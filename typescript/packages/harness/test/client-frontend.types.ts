@@ -5,6 +5,7 @@ import type {
 import type {
   ApprovalBinding as RustApprovalBinding, ModelContent as RustModelContent,
   ModelContentPart as RustModelContentPart, ModelDataPart as RustModelDataPart,
+  WasmExtensionAdmissionWire, WasmFileRefWire,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 
 type Assert<Condition extends true> = Condition;
@@ -22,6 +23,14 @@ type _ModelContentUsesOneRustDefinition = Assert<Equal<
   [ModelContent, ModelContentPart, ModelDataPart],
   [RustModelContent, RustModelContentPart, RustModelDataPart]
 >>;
+
+// Retained extension configuration still requires an immutable generated ref.
+function extensionConfigurationUsesAFileRef(extension: WasmExtensionAdmissionWire): void {
+  const content: WasmFileRefWire = extension.configurations[0]!.content;
+  // @ts-expect-error extension configuration content cannot be an opaque route
+  const invalidContent: WasmFileRefWire = "bad";
+  void [content, invalidContent];
+}
 
 // Public encoding is the existing Rust boundary, not a frontend JSON codec.
 type _CanonicalEncoderIsRust = Assert<Equal<

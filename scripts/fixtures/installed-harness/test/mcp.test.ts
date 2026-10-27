@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import {
-  NativeContracts, WasmMcpHttpTransport, WasmMcpHttpInitialization, createBrowserMcpHttpProvider, jsonToolProjection,
+  initializeMcp, WasmMcpHttpTransport, WasmMcpHttpInitialization, createBrowserMcpHttpProvider,
+  validateMcpCatalog, mcpModelDefinitions, searchMcpCatalog,
+  validateMcpStdioRequest, validateMcpCallbackRequest, mcpCallbackOperation, jsonToolProjectionSchema,
   type McpCatalog, type McpCallbackRequest,
 } from "@acyclic-labs/harness";
 
@@ -9,38 +11,38 @@ const operation = "02020202-0202-0202-0202-020202020202";
 const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 
 test("installed MCP exports preserve explicit schema exposure, search and stdio contracts", async () => {
-  const contracts = await NativeContracts.create();
+  await initializeMcp();
   const catalog: McpCatalog = { server: "installed", revision: "1",
     schema_exposure: { kind: "selected", names: ["echo"] }, discovery: "search",
-    projection_schema: (await jsonToolProjection({})).schema,
+    projection_schema: jsonToolProjectionSchema({}),
     tools: ["echo", "hidden"].map(name => ({ name, description: `Find ${name}`, inputSchema: { type: "object" } })) };
-  contracts.validateMcpCatalog(catalog, 2, 8192);
-  expect(contracts.mcpModelDefinitions(catalog, 2, 8192).map(tool => tool.name)).toEqual(["mcp.installed.echo"]);
-  expect(contracts.searchMcpCatalog(catalog, "find", undefined, 2, 2, 8192).map(tool => tool.name))
+  validateMcpCatalog(catalog, 2, 8192);
+  expect(mcpModelDefinitions(catalog, 2, 8192).map(tool => tool.name)).toEqual(["mcp.installed.echo"]);
+  expect(searchMcpCatalog(catalog, "find", undefined, 2, 2, 8192).map(tool => tool.name))
     .toEqual(["mcp.installed.echo", "mcp.installed.hidden"]);
-  expect(() => contracts.searchMcpCatalog({ ...catalog, discovery: "disabled" }, "", undefined, 2, 2, 8192)).toThrow();
-  expect(() => contracts.validateMcpCatalog(catalog, 1, 8192)).toThrow();
+  expect(() => searchMcpCatalog({ ...catalog, discovery: "disabled" }, "", undefined, 2, 2, 8192)).toThrow();
+  expect(() => validateMcpCatalog(catalog, 1, 8192)).toThrow();
   for (const bound of [-1, 0.5, 1.5, 2 ** 32, 2 ** 32 + 1, NaN, Infinity, -Infinity]) {
-    expect(() => contracts.validateMcpCatalog(catalog, bound, 8192)).toThrow();
-    expect(() => contracts.validateMcpCatalog(catalog, 2, bound)).toThrow();
-    expect(() => contracts.mcpModelDefinitions(catalog, bound, 8192)).toThrow();
-    expect(() => contracts.mcpModelDefinitions(catalog, 2, bound)).toThrow();
-    expect(() => contracts.searchMcpCatalog(catalog, "", undefined, bound, 2, 8192)).toThrow();
-    expect(() => contracts.searchMcpCatalog(catalog, "", undefined, 2, bound, 8192)).toThrow();
-    expect(() => contracts.searchMcpCatalog(catalog, "", undefined, 2, 2, bound)).toThrow();
+    expect(() => validateMcpCatalog(catalog, bound, 8192)).toThrow();
+    expect(() => validateMcpCatalog(catalog, 2, bound)).toThrow();
+    expect(() => mcpModelDefinitions(catalog, bound, 8192)).toThrow();
+    expect(() => mcpModelDefinitions(catalog, 2, bound)).toThrow();
+    expect(() => searchMcpCatalog(catalog, "", undefined, bound, 2, 8192)).toThrow();
+    expect(() => searchMcpCatalog(catalog, "", undefined, 2, bound, 8192)).toThrow();
+    expect(() => searchMcpCatalog(catalog, "", undefined, 2, 2, bound)).toThrow();
     const provider = () => { throw new Error("invalid bounds must not invoke the provider"); };
     expect(() => new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, bound, 1000)).toThrow();
     expect(() => new WasmMcpHttpTransport(provider, "http://localhost/mcp", undefined, 4096, bound)).toThrow();
   }
-  contracts.validateMcpStdioRequest({ initialization, operation, method: "tools/list", params: { cursor: "next" }, maximum_bytes: 4096 });
-  expect(() => contracts.validateMcpStdioRequest({ initialization, operation,
+  validateMcpStdioRequest({ initialization, operation, method: "tools/list", params: { cursor: "next" }, maximum_bytes: 4096 });
+  expect(() => validateMcpStdioRequest({ initialization, operation,
     method: "tools/list", params: {}, maximum_bytes: 0 })).toThrow();
-  expect(() => contracts.validateMcpStdioRequest({ initialization, operation: initialization,
+  expect(() => validateMcpStdioRequest({ initialization, operation: initialization,
     method: "tools/list", params: {}, maximum_bytes: 4096 })).toThrow();
 });
 
 test("installed MCP HTTP lifecycle classes use shipped WASM and preserve result bytes", async () => {
-  await NativeContracts.create();
+  await initializeMcp();
   for (const sse of [false, true]) {
     let calls = 0;
     const provider = createBrowserMcpHttpProvider(async (_input, options) => {
@@ -83,31 +85,31 @@ test("installed MCP HTTP lifecycle classes use shipped WASM and preserve result 
 });
 
 test("installed MCP callback primitives and new stdio services use runtime contracts", async () => {
-  const contracts = await NativeContracts.create();
+  await initializeMcp();
   const message = { jsonrpc: "2.0", id: "sample", method: "sampling/createMessage",
     params: { messages: [{ role: "user", content: { type: "text", text: "input" } }], maxTokens: 128 } };
   const request: McpCallbackRequest = {
     parent: operation,
-    policy: { server: "installed", revision: "1", sampling: true, elicitation: false, maximum_requests: 1 },
+    policy: { server: "installed", revision: "1", sampling: true, maximum_requests: 1 },
     message,
   };
-  contracts.validateMcpCallbackRequest(request);
-  const pinned = contracts.mcpCallbackOperation(request);
+  validateMcpCallbackRequest(request);
+  const pinned = mcpCallbackOperation(request);
   expect(pinned).not.toBe(operation);
-  expect(contracts.mcpCallbackOperation({ ...request, message: { ...message,
+  expect(mcpCallbackOperation({ ...request, message: { ...message,
     params: { messages: [{ role: "user", content: { type: "text", text: "changed" } }], maxTokens: 128 } } })).toBe(pinned);
   for (const params of [{ messages: [], maxTokens: 1.5 }, { messages: [{ role: "system", content: { type: "text", text: "untrusted" } }], maxTokens: 1 }]) {
-    expect(() => contracts.validateMcpCallbackRequest({ ...request, message: { ...message, params } })).toThrow();
+    expect(() => validateMcpCallbackRequest({ ...request, message: { ...message, params } })).toThrow();
   }
-  expect(() => contracts.validateMcpCallbackRequest({ ...request, policy: { ...request.policy, sampling: false } })).toThrow();
+  expect(() => validateMcpCallbackRequest({ ...request, policy: { ...request.policy, sampling: false } })).toThrow();
   for (const [method, params] of [
     ["resources/list", {}], ["resources/templates/list", {}], ["resources/read", { uri: "installed://resource" }],
     ["prompts/list", {}], ["prompts/get", { name: "prompt", arguments: {} }],
-  ] as const) contracts.validateMcpStdioRequest({ initialization, operation, method, params, maximum_bytes: 4096 });
+  ] as const) validateMcpStdioRequest({ initialization, operation, method, params, maximum_bytes: 4096 });
 });
 
 test("installed shipped WASM uses real Fetch resource endpoints and rejects unselected methods before I/O", async () => {
-  await NativeContracts.create();
+  await initializeMcp();
   let calls = 0;
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     calls++;
