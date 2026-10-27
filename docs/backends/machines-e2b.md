@@ -11,10 +11,11 @@ Control-plane create/delete and envd Connect execution/file I/O are transport
 code; lifecycle, stream ownership, expiry, binary output and cancellation use the
 shared Machines core. The template needs bash, POSIX sh, setsid,
 `/bin/kill`, readable `/proc` and writable `/tmp`, and an existing workspace directory.
-Only blocked egress is supported. Snapshot, checkpoint restoration and fork are
-currently refused pending integration of E2B's native filesystem snapshot boundary.
-The published SDK pauses the sandbox during capture and restores filesystem-only
-snapshots by cold boot; this primitive still needs provider qualification here.
+Only blocked egress is supported. Checkpoint, restore and disk fork use E2B's
+native filesystem-only snapshot primitive. Capture pauses the sandbox at the
+provider boundary; children cold boot without its memory or processes. The shared
+core owns snapshot custody and admission; the adapter releases snapshots through
+the template deletion API. This wire binding still needs real provider qualification.
 No pause/resume or idle contract is advertised. Provider-default lifetime resolves to the configured ceiling
 (one hour in the example); explicit infinite lifetime is refused. Operation records and console history are process-local. This
 binding does not implement the harness kernel filesystem seam.
@@ -27,8 +28,10 @@ the adapter does not yet enforce an immutable build commitment.
 The transport was derived from the published `e2b@2.61.0` SDK's generated envd
 Connect schema and sandbox REST requests. These are protocol sources, not real
 response fixtures. Provider conformance has not yet run, and no response fixtures
-are claimed. The current canonical suite requires checkpoint/fork unconditionally;
-this binding refuses those vectors and cannot yet pass the complete suite. An authorized local Embed host or coordinator captures are required.
+are claimed. Source `07e558968fa4926b9262562885b5b48be2620de0` passed bb2
+compile-only checks with all three provider features, and the full unfiltered
+Machines library suite passed 72 tests. These checks do not qualify E2B's wire or
+native snapshot behavior. An isolated Embed host or coordinator captures are required.
 
 [E2B Embed](https://github.com/e2b-dev/runtime/tree/main/embed/compose) offers an
 account-free Linux host. Its official Docker Compose stack alters host namespaces,
@@ -67,7 +70,7 @@ window/host. The researched Compose environment pins infra commit
    For hosted E2B, perform this step in the coordinator's account and use
    `https://api.e2b.app`, domain `e2b.app`, and unset `E2B_ENVD_PROXY`.
 4. Run `cargo run --locked -p acyclic-conformance --features e2b,machines-shell --example e2b-conformance`.
-   Save the namespace, output, elapsed time and sanitized real control/Connect/file
+   Save the namespace, output, elapsed time and sanitized real control/Connect/file/snapshot/template-deletion
    traffic for a recorded-response fixture bundle, including capture time,
    source versions and hashes. Preserve frame bytes and ordering; remove only secrets.
 5. Inspect the printed namespace for uncertain creates and destroy those sandboxes

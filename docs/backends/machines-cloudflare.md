@@ -11,14 +11,15 @@ account-free access.
 
 The Worker uses native Container exec and Sandbox 1.0 binary Files. The shared
 core owns lifecycle admission, replay, process-group cancellation, WallAlarm
-expiry and output retention. Snapshot, checkpoint restoration and fork currently
-refuse: the adapter has not yet bound native `snapshotContainer()` to the shared
-checkpoint lifecycle. Cloudflare documents that primitive as an immutable,
-point-in-time root-filesystem snapshot, with a 30-day retention period refreshed
-by restore. This is distinct from the removed TAR-copy approximation. Images require bash, POSIX
+expiry and output retention. Native `snapshotContainer()` supplies an immutable,
+point-in-time root-filesystem generation for checkpoint, restore and disk fork;
+no file-copy approximation is used. The core owns checkpoint admission, expiry,
+operation cancellation and child custody. Cloudflare retains snapshot data for
+30 days, refreshed by restore. Destroying an SDK checkpoint revokes further forks;
+the Worker API exposes no physical snapshot deletion. Images require bash, POSIX
 sh, setsid, `/bin/kill`, readable `/proc` and writable `/tmp`. No memory forks,
 suspend/resume, idle policy or unrestricted egress are advertised. Provider-default
-lifetime resolves to 24 hours; explicit infinite lifetime is refused. Operation records and captured console bytes live in the provider process. Keep that instance alive until cleanup.
+lifetime resolves to six hours; explicit infinite lifetime is refused. Operation records and captured console bytes live in the provider process. Keep that instance alive until cleanup.
 This workspace binding does not implement the harness kernel filesystem seam.
 
 ## Local validation
@@ -37,15 +38,17 @@ A previous source revision passed the complete canonical suite on bb2 on
 2026-10-26 in 11.97 seconds (log
 `/home/var/log/buildbox/1793049401359-116279-5e4947b0.log`). That run exercised
 the removed TAR-copy approximation and does not prove snapshot consistency.
-Source `19aa611df8207fa2ebfbf1a1e6609b37a3142990` was validated on bb2 on
-2026-10-27 (log `/home/var/log/buildbox/1793089603079-134925-7c549c00.log`).
-The unchanged shell suite passed through actual workerd/native Containers;
-the unchanged lifecycle suite refused its unconditional checkpoint vector.
-The combined suite took 11.49 seconds and returned failure. All three unfiltered
-library runs passed: Daytona 24, Machines 68 and conformance 49 tests. Worker
-TypeScript checking passed. The shared process custodian confirmed workerd's
-process tree retired, and the build receipt confirmed job-home, target and
-temporary-directory cleanup. No complete lifecycle qualification is claimed.
+Source `07e558968fa4926b9262562885b5b48be2620de0` was validated on bb2 on
+2026-10-27 (job `1793091808662-142237-afe1e7af`, log
+`/home/var/log/buildbox/1793091777813-142237-e0de4a9f.log`). Both unchanged
+lifecycle and shell suites passed against actual workerd/native Containers in
+14.88 seconds. All unfiltered library runs passed: Daytona 24, Machines 72 and
+conformance 49 tests; compile-only and Worker TypeScript checks also passed.
+The separate native snapshot probe restored old child bytes after a parent write.
+Its [unaltered response capture and provenance](../../rust/crates/machines/tests/fixtures/cloudflare/README.md)
+records eleven actual exchanges. The shared process custodian confirmed workerd's
+process tree retired; the build receipt confirmed all job-home, target and
+temporary-directory cleanup. Hosted Cloudflare qualification remains a live step.
 
 Native snapshot contract: [Cloudflare Container API](https://developers.cloudflare.com/containers/api/durable-object-container/)
 and [snapshot retention](https://developers.cloudflare.com/containers/guides/snapshots/).
@@ -61,7 +64,7 @@ and [snapshot retention](https://developers.cloudflare.com/containers/guides/sna
 4. From the repository root run
    `cargo run --locked -p acyclic-conformance --features cloudflare,machines-shell --example cloudflare-conformance -- https://WORKER_HOST`.
    Preserve the printed namespace, complete output and elapsed time. The runner
-   destroys all observed machines even on a failed vector. Inspect that namespace
+   destroys all observed machines and revokes all SDK checkpoint references even on a failed vector. Native snapshot data follows provider retention. Inspect that namespace
    for an uncertain create before rerunning; never replay an unknown mutation.
 5. Remove this dedicated Worker deployment after qualification with
    `npx wrangler delete` from its deployment directory and retire the test token.

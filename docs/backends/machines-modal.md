@@ -8,9 +8,11 @@ policy digest in `networks`. Supply `/workspace` to the qualification runner. Se
 
 The adapter projects the published Modal Sandbox V2 control-plane and task-command
 router RPCs. The shared core owns lifecycle, output, process-group cancellation,
-and expiry. Snapshot, checkpoint restoration and fork are currently refused pending
-integration of Modal's native immutable filesystem-image snapshot boundary and
-qualification with captured real responses. Images need bash, POSIX sh, setsid, `/bin/kill`,
+and expiry. Checkpoint, restore and disk fork use Modal's native immutable
+filesystem-image snapshot boundary. The core owns snapshot custody, cancellation,
+expiry and child admission; the adapter requests 30-day retention and releases
+images with `ImageDelete`. These RPC bindings still need captured-real-response
+qualification. Images need bash, POSIX sh, setsid, `/bin/kill`,
 readable `/proc` and writable `/tmp` and an existing workspace. Blocked egress and explicit
 domain allowlists are supported. The example allocates one CPU and 1 GiB RAM.
 Provider-default lifetime resolves to 24 hours; infinite lifetime, memory forks,
@@ -24,8 +26,10 @@ RPC field numbers and service names come from the published `modal@0.11.1`
 generated client/schema. That schema is protocol source, not captured responses.
 Modal has no local sandbox emulator in that client. Provider conformance and a
 recorded-real-response replay remain pending coordinator capture; no fabricated
-response server is used. The current canonical suite requires checkpoint/fork
-unconditionally; this binding refuses those vectors and cannot yet pass the complete suite.
+response server is used. Source `07e558968fa4926b9262562885b5b48be2620de0`
+passed bb2 compile-only checks with all three provider features, and the full
+unfiltered Machines library suite passed 72 tests. These checks do not qualify
+Modal's wire or native snapshot behavior.
 
 ## Live steps
 
@@ -52,7 +56,8 @@ unconditionally; this binding refuses those vectors and cannot yet pass the comp
    repository root run
    `cargo run --locked -p acyclic-conformance --features modal,machines-shell --example modal-conformance`.
 4. Preserve the namespace, full output and elapsed time. Capture sanitized real
-   SandboxCreateV2/WaitV2/TerminateV2 and router Start/StdioRead/Wait/StdinWrite
+   SandboxCreateV2/WaitV2/TerminateV2, ImageDelete, and router
+   TaskSnapshotFilesystem/Start/StdioRead/Wait/StdinWrite
    responses, with endpoint roles, versions, capture time, hashes and frame ordering.
    Exclude credentials, JWTs and personal data. Return that provenance-bearing bundle
    to the lane for the unchanged suite's recorded-response run.
