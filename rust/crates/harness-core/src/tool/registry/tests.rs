@@ -10,15 +10,22 @@ mod scaling;
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(32))]
     #[test]
-    fn child_family_requires_spawn_as_well_as_each_tools_own_grant(selected in any::<[bool;9]>()) {
-        let names = [crate::tools::shell::PLATFORM.name, "fs", "read", "write", "edit", "spawn", "send", "wait", "archive"];
+    fn default_catalog_requires_each_tools_own_grant(
+        selected in prop::collection::vec(any::<bool>(), crate::tools::default_names().len()),
+    ) {
+        let names = crate::tools::default_names();
         let registry = crate::tools::defaults().unwrap();
-        let grants = crate::Capabilities::new(names.iter().enumerate().filter(|(i, _)| selected[*i]).map(|(_, name)| format!("tool:call:{name}")));
+        let grants = crate::Capabilities::new(
+            names.iter().enumerate().filter(|(i, _)| selected[*i])
+                .map(|(_, name)| format!("tool:call:{name}"))
+                .chain(crate::tools::AGENT_TOOLS.map(|name| format!("tool:call:{name}"))),
+        );
         let definitions = registry.definitions_for_grants(&grants, None).unwrap();
         for (index, name) in names.iter().enumerate() {
             prop_assert_eq!(definitions.iter().any(|definition| definition.name == *name),
-                selected[index] && (index < 5 || selected[5]));
+                selected[index]);
         }
+        prop_assert_eq!(definitions.len(), selected.iter().filter(|selected| **selected).count());
     }
 }
 

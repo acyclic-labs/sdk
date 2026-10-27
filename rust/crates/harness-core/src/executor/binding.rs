@@ -61,6 +61,7 @@ impl StockExecution<'_> {
             admission_operation: OperationId,
             execution_operation: OperationId,
             task_id: Option<TaskId>,
+            private_volume: Option<&'a crate::conversation::VolumeRef>,
             run_limits: crate::runtime::TaskRunLimits,
             extensions: Option<&'a crate::core::ExtensionAdmission>,
         }
@@ -103,6 +104,10 @@ impl StockExecution<'_> {
             admission_operation: operation,
             execution_operation: operation,
             task_id: None,
+            private_volume: context
+                .content_binding(None)
+                .and_then(|binding| binding.writer.as_ref())
+                .map(|writer| writer.volume()),
             run_limits: context.scope().run_limits(),
             extensions: context.scope().extensions(),
         });

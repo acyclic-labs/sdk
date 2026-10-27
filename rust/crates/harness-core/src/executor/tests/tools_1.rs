@@ -8,10 +8,16 @@ async fn original_context_survives_tool_response_loss_and_rejects_retargeted_rep
         Limits::default(),
     )?;
     let original = admitted_context(scope.clone())?;
-    let replacement = admitted_context(scope.clone())?;
+    let replacement = original.harness.agent_context(
+        &crate::Capabilities::default(),
+        crate::runtime::ContentBindings {
+            reader: Arc::new(NoReads),
+            writer: Some(Arc::new(PrivateVolume(private_volume(0xef)?))),
+        },
+    )?;
     assert_ne!(context_identity(&original), context_identity(&replacement));
     let tool = Arc::new(ContextOnlyTool {
-        admission: context_identity(&original),
+        admission: context_identity(&original).cloned(),
         lost_response: || Error::Storage("response lost after effect".into()),
         calls: AtomicUsize::new(0),
         reconciles: AtomicUsize::new(0),
@@ -1077,7 +1083,7 @@ async fn cancelled_tool_effects_are_reconciled_and_definitive_failures_are_not()
             )?;
             let original = admitted_context(scope.clone())?;
             let tool = Arc::new(ContextOnlyTool {
-                admission: context_identity(&original),
+                admission: context_identity(&original).cloned(),
                 lost_response,
                 calls: AtomicUsize::new(0),
                 reconciles: AtomicUsize::new(0),
