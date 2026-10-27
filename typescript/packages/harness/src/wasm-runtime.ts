@@ -104,6 +104,43 @@ export async function ensureModelWasm(): Promise<void> {
   }
 }
 
+/** Declarative content contracts need neither a provider registry nor a runtime. */
+export async function ensureModelContentWasm(): Promise<void> {
+  const exports = await loadHarnessWasm();
+  if (!["modelContentInventory", "validateModelContent", "validateModelMessages",
+    "validateUserInput", "prepareModelRequest", "admitModelEvent"]
+    .every(name => typeof exports[name] === "function")) {
+    throw new Error("harness WASM does not provide the required model content exports");
+  }
+}
+
+/** MCP uses its Rust contracts and transport on the same physical module. */
+export async function ensureMcpWasm(): Promise<void> {
+  const exports = await loadHarnessWasm();
+  const functions = ["validateMcpCatalog", "mcpModelDefinitions", "searchMcpCatalog",
+    "validateMcpStdioRequest", "validateMcpCallbackRequest", "mcpCallbackOperation",
+    "jsonToolProjectionSchema"];
+  const transport = hasClass(exports, "WasmMcpHttpTransport", "wasmmcphttptransport", [
+    "initializationRequest", "acceptInitialization", "listToolsJson", "serviceJson", "callJson", "reconcileJson", "free",
+  ], true);
+  const initialization = hasClass(exports, "WasmMcpHttpInitialization", "wasmmcphttpinitialization", [
+    "resultJson", "initializedRequest", "intoTransport", "free",
+  ]);
+  if (!functions.every(name => typeof exports[name] === "function") || !transport || !initialization) {
+    throw new Error("harness WASM does not provide the required MCP exports");
+  }
+}
+
+/** Owner-mediated context reads do not require a retired workflow runtime. */
+export async function ensureContextWasm(): Promise<void> {
+  const exports = await loadHarnessWasm();
+  if (!["captureDiscoveredContext", "contextForRequest", "readPinnedContextPath",
+    "projectDiscoveredContext", "applyContextProjection", "parseSkillMetadata", "fileDescriptor"]
+    .every(name => typeof exports[name] === "function")) {
+    throw new Error("harness WASM does not provide the required context discovery exports");
+  }
+}
+
 /** The hypothesis kernel has its own export contract on the same module. */
 export async function ensureHypothesisWasm(): Promise<void> {
   const exports = await loadHarnessWasm();

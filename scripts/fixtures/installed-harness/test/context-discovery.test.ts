@@ -1,11 +1,16 @@
 import { expect, test } from "bun:test";
 import {
-  DEFAULT_LIMITS, NativeContracts, descriptorFor,
+  initializeContextDiscovery, captureDiscoveredContext, contextForRequest, readPinnedContextPath,
+  projectDiscoveredContext, applyContextProjection, fileDescriptor, encodeCanonicalJson, decodeClientJson,
   type ContextDiscovery, type ContextDiscoveryReader,
 } from "@acyclic-labs/harness";
 
+// Finite fixture inputs, not product defaults or a fabricated read capability.
+const fixtureLimits = { file_bytes: 65_536, path_bytes: 4_096, attachments: 16, render_bytes: 65_536,
+  model_steps: 8, model_events_per_step: 64, tool_calls_per_step: 16, context_messages: 128 };
+
 test("installed generated discovery callbacks retain lazy bounded reads and exact file wire", async () => {
-  const contracts = await NativeContracts.create();
+  await initializeContextDiscovery();
   const provider = { namespace: "installed", family: "filesystem", version: "2" };
   const volume = { provider, id: "skills", class: "session_shared" as const,
     owner: { kind: "session" as const, id: "installed" } };
@@ -38,15 +43,16 @@ test("installed generated discovery callbacks retain lazy bounded reads and exac
       const content = instructionText.has(query.source.path)
         ? new TextEncoder().encode(instructionText.get(query.source.path)!) : bytes.slice();
       return { bytes: content, file: { volume, path: query.source.path, version: "pinned",
-        descriptor: await descriptorFor(content, "text/plain"), display_name: query.source.path.split("/").at(-1)! } };
+        descriptor: fileDescriptor(content, "text/plain"), display_name: query.source.path.split("/").at(-1)! } };
     },
   };
-  const snapshot = await contracts.captureDiscoveredContext(declaration, reader);
+  const snapshot = await captureDiscoveredContext(declaration, reader);
   expect(reads).toBe(2);
   expect(snapshot.instructions).toMatchObject([...instructionText.keys()].map(path => ({ path })));
-  expect(snapshot.skills[0]?.fields.rank).toBe(7n);
-  expect(snapshot.skills[0]?.fields.example).toEqual({ sha256: "note", byte_length: 7n, media_type: "note" });
-  expect(Object.isFrozen(snapshot.skills)).toBe(true);
+  const fields = decodeClientJson(encodeCanonicalJson(snapshot.skills[0]!.fields)) as Record<string, unknown>;
+  expect(fields.rank).toBe(7n);
+  expect(fields.example).toEqual({ sha256: "note", byte_length: 7n, media_type: "note" });
+  // The deleted TS facade's Object.freeze policy is retired. Rust returns owned data.
   let bindings = 0;
   const inactiveReader: ContextDiscoveryReader = {
     get list() { bindings++; return reader.list; },
@@ -54,11 +60,11 @@ test("installed generated discovery callbacks retain lazy bounded reads and exac
     get read() { bindings++; return reader.read; },
   };
   const inactiveDeclaration = { ...declaration, limits: { ...declaration.limits, instruction_bytes: 0 } };
-  expect(await contracts.contextForRequest(inactiveDeclaration, inactiveReader, snapshot, "explicit")).toEqual(snapshot);
+  expect(await contextForRequest(inactiveDeclaration, inactiveReader, snapshot, "explicit")).toEqual(snapshot);
   expect(bindings).toBe(0);
-  const projected = contracts.projectDiscoveredContext(snapshot, { messages: [], metadata: {} }, "prepend", DEFAULT_LIMITS);
+  const projected = projectDiscoveredContext(snapshot, { messages: [], metadata: {} }, "prepend", fixtureLimits);
   expect(JSON.stringify(projected)).not.toContain("SECRET BODY");
-  const body = await contracts.readPinnedContextPath(snapshot.skills[0]!.source, reader, 512);
+  const body = await readPinnedContextPath(snapshot.skills[0]!.source, reader, 512);
   expect(body.bytes).toEqual(bytes);
   expect(typeof body.file.descriptor.byte_length).toBe("number");
   expect(reads).toBe(3);
@@ -66,23 +72,23 @@ test("installed generated discovery callbacks retain lazy bounded reads and exac
   const base = { messages: [{ role: "user" as const, content: part },
     { role: "user" as const, content: [part] }],
   metadata: Object.fromEntries([["attachment", body.file], ["__proto__", body.file]]) };
-  const composed = contracts.projectDiscoveredContext(snapshot, base, "prepend", DEFAULT_LIMITS);
+  const composed = projectDiscoveredContext(snapshot, base, "prepend", fixtureLimits);
   expect(composed.messages.slice(3)).toEqual(base.messages);
   expect(composed.metadata.attachment).toEqual(body.file);
   expect(Object.hasOwn(composed.metadata, "__proto__")).toBe(true);
   expect(typeof composed.metadata.attachment!.descriptor.byte_length).toBe("number");
-  expect(contracts.applyContextProjection(base, [], "prompt", "append", DEFAULT_LIMITS)).toEqual(base);
-  await expect(contracts.captureDiscoveredContext(declaration, { ...reader,
+  expect(applyContextProjection(base, [], "prompt", "append", fixtureLimits)).toEqual(base);
+  await expect(captureDiscoveredContext(declaration, { ...reader,
     async prefix() { return new Uint8Array(257); },
   })).rejects.toThrow();
-  await expect(contracts.captureDiscoveredContext(declaration, { ...reader,
+  await expect(captureDiscoveredContext(declaration, { ...reader,
     async list(query) {
       const page = await reader.list(query);
       return { ...page, entries: page.entries.map(entry => entry.name === "SKILL.md"
         ? { ...entry, kind: "directory" as const } : entry) };
     },
   })).rejects.toThrow();
-  await expect(contracts.readPinnedContextPath(snapshot.skills[0]!.source, { ...reader,
+  await expect(readPinnedContextPath(snapshot.skills[0]!.source, { ...reader,
     async read(query) {
       const result = await reader.read(query);
       return { ...result, bytes: Uint8Array.of(0) };
