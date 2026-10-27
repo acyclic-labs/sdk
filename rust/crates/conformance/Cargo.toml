@@ -48,6 +48,11 @@ notify = { workspace = true, optional = true }
 s3s = { workspace = true, optional = true }
 
 [[bin]]
+name = "harness-conformance"
+path = "src/bin/harness_conformance.rs"
+test = false
+
+[[bin]]
 name = "inference-qualify"
 path = "src/bin/inference_qualify.rs"
 required-features = ["inference"]

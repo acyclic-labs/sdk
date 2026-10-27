@@ -8,6 +8,9 @@ cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --filter co
 ```
 
 Build on bb2. The runtime budget is measured separately from Cargo compilation.
+Report identity, digest, bundle-digest and receipt validation live beside their
+shared validator in `acyclic-conformance`:
+`cargo run --locked -p acyclic-conformance --bin harness-conformance -- report.json`.
 `--corpus DIR` selects an exported copy of `harness/tests/scenarios`. Defaults
 are merged by the existing corpus loader; no case JSON needs changing.
 `--substrate local` (the only substrate) runs the portable executor and

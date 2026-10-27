@@ -497,7 +497,6 @@ dependencies = [
 name = "acyclic-harness-conformance"
 version = "0.2.0"
 dependencies = [
- "acyclic-conformance",
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-native-runtime",
@@ -505,7 +504,6 @@ dependencies = [
  "acyclic-stream",
  "acyclic-test-support",
  "async-trait",
- "blake3",
  "futures",
  "serde",
  "serde_json",
