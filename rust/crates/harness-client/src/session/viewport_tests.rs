@@ -3,7 +3,7 @@
 //! fold memory and cancellation of lazy interests, not network credit.
 use super::*;
 use crate::{AgentId, AgentPath, PageDirection, PageWindow, PageWindowPolicy, WindowPage};
-use acyclic_stream::{runtime::Executor, session::client::transport};
+use acyclic_stream::{runtime::Executor, session::transport};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
@@ -244,12 +244,13 @@ fn hundred_thousand_agent_tree_has_bounded_viewport() {
         "100000 agents: pages<=2 rows<=64 follows=12 display_bytes_peak={peak_bytes} idle_follows=0 elapsed={:?}",
         started.elapsed()
     );
+    scheduler.tasks.lock().unwrap().clear();
 }
 
 #[test]
 fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
     let tree = Tree::new(64);
-    let (mut session, _) = client();
+    let (mut session, scheduler) = client();
     let (streams, resources) = tree.visible(0);
     session.replace_interests(streams, resources).unwrap();
     let revision = session.revision();
@@ -276,12 +277,13 @@ fn viewport_refusal_is_atomic_and_legacy_resource_retention_fails_oracle() {
         .unwrap();
     assert!(session.resources.keys().all(|key| expected.contains(key)));
     eprintln!("off-screen retained tool panes: legacy=4 complete_viewport=0");
+    scheduler.tasks.lock().unwrap().clear();
 }
 
 #[test]
 fn agent_viewport_releases_output_panes_on_scroll_out() {
     let tree = Tree::new(64);
-    let (session, _) = client();
+    let (session, scheduler) = client();
     let selection = |index: usize| crate::AgentSelection {
         agent: tree.children[index].clone(),
         conversation_from: 0,
@@ -306,4 +308,5 @@ fn agent_viewport_releases_output_panes_on_scroll_out() {
         .set_viewport(selection(32), (33..36).map(selection), std::iter::empty())
         .unwrap();
     assert_eq!(client.residency(), (8, 8, 0));
+    scheduler.tasks.lock().unwrap().clear();
 }
