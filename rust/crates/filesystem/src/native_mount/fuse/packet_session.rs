@@ -146,7 +146,13 @@ impl PacketSession {
         request: &PacketRequest<'_>,
         response: &mut [u8],
     ) -> Result<PacketReply<'a>, PacketFailure> {
-        if let Some(guest) = &self.guest {
+        // These are kernel session/reference messages, not filesystem actions
+        // by a POSIX caller. Linux may tag them with root even when only a
+        // non-root identity is enrolled. The phase machine and original source
+        // guard still govern negotiation, retirement and reference release.
+        if let Some(guest) = &self.guest
+            && !matches!(request.opcode, 2 | 26 | 38 | 42)
+        {
             guest.posix().require_identity(request.owner)?;
             super::guest::require_metadata(guest.posix(), request)?;
         }
