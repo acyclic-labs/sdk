@@ -383,6 +383,7 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
         let published = if larger_commit {
             let outcome = provider
                 .commit(CommitRequest {
+                    deadline_unix_millis: None,
                     // Each real Append mutation needs its own current-tail guard.
                     conditions: vec![
                         CommitCondition::Tail {

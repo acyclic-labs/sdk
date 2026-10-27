@@ -69,6 +69,7 @@ async fn real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retr
     };
     let fork_result = stream.fork(forked.clone()).await?;
     let committed = crate::CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![crate::CommitCondition::Tail {
             path: destination.clone(),
             expected: 1,

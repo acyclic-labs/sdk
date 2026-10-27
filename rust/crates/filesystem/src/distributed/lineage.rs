@@ -262,6 +262,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let revision = actor.begin(journal)?;
         work.check()?;
         let mut request = CommitRequest {
+            deadline_unix_millis: None,
             // Initial namespace changes add one stream to the creation CAS.
             conditions: work.vec(9)?,
             mutations: work.vec(9)?,
