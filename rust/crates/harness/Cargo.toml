@@ -50,6 +50,12 @@ required-features = ["filesystem"]
 name = "native-wasm-fixture"
 required-features = ["filesystem"]
 
+# Selections real consumers compile (Cloud's native root, harness-conformance,
+# and the filesystem-napi N-API generator). The lite gate checks each one when
+# a batch touches this crate's feature gating; --all-features hides #1602.
+[package.metadata.acyclic]
+consumer-features = [["filesystem"], ["filesystem-local", "test-support"], ["filesystem-local", "native-execution"]]
+
 [features]
 oidc = ["filesystem", "acyclic-harness-core/oidc"]
 oidc-http = ["oidc", "acyclic-harness-core/oidc-http"]

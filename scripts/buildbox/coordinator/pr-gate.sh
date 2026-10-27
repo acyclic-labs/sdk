@@ -48,6 +48,15 @@ if ! python Q:/lanes/gate-affected.py "$W" "$base" --output "$W/.gate-selection.
   exit 1
 fi
 cp "$W/.gate-selection.json" "$log.scope.json"
+# Crates whose feature gating the batch touched (the candidate's own selector,
+# when it has one): the lite payload re-checks them under consumer feature sets.
+rm -f "$W/.gate-feature-packages"
+if [ -f "$W/scripts/gate-feature-crates.py" ] && ! (cd "$W" && python scripts/gate-feature-crates.py "$base" HEAD > .gate-feature-packages 2>> "$log"); then
+  v="FAIL #$n: feature-gating selection failed; recovery: python scripts/gate-feature-crates.py $base HEAD log=$log"
+  echo "GATE $v"; echo "$(date -u +%FT%T.000Z) pr-gate GATE_FAIL ${v#* }" >> ~/.codex-fleet/alerts.log
+  exit 1
+fi
+[ -s "$W/.gate-feature-packages" ] && echo "GATE_FEATURE_PACKAGES $(paste -sd' ' "$W/.gate-feature-packages")" >> "$log"
 # Admit baseline prerequisites before staging or dispatching a candidate.
 # Missing evidence uses the existing exit-5 parking and publication wake-up.
 # Prefer completed tests on the exact prepared base, even when another main

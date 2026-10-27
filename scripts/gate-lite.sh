@@ -43,9 +43,26 @@ fi
 windows=()
 if [ "$rc" = 0 ]; then
   # A metadata failure leaves the selector unparseable input: never a silent skip.
-  list=$(cargo metadata --locked --no-deps --format-version 1 | python3 scripts/gate-windows-crates.py "${selected[@]}") || {
+  meta=$(cargo metadata --locked --no-deps --format-version 1)
+  list=$(printf '%s' "$meta" | python3 scripts/gate-windows-crates.py "${selected[@]}") || {
     rc=$?; echo "GATE_LITE_WINDOWS_SELECTION_FAILED rc=$rc"; }
   for p in $list; do windows+=(-p "$p"); done
+fi
+# --all-features never builds the narrower selections consumers compile: when
+# the batch touched a crate's feature gating (.gate-feature-packages, written by
+# the outer gate from the diff), check each consumer set the crate declares in
+# [package.metadata.acyclic] consumer-features.
+if [ "$rc" = 0 ] && [ -s .gate-feature-packages ]; then
+  sets=$(printf '%s' "$meta" | python3 scripts/gate-feature-crates.py --sets .gate-feature-packages) || {
+    rc=$?; echo "GATE_LITE_FEATURE_SELECTION_FAILED rc=$rc"; }
+  while [ "$rc" = 0 ] && IFS=$'\t' read -r p features; do
+    [ -n "$p" ] || continue
+    echo "GATE_LITE_FEATURES_START crate=$p features=${features:-none}"
+    cargo check --locked -p "$p" --no-default-features ${features:+--features "$features"} --lib --message-format=short
+    rc=$?
+    [ "$rc" = 0 ] || printf 'GATE_LITE_FEATURES_FAILED rc=%s; recovery: cargo check --locked -p %s --no-default-features%s --lib\n' \
+      "$rc" "$p" "${features:+ --features $features}"
+  done <<< "$sets"
 fi
 if [ "$rc" = 0 ] && [ ${#windows[@]} -gt 0 ]; then
   echo "GATE_LITE_WINDOWS_START target=x86_64-pc-windows-msvc crates=$((${#windows[@]} / 2)) features=all targets=all"
