@@ -15,6 +15,33 @@ pub enum NetworkPolicy {
     AllowDomains(Vec<String>),
 }
 
+/// Native image addressing declared by a transport; admission lives in core.
+#[derive(Clone, Copy, Debug, Default)]
+pub enum ImageSelector {
+    /// The registered provider identifier already names an immutable image.
+    #[default]
+    NativeId,
+    /// A template's mutable default/tag is insufficient: select its exact build.
+    TemplateBuild,
+}
+
+impl ImageSelector {
+    pub(super) fn admit(self, reference: &str) -> Result<(), ProviderError> {
+        if matches!(self, Self::TemplateBuild) {
+            let pinned = reference.rsplit_once(':').is_some_and(|(template, build)| {
+                !template.is_empty()
+                    && !template.contains(':')
+                    && uuid::Uuid::parse_str(build)
+                        .is_ok_and(|id| !id.is_nil() && id.hyphenated().to_string() == build)
+            });
+            if !pinned {
+                return Err(ProviderError::Unsupported("immutable template admission failed; recovery: register template_id:immutable_build_uuid in RemoteMachinesConfig::images instead of a mutable default or tag".into()));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One provider create, with all portable decisions already resolved.
 #[derive(Clone)]
 pub struct SandboxSpec {
@@ -98,6 +125,11 @@ pub struct SandboxInstance {
 pub trait SandboxDriver: Clone + Send + Sync + 'static {
     /// Provider name used in diagnostics and compatibility commitments.
     fn name(&self) -> &'static str;
+
+    /// Native selector shape; the shared lifecycle admits it before any IO.
+    fn image_selector(&self) -> ImageSelector {
+        ImageSelector::NativeId
+    }
 
     /// Whether this transport implements memory-preserving suspend and wake.
     fn supports_suspend(&self) -> bool;

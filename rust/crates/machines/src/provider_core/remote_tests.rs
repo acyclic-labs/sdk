@@ -5,7 +5,7 @@ use crate::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[derive(Clone, Default)]
-struct NoDispatch(Arc<AtomicUsize>);
+struct NoDispatch(Arc<AtomicUsize>, ImageSelector);
 
 impl NoDispatch {
     fn dispatch<T>(&self) -> Result<T, ProviderError> {
@@ -18,6 +18,10 @@ impl NoDispatch {
 impl SandboxDriver for NoDispatch {
     fn name(&self) -> &'static str {
         "admission-test"
+    }
+
+    fn image_selector(&self) -> ImageSelector {
+        self.1
     }
 
     fn supports_suspend(&self) -> bool {
@@ -58,6 +62,61 @@ impl SandboxDriver for NoDispatch {
     ) -> Result<(), ProviderError> {
         self.dispatch()
     }
+}
+
+// These are internal admission inputs, not external provider response fixtures.
+#[tokio::test]
+async fn mutable_template_selectors_refuse_qualification_and_create_before_dispatch()
+-> Result<(), Box<dyn std::error::Error>> {
+    for reference in [
+        "template",
+        "template:default",
+        "template:stable",
+        "template:00000000-0000-0000-0000-000000000000",
+        ":12345678-1234-1234-1234-123456789abc",
+    ] {
+        let driver = NoDispatch(Arc::default(), ImageSelector::TemplateBuild);
+        let calls = Arc::clone(&driver.0);
+        let provider = RemoteMachines::new(
+            driver,
+            RemoteMachinesConfig {
+                images: [([7; 32], reference.into())].into(),
+                networks: [([8; 32], NetworkPolicy::BlockAll)].into(),
+                ..RemoteMachinesConfig::default()
+            },
+        );
+        assert!(matches!(
+            provider.qualify_image(Image::custom([7; 32])?).await,
+            Err(ProviderError::Unsupported(_))
+        ));
+        assert!(matches!(
+            provider
+                .create(CreateMachine::new(
+                    IdempotencyKey::new(),
+                    Image::custom([7; 32])?,
+                    [8; 32],
+                ))
+                .await,
+            Err(ProviderError::Unsupported(_))
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+    let driver = NoDispatch(Arc::default(), ImageSelector::TemplateBuild);
+    let calls = Arc::clone(&driver.0);
+    let provider = RemoteMachines::new(
+        driver,
+        RemoteMachinesConfig {
+            images: [(
+                [7; 32],
+                "template:12345678-1234-1234-1234-123456789abc".into(),
+            )]
+            .into(),
+            ..RemoteMachinesConfig::default()
+        },
+    );
+    provider.qualify_image(Image::custom([7; 32])?).await?;
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    Ok(())
 }
 
 #[tokio::test]

@@ -119,6 +119,9 @@ impl SandboxDriver for E2b {
     fn name(&self) -> &'static str {
         "e2b"
     }
+    fn image_selector(&self) -> super::ImageSelector {
+        super::ImageSelector::TemplateBuild
+    }
     fn supports_suspend(&self) -> bool {
         false
     }

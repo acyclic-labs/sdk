@@ -15,6 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         proxy.as_deref(),
         Duration::from_secs(3600),
     )?;
+    // Exact template_id:build_uuid; shared core refuses mutable defaults/tags.
     let image = support::required("E2B_TEMPLATE_ID")?;
     let workspace = std::env::var("E2B_WORKSPACE").unwrap_or_else(|_| "/workspace".into());
     support::run(

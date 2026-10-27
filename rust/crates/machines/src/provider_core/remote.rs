@@ -17,7 +17,8 @@ pub struct RemoteMachinesConfig {
     /// Resource namespace for this provider instance. The journal is process-local;
     /// independent instances must not dispatch into one another's resource names.
     pub namespace: uuid::Uuid,
-    /// Immutable digests mapped to provider image/template identifiers.
+    /// Immutable digests mapped to provider image identifiers. Build-addressed
+    /// templates require `template_id:immutable_build_uuid`, never a mutable tag.
     pub images: BTreeMap<[u8; 32], String>,
     /// Network commitments mapped to the policy the adapter must enforce.
     pub networks: BTreeMap<[u8; 32], NetworkPolicy>,
@@ -100,9 +101,14 @@ impl<D: SandboxDriver> RemoteMachines<D> {
             Image::Custom(digest) | Image::ManagedOci(digest) => digest.as_bytes(),
             Image::Checkpoint(checkpoint) => return self.checkpoint_boot(*checkpoint),
         };
-        self.config.images.get(&digest).cloned().map(|image| Boot { image, snapshot: None }).ok_or_else(|| ProviderError::Unsupported(
+        let image = self.config.images.get(&digest).ok_or_else(|| ProviderError::Unsupported(
             format!("unregistered immutable image {}; recovery: register its provider image in RemoteMachinesConfig::images", hex::encode(digest))
-        ))
+        ))?;
+        self.driver.image_selector().admit(image)?;
+        Ok(Boot {
+            image: image.clone(),
+            snapshot: None,
+        })
     }
 
     fn binding(&self, machine: MachineId) -> Result<Binding, ProviderError> {
