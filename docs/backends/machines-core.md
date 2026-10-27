@@ -92,8 +92,23 @@ targets. Public provider ownership and stream aliases use Streams' existing
 platform bounds: native calls remain Send/Sync, while browser calls retain their
 own event-loop handles. The native readiness helpers still require the native
 Tokio runtime; the shared registry itself introduces no browser timer or scheduler.
-The simulator's replay/events migration is still in progress; making the registry
-available does not claim that its separate maps have already been deleted.
+The simulator now uses this same registry for admission, exact replay, recovery,
+cancel, operation watch and state events. Its local world holds only simulated
+machines, immutable native snapshots, parent relationships and its deterministic
+clock. There is no local outcome or event map. A busy native-world deletion is a
+definite refusal; canonical cleanup keeps that debt for the original operation.
+Machine/checkpoint identities and successful-mutation clock ticks stay unchanged.
+Simulation operation identities now use the same canonical operation derivation
+as every other adapter, replacing its former separate digest domain.
+
+The simulator's existing bounds (4096 operations, 1024 machine identities and
+4096 events per machine) are enforced by the shared core. Operation reservation
+and its point/log publication share one conditional Streams commit; definite
+pre-dispatch refusals release the reservation in the same commit that forgets
+admission. Native machine capacity is checked while the simulator holds its
+physical-world lock. Event admission precedes canonical machine/event publication.
+Native registries keep their previous unbounded profile unless their composition
+root explicitly chooses limits. Reopen a namespace with the same profile.
 The raw backend migration is in progress; the operation authority alone does not
 establish that all adapters meet the approximately 300-line budget.
 

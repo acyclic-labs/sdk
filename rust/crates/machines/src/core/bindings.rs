@@ -58,6 +58,7 @@ pub(super) fn project(
     entry: &mut Option<StoredMachine>,
     observation: &MachineObservation,
     at: u64,
+    event_limit: Option<u64>,
 ) -> Result<Option<MachineEvent>, ProviderError> {
     if entry
         .as_ref()
@@ -77,6 +78,9 @@ pub(super) fn project(
                 "machine event sequence exhausted; recovery: create a new machine identity".into(),
             )
         })?;
+    if event_limit.is_some_and(|limit| sequence > limit) {
+        return Err(ProviderError::Rejected("Machines event limit reached; recovery: create a new bounded simulation before publishing further state transitions".into()));
+    }
     let native = entry.as_ref().and_then(|entry| entry.native.clone());
     *entry = Some(StoredMachine {
         observation: observation.clone(),
@@ -186,7 +190,7 @@ impl OperationRegistry {
         Ok(native)
     }
 
-    pub(super) async fn remember_bound_checkpoint(
+    pub(crate) async fn remember_bound_checkpoint(
         &self,
         observation: CheckpointObservation,
         native: Option<NativeBinding>,
@@ -212,7 +216,7 @@ impl OperationRegistry {
 
     /// Publish handle, initial observation/event, and created/adopted ownership in
     /// one conditional commit, before readiness or any further native mutation.
-    pub async fn claim_machine<D: RawMachines + ?Sized>(
+    pub async fn claim_machine<D: NativeResources + ?Sized>(
         &self,
         driver: &D,
         operation: OperationId,
@@ -265,8 +269,12 @@ impl OperationRegistry {
                 adopted,
             )?;
             let mut mutations = Vec::new();
-            if let Some(event) = project(&mut state, &observation, observation.changed_at_unix_ms)?
-            {
+            if let Some(event) = project(
+                &mut state,
+                &observation,
+                observation.changed_at_unix_ms,
+                self.limits.machine_events,
+            )? {
                 mutations.push(
                     self.journal
                         .append(&format!("{machine_path}/events"), &event)?,

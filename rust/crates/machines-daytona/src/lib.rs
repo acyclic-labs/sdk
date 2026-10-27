@@ -30,8 +30,8 @@ use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 
 use acyclic_machines::core::{
-    Dispatch, NativeBinding, NativeResource, OperationRegistry, RawCreated, RawMachines,
-    RawObservation,
+    Dispatch, NativeBinding, NativeResource, NativeResources, OperationRegistry, RawCreated,
+    RawMachines, RawObservation,
 };
 #[cfg(test)]
 use acyclic_machines::{ForkFidelity, MAX_FORK_CHILDREN, MutationIntent, core as ops};
@@ -516,11 +516,33 @@ impl DaytonaProvider {
 }
 
 #[async_trait]
-impl RawMachines for DaytonaProvider {
+impl NativeResources for DaytonaProvider {
     fn name(&self) -> &str {
         "daytona"
     }
 
+    async fn raw_destroy(&self, resource: &NativeResource) -> Result<(), ProviderError> {
+        match resource {
+            NativeResource::Machine(handle) => self.api.delete(handle).await,
+            NativeResource::Checkpoint(handle) => {
+                // An accepted snapshot can be absent before materialization. Its
+                // missing name is not proof of deletion; retain cleanup ownership.
+                let snapshot =
+                    self.api
+                        .get_snapshot(handle)
+                        .await
+                        .map_err(|error| match error {
+                            ProviderError::NotFound(_) => ProviderError::Unavailable,
+                            error => error,
+                        })?;
+                self.api.delete_snapshot(&snapshot.id).await
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl RawMachines for DaytonaProvider {
     async fn raw_create(&self, request: &CreateMachine) -> Result<RawCreated, ProviderError> {
         let key = request.idempotency_key;
         let snapshot = self.resolve_snapshot(&request.image)?;
@@ -733,25 +755,6 @@ impl RawMachines for DaytonaProvider {
             .into_iter()
             .map(|child| map::machine_state(child.state.as_deref()))
             .collect())
-    }
-
-    async fn raw_destroy(&self, resource: &NativeResource) -> Result<(), ProviderError> {
-        match resource {
-            NativeResource::Machine(handle) => self.api.delete(handle).await,
-            NativeResource::Checkpoint(handle) => {
-                // An accepted snapshot can be absent before materialization. Its
-                // missing name is not proof of deletion; retain cleanup ownership.
-                let snapshot =
-                    self.api
-                        .get_snapshot(handle)
-                        .await
-                        .map_err(|error| match error {
-                            ProviderError::NotFound(_) => ProviderError::Unavailable,
-                            error => error,
-                        })?;
-                self.api.delete_snapshot(&snapshot.id).await
-            }
-        }
     }
 }
 

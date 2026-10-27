@@ -22,13 +22,23 @@ impl NativeResource {
 }
 use async_trait::async_trait;
 
-/// Native machine adapter. The remaining lifecycle primitives are being migrated
-/// into this same boundary; implementations must never add their own operation registry.
+/// Minimal native resource custody. The canonical operation registry owns
+/// cancellation, cleanup ordering, retained debt and driver affinity.
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
-pub trait RawMachines: acyclic_stream::ProviderPlatform {
+pub trait NativeResources: acyclic_stream::ProviderPlatform {
     fn name(&self) -> &str;
 
+    /// Delete one opaque resource once. A missing resource may return NotFound;
+    /// a lost native reply remains Unavailable. Retry decisions belong to core.
+    async fn raw_destroy(&self, resource: &NativeResource) -> Result<(), ProviderError>;
+}
+
+/// Raw lifecycle primitives, separate from the minimal resource custody used by
+/// the operation registry. Neither boundary owns replay, events or cancellation.
+#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
+pub trait RawMachines: NativeResources {
     /// Dispatch one creation and retain its accepted address even when decoding
     /// the native observation fails. Admission/idempotency/readiness are in core.
     async fn raw_create(&self, request: &CreateMachine) -> Result<RawCreated, ProviderError>;
@@ -118,10 +128,6 @@ pub trait RawMachines: acyclic_stream::ProviderPlatform {
         machine: MachineId,
         native: Option<&NativeBinding>,
     ) -> Result<Vec<MachineState>, ProviderError>;
-
-    /// Delete one opaque resource once. A missing resource may return NotFound;
-    /// a lost native reply remains Unavailable. Retry decisions belong to core.
-    async fn raw_destroy(&self, resource: &NativeResource) -> Result<(), ProviderError>;
 }
 
 /// Native readiness is transport data; waiting and state history belong to core.

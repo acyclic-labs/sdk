@@ -44,11 +44,7 @@ impl MachinesProvider for SimulatedMachines {
                     "required image capabilities are unavailable".into(),
                 ));
             }
-            if state.machines.len() >= 1_024 {
-                return Err(ProviderError::Rejected(
-                    "simulation machine limit reached".into(),
-                ));
-            }
+            self.ops.check_machine_capacity(state.machines.len(), 1)?;
             let id = Self::machine(key, 0);
             let now = tick(state)?;
             let contract = Self::contract(&request, capabilities);
@@ -64,8 +60,13 @@ impl MachinesProvider for SimulatedMachines {
                 created_at_unix_ms: now,
                 changed_at_unix_ms: now,
             };
-            state.machines.insert(id, observation.clone());
-            event(state, id, EventFact::State(MachineState::Running), now)?;
+            state.machines.insert(
+                id,
+                SimulatedMachine {
+                    observation: observation.clone(),
+                    fork_parent: None,
+                },
+            );
             Ok(MutationOutcome::Created(observation))
         })
         .await
@@ -74,12 +75,9 @@ impl MachinesProvider for SimulatedMachines {
         &self,
         machine: MachineId,
     ) -> Result<MachineObservation, ProviderError> {
-        self.state
-            .lock()
-            .await
-            .machines
-            .get(&machine)
-            .cloned()
+        self.ops
+            .machine(machine)
+            .await?
             .ok_or_else(|| ProviderError::NotFound(machine.to_string()))
     }
     async fn list_machines(
@@ -87,37 +85,9 @@ impl MachinesProvider for SimulatedMachines {
         after: Option<MachineId>,
         limit: u32,
     ) -> Result<MachinePage, ProviderError> {
-        if limit == 0 || limit > MAX_PAGE_SIZE {
-            return Err(ProviderError::Invalid(
-                "machine page limit must be 1..=256".into(),
-            ));
-        }
-        let state = self.state.lock().await;
-        let mut values = state
-            .machines
-            .values()
-            .filter(|value| after.is_none_or(|cursor| value.id > cursor))
-            .take(
-                usize::try_from(limit)
-                    .map_err(|_| ProviderError::Invalid("invalid page limit".into()))?
-                    + 1,
-            )
-            .cloned()
-            .collect::<Vec<_>>();
-        let next = if values.len()
-            > usize::try_from(limit)
-                .map_err(|_| ProviderError::Invalid("invalid page limit".into()))?
-        {
-            values.pop();
-            values.last().map(|value| value.id)
-        } else {
-            None
-        };
-        Ok(MachinePage {
-            machines: values,
-            next,
-        })
+        self.ops.machine_page(after, limit).await
     }
+
     async fn checkpoint(
         &self,
         machine: MachineId,
@@ -127,7 +97,7 @@ impl MachinesProvider for SimulatedMachines {
             let source = state
                 .machines
                 .get(&machine)
-                .cloned()
+                .map(|machine| machine.observation.clone())
                 .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
             if !matches!(
                 source.state,
@@ -148,8 +118,8 @@ impl MachinesProvider for SimulatedMachines {
             };
             state.checkpoints.insert(id, value.clone());
             if let Some(machine_value) = state.machines.get_mut(&machine) {
-                machine_value.last_checkpoint = Some(id);
-                machine_value.changed_at_unix_ms = now;
+                machine_value.observation.last_checkpoint = Some(id);
+                machine_value.observation.changed_at_unix_ms = now;
             }
             Ok(MutationOutcome::Checkpointed(value))
         })
@@ -159,14 +129,12 @@ impl MachinesProvider for SimulatedMachines {
         &self,
         checkpoint: CheckpointId,
     ) -> Result<CheckpointObservation, ProviderError> {
-        self.state
-            .lock()
-            .await
-            .checkpoints
-            .get(&checkpoint)
-            .cloned()
+        self.ops
+            .checkpoint(checkpoint)
+            .await?
             .ok_or_else(|| ProviderError::NotFound(checkpoint.to_string()))
     }
+
     async fn fork(
         &self,
         checkpoint: CheckpointId,
@@ -193,11 +161,7 @@ impl MachinesProvider for SimulatedMachines {
                 }
                 let add = usize::try_from(count_value)
                     .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?;
-                if state.machines.len().saturating_add(add) > 1_024 {
-                    return Err(ProviderError::Rejected(
-                        "simulation machine limit reached".into(),
-                    ));
-                }
+                self.ops.check_machine_capacity(state.machines.len(), add)?;
                 let mut children = Vec::with_capacity(add);
                 for index in 0..count_value {
                     let id = Self::machine(key, index);
@@ -216,8 +180,13 @@ impl MachinesProvider for SimulatedMachines {
                         created_at_unix_ms: now,
                         changed_at_unix_ms: now,
                     };
-                    state.machines.insert(id, value.clone());
-                    event(state, id, EventFact::State(MachineState::Running), now)?;
+                    state.machines.insert(
+                        id,
+                        SimulatedMachine {
+                            observation: value.clone(),
+                            fork_parent: None,
+                        },
+                    );
                     children.push(value);
                 }
                 Ok(MutationOutcome::Forked(children))
@@ -242,7 +211,7 @@ impl MachinesProvider for SimulatedMachines {
                 let source = state
                     .machines
                     .get(&machine)
-                    .cloned()
+                    .map(|machine| machine.observation.clone())
                     .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
                 let fidelity = source.contract.fork_fidelity().ok_or_else(|| {
                     ProviderError::Unsupported("machine contract does not declare live fork".into())
@@ -254,11 +223,7 @@ impl MachinesProvider for SimulatedMachines {
                 }
                 let add = usize::try_from(count_value)
                     .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?;
-                if state.machines.len().saturating_add(add) > 1_024 {
-                    return Err(ProviderError::Rejected(
-                        "simulation machine limit reached".into(),
-                    ));
-                }
+                self.ops.check_machine_capacity(state.machines.len(), add)?;
                 let mut children = Vec::with_capacity(add);
                 for index in 0..count_value {
                     let id = Self::machine(key, index);
@@ -275,8 +240,13 @@ impl MachinesProvider for SimulatedMachines {
                         created_at_unix_ms: now,
                         changed_at_unix_ms: now,
                     };
-                    state.machines.insert(id, value.clone());
-                    event(state, id, EventFact::State(MachineState::Running), now)?;
+                    state.machines.insert(
+                        id,
+                        SimulatedMachine {
+                            observation: value.clone(),
+                            fork_parent: Some(machine),
+                        },
+                    );
                     children.push(value);
                 }
                 Ok(MutationOutcome::MachineForked {
@@ -331,7 +301,7 @@ impl MachinesProvider for SimulatedMachines {
                 .machines
                 .get(&machine)
                 .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
-            if value.state == MachineState::Destroyed {
+            if value.observation.state == MachineState::Destroyed {
                 return Err(ProviderError::Conflict(
                     "destroyed machine cannot change policy".into(),
                 ));
@@ -341,8 +311,8 @@ impl MachinesProvider for SimulatedMachines {
                 .machines
                 .get_mut(&machine)
                 .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
-            value.contract.suspension = policy;
-            value.changed_at_unix_ms = now;
+            value.observation.contract.suspension = policy;
+            value.observation.changed_at_unix_ms = now;
             Ok(MutationOutcome::SuspensionPolicySet(machine, policy))
         })
         .await
@@ -357,14 +327,14 @@ impl MachinesProvider for SimulatedMachines {
                 .machines
                 .get(&machine)
                 .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?
+                .observation
                 .state;
             if current == MachineState::Destroyed {
                 return Ok(MutationOutcome::MachineDestroyed(machine));
             }
-            let live_children = state.replays.values().any(|replay| {
-                matches!(&replay.outcome, MutationOutcome::MachineForked { source, children, .. }
-                    if *source == machine && children.iter().any(|child| state.machines.get(&child.id)
-                        .is_some_and(|value| value.state != MachineState::Destroyed)))
+            let live_children = state.machines.values().any(|child| {
+                child.fork_parent == Some(machine)
+                    && child.observation.state != MachineState::Destroyed
             });
             if live_children {
                 return Err(ProviderError::Conflict(
@@ -376,14 +346,8 @@ impl MachinesProvider for SimulatedMachines {
                 .machines
                 .get_mut(&machine)
                 .ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
-            value.state = MachineState::Destroyed;
-            value.changed_at_unix_ms = now;
-            event(
-                state,
-                machine,
-                EventFact::State(MachineState::Destroyed),
-                now,
-            )?;
+            value.observation.state = MachineState::Destroyed;
+            value.observation.changed_at_unix_ms = now;
             Ok(MutationOutcome::MachineDestroyed(machine))
         })
         .await
@@ -413,37 +377,11 @@ impl MachinesProvider for SimulatedMachines {
         after_sequence: Option<u64>,
         limit: u32,
     ) -> Result<EventPage, ProviderError> {
-        if limit == 0 || limit > MAX_EVENT_PAGE_SIZE {
-            return Err(ProviderError::Invalid(
-                "event page limit must be 1..=1024".into(),
-            ));
-        }
-        let state = self.state.lock().await;
-        if !state.machines.contains_key(&machine) {
-            return Err(ProviderError::NotFound(machine.to_string()));
-        }
-        let limit = usize::try_from(limit)
-            .map_err(|_| ProviderError::Invalid("invalid event limit".into()))?;
-        let mut values = state
-            .events
-            .get(&machine)
-            .into_iter()
-            .flatten()
-            .filter(|value| after_sequence.is_none_or(|cursor| value.sequence > cursor))
-            .take(limit + 1)
-            .cloned()
-            .collect::<Vec<_>>();
-        let next_sequence = if values.len() > limit {
-            values.pop();
-            values.last().map(|value| value.sequence)
-        } else {
-            None
-        };
-        Ok(EventPage {
-            events: values,
-            next_sequence,
-        })
+        self.ops
+            .projected_event_page(machine, after_sequence, limit)
+            .await
     }
+
     async fn usage(
         &self,
         machine: MachineId,
@@ -472,49 +410,31 @@ impl MachinesProvider for SimulatedMachines {
         })
     }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
-        self.state
-            .lock()
-            .await
-            .replays
-            .get(&key)
-            .map(|value| value.outcome.clone())
-            .ok_or_else(|| ProviderError::NotFound(key.to_string()))
+        Ok(self.ops.settled(key).await?.outcome)
     }
     async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
-        if self.state.lock().await.replays.contains_key(&key) {
-            Ok(Self::operation(key))
-        } else {
-            Err(ProviderError::NotFound(key.to_string()))
-        }
+        self.ops
+            .record_for_key(key)
+            .await?
+            .map(|record| record.id)
+            .ok_or_else(|| ProviderError::NotFound(key.to_string()))
     }
     async fn inspect_operation(
         &self,
         operation: OperationId,
     ) -> Result<OperationObservation, ProviderError> {
-        if self
-            .state
-            .lock()
-            .await
-            .replays
-            .keys()
-            .any(|key| Self::operation(*key) == operation)
-        {
-            Ok(OperationObservation {
-                id: operation,
-                phase: OperationPhase::Succeeded,
-            })
-        } else {
-            Err(ProviderError::NotFound(operation.to_string()))
-        }
+        self.ops
+            .inspect(operation)
+            .await?
+            .ok_or_else(|| ProviderError::NotFound(operation.to_string()))
     }
     async fn cancel(&self, operation: OperationId) -> Result<OperationObservation, ProviderError> {
-        self.inspect_operation(operation).await
+        self.ops.cancel_with(self, operation).await
     }
     async fn watch_operation(
         &self,
         operation: OperationId,
     ) -> Result<OperationStream, ProviderError> {
-        let observation = self.inspect_operation(operation).await?;
-        Ok(stream::once(async move { Ok(observation) }).boxed())
+        self.ops.watch(operation).await
     }
 }

@@ -380,11 +380,40 @@ impl NativeLifecycle {
 }
 
 #[async_trait]
-impl RawMachines for NativeLifecycle {
+impl NativeResources for NativeLifecycle {
     fn name(&self) -> &str {
         self.provider
     }
 
+    async fn raw_destroy(&self, resource: &NativeResource) -> Result<(), ProviderError> {
+        if !self.allow_delete {
+            return Err(ProviderError::Rejected(
+                "internal lifecycle oracle must never delete an existing target".into(),
+            ));
+        }
+        match resource {
+            NativeResource::Machine(handle) => {
+                self.check_binding(Some(&NativeBinding {
+                    provider: self.provider.into(),
+                    handle: handle.clone(),
+                    endpoint: None,
+                }))?;
+                self.value.lock().await.state = MachineState::Destroyed;
+            }
+            NativeResource::Checkpoint(handle) if handle.starts_with("opaque-checkpoint-") => {}
+            NativeResource::Checkpoint(_) => {
+                return Err(ProviderError::Rejected(
+                    "internal deletion oracle requires the opaque checkpoint address".into(),
+                ));
+            }
+        }
+        self.mutations.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl RawMachines for NativeLifecycle {
     async fn raw_create(&self, _: &CreateMachine) -> Result<RawCreated, ProviderError> {
         self.mutations.fetch_add(1, Ordering::SeqCst);
         Ok(RawCreated {
@@ -564,31 +593,6 @@ impl RawMachines for NativeLifecycle {
             .values()
             .map(|child| child.state)
             .collect())
-    }
-    async fn raw_destroy(&self, resource: &NativeResource) -> Result<(), ProviderError> {
-        if !self.allow_delete {
-            return Err(ProviderError::Rejected(
-                "internal lifecycle oracle must never delete an existing target".into(),
-            ));
-        }
-        match resource {
-            NativeResource::Machine(handle) => {
-                self.check_binding(Some(&NativeBinding {
-                    provider: self.provider.into(),
-                    handle: handle.clone(),
-                    endpoint: None,
-                }))?;
-                self.value.lock().await.state = MachineState::Destroyed;
-            }
-            NativeResource::Checkpoint(handle) if handle.starts_with("opaque-checkpoint-") => {}
-            NativeResource::Checkpoint(_) => {
-                return Err(ProviderError::Rejected(
-                    "internal deletion oracle requires the opaque checkpoint address".into(),
-                ));
-            }
-        }
-        self.mutations.fetch_add(1, Ordering::SeqCst);
-        Ok(())
     }
 }
 
@@ -1377,5 +1381,84 @@ async fn shared_native_fork_uses_reopened_addresses_and_replays_ordered_settleme
     assert_eq!(core.settled(key).await?, settled);
     assert_eq!(native.reads.load(Ordering::SeqCst), reads);
     assert_eq!(native.mutations.load(Ordering::SeqCst), mutations);
+    Ok(())
+}
+
+#[tokio::test]
+async fn bounded_admission_is_atomic_releases_refusals_and_reopens_its_count() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let streams = Arc::new(LocalStream::open(dir.path(), LocalStreamLimits::default()).await?);
+    let limits = RegistryLimits {
+        operations: Some(1),
+        ..Default::default()
+    };
+    let a = OperationRegistry::with_limits(streams.clone(), "bounded", limits)?;
+    let b = OperationRegistry::with_limits(streams.clone(), "bounded", limits)?;
+    let (one, two) = tokio::join!(
+        a.admit(IdempotencyKey::new(), &"one"),
+        b.admit(IdempotencyKey::new(), &"two")
+    );
+    let operation = match (one, two) {
+        (Ok(Admission::Fresh(id)), Err(ProviderError::Rejected(_)))
+        | (Err(ProviderError::Rejected(_)), Ok(Admission::Fresh(id))) => id,
+        _ => return Err("bounded concurrent admission did not retain exactly one slot".into()),
+    };
+    // This is a definite refusal before native dispatch; its reservation releases
+    // atomically with the absent operation projection, never a local decrement.
+    a.forget(operation).await?;
+    let key = IdempotencyKey::new();
+    let operation = fresh(b.admit(key, &"three").await?)?;
+    let outcome = MutationOutcome::MachineDestroyed(MachineId::new());
+    b.complete(operation, outcome.clone()).await?;
+    let settled = b.settled(key).await?;
+    drop(a);
+    drop(b);
+    drop(streams);
+    let core = OperationRegistry::with_limits(
+        Arc::new(LocalStream::open(dir.path(), LocalStreamLimits::default()).await?),
+        "bounded",
+        limits,
+    )?;
+    assert_eq!(core.settled(key).await?, settled);
+    assert!(
+        matches!(core.admit(key, &"three").await?, Admission::Replay(value) if *value == outcome)
+    );
+    assert!(matches!(
+        core.admit(IdempotencyKey::new(), &"four").await,
+        Err(ProviderError::Rejected(_))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn event_admission_does_not_rewrite_the_canonical_machine() -> TestResult {
+    let request = CreateMachine::new(IdempotencyKey::new(), Image::custom([7; 32])?, [8; 32]);
+    let MutationOutcome::Created(value) = SimulatedMachines::default().create(request).await?
+    else {
+        return Err("expected machine".into());
+    };
+    let core = OperationRegistry::with_limits(
+        Arc::new(MemoryStream::new(Default::default())),
+        "bounded-events",
+        RegistryLimits {
+            machine_events: Some(1),
+            ..Default::default()
+        },
+    )?;
+    core.observe_machine(value.clone(), 2).await?;
+    let mut changed = value.clone();
+    changed.state = MachineState::Suspended;
+    assert!(matches!(
+        core.observe_machine(changed, 3).await,
+        Err(ProviderError::Rejected(_))
+    ));
+    assert_eq!(core.machine(value.id).await?, Some(value.clone()));
+    let (events, next) = core.events(value.id, None, 10).await?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(
+        events.first().map(|event| &event.fact),
+        Some(&EventFact::State(MachineState::Running))
+    );
+    assert_eq!(next, None);
     Ok(())
 }

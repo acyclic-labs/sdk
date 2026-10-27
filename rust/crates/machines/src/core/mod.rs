@@ -6,9 +6,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 mod bindings;
 mod journal;
+mod limits;
+mod pages;
 pub use bindings::NativeBinding;
+pub use limits::RegistryLimits;
 mod raw;
-pub use raw::{ForkSlot, NativeResource, RawCreated, RawMachines, RawObservation};
+pub use raw::{ForkSlot, NativeResource, NativeResources, RawCreated, RawMachines, RawObservation};
 #[cfg(not(target_arch = "wasm32"))]
 mod checkpoint;
 #[cfg(not(target_arch = "wasm32"))]
@@ -106,6 +109,7 @@ pub fn operation_id(key: IdempotencyKey) -> OperationId {
 #[derive(Clone)]
 pub struct OperationRegistry {
     journal: Journal,
+    limits: RegistryLimits,
 }
 
 impl std::fmt::Debug for OperationRegistry {
@@ -123,9 +127,36 @@ impl OperationRegistry {
         provider: Arc<dyn acyclic_stream::StreamProvider>,
         account: &str,
     ) -> Result<Self, ProviderError> {
+        Self::with_limits(provider, account, RegistryLimits::default())
+    }
+
+    /// Set the account admission profile when composing its canonical registry.
+    /// Reopen the same namespace with the same limits; this grants no authority.
+    pub fn with_limits(
+        provider: Arc<dyn acyclic_stream::StreamProvider>,
+        account: &str,
+        limits: RegistryLimits,
+    ) -> Result<Self, ProviderError> {
         Ok(Self {
             journal: Journal::new(provider, account)?,
+            limits,
         })
+    }
+
+    /// Explicit process-local composition for the deterministic simulator. The
+    /// fixed namespace still passes through canonical path validation at every IO.
+    pub(crate) fn simulated() -> Self {
+        Self {
+            journal: Journal {
+                provider: Arc::new(acyclic_stream::MemoryStream::new(Default::default())),
+                root: "machines/simulation".into(),
+            },
+            limits: RegistryLimits {
+                operations: Some(4096),
+                machine_events: Some(4096),
+                machines: Some(1024),
+            },
+        }
     }
 
     pub async fn admit<T: Serialize + Sync>(
@@ -144,28 +175,57 @@ impl OperationRegistry {
     ) -> Result<Admission, ProviderError> {
         let digest = intent_digest(intent)?;
         let id = operation_id(key);
-        let fresh = self.journal.update(&format!("ops/{id}"), move |entry: &mut Option<StoredOperation>| {
-            if let Some(record) = entry {
-                if let Some(provider) = provider { bindings::check_driver(record, provider)?; }
+        loop {
+            let path = format!("ops/{id}");
+            let row = self.journal.load::<StoredOperation>(&path).await?;
+            let condition = row.condition();
+            if let Some(record) = row.value {
+                if let Some(provider) = provider {
+                    bindings::check_driver(&record, provider)?;
+                }
                 if record.intent_digest != digest {
                     return Err(ProviderError::Conflict("Machines key is bound to another intent; recovery: inspect the original key or use a fresh key for a different intent".into()));
                 }
-                return match (record.phase, &record.outcome) {
-                    (OperationPhase::Succeeded, Some(_)) => Ok(false),
+                return match (record.phase, record.outcome) {
+                    (OperationPhase::Succeeded, Some(_)) => Ok(Admission::Replay(Box::new(
+                        self.settled(key).await?.outcome,
+                    ))),
                     (OperationPhase::Failed, _) => Err(ProviderError::Failed),
                     (OperationPhase::Cancelled, _) => Err(ProviderError::Cancelled),
                     _ => Err(ProviderError::Indeterminate(key)),
                 };
             }
-            *entry = Some(StoredOperation { id, key, intent_digest: digest, provider: provider.map(str::to_owned), created: Vec::new(), targets: Vec::new(), phase: OperationPhase::Pending, outcome: None });
-            Ok(true)
-        }).await?;
-        if fresh {
-            Ok(Admission::Fresh(id))
-        } else {
-            Ok(Admission::Replay(Box::new(
-                self.settled(key).await?.outcome,
-            )))
+            let record = Some(StoredOperation {
+                id,
+                key,
+                intent_digest: digest,
+                provider: provider.map(str::to_owned),
+                created: Vec::new(),
+                targets: Vec::new(),
+                phase: OperationPhase::Pending,
+                outcome: None,
+            });
+            let mut conditions = vec![condition];
+            let mut mutations = vec![
+                self.journal.append(&path, &record)?,
+                self.journal.operation_log(&path, &record)?,
+            ];
+            if let Some(limit) = self.limits.operations {
+                let quota = self.journal.load::<u64>("limits/operations").await?;
+                conditions.push(quota.condition());
+                let used = quota.value.unwrap_or(0);
+                if used >= limit {
+                    return Err(ProviderError::Rejected("Machines operation limit reached; recovery: inspect the configured operation admission profile before admitting more operations".into()));
+                }
+                mutations.push(self.journal.append("limits/operations", &(used + 1))?);
+            }
+            if self
+                .journal
+                .publish(conditions, mutations, row.path, row.tail + 1)
+                .await?
+            {
+                return Ok(Admission::Fresh(id));
+            }
         }
     }
 
@@ -274,23 +334,40 @@ impl OperationRegistry {
     }
 
     async fn forget(&self, id: OperationId) -> Result<(), ProviderError> {
-        self.journal
-            .update(
-                &format!("ops/{id}"),
-                |entry: &mut Option<StoredOperation>| match entry {
-                    Some(record)
-                        if record.phase == OperationPhase::Pending
-                            && record.created.is_empty()
-                            && record.targets.is_empty() =>
-                    {
-                        *entry = None;
-                        Ok(())
-                    }
-                    Some(record) => Err(ProviderError::Indeterminate(record.key)),
-                    None => Ok(()),
-                },
-            )
-            .await
+        loop {
+            let path = format!("ops/{id}");
+            let row = self.journal.load::<StoredOperation>(&path).await?;
+            let condition = row.condition();
+            let Some(record) = row.value else {
+                return Ok(());
+            };
+            if record.phase != OperationPhase::Pending
+                || !record.created.is_empty()
+                || !record.targets.is_empty()
+            {
+                return Err(ProviderError::Indeterminate(record.key));
+            }
+            let mut conditions = vec![condition];
+            let empty: Option<StoredOperation> = None;
+            let mut mutations = vec![
+                self.journal.append(&path, &empty)?,
+                self.journal.operation_log(&path, &empty)?,
+            ];
+            if self.limits.operations.is_some() {
+                let quota = self.journal.load::<u64>("limits/operations").await?;
+                conditions.push(quota.condition());
+                let used = quota.value.and_then(|used| used.checked_sub(1)).ok_or_else(||
+                    ProviderError::Rejected("Machines operation admission count is inconsistent; recovery: reopen the original registry profile and inspect its canonical admission records".into()))?;
+                mutations.push(self.journal.append("limits/operations", &used)?);
+            }
+            if self
+                .journal
+                .publish(conditions, mutations, row.path, row.tail + 1)
+                .await?
+            {
+                return Ok(());
+            }
+        }
     }
 
     pub async fn record(&self, id: OperationId) -> Result<Option<OperationRecord>, ProviderError> {
@@ -395,7 +472,7 @@ impl OperationRegistry {
     /// owned, including when the process exits between the delete and its receipt.
     pub async fn cleanup(
         &self,
-        driver: &(impl RawMachines + ?Sized),
+        driver: &(impl NativeResources + ?Sized),
         operation: OperationId,
     ) -> Result<(), ProviderError> {
         self.check_driver(operation, driver.name()).await?;
@@ -414,7 +491,7 @@ impl OperationRegistry {
     /// The durable registry owns cancel and its cleanup; an adapter only deletes.
     pub async fn cancel_with(
         &self,
-        driver: &(impl RawMachines + ?Sized),
+        driver: &(impl NativeResources + ?Sized),
         operation: OperationId,
     ) -> Result<OperationObservation, ProviderError> {
         self.check_driver(operation, driver.name()).await?;
@@ -431,7 +508,7 @@ impl OperationRegistry {
     /// Adopted resources are targets and can never be reclaimed by this attempt.
     pub async fn claim(
         &self,
-        driver: &(impl RawMachines + ?Sized),
+        driver: &(impl NativeResources + ?Sized),
         operation: OperationId,
         resource: &NativeResource,
         adopted: bool,
@@ -576,7 +653,9 @@ impl OperationRegistry {
         self.journal
             .update_with(&suffix, |entry: &mut Option<StoredMachine>| {
                 let mut mutations = Vec::new();
-                if let Some(event) = bindings::project(entry, &observation, at)? {
+                if let Some(event) =
+                    bindings::project(entry, &observation, at, self.limits.machine_events)?
+                {
                     mutations.push(acyclic_stream::CommitMutation::Append {
                         path: event_path.clone(),
                         records: vec![
@@ -752,7 +831,7 @@ impl OperationRegistry {
         action: F,
     ) -> Result<MutationOutcome, ProviderError>
     where
-        D: RawMachines + ?Sized,
+        D: NativeResources + ?Sized,
         T: Serialize + Sync,
         F: AsyncFnOnce(OperationId) -> Result<MutationOutcome, ProviderError>,
     {

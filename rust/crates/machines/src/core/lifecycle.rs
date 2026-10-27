@@ -90,32 +90,6 @@ impl OperationRegistry {
         Ok(observation)
     }
 
-    pub async fn machine_page(
-        &self,
-        after: Option<MachineId>,
-        limit: u32,
-    ) -> Result<MachinePage, ProviderError> {
-        if limit == 0 || limit > MAX_PAGE_SIZE {
-            return Err(ProviderError::Invalid(
-                "machine page admission failed; recovery: request 1..256 machines".into(),
-            ));
-        }
-        let mut machines = self
-            .machines()
-            .await?
-            .into_iter()
-            .filter(|value| after.is_none_or(|cursor| value.id > cursor))
-            .take(limit as usize + 1)
-            .collect::<Vec<_>>();
-        let next = if machines.len() > limit as usize {
-            machines.pop();
-            machines.last().map(|value| value.id)
-        } else {
-            None
-        };
-        Ok(MachinePage { machines, next })
-    }
-
     pub async fn event_page<D: RawMachines + ?Sized>(
         &self,
         driver: &D,
@@ -130,11 +104,7 @@ impl OperationRegistry {
             ));
         }
         self.inspect_machine(driver, machine, at).await?;
-        let (events, next_sequence) = self.events(machine, after, limit as usize).await?;
-        Ok(EventPage {
-            events,
-            next_sequence,
-        })
+        self.projected_event_page(machine, after, limit).await
     }
 
     pub async fn inspect_machine<D: RawMachines + ?Sized>(
