@@ -1,6 +1,6 @@
 import {
-  AgentControls, PreparedAgentCommand, encodeCanonicalJson,
-  type AgentCommand, type PreparedAgentInvocation,
+  PreparedAgentCommand, encodeCanonicalJson,
+  type AgentCommand, type AgentControls, type PreparedAgentInvocation,
 } from "./client-query.js";
 
 /** Prepare one typed command on an existing authenticated session. Rust owns
