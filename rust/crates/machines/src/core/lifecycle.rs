@@ -1,8 +1,80 @@
 //! Lifecycle decisions over single native dispatches, shared by every adapter.
-use super::{OperationRegistry, RawMachines, RawObservation, settle};
+use super::{
+    NativeBinding, NativeResource, OperationRegistry, RawCreated, RawMachines, RawObservation,
+    settle,
+};
 use crate::*;
 
 impl OperationRegistry {
+    /// Creation has the same admission, native ownership and readiness boundary
+    /// as every other lifecycle mutation. Successful retries perform no native IO.
+    pub async fn create_machine<D: RawMachines + ?Sized>(
+        &self,
+        driver: &D,
+        request: CreateMachine,
+        interval: Duration,
+        timeout: Duration,
+    ) -> Result<MutationOutcome, ProviderError> {
+        let key = request.idempotency_key;
+        self.apply_with(driver, key, &MutationIntent::Create(request.clone()), async |operation| {
+            if interval.is_zero() || timeout.is_zero() {
+                return Err(ProviderError::Invalid(
+                    "create readiness admission failed; recovery: configure positive poll_interval and ready_timeout".into(),
+                ));
+            }
+            let created = driver.raw_create(&request).await?;
+            let initial = self.accept_created(driver, operation, created, key).await?;
+            let ready = self.wait_machine(driver, initial.id, key, interval, timeout).await?;
+            if ready.state != MachineState::Running || ready.contract != initial.contract {
+                return Err(ProviderError::Failed);
+            }
+            Ok(MutationOutcome::Created(ready))
+        }).await
+    }
+
+    /// Claim accepted native output before reporting a metadata failure. Used by
+    /// creation and forks so their malformed-response cleanup cannot diverge.
+    pub async fn accept_created<D: RawMachines + ?Sized>(
+        &self,
+        driver: &D,
+        operation: OperationId,
+        created: RawCreated,
+        key: IdempotencyKey,
+    ) -> Result<MachineObservation, ProviderError> {
+        if created.handle.is_empty() {
+            return Err(ProviderError::Indeterminate(key));
+        }
+        let native = NativeBinding {
+            provider: driver.name().into(),
+            handle: created.handle,
+            endpoint: created.endpoint,
+        };
+        let observation = match created.observation {
+            Ok(observation) => observation,
+            Err(error) => {
+                self.claim(
+                    driver,
+                    operation,
+                    &NativeResource::Machine(native.handle),
+                    created.adopted,
+                )
+                .await?;
+                tracing::error!(%operation, %error,
+                    "native create metadata mapping failed; recovery: cancel this operation before dispatching a new create");
+                return Err(ProviderError::Indeterminate(key));
+            }
+        };
+        self.claim_machine(
+            driver,
+            operation,
+            observation.clone(),
+            native,
+            created.adopted,
+        )
+        .await?;
+        Ok(observation)
+    }
+
     pub async fn machine_page(
         &self,
         after: Option<MachineId>,
@@ -143,7 +215,11 @@ impl OperationRegistry {
                 ));
             }
             self.wait_machine(driver, machine, key, interval, timeout).await?;
-            self.remember_checkpoint(checkpoint.clone()).await?;
+            self.remember_bound_checkpoint(checkpoint.clone(), Some(NativeBinding {
+                provider: driver.name().into(),
+                handle: resource.handle().into(),
+                endpoint: None,
+            })).await?;
             let mut current = self.machine(machine).await?.ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
             current.last_checkpoint = Some(checkpoint.id);
             self.observe_machine(current.clone(), current.changed_at_unix_ms).await?;

@@ -8,7 +8,7 @@ mod bindings;
 mod journal;
 pub use bindings::NativeBinding;
 mod raw;
-pub use raw::{NativeResource, RawMachines, RawObservation};
+pub use raw::{NativeResource, RawCreated, RawMachines, RawObservation};
 mod fork;
 mod lifecycle;
 pub use fork::{Dispatch, fork_rounds, fork_tree, retry_refused};
@@ -23,6 +23,12 @@ struct StoredMachine {
     observation: MachineObservation,
     event_sequence: u64,
     #[serde(default)]
+    native: Option<NativeBinding>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredCheckpoint {
+    observation: CheckpointObservation,
     native: Option<NativeBinding>,
 }
 
@@ -682,33 +688,28 @@ impl OperationRegistry {
         &self,
         observation: CheckpointObservation,
     ) -> Result<(), ProviderError> {
-        self.journal
-            .update(
-                &format!("checkpoints/{}", observation.id),
-                |entry: &mut Option<CheckpointObservation>| {
-                    if !entry.as_ref().is_some_and(|entry| !entry.forkable) {
-                        *entry = Some(observation.clone());
-                    }
-                    Ok(())
-                },
-            )
-            .await
+        self.remember_bound_checkpoint(observation, None).await
     }
 
     pub async fn checkpoint(
         &self,
         id: CheckpointId,
     ) -> Result<Option<CheckpointObservation>, ProviderError> {
-        Ok(self.journal.load(&format!("checkpoints/{id}")).await?.value)
+        Ok(self
+            .journal
+            .load::<StoredCheckpoint>(&format!("checkpoints/{id}"))
+            .await?
+            .value
+            .map(|entry| entry.observation))
     }
 
     pub async fn mark_checkpoint_destroyed(&self, id: CheckpointId) -> Result<(), ProviderError> {
         self.journal
             .update(
                 &format!("checkpoints/{id}"),
-                |entry: &mut Option<CheckpointObservation>| {
+                |entry: &mut Option<StoredCheckpoint>| {
                     if let Some(entry) = entry {
-                        entry.forkable = false;
+                        entry.observation.forkable = false;
                     }
                     Ok(())
                 },

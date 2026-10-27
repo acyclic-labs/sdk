@@ -1,8 +1,8 @@
 //! Raw provider primitives. Replay, ordering and resource ownership live in core.
 use super::NativeBinding;
 use crate::{
-    CheckpointObservation, IdempotencyKey, MachineId, MachineObservation, ProviderError,
-    SuspensionPolicy,
+    CheckpointObservation, CreateMachine, IdempotencyKey, MachineId, MachineObservation,
+    ProviderError, SuspensionPolicy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,11 @@ use async_trait::async_trait;
 #[async_trait]
 pub trait RawMachines: Send + Sync {
     fn name(&self) -> &str;
+
+    /// Dispatch one creation and retain its accepted address even when decoding
+    /// the native observation fails. Admission/idempotency/readiness are in core.
+    async fn raw_create(&self, request: &CreateMachine) -> Result<RawCreated, ProviderError>;
+
     /// Read once; `known` is the canonical observation, not a provider cache.
     /// Return the provider's actual readiness separately from its public state
     /// (a running VM can temporarily be busy snapshotting or forking).
@@ -79,4 +84,13 @@ pub trait RawMachines: Send + Sync {
 pub struct RawObservation {
     pub machine: MachineObservation,
     pub settled: bool,
+}
+
+/// A native acceptance and its decoding result. Metadata failure cannot erase an
+/// already-created resource from the shared cleanup owner.
+pub struct RawCreated {
+    pub handle: String,
+    pub endpoint: Option<String>,
+    pub observation: Result<MachineObservation, ProviderError>,
+    pub adopted: bool,
 }

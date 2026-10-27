@@ -33,7 +33,7 @@ use sha2::{Digest as _, Sha256};
 #[cfg(test)]
 use acyclic_machines::core as ops;
 use acyclic_machines::core::{
-    NativeBinding, NativeResource, OperationRegistry, RawMachines, RawObservation,
+    NativeBinding, NativeResource, OperationRegistry, RawCreated, RawMachines, RawObservation,
 };
 use api::{CreateSnapshotRequest, DaytonaApi, ForkRequest, Sandbox};
 
@@ -439,42 +439,34 @@ impl DaytonaProvider {
         adopted: bool,
         key: IdempotencyKey,
     ) -> Result<(), ProviderError> {
-        let observation = match map::sandbox_to_observation(
-            sandbox,
-            Some(contract),
-            checkpoint,
-            now_unix_ms(),
-        ) {
-            Ok(value) => value,
-            Err(error) => {
-                // The native mutation already returned a handle. Malformed metadata
-                // must retain its cleanup ownership and must never release the key.
-                self.ops
-                    .claim(
-                        self,
-                        operation,
-                        &NativeResource::Machine(sandbox.id.clone()),
-                        adopted,
-                    )
-                    .await?;
-                tracing::error!(%operation, %error,
-                    "native create metadata mapping failed; recovery: cancel this operation before dispatching a new create");
-                return Err(ProviderError::Indeterminate(key));
-            }
-        };
         self.ops
-            .claim_machine(
+            .accept_created(
                 self,
                 operation,
-                observation,
-                NativeBinding {
-                    provider: "daytona".into(),
-                    handle: sandbox.id.clone(),
-                    endpoint: None,
-                },
-                adopted,
+                Self::raw_created(sandbox, contract, checkpoint, adopted),
+                key,
             )
             .await
+            .map(|_| ())
+    }
+
+    fn raw_created(
+        sandbox: &Sandbox,
+        contract: &MachineContract,
+        checkpoint: Option<CheckpointId>,
+        adopted: bool,
+    ) -> RawCreated {
+        RawCreated {
+            handle: sandbox.id.clone(),
+            endpoint: None,
+            observation: map::sandbox_to_observation(
+                sandbox,
+                Some(contract),
+                checkpoint,
+                now_unix_ms(),
+            ),
+            adopted,
+        }
     }
 
     /// Creates a sandbox, or adopts the one an earlier attempt under the same deterministic
@@ -736,6 +728,20 @@ impl RawMachines for DaytonaProvider {
         "daytona"
     }
 
+    async fn raw_create(&self, request: &CreateMachine) -> Result<RawCreated, ProviderError> {
+        let key = request.idempotency_key;
+        let snapshot = self.resolve_snapshot(&request.image)?;
+        // Pure wire representability checks precede the native qualification read.
+        Self::check_request(request)?;
+        map::network_fields(&self.config, &request.network_policy_digest)?;
+        let capabilities = self.snapshot_capabilities(&snapshot).await?;
+        let contract = Self::contract(request, capabilities)?;
+        let mut body = map::create_request(&self.config, &snapshot, key, None, &contract)?;
+        body.env = self.staged_boot_env(key).unwrap_or_default();
+        let (created, adopted) = self.create_or_adopt(&body).await?;
+        Ok(Self::raw_created(&created, &contract, None, adopted))
+    }
+
     async fn raw_observe(
         &self,
         machine: MachineId,
@@ -901,27 +907,14 @@ impl MachinesProvider for DaytonaProvider {
 
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {
         let key = request.idempotency_key;
-        let intent = MutationIntent::Create(request.clone());
         let outcome = self
-            .apply(key, &intent, async |operation| {
-                let snapshot = self.resolve_snapshot(&request.image)?;
-                // Everything checkable offline fails before the snapshot lookup.
-                Self::check_request(&request)?;
-                map::network_fields(&self.config, &request.network_policy_digest)?;
-                let capabilities = self.snapshot_capabilities(&snapshot).await?;
-                let contract = Self::contract(&request, capabilities)?;
-                let mut body = map::create_request(&self.config, &snapshot, key, None, &contract)?;
-                body.env = self.staged_boot_env(key).unwrap_or_default();
-                let (created, adopted) = self.create_or_adopt(&body).await?;
-                self.claim_sandbox(operation, &created, &contract, None, adopted, key)
-                    .await?;
-                let settled = self.wait_settled(&created.id, key).await?;
-                let observation = self.observe(&settled, Some(&contract), None).await?;
-                if observation.state != MachineState::Running {
-                    return Err(ProviderError::Failed);
-                }
-                Ok(MutationOutcome::Created(observation))
-            })
+            .ops
+            .create_machine(
+                self,
+                request,
+                self.config.poll_interval,
+                self.config.ready_timeout,
+            )
             .await;
         // The staged environment is only useful to the create request itself. Whatever the
         // outcome, a later attempt stages afresh; keeping it would retain the token for nothing.
@@ -989,8 +982,13 @@ impl MachinesProvider for DaytonaProvider {
         &self,
         checkpoint: CheckpointId,
     ) -> Result<CheckpointObservation, ProviderError> {
+        let native = self
+            .ops
+            .native_checkpoint_binding(checkpoint, "daytona")
+            .await?;
+        let handle = native.map_or_else(|| checkpoint.to_string(), |native| native.handle);
         let known = self.ops.checkpoint(checkpoint).await?;
-        match self.api.get_snapshot(&checkpoint.to_string()).await {
+        match self.api.get_snapshot(&handle).await {
             Ok(snapshot) => {
                 let (source, contract, forkable) = if let Some(known) = &known {
                     (Some(known.source), known.contract.clone(), known.forkable)
@@ -1052,7 +1050,11 @@ impl MachinesProvider for DaytonaProvider {
                 }
                 let mut contract = source.contract;
                 contract.image = Image::Checkpoint(checkpoint);
-                let snapshot = checkpoint.to_string();
+                let snapshot = self
+                    .ops
+                    .native_checkpoint_binding(checkpoint, "daytona")
+                    .await?
+                    .map_or_else(|| checkpoint.to_string(), |native| native.handle);
                 let mut ids = Vec::with_capacity(count as usize);
                 for index in 0..count {
                     let slot = map::ForkSlot { index, count };
@@ -1204,10 +1206,16 @@ impl MachinesProvider for DaytonaProvider {
         self.apply(
             key,
             &MutationIntent::DestroyCheckpoint(checkpoint),
-            async |_operation| {
+            async |operation| {
                 // Retain an observation so `inspect_checkpoint` keeps answering after deletion.
                 self.inspect_checkpoint(checkpoint).await?;
-                match self.api.delete_snapshot(&checkpoint.to_string()).await {
+                let handle = self
+                    .ops
+                    .native_checkpoint_binding(checkpoint, "daytona")
+                    .await?
+                    .map_or_else(|| checkpoint.to_string(), |native| native.handle);
+                self.ops.bind_target(operation, &handle).await?;
+                match self.raw_destroy(&NativeResource::Checkpoint(handle)).await {
                     Ok(()) | Err(ProviderError::NotFound(_)) => {}
                     Err(error) => return Err(error),
                 }

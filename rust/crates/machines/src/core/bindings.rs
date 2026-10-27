@@ -162,6 +162,54 @@ impl OperationRegistry {
         Ok((known, value))
     }
 
+    /// The same canonical native addressing rule applies to snapshots. A logical
+    /// checkpoint UUID need not be a provider's accepted snapshot name or handle.
+    pub async fn native_checkpoint_binding(
+        &self,
+        checkpoint: CheckpointId,
+        provider: &str,
+    ) -> Result<Option<NativeBinding>, ProviderError> {
+        let native = self
+            .journal
+            .load::<StoredCheckpoint>(&format!("checkpoints/{checkpoint}"))
+            .await?
+            .value
+            .and_then(|row| row.native);
+        if native
+            .as_ref()
+            .is_some_and(|native| native.provider != provider)
+        {
+            return Err(ProviderError::Unsupported(
+                "checkpoint binding belongs to another provider; recovery: compose the original provider for this checkpoint identity".into(),
+            ));
+        }
+        Ok(native)
+    }
+
+    pub(super) async fn remember_bound_checkpoint(
+        &self,
+        observation: CheckpointObservation,
+        native: Option<NativeBinding>,
+    ) -> Result<(), ProviderError> {
+        self.journal.update(&format!("checkpoints/{}", observation.id), |entry: &mut Option<StoredCheckpoint>| {
+            if let Some(entry) = entry {
+                if native.as_ref().is_some_and(|native| entry.native.as_ref().is_some_and(|known| known != native)) {
+                    return Err(ProviderError::Conflict(
+                        "checkpoint identity has a different native binding; recovery: reconcile the original provider snapshot before retrying".into(),
+                    ));
+                }
+                if !entry.observation.forkable {
+                    return Ok(());
+                }
+                entry.observation = observation.clone();
+                if native.is_some() { entry.native = native.clone(); }
+            } else {
+                *entry = Some(StoredCheckpoint { observation: observation.clone(), native: native.clone() });
+            }
+            Ok(())
+        }).await
+    }
+
     /// Publish handle, initial observation/event, and created/adopted ownership in
     /// one conditional commit, before readiness or any further native mutation.
     pub async fn claim_machine<D: RawMachines + ?Sized>(

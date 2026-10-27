@@ -383,6 +383,16 @@ impl RawMachines for NativeLifecycle {
         self.provider
     }
 
+    async fn raw_create(&self, _: &CreateMachine) -> Result<RawCreated, ProviderError> {
+        self.mutations.fetch_add(1, Ordering::SeqCst);
+        Ok(RawCreated {
+            handle: "opaque-created-vm".into(),
+            endpoint: None,
+            observation: Ok(self.value.lock().await.clone()),
+            adopted: false,
+        })
+    }
+
     async fn raw_observe(
         &self,
         _: MachineId,
@@ -433,7 +443,7 @@ impl RawMachines for NativeLifecycle {
         key: IdempotencyKey,
     ) -> Result<String, ProviderError> {
         self.mutations.fetch_add(1, Ordering::SeqCst);
-        Ok(CheckpointId::from_digest(Sha256::digest(key.as_bytes()).into()).to_string())
+        Ok(format!("opaque-checkpoint-{key}"))
     }
     async fn raw_observe_checkpoint(
         &self,
@@ -451,8 +461,7 @@ impl RawMachines for NativeLifecycle {
             }
         }
         Ok(Some(CheckpointObservation {
-            id: CheckpointId::parse(handle)
-                .map_err(|error| ProviderError::Rejected(error.to_string()))?,
+            id: CheckpointId::from_digest(Sha256::digest(handle.as_bytes()).into()),
             source: source.id,
             contract: source.contract.clone(),
             forkable: true,
@@ -801,6 +810,19 @@ async fn checkpoint_wait_requires_durable_typed_ownership_and_replays_after_reop
     assert_eq!(reopened.settled(key).await?, settlement);
     assert_eq!(native.mutations.load(Ordering::SeqCst), 1);
     assert_eq!(native.reads.load(Ordering::SeqCst), reads);
+    assert_eq!(
+        reopened
+            .native_checkpoint_binding(checkpoint.id, "internal")
+            .await?
+            .map(|native| native.handle),
+        Some(format!("opaque-checkpoint-{key}"))
+    );
+    assert!(matches!(
+        reopened
+            .native_checkpoint_binding(checkpoint.id, "another-provider")
+            .await,
+        Err(ProviderError::Unsupported(_))
+    ));
     // Unacknowledged checkpoint deletion remains typed and owned after reopening.
     let key = IdempotencyKey::new();
     let operation = fresh(
@@ -817,6 +839,88 @@ async fn checkpoint_wait_requires_durable_typed_ownership_and_replays_after_reop
     assert_eq!(
         reopened.machine(value.id).await?.map(|value| value.state),
         Some(MachineState::Running)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn creation_reopens_exact_native_binding_and_settlement_without_dispatch() -> TestResult {
+    let request = CreateMachine::new(IdempotencyKey::new(), Image::custom([7; 32])?, [8; 32]);
+    let MutationOutcome::Created(value) =
+        SimulatedMachines::default().create(request.clone()).await?
+    else {
+        return Err("expected machine".into());
+    };
+    let native = NativeLifecycle {
+        provider: "internal",
+        expected_handle: None,
+        checkpoint_owner: None,
+        value: tokio::sync::Mutex::new(value.clone()),
+        mutations: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+    };
+    let dir = tempfile::tempdir()?;
+    let core = open(dir.path()).await?;
+    let interval = Duration::from_millis(1);
+    let timeout = Duration::from_secs(5);
+    let original = core
+        .create_machine(&native, request.clone(), interval, timeout)
+        .await?;
+    let settlement = core.settled(request.idempotency_key).await?;
+    let reads = native.reads.load(Ordering::SeqCst);
+    drop(core);
+    let core = open(dir.path()).await?;
+    assert_eq!(
+        core.native_binding(value.id, "internal")
+            .await?
+            .map(|native| native.handle),
+        Some("opaque-created-vm".into())
+    );
+    assert_eq!(
+        core.create_machine(&native, request.clone(), interval, timeout)
+            .await?,
+        original
+    );
+    assert_eq!(core.settled(request.idempotency_key).await?, settlement);
+    assert_eq!(native.mutations.load(Ordering::SeqCst), 1);
+    assert_eq!(native.reads.load(Ordering::SeqCst), reads);
+    let malformed_key = IdempotencyKey::new();
+    let malformed = core
+        .apply_with(
+            &native,
+            malformed_key,
+            &"internal malformed native acceptance",
+            async |operation| {
+                core.accept_created(
+                    &native,
+                    operation,
+                    RawCreated {
+                        handle: "accepted-with-invalid-metadata".into(),
+                        endpoint: None,
+                        observation: Err(ProviderError::Rejected(
+                            "internal malformed metadata vector".into(),
+                        )),
+                        adopted: false,
+                    },
+                    malformed_key,
+                )
+                .await
+                .map(MutationOutcome::Created)
+            },
+        )
+        .await;
+    assert_eq!(malformed, Err(ProviderError::Indeterminate(malformed_key)));
+    drop(core);
+    let core = open(dir.path()).await?;
+    assert_eq!(
+        core.created(operation_id(malformed_key)).await?,
+        [machine_resource("accepted-with-invalid-metadata")]
+    );
+    assert_eq!(
+        core.inspect(operation_id(malformed_key))
+            .await?
+            .map(|operation| operation.phase),
+        Some(OperationPhase::Indeterminate)
     );
     Ok(())
 }
