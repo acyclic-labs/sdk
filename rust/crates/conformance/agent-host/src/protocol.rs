@@ -7,7 +7,8 @@ use acyclic_harness_client::{
 };
 use acyclic_harness_core::{
     agent::{
-        AgentPath, AgentRecord as _, ConversationEntry, InboxRecord, IntentId, Phase, StatusRecord,
+        AgentPath, AgentRecord as _, ConversationEntry, InboxRecord, IntentId, Phase, Reply,
+        StatusRecord,
     },
     approvals::ApprovalPolicy,
     conversation::FileRef,
@@ -208,6 +209,38 @@ pub async fn verify(backend: &dyn Backend) -> Result {
             return Err("a prompt retry produced another turn".into());
         }
         let entry = ConversationEntry::decode(&conversation.first().ok_or("missing turn")?.value)?;
+        let request_reply = AgentCommand::Reply {
+            agent: root.clone(),
+            id: IntentId::try_from("prompt")?,
+            inbox: entry.inbox,
+        };
+        let answered = call(endpoint, &request_reply).await??;
+        let AgentReply::Reply {
+            reply:
+                Reply::Answered {
+                    sequence,
+                    entry: settled,
+                },
+        } = &answered
+        else {
+            return Err("the settled prompt has no correlated reply".into());
+        };
+        if *sequence != conversation[0].sequence
+            || settled != &entry
+            || serde_json::to_value(&answered)?
+                != serde_json::to_value(call(endpoint, &request_reply).await??)?
+        {
+            return Err("the committed prompt reply changed".into());
+        }
+        let wrong_reply = AgentCommand::Reply {
+            agent: root.clone(),
+            id: IntentId::try_from("another-prompt")?,
+            inbox: entry.inbox,
+        };
+        if !matches!(call(endpoint, &wrong_reply).await?, Err(error) if error.code() == "conflict")
+        {
+            return Err("reply lookup accepted another prompt's sequence".into());
+        }
         let output: serde_json::Value =
             serde_json::from_slice(&endpoint.read_file(&root, &entry.output).await?)?;
         if output.get("text").and_then(serde_json::Value::as_str) != Some(REPLY) {

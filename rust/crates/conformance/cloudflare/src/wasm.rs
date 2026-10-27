@@ -74,7 +74,6 @@ pub async fn qualify_journal_deadline(
     })
 }
 
-/// Provision the same lazy spawn fixture for the real event-owned host.
 /// Produce a real canonical append through the supplied SQLite ledger port.
 #[wasm_bindgen(js_name = appendWakeRecord)]
 pub async fn append_wake_record(port: JsValue, path: String) -> std::result::Result<(), JsValue> {
