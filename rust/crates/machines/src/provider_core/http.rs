@@ -104,6 +104,31 @@ impl Http {
         Self::checked(request.send().await).await.map(|_| ())
     }
 
+    pub async fn json_stream<T: serde::de::DeserializeOwned + Send + 'static>(
+        request: reqwest::RequestBuilder,
+        framing: super::Framing,
+    ) -> Result<futures::stream::BoxStream<'static, Result<T, ProviderError>>, ProviderError> {
+        let response = Self::checked(request.send().await).await?;
+        Ok(super::framing::json_frames(
+            response.bytes_stream(),
+            framing,
+        ))
+    }
+
+    pub async fn connect<T: serde::de::DeserializeOwned + Send + 'static>(
+        request: reqwest::RequestBuilder,
+        message: &serde_json::Value,
+    ) -> Result<futures::stream::BoxStream<'static, Result<T, ProviderError>>, ProviderError> {
+        Self::json_stream(
+            request
+                .header("content-type", "application/connect+json")
+                .header("connect-protocol-version", "1")
+                .body(super::connect_message(message)?),
+            super::Framing::Connect,
+        )
+        .await
+    }
+
     pub async fn checked(
         response: Result<Response, reqwest::Error>,
     ) -> Result<Response, ProviderError> {

@@ -3,7 +3,6 @@
 use super::instances::Instances;
 use super::{
     Allocation, SandboxDriver, SandboxInstance, SandboxSpec,
-    framing::{Framing, connect_message, frames},
     http::{Http, secret},
 };
 use crate::{ExecOutput, MachineState, ProviderError};
@@ -245,35 +244,18 @@ impl SandboxDriver for E2b {
         let executable = argv.next().ok_or_else(|| {
             ProviderError::Invalid("E2B argv missing; recovery: supply an executable".into())
         })?;
-        let request = connect_message(
-            &serde_json::json!({"process": {"cmd": executable, "args": argv.collect::<Vec<_>>()}, "tag": tag, "stdin": false}),
-        )?;
-        let response = Http::checked(
+        let response = Http::connect::<StartResponse>(
             guest
                 .request(Method::POST, &["process.Process", "Start"])?
-                .header("content-type", "application/connect+json")
-                .header("connect-protocol-version", "1")
-                .timeout(Duration::from_millis(u64::from(timeout_ms)) + Duration::from_secs(10))
-                .body(request)
-                .send()
-                .await,
+                .timeout(Duration::from_millis(u64::from(timeout_ms)) + Duration::from_secs(10)),
+            &serde_json::json!({"process": {"cmd": executable, "args": argv.collect::<Vec<_>>()}, "tag": tag, "stdin": false}),
         )
         .await?;
         let output = stream::try_unfold(
-            frames(response.bytes_stream(), Framing::Connect),
+            response,
             |mut source| async move {
                 while let Some(frame) = source.next().await {
                     let frame = frame?;
-                    if frame.flags == 2 {
-                        let trailer: serde_json::Value = serde_json::from_slice(&frame.data)
-                            .map_err(|_| ProviderError::Unavailable)?;
-                        if trailer.get("error").is_some() {
-                            return Err(ProviderError::Unavailable);
-                        }
-                        return Ok(None);
-                    }
-                    let frame: StartResponse = serde_json::from_slice(&frame.data)
-                        .map_err(|_| ProviderError::Unavailable)?;
                     let output = match frame.event {
                         Event::Start(_value) | Event::Keepalive(_value) => continue,
                         Event::Data(Data::Stdout(data)) => ExecOutput::Stdout(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?),

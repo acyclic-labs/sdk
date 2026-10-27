@@ -174,6 +174,37 @@ where
     .boxed()
 }
 
+/// Decode complete JSON records once, including Connect's terminal envelope.
+/// Provider adapters interpret application events, never transport trailers.
+pub(super) fn json_frames<T, S, B, E>(
+    source: S,
+    framing: Framing,
+) -> BoxStream<'static, Result<T, ProviderError>>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+    S: Stream<Item = Result<B, E>> + Send + 'static,
+    B: AsRef<[u8]> + Send + 'static,
+    E: Send + 'static,
+{
+    stream::try_unfold(frames(source, framing), |mut source| async move {
+        let Some(frame) = source.next().await else {
+            return Ok(None);
+        };
+        if frame.flags == 2 {
+            let trailer: serde_json::Value =
+                serde_json::from_slice(&frame.data).map_err(|_| ProviderError::Unavailable)?;
+            return if trailer.get("error").is_some() {
+                Err(ProviderError::Unavailable)
+            } else {
+                Ok(None)
+            };
+        }
+        let value = serde_json::from_slice(&frame.data).map_err(|_| ProviderError::Unavailable)?;
+        Ok(Some((value, source)))
+    })
+    .boxed()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,6 +212,58 @@ mod tests {
 
     // These are generated envelope vectors for the internal byte buffer, not
     // fixtures or purported responses from any external provider.
+    #[tokio::test]
+    async fn typed_json_records_share_decoding_and_connect_trailer_ownership()
+    -> Result<(), ProviderError> {
+        let values = [7u32, 9];
+        let lines: Vec<u8> = values
+            .iter()
+            .flat_map(|value| format!("{value}\n").into_bytes())
+            .collect();
+        let actual: Vec<u32> = json_frames(stream::iter([Ok::<_, ()>(lines)]), Framing::Lines)
+            .try_collect()
+            .await?;
+        assert_eq!(actual, values);
+
+        let mut connect = Vec::new();
+        for value in values {
+            connect.extend(connect_message(&serde_json::json!(value))?);
+        }
+        let mut terminal = connect_message(&serde_json::json!({}))?;
+        terminal[0] = 2;
+        connect.extend(terminal);
+        // A terminal envelope owns termination; later input is never decoded.
+        connect.extend(connect_message(&serde_json::json!(11))?);
+        let actual: Vec<u32> = json_frames(
+            stream::iter(connect.into_iter().map(|byte| Ok::<_, ()>(vec![byte]))),
+            Framing::Connect,
+        )
+        .try_collect()
+        .await?;
+        assert_eq!(actual, values);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn typed_json_and_connect_trailer_failures_are_terminal() -> Result<(), ProviderError> {
+        let mut trailer = connect_message(&serde_json::json!({"error": {}}))?;
+        trailer[0] = 2;
+        for (wire, framing) in [
+            (trailer, Framing::Connect),
+            (
+                connect_message(&serde_json::json!(false))?,
+                Framing::Connect,
+            ),
+            (b"false\n".to_vec(), Framing::Lines),
+        ] {
+            let mut output =
+                json_frames::<u32, _, _, _>(stream::iter([Ok::<_, ()>(wire)]), framing);
+            assert!(output.next().await.is_some_and(|result| result.is_err()));
+            assert!(output.next().await.is_none());
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn connect_envelopes_survive_every_single_split() -> Result<(), ProviderError> {
         let payload = serde_json::json!({"bytes": [0, 255, 10]});

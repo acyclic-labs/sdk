@@ -1,7 +1,7 @@
 //! Cloudflare native Containers transport for the companion Worker in
 //! `deploy/machines-cloudflare`. Lifecycle policy is implemented by `RemoteMachines`.
 
-use super::framing::{Framing, frames};
+use super::framing::Framing;
 use super::http::{Http, secret};
 use super::{Allocation, SandboxDriver, SandboxInstance, SandboxSpec};
 use crate::{ExecOutput, MachineState, ProviderError};
@@ -153,24 +153,23 @@ impl SandboxDriver for Cloudflare {
         _input: Option<Vec<u8>>,
     ) -> Result<crate::ExecStream, ProviderError> {
         let id = uuid::Uuid::new_v4().to_string();
-        let response = Http::checked(
+        let response = Http::json_stream::<Frame>(
             self.request(Method::POST, &instance.id, &["exec", &id])?
                 .timeout(Duration::from_millis(u64::from(timeout_ms)) + Duration::from_secs(10))
-                .json(&serde_json::json!({"argv": argv}))
-                .send()
-                .await,
+                .json(&serde_json::json!({"argv": argv})),
+            Framing::Lines,
         )
         .await?;
-        let output = frames(response.bytes_stream(), Framing::Lines)
+        let output = response
             .and_then(|frame| async move {
-                let frame: Frame = serde_json::from_slice(&frame.data).map_err(|_| ProviderError::Rejected("Cloudflare exec frame decoding failed; recovery: inspect the Worker version without replaying the command".into()))?;
                 match frame {
                     Frame::Stdout(data) => Ok(ExecOutput::Stdout(data)),
                     Frame::Stderr(data) => Ok(ExecOutput::Stderr(data)),
                     Frame::Exit(code) => Ok(ExecOutput::ExitCode(code)),
                     Frame::Error(_reason) => Err(ProviderError::Unavailable),
                 }
-            }).boxed();
+            })
+            .boxed();
         Ok(output)
     }
 
