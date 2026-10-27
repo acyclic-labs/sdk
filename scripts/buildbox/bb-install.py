@@ -159,6 +159,24 @@ def qualify_generation(stage, user):
     publish(stage/'.qualified.json',json.dumps(hashes).encode(),0o400)
 
 
+def carried(source):
+    """Files the installer does not manage (other owners' shims and binaries)
+    carry forward byte-exactly. Tools managed by this or the predecessor's
+    installer never do, so a tool dropped from the set is really gone."""
+    source=Path(source) if source else None
+    if source is None or not source.is_dir():return {}
+    managed=set(TOOLS)|{'bbcg','installed-tools.json'}
+    try:managed|=set(json.loads((source/'installed-tools.json').read_text())['sha256'])
+    except (FileNotFoundError,KeyError,ValueError):pass
+    files={}
+    for file in source.rglob('*'):
+        relative=file.relative_to(source)
+        if relative.parts[0] in managed or relative.parts[0].startswith('.'):continue
+        if file.is_symlink():raise ValueError('unmanaged tool link refused: '+str(file))
+        if file.is_file():files[str(relative)]=file.read_bytes()
+    return files
+
+
 def generation_payload(payload, hashes):
     """The complete on-disk generation: every tool plus its sudo-path shim."""
     files={name:data for name,data in payload.items()}
@@ -339,16 +357,30 @@ def publish_candidate(candidate):
             raise ValueError('installed predecessor changed; re-qualify against current tools')
         BIN.mkdir(exist_ok=True)
         store=secure_bin()
-        name=hashlib.sha256(json.dumps(hashes,sort_keys=True).encode()).hexdigest()[:16]
-        generation=materialize(generation_payload(payload,hashes),name)
+        files={**carried(current_generation() or store),**generation_payload(payload,hashes)}
+        name=hashlib.sha256(json.dumps(sorted((k,hashlib.sha256(v).hexdigest()) for k,v in files.items())).encode()).hexdigest()[:16]
+        generation=materialize(files,name)
         deploy(generation,store)
     return {'generation':str(generation),'sha256':hashes}
+
+
+def activate(generation):
+    if os.geteuid() != 0: raise PermissionError('bb-install requires sudo')
+    generation=Path(generation)
+    if generation.parent!=ROOT/'generations' or generation.is_symlink() or not (generation/'installed-tools.json').is_file():
+        raise ValueError('not a retained generation: '+str(generation))
+    with open('/mnt/bb/locks/bb-install.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        deploy(generation,secure_bin())
+    return generation
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     group=parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--source');group.add_argument('--publish')
+    # Rollback: re-activate a retained generation through the same canaries.
+    group.add_argument('--activate')
     args = parser.parse_args()
     if args.source:
         try:print(prepare(args.source))
@@ -358,4 +390,5 @@ if __name__ == '__main__':
             print('kind=INSTALL_INFRA step=qualify-source detail='+shlex.quote(str(error))+
                   ' recovery='+shlex.quote(recovery),file=sys.stderr)
             raise SystemExit(224)
+    elif args.activate:print(json.dumps({'activated':str(activate(args.activate))}),file=sys.stderr)
     else:print(json.dumps(publish_candidate(args.publish)),file=__import__('sys').stderr)

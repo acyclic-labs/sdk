@@ -32,7 +32,16 @@ retired), publication:
 3. repeats both canaries through the live entry, and on failure switches
    `current` and its services back to the predecessor before re-raising.
 
-Lane jobs therefore never observe a failing or mixed generation. Qualification
+Lane jobs therefore never observe a failing or mixed generation. Files the
+installer does not manage (other owners' shims and binaries such as
+`bb-cargo/cargo` or `tofu`) carry forward byte-exactly into the new
+generation; tools managed by this or the predecessor's installer never do.
+Roll back by re-activating a retained generation through the same canaries:
+
+```
+sudo /usr/bin/python3 -B /home/var/bin/bb-install.py --activate /opt/buildbox/generations/<id>
+```
+ Qualification
 records installed predecessors and publication refuses if any tool changed
 since. The Cargo source-namespace controls are mandatory in the installer's
 qualification suite. The first publication onto a regular-file store adopts

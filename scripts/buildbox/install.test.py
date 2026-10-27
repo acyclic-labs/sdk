@@ -1,5 +1,6 @@
 import concurrent.futures
 import contextlib
+import json
 import importlib.util
 import os
 from pathlib import Path
@@ -151,6 +152,15 @@ class InstallTests(unittest.TestCase):
                 with patch.object(installer,'publish',interrupted),self.assertRaises(OSError):
                     for name,data in [('a',b'new-a'),('b',b'new-b')]:installer.publish(former/name,data)
                 self.assertEqual([(former/n).read_bytes() for n in 'ab'],[b'new-a',b'old-b'])
+
+    def test_unmanaged_tools_carry_forward_and_managed_tools_never_do(self):
+        with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
+            source=Path(temporary)
+            for name in ['bb-cargo/cargo','bigstack/rustc','tofu','admission_policy.py','bbcg/systemd-run','retired_tool.py']:
+                (source/name).parent.mkdir(parents=True,exist_ok=True);(source/name).write_bytes(name.encode())
+            (source/'installed-tools.json').write_text(json.dumps({'sha256':{'retired_tool.py':None}}))
+            self.assertEqual(installer.carried(source),{'bb-cargo/cargo':b'bb-cargo/cargo','bigstack/rustc':b'bigstack/rustc','tofu':b'tofu'})
+            self.assertEqual(installer.carried(None),{})
 
     def test_live_publication_has_no_partial_selection(self):
         self.assertNotIn('--only',Path(installer.__file__).read_text())
