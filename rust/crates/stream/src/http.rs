@@ -346,6 +346,22 @@ impl StreamProvider for HttpStream {
             outcome,
         }))
     }
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        let value = self.request("head", wire::HeadRequest { path: path.to_string() }.encode_to_vec()).await?;
+        Ok(crate::PathHead {
+            tail: parse_u64(field(&value, "tail")?)?,
+            last: value.get("last").filter(|last| !last.is_null()).map(parse_record).transpose()?,
+            durable: parse_u64(field(&value, "durable")?)?,
+            origin: value.get("origin").filter(|origin| !origin.is_null()).map(|origin| -> Result<crate::ForkOrigin, StreamError> {
+                Ok(crate::ForkOrigin {
+                    source: parse_path(field(origin, "source")?)?,
+                    forked_at: parse_u64(field(origin, "forkedAt")?)?,
+                    commit_id: parse_id(field(origin, "commitId")?)?,
+                })
+            }).transpose()?,
+        })
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         parse_u64(
             &self

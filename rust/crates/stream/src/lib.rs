@@ -164,6 +164,7 @@ pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
 
 /// Route-to-response families for the hosted HTTP projection.
 pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
+    ("head", "head"),
     ("idempotency/inspect", "observation"),
     ("tail", "sequence"),
     ("append", "append"),

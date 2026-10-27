@@ -217,6 +217,12 @@ impl WasmStream {
                     None => wire::InspectIdempotencyResponse { observation: None }.encode_to_vec(),
                 }
             }
+            "head" => {
+                let request = decode::<wire::HeadRequest>(input)?;
+                let path = wire_codec::path(request.path).map_err(js_error)?;
+                let head = self.provider.head(path).await.map_err(js_error)?;
+                wire_codec::head_to_wire(head).encode_to_vec()
+            }
             "tail" => {
                 let request = decode::<wire::TailRequest>(input)?;
                 let path = wire_codec::path(request.path).map_err(js_error)?;

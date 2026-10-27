@@ -73,6 +73,17 @@ impl StreamProvider for MemoryStream {
         &self.operation_claims
     }
 
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        let state = self.state.read().await;
+        let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
+        Ok(crate::PathHead {
+            tail: stream.tail,
+            last: last_record(stream),
+            durable: 0,
+            origin: state.paths.origin(&path)?,
+        })
+    }
+
     async fn inspect_idempotency(
         &self,
         idempotency_key: IdempotencyKey,

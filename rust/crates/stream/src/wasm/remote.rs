@@ -108,6 +108,13 @@ impl StreamProvider for Remote {
         }
         Ok(observed)
     }
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        let response = self.service().head(self.request(wire::HeadRequest {
+            path: path.to_string(),
+        }).await?).await.map_err(|error| wire_codec::status(&error))?.into_inner();
+        wire_codec::head_from_wire(response)
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         Ok(self
             .service()

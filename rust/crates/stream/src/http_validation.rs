@@ -321,6 +321,32 @@ pub fn validate(route: &str, value: &Value) -> Result {
                 Err("expected empty acknowledgement response")
             }
         }
+        Some("head") => {
+            let item = object(value)?;
+            let tail = u64_string(field(item, "tail")?)?;
+            if u64_string(field(item, "durable")?)? > tail {
+                return Err("durable prefix exceeds accepted head");
+            }
+            let last = field(item, "last")?;
+            if last.is_null() {
+                if tail != 0 { return Err("nonempty head is missing its last record"); }
+            } else {
+                validate_record(last)?;
+                if u64_string(field(object(last)?, "sequence")?)?.checked_add(1) != Some(tail) {
+                    return Err("last record does not match head");
+                }
+            }
+            let origin = field(item, "origin")?;
+            if !origin.is_null() {
+                let origin = object(origin)?;
+                path(field(origin, "source")?)?;
+                id(field(origin, "commitId")?)?;
+                if u64_string(field(origin, "forkedAt")?)? > tail {
+                    return Err("inherited cut exceeds head");
+                }
+            }
+            Ok(())
+        }
         Some("sequence") => {
             u64_string(value)?;
             Ok(())

@@ -4,7 +4,7 @@ import {
   AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitMutationSchema, CommitRequestSchema,
   ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
-  ReadRequestSchema, FollowRequestSchema,
+  ReadRequestSchema, FollowRequestSchema, HeadRequestSchema,
   ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
   CreateTokenRequestSchema, RecordBatchSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
@@ -91,6 +91,7 @@ function validationError(error: unknown, operation: "append" | "commit" | "reque
 }
 
 type WireRequest =
+  | { readonly kind: "head"; readonly path: string }
   | { readonly kind: "tail"; readonly path: string }
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
   | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number }
@@ -124,6 +125,9 @@ export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array 
 
 export function wireRequest(request: WireRequest): Uint8Array {
   switch (request.kind) {
+      case "head":
+        requirePathType(request.path);
+        return toBinary(HeadRequestSchema, create(HeadRequestSchema, { path: request.path }));
       case "tail":
         requirePathType(request.path);
         return toBinary(TailRequestSchema, create(TailRequestSchema, { path: request.path }));

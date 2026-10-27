@@ -112,6 +112,11 @@ export class HttpStreamProvider implements StreamProvider {
     }
     return records;
   }
+  async head(path: string): Promise<import("./types.js").PathHead> {
+    const request = { kind: "head" as const, path };
+    await validateWireRequest(request);
+    return this.#request("head", await encodeHttpRequest("head", wireRequest(request)));
+  }
   async #tail(path: string, signal?: AbortSignal): Promise<Sequence> {
     await validateWireRequest({ kind: "tail", path });
     const input = wireRequest({ kind: "tail", path });

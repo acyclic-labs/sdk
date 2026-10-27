@@ -120,6 +120,9 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
     let result = check_command_size(input)
         .map_err(|_| StreamError::LimitExceeded)
         .and_then(|_| match kind {
+            "head" => wire::HeadRequest::decode(input)
+                .map_err(|_| StreamError::InvalidArgument)
+                .and_then(|request| wire_codec::path(request.path).map(|_| ())),
             "tail" => wire::TailRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(|request| wire_codec::path(request.path).map(|_| ())),
@@ -168,7 +171,7 @@ mod http {
             "inspect_idempotency" => "idempotency/inspect",
             "read_commit" => "commits/read",
             "children_page" => "children/page",
-            "append" | "fork" | "commit" => operation,
+            "head" | "append" | "fork" | "commit" => operation,
             _ => return Err("invalid_argument"),
         };
         match crate::http_response::value(route, input)? {
@@ -590,6 +593,27 @@ mod http {
         Ok(result.into())
     }
 
+    fn head_js(value: &Value) -> Result<JsValue> {
+        let item = object(value)?;
+        let result = Object::new();
+        set(&result, "tail", &bigint_js(field(item, "tail")?)?)?;
+        set(&result, "durable", &bigint_js(field(item, "durable")?)?)?;
+        let last = field(item, "last")?;
+        if !last.is_null() {
+            set(&result, "last", &record_js(last)?)?;
+        }
+        let origin = field(item, "origin")?;
+        if !origin.is_null() {
+            let origin = object(origin)?;
+            let projected = Object::new();
+            set(&projected, "source", &string_js(field(origin, "source")?)?)?;
+            set(&projected, "forkedAt", &bigint_js(field(origin, "forkedAt")?)?)?;
+            set(&projected, "commitId", &bytes_js(field(origin, "commitId")?)?)?;
+            set(&result, "origin", &projected.into())?;
+        }
+        Ok(result.into())
+    }
+
     pub(super) fn decode(route: &str, value: &Value) -> Result<JsValue> {
         crate::http_validation::validate(route, value)?;
         match crate::HTTP_RESPONSE_CONTRACT
@@ -598,6 +622,7 @@ mod http {
         {
             Some("empty") => Ok(JsValue::UNDEFINED),
             Some("sequence") => bigint_js(value),
+            Some("head") => head_js(value),
             Some("append") => append_result_js(value),
             Some("fork") => fork_receipt_js(value),
             Some("records") => array_js(value, record_js),

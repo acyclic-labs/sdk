@@ -154,6 +154,7 @@ export class Stream<Value = Uint8Array> {
     validatePathValue(path);
   }
   encode(value: Value): Uint8Array { return this.codec.encode(value); }
+  head(): Promise<import("./types.js").PathHead> { return this.provider.head(this.path); }
   tail(): Promise<Sequence> { return this.provider.tail(this.path); }
   append(value: Value, options: AppendOptions & { readonly idempotencyKey: IdempotencyKey }): Promise<AppendResult> { return this.appendBatch([value], options); }
   appendBatch(values: readonly Value[], options: AppendOptions & { readonly idempotencyKey: IdempotencyKey }): Promise<AppendResult> {

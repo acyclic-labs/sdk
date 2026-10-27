@@ -39,17 +39,3 @@ impl Namespace {
         }))
     }
 }
-
-impl MemoryStream {
-    /// Observes the last record and inherited fork cut under the same state lock.
-    pub async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        let state = self.state.read().await;
-        let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
-        Ok(crate::PathHead {
-            tail: stream.tail,
-            last: last_record(stream),
-            durable: 0,
-            origin: state.paths.origin(&path)?,
-        })
-    }
-}

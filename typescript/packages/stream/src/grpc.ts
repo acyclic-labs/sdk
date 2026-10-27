@@ -137,6 +137,12 @@ export class GrpcStreamProvider implements StreamProvider {
     if (response.observation !== undefined && !sameBytes(response.observation.idempotencyKey, key)) throw new StreamError("invalid_response", "idempotency response names another retry identity");
     return this.#project("inspect_idempotency", toBinary(wire.InspectIdempotencyResponseSchema, response));
   }
+  async head(path: string): Promise<import("./types.js").PathHead> {
+    const request = { kind: "head" as const, path };
+    await validateWireRequest(request);
+    const response = await this.#call("head", () => this.#client.head(fromBinary(wire.HeadRequestSchema, wireRequest(request))));
+    return this.#project("head", toBinary(wire.PathHeadSchema, response));
+  }
   async tail(path: string): Promise<bigint> {
     await validateWireRequest({ kind: "tail", path });
     return (await this.#call("tail", () => this.#client.tail(fromBinary(wire.TailRequestSchema, wireRequest({ kind: "tail", path }))))).tail;

@@ -400,6 +400,14 @@ impl StreamProvider for BrowserStream {
         self.with_provider(async move |provider| provider.inspect_idempotency(key).await)
             .await
     }
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        self.with_provider(async move |provider| {
+            let mut head = provider.head(path).await?;
+            head.durable = head.tail;
+            Ok(head)
+        }).await
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.with_provider(async move |provider| provider.tail(path).await)
             .await

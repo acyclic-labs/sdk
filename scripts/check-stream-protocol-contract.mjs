@@ -28,7 +28,7 @@ try {
   const service = stream.service.find(item => item.name === "StreamService");
   assert.ok(service, "StreamService is missing");
   assert.deepEqual(service.method.map(method => method.name), [
-    "InspectIdempotency", "Append", "Tail", "Fork", "Read",
+    "InspectIdempotency", "Append", "Head", "Tail", "Fork", "Read",
     "ChildrenPage", "Commit", "ReadCommit",
   ]);
   assert.equal(service.method.find(method => method.name === "Read").serverStreaming, true);
@@ -56,6 +56,9 @@ try {
   assertFields("ChildrenPageRequest", [["parent", 1], ["after", 2], ["hierarchy_version", 3], ["limit", 4], ["tail_stream", 5]]);
   assertFields("ChildrenPageResponse", [["hierarchy_version", 1], ["children", 2], ["next_after", 3]]);
   assertFields("TailRequest", [["path", 1], ["accepted", 2]]);
+  assertFields("HeadRequest", [["path", 1]]);
+  assertFields("PathHead", [["tail", 1], ["last", 2], ["durable", 3], ["origin", 4]]);
+  assertFields("ForkOrigin", [["source", 1], ["forked_at", 2], ["commit_id", 3]]);
   assertFields("TailResponse", [["tail", 1], ["durable", 3]]);
   assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4]]);
   assertReserved("ReadResponse", [[1, 2], [5, 6]], ["record", "delivery_token"]);

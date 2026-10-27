@@ -77,6 +77,23 @@ message AppendResponse {
   }
 }
 
+message HeadRequest {
+  string path = 1;
+}
+
+message ForkOrigin {
+  string source = 1;
+  uint64 forked_at = 2;
+  bytes commit_id = 3;
+}
+
+message PathHead {
+  uint64 tail = 1;
+  Record last = 2;
+  uint64 durable = 3;
+  ForkOrigin origin = 4;
+}
+
 message TailRequest {
   string path = 1;
   // Observe accepted visibility without waiting for persistence. False retains
@@ -374,6 +391,12 @@ service StreamService {
   rpc Append(AppendRequest) returns (AppendResponse) {
     option (acyclic.validation.v1.auth) = {
       action: "streams/append"
+      resource: "streams:/{path}"
+    };
+  }
+  rpc Head(HeadRequest) returns (PathHead) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/read"
       resource: "streams:/{path}"
     };
   }

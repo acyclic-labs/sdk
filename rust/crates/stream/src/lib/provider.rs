@@ -42,6 +42,8 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// Distinct provider sessions are distinct owners; backend leases remain
     /// responsible for exclusion across independently opened sessions.
     fn operation_claims(&self) -> &crate::OperationClaims;
+    /// Atomically observes accepted history, its last record, durable cut and fork origin.
+    async fn head(&self, path: StreamPath) -> Result<PathHead, StreamError>;
     /// Whether every mutation of this provider's storage shares these process
     /// claims. Remote sessions must leave this false, even with local caches.
     fn has_exclusive_process_owner(&self) -> bool {

@@ -13,7 +13,7 @@ const objects = {
   CompleteMultipart: "multipart/complete", AbortMultipart: "multipart/abort",
 };
 const stream = {
-  InspectIdempotency: "idempotency/inspect", Append: "append", Tail: "tail", Fork: "fork",
+  InspectIdempotency: "idempotency/inspect", Append: "append", Head: "head", Tail: "tail", Fork: "fork",
   Read: "read", Children: "children", ChildrenPage: "children/page",
   Commit: "commit", ReadCommit: "commits/read",
 };

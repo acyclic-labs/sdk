@@ -232,6 +232,11 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                 .map_err(|_| "invalid_argument")?;
             Ok(json!({ "idempotencyKey": STANDARD.encode(key.as_bytes()) }))
         }
+        "head" => {
+            let request = wire::HeadRequest::decode(input).map_err(|_| "invalid_argument")?;
+            let path = wire_codec::path(request.path).map_err(|_| "invalid_path")?;
+            Ok(json!({ "path": path.to_string() }))
+        }
         "tail" => {
             let request = wire::TailRequest::decode(input).map_err(|_| "invalid_argument")?;
             let path = wire_codec::path(request.path).map_err(|_| "invalid_path")?;

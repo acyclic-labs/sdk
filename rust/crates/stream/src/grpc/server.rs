@@ -65,6 +65,18 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         .await
     }
 
+    async fn head(
+        &self,
+        request: Request<wire::HeadRequest>,
+    ) -> Result<Response<wire::PathHead>, Status> {
+        unary(serve_span!("head"), async {
+            check_command_size(&request)?;
+            let path = path(request.into_inner().path).map_err(|error| error_status(&error))?;
+            let head = self.provider.head(path).await.map_err(|error| error_status(&error))?;
+            Ok(wire_codec::head_to_wire(head))
+        }).await
+    }
+
     async fn tail(
         &self,
         request: Request<wire::TailRequest>,

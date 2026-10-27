@@ -596,6 +596,16 @@ impl NativeStreamClient {
         operation_result(inspect_idempotency(&self.provider, request, cancellation)).await
     }
 
+    /// Executes one atomic canonical head observation.
+    #[napi(js_name = "headResult")]
+    pub async fn head_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeStreamCancellation>,
+    ) -> Result<NativeStreamOperationResult> {
+        operation_result(head(&self.provider, request, cancellation)).await
+    }
+
     /// Executes a canonical tail request.
     #[napi(js_name = "tailResult")]
     pub async fn tail_result(

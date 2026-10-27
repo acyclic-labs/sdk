@@ -12,6 +12,7 @@ import type {
   MissingCommitConflict as WireMissingCommitConflict,
   HeadCommitConflict as WireHeadCommitConflict,
   ForkReceipt as WireForkReceipt,
+  PathHead as WirePathHead, ForkOrigin as WireForkOrigin,
   ForkRequest as WireForkRequest, ReadRequest as WireReadRequest,
   Record as WireRecord, TailConflict as WireTailConflict,
   CreateTokenRequest as WireCreateTokenRequest, TokenGrant as WireTokenGrant,
@@ -67,6 +68,8 @@ export function compareStreamPaths(left: string, right: string): number {
 
 export type Record<Value = Uint8Array> = PublicWire<WireRecord, { readonly value: Value; readonly commitId: CommitId }>;
 export type EncodedRecord = Record<Uint8Array>;
+export type ForkOrigin = PublicWire<WireForkOrigin, { readonly commitId: CommitId }>;
+export type PathHead = PublicWire<WirePathHead, { readonly last?: EncodedRecord; readonly origin?: ForkOrigin }>;
 export type AppendResult =
   | (PublicWire<WireAppendReceipt, { readonly commitId: CommitId }> & { readonly ok: true })
   | (PublicWire<WireTailConflict> & { readonly ok: false; readonly code: "tail_conflict" });
@@ -125,6 +128,7 @@ export interface ProviderCommitRequest {
 export interface StreamProvider {
   registerCredential?(slot: number, credential: Uint8Array): Promise<void>;
   inspectIdempotency(idempotencyKey: IdempotencyKey): Promise<IdempotencyObservation | undefined>;
+  head(path: string): Promise<PathHead>;
   tail(path: string): Promise<Sequence>;
   append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult>;
   fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt>;

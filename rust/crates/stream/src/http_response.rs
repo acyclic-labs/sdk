@@ -19,6 +19,21 @@ pub fn encode(route: &str, input: &[u8], maximum_bytes: usize) -> Result<Vec<u8>
 }
 pub(crate) fn value(route: &str, input: &[u8]) -> Result<Option<Value>> {
     let value = match route {
+        "head" => {
+            let head = crate::wire_codec::head_to_wire(crate::wire_codec::head_from_wire(
+                wire::PathHead::decode(input).map_err(|_| "invalid_response")?,
+            ).map_err(|_| "invalid_response")?);
+            json!({
+                "tail": head.tail.to_string(),
+                "last": head.last.as_ref().map(record_json),
+                "durable": head.durable.to_string(),
+                "origin": head.origin.map(|origin| json!({
+                    "source": origin.source,
+                    "forkedAt": origin.forked_at.to_string(),
+                    "commitId": STANDARD.encode(&origin.commit_id),
+                })),
+            })
+        }
         "append" => {
             append_value(wire::AppendResponse::decode(input).map_err(|_| "invalid_response")?)?
         }

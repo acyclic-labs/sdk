@@ -207,6 +207,12 @@ impl StreamProvider for InjectedStream {
         }
         Ok(observed)
     }
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        wire_codec::head_from_wire(self.call("head", wire::HeadRequest {
+            path: path.to_string(),
+        }).await?)
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         Ok(self.watermarks(path).await?.accepted)
     }
