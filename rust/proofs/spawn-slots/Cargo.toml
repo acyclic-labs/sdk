@@ -1,0 +1,9 @@
+[package]
+name = "agent-spawn-slot-proofs"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# This dependency-free package checks the exact production arithmetic without
+# translating the rest of the SDK (or a second arithmetic implementation).
+[workspace]

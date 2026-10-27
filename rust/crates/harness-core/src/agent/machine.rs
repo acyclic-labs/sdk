@@ -17,8 +17,7 @@ use crate::conversation::FileRef;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, VecDeque};
 
-/// Most children an agent may have open at once.
-pub const MAX_OPEN_CHILDREN: usize = 256;
+pub use super::slots::MAX_OPEN_CHILDREN;
 /// Most inputs held in the checkpoint. Later input stays in the inbox, which is
 /// the agent's unbounded durable queue, and is read back as the window drains.
 pub const MAX_QUEUED: usize = 32;
@@ -107,8 +106,9 @@ pub struct AgentState {
     /// The turn in progress.
     pub turn: Option<Progress>,
     /// While a turn is in progress, the children its recorded spawns open
-    /// when it settles, beyond those already open: slots a spawn requested
-    /// meanwhile cannot take, so every spawn a tool reported succeeds.
+    /// when it settles, beyond those already open, plus slots vacated while
+    /// it pauses. A replayed recorded spawn may name one of those children;
+    /// clients cannot take its slot before the turn settles.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub reserved_children: u16,
 }
@@ -145,11 +145,7 @@ impl AgentState {
 
     /// Open-child slots a spawn requested now may take.
     fn free_children(&self) -> usize {
-        let reserved = match self.turn {
-            Some(_) => usize::from(self.reserved_children),
-            None => 0,
-        };
-        MAX_OPEN_CHILDREN.saturating_sub(reserved)
+        super::slots::client_ceiling(self.turn.is_some(), usize::from(self.reserved_children))
     }
 
     /// The outcome of the spawn named `intent`, read from the state committed
@@ -524,7 +520,12 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
     }
     state.closed = admitted.control.closed;
     if let InboxRecord::ChildDone(done) = &record {
-        state.open_children.remove(&done.child);
+        if state.open_children.remove(&done.child) && state.turn.is_some() {
+            // The paused journal may already contain a replayed spawn of this
+            // child. Its slot remains owned by the turn until the driver next
+            // reconciles recorded effects. Duplicate ChildDone consumes none.
+            state.reserved_children = super::slots::reserve_vacated(state.reserved_children);
+        }
         state.archive_pending.remove(&done.child);
     }
     if let Some(input) = input(sequence, record).filter(|_| admitted.enqueue) {
@@ -761,7 +762,7 @@ fn apply_spawns(state: &mut AgentState, outs: &mut Vec<Out>, from: usize, limit:
         };
         let opened = match state.spawned(intent) {
             Ok(child) if state.open_children.contains(&child) => true,
-            Ok(child) if !state.closed && state.open_children.len() < limit => {
+            Ok(child) if !state.closed && super::slots::admits(state.open_children.len(), limit, false) => {
                 state.open_children.insert(child);
                 true
             }

@@ -24,6 +24,7 @@ mod lower;
 mod machine;
 mod records;
 mod reply;
+mod slots;
 mod volumes;
 pub use volumes::SpawnVolumes;
 

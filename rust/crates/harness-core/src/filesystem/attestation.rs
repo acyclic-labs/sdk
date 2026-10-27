@@ -16,9 +16,9 @@
 //! is refused under an attestor, since no attestation could cover its bytes.
 //! Providers that need no evidence ignore it.
 //!
-//! `Attested` overrides every [`StreamProvider`] method, so no write path
-//! falls back to a default that bypasses the attestor; a test checks this
-//! against the trait's source.
+//! `Attested` implements the generated no-default [`acyclic_stream::ExplicitStreamProvider`]
+//! contract. A new provider method, even one with a default, requires an
+//! explicit implementation here at compile time.
 use super::TurnAdmission;
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::NativeReadMeter;
@@ -137,7 +137,7 @@ fn commit_digest(request: &CommitRequest) -> Result<[u8; 32], StreamError> {
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
-impl<P: AttestedProvider + 'static> StreamProvider for Attested<P> {
+impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for Attested<P> {
     fn operation_claims(&self) -> &OperationClaims {
         self.inner.operation_claims()
     }
@@ -367,35 +367,9 @@ impl<P: AttestedProvider + 'static> StreamProvider for Attested<P> {
 
 #[cfg(test)]
 mod tests {
-    /// The `fn` names declared directly in the first block opened by `header`.
-    fn methods(source: &str, header: &str) -> std::collections::BTreeSet<String> {
-        let start = source.find(header).expect("block header is present");
-        let mut depth = 0usize;
-        let mut names = std::collections::BTreeSet::new();
-        for line in source[start..].lines() {
-            if depth == 1
-                && let Some(rest) = line.trim_start().split("fn ").nth(1)
-                && (line.trim_start().starts_with("fn ")
-                    || line.trim_start().starts_with("async fn "))
-            {
-                let name: String = rest
-                    .chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect();
-                names.insert(name);
-            }
-            depth += line.matches('{').count();
-            depth = depth.saturating_sub(line.matches('}').count());
-            if depth == 0 && line.contains('}') {
-                break;
-            }
-        }
-        names
-    }
-
     /// Counts each request for evidence.
     #[derive(Default)]
-    struct Counting(std::sync::atomic::AtomicUsize);
+    struct Counting(std::sync::atomic::AtomicUsize, std::sync::Mutex<Vec<super::TurnAdmission>>);
 
     impl super::Attestor for Counting {
         fn attest<'a>(
@@ -403,6 +377,7 @@ mod tests {
             attempt: super::Attempt<'a>,
         ) -> super::BoxProviderFuture<'a, Result<super::Attestation, super::StreamError>> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.1.lock().expect("admission ledger").push(attempt.admission.clone());
             Box::pin(std::future::ready(Ok(super::Attestation(
                 attempt.digest.to_vec().into(),
             ))))
@@ -416,6 +391,16 @@ mod tests {
         inner: acyclic_stream::MemoryStream,
         bound: Option<super::Attestation>,
         reached: std::sync::Arc<std::sync::Mutex<Vec<Option<super::Attestation>>>>,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl Probe {
+        fn write(&self, digest: [u8; 32]) -> super::StreamError {
+            assert_eq!(self.bound, Some(super::Attestation(digest.to_vec().into())),
+                "write must reach the binding for its own canonical digest");
+            self.reached.lock().expect("probe ledger").push(self.bound.clone());
+            super::StreamError::AccessDenied
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -457,13 +442,13 @@ mod tests {
             &self,
             request: super::AppendRequest,
         ) -> Result<super::AppendOutcome, super::StreamError> {
-            self.inner.append(request).await
+            Err(self.write(acyclic_stream::request::append_digest(&request)?))
         }
         async fn fork(
             &self,
             request: super::ForkRequest,
         ) -> Result<super::ForkReceipt, super::StreamError> {
-            self.inner.fork(request).await
+            Err(self.write(acyclic_stream::request::fork_digest(&request)?))
         }
         async fn read(
             &self,
@@ -483,7 +468,11 @@ mod tests {
             &self,
             request: super::CommitRequest,
         ) -> Result<super::CommitOutcome, super::StreamError> {
-            self.inner.commit(request).await
+            Err(self.write(super::commit_digest(&request)?))
+        }
+        async fn commit_before(&self, request: super::CommitRequest, _: u64)
+            -> Result<super::CommitOutcome, super::StreamError> {
+            Err(self.write(super::commit_digest(&request)?))
         }
         async fn read_commit(
             &self,
@@ -493,15 +482,28 @@ mod tests {
         }
         fn native_commit(
             &self,
-            _request: super::CommitRequest,
+            request: super::CommitRequest,
             _deadline: Option<u64>,
             _meter: std::sync::Arc<dyn super::NativeReadMeter>,
         ) -> super::NativeProviderFuture<'_, super::CommitOutcome> {
-            if let Ok(mut reached) = self.reached.lock() {
-                reached.push(self.bound.clone());
-            }
             // A definite answer distinct from the trait default's Unsupported.
-            super::NativeProviderFuture::ready(Ok(Err(super::StreamError::AccessDenied)))
+            let result = super::commit_digest(&request).map(|digest| self.write(digest));
+            super::NativeProviderFuture::ready(Ok(Err(result.unwrap_or_else(|error| error))))
+        }
+        fn native_append(&self, request: super::AppendRequest,
+            _: std::sync::Arc<dyn super::NativeReadMeter>)
+            -> super::NativeProviderFuture<'_, super::AppendOutcome> {
+            let result = acyclic_stream::request::append_digest(&request).map(|digest| self.write(digest));
+            super::NativeProviderFuture::ready(Ok(Err(result.unwrap_or_else(|error| error))))
+        }
+        fn native_commit_guarded<E, F, Fut>(&self, request: super::CommitRequest,
+            _: Option<u64>, _: std::sync::Arc<dyn super::NativeReadMeter>, _before: F)
+            -> super::NativeProviderFuture<'_, super::CommitOutcome, E>
+        where Self: Sized, E: From<super::StreamError> + Send + 'static,
+              F: FnMut() -> Fut + Send + 'static,
+              Fut: std::future::Future<Output = Result<(), E>> + Send + 'static {
+            let result = super::commit_digest(&request).map(|digest| self.write(digest));
+            super::NativeProviderFuture::ready(Ok(Err(E::from(result.unwrap_or_else(|error| error)))))
         }
     }
 
@@ -597,22 +599,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn attested_overrides_every_stream_provider_method() {
-        let trait_source = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../stream/src/lib/provider.rs"
-        ))
-        .expect("the stream provider contract is in the workspace");
-        let declared = methods(&trait_source, "pub trait StreamProvider");
-        let overridden = methods(
-            include_str!("attestation.rs"),
-            "impl<P: AttestedProvider + 'static> StreamProvider for Attested<P>",
-        );
-        assert!(declared.len() > 20, "{declared:?}");
-        assert_eq!(
-            declared, overridden,
-            "a default would bypass the attestor or the inner provider"
-        );
-    }
+    #[cfg(not(target_arch = "wasm32"))]
+    include!("attestation_proofs.rs");
 }

@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "status": "authored_uncompiled_unexecuted",
+  "qualification": {"local": "unqualified", "cloud": "unqualified"},
+  "decisions": [
+    "Include the actual dependency-free production slot arithmetic in a small Kani workspace.",
+    "Use deterministic schedules of the production actor step, which serializes inbox commits, rather than a separate concurrent reducer.",
+    "Keep slots vacated during a paused turn until the driver reconciles recorded effects; duplicate ChildDone reserves nothing.",
+    "Generate ExplicitStreamProvider from the same trait declaration; it removes all defaults and generates forwarding, so missing adapter methods fail compilation.",
+    "Attestor implementations retain the documented deterministic-function obligation; adapter properties verify original admission, exact digest and repeat evidence, not arbitrary third-party signer purity."
+  ],
+  "targets": [
+    {
+      "id": "spawn_slots",
+      "production": "rust/crates/harness-core/src/agent/slots.rs",
+      "proofs": ["Kani: client_cannot_take_a_recorded_slot", "Kani: every_recorded_child_fits_after_client_admission", "Kani: completing_a_child_does_not_release_a_paused_turns_slot", "Kani: replay_and_untrusted_reservation_counts_do_not_overflow", "agent-model: slot_schedules"],
+      "controls": [
+        {"file": "rust/crates/harness-core/src/agent/slots.rs", "before": "MAX_OPEN_CHILDREN.saturating_sub(if turn { reserved } else { 0 })", "after": "MAX_OPEN_CHILDREN.saturating_sub(0)", "expected": "Kani counterexample and unchanged slot schedule assertion failure"},
+        {"file": "rust/crates/harness-core/src/agent/slots.rs", "before": "reserved.saturating_add(1).min(MAX_OPEN_CHILDREN as u16)", "after": "reserved", "expected": "Kani counterexample and unchanged ChildDone replay regression failure"}
+      ]
+    },
+    {
+      "id": "attested",
+      "proofs": ["Compiler: ExplicitStreamProvider requires every current and future method", "contract-derive explicit_provider positive and E0046 doctests", "harness-core: every_write_family_preserves_digest_admission_and_retry_evidence"],
+      "controls": [
+        {"file": "rust/crates/harness-core/src/filesystem/attestation.rs", "before": "digest: digest()?", "after": "digest: [0; 32]", "expected": "unchanged provider assertion rejects wrong canonical digest"},
+        {"file": "rust/crates/harness-core/src/filesystem/attestation.rs", "before": "admission: &self.admission", "after": "admission: &super::TurnAdmission::LocalRoot", "expected": "unchanged hosted-admission ledger assertion fails"},
+        {"file": "rust/crates/harness-core/src/filesystem/attestation.rs", "mutation": "remove the ExplicitStreamProvider durability_barrier implementation", "expected": "E0046 missing durability_barrier"}
+      ]
+    },
+    {
+      "id": "record_bounds",
+      "proofs": ["harness-core: record_bounds_cover_every_kind_and_json_escape_expansion", "harness-core: every_record_a_step_writes_fits_its_limit_at_the_configured_maxima"],
+      "controls": [
+        {"file": "rust/crates/harness-core/src/conversation/mod.rs", "before": "pub const MAX_PATH_BYTES: usize = 4096;", "after": "pub const MAX_PATH_BYTES: usize = 32768;", "expected": "unchanged canonical-encoding bound assertion fails; refusal is not counted as a successful bound"}
+      ]
+    }
+  ],
+  "execution_receipts": [],
+  "remaining": ["supported direct bb2 dispatch", "format and affected compiler checks", "Kani and positive suites", "actual production mutations with unchanged oracles", "exact source and executable receipts", "queue this one PR"]
+}
