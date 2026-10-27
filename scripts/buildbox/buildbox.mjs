@@ -1000,15 +1000,19 @@ async function followStream(J, f, sink, st) {
   }
 }
 
+// The rc after the streams end without one: one ssh session per job blocks on the wrapper's exit (tail --pid) and
+// prints its rc, instead of a new connection every 2-5 s (up to ~300 handshakes per job). Only a dropped session
+// reconnects; a vanished wrapper with no rc is null, as before.
 async function remoteRc(J) {
   const t0 = Date.now();
   for (;;) {
-    const r = await sshRun(`cat ${J}.rc 2>/dev/null || { w=$(cat ${J}.wpid 2>/dev/null); [ -n "$w" ] && kill -0 $w 2>/dev/null && echo running || echo gone; }`, { timeout: 45000 });
+    const left = REATTACH_SEC * 1000 - (Date.now() - t0);
+    if (left <= 0) return null;
+    const r = await sshRun(`w=$(cat ${J}.wpid 2>/dev/null); [ -e ${J}.rc ] || [ -z "$w" ] || tail --pid=$w -f /dev/null; cat ${J}.rc 2>/dev/null || echo gone`, { timeout: left });
     const s = r.stdout.toString().trim();
     if (r.status === 0 && /^\d+$/.test(s)) return Number(s);
     if (r.status === 0 && s === 'gone') return null;
-    if (Date.now() - t0 > REATTACH_SEC * 1000) return null;
-    await sleep(r.status === 0 ? 2000 : 5000);
+    await sleep(5000);
   }
 }
 
