@@ -703,6 +703,7 @@ async fn retained_cut_is_invalidated_when_delivery_is_cancelled() -> TestResult 
             .now_or_never()
             .is_none()
     );
+    drop(slot);
     let cut = store.load(&address).await?;
     assert_eq!(cut.state().ok_or("missing actor state")?.epoch(), 1);
     store
