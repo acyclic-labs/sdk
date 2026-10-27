@@ -46,7 +46,7 @@ try {
     }
   }
   const { exerciseCheckpoint } = await import("./checkpoint-consumer.mjs");
-  await exerciseCheckpoint(Harness, harness, options, contracts);
+  await exerciseCheckpoint({ ...options, authority: { kind: "agent", id: "browser-checkpoint" } });
   const { exerciseBrowserHistory } = await import("./browser-history-consumer.mjs");
   await exerciseBrowserHistory();
   const provider = { namespace: "browser", family: "filesystem", version: "2" };

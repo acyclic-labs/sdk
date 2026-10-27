@@ -1,3 +1,7 @@
-import type { Harness, HarnessOptions, NativeContracts } from "../src/index.js";
-export function exerciseCheckpoint(HarnessClass: typeof Harness, harness: Harness,
-  options: HarnessOptions, contracts: NativeContracts): Promise<void>;
+export interface CheckpointFixture {
+  readonly authority: { readonly kind: "agent"; readonly id: string };
+  readonly issuerId: string;
+  readonly issuerKey: Uint8Array;
+  readonly schemas?: readonly unknown[];
+}
+export function exerciseCheckpoint(options: CheckpointFixture): Promise<void>;

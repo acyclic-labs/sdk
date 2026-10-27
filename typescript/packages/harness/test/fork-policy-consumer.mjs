@@ -1,19 +1,27 @@
+import { BrowserAgentAuthority } from "../dist/browser.js";
+import { encodeCanonicalJson, fileDescriptor, validateContract } from "../generated/wasm/acyclic_harness_wasm.js";
+import { MODEL_TEST_LIMITS } from "./support/model-limits.mjs";
+
 /** Pure pre-admission policy consumer shared by installed Bun and Chromium.
  * Provider capture/publication is exercised separately by the Rust preparer consumer. */
-export async function exerciseForkPolicy(Harness, parentOptions, contracts) {
+export async function exerciseForkPolicy(parentOptions) {
+  const equal = (left, right) => {
+    const a = encodeCanonicalJson(left), b = encodeCanonicalJson(right);
+    return a.length === b.length && a.every((byte, index) => byte === b[index]);
+  };
   const assert = (value, message) => { if (!value) throw new Error(message); };
   const rejects = (action, message) => { let failed = false; try { action(); } catch { failed = true; } assert(failed, message); };
   const authority = { kind: "conversation", id: `${parentOptions.authority.id}-fork-policy` };
   const options = { ...parentOptions, authority };
-  const harness = await Harness.create(options);
+  const harness = new BrowserAgentAuthority(authority, options.issuerId, options.issuerKey, options.schemas ?? []);
   const parentAgent = "11111111-1111-1111-1111-111111111111";
   const childAgent = "22222222-2222-2222-2222-222222222222";
   const provider = { namespace: "fork-policy", family: "filesystem", version: "2" };
   const volume = { provider, id: "parent-private", class: "agent_private", owner: { kind: "agent", id: parentAgent } };
-  const file = contracts.validate("file_ref", { volume, path: "request.txt", version: "1",
-    descriptor: contracts.fileDescriptor(new TextEncoder().encode("parent"), "text/plain"), display_name: "request.txt" });
+  const file = validateContract("file_ref", { volume, path: "request.txt", version: "1",
+    descriptor: fileDescriptor(new TextEncoder().encode("parent"), "text/plain"), display_name: "request.txt" }, undefined);
   const scope = harness.issueScope("fork-policy", ["conversation:bind", "conversation:append", harness.fileReadCapability(file)], parentAgent);
-  const command = (operation_id, action) => ({ authority, operation_id, idempotency_key: operation_id,
+  const command = (operation_id, action) => ({ operation_id, idempotency_key: operation_id,
     expected_revision: harness.head()[1], scope, causal_parent: null, action });
   const message = (id, sequence) => ({ id, sequence, kind: "user", content: file, attachments: { kind: "inline", items: [] },
     reply_to: null, tool_call_id: null, extensions: {} });
@@ -31,16 +39,14 @@ export async function exerciseForkPolicy(Harness, parentOptions, contracts) {
         { required: true, revision: { kind: "project", reference: { volume: { provider, id: "parent-project", class: "project", owner: { kind: "project", id: "project" } }, generation: { kind: "generation", provider, key: [1], version: null } } } },
         { required: true, revision: { kind: "private_volume", reference: { volume, generation: { kind: "generation", provider, key: [2], version: null }, paths: [] } } },
       ], boundary: null };
-    const inherited = harness.prepareForkRequest(request);
+    const inherited = harness.prepareForkRequest(request, undefined);
     assert(request.preparation.inherited_through_sequence === 0n, "policy mutated caller request");
     assert(inherited.preparation.inherited_through_sequence === 1n, "default did not pin logical tail");
     assert(harness.prepareForkRequest(request, "fresh").preparation.inherited_through_sequence === 0n, "fresh inherited history");
     rejects(() => harness.prepareForkRequest(request, "summary"), "unimplemented summary was silently substituted");
     const summary = { checkpoint: { ...file, path: "checkpoint.json",
-      descriptor: contracts.fileDescriptor(new TextEncoder().encode("{}"), "application/json") },
-      limits: { file_bytes: BigInt(Number.MAX_SAFE_INTEGER), path_bytes: 0xffff_ffffn, attachments: 0xffff_ffffn,
-        render_bytes: BigInt(Number.MAX_SAFE_INTEGER), model_steps: 0xffff_ffffn, model_events_per_step: 0xffff_ffffn,
-        tool_calls_per_step: 0xffff_ffffn, context_messages: 0xffff_ffffn },
+      descriptor: fileDescriptor(new TextEncoder().encode("{}"), "application/json") },
+      limits: Object.fromEntries(Object.entries(MODEL_TEST_LIMITS).map(([key, value]) => [key, BigInt(value)])),
       history_limits: { maximum_events: 16, maximum_bytes: 65536n } };
     const summarized = harness.prepareForkRequest(request, { summary });
     for (const [field, value] of Object.entries(summary.limits)) {
@@ -51,16 +57,16 @@ export async function exerciseForkPolicy(Harness, parentOptions, contracts) {
     rejects(() => harness.prepareForkRequest(request, { summary: { ...summary, limits: {
       ...summary.limits, file_bytes: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
     } } }), "unsafe Summary limit was rounded");
-    const restored = await Harness.restore(harness.snapshot(), options);
-    try { assert(contracts.canonicalEqual(restored.prepareForkRequest(request), inherited), "checkpoint changed selected boundary"); }
+    const restored = BrowserAgentAuthority.restore(harness.snapshot(), options.issuerId, options.issuerKey, options.schemas ?? []);
+    try { assert(equal(restored.prepareForkRequest(request, undefined), inherited), "checkpoint changed selected boundary"); }
     finally { restored.free(); }
     harness.apply(command("15151515-1515-1515-1515-151515151515", { kind: "append_conversation_message", message: message("16161616-1616-1616-1616-161616161616", 2n) }));
     assert(inherited.preparation.inherited_through_sequence === 1n, "later parent changed frozen boundary");
-    rejects(() => harness.prepareForkRequest(request), "stale parent policy admission accepted");
+    rejects(() => harness.prepareForkRequest(request, undefined), "stale parent policy admission accepted");
     const later = structuredClone(request);
     later.parent_revision = harness.head()[1];
     later.selections[0].revision.reference.version = String(later.parent_revision);
     later.preparation.maximum_inherited_messages = 1n;
-    rejects(() => harness.prepareForkRequest(later), "oversized logical history silently truncated");
+    rejects(() => harness.prepareForkRequest(later, undefined), "oversized logical history silently truncated");
   } finally { harness.free(); }
 }

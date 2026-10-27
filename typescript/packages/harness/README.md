@@ -68,3 +68,13 @@ the supplied settled-cut fixture and does not claim that extra preflight. Contro
 and tool output use `verifyClientControls` and `verifyClientToolOutput`. Reports
 name only completed cases. These observation cases establish neither turn
 execution nor credit/scale/bootstrap or real endpoint qualification by themselves.
+
+The `./browser` host module also exposes `BrowserAgentAuthority`,
+`BrowserAggregate` and `BrowserHistoryReader` directly from the retained Rust
+bindings. History options use the Rust fields `database`, `authority`, `issuer_id`,
+`issuer_key`, `maximum_commands`, `maximum_journal_bytes`, and optional `memory`.
+`BrowserAggregate.openBrowser(options, schemas, snapshot)` and
+`BrowserHistoryReader.openBrowser(options)` use the same owning IndexedDB stream.
+These are explicit host composition primitives; they do not bootstrap an endpoint
+credential or replace the public agent session. Archival cursors pin their cut,
+and page calls require finite event and byte bounds.
