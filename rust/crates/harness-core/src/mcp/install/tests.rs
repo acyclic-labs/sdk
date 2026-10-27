@@ -728,6 +728,7 @@ IFS= read -r input
                 tool_bytes: 8192,
                 ..Default::default()
             },
+            Arc::new(crate::secrets::EnvSecrets),
         )
         .await?;
     assert!(installed.diagnostics.is_empty());

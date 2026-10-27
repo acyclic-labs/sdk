@@ -149,9 +149,8 @@ where
     /// and agent, and writing the private volume) and that the admission
     /// writes every fresh volume; a read-only or mismatched admission is
     /// refused here, having read and written nothing. Retained volumes keep
-    /// exactly the access the admission grants them. Then it prepares the one
-    /// commit creating the fresh volumes and the root, reading only the
-    /// volumes' authority.
+    /// exactly the access the admission grants them. Then it prepares, with
+    /// no IO, the one sealed commit creating the fresh volumes and the root.
     ///
     /// # Errors
     /// [`crate::Error::Unauthorized`] (as [`Error::Turn`]) when the
@@ -223,7 +222,7 @@ where
         .await
         .map_err(|failure| turn(super::map_error(failure.error)))?;
         fs.seal_commit(&mut commit, WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|failure| turn(super::map_error(failure.error)))?;
+            .map_err(|failure| turn(failure.error.into()))?;
         Ok(Prepared {
             child,
             request: commit.request().clone(),
