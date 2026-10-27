@@ -38,8 +38,9 @@ pub use acyclic_harness_client::{
     WireSession, WireSessionError,
 };
 pub use acyclic_harness_client::{
-    DemandError, DemandPolicy, PageDirection, PageRequest, PageWindow, PageWindowError,
-    PageWindowPolicy, ViewDemand, WindowPage,
+    CREDENTIAL_ENV, ConnectionConfigError, ConnectionOptions, DEFAULT_ENDPOINT, DemandError,
+    DemandPolicy, ENDPOINT_ENV, PageDirection, PageRequest, PageWindow, PageWindowError,
+    PageWindowPolicy, ViewDemand, WindowPage, resolve_connection_options,
 };
 pub use interests::{ClientInterests, InterestChanges, InterestTier};
 mod offline;

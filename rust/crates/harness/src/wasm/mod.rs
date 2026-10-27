@@ -63,6 +63,7 @@ use tool::*;
 mod agent_client;
 #[cfg(target_arch = "wasm32")]
 mod agent_command;
+mod client_connection;
 #[cfg(target_arch = "wasm32")]
 mod page_window;
 mod wire;

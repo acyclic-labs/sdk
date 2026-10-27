@@ -91,6 +91,15 @@ export async function ensureClientWasm(): Promise<void> {
   assertClientWasmExports(await loadHarnessWasm());
 }
 
+/** Configuration admission does not require a server, provider or transport. */
+export async function ensureConnectionWasm(): Promise<void> {
+  const exports = await loadHarnessWasm();
+  if (typeof exports.resolveClientConnection !== "function"
+    || !hasClass(exports, "WasmConnectionOptions", "wasmconnectionoptions", ["endpoint", "credential", "free"])) {
+    throw new Error("harness WASM does not provide the required connection configuration exports");
+  }
+}
+
 /** Browser authority and agent hosts share the one physical WASM instance. */
 export async function ensureBrowserWasm(): Promise<void> {
   assertBrowserWasmExports(await loadHarnessWasm());

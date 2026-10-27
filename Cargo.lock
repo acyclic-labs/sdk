@@ -451,6 +451,7 @@ name = "acyclic-harness-client"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
+ "acyclic-auth",
  "acyclic-harness-core",
  "acyclic-stream",
  "bytes",
@@ -461,6 +462,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tsify",
+ "url",
  "wasm-bindgen",
 ]
 

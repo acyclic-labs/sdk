@@ -5,6 +5,21 @@ session for local, self-hosted Actors and managed Swarm. The TypeScript package
 exports the generated client rather than maintaining a second transport or agent
 runtime.
 
+Connection configuration uses one Rust policy for native and TS callers:
+explicit endpoint, then `ACYCLIC_ENDPOINT`, then
+`https://swarm.cloud.acyclic.dev`. The credential is explicit or comes from
+`ACYCLIC_API_KEY`. There is no config-file lookup or automatic local fallback.
+Invalid endpoints (including HTTP), missing credentials and invalid credentials
+have typed error codes before a transport is constructed.
+
+Native callers use `acyclic_harness::client::ConnectionOptions::from_env`.
+TS callers first call `initializeClientConnection()`, then the synchronous,
+I/O-free `resolveConnectionOptions(endpoint?, credential?, environment?)`.
+Initialization loads the SDK's WASM asset; resolution itself does not connect to
+the selected endpoint. Browsers pass a credential explicitly or supply the
+environment object. These resolved options are configuration, not a session
+capability or proof that a server is reachable.
+
 Call `initializeClientQueries()` before constructing client objects. `AgentClient`
 folds the selected conversation, status and filesystem streams through one bounded
 `WireSession`. `PageWindow` retains complete provider pages and their opaque

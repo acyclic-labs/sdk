@@ -1,5 +1,11 @@
 //! Bounded view demand and provider-owned pages shared by client adapters.
 
+mod connection;
+pub use connection::{
+    CREDENTIAL_ENV, ConnectionConfigError, ConnectionOptions, DEFAULT_ENDPOINT, ENDPOINT_ENV,
+    resolve_connection_options,
+};
+
 #[cfg(any(
     all(feature = "grpc", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")

@@ -13,6 +13,7 @@ grpc = ["acyclic-stream/grpc", "dep:acyclic-actors", "dep:acyclic-harness-core",
 wasm = ["acyclic-stream/wasm", "acyclic-harness-core/wasm", "dep:acyclic-actors", "dep:prost", "dep:serde", "dep:serde_json", "dep:thiserror", "dep:tsify", "dep:wasm-bindgen"]
 
 [dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth" }
 acyclic-actors = { version = "=0.2.0", path = "../actors", optional = true }
 acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", optional = true }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
@@ -24,6 +25,7 @@ serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true, optional = true }
 tsify = { workspace = true, optional = true }
 wasm-bindgen = { workspace = true, optional = true }
+url = "=2.5.8"
 
 [dev-dependencies]
 proptest.workspace = true
