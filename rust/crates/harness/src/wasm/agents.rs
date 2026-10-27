@@ -10,27 +10,24 @@ use crate::{
         AGENTS, AgentHandler, AgentHost, AgentId, AgentPath, Control, Delivered, ExecutorDriver,
         ForkAdopted, InboxRecord, IntentId, Message, Sender, VolumeBinding,
     },
-    context::{CompactionPolicy, ContextPipeline},
+    context::CompactionPolicy,
     conversation::{
         ContentAccess, ContentPublisher as _, ContentResidencyVerifier as _, FileRef, Limits,
         VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{AggregateKind, Authority, AuthorityRoot},
-    executor::{Executor, StockExecutor},
     filesystem::{
         FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost, FilesystemTurnHost,
-        PRIVATE_VOLUME, TurnAuthority, TurnExecutors,
+        PRIVATE_VOLUME,
     },
-    model::{Model, ModelContent, ModelProvider as _},
+    model::Model,
     resources::ProviderRef,
-    runtime::RuntimeScope,
     tool::{Tool, ToolDefinition, ToolRegistry},
 };
 use acyclic_actors::{addressing::ActorReference, guest::Handler, local::SystemClock};
 use acyclic_fs::StreamAuthorityStore;
 use acyclic_stream::{
-    BoxProviderFuture, ChildrenPageRequest, CommitId, ReadRequest, StreamError, StreamPath,
-    StreamProvider,
+    ChildrenPageRequest, CommitId, ReadRequest, StreamError, StreamPath, StreamProvider,
 };
 use futures::{TryStreamExt as _, future::AbortHandle};
 use js_sys::Function;
@@ -256,54 +253,6 @@ impl WasmAgentRegistry {
             from_js(compaction)?,
         ));
         Ok(())
-    }
-}
-
-/// Builds each turn's stock executor from the registry, under the turn's authority.
-struct Executors {
-    model: Model,
-    provider: HostModel,
-    compaction: CompactionPolicy,
-    tools: ToolRegistry,
-    grants: Vec<String>,
-    limits: Limits,
-}
-
-impl TurnExecutors for Executors {
-    fn executor<'a>(
-        &'a self,
-        _: &'a crate::agent::AgentState,
-        _: OperationId,
-        _: &'a ModelContent,
-        authority: &'a TurnAuthority,
-    ) -> BoxProviderFuture<'a, Result<Arc<dyn Executor>>> {
-        Box::pin(async move {
-            let provider = self
-                .provider
-                .bind_content(authority.content.reader.clone(), self.limits.file_bytes)
-                .ok_or_else(|| Error::Unsupported("browser model reads no content".into()))?;
-            let grants = Capabilities::new(
-                authority
-                    .grants
-                    .iter()
-                    .map(str::to_owned)
-                    .chain(self.grants.iter().cloned())
-                    .chain([crate::contract::capability::MODEL_GENERATE.to_owned()]),
-            );
-            let executor = StockExecutor::new(
-                self.model.clone(),
-                provider,
-                ContextPipeline::default(),
-                self.tools.clone(),
-            )
-            .with_limits(self.limits)
-            .with_compaction_policy(self.compaction.clone())
-            .with_tool_authority(
-                RuntimeScope::new(grants, self.limits)?,
-                authority.approval.clone(),
-            )?;
-            Ok(Arc::new(executor) as Arc<dyn Executor>)
-        })
     }
 }
 

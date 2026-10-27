@@ -13,8 +13,8 @@ use crate::{
     conversation::{ContentAccess, ContentPublisher, VolumeRef},
     executor::{Executor, StockExecutor},
     filesystem::{
-        FilesystemSpawnVolumes, FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, TurnAdmission,
-        TurnAuthority, TurnExecutors, TurnLimits,
+        FilesystemSpawnVolumes, FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, StockExecutors,
+        TurnAdmission, TurnAuthority, TurnContext, TurnExecutors, TurnLimits,
     },
     model::ModelContent,
 };
@@ -62,17 +62,19 @@ impl Drop for Hosted {
     }
 }
 
-/// Builds each agent turn's executor from the harness that hosts it.
-struct Executors(Weak<LocalHarness>);
+/// What the local harness adds to each stock turn: its context manifest,
+/// the turn's task context and tool authority, and its hooks.
+struct LocalContext(Weak<LocalHarness>);
 
-impl TurnExecutors for Executors {
-    fn executor<'a>(
+impl TurnContext for LocalContext {
+    fn prepare<'a>(
         &'a self,
+        (executor, _): (StockExecutor, crate::conversation::Limits),
         agent: &'a AgentState,
         turn: OperationId,
         input: &'a ModelContent,
         authority: &'a TurnAuthority,
-    ) -> BoxProviderFuture<'a, Result<Arc<dyn Executor>>> {
+    ) -> BoxProviderFuture<'a, Result<StockExecutor>> {
         Box::pin(async move {
             let local = self
                 .0
@@ -98,43 +100,60 @@ impl TurnExecutors for Executors {
             let context = local
                 .harness
                 .agent_context(&authority.grants, authority.content.clone())?;
-            let reader = authority.content.reader.clone();
-            let (model, provider) = local.agent()?;
-            let provider = provider
-                .bind_content(reader.clone(), local.limits.file_bytes)
-                .unwrap_or_else(|| provider.clone());
-            // The agent tools act for this turn: their effects commit with it.
-            let mut tools = local.tools().clone();
-            if let Some(effects) = &authority.effects {
-                crate::tools::bind_agent_tools(
-                    &mut tools,
-                    agent,
-                    Arc::clone(effects),
-                    Arc::clone(writer),
-                    local.limits.file_bytes,
-                    (&local.agent_tools, local.max_children),
-                )?;
-            }
-            let executor = StockExecutor::new(
-                model.clone(),
-                provider,
-                crate::context::ContextPipeline::default(),
-                tools,
-            )
-            .with_limits(local.limits)
-            .with_compaction_policy(local.compaction.clone())
-            .with_context_manifest(manifest, reader)
-            .await?
-            .with_tool_authority(context.scope().clone(), authority.approval.clone())?
-            .with_task_context(&context, turn)?;
+            let executor = executor
+                .with_context_manifest(manifest, authority.content.reader.clone())
+                .await?
+                .with_tool_authority(context.scope().clone(), authority.approval.clone())?
+                .with_task_context(&context, turn)?;
             // SessionStart runs once per agent, keyed by the agent itself, so
             // a forked child (which inherits its parent's tail) runs its own.
             #[cfg(any(test, feature = "hooks"))]
             let executor = executor
                 .with_agent_hooks(&context, turn, input, session_operation(&agent.path))
                 .await?;
-            Ok(Arc::new(executor) as Arc<dyn Executor>)
+            #[cfg(not(any(test, feature = "hooks")))]
+            let _ = agent;
+            Ok(executor)
         })
+    }
+}
+
+/// A native host's agents: it owns their loop and tool execution, so none
+/// of their turns runs here.
+struct NativeHost;
+
+impl TurnExecutors for NativeHost {
+    fn executor<'a>(
+        &'a self,
+        _: &'a AgentState,
+        _: OperationId,
+        _: &'a ModelContent,
+        _: &'a TurnAuthority,
+    ) -> BoxProviderFuture<'a, Result<Arc<dyn Executor>>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "native hosts own their agent loop and tool execution".into(),
+            ))
+        })
+    }
+}
+
+impl LocalHarness {
+    /// Every agent turn's executor: the stock composition over this
+    /// harness's model, tools, limits and compaction, in its context.
+    fn executors(self: &Arc<Self>) -> Arc<dyn TurnExecutors> {
+        match &self.agent {
+            Some(model) => Arc::new(
+                StockExecutors::new(
+                    model.clone(),
+                    self.tools().clone(),
+                    (self.limits, self.compaction.clone()),
+                    Arc::new(LocalContext(Arc::downgrade(self))),
+                )
+                .with_agent_tools(&self.agent_tools, self.max_children),
+            ),
+            None => Arc::new(NativeHost),
+        }
     }
 }
 
@@ -158,7 +177,7 @@ impl LocalHarness {
                 within: ActorReference::new(b"local", b"native", b"guests").map_err(storage)?,
             },
             Turns {
-                executors: Arc::new(Executors(Arc::downgrade(self))),
+                executors: self.executors(),
                 limits: TurnLimits {
                     maximum_bytes: self.limits.file_bytes,
                     max_steps: u32::try_from(self.limits.model_steps)
@@ -283,7 +302,7 @@ impl LocalHarness {
                 self.files.clone(),
                 authority.clone(),
                 TurnAdmission::LocalRoot,
-                Arc::new(Executors(Arc::downgrade(self))),
+                self.executors(),
                 limits,
                 self.approval_policy.clone(),
             )

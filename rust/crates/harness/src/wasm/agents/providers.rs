@@ -6,14 +6,14 @@
 //! their StreamProvider and immutable object store through the same boundary.
 
 use super::{
-    Authorities, BrowserHandler, Error, Executors, HISTORY_TURNS, TURN_BACKSTOP_MS,
-    WasmAgentRegistry, WasmBrowserAgentOptions, WasmReducer, agent_error, from_js, js_error,
-    stream_error,
+    Authorities, BrowserHandler, Error, HISTORY_TURNS, TURN_BACKSTOP_MS, WasmAgentRegistry,
+    WasmBrowserAgentOptions, WasmReducer, agent_error, from_js, js_error, stream_error,
 };
 use crate::{
     agent::{AgentHandler, ExecutorDriver, actor_store},
     filesystem::{
-        FilesystemHost, FilesystemSpawnVolumes, FilesystemTurnHost, TurnAdmission, TurnLimits,
+        FilesystemHost, FilesystemSpawnVolumes, FilesystemTurnHost, Grants, StockExecutors,
+        TurnAdmission, TurnLimits,
     },
 };
 use acyclic_actors::domain::ActorLimits;
@@ -294,14 +294,12 @@ impl Providers {
             Arc::clone(&self.filesystem),
             owner.issuer.clone(),
             TurnAdmission::LocalRoot,
-            Arc::new(Executors {
-                model,
-                provider,
-                compaction,
-                tools: registry.tools.clone(),
-                grants: registry.grants.clone(),
-                limits: options.limits,
-            }),
+            Arc::new(StockExecutors::new(
+                (model, Arc::new(provider)),
+                registry.tools.clone(),
+                (options.limits, compaction),
+                Arc::new(Grants(registry.grants.clone())),
+            )),
             turn_limits,
             options.approval_policy.clone(),
         ));

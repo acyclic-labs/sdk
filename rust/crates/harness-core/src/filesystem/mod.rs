@@ -40,6 +40,8 @@ pub mod attestation;
 pub mod hosting;
 mod spawn_volumes;
 pub use spawn_volumes::{FilesystemSpawnVolumes, ForkCuts};
+mod stock_turns;
+pub use stock_turns::{Grants, StockExecutors, TurnContext};
 mod agent_turns;
 pub use agent_turns::{
     AgentAuthority, FilesystemTurnHost, PRIVATE_VOLUME, TurnAdmission, TurnAuthority,
