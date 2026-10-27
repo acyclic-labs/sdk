@@ -397,6 +397,7 @@ impl WireSession {
                 &subscription.kind,
                 Some(wire::session_subscription::Kind::Follow(follow))
                     if follow.resource.starts_with(FS_RESOURCE)
+                        || follow.delivery == wire::SessionDelivery::Latest as i32
             );
         let request = subscription.clone();
         let client = self.client.clone();
@@ -587,10 +588,9 @@ fn validate_subscription(
     let Some(wire::session_subscription::Kind::Follow(follow)) = &subscription.kind else {
         return Err(WireSessionError::InvalidSubscription);
     };
-    if follow.delivery != wire::SessionDelivery::All as i32
-        || subscription.filter.is_some()
-        || subscription.channel.is_some()
-    {
+    // LATEST and key filters are ordinary follows whose provider skips
+    // records; the view folds them as gaps (see `stage_stream`).
+    if subscription.channel.is_some() {
         return Err(WireSessionError::InvalidSubscription);
     }
     let resume = subscription
