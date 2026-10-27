@@ -114,14 +114,27 @@ impl Sessions {
             },
         )?)
     }
-    /// Records the prompt a Spawn or Send accepted, then runs its input.
+    /// Records the prompt a Spawn or Send accepted, then runs its input. A
+    /// replay names its original, earlier prompt and never displaces a newer
+    /// one.
     fn accept(&mut self, reference: &str, action: SessionAction) -> Result<Value> {
         let accepted = self.request(reference, action)?;
-        self.prompts.insert(
-            reference.into(),
-            json!({"id": accepted.get("id").ok_or("accepted prompt has no id")?,
-                "inbox": accepted.get("inbox").ok_or("accepted prompt has no inbox")?}),
-        );
+        let inbox = accepted
+            .get("inbox")
+            .and_then(Value::as_u64)
+            .ok_or("accepted prompt has no inbox")?;
+        let newer = self
+            .prompts
+            .get(reference)
+            .and_then(|prompt| prompt["inbox"].as_u64())
+            .is_none_or(|latest| latest < inbox);
+        if newer {
+            self.prompts.insert(
+                reference.into(),
+                json!({"id": accepted.get("id").ok_or("accepted prompt has no id")?,
+                    "inbox": inbox}),
+            );
+        }
         self.start(reference)?;
         Ok(accepted)
     }
@@ -275,22 +288,27 @@ impl Sessions {
         }
         Ok(progressed)
     }
-    /// The reply to `reference`'s last accepted prompt, once nothing running
-    /// can still settle it: answered, dropped, or pending behind a stop.
+    /// `None` while the child has a running input. This owner is the only
+    /// one that runs it and starts its next input as each settles, so an idle
+    /// child has nothing left that can settle: the answer is then the reply to
+    /// its last accepted prompt (answered, dropped, or pending behind a stop).
+    /// After a restart, recovered work is awaited the same way, and the
+    /// answer is the observed session.
     fn wait(&self, reference: &str) -> Result<Option<Value>> {
+        if self.children.contains_key(reference) {
+            return Ok(None);
+        }
         let Some(prompt) = self.prompts.get(reference) else {
-            // This owner accepted no prompt for it: nothing is awaited.
             return self.request(reference, SessionAction::Observe).map(Some);
         };
-        let value = self.request(
+        self.request(
             reference,
             SessionAction::Reply {
                 id: serde_json::from_value(prompt["id"].clone())?,
                 inbox: prompt["inbox"].as_u64().ok_or("prompt inbox absent")?,
             },
-        )?;
-        let pending = value.pointer("/reply/kind").and_then(Value::as_str) == Some("pending");
-        Ok((!pending || !self.children.contains_key(reference)).then_some(value))
+        )
+        .map(Some)
     }
     fn resolve(&self, reference: &str, waiting: &mut Vec<(Value, String)>) -> Result<()> {
         if !waiting.iter().any(|(_, pending)| pending == reference) {
