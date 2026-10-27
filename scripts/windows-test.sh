@@ -286,7 +286,7 @@ def main():
     records.mkdir(parents=True)
     if os.environ.get('WIN_TEST_TARGET_DIR') or os.environ.get('WIN_TEST_PERSISTENT_SOURCE_CLOCK'):
         fail('Windows builds require build-slot job-owned targets; custom targets/source clocks are prohibited')
-    for shared in ('scripts/with-xwin-cache.py', 'scripts/buildbox/msvc-compiler.py', 'scripts/windows-runner.py', 'scripts/windows-native-host.py', 'scripts/windows-artifacts.py', 'scripts/graphcoder-e2e/materialize.py'):
+    for shared in ('scripts/with-xwin-cache.py', 'scripts/windows-runner.py', 'scripts/windows-native-host.py', 'scripts/windows-artifacts.py', 'scripts/graphcoder-e2e/materialize.py'):
         path = root / shared
         if not path.is_file() or path.is_symlink():
             fail('The source snapshot must contain the shared SDK factory: ' + shared)

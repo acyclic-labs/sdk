@@ -1,3 +1,0 @@
-rust/crates/filesystem/src/access/trie/shared/tests.rs:18:44: error[E0277]: can't compare `{integer}` with `&{integer}`: no implementation for `{integer} < &{integer}` and `{integer} > &{integer}`
-rust/crates/filesystem/src/access/trie/shared/tests.rs:18:44: error[E0277]: can't compare `&{integer}` with `{integer}`: no implementation for `&{integer} < {integer}` and `&{integer} > {integer}`
-error: could not compile `acyclic-fs` (lib test) due to 2 previous errors

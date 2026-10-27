@@ -1,4 +1,0 @@
-test core::element_sizes::conversation_message ... ok
-test a_stash_cut_at_every_step_and_written_after_still_completes ... ok
-GATE_TEST_BASELINE_COMPLETE rc=0
-GATE_TEST_BASELINE_EXECUTOR rc=0

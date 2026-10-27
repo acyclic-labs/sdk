@@ -1,3 +1,0 @@
-#!/bin/sh
-# Compatibility entry point only; kernel containment has one implementation.
-exec /usr/bin/python3 -B /home/var/bin/cpu_leases.py scope "$@"

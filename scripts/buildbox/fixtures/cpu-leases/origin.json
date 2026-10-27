@@ -1,6 +1,0 @@
-{
-  "reason": "actual count-only admission before CPU lease cut-over",
-  "sha256": "756391674bc9c5a5b3d3c582a800a06194e6afe396298fabede1ef6c2191b28f",
-  "source": "bb2:/home/var/bin/bb-admit.py",
-  "captured_at": "2026-10-25T20:23:10.9195621Z"
-}

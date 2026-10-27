@@ -1,1 +1,0 @@
-{"source": "scripts/buildbox/cpu_leases.py", "commit": "a4b80d48a593689e4b09a875994cd2afe3064a64", "sha256": "785b26c25c4da33f6872a02567fb8dd2fde49e25541b2e3a1ca9bb6f27a97bde", "role": "uncapped lease adapter immediately before job_caps"}

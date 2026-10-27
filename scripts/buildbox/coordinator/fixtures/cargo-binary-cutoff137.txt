@@ -1,9 +1,0 @@
-     Running unittests src/lib.rs (/work/target/cutoff137/debug/deps/cutoff137_evidence-c755b550149560ff)
-
-running 1 test
-
-[buildbox] test binary cutoff137_evidence-c755b550149560ff still running after 30s: killed (rc 137). Per-binary ceiling for cargo test; BUILD_SLOT_TEST_BIN_MAX_SEC lowers it, BUILD_SLOT_STRESS=1 lifts it
-error: test failed, to rerun pass `--lib`
-
-Caused by:
-  process didn't exit successfully: `/mnt/bb/jobs/job-kb33pdps/tmp/cutoff137.8lXzSp5M/runner.sh /work/target/cutoff137/debug/deps/cutoff137_evidence-c755b550149560ff --nocapture` (exit status: 137)

@@ -1,2 +1,0 @@
-GATE_CLIPPY_FINDING 2 plugin/src/pi_builtin/native_io.rs: indexing may panic
-GATE_CLIPPY_FINDING 1 plugin/src/pi_builtin/native_io.rs: used `expect()` on an `Option` value

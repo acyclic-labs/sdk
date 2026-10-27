@@ -1,6 +1,0 @@
-{
-  "sha256": "bf932301811dddc6532251b4af5894f212a7d44fce9b6a7e6ce8307ae74ead4f",
-  "source": "git show a29e245f5d961ce181232904aff2a518b7bc683d:scripts/buildbox/cpu_leases.py",
-  "capture": "2026-10-25T20:51:01.2148328Z",
-  "extraction": "Exact function from def retire through the next function; LF normalized"
-}

@@ -1,6 +1,0 @@
-[Unit]
-Description=Build box jobs (buildbox.mjs): low CPU weight, no cap; sessions, sync and prep go first
-
-[Slice]
-CPUWeight=25
-IOWeight=25

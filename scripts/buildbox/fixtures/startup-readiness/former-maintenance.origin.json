@@ -1,8 +1,0 @@
-{
-  "captured_source_sha256": "775ecd15df4f175649aacf0b68c3e307da1524d4731a927d531943aafc909104",
-  "meaning": "empty diagnostic observed at public client boundary; raw remote stderr was not recovered",
-  "observed_log": "D:/lane-scratch/gate-speed/input-closure-20261026/peer-inputs/posix-input-controls.out",
-  "observed_marker": "[build-slot buildbox] 03:16:31 BB_WT_PRUNE_FAILED rc=255: ",
-  "observed_log_sha256": "e52f5c83c6753095e6df64781a717ab01178c0715673015f728142696c4edad7",
-  "fixture_sha256": "c7fa115c9d220a7137102fd1cf58f94465501ff088b216896b2d77ee1c0b2d9e"
-}

@@ -62,7 +62,7 @@ print(json.dumps({'child':'exact JSON'}))
             def populate(root,workers):
                 (root/'live-sdk').write_text(str(workers))
                 (root/'bin').mkdir()
-                (root/'bin/clang-cl').write_bytes((Path(__file__).parent/'buildbox/msvc-compiler.py').read_bytes())
+                (root/'bin/clang-cl').write_bytes(cache.compiler_path().read_bytes())
                 for index in range(workers):
                     sdk=root/f'worker-{index}'/'xwin'
                     (sdk/'crt').mkdir(parents=True);(sdk/'sdk').mkdir();(sdk/'DONE').write_text('ready')
@@ -71,7 +71,7 @@ print(json.dumps({'child':'exact JSON'}))
                 for _ in range(2):cache.prepare_workspace(root,2,identity)
                 self.assertEqual(initialize.call_count,1)
                 self.assertEqual((root/'live-sdk').read_text(),'2')
-            spec=importlib.util.spec_from_file_location('candidate_xwin_store',Path(__file__).parent/'buildbox/bb_target_store.py')
+            spec=importlib.util.spec_from_file_location('candidate_xwin_store',Path(os.environ.get('SDK_BUILD_TOOLS_DIR', '/home/var/bin'))/'bb_target_store.py')
             store=importlib.util.module_from_spec(spec);spec.loader.exec_module(store)
             meta={'repo':'sdk','source':{'content_sha256':'same'},'argv':['matrix']}
             env={'BB_SOURCE_TIMES_POLICY':'blob-past-private-v1','BB_TARGET_REQUEST_SHA256':'same'}

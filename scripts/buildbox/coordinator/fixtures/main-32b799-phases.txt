@@ -1,9 +1,0 @@
-GATE_CLIPPY rc=0
-GATE_CLIPPY_FINDING 1 rust/crates/harness-core/src/test_support/task_volume_work.rs: struct `Files` has a public `len` method, but no `is_empty` metGATE_FEATURES rc=0
-GATE_FEATURES feature matrix: 110/110 sets ok in 1804.4s
-GATE_FEATURES_WALL seconds=5694 rc=0 target=/work/target/.gate-features lock_wait_seconds=0
-GATE_WINDOWS_FEATURES_START scope=full target=x86_64-pc-windows-msvc libraries+all-targets each-feature
-GATE_FEATURES_WALL seconds=1863 rc=0 target=/work/target/.gate-features-windows-msvc lock_wait_seconds=0
-GATE_DONE rc=1
-GATE_EXECUTOR rc=1
-GATE_MAIN_VERIFIED {"head": "32b79969bc504e875bb6e9f65611bf0d02ea45e9", "runner_sha256": "bc553c0c681ae3f963bda8da4fd5e4e9862be2dd488385307e5b16f7e98bc4cf"}
