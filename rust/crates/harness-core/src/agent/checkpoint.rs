@@ -1,27 +1,30 @@
-//! The agent checkpoint's one encoding, with a static size bound.
+//! The agent checkpoint's one encoding, and the static size bound of every
+//! record an agent step writes.
 //!
 //! The parts that scale with the agent's limits are raw protobuf fields
-//! rather than JSON: each open child is its 16-byte id (its path is derived
-//! from the agent's), the children still to archive are a bitmap over them,
-//! and the turn driver's checkpoint is raw bytes. The rest of the state is
-//! JSON.
+//! rather than JSON: each open child is its 16-byte id (its path, like the
+//! agent's parent, is derived from the agent's path), the children still to
+//! archive are a bitmap over them, and the turn driver's checkpoint is raw
+//! bytes. The rest of the state is JSON.
 //!
-//! Every step's state passes [`super::machine`]'s one size check before it
-//! is checkpointed; a state that would exceed [`MAX_CHECKPOINT_BYTES`] fails
-//! the agent visibly, dropping its input window and turn, so what remains is
-//! only what is bounded by construction: two paths of at most
-//! [`super::MAX_DEPTH`], the adoption's volumes and policy (one inbox record),
-//! [`super::MAX_OPEN_CHILDREN`] ids, and one bounded outcome. `tests` checks
-//! that this core, plus the actor record framing and the inbox subscription,
-//! is within the stream's record limit, so no step can wedge an agent on a
-//! record its stream refuses.
+//! Every part of every agent record is bounded at admission: paths by
+//! [`super::MAX_DEPTH`], file and volume references by the conversation
+//! maxima ([`crate::conversation::MAX_PATH_BYTES`] and
+//! [`crate::conversation::MAX_LABEL_BYTES`], enforced wherever a reference is
+//! built or decoded), and texts by their own limits. `tests` builds the worst
+//! case of each record kind a step appends and checks it encodes, and the
+//! worst settled checkpoint within [`MAX_CHECKPOINT_BYTES`] and one stream
+//! record. Only the input window and the turn grow with traffic; a state
+//! whose window and turn would not fit fails the agent visibly instead (see
+//! [`super::machine`]), so no step can wedge an agent on a record its stream
+//! refuses.
 use super::{AgentId, AgentState, Error};
 use acyclic_actors::guest::{Checkpoint, CodecIdentity};
 use prost::Message as _;
 use std::collections::BTreeSet;
 
 /// Largest agent checkpoint.
-pub const MAX_CHECKPOINT_BYTES: usize = 56 * 1024;
+pub const MAX_CHECKPOINT_BYTES: usize = 60 * 1024;
 /// Most bytes a step's own settlement adds after the size check: the
 /// conversation and status tails, two `u64`s in decimal.
 pub(crate) const TAIL_SLACK: usize = 2 * 20;
@@ -82,6 +85,9 @@ pub(crate) fn encode(state: &AgentState, cursor: u64) -> Result<Vec<u8>, Error> 
     let open_children = std::mem::take(&mut rest.open_children);
     let archive_pending = std::mem::take(&mut rest.archive_pending);
     let turn = rest.turn.take();
+    if rest.parent.take() != state.path.parent() {
+        return Err(Error::Record("agent parent is not its path's parent"));
+    }
     let mut ids = Vec::with_capacity(open_children.len());
     let mut bitmap = vec![0; open_children.len().div_ceil(8)];
     for (index, child) in open_children.iter().enumerate() {
@@ -112,10 +118,14 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<(AgentState, u64), Error> {
     let malformed = || Error::Record("agent checkpoint is malformed");
     let encoded = Encoded::decode(bytes).map_err(|_| malformed())?;
     let mut state: AgentState = serde_json::from_slice(&encoded.state).map_err(|_| malformed())?;
-    if !state.open_children.is_empty() || !state.archive_pending.is_empty() || state.turn.is_some()
+    if !state.open_children.is_empty()
+        || !state.archive_pending.is_empty()
+        || state.turn.is_some()
+        || state.parent.is_some()
     {
         return Err(malformed());
     }
+    state.parent = state.path.parent();
     if encoded.archive_pending.len() != encoded.open_children.len().div_ceil(8) {
         return Err(malformed());
     }
@@ -141,9 +151,16 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<(AgentState, u64), Error> {
 mod tests {
     use super::*;
     use crate::agent::{
-        AgentOutcome, AgentPath, INBOX, MAX_DEPTH, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES,
-        MAX_RECORD_BYTES, Phase,
+        AgentOutcome, AgentPath, AgentRecord, ChildDone, Closed, Control, ConversationEntry,
+        ForkAdopted, Hook, INBOX, InboxRecord, IntentId, MAX_DEPTH, MAX_INTENT_BYTES,
+        MAX_MESSAGE_BYTES, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES,
+        Message, Phase, Sender, SpawnRequest, StatusRecord, TurnInput, VolumeBinding,
     };
+    use crate::conversation::{
+        FileDescriptor, FileRef, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_PATH_BYTES,
+        VolumeClass, VolumeOwner, VolumeRef,
+    };
+    use crate::resources::ProviderRef;
     use acyclic_actors::local::{SUBSCRIPTION_OVERHEAD, State};
 
     fn id(n: u64) -> AgentId {
@@ -152,64 +169,219 @@ mod tests {
         AgentId::from_bytes(bytes)
     }
 
-    /// The largest state the size check can leave at `depth`: every child
-    /// it may hold open and to archive, settled, its counters at their widest,
-    /// and with no adoption volumes or policy and an empty outcome, whose
-    /// bounds the test adds.
-    fn core(depth: usize) -> AgentState {
+    /// The longest admissible text of `bytes` bytes that JSON escapes most:
+    /// `"` doubles, and every character a label or path admits escapes to
+    /// at most two bytes.
+    fn widest(bytes: usize) -> String {
+        "\"".repeat(bytes)
+    }
+
+    fn agent(depth: usize) -> AgentPath {
         let mut path = AgentPath::root(&id(0));
         for level in 1..=depth {
             path = path.child(&id(level as u64)).expect("within MAX_DEPTH");
         }
-        let children = if depth < MAX_DEPTH {
-            MAX_OPEN_CHILDREN
-        } else {
-            0
-        };
-        let open_children: BTreeSet<_> = (0..children as u64)
-            .map(|n| path.child(&id(n)).expect("below MAX_DEPTH"))
-            .collect();
-        AgentState {
-            parent: path.parent(),
-            path,
-            volumes: Vec::new(),
-            policy: None,
-            conversation_tail: u64::MAX,
-            status_tail: u64::MAX,
-            phase: Phase::Done {
-                outcome: AgentOutcome::Failed {
-                    message: String::new(),
-                },
+        path
+    }
+
+    fn intent() -> IntentId {
+        IntentId::try_from("i".repeat(MAX_INTENT_BYTES)).expect("intent")
+    }
+
+    fn volume() -> VolumeRef {
+        let part = || widest(MAX_LABEL_BYTES);
+        let provider = ProviderRef::new(part(), part(), part(), &mut None).expect("provider");
+        let owner = VolumeOwner::Project(part());
+        VolumeRef::new(provider, part(), VolumeClass::Project, owner, &mut None).expect("volume")
+    }
+
+    fn file() -> FileRef {
+        let media = format!("a/{}", "a".repeat(MAX_LABEL_BYTES - 2));
+        let descriptor =
+            FileDescriptor::new([0xff; 32], MAX_EXACT_JS_INTEGER, media).expect("descriptor");
+        FileRef::new(
+            volume(),
+            widest(MAX_PATH_BYTES),
+            widest(MAX_LABEL_BYTES),
+            descriptor,
+            widest(MAX_LABEL_BYTES),
+            &mut None,
+        )
+        .expect("file")
+    }
+
+    fn outcomes() -> Vec<AgentOutcome> {
+        vec![
+            AgentOutcome::Succeeded {
+                result: Some(Box::new(file())),
             },
-            archive_pending: open_children.clone(),
-            open_children,
-            queued: Default::default(),
-            overflow: None,
-            taken: BTreeSet::new(),
-            closed: true,
-            reported: true,
-            turn: None,
+            AgentOutcome::Failed {
+                message: widest(MAX_MESSAGE_BYTES),
+            },
+        ]
+    }
+
+    fn senders() -> Vec<Sender> {
+        vec![
+            Sender::Agent {
+                path: agent(MAX_DEPTH),
+            },
+            Sender::User {
+                principal: widest(MAX_INTENT_BYTES),
+            },
+            Sender::Host {
+                host: widest(MAX_INTENT_BYTES),
+            },
+        ]
+    }
+
+    /// The widest adoption: deepest parent, every volume, brief and policy.
+    fn adoption() -> ForkAdopted {
+        ForkAdopted {
+            agent: id(u64::MAX),
+            parent: Some(agent(MAX_DEPTH - 1)),
+            forked_at: u64::MAX,
+            conversation_tail: u64::MAX,
+            volumes: (0..MAX_VOLUMES)
+                .map(|_| VolumeBinding {
+                    name: widest(MAX_INTENT_BYTES),
+                    volume: volume(),
+                })
+                .collect(),
+            brief: Some(file()),
+            policy: Some(file()),
         }
     }
 
-    #[test]
-    fn the_checkpoint_of_any_state_the_size_check_leaves_fits_one_stream_record() {
-        let mut core_bytes = 0;
-        for depth in [MAX_DEPTH - 1, MAX_DEPTH] {
-            let state = core(depth);
-            let bytes = encode(&state, u64::MAX).expect("encodes");
-            assert_eq!(decode(&bytes).expect("decodes"), (state, u64::MAX));
-            core_bytes = core_bytes.max(bytes.len());
+    /// Every record kind a step sends, each at its widest.
+    fn inbox_records() -> Vec<InboxRecord> {
+        let deepest = agent(MAX_DEPTH);
+        let mut records = vec![
+            InboxRecord::ForkAdopted(Box::new(adoption())),
+            InboxRecord::Approval(crate::agent::Approval { id: intent() }),
+            InboxRecord::ApprovalRequested(crate::agent::ApprovalRequested {
+                child: deepest.clone(),
+                id: intent(),
+            }),
+            InboxRecord::Hook(Hook {
+                host: widest(MAX_INTENT_BYTES),
+                id: intent(),
+                event: Box::new(file()),
+            }),
+        ];
+        for outcome in outcomes() {
+            records.push(InboxRecord::ChildDone(ChildDone {
+                child: deepest.clone(),
+                outcome,
+            }));
         }
-        // Adoption volumes and policy are at most one inbox record of JSON,
-        // and a settled outcome is bounded where it settles.
-        let bound = core_bytes + MAX_RECORD_BYTES + MAX_OUTCOME_BYTES;
-        assert!(
-            bound <= MAX_CHECKPOINT_BYTES,
-            "{bound} > {MAX_CHECKPOINT_BYTES}"
-        );
+        for from in senders() {
+            records.push(InboxRecord::Message(Message {
+                from: from.clone(),
+                id: intent(),
+                body: Box::new(file()),
+            }));
+            records.push(InboxRecord::Spawn(SpawnRequest {
+                by: from.clone(),
+                id: intent(),
+                brief: widest(MAX_MESSAGE_BYTES),
+            }));
+            for control in [InboxRecord::Cancel, InboxRecord::Archive] {
+                records.push(control(Control {
+                    by: from.clone(),
+                    id: intent(),
+                }));
+            }
+        }
+        records
+    }
+
+    /// Every turn input, each at its widest.
+    fn turn_inputs() -> Vec<TurnInput> {
+        let mut inputs = vec![TurnInput::Brief {
+            brief: Box::new(file()),
+        }];
+        for (sequence, record) in inbox_records().into_iter().enumerate() {
+            inputs.extend(super::super::machine::input(sequence as u64, record));
+        }
+        inputs
+    }
+
+    #[test]
+    fn every_record_a_step_writes_fits_its_limit_at_the_configured_maxima() {
+        assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
+        let deepest = agent(MAX_DEPTH);
+        // Sends, adoptions (host-bound volumes included), reports, archives.
+        for record in inbox_records() {
+            record.encode().expect("every inbox record fits");
+        }
+        for by in senders() {
+            Closed { by, id: intent() }
+                .encode()
+                .expect("a closed marker fits");
+        }
+        // Statuses and conversation entries.
+        for outcome in outcomes() {
+            let encoded = serde_json::to_vec(&outcome).expect("outcome");
+            assert!(encoded.len() <= MAX_OUTCOME_BYTES, "{}", encoded.len());
+            StatusRecord {
+                phase: Phase::Done { outcome },
+                cursor: u64::MAX,
+            }
+            .encode()
+            .expect("a status fits");
+        }
+        for input in turn_inputs() {
+            ConversationEntry {
+                input,
+                output: file(),
+            }
+            .encode()
+            .expect("a conversation entry fits");
+        }
+        // The widest settled checkpoint: deepest agent that can have children,
+        // every child open and to archive, the widest adoption, settled with
+        // the widest outcome, counters at their widest.
+        let adopted = adoption();
+        for depth in [MAX_DEPTH - 1, MAX_DEPTH] {
+            let path = agent(depth);
+            let children = if depth < MAX_DEPTH {
+                MAX_OPEN_CHILDREN
+            } else {
+                0
+            };
+            let open_children: BTreeSet<_> = (0..children as u64)
+                .map(|n| path.child(&id(n)).expect("below MAX_DEPTH"))
+                .collect();
+            for outcome in outcomes() {
+                let state = AgentState {
+                    parent: path.parent(),
+                    path: path.clone(),
+                    volumes: adopted.volumes.clone(),
+                    policy: adopted.policy.clone(),
+                    conversation_tail: u64::MAX,
+                    status_tail: u64::MAX,
+                    phase: Phase::Done { outcome },
+                    archive_pending: open_children.clone(),
+                    open_children: open_children.clone(),
+                    queued: Default::default(),
+                    overflow: None,
+                    taken: BTreeSet::new(),
+                    closed: true,
+                    reported: true,
+                    turn: None,
+                };
+                let bytes = encode(&state, u64::MAX).expect("encodes");
+                assert!(
+                    bytes.len() + TAIL_SLACK <= MAX_CHECKPOINT_BYTES,
+                    "{} > {MAX_CHECKPOINT_BYTES}",
+                    bytes.len() + TAIL_SLACK
+                );
+                assert_eq!(decode(&bytes).expect("decodes"), (state, u64::MAX));
+            }
+        }
         // Wrapped in the actor state record with its one inbox subscription.
-        let inbox = core(MAX_DEPTH).path.inbox().expect("inbox");
+        let inbox = deepest.inbox().expect("inbox");
         let codec = codec();
         let record = State::record_bound(
             codec.name.len() + codec.version.len() + MAX_CHECKPOINT_BYTES,
@@ -220,43 +392,5 @@ mod tests {
             "{record} > {}",
             acyclic_stream::MAX_RECORD_BYTES
         );
-    }
-
-    #[test]
-    fn every_record_a_step_builds_from_bounded_parts_fits_its_limit() {
-        use crate::agent::{
-            AgentRecord, ChildDone, Closed, Control, InboxRecord, IntentId, MAX_INTENT_BYTES,
-            Sender, StatusRecord,
-        };
-        assert!(MAX_RECORD_BYTES <= acyclic_stream::MAX_RECORD_BYTES);
-        let deepest = core(MAX_DEPTH).path;
-        let empty = AgentOutcome::Failed {
-            message: String::new(),
-        };
-        // A report and a status carry at most one bounded outcome.
-        let report = InboxRecord::ChildDone(ChildDone {
-            child: deepest.clone(),
-            outcome: empty.clone(),
-        });
-        let status = StatusRecord {
-            phase: Phase::Done { outcome: empty },
-            cursor: u64::MAX,
-        };
-        for bytes in [report.encode(), status.encode()] {
-            let bound = bytes.expect("encodes").len() + MAX_OUTCOME_BYTES;
-            assert!(bound <= MAX_RECORD_BYTES, "{bound} > {MAX_RECORD_BYTES}");
-        }
-        // An archive cascade's records: the deepest sender, the longest id.
-        let id = IntentId::try_from("i".repeat(MAX_INTENT_BYTES)).expect("intent");
-        let by = Sender::Agent {
-            path: deepest.parent().expect("deep"),
-        };
-        InboxRecord::Archive(Control {
-            by: by.clone(),
-            id: id.clone(),
-        })
-        .encode()
-        .expect("an archive fits");
-        Closed { by, id }.encode().expect("a closed marker fits");
     }
 }
