@@ -330,9 +330,13 @@ fn check_outcome(outcome: &AgentOutcome) -> Result<(), Error> {
     }
 }
 
+/// A name: a binding, principal or host. Like a label, it admits no control
+/// character, so its encoding is at most twice its length.
 fn check_text(text: &str) -> Result<(), Error> {
-    if text.is_empty() || text.len() > MAX_INTENT_BYTES {
-        return Err(Error::Record("name must be 1-128 bytes"));
+    if text.is_empty() || text.len() > MAX_INTENT_BYTES || text.chars().any(char::is_control) {
+        return Err(Error::Record(
+            "name must be 1-128 bytes without control characters",
+        ));
     }
     Ok(())
 }
