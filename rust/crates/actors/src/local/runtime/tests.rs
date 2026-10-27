@@ -2,6 +2,7 @@ use super::*;
 use crate::conformance::{self, Failure, Package, Target};
 use crate::guest::{AlarmChange, Checkpoint, Effect, GuestFuture, Manifest, Transition};
 use crate::local::{PreparedPublish, Subscription};
+use acyclic_stream::testing::{Counted, RequestLedger};
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitMutation, CommitRequest, LocalStream, MemoryStream,
     StreamPath,
@@ -67,15 +68,21 @@ type Running<P> = Option<(Arc<Runtime<P>>, tokio::task::JoinHandle<()>)>;
 /// Hosts `local::Runtime` behind the conformance target surface.
 struct LocalTarget<P: StreamProvider> {
     store: Store<P>,
+    requests: RequestLedger,
     handler: Arc<dyn Handler>,
     running: std::sync::Mutex<Running<P>>,
 }
 
 impl<P: StreamProvider> LocalTarget<P> {
-    fn start(provider: &Arc<P>, handler: Arc<dyn Handler>) -> Result<Self, StreamError> {
+    fn start(
+        provider: &Arc<P>,
+        handler: Arc<dyn Handler>,
+        requests: RequestLedger,
+    ) -> Result<Self, StreamError> {
         let target = Self {
             store: Store::new(Arc::clone(provider), root()?),
             handler,
+            requests,
             running: std::sync::Mutex::new(None),
         };
         target.launch()?;
@@ -111,6 +118,9 @@ impl<P: StreamProvider> LocalTarget<P> {
 
 impl<P: StreamProvider> Target for LocalTarget<P> {
     type Provider = P;
+    fn requests(&self) -> RequestLedger {
+        self.requests.clone()
+    }
     fn store(&self) -> &Store<P> {
         &self.store
     }
@@ -143,22 +153,69 @@ impl<P: StreamProvider> Target for LocalTarget<P> {
     }
 }
 
-#[tokio::test]
-async fn conformance_suite_passes_on_memory_runtime() -> TestResult {
-    let target = LocalTarget::start(
-        &Arc::new(MemoryStream::default()),
+async fn memory_backend() -> Result<LocalTarget<Counted<MemoryStream>>, Box<dyn std::error::Error>>
+{
+    let provider = Counted::new(MemoryStream::default());
+    let requests = provider.ledger();
+    Ok(LocalTarget::start(
+        &Arc::new(provider),
         Arc::new(Package::new()?),
-    )?;
-    conformance::verify(&target, "memory").await?;
-    Ok(())
+        requests,
+    )?)
 }
 
-#[tokio::test]
-async fn conformance_suite_passes_on_durable_local_runtime() -> TestResult {
+struct DurableBackend {
+    target: LocalTarget<Counted<LocalStream>>,
+    // The journal directory must outlive the running host and every restart.
+    _directory: tempfile::TempDir,
+}
+
+impl Target for DurableBackend {
+    type Provider = Counted<LocalStream>;
+    fn requests(&self) -> RequestLedger {
+        self.target.requests()
+    }
+    fn store(&self) -> &Store<Counted<LocalStream>> {
+        self.target.store()
+    }
+    fn clock(&self) -> &dyn Clock {
+        self.target.clock()
+    }
+    fn pause<'a>(
+        &'a self,
+        actor: &'a ActorReference,
+        paused: bool,
+    ) -> BoxFuture<'a, Result<(), Error>> {
+        self.target.pause(actor, paused)
+    }
+    fn restart(&self) -> BoxFuture<'_, Result<(), Error>> {
+        self.target.restart()
+    }
+}
+
+async fn durable_backend() -> Result<DurableBackend, Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
-    let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
-    let target = LocalTarget::start(&provider, Arc::new(Package::new()?))?;
-    conformance::verify(&target, "local").await?;
+    let provider = Counted::new(LocalStream::open(directory.path(), Default::default()).await?);
+    let requests = provider.ledger();
+    let provider = Arc::new(provider);
+    Ok(DurableBackend {
+        target: LocalTarget::start(&provider, Arc::new(Package::new()?), requests)?,
+        _directory: directory,
+    })
+}
+
+conformance::suite!(conformance_suite_passes_on_memory_runtime, memory_backend);
+conformance::suite!(
+    conformance_suite_passes_on_durable_local_runtime,
+    durable_backend
+);
+
+#[tokio::test]
+async fn conformance_benchmark_checks_all_deliveries() -> TestResult {
+    let backend = memory_backend().await?;
+    let sample = conformance::bench(&backend).await?;
+    assert_eq!(sample.deliveries, 256);
+    eprintln!("ACTORS_CONFORMANCE_BENCH {sample:?}");
     Ok(())
 }
 
@@ -188,11 +245,14 @@ impl Handler for DropsAlarmClears {
 
 #[tokio::test]
 async fn negative_control_conformance_rejects_a_host_that_loses_alarm_changes() -> TestResult {
+    let provider = Counted::new(MemoryStream::default());
+    let requests = provider.ledger();
     let target = LocalTarget::start(
-        &Arc::new(MemoryStream::default()),
+        &Arc::new(provider),
         Arc::new(DropsAlarmClears(Package::new()?)),
+        requests,
     )?;
-    match conformance::verify(&target, "broken").await {
+    match conformance::verify(&target).await {
         Err(Failure::Violation {
             case: "cleared", ..
         }) => Ok(()),

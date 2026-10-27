@@ -87,3 +87,12 @@ Existing v1 roots fail closed; no old-data upgrade path is provided.
 
 Root `wire`, `FILE_DESCRIPTOR_SET`, provider types and `LocalObjects` select the sole v1 contract.
 Local capacity and synchronization options remain available; private segment storage is independent of the public wire contract.
+
+Enable `conformance` to wrap any logical provider in the shared
+`acyclic_stream::testing::Counted<P>`. It implements the complete
+`ObjectsProvider` surface, forwarding native admission arguments and custody
+unchanged. `acyclic_stream::assert_requests!` checks deltas without resetting
+cloned ledgers: puts and gets count as data, heads as control, and listings as
+control. Failed requests count too. Keep `provider.ledger()` before erasing the
+wrapper behind a provider trait object. Instrument the transport dispatch with
+that ledger when measuring physical request budgets.

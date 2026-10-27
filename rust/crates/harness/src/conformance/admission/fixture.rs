@@ -61,8 +61,8 @@ impl Fixture {
     }
 
     pub fn no_turn_io(&self) -> bool {
-        self.provider.reads.load(Ordering::SeqCst) == 0
-            && self.provider.writes.load(Ordering::SeqCst) == 0
+        self.provider.requests.requests().data() == 0
+            && self.provider.requests.requests().control() == 0
     }
 
     pub async fn check(
@@ -103,7 +103,7 @@ impl Fixture {
         if host.runtime().drain().await.is_empty() {
             return Err(format!("{label} did not reach the admission/history sentinel").into());
         }
-        if allowed && self.provider.reads.load(Ordering::SeqCst) == 0 {
+        if allowed && self.provider.history_reads.load(Ordering::SeqCst) == 0 {
             return Err(format!("{label}: valid admission did not read nonempty history").into());
         }
         if !allowed && (!self.no_turn_io() || executors.0.load(Ordering::SeqCst) != 0) {

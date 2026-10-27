@@ -22,7 +22,7 @@ use acyclic_stream::{
     BoxProviderFuture, UnixMillisClock,
     runtime::{Executor as _, PlatformExecutor},
 };
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
 
 /// Root preparation never runs a turn.
 struct Never;
@@ -196,7 +196,8 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
     };
     let intent = vectors::intent("root")?;
     let prepared = bound.prepare_root(&intent, request()).await;
-    let io = stream.reads.load(Ordering::SeqCst) + stream.writes.load(Ordering::SeqCst);
+    let requests = stream.requests.requests();
+    let io = requests.data() + requests.control();
     if io != 0 {
         return Err(format!("{case:?}: root preparation performed provider IO").into());
     }

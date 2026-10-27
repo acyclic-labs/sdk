@@ -16,6 +16,7 @@ categories = ["api-bindings", "filesystem"]
 
 [features]
 model-checking = ["dep:loom"]
+conformance = ["acyclic-stream/conformance"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 default = ["grpc"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/time"]
@@ -78,6 +79,7 @@ tokio-rustls = { version = "=0.26.6", default-features = false, features = ["rin
 workspace = true
 
 [dev-dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["conformance"] }
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 syn = { version = "=3.0.6", features = ["full", "visit"] }

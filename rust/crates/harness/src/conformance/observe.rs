@@ -1,3 +1,4 @@
+use acyclic_stream::testing::{RequestClass, RequestLedger};
 use acyclic_stream::*;
 use std::sync::{
     Arc, Mutex,
@@ -14,8 +15,9 @@ pub(crate) enum Fault {
 
 pub(crate) struct Observed {
     pub inner: Arc<dyn StreamProvider>,
-    pub reads: AtomicUsize,
-    pub writes: AtomicUsize,
+    pub requests: RequestLedger,
+    // A history-read sentinel, independent of the aggregate request budget.
+    pub history_reads: AtomicUsize,
     calls: AtomicUsize,
     commits: Mutex<Vec<CommitRequest>>,
     follows: Mutex<Vec<(StreamPath, u64)>>,
@@ -28,8 +30,8 @@ impl Observed {
     pub fn new(inner: Arc<dyn StreamProvider>) -> Self {
         Self {
             inner,
-            reads: AtomicUsize::new(0),
-            writes: AtomicUsize::new(0),
+            requests: RequestLedger::new(),
+            history_reads: AtomicUsize::new(0),
             calls: AtomicUsize::new(0),
             commits: Mutex::new(Vec::new()),
             follows: Mutex::new(Vec::new()),
@@ -121,13 +123,6 @@ impl Observed {
             None => self.inner.commit(request).await,
         }
     }
-
-    fn read_call(&self) {
-        self.reads.fetch_add(1, Ordering::SeqCst);
-    }
-    fn write_call(&self) {
-        self.writes.fetch_add(1, Ordering::SeqCst);
-    }
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
@@ -140,15 +135,15 @@ impl StreamProvider for Observed {
         &self,
         key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        self.read_call();
+        self.requests.record(RequestClass::Metadata);
         self.io(self.inner.inspect_idempotency(key)).await
     }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.read_call();
+        self.requests.record(RequestClass::Head);
         self.io(self.inner.tail(path)).await
     }
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.read_call();
+        self.requests.record(RequestClass::Head);
         self.io(self.inner.bounds(path)).await
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -156,15 +151,16 @@ impl StreamProvider for Observed {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .push(request.clone());
-        self.write_call();
+        self.requests.record(RequestClass::Data);
         self.io(self.inner.append(request)).await
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.write_call();
+        self.requests.record(RequestClass::Data);
         self.io(self.inner.fork(request)).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        self.read_call();
+        self.requests.record(RequestClass::Data);
+        self.history_reads.fetch_add(1, Ordering::SeqCst);
         self.io(self.inner.read(request)).await
     }
     async fn follow(
@@ -177,22 +173,24 @@ impl StreamProvider for Observed {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .push((path.clone(), from));
-        self.read_call();
+        self.requests.record(RequestClass::Data);
+        self.history_reads.fetch_add(1, Ordering::SeqCst);
         self.io(self.inner.follow(path, from, filter)).await
     }
     async fn children_page(
         &self,
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
-        self.read_call();
+        self.requests.record(RequestClass::List);
         self.io(self.inner.children_page(request)).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.write_call();
+        self.requests.record(RequestClass::Data);
         self.io(self.commit_inner(request)).await
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        self.read_call();
+        self.requests.record(RequestClass::Data);
+        self.history_reads.fetch_add(1, Ordering::SeqCst);
         self.io(self.inner.read_commit(id)).await
     }
 }

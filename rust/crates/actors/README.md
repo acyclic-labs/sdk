@@ -61,3 +61,18 @@ enabling nonempty-selection writes. A host must authorize and resolve every
 selected reference before accepting a deployment; it must reject an unsupported
 selection rather than acknowledge a deployment with missing environment values.
 There is no fallback to environment inheritance or plaintext bindings.
+
+With the `conformance` feature, downstream hosts implement
+`acyclic_actors::conformance::Backend` and register their async setup function
+with `conformance::suite!(MyBackend::fresh)`. The backend retains disposable
+storage, a running host loaded with the shared `Package`, its clock, pause/restart
+controls, and a `RequestLedger` instrumenting the actual provider dispatch.
+`verify(&backend)` drives the same ordered delivery, alarm, pause and restart
+vectors for every implementation. Existing `Target` implementations use the
+same trait through its compatibility alias.
+
+`conformance::bench(&backend)` is an on-demand workload over a fresh backend.
+It excludes setup and warmup, verifies all 256 deliveries, and returns elapsed
+time plus data/control request counts. A downstream service can instrument
+physical dispatch with the same ledger; counts at an API wrapper boundary alone
+do not establish physical network traffic. No benchmark is scheduled by CI.
