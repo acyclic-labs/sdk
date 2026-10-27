@@ -15,6 +15,27 @@ pub(super) enum PacketFailure {
 }
 
 impl PacketFailure {
+    fn retained(core: &Arc<ProjectionCore>) -> Option<Self> {
+        if !core.handler_failed.load(Ordering::Acquire) {
+            return None;
+        }
+        // Read the original failure slot, rather than admitting another
+        // callback after a terminal failure or copying a second error index.
+        // Once its retirement owner takes the cause, the view stays closed.
+        let reports = core
+            .handler_error
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Some(Self::Source {
+            _core: Arc::clone(core),
+            errno: reports
+                .first_fatal
+                .as_ref()
+                .map_or(libc::ENODEV, |failure| callback_errno(&failure.0)),
+            completion: PacketCompletion::no_reply(),
+        })
+    }
+
     pub(super) fn from_callback(
         core: &Arc<ProjectionCore>,
         failure: (NativeMountError, crate::WorkCounters),
@@ -187,6 +208,9 @@ impl FuseProjection {
         response: &mut [u8],
         owner: (u32, u32),
     ) -> Result<PacketCompletion, PacketFailure> {
+        if let Some(failure) = PacketFailure::retained(&self.core) {
+            return Err(failure);
+        }
         let mut no_reply = [0; super::packet::OUTPUT_HEADER];
         let response = if matches!(request.opcode, 2 | 42) {
             no_reply.as_mut_slice()

@@ -7,7 +7,7 @@ use super::vring_control::{QueueKick, VringControl};
 use super::vring_packet::{QueueProgress, serve_vring_packet};
 use acyclic_native_runtime::ProcessWake;
 use std::io;
-use std::os::fd::AsFd;
+use std::os::fd::{AsRawFd, BorrowedFd};
 use std::sync::{Arc, PoisonError};
 use virtio_queue::QueueT;
 
@@ -108,7 +108,12 @@ fn batch(
 
 fn wait(change: &ProcessWake, kick: Option<&Arc<QueueKick>>) -> io::Result<bool> {
     use super::transport_io::{self, Ready};
-    match transport_io::wait(change, kick.map(|kick| kick.as_fd()), libc::POLLIN)? {
+    let descriptor = kick.map(|kick| {
+        // SAFETY: the actual kick Arc is borrowed for this entire wait, so
+        // replacement cannot close its EventConsumer during the shared poll.
+        unsafe { BorrowedFd::borrow_raw(kick.as_raw_fd()) }
+    });
+    match transport_io::wait(change, descriptor, libc::POLLIN)? {
         Ready::Closed => Ok(false),
         Ready::Wake => Ok(true),
         Ready::Device(events) if events & (libc::POLLERR | libc::POLLHUP | libc::POLLNVAL) != 0 => {
