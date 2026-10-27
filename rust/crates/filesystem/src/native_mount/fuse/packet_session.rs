@@ -85,6 +85,17 @@ impl PacketSession {
         self.phase.load(Ordering::Acquire) == READY
     }
 
+    pub(super) fn packet_capacity(&self) -> usize {
+        self.maximum_write as usize + 4096
+    }
+
+    pub(super) fn single_core(&self) -> Option<&Arc<ProjectionCore>> {
+        match &self.router {
+            PacketRouter::Single(projection) => Some(&projection.core),
+            PacketRouter::Shared(_) => None,
+        }
+    }
+
     pub(super) fn close(&self) {
         self.phase.store(CLOSED, Ordering::Release);
         self.router.close();
