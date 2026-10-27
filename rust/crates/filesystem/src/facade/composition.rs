@@ -230,6 +230,40 @@ where
         Ok(id)
     }
 
+    /// Conditions `commit` on `source` still being its workspace's head when
+    /// the commit applies. Composing this for every source a commit forks
+    /// makes the sources one consistent cut: if any advanced after it was
+    /// read, the whole commit is rejected and nothing is published.
+    pub async fn require_head(
+        &self,
+        source: &crate::Generation<StreamAuthorityStore<P>, O>,
+        commit: &mut FilesystemCommit,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> MeasuredResult<OperationReceipt<()>, WorkspaceError> {
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let result = async {
+            if !self.same_deployment(&source.workspace.volume.fs) {
+                return Err(WorkspaceError::ForeignGeneration);
+            }
+            let mut authority = authority_work(&accounting, cancellation)?;
+            let result = self
+                .inner
+                .authority
+                .contribute_head(
+                    commit,
+                    crate::kernel::volume_authority_id(source.workspace.volume.id),
+                    source.id,
+                    &mut authority,
+                )
+                .await;
+            record_authority_work(&mut accounting, &authority)?;
+            result.map_err(|error| WorkspaceError::from(FsError::from(error)))
+        }
+        .await;
+        measured(result, &accounting)
+    }
+
     /// Fences the active policy cut and freezes a caller-submitted commit.
     /// Call this before sending its request through an external provider.
     /// Repeated sealing preserves the exact request and key.

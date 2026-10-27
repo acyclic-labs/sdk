@@ -437,7 +437,7 @@ fn extend_transaction(
     let mut merged = work.vec(prefix.conditions.len() + conditions.len())?;
     merged.append(&mut prefix.conditions);
     for condition in conditions {
-        super::super::policy::merge_policy_condition(&mut merged, condition, work)?;
+        super::super::policy::merge_condition(&mut merged, condition, work)?;
     }
     prefix.conditions = merged;
     let mut mutations = work.vec(prefix.mutations.len() + next.mutations.len())?;

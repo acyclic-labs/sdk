@@ -453,7 +453,7 @@ async fn same_authority_publication(change_head: bool) -> TestResult {
             outcome,
             Err(AuthorityError::Authority(
                 AuthorityStoreError::RejectedStatic(
-                    "policy cut conflicts with the publication condition"
+                    "a commit condition conflicts with one the commit already holds"
                 )
             ))
         ));
