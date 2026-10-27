@@ -35,7 +35,7 @@ impl OperationRegistry {
         &self,
         record: &StoredOperation,
         from: u64,
-        limit: u64,
+        limit: u32,
     ) -> Result<Vec<Resource>, ProviderError> {
         if limit == 0 {
             return Ok(Vec::new());
@@ -49,7 +49,8 @@ impl OperationRegistry {
             .map_err(storage)?;
         let mut values = Vec::new();
         while let Some(row) = records.try_next().await.map_err(storage)? {
-            if row.sequence != from + values.len() as u64 || values.len() as u64 >= limit {
+            if row.sequence != from + values.len() as u64 || values.len() as u64 >= u64::from(limit)
+            {
                 return Err(storage(acyclic_stream::StreamError::InvalidResponse));
             }
             values.push(
@@ -57,7 +58,7 @@ impl OperationRegistry {
                     .map_err(|_| storage(acyclic_stream::StreamError::InvalidResponse))?,
             );
         }
-        if values.len() as u64 != limit {
+        if values.len() as u64 != u64::from(limit) {
             return Err(storage(acyclic_stream::StreamError::InvalidResponse));
         }
         Ok(values)
@@ -240,13 +241,30 @@ impl OperationRegistry {
         if record.created.is_empty() && record.targets.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }
+        let first = record
+            .created
+            .iter()
+            .chain(&record.targets)
+            .copied()
+            .min()
+            .ok_or_else(|| storage(acyclic_stream::StreamError::InvalidResponse))?;
+        let last = record
+            .created
+            .iter()
+            .chain(&record.targets)
+            .copied()
+            .max()
+            .ok_or_else(|| storage(acyclic_stream::StreamError::InvalidResponse))?;
+        if last >= record.native_resources {
+            return Err(storage(acyclic_stream::StreamError::InvalidResponse));
+        }
         let resources = self
-            .resource_records(record, 0, u64::from(record.native_resources))
+            .resource_records(record, u64::from(first), last - first + 1)
             .await?;
         let created = record
             .created
             .iter()
-            .map(|index| match resources.get(*index as usize) {
+            .map(|index| match resources.get((*index - first) as usize) {
                 Some(Resource::Created(value)) => Ok(value.clone()),
                 _ => Err(storage(acyclic_stream::StreamError::InvalidResponse)),
             })
@@ -254,7 +272,7 @@ impl OperationRegistry {
         let targets = record
             .targets
             .iter()
-            .map(|index| match resources.get(*index as usize) {
+            .map(|index| match resources.get((*index - first) as usize) {
                 Some(Resource::Target(value)) => Ok(value.clone()),
                 _ => Err(storage(acyclic_stream::StreamError::InvalidResponse)),
             })
