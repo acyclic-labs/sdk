@@ -93,7 +93,9 @@ impl ProjectionState {
         let entry = self.by_inode.get_mut(&inode).ok_or(libc::ESTALE)?;
         entry.open_handles = entry.open_handles.saturating_add(1);
         entry.write_handles += u64::from(changes_content(flags));
-        hold(&mut entry.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
+        if self.cache == ProjectionCache::Notifications {
+            hold(&mut entry.kernel, stamp.unwrap_or(ViewStamp::ORIGIN));
+        }
         entry.cached_content = Some(opened_version);
         self.next_handle = self.next_handle.saturating_add(1).max(1);
         self.files.insert(
@@ -108,6 +110,10 @@ impl ProjectionState {
             },
         );
         let mut open_flags = FopenFlags::empty();
+        open_flags.set(
+            FopenFlags::FOPEN_DIRECT_IO,
+            self.cache == ProjectionCache::Direct,
+        );
         open_flags.set(
             FopenFlags::FOPEN_KEEP_CACHE,
             admitted && previous == Some(opened_version),
@@ -353,7 +359,7 @@ impl FuseProjection {
     )]
     pub(super) fn create_file(
         &self,
-        request: &Request,
+        owner: (u32, u32),
         parent: u64,
         name: &OsStr,
         mode: u32,
@@ -394,13 +400,7 @@ impl FuseProjection {
                     self.open_source(path, existing.node.file_id, flags, stamp, work)?;
                 (lookup, open_file, flags & libc::O_TRUNC != 0)
             } else {
-                let metadata = create_metadata(
-                    &self.core.clock,
-                    mode,
-                    S_IFREG,
-                    request.uid(),
-                    request.gid(),
-                );
+                let metadata = create_metadata(&self.core.clock, mode, S_IFREG, owner.0, owner.1);
                 let created = self.source_write(work, || {
                     Ok(source.create_file(path, metadata, proof, work)?)
                 })?;

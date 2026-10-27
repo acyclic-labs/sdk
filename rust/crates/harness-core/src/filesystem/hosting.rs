@@ -26,13 +26,18 @@ use crate::{
 };
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::Clock};
 use acyclic_fs::{
-    AsyncObjectStore, CancellationToken, CreateSpec, CreationOperation, EmbeddedCapabilities,
-    FilesystemCommit, FilesystemCommitOutcome, Fs, StreamAuthorityStore, WorkBudget, WorkspaceName,
+    AsyncObjectStore, CancellationToken, CreateSpec, CreationOperation, FilesystemCommit,
+    FilesystemCommitOutcome, Fs, StreamAuthorityStore, WorkBudget, WorkspaceName,
     distributed::AuthorityProvider,
 };
 use std::sync::Arc;
 
 type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
+
+#[cfg(all(target_os = "linux", feature = "native-execution"))]
+mod guest;
+#[cfg(all(target_os = "linux", feature = "native-execution"))]
+pub use guest::LocalGuestEnrollment;
 
 /// The caller a host's platform verified for one request, before any of the
 /// request's IO: the audience its scope was issued for, and the scope itself.
@@ -110,13 +115,9 @@ pub enum RootSubmission {
 /// The one admitted stream instance and its placement. Agents, their actor
 /// state and their volumes' authority all live on `stream`, so a root's
 /// volumes and adoption, and every spawn, commit together.
-pub struct Placement<P, O> {
-    /// The admitted stream instance.
-    pub stream: Arc<P>,
-    /// Volume content objects.
-    pub objects: O,
-    /// What the volume store guarantees.
-    pub capabilities: EmbeddedCapabilities,
+pub struct Placement<P: 'static, O: 'static> {
+    /// The canonical filesystem; its authority provider also hosts the agents.
+    pub filesystem: Fs<StreamAuthorityStore<P>, O>,
     /// The filesystem provider every volume of this placement names.
     pub provider: ProviderRef,
     /// Account and namespace of the agents' actors. The binding's runtime
@@ -195,22 +196,12 @@ where
         turns: Turns,
     ) -> Result<Self, Error> {
         let Placement {
-            stream,
-            objects,
-            capabilities,
+            filesystem,
             provider,
             within,
         } = placement;
-        let volumes = FilesystemHost::new(
-            Fs::new(
-                StreamAuthorityStore::new(Arc::clone(&stream)),
-                objects,
-                capabilities,
-            ),
-            &provider,
-            None,
-        )
-        .map_err(turn)?;
+        let stream = filesystem.stream_provider();
+        let volumes = FilesystemHost::new(filesystem, &provider, None).map_err(turn)?;
         let maximum_bytes = turns.limits.maximum_bytes;
         let driver = ExecutorDriver::new(Arc::new(FilesystemTurnHost::new(
             Arc::clone(&stream),

@@ -15,6 +15,51 @@ pub(super) enum KernelCacheItem {
     },
 }
 
+/// One affine notification borrowed from the original invalidator's tail.
+/// Only physical delivery advances that tail. Refusal or abandonment leaves
+/// the same item and all following items with their existing owner.
+#[must_use]
+struct PendingInvalidation<'a> {
+    items: &'a mut FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
+    _work: Work,
+}
+
+impl<'a> PendingInvalidation<'a> {
+    fn next(
+        items: &'a mut FuseOwned<std::vec::IntoIter<KernelCacheItem>>,
+        work: &Work,
+    ) -> Result<Option<Self>, NativeMountError> {
+        if items.as_slice().is_empty() {
+            return Ok(None);
+        }
+        work.charge(WorkCounters {
+            backend_write_operations: 1,
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        })?;
+        Ok(Some(Self {
+            items,
+            _work: work.clone(),
+        }))
+    }
+
+    fn publish(&self, notifier: &impl KernelCacheNotifier) -> std::io::Result<()> {
+        match self.items.as_slice().first() {
+            Some(KernelCacheItem::Inode(inode)) => notifier.inval_inode(*inode),
+            Some(KernelCacheItem::Entry { parent, name }) => notifier.inval_entry(*parent, name),
+            None => Err(std::io::Error::from_raw_os_error(libc::EPROTO)),
+        }
+    }
+
+    fn delivered(self) {
+        drop(self.items.next());
+    }
+
+    fn undelivered(self) {
+        // The head was borrowed, never removed or copied into another queue.
+    }
+}
+
 #[derive(Default)]
 pub(super) struct InvalidationQueue {
     pub(super) notified: Option<ViewStamp>,
@@ -267,16 +312,6 @@ pub(super) trait KernelCacheNotifier {
     fn inval_entry(&self, parent: u64, name: &[u8]) -> std::io::Result<()>;
 }
 
-impl KernelCacheNotifier for Notifier {
-    fn inval_inode(&self, inode: u64) -> std::io::Result<()> {
-        Notifier::inval_inode(self, INodeNo(inode), 0, 0)
-    }
-
-    fn inval_entry(&self, parent: u64, name: &[u8]) -> std::io::Result<()> {
-        Notifier::inval_entry(self, INodeNo(parent), OsStr::from_bytes(name))
-    }
-}
-
 /// The inputs a failed pass ran with; an unchanged key does not retry.
 pub(super) type InvalidationKey = (Option<ViewStamp>, usize, u64, bool);
 
@@ -423,25 +458,18 @@ fn drop_kernel_caches(
     first_sdk_failure: &mut Option<NativeMountError>,
 ) -> Result<(), NativeMountError> {
     run_native_mount_handler_on_meter(work, |work| {
-        while let Some(item) = items.as_slice().first() {
-            work.charge(WorkCounters {
-                backend_write_operations: 1,
-                items_examined: 1,
-                ..WorkCounters::UNCHARGED
-            })?;
-            let dropped = match item {
-                KernelCacheItem::Inode(inode) => notifier.inval_inode(*inode),
-                KernelCacheItem::Entry { parent, name } => notifier.inval_entry(*parent, name),
-            };
+        while let Some(pending) = PendingInvalidation::next(items, work)? {
+            let dropped = pending.publish(notifier);
             // Retire only notifications the kernel accepted, or for which it
             // holds nothing. A refused one and all after it stay queued.
             if let Err(error) = dropped
                 && error.kind() != std::io::ErrorKind::NotFound
             {
                 first_sdk_failure.get_or_insert(NativeMountError::Io(error));
+                pending.undelivered();
                 break;
             }
-            drop(items.next());
+            pending.delivered();
         }
         Ok(())
     })

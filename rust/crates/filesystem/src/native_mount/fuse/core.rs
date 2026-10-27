@@ -100,10 +100,14 @@ impl Drop for StateGuard<'_> {
         if let Some(wake) = wake {
             wake.wake();
         }
-        if let Some(notifier) = self.core.notifier.get() {
+        // Closing the projection retires these unpublished reservations. It
+        // must not start another device write while joining a failed transport.
+        if !self.core.stopping.load(Ordering::Acquire)
+            && let Some(notifier) = self.core.notifier.get()
+        {
             for (inode, credit) in superseded.iter_mut() {
                 // Drop only attributes, so this never waits for kernel pages or requests.
-                let _ = notifier.inval_inode(INodeNo(*inode), -1, 0);
+                let _ = notifier.inval_attributes(*inode);
                 credit.record_deferred(WorkCounters {
                     backend_write_operations: 1,
                     items_examined: 1,
@@ -122,7 +126,7 @@ pub(super) struct ProjectionCore {
     pub(super) state: RankedMutex<ProjectionState, VIEW>,
     pub(super) names: RwLock<()>,
     pub(super) invalidation: RankedCondvar,
-    pub(super) notifier: OnceLock<Notifier>,
+    pub(super) notifier: OnceLock<CacheNotifier>,
     pub(super) stopping: AtomicBool,
     pub(super) origin: ViewOrigin,
     pub(super) startup_meter: Mutex<NativeMountMeterActivation>,
@@ -166,9 +170,7 @@ impl ProjectionCore {
         source: Arc<dyn MountFilesystem>,
         root: MountLookup,
         stamp: Option<ViewStamp>,
-        writable: bool,
-        owner: (u32, u32),
-        inode_base: u64,
+        config: ProjectionConfig,
         work: &Work,
     ) -> Result<Arc<Self>, NativeMountError> {
         let (source_original_work, callback_guard) =
@@ -181,7 +183,7 @@ impl ProjectionCore {
             1,
             WorkCounters::UNCHARGED,
         )?;
-        let mut state = ProjectionState::new(writable, owner.0, owner.1, inode_base);
+        let mut state = ProjectionState::new(config);
         state.next_inode = state.root_inode;
         state.intern_projected(
             FuseOwned::empty(MountPath::root()),
@@ -261,7 +263,6 @@ impl ProjectionCore {
     }
 
     pub(super) fn retain_handler_failure(&self, failure: (NativeMountError, WorkCounters)) {
-        self.handler_failed.store(true, Ordering::Release);
         let mut reports = self
             .handler_error
             .lock()
@@ -269,6 +270,10 @@ impl ProjectionCore {
         if reports.first_fatal.is_none() {
             reports.first_fatal = Some(failure);
         }
+        // Publish terminal admission only after its original cause is in the
+        // slot. A concurrent packet must not observe an empty retirement slot
+        // and substitute ENODEV before the original refusal is retained.
+        self.handler_failed.store(true, Ordering::Release);
         self.invalidation.notify_all();
     }
 

@@ -3,12 +3,11 @@ use super::*;
 #[test]
 pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
 -> Result<(), Box<dyn std::error::Error>> {
-    use crate::native_mount::fuse::Errno;
     #[derive(Clone, Copy)]
     struct Reply<'a>(&'a std::cell::Cell<u32>);
     impl Reply<'_> {
-        fn error(self, error: Errno) {
-            assert_eq!(error, Errno::from_i32(libc::EIO));
+        fn error(self, error: i32) {
+            assert_eq!(error, libc::EIO);
             self.0.set(self.0.get() + 1);
         }
     }
@@ -24,20 +23,14 @@ pub(super) fn filtered_callback_error_replies_without_overwriting_parent_errno()
     let replied = std::cell::Cell::new(0);
     let reply = Reply(&replied);
     crate::obs::assert_filtered_callback_isolation(|span| {
-        respond!(
-            core,
-            reply,
-            span,
-            work,
-            {
-                assert!(work.shares_ledger(&denied));
-                attempted.set(attempted.get() + 1);
-                crate::native_mount::fuse::fuse_copy_bytes(b"refused before copy", work).map(|_| ())
-            },
-            |()| {
-                let _ = reply;
-            }
-        );
+        let result = core.request(|work| {
+            assert!(work.shares_ledger(&denied));
+            attempted.set(attempted.get() + 1);
+            crate::native_mount::fuse::fuse_copy_bytes(b"refused before copy", work).map(|_| ())
+        });
+        if let Err(error) = core.finish(result) {
+            reply.error(super::super::errno_on(&span, error));
+        }
         libc::EIO
     });
     assert_eq!(attempted.get(), 2);
@@ -165,7 +158,12 @@ pub(super) fn name(value: &str) -> MountPath {
 }
 
 pub(super) fn empty_projection_state() -> crate::native_mount::fuse::ProjectionState {
-    crate::native_mount::fuse::ProjectionState::new(true, 0, 0, 0)
+    crate::native_mount::fuse::ProjectionState::new(super::super::ProjectionConfig {
+        writable: true,
+        owner: (0, 0),
+        inode_base: 0,
+        cache: super::super::ProjectionCache::Notifications,
+    })
 }
 
 #[test]
@@ -768,3 +766,90 @@ pub(super) fn enumerated_entries_receive_nonzero_inodes_without_fake_lookup_refe
 
 pub(super) type MemoryCheckout =
     crate::Checkout<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
+
+#[test]
+fn direct_projection_does_not_admit_kernel_cache_leases() -> Result<(), Box<dyn std::error::Error>>
+{
+    use super::super::{FopenFlags, FuseProjection, ProjectionCache, ProjectionConfig};
+    use std::ffi::OsStr;
+
+    let (source, around) = shared_sources(posix_config())?;
+    let source: Arc<dyn MountFilesystem> = Arc::new(source);
+    let cancellation = crate::CancellationToken::new();
+    let work = crate::NativeMaterializationWork::new(FINITE_HANDLER_POLICY, &cancellation)
+        .map_err(|(cause, _)| cause)?;
+    let root = source
+        .lookup_with_meter(&MountPath::root(), &work)?
+        .ok_or("actual checkout root missing")?;
+    let stamp = source.view_stamp_with_meter(&work)?;
+    let core = ProjectionCore::new(
+        source,
+        root,
+        stamp,
+        ProjectionConfig {
+            writable: true,
+            owner: (0, 0),
+            inode_base: 0,
+            cache: ProjectionCache::Direct,
+        },
+        &work,
+    )?;
+    let projection = FuseProjection {
+        core: Arc::clone(&core),
+    };
+    let (created, handle, flags) = projection.create_file(
+        (0, 0),
+        ROOT_INODE,
+        OsStr::new("direct"),
+        0o600,
+        libc::O_CREAT | libc::O_EXCL | libc::O_RDWR,
+        &work,
+    )?;
+    assert_eq!(created.ttl, Duration::ZERO);
+    assert!(flags.contains(FopenFlags::FOPEN_DIRECT_IO));
+    assert!(!flags.contains(FopenFlags::FOPEN_KEEP_CACHE));
+    let looked_up = projection.lookup_entry(ROOT_INODE, OsStr::new("direct"), &work)?;
+    assert_eq!(looked_up.ttl, Duration::ZERO);
+    assert_eq!(looked_up.attr.ino, created.attr.ino);
+    assert_eq!(
+        projection
+            .node_attributes(created.attr.ino.0, Some(handle), &work)?
+            .1,
+        Duration::ZERO
+    );
+    assert!(matches!(
+        projection.lookup_entry(ROOT_INODE, OsStr::new("absent"), &work),
+        Err(error) if callback_errno(&error) == libc::ENOENT
+    ));
+    around.create_file(&name("absent"), FileMetadata::default(), None, &work)?;
+    let external = projection.lookup_entry(ROOT_INODE, OsStr::new("absent"), &work)?;
+    assert_ne!(external.attr.ino.0, 0);
+    assert_eq!(external.ttl, Duration::ZERO);
+    assert!(
+        !projection
+            .open_directory(ROOT_INODE, &work)?
+            .contains(FopenFlags::FOPEN_CACHE_DIR)
+    );
+    let mut state = core.state().map_err(NativeMountError::from)?;
+    state.admit_listing(core.source.as_ref(), ROOT_INODE, stamp, &work)?;
+    state.invalidate_attributes(created.attr.ino.0, &work)?;
+    assert!(state.by_inode.values().all(|entry| {
+        entry.kernel.is_none()
+            && entry
+                .bindings
+                .iter()
+                .all(|binding| binding.kernel.is_none())
+            && entry.negative_children.is_empty()
+    }));
+    assert!(state.superseded_attributes.is_empty());
+    assert!(state.invalidation.deferred.is_empty());
+    // These reply controls do not establish refusal of private mmap or a
+    // revocation guarantee: that requires an enforceable guest contract.
+    assert_eq!(
+        ProjectionCache::Direct.capabilities(),
+        super::super::InitFlags::FUSE_PARALLEL_DIROPS
+    );
+    drop(state);
+    projection.flush_handle(created.attr.ino.0, handle, false, true, &work)?;
+    Ok(())
+}

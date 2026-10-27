@@ -19,6 +19,8 @@ struct Storage {
     issuer: AuthorityRoot,
     owner: owner::Owner,
     files: Arc<LocalFilesystem>,
+    #[cfg(all(target_os = "linux", feature = "native-execution"))]
+    volume_filesystem: acyclic_fs::LocalFs,
     /// The Stream provider holding the filesystem's volume authority.
     volume_stream: Arc<LocalStream>,
     scratch: VolumeRef,
@@ -172,7 +174,9 @@ impl Opening {
         acyclic_fs::watch::initialize_native_watch_services().map_err(storage)?;
         #[cfg(any(test, feature = "native-execution"))]
         if self.native_mounts {
-            workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
+            if matches!(self.config.project, LocalProject::Workspace(_)) {
+                workspace::volumes::require_available(acyclic_fs::probe_native_mount())?;
+            }
             acyclic_fs::initialize_native_mount_services().map_err(storage)?;
         }
         #[cfg(not(any(test, feature = "native-execution")))]
@@ -252,6 +256,8 @@ impl Opening {
             issuer,
             owner,
             files,
+            #[cfg(all(target_os = "linux", feature = "native-execution"))]
+            volume_filesystem: filesystem,
             volume_stream,
             scratch,
             journal,
@@ -328,6 +334,8 @@ impl Opening {
             issuer,
             owner,
             files,
+            #[cfg(all(target_os = "linux", feature = "native-execution"))]
+            volume_filesystem,
             volume_stream,
             scratch,
             journal,
@@ -384,6 +392,8 @@ impl Opening {
         .build()?;
         Ok(LocalHarness {
             files,
+            #[cfg(all(target_os = "linux", feature = "native-execution"))]
+            volume_filesystem,
             harness,
             tools: self.tools,
             root: owner.agent,

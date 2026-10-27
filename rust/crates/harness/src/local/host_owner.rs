@@ -108,6 +108,17 @@ pub struct HostWorkspaceOwner {
 }
 
 impl HostWorkspaceOwner {
+    /// Admits one explicitly enrolled local volume through this host's Bound,
+    /// retaining its original issuer and canonical filesystem provider.
+    #[cfg(target_os = "linux")]
+    pub async fn guest_session(
+        &self,
+        enrollment: crate::filesystem::hosting::LocalGuestEnrollment,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_fs::native_mount::GuestSessionAdmission> {
+        self.local.guest_session(enrollment, work).await
+    }
+
     /// Uses an already-running harness, with no provider or agent executor.
     pub fn new(local: Arc<LocalHarness>) -> Result<Self> {
         if local.agent.is_some() || !local.tools().definitions(None)?.is_empty() {

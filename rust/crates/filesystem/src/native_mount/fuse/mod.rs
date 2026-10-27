@@ -5,6 +5,9 @@
     reason = "FUSE mount, descriptor transfer and recovery syscalls"
 )]
 
+mod guest;
+pub use guest::{GuestSessionAdmission, GuestSessionRetired};
+
 use super::{
     ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,
     MountDirectoryEntry, MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile,
@@ -16,16 +19,9 @@ use crate::lock_order::{
     Condvar as RankedCondvar, Mutex as RankedMutex, MutexGuard as RankedGuard, OPERATION, VIEW,
 };
 use crate::materializer::NativeResourceCredit::{Copy, Items};
-use fuser::{
-    BsdFileFlags, Config, CopyFileRangeFlags, Errno, FileAttr, FileHandle as FuseFileHandle,
-    FileType, Filesystem, FopenFlags, Generation, INodeNo, InitFlags, KernelConfig, LockOwner,
-    Notifier, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData, ReplyDirectory,
-    ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyLseek, ReplyOpen, ReplyWrite, ReplyXattr,
-    Request, TimeOrNow, WriteFlags,
-};
+use fuser::{FileAttr, FileType, FopenFlags, INodeNo, InitFlags, TimeOrNow};
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -34,47 +30,9 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGua
 use std::time::{Duration, SystemTime};
 
 #[cfg(test)]
-#[allow(
-    clippy::type_complexity,
-    reason = "The test gate pairs one admission signal with release of that same write."
-)]
-static TEST_WRITE_GATE: OnceLock<
-    Mutex<
-        Option<(
-            std::sync::mpsc::SyncSender<()>,
-            std::sync::mpsc::Receiver<()>,
-        )>,
-    >,
-> = OnceLock::new();
-
-/// Pauses one FUSE write after handle admission.
+pub(super) use tests::packets::trace_kernel_packets;
 #[cfg(test)]
-pub(super) fn pause_next_write_after_admission() -> (
-    std::sync::mpsc::Receiver<()>,
-    std::sync::mpsc::SyncSender<()>,
-) {
-    let (admitted_send, admitted_receive) = std::sync::mpsc::sync_channel(0);
-    let (release_send, release_receive) = std::sync::mpsc::sync_channel(0);
-    *TEST_WRITE_GATE
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = Some((admitted_send, release_receive));
-    (admitted_receive, release_send)
-}
-
-#[cfg(test)]
-fn pause_test_write() {
-    let Some((admitted, release)) = TEST_WRITE_GATE
-        .get_or_init(|| Mutex::new(None))
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take()
-    else {
-        return;
-    };
-    let _ = admitted.send(());
-    let _ = release.recv_timeout(Duration::from_secs(10));
-}
+pub(super) use tests::write_gate::pause_next_write_after_admission;
 
 const ROOT_INODE: u64 = 1;
 /// Inodes per view of a shared instance. A view's inodes are
@@ -134,41 +92,36 @@ impl From<i32> for NativeMountError {
     }
 }
 
-fn errno_on(span: &tracing::Span, error: i32) -> Errno {
+fn errno_on(span: &tracing::Span, error: i32) -> i32 {
     span.record("errno", error);
-    Errno::from_i32(error)
+    error
 }
 
-macro_rules! respond {
-    ($core:expr, $reply:ident, $span:ident, $work:ident, $result:expr, |$value:pat_param| $ok:expr) => {{
-        let mut pending_reply = Some($reply);
-        let result = $core.request(|$work| {
-            let $value = $result?;
-            let $reply = pending_reply.take().expect("one successful FUSE reply");
-            let _ = $ok;
-            Ok(())
-        });
-        if let Err(error) = $core.finish(result) {
-            if let Some(reply) = pending_reply.take() {
-                reply.error($crate::native_mount::fuse::errno_on(&$span, error));
-            }
-        }
-    }};
-}
-
-mod callbacks;
+mod notification;
+mod packet;
+mod packet_buffers;
+mod packet_cache;
+mod packet_cancellation;
+use packet_cache::{ProjectionCache, ProjectionConfig};
+mod packet_dispatch;
+mod packet_publication;
+mod packet_router;
+mod packet_session;
+mod packet_workers;
+mod vhost_control;
+mod vhost_session;
+mod vring;
+mod vring_control;
+mod vring_event;
+mod vring_memory;
+mod vring_packet;
+mod vring_worker;
+use notification::CacheNotifier;
+mod host_io;
+mod host_session;
 mod shared;
 mod shared_instance;
-
-fn reply_xattr(reply: ReplyXattr, value: &[u8], size: u32, span: &tracing::Span) {
-    if size == 0 {
-        reply.size(u32::try_from(value.len()).unwrap_or(u32::MAX));
-    } else if value.len() <= size as usize {
-        reply.data(value);
-    } else {
-        reply.error(errno_on(span, libc::ERANGE));
-    }
-}
+mod transport_io;
 
 #[cfg(test)]
 pub(in crate::native_mount) mod tests;

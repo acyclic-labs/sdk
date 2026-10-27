@@ -53,6 +53,68 @@ fn provider() -> Result<ProviderRef> {
     )?)
 }
 
+#[cfg(all(target_os = "linux", feature = "native-execution"))]
+#[tokio::test]
+async fn guest_admission_refuses_wrong_volume_provider_and_hosted_mapping_before_io() -> Result {
+    use acyclic_fs::native_mount::GuestPosixPolicy;
+    use acyclic_harness_core::filesystem::hosting::LocalGuestEnrollment;
+    acyclic_native_runtime::initialize_native_io_services()?;
+    acyclic_fs::initialize_native_mount_services()?;
+    let stream = Arc::new(Refusing::default());
+    let (placed, bucket) = placed(&stream)?;
+    let reference = placed.provider.clone();
+    let audience = Authority {
+        kind: AggregateKind::Conversation,
+        id: "guest".into(),
+    };
+    let issuer = AuthorityRoot::new("agents", [7; 32], audience.clone());
+    let scope = issuer.bootstrap_scope("guest", &Capabilities::default(), None, &mut None)?;
+    let hosted = Bound::admitted(
+        issuer.clone(),
+        VerifiedCaller { audience, scope },
+        placed,
+        turns()?,
+    )?;
+    let local = Bound::local_root(issuer, placement(&stream)?, turns()?)?;
+    let work = acyclic_fs::NativeMaterializationWork::new(
+        acyclic_fs::performance::BOUNDARY_BUDGET,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(cause, _)| cause)?;
+    let enrollment = |provider: &ProviderRef| -> Result<LocalGuestEnrollment> {
+        Ok(LocalGuestEnrollment {
+            volume: VolumeRef::new(
+                provider.clone(),
+                "agent-guest".into(),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(id(7).to_bytes())),
+                &mut None,
+            )?,
+            posix: GuestPosixPolicy {
+                identities: vec![(0, 0)],
+                metadata: true,
+            },
+            writable: true,
+        })
+    };
+    assert!(matches!(
+        hosted.guest_session(enrollment(&reference)?, &work).await,
+        Err(acyclic_harness_core::Error::Unsupported(_))
+    ));
+    let other = ProviderRef::new("other".into(), "filesystem".into(), "2".into(), &mut None)?;
+    assert!(
+        local
+            .guest_session(enrollment(&other)?, &work)
+            .await
+            .is_err()
+    );
+    assert_eq!(stream.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(bucket.objects().await?, 0);
+    assert_eq!(work.receipt().backend_read_operations, 0);
+    assert_eq!(work.receipt().backend_write_operations, 0);
+    Ok(())
+}
+
 /// The volumes' object bucket, to observe what preparation writes.
 struct Bucket(
     Arc<acyclic_objects::v1::MemoryObjects>,
@@ -76,20 +138,22 @@ impl Bucket {
 }
 
 /// The one placement over `stream`.
-fn placement<P>(stream: &Arc<P>) -> Result<Placement<P, Objects>> {
+fn placement<P: 'static>(stream: &Arc<P>) -> Result<Placement<P, Objects>> {
     Ok(placed(stream)?.0)
 }
 
 /// The one placement over `stream`, and its object bucket.
-fn placed<P>(stream: &Arc<P>) -> Result<(Placement<P, Objects>, Bucket)> {
+fn placed<P: 'static>(stream: &Arc<P>) -> Result<(Placement<P, Objects>, Bucket)> {
     let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
     let objects = Arc::new(objects);
     let observed = Bucket(objects.clone(), bucket.clone());
     Ok((
         Placement {
-            stream: stream.clone(),
-            objects: LogicalObjectStore::new(objects, bucket),
-            capabilities: EmbeddedCapabilities::MEMORY,
+            filesystem: acyclic_fs::Fs::new(
+                acyclic_fs::StreamAuthorityStore::new(stream.clone()),
+                LogicalObjectStore::new(objects, bucket),
+                EmbeddedCapabilities::MEMORY,
+            ),
             provider: provider()?,
             within: ActorReference::new(b"account", b"agents", b"owner")?,
         },

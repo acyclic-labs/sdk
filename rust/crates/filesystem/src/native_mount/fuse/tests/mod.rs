@@ -24,6 +24,8 @@ type MemorySource = super::super::CheckoutMountSource<
     crate::facade::MemoryObjectBackend,
 >;
 
+mod guest_admission;
+
 fn fuse_fixture_work() -> crate::NativeMaterializationWork {
     cache_work(
         crate::WorkBudget::UNBOUNDED,
@@ -47,7 +49,18 @@ fn projection_core(
         None => crate::NativeMaterializationWork::new(budget, cancellation)
             .map_err(|(cause, _)| NativeMountError::from(cause))?,
     };
-    super::ProjectionCore::new(source, root, stamp, true, (0, 0), 0, &work)
+    super::ProjectionCore::new(
+        source,
+        root,
+        stamp,
+        super::ProjectionConfig {
+            writable: true,
+            owner: (0, 0),
+            inode_base: 0,
+            cache: super::ProjectionCache::Notifications,
+        },
+        &work,
+    )
 }
 
 #[cfg(acyclic_fs_loom)]
@@ -59,11 +72,18 @@ mod directory_reply;
 mod disclosure;
 mod folded;
 mod folded_property;
+mod guest;
 mod inbox;
 mod mount;
 mod native;
+mod packet_cancellation;
+mod packet_workers;
+pub(super) mod packets;
 pub(in crate::native_mount) mod retirement;
 mod shared;
+mod vhost_session;
+mod vring;
+pub(in crate::native_mount::fuse) mod write_gate;
 
 use cache::*;
 use native::*;

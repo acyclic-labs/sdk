@@ -139,6 +139,40 @@ impl TurnExecutors for Executors {
 }
 
 impl LocalHarness {
+    /// Guest sources use the same public enrollment producer as hosted trees.
+    #[cfg(all(target_os = "linux", feature = "native-execution"))]
+    pub(super) async fn guest_session(
+        self: &Arc<Self>,
+        enrollment: crate::filesystem::hosting::LocalGuestEnrollment,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<acyclic_fs::native_mount::GuestSessionAdmission> {
+        use crate::filesystem::hosting::{Bound, Placement, Turns};
+        let issuer = self.root_authority.clone().ok_or_else(|| {
+            Error::Unsupported("local guest enrollment requires signing custody".into())
+        })?;
+        let bound = Bound::local_root(
+            issuer,
+            Placement {
+                filesystem: self.volume_filesystem.clone(),
+                provider: self.project.provider().clone(),
+                within: ActorReference::new(b"local", b"native", b"guests").map_err(storage)?,
+            },
+            Turns {
+                executors: Arc::new(Executors(Arc::downgrade(self))),
+                limits: TurnLimits {
+                    maximum_bytes: self.limits.file_bytes,
+                    max_steps: u32::try_from(self.limits.model_steps)
+                        .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
+                    history_turns: HISTORY_TURNS,
+                },
+                actors: ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
+                clock: Arc::new(SystemClock),
+            },
+        )
+        .map_err(storage)?;
+        bound.guest_session(enrollment, work).await
+    }
+
     /// Every agent of this harness on one A4 runtime, and its root agent.
     ///
     /// The first call creates the root agent (replayed exactly on reopen) and

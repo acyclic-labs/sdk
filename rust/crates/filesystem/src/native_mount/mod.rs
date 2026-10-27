@@ -59,10 +59,16 @@ mod lazy;
 pub use lazy::{LazyMountSource, NativeMountSourceWatchOwner};
 
 mod customer;
+#[cfg(target_os = "linux")]
+mod guest;
 pub use customer::{
     LazyMount, Mount, MountLifecycleError, MountOptions, MountPublication, NativeMountDrainProof,
     NativeMountPublicationFailure, NativeWorkingSet, native_file_io,
 };
+#[cfg(target_os = "linux")]
+pub use fuse::{GuestSessionAdmission, GuestSessionRetired};
+#[cfg(target_os = "linux")]
+pub use guest::{GuestPosixPolicy, LocalGuestSource};
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod device;

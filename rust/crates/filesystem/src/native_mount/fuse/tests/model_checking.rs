@@ -82,9 +82,12 @@ pub(in crate::native_mount::fuse) fn fixture()
         Arc::new(NoContent),
         directory(FileId::new()),
         None,
-        false,
-        (0, 0),
-        0,
+        super::super::ProjectionConfig {
+            writable: false,
+            owner: (0, 0),
+            inode_base: 0,
+            cache: super::super::ProjectionCache::Notifications,
+        },
         &work,
     )
     .unwrap();

@@ -235,7 +235,7 @@ impl ProjectionState {
         source: &dyn MountFilesystem,
         inode: u64,
         stream: &mut DirectoryStream,
-        listing: &mut Option<DirectoryReply>,
+        listing: &mut Option<impl DirectoryOutput>,
         mut first: Option<ChildName>,
         work: &crate::NativeMaterializationWork,
     ) -> (Result<(), NativeMountError>, bool) {
@@ -264,7 +264,7 @@ impl ProjectionState {
                         OsStr::new(name),
                         &dot,
                         &Duration::ZERO,
-                    ) {
+                    )? {
                         return Ok(());
                     }
                     work.record_admitted(Copy.delta(name.len() as u64))?;
@@ -364,7 +364,7 @@ impl ProjectionState {
                     OsStr::from_bytes(&entry.name),
                     &attr,
                     &ttl,
-                ) {
+                )? {
                     if let (Some(handed), Some(entry)) =
                         (handed, self.by_inode.get_mut(&child_inode))
                     {
@@ -394,58 +394,19 @@ impl ProjectionState {
     }
 }
 
-pub(super) enum DirectoryReply {
-    Basic(ReplyDirectory),
-    Plus(ReplyDirectoryPlus),
-    #[cfg(test)]
-    Capture(CapturedDirectory),
-}
-
-#[cfg(test)]
-pub(super) type CapturedDirectory = std::rc::Rc<std::cell::RefCell<Vec<(Vec<u8>, FileAttr)>>>;
-
-impl DirectoryReply {
-    fn counts_lookups(&self) -> bool {
-        match self {
-            Self::Basic(_) => false,
-            Self::Plus(_) => true,
-            #[cfg(test)]
-            Self::Capture(_) => true,
-        }
-    }
-    pub(super) fn push(
+/// A bounded directory reply owned by its transport. The projection owns all
+/// page cursors, lookup references and partial-emission decisions.
+pub(super) trait DirectoryOutput {
+    fn counts_lookups(&self) -> bool;
+    /// Returns true without consuming the entry when the output is full.
+    fn push(
         &mut self,
         offset: u64,
         name: &OsStr,
         attr: &FileAttr,
         ttl: &Duration,
-    ) -> bool {
-        match self {
-            Self::Basic(reply) => reply.add(attr.ino, offset, attr.kind, name),
-            Self::Plus(reply) => reply.add(attr.ino, offset, name, ttl, attr, Generation(0)),
-            #[cfg(test)]
-            Self::Capture(entries) => {
-                entries.borrow_mut().push((name.as_bytes().to_vec(), *attr));
-                false
-            }
-        }
-    }
-    pub(super) fn ok(self) {
-        match self {
-            Self::Basic(reply) => reply.ok(),
-            Self::Plus(reply) => reply.ok(),
-            #[cfg(test)]
-            Self::Capture(_) => (),
-        }
-    }
-    pub(super) fn error(self, error: Errno) {
-        match self {
-            Self::Basic(reply) => reply.error(error),
-            Self::Plus(reply) => reply.error(error),
-            #[cfg(test)]
-            Self::Capture(_) => panic!("unexpected directory error: {error:?}"),
-        }
-    }
+    ) -> Result<bool, NativeMountError>;
+    fn ok(self);
 }
 
 impl FuseProjection {
@@ -490,7 +451,7 @@ impl FuseProjection {
         &self,
         inode: u64,
         offset: u64,
-        listing: &mut Option<DirectoryReply>,
+        listing: &mut Option<impl DirectoryOutput>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         let source = self.core.source.as_ref();

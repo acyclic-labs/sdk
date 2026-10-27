@@ -7,7 +7,7 @@
 //! a lock nobody holds; the next start for that root detaches the dead
 //! owner's mount before mounting again.
 
-use super::shared::{SharedDispatch, SharedViewEntry, SharedViews, run_shared_invalidator};
+use super::shared::{SharedViewEntry, SharedViews, run_shared_invalidator};
 use super::*;
 use crate::NativeMaterializationWork;
 use crate::native_mount::shared::instances::{Instance, Instances};
@@ -36,8 +36,8 @@ pub(in crate::native_mount) struct SharedFuseInstance {
 #[derive(Default)]
 struct InstanceState {
     mount: super::mount::Mount,
-    device: Option<OwnedFd>,
-    worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    device: Option<Arc<std::fs::File>>,
+    worker: Option<std::thread::JoinHandle<Result<(), NativeMountError>>>,
     invalidator: Option<std::thread::JoinHandle<()>>,
     guard: Option<MountDestinationGuard>,
 }
@@ -131,32 +131,27 @@ impl SharedFuseInstance {
             .unwrap_or_else(PoisonError::into_inner);
         MountDestinationGuard::acquire_with_work(root, true, &work, &mut state.guard, false)?;
         super::session::map_read_buffers();
-        let mut config = Config::default();
-        config.mount_options = vec![
-            fuser::MountOption::FSName("acyclic-fs".to_owned()),
-            fuser::MountOption::DefaultPermissions,
-            fuser::MountOption::Exec,
-            fuser::MountOption::NoAtime,
-        ];
-        config.n_threads = Some(crate::native_mount::CALLBACK_THREADS as usize);
-        config.clone_fd = false;
-        state.mount.open_into(
+        let mut received = None;
+        let opened = state.mount.open_into(
             root,
             true,
             || super::lifecycle::fuse_recovery_helper(&work),
-            &mut state.device,
-        )?;
-        let descriptor = state
-            .device
-            .as_ref()
-            .ok_or(NativeMountError::FuseShutdownFailed)?
-            .try_clone()?;
-        let session = fuser::Session::from_fd(
-            SharedDispatch(Arc::clone(&views)),
+            &mut received,
+        );
+        state.device = received.map(|descriptor| Arc::new(std::fs::File::from(descriptor)));
+        opened?;
+        let descriptor = Arc::clone(
+            state
+                .device
+                .as_ref()
+                .ok_or(NativeMountError::FuseShutdownFailed)?,
+        );
+        let session = super::host_session::HostSession::new(
+            super::packet_router::PacketRouter::Shared(Arc::clone(&views)),
             descriptor,
-            fuser::SessionACL::Owner,
-            config,
+            &work,
         )?;
+        session.initialize()?;
         let notifier = session.notifier();
         views.set_notifier(notifier.clone());
         state.worker = Some(

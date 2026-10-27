@@ -104,212 +104,230 @@ fn linux_mount_behaviour_cases() -> Result<(), Box<dyn std::error::Error>> {
         "linux_concurrent_truncates_do_not_fence_unrelated_files",
         "rustc_compiles_inside_a_linux_mount",
     ] {
-        let source = Arc::new(source(FilesystemProfile::Posix)?);
-        let temporary = tempfile::tempdir()?;
-        let mut mount = mount_source(&source, temporary.path())?;
-        match case {
-            "linux_negative_lookup_clears_on_create_and_invalidation" => {
-                let local = temporary.path().join("created-locally");
-                assert_eq!(
-                    std::fs::metadata(&local).err().map(|error| error.kind()),
-                    Some(std::io::ErrorKind::NotFound)
-                );
-                std::fs::write(&local, b"local")?;
-                assert_eq!(std::fs::read(&local)?, b"local");
-
-                std::fs::create_dir(temporary.path().join("nested"))?;
-                for name in ["created-by-source", "nested/created-by-source"] {
-                    let external = temporary.path().join(name);
+        let run = || -> Result<(), Box<dyn std::error::Error>> {
+            let source = Arc::new(source(FilesystemProfile::Posix)?);
+            let temporary = tempfile::tempdir()?;
+            let mut mount = mount_source(&source, temporary.path())?;
+            match case {
+                "linux_negative_lookup_clears_on_create_and_invalidation" => {
+                    let local = temporary.path().join("created-locally");
                     assert_eq!(
-                        std::fs::metadata(&external).err().map(|error| error.kind()),
+                        std::fs::metadata(&local).err().map(|error| error.kind()),
                         Some(std::io::ErrorKind::NotFound)
                     );
+                    std::fs::write(&local, b"local")?;
+                    assert_eq!(std::fs::read(&local)?, b"local");
+
+                    std::fs::create_dir(temporary.path().join("nested"))?;
+                    for name in ["created-by-source", "nested/created-by-source"] {
+                        let external = temporary.path().join(name);
+                        assert_eq!(
+                            std::fs::metadata(&external).err().map(|error| error.kind()),
+                            Some(std::io::ErrorKind::NotFound)
+                        );
+                        boundary(source.cancellation(), |work| {
+                            source.create_file(&native_test_path(name), metadata(), None, work)
+                        })?;
+                        mount.invalidate(format!("/{name}").as_bytes())?;
+                        assert!(
+                            external.is_file(),
+                            "invalidation must evict a negative dentry"
+                        );
+                    }
+
+                    let data_path = MountPath::root().child(b"changed-by-source".to_vec());
                     boundary(source.cancellation(), |work| {
-                        source.create_file(&native_test_path(name), metadata(), None, work)
+                        source.create_file(&data_path, metadata(), None, work)
                     })?;
-                    mount.invalidate(format!("/{name}").as_bytes())?;
+                    source.write_range(&data_path, 0, Bytes::from_static(b"before"))?;
+                    mount.invalidate(b"/changed-by-source")?;
+                    let mut opened =
+                        std::fs::File::open(temporary.path().join("changed-by-source"))?;
+                    let mut body = [0_u8; 6];
+                    opened.read_exact(&mut body)?;
+                    assert_eq!(&body, b"before");
+                    source.write_range(&data_path, 0, Bytes::from_static(b"after!"))?;
+                    mount.invalidate(b"/changed-by-source")?;
+                    opened.seek(SeekFrom::Start(0))?;
+                    opened.read_exact(&mut body)?;
+                    assert_eq!(&body, b"after!");
+                    drop(opened);
+                }
+                "linux_truncate_open_keeps_its_own_handle" => {
+                    let path = temporary.path().join("incremental-output");
+                    std::fs::write(&path, b"old")?;
+                    for iteration in 0..8 {
+                        let mut file = std::fs::OpenOptions::new()
+                            .write(true)
+                            .truncate(true)
+                            .open(&path)?;
+                        write!(file, "new-{iteration}")?;
+                        file.sync_all()?;
+                        assert_eq!(std::fs::read_to_string(&path)?, format!("new-{iteration}"));
+                    }
+                }
+                "linux_hard_link_alias_survives_mounted_write_and_rename" => {
+                    let original = temporary.path().join("original");
+                    let alias = temporary.path().join("alias");
+                    let renamed = temporary.path().join("renamed");
+                    std::fs::write(&original, b"before")?;
+                    std::fs::hard_link(&original, &alias)?;
+                    assert_eq!(
+                        std::fs::metadata(&original)?.ino(),
+                        std::fs::metadata(&alias)?.ino()
+                    );
+                    assert_eq!(std::fs::metadata(&alias)?.nlink(), 2);
+
+                    std::fs::write(&alias, b"after")?;
+                    assert_eq!(std::fs::read(&original)?, b"after");
+                    std::fs::rename(&original, &renamed)?;
+                    assert_eq!(
+                        std::fs::metadata(&renamed)?.ino(),
+                        std::fs::metadata(&alias)?.ino()
+                    );
+                    assert_eq!(std::fs::read(&renamed)?, b"after");
+                    std::fs::remove_file(&alias)?;
+                    assert_eq!(std::fs::metadata(&renamed)?.nlink(), 1);
+                    assert_eq!(std::fs::read(&renamed)?, b"after");
+                }
+                "linux_fsync_waits_for_an_admitted_write" => {
+                    let path = temporary.path().join("ordered-write");
+                    std::fs::write(&path, b"old")?;
+                    let file = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .open(&path)?;
+                    let mut writer = file.try_clone()?;
+                    let syncer = file.try_clone()?;
+                    std::thread::scope(|threads| -> Result<(), Box<dyn std::error::Error>> {
+                        let pause =
+                            super::super::fuse::pause_next_write_after_admission(source.clone());
+                        let writer_thread = threads.spawn(move || writer.write_all(b"new"));
+                        pause.admitted.recv_timeout(Duration::from_secs(5))?;
+
+                        let (started, started_rx) = std::sync::mpsc::sync_channel(1);
+                        let (finished, finished_rx) = std::sync::mpsc::sync_channel(1);
+                        let sync_thread = threads.spawn(move || {
+                            let _ = started.send(());
+                            let result = syncer.sync_all();
+                            let _ = finished.send(result);
+                        });
+                        started_rx.recv_timeout(Duration::from_secs(5))?;
+                        assert!(
+                            finished_rx
+                                .recv_timeout(Duration::from_millis(100))
+                                .is_err(),
+                            "fsync must not overtake a write admitted on the same handle"
+                        );
+                        pause.release.send(())?;
+                        writer_thread
+                            .join()
+                            .map_err(|_| "mounted writer panicked")??;
+                        sync_thread.join().map_err(|_| "mounted fsync panicked")?;
+                        finished_rx.recv_timeout(Duration::from_secs(5))??;
+                        Ok(())
+                    })?;
+                    drop(file);
+                    assert_eq!(std::fs::read(&path)?, b"new");
                     assert!(
-                        external.is_file(),
-                        "invalidation must evict a negative dentry"
+                        !checkout_state(&source).1,
+                        "fsync published the admitted write"
                     );
                 }
-
-                let data_path = MountPath::root().child(b"changed-by-source".to_vec());
-                boundary(source.cancellation(), |work| {
-                    source.create_file(&data_path, metadata(), None, work)
-                })?;
-                source.write_range(&data_path, 0, Bytes::from_static(b"before"))?;
-                mount.invalidate(b"/changed-by-source")?;
-                let mut opened = std::fs::File::open(temporary.path().join("changed-by-source"))?;
-                let mut body = [0_u8; 6];
-                opened.read_exact(&mut body)?;
-                assert_eq!(&body, b"before");
-                source.write_range(&data_path, 0, Bytes::from_static(b"after!"))?;
-                mount.invalidate(b"/changed-by-source")?;
-                opened.seek(SeekFrom::Start(0))?;
-                opened.read_exact(&mut body)?;
-                assert_eq!(&body, b"after!");
-                drop(opened);
-            }
-            "linux_truncate_open_keeps_its_own_handle" => {
-                let path = temporary.path().join("incremental-output");
-                std::fs::write(&path, b"old")?;
-                for iteration in 0..8 {
-                    let mut file = std::fs::OpenOptions::new()
-                        .write(true)
-                        .truncate(true)
-                        .open(&path)?;
-                    write!(file, "new-{iteration}")?;
-                    file.sync_all()?;
-                    assert_eq!(std::fs::read_to_string(&path)?, format!("new-{iteration}"));
-                }
-            }
-            "linux_hard_link_alias_survives_mounted_write_and_rename" => {
-                let original = temporary.path().join("original");
-                let alias = temporary.path().join("alias");
-                let renamed = temporary.path().join("renamed");
-                std::fs::write(&original, b"before")?;
-                std::fs::hard_link(&original, &alias)?;
-                assert_eq!(
-                    std::fs::metadata(&original)?.ino(),
-                    std::fs::metadata(&alias)?.ino()
-                );
-                assert_eq!(std::fs::metadata(&alias)?.nlink(), 2);
-
-                std::fs::write(&alias, b"after")?;
-                assert_eq!(std::fs::read(&original)?, b"after");
-                std::fs::rename(&original, &renamed)?;
-                assert_eq!(
-                    std::fs::metadata(&renamed)?.ino(),
-                    std::fs::metadata(&alias)?.ino()
-                );
-                assert_eq!(std::fs::read(&renamed)?, b"after");
-                std::fs::remove_file(&alias)?;
-                assert_eq!(std::fs::metadata(&renamed)?.nlink(), 1);
-                assert_eq!(std::fs::read(&renamed)?, b"after");
-            }
-            "linux_fsync_waits_for_an_admitted_write" => {
-                let path = temporary.path().join("ordered-write");
-                std::fs::write(&path, b"old")?;
-                let file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(&path)?;
-                let mut writer = file.try_clone()?;
-                let syncer = file.try_clone()?;
-                let (admitted, release) = super::super::fuse::pause_next_write_after_admission();
-                let writer_thread = std::thread::spawn(move || writer.write_all(b"new"));
-                admitted.recv_timeout(Duration::from_secs(5))?;
-
-                let (started, started_rx) = std::sync::mpsc::sync_channel(1);
-                let (finished, finished_rx) = std::sync::mpsc::sync_channel(1);
-                let sync_thread = std::thread::spawn(move || {
-                    let _ = started.send(());
-                    let result = syncer.sync_all();
-                    let _ = finished.send(result);
-                });
-                started_rx.recv_timeout(Duration::from_secs(5))?;
-                assert!(
-                    finished_rx
-                        .recv_timeout(Duration::from_millis(100))
-                        .is_err(),
-                    "fsync must not overtake a write admitted on the same handle"
-                );
-                release.send(())?;
-                writer_thread
-                    .join()
-                    .map_err(|_| "mounted writer panicked")??;
-                sync_thread.join().map_err(|_| "mounted fsync panicked")?;
-                finished_rx.recv_timeout(Duration::from_secs(5))??;
-                drop(file);
-                assert_eq!(std::fs::read(&path)?, b"new");
-                assert!(
-                    !checkout_state(&source).1,
-                    "fsync published the admitted write"
-                );
-            }
-            "linux_fsync_on_clean_descriptor_publishes_other_descriptor_write" => {
-                let path = temporary.path().join("cross-descriptor-fsync");
-                std::fs::write(&path, b"old")?;
-                let syncer = std::fs::OpenOptions::new().read(true).open(&path)?;
-                let mut writer = std::fs::OpenOptions::new().write(true).open(&path)?;
-                writer.write_all(b"new")?;
-                assert!(checkout_state(&source).1, "write remains pending");
-                syncer.sync_all()?;
-                assert!(
-                    !checkout_state(&source).1,
-                    "explicit fsync published the write"
-                );
-                assert_eq!(std::fs::read(&path)?, b"new");
-                writer.write_all(b"2")?;
-                assert!(checkout_state(&source).1, "second write remains pending");
-                std::fs::File::open(temporary.path())?.sync_all()?;
-                assert!(
-                    !checkout_state(&source).1,
-                    "directory fsync published the write"
-                );
-                drop(writer);
-                drop(syncer);
-            }
-            "linux_concurrent_truncates_do_not_fence_unrelated_files" => {
-                let barrier = Arc::new(std::sync::Barrier::new(9));
-                let mut workers = Vec::new();
-                for worker in 0..8 {
-                    let path = temporary.path().join(format!("concurrent-{worker}"));
+                "linux_fsync_on_clean_descriptor_publishes_other_descriptor_write" => {
+                    let path = temporary.path().join("cross-descriptor-fsync");
                     std::fs::write(&path, b"old")?;
-                    let barrier = Arc::clone(&barrier);
-                    workers.push(std::thread::spawn(move || -> std::io::Result<()> {
-                        barrier.wait();
-                        for iteration in 0..8 {
-                            let mut file = std::fs::OpenOptions::new()
-                                .write(true)
-                                .truncate(true)
-                                .open(&path)
-                                .map_err(|error| {
-                                    std::io::Error::other(format!(
-                                        "concurrent open {worker}/{iteration}: {error}"
-                                    ))
-                                })?;
-                            write!(file, "new-{worker}-{iteration}")?;
-                            file.sync_all()?;
-                        }
-                        assert_eq!(std::fs::read_to_string(&path)?, format!("new-{worker}-7"));
-                        Ok(())
-                    }));
+                    let syncer = std::fs::OpenOptions::new().read(true).open(&path)?;
+                    let mut writer = std::fs::OpenOptions::new().write(true).open(&path)?;
+                    writer.write_all(b"new")?;
+                    assert!(checkout_state(&source).1, "write remains pending");
+                    syncer.sync_all()?;
+                    assert!(
+                        !checkout_state(&source).1,
+                        "explicit fsync published the write"
+                    );
+                    assert_eq!(std::fs::read(&path)?, b"new");
+                    writer.write_all(b"2")?;
+                    assert!(checkout_state(&source).1, "second write remains pending");
+                    std::fs::File::open(temporary.path())?.sync_all()?;
+                    assert!(
+                        !checkout_state(&source).1,
+                        "directory fsync published the write"
+                    );
+                    drop(writer);
+                    drop(syncer);
                 }
-                barrier.wait();
-                for worker in workers {
-                    worker.join().map_err(|_| "mounted writer panicked")??;
+                "linux_concurrent_truncates_do_not_fence_unrelated_files" => {
+                    let barrier = Arc::new(std::sync::Barrier::new(9));
+                    let mut workers = Vec::new();
+                    for worker in 0..8 {
+                        let path = temporary.path().join(format!("concurrent-{worker}"));
+                        std::fs::write(&path, b"old")?;
+                        let barrier = Arc::clone(&barrier);
+                        workers.push(std::thread::spawn(move || -> std::io::Result<()> {
+                            barrier.wait();
+                            for iteration in 0..8 {
+                                let mut file = std::fs::OpenOptions::new()
+                                    .write(true)
+                                    .truncate(true)
+                                    .open(&path)
+                                    .map_err(|error| {
+                                        std::io::Error::other(format!(
+                                            "concurrent open {worker}/{iteration}: {error}"
+                                        ))
+                                    })?;
+                                write!(file, "new-{worker}-{iteration}")?;
+                                file.sync_all()?;
+                            }
+                            assert_eq!(std::fs::read_to_string(&path)?, format!("new-{worker}-7"));
+                            Ok(())
+                        }));
+                    }
+                    barrier.wait();
+                    for worker in workers {
+                        worker.join().map_err(|_| "mounted writer panicked")??;
+                    }
                 }
+                "rustc_compiles_inside_a_linux_mount" => {
+                    std::fs::write(temporary.path().join("main.rs"), b"fn main() {}\n")?;
+                    let output = acyclic_native_runtime::process_output(
+                        std::process::Command::new("rustc")
+                            .current_dir(temporary.path())
+                            .args(["--edition", "2021", "main.rs", "-o", "main"]),
+                        std::time::Duration::from_secs(120),
+                        8 * 1024 * 1024,
+                    )?;
+                    assert!(
+                        output.status.success(),
+                        "rustc failed\nstdout:\n{}\nstderr:\n{}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                    assert!(temporary.path().join("main").is_file());
+                    assert!(
+                        acyclic_native_runtime::process_status(
+                            &mut std::process::Command::new(temporary.path().join("main")),
+                            std::time::Duration::from_secs(120)
+                        )?
+                        .success(),
+                        "compiled executable did not run from the mount"
+                    );
+                }
+                _ => unreachable!(),
             }
-            "rustc_compiles_inside_a_linux_mount" => {
-                std::fs::write(temporary.path().join("main.rs"), b"fn main() {}\n")?;
-                let output = acyclic_native_runtime::process_output(
-                    std::process::Command::new("rustc")
-                        .current_dir(temporary.path())
-                        .args(["--edition", "2021", "main.rs", "-o", "main"]),
-                    std::time::Duration::from_secs(120),
-                    8 * 1024 * 1024,
-                )?;
-                assert!(
-                    output.status.success(),
-                    "rustc failed\nstdout:\n{}\nstderr:\n{}",
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                assert!(temporary.path().join("main").is_file());
-                assert!(
-                    acyclic_native_runtime::process_status(
-                        &mut std::process::Command::new(temporary.path().join("main")),
-                        std::time::Duration::from_secs(120)
-                    )?
-                    .success(),
-                    "compiled executable did not run from the mount"
-                );
-            }
-            _ => unreachable!(),
+            assert!(mount.stop()?);
+            Ok(())
+        };
+        let result = if case == "linux_fsync_on_clean_descriptor_publishes_other_descriptor_write" {
+            super::super::fuse::trace_kernel_packets(case, run)
+        } else {
+            run()
+        };
+        if let Err(cause) = result {
+            return Err(format!(
+                "step=Linux mount case {case}; cause={cause:?}; recovery: ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest cargo test --locked -p acyclic-fs --lib -- --include-ignored --nocapture"
+            ).into());
         }
-        assert!(mount.stop()?);
     }
     Ok(())
 }

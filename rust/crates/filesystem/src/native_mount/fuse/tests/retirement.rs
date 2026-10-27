@@ -47,7 +47,9 @@ fn terminal_worker_retires_destination(
     let missing = root.path().join("absent-worker-input");
     let worker = std::thread::spawn(move || {
         assert!(!panicked, "retained FUSE worker panic");
-        std::fs::read(missing).map(drop)
+        std::fs::read(missing)
+            .map(drop)
+            .map_err(NativeMountError::from)
     });
     let cleanup_error =
         std::fs::read(root.path()).expect_err("a directory cannot be read as source bytes");
@@ -294,9 +296,7 @@ fn interleaving(mode: Retirement, interrupted: bool) -> Result<(), Box<dyn std::
         before: Some((0, 0)),
         mount,
         worker: None,
-        device: Some(super::super::session::FuseDevice::Owned(
-            std::fs::File::open("/dev/null")?.into(),
-        )),
+        device: Some(Arc::new(std::fs::File::open("/dev/null")?)),
         notifier: None,
         identity: None,
         retirement: None,

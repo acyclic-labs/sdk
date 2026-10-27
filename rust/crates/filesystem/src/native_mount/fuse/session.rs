@@ -6,6 +6,7 @@ use crate::{
     NativeAllocation, NativeMaterializationWork, NativeRootIdentity, NativeWorkReservation,
     WorkCounters, WorkError,
 };
+use std::os::fd::AsFd;
 
 pub(in crate::native_mount) struct FuseSession {
     pub(super) core: Arc<ProjectionCore>,
@@ -17,38 +18,15 @@ pub(super) struct FuseSessionState {
     pub(super) path: FuseOwned<Vec<u8>>,
     pub(super) before: Option<(u64, u64)>,
     pub(super) mount: super::mount::Mount,
-    pub(super) worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
-    pub(super) device: Option<FuseDevice>,
-    pub(super) notifier: Option<Notifier>,
+    pub(super) worker: Option<std::thread::JoinHandle<Result<(), NativeMountError>>>,
+    pub(super) device: Option<Arc<std::fs::File>>,
+    pub(super) notifier: Option<CacheNotifier>,
     pub(super) identity: Option<NativeRootIdentity>,
     pub(super) retirement: Option<NativeMountRetirement>,
     pub(super) cleanup: NativeWorkReservation,
     pub(super) failure: crate::native_mount::retirement::TerminalFailures,
     pub(super) shared: Option<super::shared_instance::SharedFuseView>,
     pub(super) _allocation: NativeAllocation,
-}
-
-/// The session's FUSE device. Until fuser's session owns the device this
-/// state holds a descriptor; afterwards it holds a notifier, which shares
-/// fuser's descriptor and keeps it open, so a mounted view costs one.
-pub(super) enum FuseDevice {
-    Owned(OwnedFd),
-    Session {
-        _notifier: Notifier,
-        device: std::os::fd::RawFd,
-    },
-}
-
-impl FuseDevice {
-    pub(super) fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
-        use std::os::fd::AsFd as _;
-        match self {
-            Self::Owned(device) => device.as_fd(),
-            // SAFETY: the notifier shares the open device that owns this
-            // descriptor, which therefore stays open while it lives.
-            Self::Session { device, .. } => unsafe { std::os::fd::BorrowedFd::borrow_raw(*device) },
-        }
-    }
 }
 
 impl FuseSessionState {
@@ -94,7 +72,7 @@ impl FuseSessionState {
             let path = std::ffi::CStr::from_bytes_with_nul(&self.path)
                 .map_err(|_| NativeMountError::FuseShutdownFailed)?;
             self.mount
-                .stop(path, self.device.as_ref().map(FuseDevice::as_fd))?;
+                .stop(path, self.device.as_ref().map(std::os::fd::AsFd::as_fd))?;
         }
         if let Some(device) = self.device.as_ref() {
             started(ReadOperations.delta(1))?;
@@ -127,7 +105,7 @@ impl FuseSessionState {
                     operation: "FUSE SDK request worker",
                     panic: Mutex::new(panic),
                 })
-                .and_then(|result| result.map_err(NativeMountError::from))
+                .and_then(std::convert::identity)
                 .err();
             // The worker has physically exited even when its terminal value
             // failed. The same owner must still retire its source and fence.
@@ -178,9 +156,12 @@ impl FuseSession {
             source,
             root,
             stamp,
-            request.writable,
-            (metadata.st_uid, metadata.st_gid),
-            0,
+            ProjectionConfig {
+                writable: request.writable,
+                owner: (metadata.st_uid, metadata.st_gid),
+                inode_base: 0,
+                cache: ProjectionCache::Notifications,
+            },
             work,
         )?;
         let _startup = NativeMountWorkScope::new(&core, work)?;
@@ -190,7 +171,7 @@ impl FuseSession {
         let allocation = work.claim(
             (std::mem::size_of::<Mutex<FuseSessionState>>()
                 + std::mem::size_of::<(Arc<ProjectionCore>, Arc<Mutex<FuseSessionState>>)>()
-                + std::mem::size_of::<fuser::Session<FuseProjection>>()) as u64,
+                + std::mem::size_of::<super::host_session::HostSession>()) as u64,
             3,
             WorkCounters::UNCHARGED,
         )?;
@@ -235,18 +216,6 @@ impl FuseSession {
                 prepare(packet)?;
             }
             map_read_buffers();
-            let mut config = Config::default();
-            config.mount_options = vec![
-                fuser::MountOption::FSName("acyclic-fs".to_owned()),
-                fuser::MountOption::DefaultPermissions,
-                fuser::MountOption::Exec,
-                fuser::MountOption::NoAtime,
-            ];
-            if !request.writable {
-                config.mount_options.push(fuser::MountOption::RO);
-            }
-            config.n_threads = Some(crate::native_mount::CALLBACK_THREADS as usize);
-            config.clone_fd = false;
             work.charge(WriteOperations.delta(2))?;
             let filesystem = FuseProjection {
                 core: Arc::clone(&core),
@@ -259,31 +228,26 @@ impl FuseSession {
                 || super::lifecycle::fuse_recovery_helper(work),
                 &mut received,
             );
-            *device = received.map(FuseDevice::Owned);
+            *device = received.map(|descriptor| Arc::new(std::fs::File::from(descriptor)));
             opened?;
-            // A failed handshake closes the session's descriptor, so the
-            // state holds its own until fuser's session owns the device.
-            let descriptor = device
-                .as_ref()
-                .ok_or(NativeMountError::FuseShutdownFailed)?
-                .as_fd()
-                .try_clone_to_owned()?;
-            let session =
-                fuser::Session::from_fd(filesystem, descriptor, fuser::SessionACL::Owner, config)
-                    .map_err(|error| {
-                    core.take_handler_failure()
-                        .map_or_else(|| error.into(), |failure| failure.0)
-                })?;
+            // State retains the actual device throughout handshake and rollback.
+            let descriptor = Arc::clone(
+                device
+                    .as_ref()
+                    .ok_or(NativeMountError::FuseShutdownFailed)?,
+            );
+            let session = super::host_session::HostSession::new(
+                super::packet_router::PacketRouter::Single(filesystem),
+                descriptor,
+                work,
+            )?;
+            session.initialize().map_err(|error| {
+                core.take_handler_failure()
+                    .map_or(error, |failure| failure.0)
+            })?;
             started.notifier = Some(session.notifier());
             let _ = core.notifier.set(session.notifier());
-            started.device = Some(FuseDevice::Session {
-                _notifier: session.notifier(),
-                device: {
-                    use std::os::fd::{AsFd as _, AsRawFd as _};
-                    session.as_fd().as_raw_fd()
-                },
-            });
-            // Session::spawn consumes its join handle on unmount refusal; retain it ourselves.
+            // Retain the join handle through unmount refusal and physical exit.
             started.worker = Some(std::thread::Builder::new().spawn(move || session.run())?);
             let (directory, identity) =
                 crate::native_host::open_root_directory(&request.destination, &mut &*work)?;
@@ -342,9 +306,12 @@ impl FuseSession {
                 source,
                 root,
                 stamp,
-                request.writable,
-                (metadata.st_uid, metadata.st_gid),
-                base,
+                ProjectionConfig {
+                    writable: request.writable,
+                    owner: (metadata.st_uid, metadata.st_gid),
+                    inode_base: base,
+                    cache: ProjectionCache::Notifications,
+                },
                 work,
             )?;
             startup = Some(NativeMountWorkScope::new(&core, work)?);

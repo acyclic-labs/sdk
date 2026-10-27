@@ -56,32 +56,34 @@ pub(super) fn linux_an_open_reader_sees_a_write_through_another_handle()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Read as _, Seek as _, Write as _};
 
-    let (inner, _) = shared_sources(posix_config())?;
-    let volume_id = inner.volume_id()?;
-    let source = Arc::new(inner);
-    let temporary = tempfile::tempdir()?;
-    let mut session = mount(
-        Arc::clone(&source) as Arc<dyn MountFilesystem>,
-        volume_id,
-        temporary.path(),
-    )?;
-    let shared = temporary.path().join("shared");
-    std::fs::write(&shared, b"before")?;
-    assert_eq!(std::fs::read(&shared)?, b"before");
-    let mut writer = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&shared)?;
-    let mut reader = std::fs::File::open(&shared)?;
-    writer.seek(std::io::SeekFrom::End(0))?;
-    writer.write_all(b"-after")?;
-    writer.sync_all()?;
-    let mut observed = Vec::new();
-    reader.read_to_end(&mut observed)?;
-    assert_eq!(observed, b"before-after");
-    drop((writer, reader));
-    assert!(session.stop()?);
-    Ok(())
+    super::packets::trace_kernel_packets("open reader observes another handle", || {
+        let (inner, _) = shared_sources(posix_config())?;
+        let volume_id = inner.volume_id()?;
+        let source = Arc::new(inner);
+        let temporary = tempfile::tempdir()?;
+        let mut session = mount(
+            Arc::clone(&source) as Arc<dyn MountFilesystem>,
+            volume_id,
+            temporary.path(),
+        )?;
+        let shared = temporary.path().join("shared");
+        std::fs::write(&shared, b"before")?;
+        assert_eq!(std::fs::read(&shared)?, b"before");
+        let mut writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&shared)?;
+        let mut reader = std::fs::File::open(&shared)?;
+        writer.seek(std::io::SeekFrom::End(0))?;
+        writer.write_all(b"-after")?;
+        writer.sync_all()?;
+        let mut observed = Vec::new();
+        reader.read_to_end(&mut observed)?;
+        assert_eq!(observed, b"before-after");
+        drop((writer, reader));
+        assert!(session.stop()?);
+        Ok(())
+    })
 }
 
 #[test]
@@ -92,16 +94,31 @@ pub(super) fn linux_writes_keep_node_facts_exact() -> Result<(), Box<dyn std::er
     let temporary = tempfile::tempdir()?;
     let mut session = mount(Arc::new(inner), volume_id, temporary.path())?;
     let written = temporary.path().join("written");
-    std::fs::write(&written, b"first")?;
-    for body in [b"second write".as_slice(), b"third".as_slice()] {
-        let mut file = std::fs::OpenOptions::new().write(true).open(&written)?;
-        std::io::Write::write_all(&mut file, body)?;
-        drop(file);
-        assert_eq!(std::fs::metadata(&written)?.len(), 12);
+    let mut step = "initial write";
+    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+        std::fs::write(&written, b"first")?;
+        for body in [b"second write".as_slice(), b"third".as_slice()] {
+            step = "reopen written file";
+            let mut file = std::fs::OpenOptions::new().write(true).open(&written)?;
+            step = "rewrite opened file";
+            std::io::Write::write_all(&mut file, body)?;
+            drop(file);
+            step = "read updated node facts";
+            assert_eq!(std::fs::metadata(&written)?.len(), 12);
+        }
+        step = "read rewritten bytes";
+        assert_eq!(std::fs::read(&written)?, b"thirdd write");
+        step = "positive session stop";
+        assert!(session.stop()?);
+        Ok(())
+    })();
+    if let Err(error) = &result {
+        eprintln!(
+            "FUSE_NODE_FACTS step={step} error={error:?} callback_failure={:?}",
+            session.take_callback_failure()
+        );
     }
-    assert_eq!(std::fs::read(&written)?, b"thirdd write");
-    assert!(session.stop()?);
-    Ok(())
+    result
 }
 
 #[test]
