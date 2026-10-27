@@ -121,11 +121,7 @@ workspace = true
 
 [[example]]
 name = "provider-conformance"
-required-features = ["http", "conformance"]
-
-[[example]]
-name = "postgres-conformance"
-required-features = ["postgres", "conformance"]
+required-features = ["conformance"]
 
 [[test]]
 name = "browser_follow_model"
