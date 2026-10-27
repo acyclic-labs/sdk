@@ -388,7 +388,7 @@ impl NativeResources for NativeLifecycle {
         self.provider
     }
 
-    async fn raw_destroy(&self, resource: &NativeResource) -> Result<(), ProviderError> {
+    async fn raw_destroy(&self, resource: &NativeResource) -> Result<u64, ProviderError> {
         if !self.allow_delete {
             return Err(ProviderError::Rejected(
                 "internal lifecycle oracle must never delete an existing target".into(),
@@ -411,7 +411,7 @@ impl NativeResources for NativeLifecycle {
             }
         }
         self.mutations.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+        Ok(self.value.lock().await.changed_at_unix_ms + 1)
     }
 }
 
@@ -1463,5 +1463,171 @@ async fn event_admission_does_not_rewrite_the_canonical_machine() -> TestResult 
         Some(&EventFact::State(MachineState::Running))
     );
     assert_eq!(next, None);
+    Ok(())
+}
+
+#[tokio::test]
+async fn reopened_cleanup_publishes_destruction_with_debt_release_and_stable_settlement()
+-> TestResult {
+    let request = CreateMachine::new(IdempotencyKey::new(), Image::custom([7; 32])?, [8; 32]);
+    let MutationOutcome::Created(value) = SimulatedMachines::default().create(request).await?
+    else {
+        return Err("expected internal machine".into());
+    };
+    let driver = NativeLifecycle {
+        provider: "internal",
+        allow_delete: true,
+        expected_handle: Some("opaque-cleanup-machine"),
+        checkpoint_owner: None,
+        value: tokio::sync::Mutex::new(value.clone()),
+        children: tokio::sync::Mutex::default(),
+        mutations: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+    };
+    let dir = tempfile::tempdir()?;
+    let core = open(dir.path()).await?;
+    let key = IdempotencyKey::new();
+    let operation = fresh(core.admit(key, &"internal accepted machine").await?)?;
+    core.claim_machine(
+        &driver,
+        operation,
+        value.clone(),
+        NativeBinding {
+            provider: driver.name().into(),
+            handle: "opaque-cleanup-machine".into(),
+            endpoint: None,
+        },
+        false,
+    )
+    .await?;
+    core.cancel(operation).await?;
+    let settlement = core.join_settlement(key, operation).await?;
+    drop(core);
+    let core = open(dir.path()).await?;
+    core.cancel_with(&driver, operation).await?;
+    assert!(core.created(operation).await?.is_empty());
+    let destroyed = core
+        .machine(value.id)
+        .await?
+        .ok_or("missing destroyed point")?;
+    assert_eq!(destroyed.state, MachineState::Destroyed);
+    assert_eq!(destroyed.changed_at_unix_ms, value.changed_at_unix_ms + 1);
+    assert_eq!(core.join_settlement(key, operation).await?, settlement);
+    let operation_row = core
+        .journal
+        .load::<StoredOperation>(&format!("ops/{operation}"))
+        .await?;
+    let machine_row = core
+        .journal
+        .load::<StoredMachine>(&value.id.to_string())
+        .await?;
+    assert_eq!(operation_row.anchor, machine_row.anchor);
+    let mut event_records = core
+        .journal
+        .provider
+        .read(ReadRequest {
+            path: core.journal.path(&format!("{}/events", value.id))?,
+            from: 1,
+            limit: 1,
+        })
+        .await?;
+    assert_eq!(
+        event_records
+            .try_next()
+            .await?
+            .map(|record| record.commit_id),
+        machine_row.anchor
+    );
+    core.cancel_with(&driver, operation).await?;
+    assert_eq!(driver.mutations.load(Ordering::SeqCst), 1);
+    // A delayed native read cannot resurrect the acknowledged deletion.
+    core.observe_machine(value.clone(), value.changed_at_unix_ms)
+        .await?;
+    assert_eq!(core.events(value.id, None, 10).await?.0.len(), 2);
+    drop(event_records);
+    drop(core);
+    let core = open(dir.path()).await?;
+    assert_eq!(
+        core.machine(value.id).await?.map(|value| value.state),
+        Some(MachineState::Destroyed)
+    );
+    assert_eq!(core.join_settlement(key, operation).await?, settlement);
+    Ok(())
+}
+
+#[tokio::test]
+async fn checkpoint_cleanup_reopens_the_admitted_projection_and_revokes_forkability_atomically()
+-> TestResult {
+    let request = CreateMachine::new(IdempotencyKey::new(), Image::custom([7; 32])?, [8; 32]);
+    let MutationOutcome::Created(value) = SimulatedMachines::default().create(request).await?
+    else {
+        return Err("expected internal machine".into());
+    };
+    let driver = NativeLifecycle {
+        provider: "internal",
+        allow_delete: true,
+        expected_handle: None,
+        checkpoint_owner: None,
+        value: tokio::sync::Mutex::new(value.clone()),
+        children: tokio::sync::Mutex::default(),
+        mutations: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+    };
+    let checkpoint = CheckpointObservation {
+        id: CheckpointId::new(),
+        source: value.id,
+        contract: value.contract,
+        forkable: true,
+        created_at_unix_ms: 10,
+    };
+    let dir = tempfile::tempdir()?;
+    let core = open(dir.path()).await?;
+    let key = IdempotencyKey::new();
+    let operation = fresh(core.admit(key, &"internal accepted checkpoint").await?)?;
+    core.claim_checkpoint(
+        &driver,
+        operation,
+        checkpoint.clone(),
+        NativeBinding {
+            provider: driver.name().into(),
+            handle: "opaque-checkpoint-cleanup".into(),
+            endpoint: None,
+        },
+    )
+    .await?;
+    core.cancel(operation).await?;
+    let settlement = core.join_settlement(key, operation).await?;
+    drop(core);
+    let core = open(dir.path()).await?;
+    core.cancel_with(&driver, operation).await?;
+    assert!(core.created(operation).await?.is_empty());
+    assert_eq!(
+        core.checkpoint(checkpoint.id).await?,
+        Some(CheckpointObservation {
+            forkable: false,
+            ..checkpoint.clone()
+        })
+    );
+    let operation_row = core
+        .journal
+        .load::<StoredOperation>(&format!("ops/{operation}"))
+        .await?;
+    let checkpoint_row = core
+        .journal
+        .load::<StoredCheckpoint>(&format!("checkpoints/{}", checkpoint.id))
+        .await?;
+    assert_eq!(operation_row.anchor, checkpoint_row.anchor);
+    assert_eq!(core.join_settlement(key, operation).await?, settlement);
+    core.cancel_with(&driver, operation).await?;
+    assert_eq!(driver.mutations.load(Ordering::SeqCst), 1);
+    drop(core);
+    let core = open(dir.path()).await?;
+    assert_eq!(
+        core.checkpoint(checkpoint.id)
+            .await?
+            .map(|value| value.forkable),
+        Some(false)
+    );
+    assert_eq!(core.join_settlement(key, operation).await?, settlement);
     Ok(())
 }

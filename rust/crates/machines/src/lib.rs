@@ -7,7 +7,8 @@
 /// Shared canonical account-relative resource addressing.
 pub use acyclic_auth::addressing;
 use async_trait::async_trait;
-use futures::{StreamExt, stream};
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
+use futures::stream;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use std::{

@@ -521,9 +521,11 @@ impl NativeResources for DaytonaProvider {
         "daytona"
     }
 
-    async fn raw_destroy(&self, resource: &NativeResource) -> Result<(), ProviderError> {
+    async fn raw_destroy(&self, resource: &NativeResource) -> Result<u64, ProviderError> {
         match resource {
-            NativeResource::Machine(handle) => self.api.delete(handle).await,
+            NativeResource::Machine(handle) => {
+                self.api.delete(handle).await.map(|()| now_unix_ms())
+            }
             NativeResource::Checkpoint(handle) => {
                 // An accepted snapshot can be absent before materialization. Its
                 // missing name is not proof of deletion; retain cleanup ownership.
@@ -535,7 +537,10 @@ impl NativeResources for DaytonaProvider {
                             ProviderError::NotFound(_) => ProviderError::Unavailable,
                             error => error,
                         })?;
-                self.api.delete_snapshot(&snapshot.id).await
+                self.api
+                    .delete_snapshot(&snapshot.id)
+                    .await
+                    .map(|()| now_unix_ms())
             }
         }
     }

@@ -42,11 +42,11 @@ impl OperationRegistry {
                 ));
             }
             self.wait_machine(driver, machine, key, interval, timeout).await?;
-            self.remember_bound_checkpoint(checkpoint.clone(), Some(NativeBinding {
+            self.claim_checkpoint(driver, operation, checkpoint.clone(), NativeBinding {
                 provider: driver.name().into(),
                 handle: resource.handle().into(),
                 endpoint: None,
-            })).await?;
+            }).await?;
             let mut current = self.machine(machine).await?.ok_or_else(|| ProviderError::NotFound(machine.to_string()))?;
             current.last_checkpoint = Some(checkpoint.id);
             self.observe_machine(current.clone(), current.changed_at_unix_ms).await?;

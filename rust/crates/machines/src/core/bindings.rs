@@ -237,7 +237,14 @@ impl OperationRegistry {
                 .load::<StoredOperation>(&operation_path)
                 .await?;
             let machine = self.journal.load::<StoredMachine>(&machine_path).await?;
-            let conditions = vec![op.condition(), machine.condition()];
+            let resource = NativeResource::Machine(native.handle.clone());
+            let link_path = super::custody::projection_path(operation, &resource)?;
+            let projection = super::custody::CleanupProjection::Machine(observation.id);
+            let link = self
+                .journal
+                .load::<super::custody::CleanupProjection>(&link_path)
+                .await?;
+            let conditions = vec![op.condition(), machine.condition(), link.condition()];
             let mut record = op
                 .value
                 .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
@@ -246,6 +253,10 @@ impl OperationRegistry {
                 .as_ref()
                 .and_then(|state| state.native.as_ref())
                 .is_some_and(|binding| binding != &native)
+                || link
+                    .value
+                    .as_ref()
+                    .is_some_and(|known| known != &projection)
             {
                 // The native mutation already accepted a resource. Refusing its
                 // conflicting logical identity must not drop the new handle.
@@ -268,7 +279,7 @@ impl OperationRegistry {
                 &NativeResource::Machine(native.handle.clone()),
                 adopted,
             )?;
-            let mut mutations = Vec::new();
+            let mut mutations = vec![self.journal.append(&link_path, &projection)?];
             if let Some(event) = project(
                 &mut state,
                 &observation,
@@ -302,7 +313,11 @@ impl OperationRegistry {
         }
         let resource = NativeResource::Machine(native.handle);
         match driver.raw_destroy(&resource).await {
-            Ok(()) | Err(ProviderError::NotFound(_)) => self.deleted(operation, &resource).await?,
+            Ok(at) => {
+                self.acknowledge_deletion(operation, &resource, Some(at))
+                    .await?
+            }
+            Err(ProviderError::NotFound(_)) => self.deleted(operation, &resource).await?,
             Err(error) => tracing::warn!(%operation, %error,
                 "Machines late-create deletion failed; recovery: call MachinesProvider::cancel with the original operation identity again"),
         }

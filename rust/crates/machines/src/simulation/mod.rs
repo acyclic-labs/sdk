@@ -112,13 +112,15 @@ impl SimulatedMachines {
                             )
                             .await?;
                         self.ops
-                            .remember_bound_checkpoint(
+                            .claim_checkpoint(
+                                self,
+                                operation,
                                 value.clone(),
-                                Some(NativeBinding {
+                                NativeBinding {
                                     provider: self.name().into(),
                                     handle,
                                     endpoint: None,
-                                }),
+                                },
                             )
                             .await?;
                         let source = state
@@ -241,7 +243,7 @@ impl NativeResources for SimulatedMachines {
         "simulation"
     }
 
-    async fn raw_destroy(&self, resource: &NativeResource) -> Result<(), ProviderError> {
+    async fn raw_destroy(&self, resource: &NativeResource) -> Result<u64, ProviderError> {
         // A native-world mutation may still be publishing its accepted result.
         // Refuse while busy; the one canonical cleanup owner retains the debt.
         let mut state = self.state.try_lock().map_err(|_| ProviderError::Conflict(
@@ -273,6 +275,6 @@ impl NativeResources for SimulatedMachines {
                 current.forkable = false;
             }
         }
-        Ok(())
+        Ok(state.now)
     }
 }

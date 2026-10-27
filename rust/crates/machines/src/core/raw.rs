@@ -30,8 +30,10 @@ pub trait NativeResources: acyclic_stream::ProviderPlatform {
     fn name(&self) -> &str;
 
     /// Delete one opaque resource once. A missing resource may return NotFound;
-    /// a lost native reply remains Unavailable. Retry decisions belong to core.
-    async fn raw_destroy(&self, resource: &NativeResource) -> Result<(), ProviderError>;
+    /// a lost native reply remains Unavailable. Success returns the provider's
+    /// deletion observation time in Unix milliseconds (virtual for simulation).
+    /// Retry and canonical state publication belong to core.
+    async fn raw_destroy(&self, resource: &NativeResource) -> Result<u64, ProviderError>;
 }
 
 /// Raw lifecycle primitives, separate from the minimal resource custody used by

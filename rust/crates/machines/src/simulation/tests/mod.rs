@@ -1,4 +1,5 @@
 use super::*;
+use futures::StreamExt;
 
 fn request(key: IdempotencyKey) -> CreateMachine {
     CreateMachine::new(

@@ -1,5 +1,7 @@
 //! Shared fork ordering and definite-refusal handling. Unknown dispatch is never retried.
-use crate::{IdempotencyKey, ProviderError};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::IdempotencyKey;
+use crate::ProviderError;
 use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;

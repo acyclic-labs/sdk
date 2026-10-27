@@ -5,6 +5,7 @@ pub use crate::{OperationSettlement, SettledMutation};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 mod bindings;
+mod custody;
 mod journal;
 mod limits;
 mod pages;
@@ -494,10 +495,7 @@ impl OperationRegistry {
         id: OperationId,
         resource: &NativeResource,
     ) -> Result<(), ProviderError> {
-        self.change(id, |record| {
-            record.created.retain(|id| id != resource);
-        })
-        .await
+        self.acknowledge_deletion(id, resource, None).await
     }
 
     /// Delete newest descendants first. An unacknowledged native deletion remains
@@ -510,9 +508,11 @@ impl OperationRegistry {
         self.check_driver(operation, driver.name()).await?;
         for resource in self.created(operation).await?.into_iter().rev() {
             match driver.raw_destroy(&resource).await {
-                Ok(()) | Err(ProviderError::NotFound(_)) => {
-                    self.deleted(operation, &resource).await?
+                Ok(at) => {
+                    self.acknowledge_deletion(operation, &resource, Some(at))
+                        .await?
                 }
+                Err(ProviderError::NotFound(_)) => self.deleted(operation, &resource).await?,
                 Err(error) => tracing::warn!(%operation, resource = resource.handle(), %error,
                     "Machines native deletion failed; recovery: call MachinesProvider::cancel with this operation identity again"),
             }
@@ -554,7 +554,11 @@ impl OperationRegistry {
             return Ok(());
         }
         match driver.raw_destroy(resource).await {
-            Ok(()) | Err(ProviderError::NotFound(_)) => self.deleted(operation, resource).await?,
+            Ok(at) => {
+                self.acknowledge_deletion(operation, resource, Some(at))
+                    .await?
+            }
+            Err(ProviderError::NotFound(_)) => self.deleted(operation, resource).await?,
             Err(error) => tracing::warn!(%operation, resource = resource.handle(), %error,
                 "Machines late-create deletion failed; recovery: call MachinesProvider::cancel with this operation identity again"),
         }
