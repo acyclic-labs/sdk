@@ -1278,19 +1278,6 @@ impl MachinesProvider for DaytonaProvider {
     }
 }
 
-fn require_capability(
-    machine: &MachineObservation,
-    capability: Capability,
-) -> Result<(), ProviderError> {
-    if machine.contract.capabilities.contains(&capability) {
-        Ok(())
-    } else {
-        Err(ProviderError::Unsupported(format!(
-            "machine contract does not declare {capability:?}"
-        )))
-    }
-}
-
 #[cfg(test)]
 #[allow(
     clippy::indexing_slicing,

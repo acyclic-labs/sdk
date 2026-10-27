@@ -671,7 +671,7 @@ async fn checkpoint_wait_requires_durable_typed_ownership_and_replays_after_reop
     };
     let core = open(dir.path()).await?;
     let key = IdempotencyKey::new();
-    let native = NativeLifecycle {
+    let mut native = NativeLifecycle {
         provider: "internal",
         checkpoint_owner: Some((core.clone(), key)),
         value: tokio::sync::Mutex::new(value.clone()),
@@ -704,6 +704,7 @@ async fn checkpoint_wait_requires_durable_typed_ownership_and_replays_after_reop
     assert!(core.created(operation_id(key)).await?.is_empty());
     let settlement = core.settled(key).await?;
     let reads = native.reads.load(Ordering::SeqCst);
+    native.checkpoint_owner = None;
     drop(core);
     let reopened = open(dir.path()).await?;
     assert_eq!(
