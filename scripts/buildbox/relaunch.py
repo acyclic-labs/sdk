@@ -265,23 +265,32 @@ def host_identity():
     return key.read_bytes(), (CONFIG_DIR/'host_ed25519.pub').read_text().split()[:2]
 
 
-def pin_host(ip, public, ssh_dir=None):
-    ssh_dir = Path(ssh_dir or SSH_DIR)
-    known = ssh_dir/'known_hosts'
+def pin_host(ip, public, ssh_dir=None, name='config'):
+    """Write ssh_dir/NAME: the shared config with bb2/buildbox's HostName set to IP,
+    pinning the fixed host identity. NAME 'config' publishes the shared alias; any
+    other name is a private candidate endpoint with its own known_hosts, so
+    nothing ordinary jobs read changes."""
+    ssh_dir = Path(ssh_dir or SSH_DIR); shared = name == 'config'
+    known = ssh_dir/'known_hosts'; pinned = known if shared else ssh_dir/(name+'.known_hosts')
     lines = [l for l in (known.read_text().splitlines() if known.exists() else []) if l.split(' ', 1)[0] != 'bb2']
-    atomic_write(known, ('\n'.join([*lines, 'bb2 '+' '.join(public)])+'\n').encode(), 0o644)
-    config = ssh_dir/'config'; out = []; host = None
+    atomic_write(pinned, ('\n'.join([*lines, 'bb2 '+' '.join(public)])+'\n').encode(), 0o644)
+    config = ssh_dir/'config'; host = None
+    # ssh_config takes the first value obtained: a leading global line selects the candidate's known_hosts.
+    out = [] if shared else ['UserKnownHostsFile '+str(pinned)]
     for line in config.read_text().splitlines():
         words = line.split()
         if words[:1] == ['Host']: host = words[1] if len(words) > 1 else None
         if words[:1] == ['HostName'] and host in ('bb2', 'buildbox'):
             line = line[:len(line)-len(line.lstrip())]+'HostName '+ip
+        if not shared and words[:1] == ['UserKnownHostsFile']:
+            line = line[:len(line)-len(line.lstrip())]+'UserKnownHostsFile '+str(pinned)
         out.append(line)
-    atomic_write(config, ('\n'.join(out)+'\n').encode(), 0o644)
+    atomic_write(ssh_dir/name, ('\n'.join(out)+'\n').encode(), 0o644)
+    return ssh_dir/name
 
 
-def ssh(command, data=None, timeout=600):
-    return subprocess.run(['ssh', '-F', str(SSH_DIR/'config'), '-o', 'BatchMode=yes', '-o', 'ControlPath=none', 'bb2', command],
+def ssh(command, data=None, timeout=600, config=None):
+    return subprocess.run(['ssh', '-F', str(config or SSH_DIR/'config'), '-o', 'BatchMode=yes', '-o', 'ControlPath=none', 'bb2', command],
                           input=data, capture_output=True, timeout=timeout)
 
 
@@ -298,29 +307,32 @@ def instance_state(region, instance):
     return item.findtext('.//instanceState/name'), item.findtext('.//ipAddress'), item.findtext('.//spotInstanceRequestId')
 
 
-def provision(snapshot):
+def provision(snapshot, config=None):
     """Phase 2 over ssh: tracked host plumbing from origin/main plus the tool snapshot."""
     archive = subprocess.run(['git', '-C', str(SDK), 'archive', '--format=tar', 'origin/main', 'scripts/buildbox'],
                              capture_output=True, check=True).stdout
     hooks = io.BytesIO()
     with tarfile.open(fileobj=hooks, mode='w') as bundle:
         if (CONFIG_DIR/'bootstrap.d').is_dir(): bundle.add(CONFIG_DIR/'bootstrap.d', arcname='hooks')
-    work = ssh('mktemp -d /mnt/bb/tmp/bb-host-XXXXXX').stdout.decode().strip()
+    work = ssh('mktemp -d /mnt/bb/tmp/bb-host-XXXXXX', config=config).stdout.decode().strip()
     for name, data in [('src.tar', archive), ('tools.tar', snapshot.read_bytes()), ('hooks.tar', hooks.getvalue())]:
-        if ssh(f'cat > {work}/{name}', data).returncode: raise RuntimeError('upload failed: '+name)
+        if ssh(f'cat > {work}/{name}', data, config=config).returncode: raise RuntimeError('upload failed: '+name)
     result = ssh(f'cd {work} && tar -xf src.tar && mkdir -p hooks && tar -xf hooks.tar && '
-                 f'sudo -n bash scripts/buildbox/host-install.sh {work}/scripts/buildbox {work}/tools.tar {work}/hooks', timeout=1200)
+                 f'sudo -n bash scripts/buildbox/host-install.sh {work}/scripts/buildbox {work}/tools.tar {work}/hooks', timeout=1200,
+                 config=config)
     if result.returncode: raise RuntimeError('host-install failed: '+result.stdout.decode()[-1500:]+result.stderr.decode()[-1500:])
 
 
-def canary():
-    """One script job and one cargo job through the normal client path."""
+def canary(config=None):
+    """One script job and one cargo job through the normal client path, over
+    CONFIG (the candidate endpoint) when given; the shared alias is untouched."""
     jobs = [['bash', '-c', 'echo BB_RELAUNCH_SCRIPT_OK'], ['cargo', 'check', '--locked', '-q', '-p', 'acyclic-markdown']]
     for argv in jobs:
         # Exactly bs.ps1's entry: the WSL remote client with forwarded job env names.
         result = subprocess.run(['/home/var/bin/build-slot', '--remote', *argv], cwd=SDK, capture_output=True, timeout=900,
                                 env={**os.environ, 'BUILD_SLOT_NO_NPM': '1', 'BUILD_SLOT_LABEL': 'bb2-relaunch-canary',
                                      'BUILD_SLOT_TENANT': 'graphcoder',
+                                     **({'BUILD_SLOT_SSH_CONFIG': str(config)} if config else {}),
                                      'BUILD_SLOT_REMOTE_ENV': 'BUILD_SLOT_NO_NPM BUILD_SLOT_LABEL'})
         if result.returncode or (argv[0] == 'bash' and b'BB_RELAUNCH_SCRIPT_OK' not in result.stdout):
             raise RuntimeError('canary failed: '+' '.join(argv)+' rc='+str(result.returncode))
@@ -393,26 +405,31 @@ def _relaunch(dry_run=False):
 
 def commit(region, instance, group, public, snapshot, old):
     """The replacement stays pending until both canaries pass: until then it is
-    listed for retirement and the old coordinates are restored on any failure,
-    so ordinary jobs never reach an unfinished box and nothing keeps billing."""
+    listed for retirement and reached only through a candidate-specific ssh
+    config. The shared bb2 alias that ordinary jobs use is published only at
+    the commit point, so no job (even after a killed launcher) reaches an
+    unfinished box, and nothing keeps billing."""
     schedule_retirement(region, instance)
-    saved = {path: path.read_bytes() for path in [SSH_DIR/'known_hosts', SSH_DIR/'config'] if path.exists()}
+    candidate = SSH_DIR/'candidate-config'
     try:
         state = {}
         if not wait(lambda: state.update(zip(['name', 'ip', 'spot'], instance_state(region, instance))) or
                     (state['name'] == 'running' and state['ip']), 300, 5):
             raise RuntimeError(f'{instance} not running with a public IP after 300 s')
-        pin_host(state['ip'], public)
-        if not wait(lambda: ssh('test -e /var/lib/buildbox/bootstrap.done', timeout=60).returncode == 0, 2700, 30):
+        pin_host(state['ip'], public, name=candidate.name)
+        if not wait(lambda: ssh('test -e /var/lib/buildbox/bootstrap.done', timeout=60, config=candidate).returncode == 0, 2700, 30):
             raise RuntimeError('phase 1 bootstrap did not finish in 45 min; see /var/log/bb-bootstrap.log')
-        provision(snapshot); canary()
+        provision(snapshot, candidate); canary(candidate)
     except BaseException:
-        for path, data in saved.items(): atomic_write(path, data, 0o644)
         retire_pending(keep={old.get('BB2_INSTANCE_ID')})
         raise
-    # Commit point: the predecessor joins the retirement list before the switch.
+    finally:
+        for path in [candidate, SSH_DIR/(candidate.name+'.known_hosts')]: path.unlink(missing_ok=True)
+    # Commit point: the predecessor joins the retirement list, then the shared
+    # alias and instance.env switch to the canaried replacement.
     if old.get('BB2_INSTANCE_ID') and old['BB2_INSTANCE_ID'] != instance:
         schedule_retirement(old.get('AWS_DEFAULT_REGION', region), old['BB2_INSTANCE_ID'])
+    pin_host(state['ip'], public)
     atomic_write(CONFIG_DIR/'instance.env', (f'AWS_DEFAULT_REGION={region}\nBB2_INSTANCE_ID={instance}\n'
                  f'BB2_SECURITY_GROUP_ID={group}\n').encode())
     # Live now: off the list (a later run's keep= guards it too), then retire the rest.
