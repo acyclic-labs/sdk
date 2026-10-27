@@ -17,19 +17,6 @@ impl Drop for Entered {
     }
 }
 
-#[cfg(not(acyclic_sdk_docs_loom))]
-struct Held<'a>(&'a Lock);
-#[cfg(not(acyclic_sdk_docs_loom))]
-impl Drop for Held<'_> {
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "its own workspace, without acyclic_native_runtime::FileLock; Held unlocks explicitly"
-    )]
-    fn drop(&mut self) {
-        let _ = self.0.unlock();
-    }
-}
-
 // Lock order on misses: one identity lock, then storage I/O. Validated hits
 // need only a record read. Nested lookups are forbidden on either path.
 pub fn get_or_compute<T>(
@@ -63,14 +50,11 @@ fn cached<const FAST: bool, T>(
     #[cfg(not(acyclic_sdk_docs_loom))]
     #[expect(
         clippy::disallowed_methods,
-        reason = "its own workspace, without acyclic_native_runtime::FileLock; Held unlocks explicitly"
+        reason = "its own workspace uses the owned File; closing its unshared handle releases the lock"
     )]
-    let _held = {
-        if lock.lock().is_err() {
-            return compute();
-        }
-        Held(&lock)
-    };
+    if lock.lock().is_err() {
+        return compute();
+    }
     lookup(read, compute, publish)
 }
 
