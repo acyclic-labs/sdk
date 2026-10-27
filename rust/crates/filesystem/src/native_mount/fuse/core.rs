@@ -170,9 +170,7 @@ impl ProjectionCore {
         source: Arc<dyn MountFilesystem>,
         root: MountLookup,
         stamp: Option<ViewStamp>,
-        writable: bool,
-        owner: (u32, u32),
-        inode_base: u64,
+        config: ProjectionConfig,
         work: &Work,
     ) -> Result<Arc<Self>, NativeMountError> {
         let (source_original_work, callback_guard) =
@@ -185,7 +183,7 @@ impl ProjectionCore {
             1,
             WorkCounters::UNCHARGED,
         )?;
-        let mut state = ProjectionState::new(writable, owner.0, owner.1, inode_base);
+        let mut state = ProjectionState::new(config);
         state.next_inode = state.root_inode;
         state.intern_projected(
             FuseOwned::empty(MountPath::root()),

@@ -52,6 +52,7 @@ pub(super) struct Entry {
 }
 
 pub(super) struct ProjectionState {
+    pub(super) cache: ProjectionCache,
     pub(super) writable: bool,
     pub(super) mount_uid: u32,
     pub(super) mount_gid: u32,
@@ -85,6 +86,9 @@ impl ProjectionState {
         inode: u64,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
+        if self.cache == ProjectionCache::Direct {
+            return Ok(());
+        }
         fuse_reserve(&mut self.superseded_attributes, 1, work)?;
         let credit = work.reserve_work(crate::WorkCounters {
             backend_write_operations: 1,
@@ -96,9 +100,16 @@ impl ProjectionState {
     }
 
     /// A projection whose inodes are `inode_base + 1 ..` within one view span.
-    pub(super) fn new(writable: bool, mount_uid: u32, mount_gid: u32, inode_base: u64) -> Self {
+    pub(super) fn new(config: ProjectionConfig) -> Self {
+        let ProjectionConfig {
+            writable,
+            owner: (mount_uid, mount_gid),
+            inode_base,
+            cache,
+        } = config;
         debug_assert_eq!(inode_base % VIEW_INODE_SPAN, 0, "view spans are aligned");
         Self {
+            cache,
             writable,
             mount_uid,
             mount_gid,
@@ -290,6 +301,9 @@ impl ProjectionState {
         stamp: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<bool, NativeMountError> {
+        if self.cache == ProjectionCache::Direct {
+            return Ok(false);
+        }
         let Some(stamp) = stamp else {
             return Ok(false);
         };
@@ -319,6 +333,9 @@ impl ProjectionState {
         work: &crate::NativeMaterializationWork,
     ) -> Result<Duration, NativeMountError> {
         work.charge(Items.delta(1))?;
+        if self.cache == ProjectionCache::Direct {
+            return Ok(Duration::ZERO);
+        }
         let Some(entry) = self.by_inode.get(&inode) else {
             return Ok(Duration::ZERO);
         };
@@ -357,7 +374,7 @@ impl ProjectionState {
         let folded = name.folded.is_some();
         let key = self.retain_spelling(inode, name)?;
         let attributes = self.admit_attributes(source, inode, stamp, work)?;
-        if folded {
+        if folded || self.cache == ProjectionCache::Direct {
             return Ok(Duration::ZERO);
         }
         let Some(entry) = self.by_inode.get(&inode) else {
@@ -424,6 +441,9 @@ impl ProjectionState {
         stamp: Option<ViewStamp>,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
+        if self.cache == ProjectionCache::Direct {
+            return Ok(());
+        }
         let Some(entry) = self.by_inode.get(&inode) else {
             return Ok(());
         };

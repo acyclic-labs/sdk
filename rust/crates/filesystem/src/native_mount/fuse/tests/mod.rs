@@ -47,7 +47,18 @@ fn projection_core(
         None => crate::NativeMaterializationWork::new(budget, cancellation)
             .map_err(|(cause, _)| NativeMountError::from(cause))?,
     };
-    super::ProjectionCore::new(source, root, stamp, true, (0, 0), 0, &work)
+    super::ProjectionCore::new(
+        source,
+        root,
+        stamp,
+        super::ProjectionConfig {
+            writable: true,
+            owner: (0, 0),
+            inode_base: 0,
+            cache: super::ProjectionCache::Notifications,
+        },
+        &work,
+    )
 }
 
 #[cfg(acyclic_fs_loom)]
@@ -67,8 +78,8 @@ mod packet_workers;
 pub(super) mod packets;
 pub(in crate::native_mount) mod retirement;
 mod shared;
-mod vring;
 mod vhost_session;
+mod vring;
 
 use cache::*;
 use native::*;

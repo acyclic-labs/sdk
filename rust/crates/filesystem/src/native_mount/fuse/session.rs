@@ -156,9 +156,12 @@ impl FuseSession {
             source,
             root,
             stamp,
-            request.writable,
-            (metadata.st_uid, metadata.st_gid),
-            0,
+            ProjectionConfig {
+                writable: request.writable,
+                owner: (metadata.st_uid, metadata.st_gid),
+                inode_base: 0,
+                cache: ProjectionCache::Notifications,
+            },
             work,
         )?;
         let _startup = NativeMountWorkScope::new(&core, work)?;
@@ -303,9 +306,12 @@ impl FuseSession {
                 source,
                 root,
                 stamp,
-                request.writable,
-                (metadata.st_uid, metadata.st_gid),
-                base,
+                ProjectionConfig {
+                    writable: request.writable,
+                    owner: (metadata.st_uid, metadata.st_gid),
+                    inode_base: base,
+                    cache: ProjectionCache::Notifications,
+                },
                 work,
             )?;
             startup = Some(NativeMountWorkScope::new(&core, work)?);
