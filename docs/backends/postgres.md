@@ -20,8 +20,12 @@ is REPEATABLE READ. The canonical shared Stream core owns append-if-tail CAS, ex
 idempotency, hierarchical fork/commit, filters and bounded public paging. Commands
 include the database clock sample, so reopening preserves record times and retry
 receipts. Publication survives caller cancellation; only committed commands enter
-the visible core. Conflicts leave retry keys available according to the shared
-contract. SQL synchronous commit must remain enabled for durable acknowledgements.
+the visible core. The core prepares its owned mutation under its state write
+guard before SQL publication, then installs it only after durability. Conditional
+refusals and known retries insert no journal row and send no notification.
+Conflicts leave retry keys available according to the shared contract. Planning
+and recorded admission use the database clock, with a SQL deadline recheck before
+commit. SQL synchronous commit must remain enabled for durable acknowledgements.
 
 Each opened provider owns two connections and three shared async tasks: one
 serialized query connection, one LISTEN connection, and one notification refresh
@@ -87,8 +91,29 @@ That run also passed both local host baselines (6.38 s), the cross-session and
 listener-loss checks, and the idle 100,000-stream/subscription check in 17.65 s
 (700 ms path creation), with two provider connections, four total tasks including
 the observer, one OS thread and 321,380 KiB RSS. Browser and Cloudflare host
-fixtures compiled for wasm. Adapter inventory remains 495 Rust lines plus 13 SQL
+fixtures compiled for wasm. Adapter inventory is 491 Rust lines plus 13 SQL
 lines; the shared journal-orchestration extraction remains follow-up #1629.
+
+The shared prepare/durability/install correction passed all 390 Stream library
+tests in 8.65 s, with no ignored or filtered tests. A real SQL observation of 48
+conditional refusals and an elapsed deadline retained zero rows and bytes;
+corrected requests plus append/fork/commit retries after independent reopen
+retained exactly three accepted rows (189 bytes). The unchanged Postgres suite
+passed in 135 ms; cross-session CAS, notification, subscription ownership and
+listener-loss checks also passed. Evidence: job `1793131869120-84430-ddfd841b`,
+log `/home/var/log/buildbox/1793131846910-84430-5f30da4e.log`, source checkpoint
+`ff24415a75ce838a784e2f9c619eabdf6106c653`. The subsequent database planning-clock
+correction at `0983a6e402f7ab134d243a2c64b0b007ce2df3e8` passed a compile-only
+Postgres/example check: job `1793132220956-87488-8ef61921`, log
+`/home/var/log/buildbox/1793132200512-87488-3bc05557.log`.
+
+The session resource-refusal correction at
+`8b43263bcb28829056e33036b90de2974e25c7d6` passed all 391 Stream library
+tests in 8.87 s (zero ignored or filtered in the complete run), followed by a
+default GraphCoder compile. Evidence: job `1793132738027-89535-de4d1919`, log
+`/home/var/log/buildbox/1793132723435-89535-8486c831.log`. Missing resource
+routing and synchronous resource refusal now close only their channel. This
+preserves ordinary follows; it does not supply the missing remote policy watch.
 
 ## Live steps
 
@@ -106,3 +131,49 @@ provider handle is dropped and terminates its own disposable LISTEN connection.
 Repeat resource measurements with representative nonempty histories and active-agent concurrency.
 Native work-meter entry points retain their explicit Unsupported default; this
 adapter currently qualifies the ordinary public provider contract.
+
+## OSS Actors server composition
+
+Enable `acyclic-harness/serve` in the application. Keep the selected Stream
+provider concrete when building `StreamAuthorityStore<P>` and the shared
+`hosting::Bound<P, O>`; the same provider holds agents and filesystem authority.
+Construct the admitted `hosting::Server` through `hosting::serve` or `reopen`,
+start its canonical runtime, and pass it to the public server entry point:
+
+```rust,ignore
+let host = acyclic_harness::server::Hosted::new(server, clock, runtime_owner, resources);
+acyclic_harness::server::serve(
+    listener,
+    acyclic_harness::server::ServerConfig { harness: host, tls },
+    ready,
+    shutdown,
+).await?;
+```
+
+`runtime_owner` retains the running tree and its storage resources, stopping the
+runtime when dropped. `resources` is the explicitly supported resource-follow provider;
+pass `None` to reject resource follows while retaining ordinary Stream follows.
+The local composition supplies its process-owned filesystem change provider.
+Postgres does not declare the exclusive process policy owner needed by that
+provider: remote idle filesystem-policy watches remain unsupported.
+The current `Conversation::observe` always opens its tools resource, so a
+composition without that resource provider does not yet support the full
+frontend. Endpoint qualification remains open; typed composition alone does
+not establish a working remote GraphCoder session.
+The diagnostic at source `0983a6e402f7ab134d243a2c64b0b007ce2df3e8` plus the
+typed composition reached prompt submission, then failed while following the
+turn with a session registration deadline. Job `1793132557129-88589-6f2aebba`,
+log `/home/var/log/buildbox/1793132539573-88589-57ecfc1e.log`, predates the
+resource-refusal correction. Its unchanged Stream suite passed in 128 ms,
+Objects in 311 ms, filesystem smoke in 132 ms and chunked reopen in 191 ms;
+the first complete host-vector pairing passed in 3.88 s. Later pairings and
+endpoint reopen were not reached. The filesystem owner holds durable
+policy-cut/follow composition after the canonical session supports asynchronous
+delivery revalidation; Postgres retains its truthful AtomicPublication capability.
+`ServerConfig` also accepts the existing
+`LocalHarnessConfig`; both compositions use one credential minting, session and
+gRPC service path. Use the same public `Connection` with either endpoint.
+This selects providers in the server application's composition; it adds no
+provider-specific filesystem or agent dispatch. GraphCoder's native checkout and
+shell composition still has its separately declared native work-meter limits;
+this API is not a claim that those limits have been removed.

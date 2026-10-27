@@ -11,6 +11,9 @@ use acyclic_stream::{
 use object_store::{ObjectStore, path::Path};
 use std::{sync::Arc, time::Instant};
 
+#[path = "endpoint.rs"]
+mod endpoint;
+
 struct Providers {
     database: Option<String>,
     objects: Option<Arc<dyn ObjectStore>>,
@@ -23,19 +26,23 @@ struct Domain {
     directory: tempfile::TempDir,
 }
 
+impl Providers {
+    fn domain(&self) -> Result<Domain> {
+        Ok(Domain {
+            providers: Providers {
+                database: self.database.clone(),
+                objects: self.objects.clone(),
+                capabilities: self.capabilities,
+            },
+            namespace: uuid::Uuid::new_v4().to_string(),
+            directory: tempfile::tempdir()?,
+        })
+    }
+}
+
 impl Backend for Providers {
     fn fresh(&self) -> BoxProviderFuture<'_, Result<Box<dyn Storage>>> {
-        Box::pin(async move {
-            Ok(Box::new(Domain {
-                providers: Providers {
-                    database: self.database.clone(),
-                    objects: self.objects.clone(),
-                    capabilities: self.capabilities,
-                },
-                namespace: uuid::Uuid::new_v4().to_string(),
-                directory: tempfile::tempdir()?,
-            }) as Box<dyn Storage>)
-        })
+        Box::pin(async move { Ok(Box::new(self.domain()?) as Box<dyn Storage>) })
     }
 
     fn handler(
@@ -115,15 +122,47 @@ pub async fn verify(
         ("Postgres + MinIO", Some(database.to_owned()), Some(store)),
     ] {
         let started = Instant::now();
-        acyclic_agent_host_conformance::verify(&Providers {
+        let providers = Providers {
             database,
             objects,
             capabilities,
-        })
-        .await
-        .map_err(|error| error as Box<dyn std::error::Error>)?;
+        };
+        acyclic_agent_host_conformance::verify(&providers)
+            .await
+            .map_err(|error| error as Box<dyn std::error::Error>)?;
         println!(
             "Agent-host unchanged vectors over {name}: {:?}",
+            started.elapsed()
+        );
+        let domain = providers
+            .domain()
+            .map_err(|error| error as Box<dyn std::error::Error>)?;
+        let started = Instant::now();
+        match &domain.providers.database {
+            Some(database) => {
+                endpoint::verify(&domain, async || {
+                    Ok(Arc::new(
+                        PostgresStream::connect(database, &domain.namespace).await?,
+                    ))
+                })
+                .await
+            }
+            None => {
+                endpoint::verify(&domain, async || {
+                    Ok(Arc::new(
+                        LocalStream::open(
+                            domain.directory.path().join("stream"),
+                            LocalStreamLimits::default(),
+                        )
+                        .await?,
+                    ))
+                })
+                .await
+            }
+        }
+        .map_err(|error| error as Box<dyn std::error::Error>)?;
+        println!(
+            "OSS endpoint prompt/follow/reconnect/reopen over {name}: {:?}",
             started.elapsed()
         );
     }
