@@ -34,35 +34,30 @@ This runs the canonical Machines suite through actual workerd and native local
 Containers, including binary stdout/stderr before exit, exit 7, descendant
 cancellation on stream drop and quiet absolute expiry. It installs the pinned
 Worker dependencies and checks TypeScript. No response fixtures are synthesized.
-A previous source revision passed the complete canonical suite on bb2 on
-2026-10-26 in 11.97 seconds (log
-`/home/var/log/buildbox/1793049401359-116279-5e4947b0.log`). That run exercised
-the removed TAR-copy approximation and does not prove snapshot consistency.
-Source `07e558968fa4926b9262562885b5b48be2620de0` was validated on bb2 on
-2026-10-27 (job `1793091808662-142237-afe1e7af`, log
-`/home/var/log/buildbox/1793091777813-142237-e0de4a9f.log`). Both unchanged
-lifecycle and shell suites passed against actual workerd/native Containers in
-14.88 seconds. All unfiltered library runs passed: Daytona 24, Machines 72 and
-conformance 49 tests; compile-only and Worker TypeScript checks also passed.
-The separate native snapshot probe restored old child bytes after a parent write.
-Its [unaltered response capture and provenance](../../rust/crates/machines/tests/fixtures/cloudflare/README.md)
-records eleven actual exchanges. The shared process custodian confirmed workerd's
-process tree retired; the build receipt confirmed all job-home, target and
-temporary-directory cleanup. Hosted Cloudflare qualification remains a live step.
+Source `5deac2f509b0d9581bf2a1e6d2a713d249982a12` passed on bb2:
+compile gate, full conformance 24 / Machines 77 / Daytona 49 libraries,
+actual workerd lifecycle and shell suites (15.77 s together), native snapshot
+probe and Worker TypeScript. The captured overlay contained backend docs only.
+The custodian confirmed workerd retirement; all four build cleanup fields are
+true. Job `1793097182725-162966-0c28c563`, log
+`/home/var/log/buildbox/1793097167860-162966-73b62143.log`, rc0, wall547.672s
+including compilation. Source `01e90ce7cc56997b6d282933639e2f10d89d9e2c`
+also passed the full public native shell contract (2 tests). Hosted account
+validation remains a live step.
 
-Source `d553734e82cecf83244596872a4e8285ad03e2a0` also passed the unchanged
-lifecycle and expanded shared shell suites against workerd in 16.76 seconds,
-including omitted timeout and long UTF-8 source split across argument boundaries.
-Both native and machine shell admission now uses 1..60 seconds (default 60) and
-1..16384 source bytes; this reduces the prior native shell allowance.
-All unfiltered libraries passed (Daytona 24, Machines 73, conformance 49), as did
-Worker TypeScript, Machines WASM build, TypeScript compilation and all 53 Bun tests.
-Job `1793093958321-149476-5f8c6e43`, log
-`/home/var/log/buildbox/1793093944726-149476-81513db7.log`, completed successfully;
-workerd was positively retired and the receipt confirms job cleanup.
-The separate full harness-core library attempt reported 23 failures and stalled
-in a durable-host test until bb2's existing hang reaper killed it. No complete
-harness-core suite pass or main-baseline equivalence is claimed.
+MachineShell shares the original native input schema: omitted timeout300s and
+positive checked-u32 millisecond deadlines. Supply an explicit timeout within
+1..60s for Machines: its canonical command admission refuses the longer native
+default before dispatch. The same suite checks omission, explicit120s and
+oversized argument refusal without guest mutation, then executes supported
+multibyte source across argument boundaries. Native acceptance is preserved.
+
+The [checked-in native snapshot capture and provenance](../../rust/crates/machines/tests/fixtures/cloudflare/README.md)
+contains eleven unaltered real responses from earlier source07e55896. Later
+snapshot probes also restored old child bytes after a parent write. Historical
+TAR-copy results are not snapshot consistency evidence. A separate full
+harness-core attempt reported23failures and stalled until bb2's hang reaper
+stopped it; no complete harness-core or main-baseline pass is claimed.
 
 Native snapshot contract: [Cloudflare Container API](https://developers.cloudflare.com/containers/api/durable-object-container/)
 and [snapshot retention](https://developers.cloudflare.com/containers/guides/snapshots/).

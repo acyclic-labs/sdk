@@ -2,7 +2,7 @@
 
 Enable `acyclic-machines/e2b`. Compose `RemoteMachines<E2b>` using explicit API
 URL/key, guest domain, optional envd proxy URL and lifetime ceiling. Register a
-dedicated E2B template ID in `RemoteMachinesConfig.images`, a
+dedicated E2B `template_id:immutable_build_uuid` in `RemoteMachinesConfig.images`, a
 `NetworkPolicy::BlockAll` digest in `networks`. Supply the image's working directory
 to the qualification runner. The `e2b-conformance` example shows the bindings.
 Credentials are never read from an ambient profile by the adapter.
@@ -19,9 +19,13 @@ the template deletion API. This wire binding still needs real provider qualifica
 No pause/resume or idle contract is advertised. Provider-default lifetime resolves to the configured ceiling
 (one hour in the example); explicit infinite lifetime is refused. Operation records and console history are process-local. This
 binding does not implement the harness kernel filesystem seam.
-E2B resolves template IDs through mutable build tags. Freeze the dedicated
-template's default build for this binding's lifetime and retain its build ID;
-the adapter does not yet enforce an immutable build commitment.
+The shared core refuses bare templates and mutable tags before qualification or
+create. E2B declares build-qualified addressing; snapshots retain their separate
+native atomic handles. This adds no polling or build cache. The pinned upstream
+[selector query](https://github.com/e2b-dev/runtime/blob/7278c2a380767c9989da73cf4c04b1af1b32da18/packages/db/queries/templates/get_template_with_build_by_tag.sql)
+resolves UUID suffixes as exact build IDs, and its
+[tag validator](https://github.com/e2b-dev/runtime/blob/7278c2a380767c9989da73cf4c04b1af1b32da18/packages/shared/pkg/id/id.go)
+forbids mutable UUID tags. These are protocol sources, not runtime qualification.
 
 ## Validation and provenance
 
@@ -32,6 +36,14 @@ are claimed. Source `07e558968fa4926b9262562885b5b48be2620de0` passed bb2
 compile-only checks with all three provider features, and the full unfiltered
 Machines library suite passed 72 tests. These checks do not qualify E2B's wire or
 native snapshot behavior. An isolated Embed host or coordinator captures are required.
+Shared transport and immutable image admission source
+`5deac2f509b0d9581bf2a1e6d2a713d249982a12` passed the compile gate and full
+conformance 24 / Machines 77 / Daytona 49 library suites on bb2. These checks
+include scoped credentials and refusal before transport dispatch for mutable
+template selectors. They do not qualify E2B runtime behavior.
+MachineShell shares the unchanged native input schema. Supply an explicit
+timeout within 1..60 s: the native default 300 s exceeds canonical Machines admission
+and is refused before execution. Oversized guest arguments are refused there too.
 
 [E2B Embed](https://github.com/e2b-dev/runtime/tree/main/embed/compose) offers an
 account-free Linux host. Its official Docker Compose stack alters host namespaces,
@@ -61,12 +73,11 @@ window/host. The researched Compose environment pins infra commit
      { user: "root" },
    );
    const build = await Template.build(template, `machines-${crypto.randomUUID()}`);
-   console.log({ templateId: build.templateId, buildId: build.buildId });
+   console.log(JSON.stringify({ selector: `${build.templateId}:${build.buildId}` }));
    ```
 
-   Export the returned template ID as `E2B_TEMPLATE_ID` and
-   `export E2B_WORKSPACE=/workspace`. Preserve the build ID and do not rebuild
-   or reassign this template during the run.
+   Export the returned build-qualified selector as `E2B_TEMPLATE_ID` and
+   `export E2B_WORKSPACE=/workspace`. A bare template ID or mutable tag is refused.
    For hosted E2B, perform this step in the coordinator's account and use
    `https://api.e2b.app`, domain `e2b.app`, and unset `E2B_ENVD_PROXY`.
 4. Run `cargo run --locked -p acyclic-conformance --features e2b,machines-shell --example e2b-conformance`.

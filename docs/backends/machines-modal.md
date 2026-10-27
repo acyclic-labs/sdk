@@ -30,6 +30,14 @@ response server is used. Source `07e558968fa4926b9262562885b5b48be2620de0`
 passed bb2 compile-only checks with all three provider features, and the full
 unfiltered Machines library suite passed 72 tests. These checks do not qualify
 Modal's wire or native snapshot behavior.
+Shared transport and immutable image admission source
+`5deac2f509b0d9581bf2a1e6d2a713d249982a12` passed the compile gate and full
+conformance 24 / Machines 77 / Daytona 49 library suites on bb2. These checks
+include scoped credentials and refusal before transport dispatch for mutable
+template selectors. They do not qualify Modal runtime behavior.
+MachineShell shares the unchanged native input schema. Supply an explicit
+timeout within 1..60 s: the native default 300 s exceeds canonical Machines admission
+and is refused before execution. Oversized guest arguments are refused there too.
 
 ## Live steps
 
