@@ -10,23 +10,17 @@ import { createRequire } from "node:module";
 import { assertNativeReceipt, verifyNativeAssembly, writeCompanionManifest } from "./assemble-stream-native-package.mjs";
 import { normalizeBuildInputs, rustMetadata } from "./build-stream-native.mjs";
 import { writeWasmReceiptFixture } from "./fixtures/wasm-receipt.mjs";
+import { validBuildInputs } from "./fixtures/native-build-inputs.mjs";
 
 const sha = `sha256:${"a".repeat(64)}`;
 const revision = "1".repeat(40);
 const target = "x86_64-pc-windows-msvc";
 const hash = value => `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("hex")}`;
 function inputs() {
-  return {
-    schema: "acyclic.stream.native-build-inputs.v3", target, target_dir: "C:/target",
-    runtime: { node: "24.15.0", node_path: "node", platform: "win32", arch: "x64", bun: { maintained: "1.4.2", actual: null } },
-    invocation: { script: "scripts/build-stream-native.mjs", runtime: "node", args: ["build"] },
-    compiler: { rustc: { command: "rustc", args: ["--version", "--verbose"], output: `rustc 1.98.1\nhost: ${target}`, executable_sha256: sha }, cargo: { command: "cargo", args: ["--version", "--verbose"], output: "cargo 1.98.1" } },
-    generator: { package: "@napi-rs/cli", version: "3.10.5", package_sha256: sha, entry_sha256: sha, lock_sha256: sha, options: { release: true, platform: true, target, output_dir: "C:/native", target_dir: "C:/target", js_package_name: "@acyclic-labs/stream", js_binding: "binding.cjs", dts: "binding.d.ts", cargo_options: ["--locked"] } },
-    linker: { configured: { target: null }, environment: { LINK: null, CC: null, AR: null, RUSTC_LINKER: null, DYLD_LIBRARY_PATH: null, SDKROOT: null, VCINSTALLDIR: null, VCToolsInstallDir: null, WindowsSdkDir: null, VisualStudioVersion: null }, actual: { source: "rustc-invocation", rustc: "rustc", target, linker: null, args: ["--crate-name", "acyclic_stream_napi", "--emit=dep-info,link", "--remap-path-prefix=C:/producer/sdk=/__acyclic_stream_source"] } },
-    profile: { name: "release", cargo_incremental: "0", release_incremental: "false", manifest_sha256: sha, config_sha256: sha },
-    environment: { RUSTFLAGS: null, CARGO_ENCODED_RUSTFLAGS: null, RUSTC_WRAPPER: null, RUSTC_WORKSPACE_WRAPPER: null, CARGO_TARGET_DIR: null },
-    cache: { wrapper: null, wrapper_version: null, directory: null, size: null },
-  };
+  const raw = validBuildInputs();
+  raw.compiler.rustc.command = raw.linker.actual.rustc;
+  raw.linker.actual.args.push("--remap-path-prefix=C:/producer/sdk=/__acyclic_stream_source");
+  return raw;
 }
 function metadata(selected_target = target) {
   const raw = inputs();
