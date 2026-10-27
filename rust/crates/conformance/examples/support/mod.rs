@@ -31,12 +31,10 @@ pub async fn run<D: SandboxDriver>(
         config.namespace
     );
     let provider = std::sync::Arc::new(RemoteMachines::new(driver, config));
-    let result = async {
-        acyclic_conformance::machines(provider.as_ref()).await?;
-        acyclic_conformance::machines_shell::verify(provider.clone(), &workspace).await?;
-        Ok::<(), String>(())
-    }
-    .await;
+    // Both suites run in full even when one refuses a capability. Retain each
+    // verdict; a shell pass cannot turn a failed lifecycle suite into success.
+    let lifecycle = acyclic_conformance::machines(provider.as_ref()).await;
+    let shell = acyclic_conformance::machines_shell::verify(provider.clone(), &workspace).await;
     // A failed vector still owns every machine it successfully observed. Clean
     // those resources before returning the original failure to the coordinator.
     let mut cursor = None;
@@ -61,11 +59,25 @@ pub async fn run<D: SandboxDriver>(
             break;
         }
     }
-    result.map_err(|error| {
-        format!("{name} canonical Machines conformance failed: {error}; recovery: {recovery}")
-    })?;
+    let mut failures = Vec::new();
+    for (suite, result) in [("lifecycle", lifecycle), ("shell", shell)] {
+        match result {
+            Ok(()) => println!("{name} {suite} suite passed (unchanged)"),
+            Err(error) => failures.push(format!("{suite}: {error}")),
+        }
+    }
     if cleanup_failed {
-        return Err(format!("{name} conformance cleanup failed; recovery: {recovery}; inspect provider resources in the printed namespace before rerunning").into());
+        failures.push(
+            "cleanup failed; inspect provider resources in the printed namespace before rerunning"
+                .into(),
+        );
+    }
+    if !failures.is_empty() {
+        return Err(format!(
+            "{name} canonical Machines conformance failed: {}; recovery: {recovery}",
+            failures.join("; ")
+        )
+        .into());
     }
     println!("{name} machines conformance passed (canonical suite, unchanged)");
     Ok(())

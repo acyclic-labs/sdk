@@ -228,14 +228,16 @@ state=$1; shift
 # Stay outside the user's process group so its root status survives cleanup.
 # Descendants may retain stdout/stderr after their parent exits. Retire them
 # here, before waiting for a provider's pipe EOF can hide the root exit.
+exec 3<&0
 setsid --wait sh -c '
 state=$1; shift
 mkdir -p "$state" || { printf "%s\n" "exec ownership setup failed; recovery: restore writable /tmp" >&2; exit 125; }
 printf "%s\n" "$$" > "$state/pid" || { printf "%s\n" "exec PID publication failed; recovery: restore writable /tmp and destroy the machine" >&2; exit 125; }
 test ! -e "$state/cancel" || { printf "%s\n" "exec launch cancelled; recovery: acquire fresh authority before dispatching a new command" >&2; exit 125; }
 exec "$@"
-' acyclic-exec "$state" "$@" <&0 &
+' acyclic-exec "$state" "$@" <&3 3<&- &
 child=$!
+exec 3<&-
 wait "$child"
 status=$?
 if test -r "$state/pid"; then

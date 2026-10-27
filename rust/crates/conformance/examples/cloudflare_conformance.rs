@@ -6,7 +6,7 @@ use acyclic_machines::provider_core::cloudflare::Cloudflare;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = std::env::args()
         .nth(1)
-        .unwrap_or_else(|| "http://127.0.0.1:8787".into());
+        .unwrap_or_else(|| "http://127.0.0.1:15440".into());
     let token = std::env::var_os("CLOUDFLARE_MACHINES_TRANSPORT_TOKEN")
         .map(|_| support::required("CLOUDFLARE_MACHINES_TRANSPORT_TOKEN"))
         .transpose()?;

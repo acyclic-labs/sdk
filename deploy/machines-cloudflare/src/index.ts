@@ -1,4 +1,4 @@
-// Cloudflare transport only: portable lifecycle, replay, expiry and disk copies
+// Cloudflare transport only: portable lifecycle, replay and expiry
 // belong to the Rust Machines core. Uses the native Container API and Files 1.0.
 import { DurableObject } from "cloudflare:workers";
 import { Files } from "@cloudflare/sandbox";
