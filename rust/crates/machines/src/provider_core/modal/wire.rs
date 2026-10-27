@@ -2,8 +2,6 @@
 //! Field numbers follow modal npm 0.11.1. Unknown protobuf fields are ignored;
 //! no server responses or response fixtures are synthesized here.
 #[derive(Clone, PartialEq, prost::Message)]
-pub struct Empty {}
-#[derive(Clone, PartialEq, prost::Message)]
 pub struct TaskSnapshotFilesystemRequest {
     #[prost(string, tag = "1")]
     pub task_id: String,

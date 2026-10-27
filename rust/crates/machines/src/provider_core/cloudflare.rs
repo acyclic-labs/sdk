@@ -65,9 +65,6 @@ impl SandboxDriver for Cloudflare {
     fn name(&self) -> &'static str {
         "cloudflare"
     }
-    fn supports_suspend(&self) -> bool {
-        false
-    }
     fn supports_disk_snapshots(&self) -> bool {
         true
     }

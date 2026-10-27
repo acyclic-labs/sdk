@@ -3,10 +3,8 @@
 mod wire;
 use super::instances::Instances;
 use super::{
-    Allocation, NetworkPolicy, SandboxDriver, SandboxInstance, SandboxSpec,
-    duplex::{duplex_exec, pump_stdin},
-    http::credential_headers,
-    rpc::Rpc,
+    Allocation, NetworkPolicy, SandboxDriver, SandboxInstance, SandboxSpec, duplex::duplex_exec,
+    http::credential_headers, rpc::Rpc,
 };
 use crate::{ExecStream, MachineState, ProviderError};
 use async_trait::async_trait;
@@ -20,7 +18,7 @@ const ROUTER: &str = "modal.task_command_router.TaskCommandRouter";
 struct Guest {
     task: String,
     router: Rpc,
-    sandbox_token: String,
+    control: Rpc,
 }
 
 /// Modal connection with explicit credentials; never reads account config files.
@@ -60,24 +58,12 @@ impl Modal {
             guests: Instances::default(),
         })
     }
-
-    fn control_for(&self, guest: &Guest) -> Result<Rpc, ProviderError> {
-        if guest.sandbox_token.is_empty() {
-            Ok(self.control.clone())
-        } else {
-            self.control
-                .with_header("x-modal-sandbox-token", &guest.sandbox_token)
-        }
-    }
 }
 
 #[async_trait]
 impl SandboxDriver for Modal {
     fn name(&self) -> &'static str {
         "modal"
-    }
-    fn supports_suspend(&self) -> bool {
-        false
     }
     fn supports_disk_snapshots(&self) -> bool {
         true
@@ -112,9 +98,8 @@ impl SandboxDriver for Modal {
         &self,
         snapshot: &super::ProviderSnapshot,
     ) -> Result<super::SnapshotRelease, ProviderError> {
-        let _: wire::Empty = self
-            .control
-            .unary(
+        self.control
+            .notify(
                 "ImageDelete",
                 wire::ImageId {
                     image_id: snapshot.handle.clone(),
@@ -182,7 +167,9 @@ impl SandboxDriver for Modal {
             Guest {
                 task: response.task_id,
                 router,
-                sandbox_token: response.sandbox_token,
+                control: self
+                    .control
+                    .with_optional_header("x-modal-sandbox-token", &response.sandbox_token)?,
             },
         );
         Ok(SandboxInstance {
@@ -198,8 +185,8 @@ impl SandboxDriver for Modal {
 
     async fn state(&self, instance: &SandboxInstance) -> Result<MachineState, ProviderError> {
         let guest = self.guests.get(instance)?;
-        let response: wire::SandboxWaitResponse = self
-            .control_for(&guest)?
+        let response: wire::SandboxWaitResponse = guest
+            .control
             .unary(
                 "SandboxWaitV2",
                 wire::SandboxWaitRequest {
@@ -220,9 +207,9 @@ impl SandboxDriver for Modal {
 
     async fn destroy(&self, instance: &SandboxInstance) -> Result<(), ProviderError> {
         let guest = self.guests.get(instance)?;
-        let _: wire::Empty = self
-            .control_for(&guest)?
-            .unary(
+        guest
+            .control
+            .notify(
                 "SandboxTerminateV2",
                 wire::SandboxRequest {
                     sandbox_id: instance.id.clone(),
@@ -247,9 +234,9 @@ impl SandboxDriver for Modal {
         let guest = self.guests.get(instance)?;
         let timeout = Duration::from_millis(u64::from(timeout_ms));
         let exec = format!("ex-{}", uuid::Uuid::new_v4().simple());
-        let _: wire::Empty = guest
+        guest
             .router
-            .unary(
+            .notify(
                 "TaskExecStart",
                 wire::TaskExecStartRequest {
                     task_id: guest.task.clone(),
@@ -302,29 +289,18 @@ impl SandboxDriver for Modal {
                 None => Err(ProviderError::Unavailable),
             }
         };
-        let input_guest = guest.clone();
-        let input_exec = exec.clone();
-        let input = pump_stdin(input, move |offset, data, eof| {
-            let guest = input_guest.clone();
-            let exec = input_exec.clone();
-            Box::pin(async move {
-                let _: wire::Empty = guest
-                    .router
-                    .unary(
-                        "TaskExecStdinWrite",
-                        wire::TaskExecStdinWriteRequest {
-                            task_id: guest.task,
-                            exec_id: exec,
-                            offset,
-                            data,
-                            eof,
-                        },
-                        Duration::from_secs(10),
-                    )
-                    .await?;
-                Ok(())
-            })
-        });
+        let input =
+            guest
+                .router
+                .write_input(input, "TaskExecStdinWrite", move |offset, data, eof| {
+                    wire::TaskExecStdinWriteRequest {
+                        task_id: guest.task.clone(),
+                        exec_id: exec.clone(),
+                        offset,
+                        data,
+                        eof,
+                    }
+                });
         Ok(duplex_exec(stdout, stderr, input, exit))
     }
 }

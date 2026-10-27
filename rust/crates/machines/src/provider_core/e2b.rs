@@ -8,7 +8,7 @@ use super::{
 use crate::{ExecOutput, MachineState, ProviderError};
 use async_trait::async_trait;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use futures::{StreamExt, stream};
+use futures::{StreamExt, TryStreamExt};
 use reqwest::{Method, header::HeaderMap};
 use serde::Deserialize;
 use std::time::Duration;
@@ -121,9 +121,6 @@ impl SandboxDriver for E2b {
     }
     fn image_selector(&self) -> super::ImageSelector {
         super::ImageSelector::TemplateBuild
-    }
-    fn supports_suspend(&self) -> bool {
-        false
     }
     fn supports_disk_snapshots(&self) -> bool {
         true
@@ -252,26 +249,15 @@ impl SandboxDriver for E2b {
             &serde_json::json!({"process": {"cmd": executable, "args": argv.collect::<Vec<_>>()}, "tag": tag, "stdin": false}),
         )
         .await?;
-        let output = stream::try_unfold(
-            response,
-            |mut source| async move {
-                while let Some(frame) = source.next().await {
-                    let frame = frame?;
-                    let output = match frame.event {
-                        Event::Start(_value) | Event::Keepalive(_value) => continue,
-                        Event::Data(Data::Stdout(data)) => ExecOutput::Stdout(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?),
-                        Event::Data(Data::Stderr(data)) => ExecOutput::Stderr(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?),
-                        Event::End(end) if end.exited && end.error.is_none() => ExecOutput::ExitCode(end.code),
-                        Event::End(_) => return Err(ProviderError::Unavailable),
-                    };
-                    if matches!(&output, ExecOutput::Stdout(data) | ExecOutput::Stderr(data) if data.is_empty()) {
-                        continue;
-                    }
-                    return Ok(Some((output, source)));
-                }
-                Ok(None)
-            },
-        ).boxed();
+        let output = response.try_filter_map(|frame| async move {
+            Ok(match frame.event {
+                Event::Start(_value) | Event::Keepalive(_value) => None,
+                Event::Data(Data::Stdout(data)) => Some(ExecOutput::Stdout(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?)),
+                Event::Data(Data::Stderr(data)) => Some(ExecOutput::Stderr(STANDARD.decode(data).map_err(|_| ProviderError::Unavailable)?)),
+                Event::End(end) if end.exited && end.error.is_none() => Some(ExecOutput::ExitCode(end.code)),
+                Event::End(_) => return Err(ProviderError::Unavailable),
+            })
+        }).boxed();
         Ok(output)
     }
 

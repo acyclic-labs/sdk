@@ -132,7 +132,9 @@ pub trait SandboxDriver: Clone + Send + Sync + 'static {
     }
 
     /// Whether this transport implements memory-preserving suspend and wake.
-    fn supports_suspend(&self) -> bool;
+    fn supports_suspend(&self) -> bool {
+        false
+    }
 
     /// True only for a native boundary covering every writer at one instant,
     /// whose children cold boot without inheriting memory or running processes.

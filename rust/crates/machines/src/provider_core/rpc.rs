@@ -16,6 +16,9 @@ pub(super) struct Rpc {
     metadata: MetadataMap,
 }
 
+#[derive(Clone, PartialEq, Message)]
+struct Empty {}
+
 impl Rpc {
     pub fn new(
         endpoint: &str,
@@ -49,6 +52,49 @@ impl Rpc {
         headers.extend(super::http::credential_headers([(name, value)])?);
         scoped.metadata = MetadataMap::from_headers(headers);
         Ok(scoped)
+    }
+
+    pub fn with_optional_header(
+        &self,
+        name: &'static str,
+        value: &str,
+    ) -> Result<Self, ProviderError> {
+        if value.is_empty() {
+            Ok(self.clone())
+        } else {
+            self.with_header(name, value)
+        }
+    }
+
+    pub async fn notify<I>(
+        &self,
+        method: &'static str,
+        message: I,
+        timeout: Duration,
+    ) -> Result<(), ProviderError>
+    where
+        I: Message + Default + Send + Sync + 'static,
+    {
+        self.unary::<_, Empty>(method, message, timeout)
+            .await
+            .map(|_| ())
+    }
+
+    pub async fn write_input<I>(
+        self,
+        input: Option<Vec<u8>>,
+        method: &'static str,
+        mut message: impl FnMut(u64, Vec<u8>, bool) -> I + Send,
+    ) -> Result<(), ProviderError>
+    where
+        I: Message + Default + Send + Sync + 'static,
+    {
+        super::duplex::pump_stdin(input, move |offset, data, eof| {
+            let rpc = self.clone();
+            let message = message(offset, data, eof);
+            Box::pin(async move { rpc.notify(method, message, Duration::from_secs(10)).await })
+        })
+        .await
     }
 
     fn request<T>(&self, message: T, timeout: Duration) -> Request<T> {
@@ -139,6 +185,16 @@ mod tests {
             super::super::http::credential_headers([("x-parent", "parent")])?,
         )?;
         let scoped = original.with_header("x-guest", "guest")?;
+        let absent = original.with_optional_header("x-guest", "")?;
+        let present = original.with_optional_header("x-guest", "guest")?;
+        assert!(absent.metadata.get("x-guest").is_none());
+        assert_eq!(present.metadata.get("x-guest").unwrap(), "guest");
+        original
+            .clone()
+            .write_input(None, "Unused", |_, _, _| -> Empty {
+                panic!("absent stdin must not dispatch a write");
+            })
+            .await?;
         let original = original.request((), Duration::from_secs(1));
         let scoped = scoped.request((), Duration::from_secs(1));
         assert_eq!(original.metadata().get("x-parent").unwrap(), "parent");
