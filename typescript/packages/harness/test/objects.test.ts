@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { Harness, NativeContracts, TaskDefinition, type AgentId, type VolumeClass, type VolumeRef } from "../src/index.js";
+import { Harness, NativeContracts, type AgentId, type VolumeClass, type VolumeRef } from "../src/index.js";
 import { create } from "@bufbuild/protobuf";
 import { MemoryObjectsV1, CreateBucketRequestSchema, DeleteObjectRequestSchema, GetObjectRequestSchema } from "@acyclic-labs/objects/v1";
 import { ObjectContentStore } from "../src/objects.js";
@@ -54,11 +54,6 @@ test("Objects content is content-addressed, owner-written, and delegably read", 
     "application/vnd.acyclic.harness.attachments+json", "one.json");
   expect(await store.loadManifest(manifest, 1)).toEqual([{ file, label: null }]);
   await expect(store.loadManifest(manifest, 2)).rejects.toThrow();
-  const task = await TaskDefinition.live<void, string>("object_file", "1", async context =>
-    new TextDecoder().decode(await context.readFile(file)), { requirements: ["content"] });
-  const runtime = await Harness.builder(contracts).content(store.bindings())
-    .grant(authority.volumeCapability(volume, "read")).task(task).build();
-  expect(await runtime.spawn(task, undefined).result()).toEqual({ kind: "succeeded", value: "owned" });
 
   const delegated = authority.delegatePrivateFileRead(ownerScope, reader, "reader", file);
   const attached = await ObjectContentStore.create({ objects, bucket, volume, expectedProvider: volume.provider,

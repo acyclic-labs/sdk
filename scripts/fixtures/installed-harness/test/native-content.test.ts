@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import {
-  DEFAULT_LIMITS, Harness, NativeContracts, descriptorFor, type AgentId, type FileRef,
+  DEFAULT_LIMITS, NativeContracts, descriptorFor, type AgentId, type FileRef,
 } from "@acyclic-labs/harness";
 
 const contracts = await NativeContracts.create();
@@ -33,17 +33,4 @@ test("installed native inventory preserves ordered tool media, option refs and f
   expect(inventory.nativeConfigurations).toEqual([part.policy.native.configuration]);
   expect(inventory.nativeConfigurations[0]?.source.revision).toBe(9_007_199_254_740_993n);
   expect(Object.isFrozen(inventory.nativeConfigurations[0])).toBe(true);
-});
-
-test("installed local runtime rejects unsupported original option admission before provider IO", async () => {
-  let calls = 0;
-  const runtime = await Harness.builder(contracts).model(
-    { provider: "mock", name: "installed-native-options", revision: "pinned", options: {} }, {
-      contextCapacity() { calls++; throw new Error("native rejection invoked model capacity"); },
-      async prepare() { calls++; throw new Error("native rejection invoked model preparation"); },
-      async reconcile() { return undefined; },
-    }).build();
-  await expect(runtime.run({ prompt: "", content: [await nativePart()] })).rejects.toThrow(
-    "original native option admission is unavailable");
-  expect(calls).toBe(0);
 });

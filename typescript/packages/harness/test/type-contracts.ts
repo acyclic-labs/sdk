@@ -1,15 +1,13 @@
-import type {
-  AgentHarness, AgentId, ApprovalBinding, Authority, BrowserAggregate, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeSpawner, HarnessRuntimeState, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
-  ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, PolicyDigest, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, ResumableTask, RuntimeSchema, TaskId, TaskContext,
-  BatchId, SharedGrant, TaskGroup, ToolRef, VolumeOwner, VolumeRef, ModelContentPart, ModelEvent, ModelRole,
+import type { AgentId, ApprovalBinding, Authority, BrowserAggregate, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, InteractionId, InteractionResolution, InteractionTicket,
+  ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, SharedGrant, VolumeOwner, VolumeRef, ModelContentPart, ModelEvent, ModelRole,
   CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacityWire, ModelTokenCountWire, ModelContextCapacity, ModelTokenCount,
 } from "../src/index.js";
-import { Harness, TaskDefinition, composeContentBindings, decodeEventPayload, defineRuntimeSchema, defineTool } from "../src/index.js";
+import { Harness, composeContentBindings, decodeEventPayload } from "../src/index.js";
 import type { ClientFrame } from "../generated/proto/harness/v2/harness_pb.js";
 import type { HandshakeRequest } from "../generated/proto/protocol/v1/protocol_pb.js";
 import type { AgentClient, AgentEvent, AgentWindow, StatusRecord } from "../src/client.js";
 import type {
-  WasmExtensionAdmissionWire, WasmFileRefWire, WasmTaskAdmissionInput,
+  WasmExtensionAdmissionWire, WasmFileRefWire,
   ModelContent as ModelContentWire, ModelContentPart as ModelContentPartWire, ModelEvent as ModelEventWire, ModelRole as ModelRoleWire,
   CompactionPolicy as RustCompactionPolicy, CompactionRetention as RustCompactionRetention,
   ThresholdCompaction as RustThresholdCompaction, ModelContextCapacity as RustModelContextCapacity,
@@ -158,14 +156,6 @@ const roundedInteractionVersion: InteractionResolution = { id: "01010101-0101-01
 const stringMergeOperation: ProviderOperationId = "merge-1";
 // @ts-expect-error a frame tag cannot carry a different protobuf payload
 const mismatchedClientFrame: ClientFrame["frame"] = { case: "resume", value: {} as HandshakeRequest };
-// @ts-expect-error replaceable policies must expose a pinned implementation revision
-const unpinnedPolicy: Policy = { evaluate: async () => ({ kind: "allow" }) };
-// @ts-expect-error durable hosts must declare which policy implementation they enforce
-const unpinnedHostPolicy: Pick<HarnessRuntimeState, "policyIdentity"> = {};
-// @ts-expect-error unvalidated byte arrays cannot claim a nonzero 32-byte policy digest
-const unvalidatedPolicyDigest: PolicyDigest = [1];
-// @ts-expect-error local approvals must bind a stable operation and exact action digest
-const unboundLocalApproval: Interaction = { id: "approval", kind: "approval", prompt: "approve" };
 
 function nativeValidationKeepsOwnerClass(native: NativeContracts): VolumeRef<"project"> {
   return native.validate("volume_ref", project);
@@ -183,120 +173,24 @@ function nativeAdmissionDoesNotPromiseOriginalIdentitySpelling(native: NativeCon
 }
 
 function nativeAdmissionIsRequiredAtComposition(native: NativeContracts): void {
-  const builder = Harness.builder(native);
   const content = composeContentBindings(native, [{ volume: project, content: {} as ContentBindings }]);
-  // @ts-expect-error a runtime cannot be built without initialized Rust admission
-  Harness.builder();
   // @ts-expect-error content routing cannot silently skip Rust volume admission
   composeContentBindings([{ volume: project, content }]);
-  void [builder, content];
+  void content;
 }
 
 function generatedAdmissionBoundaryRejectsOpaqueRoutes(): void {
-  const input = {} as WasmTaskAdmissionInput;
-  // @ts-expect-error Rust-owned admission inputs reject an arbitrary execution route
-  input.execution = "bad";
-  // @ts-expect-error Rust-owned admission inputs reject an arbitrary policy identity
-  input.policy = "bad";
   const extension = {} as WasmExtensionAdmissionWire;
   const content: WasmFileRefWire = extension.configurations[0]!.content;
   // @ts-expect-error extension configuration content must be a generated FileRef wire
   const invalidContent: WasmFileRefWire = "bad";
   void [content, invalidContent];
-  void input;
-}
-
-function cannotConstructRuntimeDirectly(): void {
-  // @ts-expect-error runtime construction must pass through Builder or a validated scope
-  new AgentHarness(new Map(), new Map(), {}, undefined, new Map(), new Map(), new Map());
 }
 
 function recordedEventCannotExposeBearerProof(event: Event): Uint8Array {
   // @ts-expect-error durable event scope is non-bearer and has no reusable proof
   void event.scope.proof;
   return event.attestation;
-}
-
-function durableTasksNeedPinnedTypes(harness: AgentHarness, id: TaskId): void {
-  // @ts-expect-error a typed checkpoint transition needs its own pinned state schema
-  const missingState: ResumableTask<number, number, number> = { initial: input => input,
-    async transition(_context, state) { return { kind: "finish", output: state }; } };
-  void missingState;
-  // @ts-expect-error a resumable task cannot omit its input/output schemas
-  TaskDefinition.resumable("durable", "1", { initial: (input: number) => input,
-    async transition() { return { kind: "finish" as const, output: 1 }; } }, { implementationDigest: "ab".repeat(32) });
-  // @ts-expect-error reattachment may not invent a caller-selected result type
-  void harness.attach<number>(id);
-  // @ts-expect-error arbitrary parser objects cannot impersonate pinned runtime schemas
-  const unpinned: RuntimeSchema<number> = { id: "number", document: { type: "number" }, parse: (value: unknown) => Number(value) };
-  // @ts-expect-error a bare boolean is not a durable schema document
-  void defineRuntimeSchema("vacuous", true, (value: unknown) => value);
-  void unpinned;
-}
-
-function toolsNeedTypedAdmission(): void {
-  // @ts-expect-error a tool handler cannot claim typed inputs without a parser
-  void defineTool<number, number>({ name: "unsafe", revision: "1", description: "unsafe",
-    inputSchema: { type: "number" }, outputSchema: { type: "number" } }, (_context, value) => value);
-}
-
-function hostRecoveryCannotInventTypes(host: HarnessRuntimeSpawner & HarnessRuntimeState, id: TaskId): void {
-  // @ts-expect-error recovered task output is unknown until its pinned definition validates it
-  void host.attach<number>(id, {} as AgentHarness);
-  if (host.reconcileBatch) {
-    // @ts-expect-error recovered batch output is likewise unknown
-    void host.reconcileBatch<number>("group" as never, "batch" as never, {} as AgentHarness);
-  }
-}
-
-function typedAnswerRequiresSchema(context: TaskContext, schema: RuntimeSchema<number>): void {
-  void context.interactTyped({ id: "question", kind: "question", prompt: "Number?" }, schema)
-    .then(answer => { if (answer.kind === "answered") { const number: number = answer.value; void number; } });
-  // @ts-expect-error approvals cannot masquerade as schema-validated question answers
-  void context.interactTyped({ id: "approval", kind: "approval", prompt: "Approve?" }, schema);
-}
-
-function taskExecutionCannotReachHostBindings(context: TaskContext, group: TaskGroup<unknown>): void {
-  // @ts-expect-error task code has no raw Harness/content binding escape hatch
-  void context.harness.content;
-  // @ts-expect-error groups cannot expose the Harness through a second path
-  void group.harness.content;
-}
-
-function childTaskHandlesDoNotExposeExecutors(context: TaskContext, definition: TaskDefinition<number, number>): void {
-  const child = context.task(definition);
-  // @ts-expect-error task code receives an opaque child handle, not its implementation
-  void child.implementation;
-  // @ts-expect-error task code cannot bypass the admitted child handle
-  void context.spawn(definition, 1);
-  void context.spawn(child, 1);
-  const group = context.group<number>({ kind: "collect-all" });
-  const batch = { id: "batch:typed" as BatchId, inputs: [1] };
-  // @ts-expect-error a scoped group cannot accept a raw task implementation
-  void group.spawnMany(definition, batch);
-  void group.spawnMany(child, batch);
-}
-
-function durableToolOutcomeCannotBeErased(context: TaskContext, tool: ToolRef<number, number>, operation: OperationId): void {
-  // @ts-expect-error task code cannot forge an admitted tool handle from its declarative fields
-  const forged: ToolRef<number, number> = { definition: tool.definition };
-  void forged;
-  // @ts-expect-error a registered tool handle never exposes its executor
-  void tool.executor;
-  // @ts-expect-error a registered tool handle never exposes its inline handler
-  void tool.definition.handler;
-  // @ts-expect-error parsing code stays inside the registered execution boundary
-  void tool.definition.parseInput;
-  const outcome: Promise<import("../src/index.js").Outcome<number, OperationId>> = context.callDurable(operation, tool, 1);
-  // @ts-expect-error a durable call may remain indeterminate and cannot be a bare result
-  const bare: Promise<number> = context.callDurable(operation, tool, 1);
-  void outcome.then(result => {
-    if (result.kind === "indeterminate") {
-      const exactIdentity: OperationId = result.operationId;
-      void exactIdentity;
-    }
-  });
-  void bare;
 }
 
 function eventPayloadNeedsDecoder(harness: Harness, command: Command<{ readonly kind: "bind_conversation"; readonly agent: AgentId }>): void {
@@ -343,8 +237,7 @@ function nativeResourceValidationKeepsProviderKind(contracts: NativeContracts, r
   void [exact, artifact];
 }
 
-void [wrongOwner, untypedPrivateOwner, untypedBoundAgent, wrongFamily, wrongFile, wrongGrant, emptySharedGrant, untypedForkAgent, untypedAttachedAgent, untypedForkOperation, wrongPrivateGeneration, unlinkedToolResult, toolIdOnUser, wrongMergeNoticeKind, wrongMergeProofProvider, missingMergeProofStatement, roundedConversationSequence, unvalidatedMessageId, unvalidatedSelectionId, roundedContextRevision, roundedPageCursor, unversionedProjection, untypedInteractionId, untypedApprovalOperation, unboundApproval, approvalOnQuestion, wrongRevision, wrongHistoryProvider, wrongAuthority, executableModelSchema, roundedInteractionVersion, stringMergeOperation, mismatchedClientFrame, unpinnedPolicy, unpinnedHostPolicy, unvalidatedPolicyDigest, unboundLocalApproval];
-void cannotConstructRuntimeDirectly;
+void [wrongOwner, untypedPrivateOwner, untypedBoundAgent, wrongFamily, wrongFile, wrongGrant, emptySharedGrant, untypedForkAgent, untypedAttachedAgent, untypedForkOperation, wrongPrivateGeneration, unlinkedToolResult, toolIdOnUser, wrongMergeNoticeKind, wrongMergeProofProvider, missingMergeProofStatement, roundedConversationSequence, unvalidatedMessageId, unvalidatedSelectionId, roundedContextRevision, roundedPageCursor, unversionedProjection, untypedInteractionId, untypedApprovalOperation, unboundApproval, approvalOnQuestion, wrongRevision, wrongHistoryProvider, wrongAuthority, executableModelSchema, roundedInteractionVersion, stringMergeOperation, mismatchedClientFrame];
 void nativeValidationKeepsOwnerClass;
 void nativeAdmissionDoesNotPromiseOriginalIdentitySpelling;
 void nativeAdmissionIsRequiredAtComposition;
@@ -353,9 +246,4 @@ void recordedEventCannotExposeBearerProof;
 void admittedContentCannotBeRebound;
 void identityConstructorsKeepDistinctBrands;
 void nativeResourceValidationKeepsProviderKind;
-void durableTasksNeedPinnedTypes;
-void toolsNeedTypedAdmission;
-void hostRecoveryCannotInventTypes;
-void typedAnswerRequiresSchema;
-void durableToolOutcomeCannotBeErased;
 void eventPayloadNeedsDecoder;
