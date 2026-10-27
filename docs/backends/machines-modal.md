@@ -37,6 +37,15 @@ include scoped credentials and refusal before transport dispatch for mutable
 template selectors, plus shared RPC input pumping. Job
 `1793098004380-166798-be025746`, rc0, all four build cleanup fields true.
 They do not qualify Modal runtime behavior.
+
+The complete lane was rebased onto main after the virtio-fs prerequisite merged.
+Clean source `21d4c25f3391f70661d9697998b3725e18d59024` passed the bb2 compile
+gate with all three providers, tests and examples (1m21s). Job
+`1793098891790-169059-e954845c`, rc0; all four build cleanup fields true.
+The same clean source passed the complete conformance24/Machines77/Daytona49
+libraries (job `1793099028112-169459-e5c83759`, rc0). All four cleanup fields
+are true. These checks do not qualify this provider's real wire or snapshots.
+
 MachineShell shares the unchanged native input schema. Supply an explicit
 timeout within 1..60 s: the native default 300 s exceeds canonical Machines admission
 and is refused before execution. Oversized guest arguments are refused there too.

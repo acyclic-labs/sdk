@@ -34,20 +34,16 @@ This runs the canonical Machines suite through actual workerd and native local
 Containers, including binary stdout/stderr before exit, exit 7, descendant
 cancellation on stream drop and quiet absolute expiry. It installs the pinned
 Worker dependencies and checks TypeScript. No response fixtures are synthesized.
-Source `5deac2f509b0d9581bf2a1e6d2a713d249982a12` passed on bb2:
+Clean rebased source `21d4c25f3391f70661d9697998b3725e18d59024` passed on bb2:
 compile gate, full conformance 24 / Machines 77 / Daytona 49 libraries,
-actual workerd lifecycle and shell suites (15.77 s together), native snapshot
-probe and Worker TypeScript. The captured overlay contained backend docs only.
-The custodian confirmed workerd retirement; all four build cleanup fields are
-true. Job `1793097182725-162966-0c28c563`, log
-`/home/var/log/buildbox/1793097167860-162966-73b62143.log`, rc0, wall547.672s
-including compilation. Source `01e90ce7cc56997b6d282933639e2f10d89d9e2c`
-also passed the full public native shell contract (2 tests). Hosted account
-validation remains a live step.
-Later shared RPC cleanup source `25830279bd2648d01670c6b6ebe00176967426b6`
-passed the compile gate and the same full library suites, with no new workerd
-run: job `1793098004380-166798-be025746`, rc0, all cleanup fields true.
-
+actual workerd lifecycle and shell suites (18.62 s together), native snapshot
+probe and Worker TypeScript. The custodian confirmed workerd retirement; all
+four build cleanup fields are true. Job `1793099028112-169459-e5c83759`, log
+`/home/var/log/buildbox/1793099013311-169459-6b97db22.log`, rc0, wall352.785s
+including compilation. The separate compile gate passed in1m21s, job
+`1793098891790-169059-e954845c`. Source
+`01e90ce7cc56997b6d282933639e2f10d89d9e2c` also passed the full public native
+shell contract (2 tests). Hosted account validation remains a live step.
 MachineShell shares the original native input schema: omitted timeout300s and
 positive checked-u32 millisecond deadlines. Supply an explicit timeout within
 1..60s for Machines: its canonical command admission refuses the longer native
