@@ -27,8 +27,8 @@ pub use acyclic_harness_core::filesystem::{
 
 use crate::{
     agent::{
-        AgentPath, AgentRecord, Control, Delivered, Error, InboxRecord, IntentId,
-        MAX_OPEN_CHILDREN, Message, Sender, SpawnRequest, StatusRecord, requested_child,
+        AgentPath, AgentRecord, Control, Delivered, Error, InboxRecord, IntentId, Message, Sender,
+        SpawnOutcome, SpawnRequest, StatusRecord, requested_child,
     },
     approvals::ApprovalResponder,
     interaction::Interaction,
@@ -297,19 +297,13 @@ where
                 let Delivered::Committed { inbox } = agents.send(parent, by, &record).await? else {
                     return Err(Error::Record("the parent is archived"));
                 };
-                let child = requested_child(parent, inbox)?.1;
-                // The parent's step consumes a request it cannot honour (it is
-                // archived or has its open-children limit) without creating
-                // the child, so a recorded refusal is reported, not a path
-                // that never appears. A child already created, as on a retry,
-                // is spawned whatever the parent's state now.
-                let state = agents.state(parent).await?;
-                if !state.open_children.contains(&child)
-                    && (state.closed || state.open_children.len() >= MAX_OPEN_CHILDREN)
-                    && !matches!(agents.state(&child).await, Ok(_))
-                {
-                    return Err(Error::Record("the parent refused the spawn"));
-                }
+                // The parent's step applies the request against every spawn
+                // before it and commits the outcome; the reply is that record.
+                let (intent, _) = requested_child(parent, inbox)?;
+                let child = match agents.spawned(parent, inbox, &intent).await? {
+                    SpawnOutcome::Spawned { child } => child,
+                    SpawnOutcome::Refused { reason } => return Err(Error::SpawnRefused(reason)),
+                };
                 Ok(AgentReply::Spawned {
                     agent: child,
                     delivery: Delivered::Committed { inbox },

@@ -197,3 +197,41 @@ async fn host_replays_exact_intents_and_rejects_changed_bytes_after_progress() -
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
+    let provider = Arc::new(MemoryStream::default());
+    let host = AgentHost::new(
+        provider,
+        Spawner(AtomicUsize::new(1)),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+        Arc::new(SystemClock),
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    let request = InboxRecord::Spawn(SpawnRequest {
+        by: user(),
+        id: intent("s"),
+        brief: "task".into(),
+    });
+    let Delivered::Committed { inbox } = host.send(&root, &user(), &request).await? else {
+        return Err("spawn request was not committed".into());
+    };
+    let (spawn, child) = requested_child(&root, inbox)?;
+    // Until the parent's step commits, the reply waits rather than guessing.
+    let reply = host.spawned(&root, inbox, &spawn);
+    futures::pin_mut!(reply);
+    assert!(futures::poll!(reply.as_mut()).is_pending());
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    assert_eq!(
+        reply.await?,
+        SpawnOutcome::Spawned {
+            child: child.clone()
+        }
+    );
+    assert_eq!(host.state(&child).await?.parent.as_ref(), Some(&root));
+    Ok(())
+}
