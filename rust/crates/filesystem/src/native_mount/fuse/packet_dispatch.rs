@@ -19,6 +19,10 @@ impl PacketFailure {
         if !core.handler_failed.load(Ordering::Acquire) {
             return None;
         }
+        Some(Self::from_retained(core))
+    }
+
+    fn from_retained(core: &Arc<ProjectionCore>) -> Self {
         // Read the original failure slot, rather than admitting another
         // callback after a terminal failure or copying a second error index.
         // Once its retirement owner takes the cause, the view stays closed.
@@ -26,14 +30,14 @@ impl PacketFailure {
             .handler_error
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        Some(Self::Source {
+        Self::Source {
             _core: Arc::clone(core),
             errno: reports
                 .first_fatal
                 .as_ref()
                 .map_or(libc::ENODEV, |failure| callback_errno(&failure.0)),
             completion: PacketCompletion::no_reply(),
-        })
+        }
     }
 
     pub(super) fn from_callback(
@@ -51,13 +55,8 @@ impl PacketFailure {
         core: &Arc<ProjectionCore>,
         failure: (NativeMountError, crate::WorkCounters),
     ) -> Self {
-        let errno = callback_errno(&failure.0);
         core.retain_handler_failure(failure);
-        Self::Source {
-            _core: Arc::clone(core),
-            errno,
-            completion: PacketCompletion::no_reply(),
-        }
+        Self::from_retained(core)
     }
 
     pub(super) fn errno(&self) -> i32 {

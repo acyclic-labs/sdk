@@ -96,6 +96,19 @@ fn terminal_view_refuses_later_kernel_packets_without_readmitting_source()
     });
     assert_eq!(core.finish(result), Err(libc::EIO));
     let before = work.receipt();
+    let later = super::super::packet_dispatch::PacketFailure::source(
+        &core,
+        (
+            NativeMountError::Materialization(crate::NativeTreeMaterializationError::Cancelled),
+            before,
+        ),
+    );
+    assert_eq!(
+        later.errno(),
+        libc::EIO,
+        "the first actual cause owns retirement"
+    );
+    drop(later);
     for expected in [libc::EIO, libc::ENODEV] {
         let failure = protocol.publish(
             &PacketRequest::parse(&packet(1)?.request)
