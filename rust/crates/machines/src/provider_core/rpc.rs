@@ -78,7 +78,10 @@ impl Rpc {
         method: &'static str,
         message: I,
         timeout: Duration,
-    ) -> Result<impl futures::Stream<Item = Result<O, ProviderError>> + Send + 'static, ProviderError>
+    ) -> Result<
+        impl futures::Stream<Item = Result<O, ProviderError>> + Send + 'static + use<I, O>,
+        ProviderError,
+    >
     where
         I: Message + Default + Send + Sync + 'static,
         O: Message + Default + Send + Sync + 'static,
