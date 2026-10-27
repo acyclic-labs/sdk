@@ -70,6 +70,7 @@ mod directory_reply;
 mod disclosure;
 mod folded;
 mod folded_property;
+mod guest;
 mod inbox;
 mod mount;
 mod native;

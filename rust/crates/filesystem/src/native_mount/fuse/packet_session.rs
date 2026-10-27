@@ -101,6 +101,17 @@ impl PacketSession {
         self.router.close();
     }
 
+    pub(super) fn retire_failure(&self, error: &PacketFailure) {
+        // A shared view owns its original source failure. Retiring that view
+        // must not close the kernel connection serving its siblings.
+        if !matches!(
+            (&self.router, error),
+            (PacketRouter::Shared(_), PacketFailure::Source { .. })
+        ) {
+            self.close();
+        }
+    }
+
     pub(super) fn dispatch<'a>(
         &'a self,
         request: &PacketRequest<'_>,
@@ -137,13 +148,7 @@ impl PacketSession {
             self.phase
                 .compare_exchange(COLD, NEGOTIATING, Ordering::AcqRel, Ordering::Acquire)
                 .map_err(|_| libc::EPROTO)?;
-            match self.initialize(request, response) {
-                Ok(result) => result,
-                Err(error) => {
-                    self.close();
-                    return Err(error);
-                }
-            }
+            self.initialize(request, response)?
         } else {
             if !self.ready() {
                 return Err(if self.phase.load(Ordering::Acquire) == CLOSED {
@@ -166,15 +171,7 @@ impl PacketSession {
                         return Err(libc::EMSGSIZE.into());
                     }
                 }
-                match self.router.dispatch(request, response) {
-                    Ok(completion) => (completion, None),
-                    Err(error) => {
-                        if error.is_terminal() {
-                            self.close();
-                        }
-                        return Err(error);
-                    }
-                }
+                (self.router.dispatch(request, response)?, None)
             }
         };
         Ok(PacketReply {

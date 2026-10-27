@@ -89,19 +89,30 @@ bb2 passed `cargo check --locked -p acyclic-fs --tests` for the shared packet
 and socket implementation (job `1793061176450-13144-f5af43b2`). This proves
 compilation, not a public source admission, protocol interoperability or mount.
 
-The complete Linux filesystem library run, including existing ignored mount
-tests, reported failures and hung in its live cancellation test. The owner
-cancelled it; cancellation wake and refusal-drain corrections await a rerun:
+The second complete Linux filesystem library run, including every existing
+ignored mount test, finished in 30.31 seconds: 2,471 passed and 28 failed,
+with zero ignored or filtered tests (source `500c174955eda0d91097cbb362ef981e57f39148`,
+job `1793062408205-18599-49ab79a2`). The earlier cancellation hang is gone;
+that test still reported cancellation during cleanup. Further corrections
+preserve physical reply ordering, shared-view isolation and deferred custody
+reconciliation. They await execution. This is not a passing suite.
+
+A new real QEMU/cloud-hypervisor vector requires prepared guest artifacts:
 
 ```powershell
-pwsh -NoProfile -File Q:/lanes/bs.ps1 bash -c 'cargo test --locked -p acyclic-fs --lib -- --include-ignored --nocapture'
+pwsh -NoProfile -File Q:/lanes/bs.ps1 bash -c 'python3 scripts/prepare-virtiofs-guest.py --output /tmp/acyclic-guest && ACYCLIC_FS_GUEST_ARTIFACTS=/tmp/acyclic-guest cargo test --locked -p acyclic-fs --lib -- --include-ignored --nocapture'
 ```
 
 The real-kernel capture and replay test passed in that run, as did standard
 vhost-user CONFIG negotiation and quiet cancellation/EOF. Its actual INIT,
 LOOKUP, READ, WRITE and RELEASE traffic and kernel/binary/source provenance
 are retained in [the packet fixture](../../rust/crates/filesystem/fixtures/fuse/README.md).
-The newly added mount-free replay of that saved fixture awaits execution.
+The mount-free replay of that saved fixture also passed in the second run.
 No QEMU/cloud-hypervisor mount pass is claimed. bb2 preflight found `/dev/fuse`, `/dev/kvm` and QEMU;
-cloud-hypervisor was not installed. The live qualification still requires both
+cloud-hypervisor was not installed. The preparation script uses the installed
+distribution kernel, its actual virtio-fs module and static BusyBox, and verifies
+the official cloud-hypervisor release asset's SHA-256. It records the exact
+artifact provenance and copies no host initrd or configuration. The vector
+retains the socket and VMM process tree through positive exit/cleanup.
+The live qualification still requires both
 guest boots above, verified read/write/delete, and positive guest/server exit.

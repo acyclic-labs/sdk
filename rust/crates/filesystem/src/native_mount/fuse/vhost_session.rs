@@ -84,7 +84,12 @@ impl VhostSession {
         VhostRetired {
             transport: match self.control.take_failure() {
                 Some(error) => Err(error),
-                None => result,
+                None => result.and_then(|()| {
+                    self.control
+                        .work
+                        .admit(WorkCounters::UNCHARGED)
+                        .map_err(Into::into)
+                }),
             },
             core: Arc::clone(&self.core),
         }

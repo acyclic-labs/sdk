@@ -30,7 +30,9 @@ impl PacketSession {
             Err(error) => {
                 self.reject(request, response, error.errno(), publish)?;
                 if error.is_terminal() || request.opcode == 26 {
-                    self.close();
+                    // Keep the original view and work through the physical
+                    // negative reply before starting terminal retirement.
+                    self.retire_failure(&error);
                     Err(error)
                 } else {
                     Ok(true)
