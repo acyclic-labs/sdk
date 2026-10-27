@@ -112,14 +112,16 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
                 .await?
                 .map(|record| record.map(FollowUpdate::Record))
                 .boxed(),
-            _ => provider
-                .follow_updates(
-                    path.clone(),
-                    1,
-                    Some(receipt.commit_id),
-                    FollowFilter::default(),
-                )
-                .await?,
+            _ => {
+                provider
+                    .follow_updates(
+                        path.clone(),
+                        1,
+                        Some(receipt.commit_id),
+                        FollowFilter::default(),
+                    )
+                    .await?
+            }
         };
         drop(provider);
         // A distinct provider must wake this subscription through LISTEN after

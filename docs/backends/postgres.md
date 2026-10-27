@@ -46,14 +46,13 @@ the SQL journal itself has no compaction yet.
 Run only on bb2:
 
 ```powershell
-$storageBase = (git merge-base HEAD origin/main).Trim()
-$storageInputs = 'BUILD_SLOT_INPUTS_JSON=' + (@{ version = 1; complete = $true; base_sha = $storageBase; inputs = @() } | ConvertTo-Json -Compress)
-pwsh -NoProfile -File Q:/lanes/bs.ps1 --env $storageInputs bash scripts/backends/compile-storage.sh
-pwsh -NoProfile -File Q:/lanes/bs.ps1 --env $storageInputs bash scripts/backends/storage-conformance.sh
+pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/compile-storage.sh
+pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh
 ```
 
-The declaration has no comparison receipts or borrowed proof artifacts; these
-jobs qualify the uploaded source and create fresh emulator fixtures.
+The drivers' companion `.inputs.json` declarations name no comparison receipts
+or borrowed proof artifacts; these jobs qualify the uploaded source and create
+fresh emulator fixtures.
 
 The second command creates PostgreSQL and MinIO containers with disposable data
 under `/mnt/bb`. It invokes the unchanged Stream suite, then checks independent
