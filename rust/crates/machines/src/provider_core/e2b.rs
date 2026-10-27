@@ -3,7 +3,7 @@
 use super::instances::Instances;
 use super::{
     Allocation, SandboxDriver, SandboxInstance, SandboxSpec,
-    http::{Http, secret},
+    http::{Http, credential_headers},
 };
 use crate::{ExecOutput, MachineState, ProviderError};
 use async_trait::async_trait;
@@ -56,10 +56,8 @@ impl E2b {
         {
             return Err(ProviderError::Invalid("E2B deployment admission failed; recovery: configure a DNS domain and nonzero provider lifetime ceiling".into()));
         }
-        let mut headers = HeaderMap::new();
-        headers.insert("x-api-key", secret(api_key)?);
         Ok(Self {
-            api: Http::new(api_url, headers)?,
+            api: Http::new(api_url, credential_headers([("x-api-key", api_key)])?)?,
             guest_domain: guest_domain.into(),
             dev_proxy: dev_proxy
                 .map(|url| Http::new(url, HeaderMap::new()))
@@ -172,18 +170,18 @@ impl SandboxDriver for E2b {
         {
             return Err(ProviderError::Unavailable);
         }
-        let mut headers = HeaderMap::new();
-        headers.insert("x-access-token", secret(&created.access_token)?);
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            secret(&format!("Basic {}", STANDARD.encode("user:")))?,
-        );
+        let mut headers = credential_headers([
+            ("x-access-token", created.access_token.as_str()),
+            (
+                "authorization",
+                format!("Basic {}", STANDARD.encode("user:")).as_str(),
+            ),
+        ])?;
         let endpoint = if let Some(proxy) = &self.dev_proxy {
-            headers.insert("e2b-sandbox-id", secret(&created.id)?);
-            headers.insert(
-                "e2b-sandbox-port",
-                reqwest::header::HeaderValue::from_static("49983"),
-            );
+            headers.extend(credential_headers([
+                ("e2b-sandbox-id", created.id.as_str()),
+                ("e2b-sandbox-port", "49983"),
+            ])?);
             proxy.endpoint.to_string()
         } else {
             format!("https://49983-{}.{}", created.id, self.guest_domain)

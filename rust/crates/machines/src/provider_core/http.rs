@@ -2,7 +2,7 @@
 use crate::ProviderError;
 use reqwest::{
     Client, Method, Response, Url,
-    header::{HeaderMap, HeaderValue},
+    header::{HeaderMap, HeaderName, HeaderValue},
 };
 use std::time::Duration;
 
@@ -31,6 +31,17 @@ pub(super) fn secret(value: &str) -> Result<HeaderValue, ProviderError> {
     })?;
     value.set_sensitive(true);
     Ok(value)
+}
+
+/// Credentials are validated and marked sensitive once for HTTP and RPC alike.
+/// Names are static adapter protocol constants, never provider response input.
+pub(super) fn credential_headers<'a>(
+    values: impl IntoIterator<Item = (&'static str, &'a str)>,
+) -> Result<HeaderMap, ProviderError> {
+    values
+        .into_iter()
+        .map(|(name, value)| Ok((HeaderName::from_static(name), secret(value)?)))
+        .collect()
 }
 
 pub(super) fn endpoint_url(endpoint: &str) -> Result<Url, ProviderError> {

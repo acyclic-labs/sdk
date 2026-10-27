@@ -5,14 +5,13 @@ use super::instances::Instances;
 use super::{
     Allocation, NetworkPolicy, SandboxDriver, SandboxInstance, SandboxSpec,
     duplex::{duplex_exec, pump_stdin},
-    http::secret,
+    http::credential_headers,
     rpc::Rpc,
 };
 use crate::{ExecStream, MachineState, ProviderError};
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use std::time::Duration;
-use tonic::metadata::MetadataMap;
 
 const CONTROL: &str = "modal.client.ModalClient";
 const ROUTER: &str = "modal.task_command_router.TaskCommandRouter";
@@ -41,37 +40,34 @@ impl Modal {
         token_secret: &str,
         app_id: &str,
     ) -> Result<Self, ProviderError> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("x-modal-token-id", secret(token_id)?);
-        headers.insert("x-modal-token-secret", secret(token_secret)?);
-        headers.insert(
-            "x-modal-client-type",
-            reqwest::header::HeaderValue::from_static("1"),
-        );
-        headers.insert(
-            "x-modal-client-version",
-            reqwest::header::HeaderValue::from_static("0.11.1"),
-        );
         if app_id.is_empty() {
             return Err(ProviderError::Invalid(
                 "Modal app admission failed; recovery: configure an existing app ID".into(),
             ));
         }
         Ok(Self {
-            control: Rpc::new(endpoint, MetadataMap::from_headers(headers))?,
+            control: Rpc::new(
+                endpoint,
+                CONTROL,
+                credential_headers([
+                    ("x-modal-token-id", token_id),
+                    ("x-modal-token-secret", token_secret),
+                    ("x-modal-client-type", "1"),
+                    ("x-modal-client-version", "0.11.1"),
+                ])?,
+            )?,
             app: app_id.into(),
             guests: Instances::default(),
         })
     }
 
     fn control_for(&self, guest: &Guest) -> Result<Rpc, ProviderError> {
-        let mut control = self.control.clone();
-        if !guest.sandbox_token.is_empty() {
-            let mut headers = control.metadata.clone().into_headers();
-            headers.insert("x-modal-sandbox-token", secret(&guest.sandbox_token)?);
-            control.metadata = MetadataMap::from_headers(headers);
+        if guest.sandbox_token.is_empty() {
+            Ok(self.control.clone())
+        } else {
+            self.control
+                .with_header("x-modal-sandbox-token", &guest.sandbox_token)
         }
-        Ok(control)
     }
 }
 
@@ -98,7 +94,6 @@ impl SandboxDriver for Modal {
         let response: wire::ImageId = guest
             .router
             .unary(
-                ROUTER,
                 "TaskSnapshotFilesystem",
                 wire::TaskSnapshotFilesystemRequest {
                     task_id: guest.task,
@@ -120,7 +115,6 @@ impl SandboxDriver for Modal {
         let _: wire::Empty = self
             .control
             .unary(
-                CONTROL,
                 "ImageDelete",
                 wire::ImageId {
                     image_id: snapshot.handle.clone(),
@@ -151,7 +145,6 @@ impl SandboxDriver for Modal {
         let response: wire::SandboxCreateV2Response = self
             .control
             .unary(
-                CONTROL,
                 "SandboxCreateV2",
                 wire::SandboxCreateV2Request {
                     app_id: self.app.clone(),
@@ -179,12 +172,11 @@ impl SandboxDriver for Modal {
         let access = response
             .command_router_access
             .ok_or(ProviderError::Unavailable)?;
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            secret(&format!("Bearer {}", access.jwt))?,
-        );
-        let router = Rpc::new(&access.url, MetadataMap::from_headers(headers))?;
+        let router = Rpc::new(
+            &access.url,
+            ROUTER,
+            credential_headers([("authorization", format!("Bearer {}", access.jwt).as_str())])?,
+        )?;
         self.guests.insert(
             response.sandbox_id.clone(),
             Guest {
@@ -209,7 +201,6 @@ impl SandboxDriver for Modal {
         let response: wire::SandboxWaitResponse = self
             .control_for(&guest)?
             .unary(
-                CONTROL,
                 "SandboxWaitV2",
                 wire::SandboxWaitRequest {
                     sandbox_id: instance.id.clone(),
@@ -232,7 +223,6 @@ impl SandboxDriver for Modal {
         let _: wire::Empty = self
             .control_for(&guest)?
             .unary(
-                CONTROL,
                 "SandboxTerminateV2",
                 wire::SandboxRequest {
                     sandbox_id: instance.id.clone(),
@@ -260,7 +250,6 @@ impl SandboxDriver for Modal {
         let _: wire::Empty = guest
             .router
             .unary(
-                ROUTER,
                 "TaskExecStart",
                 wire::TaskExecStartRequest {
                     task_id: guest.task.clone(),
@@ -283,7 +272,6 @@ impl SandboxDriver for Modal {
                 guest
                     .router
                     .streaming::<_, wire::TaskExecStdioReadResponse>(
-                        ROUTER,
                         "TaskExecStdioRead",
                         wire::TaskExecStdioReadRequest {
                             task_id: guest.task,
@@ -306,12 +294,7 @@ impl SandboxDriver for Modal {
         };
         let exit = async move {
             let result: wire::TaskExecWaitResponse = router
-                .unary(
-                    ROUTER,
-                    "TaskExecWait",
-                    wait,
-                    timeout + Duration::from_secs(10),
-                )
+                .unary("TaskExecWait", wait, timeout + Duration::from_secs(10))
                 .await?;
             match result.exit_status {
                 Some(wire::ExitStatus::Code(code)) => Ok(code),
@@ -328,7 +311,6 @@ impl SandboxDriver for Modal {
                 let _: wire::Empty = guest
                     .router
                     .unary(
-                        ROUTER,
                         "TaskExecStdinWrite",
                         wire::TaskExecStdinWriteRequest {
                             task_id: guest.task,
