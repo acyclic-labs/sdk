@@ -203,6 +203,7 @@ export default {
     if (new URL(request.url).pathname === "/creation-interrupted") {
       const agent = env.AGENT.getByName("saved-creating");
       let interrupted = false;
+      console.log("STEP saved-creation capture: submitting the original root before injected commit interruption");
       try { await agent.create("saved-creation-root"); } catch { interrupted = true; }
       const stage = await agent.placementStage();
       if (!interrupted || stage !== "creating") {

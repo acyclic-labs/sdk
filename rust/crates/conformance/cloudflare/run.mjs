@@ -121,5 +121,6 @@ async function main() {
 
 await main().catch(error => {
   console.error(`STEP workerd-conformance failed: ${error}; recovery: bash scripts/qualify-cloudflare.sh`);
+  console.error(error);
   process.exitCode = 1;
 });
