@@ -56,32 +56,34 @@ pub(super) fn linux_an_open_reader_sees_a_write_through_another_handle()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Read as _, Seek as _, Write as _};
 
-    let (inner, _) = shared_sources(posix_config())?;
-    let volume_id = inner.volume_id()?;
-    let source = Arc::new(inner);
-    let temporary = tempfile::tempdir()?;
-    let mut session = mount(
-        Arc::clone(&source) as Arc<dyn MountFilesystem>,
-        volume_id,
-        temporary.path(),
-    )?;
-    let shared = temporary.path().join("shared");
-    std::fs::write(&shared, b"before")?;
-    assert_eq!(std::fs::read(&shared)?, b"before");
-    let mut writer = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&shared)?;
-    let mut reader = std::fs::File::open(&shared)?;
-    writer.seek(std::io::SeekFrom::End(0))?;
-    writer.write_all(b"-after")?;
-    writer.sync_all()?;
-    let mut observed = Vec::new();
-    reader.read_to_end(&mut observed)?;
-    assert_eq!(observed, b"before-after");
-    drop((writer, reader));
-    assert!(session.stop()?);
-    Ok(())
+    super::packets::trace_kernel_packets("open reader observes another handle", || {
+        let (inner, _) = shared_sources(posix_config())?;
+        let volume_id = inner.volume_id()?;
+        let source = Arc::new(inner);
+        let temporary = tempfile::tempdir()?;
+        let mut session = mount(
+            Arc::clone(&source) as Arc<dyn MountFilesystem>,
+            volume_id,
+            temporary.path(),
+        )?;
+        let shared = temporary.path().join("shared");
+        std::fs::write(&shared, b"before")?;
+        assert_eq!(std::fs::read(&shared)?, b"before");
+        let mut writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&shared)?;
+        let mut reader = std::fs::File::open(&shared)?;
+        writer.seek(std::io::SeekFrom::End(0))?;
+        writer.write_all(b"-after")?;
+        writer.sync_all()?;
+        let mut observed = Vec::new();
+        reader.read_to_end(&mut observed)?;
+        assert_eq!(observed, b"before-after");
+        drop((writer, reader));
+        assert!(session.stop()?);
+        Ok(())
+    })
 }
 
 #[test]

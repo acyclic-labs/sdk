@@ -206,6 +206,58 @@ impl Drop for Recording {
     }
 }
 
+/// Reuse the real kernel capture when a live regression fails. Completion
+/// order and kernel handle IDs distinguish a late release from a new write;
+/// no response or provider state is reconstructed for this diagnostic.
+pub(in crate::native_mount) fn trace_kernel_packets<T, E>(
+    step: &str,
+    run: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E> {
+    struct Trace<'a> {
+        step: &'a str,
+        capture: Arc<Capture>,
+        passed: bool,
+    }
+    impl Drop for Trace<'_> {
+        fn drop(&mut self) {
+            if self.passed {
+                return;
+            }
+            let packets = self
+                .capture
+                .packets
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            for packet in packets.iter() {
+                if let Ok(request) = PacketRequest::parse(&packet.request) {
+                    let handle = matches!(request.opcode, 15 | 16 | 18 | 20 | 25)
+                        .then(|| PacketInput::new(request.body).u64().ok())
+                        .flatten();
+                    let errno = packet.response.as_deref().and_then(|bytes| {
+                        let mut input = PacketInput::new(bytes);
+                        input.u32().ok()?;
+                        Some(input.u32().ok()? as i32)
+                    });
+                    eprintln!(
+                        "KERNEL_PACKET step={} admitted={} unique={} opcode={} inode={} handle={handle:?} reply_errno={errno:?}",
+                        self.step, packet.sequence, request.unique, request.opcode, request.inode
+                    );
+                }
+            }
+        }
+    }
+    let capture = Arc::new(Capture::default());
+    let _recording = Recording::start(Arc::clone(&capture));
+    let mut trace = Trace {
+        step,
+        capture,
+        passed: false,
+    };
+    let result = run();
+    trace.passed = result.is_ok();
+    result
+}
+
 #[test]
 #[ignore = "captures requests from a real Linux FUSE mount"]
 fn kernel_packets_replay_through_the_mount_free_entry() -> Result<(), Box<dyn std::error::Error>> {
