@@ -108,7 +108,6 @@ for fixture in client-query.test.ts session-authority.ts actor-records.fixture.t
     exit 1
   }
 done
-install -m 0644 "$root/conformance/vectors/harness/native-wasm-event-v2.json" native-wasm-event-v2.json
 bun test test 2>&1 | tee "$work/typescript-package-test.log"
 framework_versions=()
 for framework in react react-dom svelte; do
