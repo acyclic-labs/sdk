@@ -173,6 +173,29 @@ impl Hooks {
             .flat_map(|binding| &binding.commands))
     }
 
+    /// The outcome of `event`'s hooks after a run interrupted before its
+    /// outcome was recorded: each matching hook reports a failure, which
+    /// blocks exactly where its failure policy blocks.
+    #[doc(hidden)]
+    pub fn interrupted<'a>(
+        &self,
+        event: HookEvent,
+        input: impl Into<HookInput<'a>>,
+        registry: &ToolRegistry,
+    ) -> Result<HookOutput> {
+        let mut output = HookOutput::default();
+        for hook in self.commands(event, input, registry)? {
+            output.diagnostics.push(HookDiagnostic {
+                cause: crate::ProcessError::Io {
+                    exit_code: None,
+                    message: "hook was interrupted before its outcome was recorded".into(),
+                },
+                blocking: hook.failure == HookFailure::Block,
+            });
+        }
+        Ok(output)
+    }
+
     #[doc(hidden)]
     pub async fn run_commands<'a, F, Fut>(
         &self,

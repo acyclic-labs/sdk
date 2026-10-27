@@ -23,9 +23,15 @@ impl CheckoutTools {
                 "hooks require the selected project grants".into(),
             ));
         }
-        crate::hooks::effects::run_once(&context, event, reconcile_only, || {
-            self.execute_hooks(hooks, event, input, registry, &context)
-        })
+        crate::hooks::effects::run_once(
+            &context,
+            event,
+            reconcile_only,
+            (
+                || self.execute_hooks(hooks, event, input, registry, &context),
+                || hooks.interrupted(event, input, registry),
+            ),
+        )
         .await
     }
 

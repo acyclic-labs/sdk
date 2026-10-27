@@ -127,10 +127,11 @@ impl TurnExecutors for Executors {
             .await?
             .with_tool_authority(context.scope().clone(), authority.approval.clone())?
             .with_task_context(&context, turn)?;
-            // The agent's first turn is the one before its first conversation entry.
+            // SessionStart runs once per agent, keyed by the agent itself, so
+            // a forked child (which inherits its parent's tail) runs its own.
             #[cfg(any(test, feature = "hooks"))]
             let executor = executor
-                .with_agent_hooks(&context, turn, input, agent.conversation_tail == 0)
+                .with_agent_hooks(&context, turn, input, session_operation(&agent.path))
                 .await?;
             Ok(Arc::new(executor) as Arc<dyn Executor>)
         })
@@ -350,4 +351,14 @@ impl LocalHarness {
     pub fn agent_failures(&self) -> Option<tokio::sync::broadcast::Receiver<AgentFailure>> {
         self.agents.get().map(|hosted| hosted.failures.subscribe())
     }
+}
+
+/// The operation keying `agent`'s one `SessionStart`.
+#[cfg(any(test, feature = "hooks"))]
+fn session_operation(agent: &crate::agent::AgentPath) -> OperationId {
+    let mut hasher = blake3::Hasher::new_derive_key("acyclic.agent.session-start/v1");
+    hasher.update(agent.as_str().as_bytes());
+    let mut id = [0; 16];
+    hasher.finalize_xof().fill(&mut id);
+    OperationId::from_bytes(id)
 }

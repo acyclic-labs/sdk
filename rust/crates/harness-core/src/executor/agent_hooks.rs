@@ -10,15 +10,18 @@ use crate::{
 
 impl StockExecutor {
     /// Binds the hooks this turn's context manifest configures, then runs its
-    /// prompt events: `SessionStart` on the agent's first turn and
-    /// `UserPromptSubmit` on every turn. Their context precedes the turn; a
-    /// block fails the turn when it runs, before any model request.
+    /// prompt events: `SessionStart` once per agent `session` and
+    /// `UserPromptSubmit` on every turn. `SessionStart` is keyed by the
+    /// session, not the turn, so it runs on the agent's first turn (a forked
+    /// child's included) and every later turn reads back its recorded
+    /// outcome, keeping its context. Their context precedes the turn; a block
+    /// fails the turn when it runs, before any model request.
     pub async fn with_agent_hooks(
         self,
         context: &TaskContext,
         turn: OperationId,
         prompt: &ModelContent,
-        first_turn: bool,
+        session: OperationId,
     ) -> Result<Self> {
         let mut hooks = None::<Hooks>;
         let mut digest = blake3::Hasher::new_derive_key("acyclic.agent.hooks/v1");
@@ -47,21 +50,24 @@ impl StockExecutor {
         let mut executor = self;
         let mut stages = Vec::new();
         for event in HookEvent::at(HookSite::Prompt) {
-            let input = match event {
-                HookEvent::SessionStart if first_turn => {
-                    serde_json::json!({"source": "startup", "session_id": turn.to_string()})
-                }
-                HookEvent::SessionStart => continue,
-                HookEvent::UserPromptSubmit => serde_json::json!({
-                    "prompt": prompt,
-                    "session_id": turn.to_string(),
-                }),
+            let (input, operation) = match event {
+                HookEvent::SessionStart => (
+                    serde_json::json!({"source": "startup", "session_id": session.to_string()}),
+                    session,
+                ),
+                HookEvent::UserPromptSubmit => (
+                    serde_json::json!({
+                        "prompt": prompt,
+                        "session_id": session.to_string(),
+                    }),
+                    turn,
+                ),
                 HookEvent::PreToolUse | HookEvent::PostToolUse | HookEvent::Stop => {
                     return Err(Error::Invalid("prompt hook site fires a tool event".into()));
                 }
             };
             let text = match executor
-                .prompt_hook(&bound, event, &input, &context, turn)
+                .prompt_hook(&bound, event, &input, &context, operation)
                 .await?
             {
                 Ok(Some(text)) => text,
@@ -99,13 +105,14 @@ impl StockExecutor {
 
     /// One prompt event's added context, or `None` when no hook matches; or
     /// the reason a block, explicit or by failure policy, fails the turn.
+    /// The event runs once per `operation`.
     async fn prompt_hook(
         &self,
         bound: &BoundHooks,
         event: HookEvent,
         input: &serde_json::Value,
         context: &Arc<TaskContext>,
-        turn: OperationId,
+        operation: OperationId,
     ) -> Result<std::result::Result<Option<Vec<String>>, String>> {
         if bound
             .rules
@@ -119,7 +126,7 @@ impl StockExecutor {
             context.harness.workspace_tools.as_ref().ok_or_else(|| {
                 Error::Unsupported("hook workspace execution is not bound".into())
             })?;
-        let issued = ToolContext::new(Arc::clone(context), turn, prompt_call(event))?;
+        let issued = ToolContext::new(Arc::clone(context), operation, prompt_call(event))?;
         let mut output = executor
             .run_hooks(
                 (&bound.rules, bound.manifest),
@@ -130,7 +137,7 @@ impl StockExecutor {
                 self.reconciliation_only,
             )
             .await?
-            .ok_or(Error::Indeterminate(turn))?;
+            .ok_or(Error::Indeterminate(operation))?;
         crate::hooks::report(event, &output);
         if let Some(reason) = output.take_block_reason() {
             return Ok(Err(format!(
