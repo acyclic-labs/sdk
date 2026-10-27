@@ -400,6 +400,7 @@ mod tests {
                     closed: true,
                     reported: true,
                     turn: None,
+                    reserved_children: u16::MAX,
                 };
                 let bytes = encode(&state, u64::MAX).expect("encodes");
                 assert!(

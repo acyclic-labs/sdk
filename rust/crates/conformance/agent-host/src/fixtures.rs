@@ -89,6 +89,7 @@ impl TurnDriver for Driver {
                 });
             }
             Ok(TurnStep {
+                reserved_children: 0,
                 checkpoint: None,
                 outs,
                 wait: Wait::Input,
