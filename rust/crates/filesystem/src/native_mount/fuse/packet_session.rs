@@ -146,7 +146,11 @@ impl PacketSession {
             }
         } else {
             if !self.ready() {
-                return Err(libc::EPROTO.into());
+                return Err(if self.phase.load(Ordering::Acquire) == CLOSED {
+                    libc::ENODEV.into()
+                } else {
+                    libc::EPROTO.into()
+                });
             }
             if request.opcode == 38 {
                 PacketInput::new(request.body).end()?;

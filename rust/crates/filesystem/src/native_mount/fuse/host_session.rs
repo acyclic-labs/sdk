@@ -1,6 +1,6 @@
 //! Physical host session over the common packet entry.
 
-use super::host_io::HostIo;
+use super::host_io::{HostIo, Received};
 use super::notification::{CacheNotifier, PacketSink};
 use super::packet::PacketRequest;
 use super::packet_buffers::{PacketBuffers, maximum_write};
@@ -12,7 +12,7 @@ use std::io::IoSlice;
 
 pub(super) struct HostSession {
     protocol: PacketSession,
-    // Its waker only stops physical I/O. Keep the actual registration alive
+    // Its waker interrupts physical I/O. Keep the actual registration alive
     // through every worker's exit, then recover the typed cause from work.
     _cancellation: crate::Cancelled<'static>,
     io: Arc<HostIo>,
@@ -75,8 +75,10 @@ impl HostSession {
     }
 
     fn serve(&self, input: &mut [u8], output: &mut [u8]) -> Result<bool, NativeMountError> {
-        let Some(length) = self.io.receive(input)? else {
-            return Ok(false);
+        let length = match self.io.receive(input)? {
+            Received::Closed => return Ok(false),
+            Received::Wake => return Ok(true),
+            Received::Packet(length) => length,
         };
         let packet = input.get(..length).ok_or(libc::EPROTO)?;
         let request = PacketRequest::parse(packet)?;
@@ -99,9 +101,14 @@ impl HostSession {
                 .map_err(super::packet_dispatch::PacketFailure::into_native_error)
                 .map(|()| true);
         }
-        self.protocol
-            .publish(&request, output, publish)
-            .map_err(super::packet_dispatch::PacketFailure::into_native_error)
+        match self.protocol.publish(&request, output, publish) {
+            // The negative reply physically completed. Its actual typed cause
+            // remains in the original core. Continue serving refusals while
+            // the existing retirement owner unmounts this kernel connection;
+            // otherwise retained device ownership can strand pending calls.
+            Err(super::packet_dispatch::PacketFailure::Source { .. }) => Ok(true),
+            other => other.map_err(super::packet_dispatch::PacketFailure::into_native_error),
+        }
     }
 }
 

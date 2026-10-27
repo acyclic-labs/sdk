@@ -30,6 +30,28 @@ struct CapturedPacket {
     response: Option<Vec<u8>>,
 }
 
+#[derive(Deserialize)]
+struct KernelCapture {
+    kind: String,
+    kernel: String,
+    entry_source_blake3: String,
+    packets: Vec<CapturedPacket>,
+}
+
+#[test]
+fn recorded_kernel_packets_replay_without_mounting() -> Result<(), Box<dyn std::error::Error>> {
+    let capture: KernelCapture = serde_json::from_str(include_str!(
+        "../../../../fixtures/fuse/linux-kernel-packets.json"
+    ))?;
+    assert_eq!(
+        capture.kind,
+        "real Linux /dev/fuse requests and physically published replies"
+    );
+    assert!(capture.kernel.starts_with("Linux version "));
+    assert_eq!(capture.entry_source_blake3.len(), 64);
+    replay(&capture.packets)
+}
+
 impl Capture {
     pub(in crate::native_mount::fuse) fn current() -> Option<Arc<Self>> {
         RECORDING.with_borrow(Clone::clone)
