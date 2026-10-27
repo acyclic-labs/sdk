@@ -109,9 +109,11 @@ pub(crate) fn diagnostic<T>(result: Result<T>, allocation: &mut NativeAllocation
             // A native transport failure carries no excerpt to fund: it keeps its class.
             error @ Error::ModelUnavailable { .. } if error_has_no_excerpt(&error) => return error,
             error @ Error::ModelUnavailable { .. } => (error.code(), error.to_string()),
-            error => return crate::diagnostic::rejection(error, |bytes| {
-                Ok(Some(allocation.split_off(bytes)?))
-            }),
+            error => {
+                return crate::diagnostic::rejection(error, |bytes| {
+                    Ok(Some(allocation.split_off(bytes)?))
+                });
+            }
         };
         match allocation.split_off(message.capacity() as u64) {
             Ok(custody) if semantic => Error::ModelDiagnostic {

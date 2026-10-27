@@ -14,18 +14,21 @@ pub(crate) fn generate<'a>(
     request: &'a PreparedModelRequest,
     dispatch: ModelDispatch,
 ) -> BoxProviderStream<'a, Result<ModelEvent>> {
-    Box::pin(async_stream::try_stream! {
-        provider.validate(&request.request().model)?;
-        if request.request_digest() != dispatch.request_digest {
-            Err(invalid("model dispatch digest differs from prepared request"))?;
+    Box::pin(
+        async_stream::try_stream! {
+            provider.validate(&request.request().model)?;
+            if request.request_digest() != dispatch.request_digest {
+                Err(invalid("model dispatch digest differs from prepared request"))?;
+            }
+            let names = crate::tool_names::Names::new(request.request());
+            let auth = authenticate(provider, #[cfg(not(target_arch = "wasm32"))] None).await?;
+            let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
+            let body = bytes::Bytes::from(encode(provider,request,&names,None,&origin).await?);
+            let mut events = generate_encoded(provider, request, dispatch, body, auth, names);
+            while let Some(event) = events.next().await { yield event?; }
         }
-        let names = crate::tool_names::Names::new(request.request());
-        let auth = authenticate(provider, #[cfg(not(target_arch = "wasm32"))] None).await?;
-        let origin = provider.reasoning_origin(auth.0.as_deref(), auth.1.as_deref());
-        let body = bytes::Bytes::from(encode(provider,request,&names,None,&origin).await?);
-        let mut events = generate_encoded(provider, request, dispatch, body, auth, names);
-        while let Some(event) = events.next().await { yield event?; }
-    }.map(|result: Result<ModelEvent>| result.map_err(crate::diagnostic::ordinary)))
+        .map(|result: Result<ModelEvent>| result.map_err(crate::diagnostic::ordinary)),
+    )
 }
 
 /// Caller has admitted model identity and bound dispatch to the immutable request.

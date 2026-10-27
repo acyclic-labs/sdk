@@ -1,19 +1,20 @@
-use std::fmt::{self, Write as _};
 use acyclic_harness_core::{Error, NativeCustody, Result, wire::ErrorCode};
+use std::fmt::{self, Write as _};
 
 /// Mark semantic failures at the provider boundary on every execution path.
 /// Storage, cancellation and native accounting failures keep their original class.
-pub(crate) fn rejection(
-    error: Error,
-    fund: impl FnOnce(u64) -> Result<NativeCustody>,
-) -> Error {
+pub(crate) fn rejection(error: Error, fund: impl FnOnce(u64) -> Result<NativeCustody>) -> Error {
     let (code, message) = match error {
         Error::Invalid(message) => (ErrorCode::Invalid, message),
         Error::Unauthorized(message) => (ErrorCode::Unauthorized, message),
         error => return error,
     };
     match fund(message.capacity() as u64) {
-        Ok(custody) => Error::ModelDiagnostic { code, message, custody },
+        Ok(custody) => Error::ModelDiagnostic {
+            code,
+            message,
+            custody,
+        },
         Err(cause) => cause,
     }
 }
