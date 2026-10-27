@@ -30,10 +30,10 @@ export class Machine extends DurableObject<Env> {
         return new Response(null, { status: 204 });
       }
       if (request.method === "POST") {
-        const body = await request.json<{ image: string; env: Record<string, string>; internet: boolean }>();
+        const body = await request.json<{ image: string; snapshot?: ContainerSnapshot; env: Record<string, string>; internet: boolean }>();
         if (body.image !== "workspace" || body.internet !== false) return failure(400, "Container create admission failed; recovery: use registered image workspace with blocked internet");
         if (this.container.running) return failure(409, "Container already running; recovery: recover the existing create operation");
-        this.container.start({ image: this.container.images.workspace, instance: "lite", enableInternet: false, env: body.env });
+        this.container.start({ ...(body.snapshot === undefined ? { image: this.container.images.workspace } : { containerSnapshot: body.snapshot }), instance: "lite", enableInternet: false, env: body.env });
         // An explicit Machines contract owns lifetime. Provider idle shutdown must
         // not silently replace it while a quiet command is running.
         await this.container.setInactivityTimeout(24 * 60 * 60 * 1000);
@@ -44,6 +44,9 @@ export class Machine extends DurableObject<Env> {
       }
     }
     if (!this.container.running) return failure(404, "Container stopped; recovery: inspect its Machines observation");
+    if (action === "snapshot" && request.method === "POST") {
+      return Response.json(await this.container.snapshotContainer({}));
+    }
     if (action === "file") {
       const path = url.searchParams.get("path");
       if (path === null || !path.startsWith("/") || path.includes("\0")) return failure(400, "File path admission failed; recovery: use an absolute guest path");

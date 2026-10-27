@@ -65,4 +65,11 @@ curl --fail --silent --show-error --max-time 25 -X POST "$warm" -H 'content-type
 curl --fail --silent --show-error --max-time 5 "$warm" || fail 'Native Container state read' 'bash scripts/qualify-machines-cloudflare.sh'
 curl --fail --silent --show-error --max-time 10 -X DELETE "$warm" || fail 'Warmup Container cleanup' 'bash scripts/qualify-machines-cloudflare.sh'
 cd ../..
+snapshot_capture=${MACHINES_SNAPSHOT_CAPTURE:-$scratch/native-snapshot.json}
+snapshot_failed=false
+node scripts/capture-machines-cloudflare.mjs http://127.0.0.1:15440 "$snapshot_capture" "$(git rev-parse HEAD)" || snapshot_failed=true
+if "$snapshot_failed"; then
+  cat "$snapshot_capture" || printf 'step=snapshot-capture-read; recovery: inspect %q\n' "$snapshot_capture" >&2
+fi
 /usr/bin/time -f 'Canonical Machines suite: %e seconds' timeout 55s "$binary" || fail 'Cloudflare canonical Machines conformance' 'bash scripts/qualify-machines-cloudflare.sh'
+if "$snapshot_failed"; then fail 'Cloudflare native snapshot probe' 'bash scripts/qualify-machines-cloudflare.sh'; fi
