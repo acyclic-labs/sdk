@@ -8,8 +8,9 @@
 //! ([`AgentPath::status`], [`AgentPath::conversation`]) any client follows.
 
 use super::{
-    AgentHandler, AgentPath, Error, ForkAdopted, InboxRecord, IntentId, Sender, Spawn,
-    SpawnVolumes, Submitted, TurnDriver, archive, handler::Agents, inbox_tail, send, submit,
+    AgentHandler, AgentPath, Error, ForkAdopted, INBOX, InboxRecord, IntentId, Sender, Spawn,
+    SpawnOutcome, SpawnVolumes, Submitted, TurnDriver, archive, handler::Agents, inbox_tail, send,
+    submit,
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -18,8 +19,10 @@ use acyclic_actors::{
     local::{Clock, Runtime, Store},
 };
 use acyclic_stream::{
-    CommitCondition, CommitRequest, CommittedMutation, StreamPath, StreamProvider,
+    CommitCondition, CommitRequest, CommittedMutation, FollowFilter, StreamError, StreamPath,
+    StreamProvider,
 };
+use futures::StreamExt as _;
 use std::{convert::Infallible, sync::Arc};
 
 /// Outcome of one control commit.
@@ -153,6 +156,55 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
     /// This is an observation; effect admission still requires its own commit fence.
     pub async fn state(&self, agent: &AgentPath) -> Result<super::AgentState, Error> {
         self.agents.state(&self.actor(agent)?, agent).await
+    }
+
+    /// What `parent`'s step did with the spawn named `intent` that its inbox
+    /// record `sequence` requested: the outcome that step committed, never a
+    /// guess from an earlier state. Waits, on the parent's actor state stream,
+    /// for the step consuming `sequence` to commit.
+    pub async fn spawned(
+        &self,
+        parent: &AgentPath,
+        sequence: u64,
+        intent: &IntentId,
+    ) -> Result<SpawnOutcome, Error> {
+        let actor = self.actor(parent)?;
+        let store = self.runtime.store();
+        let path = store.path(&actor).map_err(actor_error)?;
+        loop {
+            // Follow from the tail read before the load, so a step committing
+            // after the load is never missed.
+            let tail = match self.provider.tail(path.clone()).await {
+                Ok(tail) => tail,
+                Err(StreamError::NotFound) => 0,
+                Err(error) => return Err(Error::Stream(error)),
+            };
+            let consumed = store
+                .load(&actor)
+                .await
+                .map_err(actor_error)?
+                .state()
+                .and_then(|state| state.cursor(INBOX))
+                .is_some_and(|cursor| cursor > sequence);
+            if consumed {
+                return self
+                    .state(parent)
+                    .await?
+                    .spawn_outcome(intent)
+                    .cloned()
+                    .ok_or(Error::Record("spawn outcome is no longer retained"));
+            }
+            let mut committed = self
+                .provider
+                .follow(path.clone(), tail, FollowFilter::default())
+                .await
+                .map_err(Error::Stream)?;
+            match committed.next().await {
+                Some(Ok(_)) => {}
+                Some(Err(error)) => return Err(Error::Stream(error)),
+                None => return Err(Error::Stream(StreamError::Unavailable)),
+            }
+        }
     }
 
     /// Prepares, without IO, the one commit creating root agent

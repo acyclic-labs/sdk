@@ -38,8 +38,9 @@ pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
 pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, VOLUMES};
 pub use lower::{delivery_key, lower};
 pub use machine::{
-    AgentState, Alarm, MAX_OPEN_CHILDREN, MAX_QUEUED, Out, Step, TurnDriver, TurnFuture, TurnInput,
-    TurnStep, Wait, Wake, requested_child, step,
+    AgentState, Alarm, MAX_OPEN_CHILDREN, MAX_QUEUED, MAX_SPAWN_OUTCOMES, Out, SpawnOutcome,
+    SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, requested_child,
+    step,
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, Closed, Control,
@@ -60,6 +61,9 @@ pub enum Error {
     /// The recipient agent was never created.
     #[error("no such agent")]
     NoSuchAgent,
+    /// The parent's step applied the spawn and created no child.
+    #[error("spawn refused: {0:?}")]
+    SpawnRefused(SpawnRefusal),
     /// Completion is uncertain; retry this exact request until it resolves.
     #[error("agent commit outcome is unknown")]
     Unknown(Box<acyclic_stream::CommitRequest>),
@@ -83,6 +87,7 @@ impl Error {
             Self::Path(_) => "invalid_agent_path",
             Self::Record(_) => "invalid_agent_record",
             Self::NoSuchAgent => "no_such_agent",
+            Self::SpawnRefused(_) => "spawn_refused",
             Self::Unknown(_) => "agent_unknown",
             Self::Stream(cause) => cause.code(),
             Self::Actor(_) => "agent_runtime_error",
