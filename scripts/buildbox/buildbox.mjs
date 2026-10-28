@@ -1503,7 +1503,7 @@ async function runIn(argv, t0, cwd, co, rel, key, tkey, id, base, ctx) {
     followStream(J, 'err', (b) => {
       if (!st.detached) process.stderr.write(b); log.write(b); keep(ve, b);
       st.receiptLines = (st.receiptLines || '') + b.toString();
-      const lines = st.receiptLines.split('\n'); st.receiptLines = lines.pop().slice(-65536);
+      const lines = st.receiptLines.split('\n'); st.receiptLines = lines.pop();
       for (const line of lines) if (line.startsWith('BUILD_SLOT_EXEC=')) {
         mark('exec-line');
         try { atomic(ctx.metaFile + '.exec', JSON.parse(line.slice(16))); } catch {}

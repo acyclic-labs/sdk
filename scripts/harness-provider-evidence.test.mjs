@@ -274,6 +274,8 @@ test("runner rejects stale source and substituted package inputs before qualific
     for (const name of ["run-harness-conformance.mjs", "harness-conformance-cases.mjs", "harness-conformance-evidence.mjs", "generated-bindings.mjs", "harness-package-closure.mjs", "harness-provider-evidence.mjs"]) {
       copyFileSync(new URL(`./${name}`, import.meta.url), join(root, "scripts", name));
     }
+    mkdirSync(join(root, "scripts/buildbox"));
+    copyFileSync(new URL("./buildbox/process-capture.mjs", import.meta.url), join(root, "scripts/buildbox/process-capture.mjs"));
     mkdirSync(join(root, "conformance/vectors"), { recursive: true });
     copyFileSync(new URL("../conformance/vectors/core.json", import.meta.url), join(root, "conformance/vectors/core.json"));
     writeFileSync(join(root, ".gitignore"), "/artifacts/\n/launcher/\n");

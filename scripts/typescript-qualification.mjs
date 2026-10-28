@@ -1,10 +1,10 @@
 #!/usr/bin/env node
+import { captureCommand } from "./buildbox/process-capture.mjs";
 
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const PACKAGES = JSON.parse(readFileSync(join(root, "release", "npm-packages.json"), "utf8"))
@@ -184,7 +184,7 @@ function verify(receiptPath, sourceSha, assetName, archive) {
 }
 
 function checkedGit(args) {
-  const result = spawnSync("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
+  const result = captureCommand("git", args, { cwd: root, encoding: "utf8", windowsHide: true });
   if (result.error || result.status !== 0) fail(`source inspection failed: ${result.error ?? result.stderr}`);
   return result.stdout;
 }
@@ -270,8 +270,8 @@ function consumer(bun, buildReceipt) {
     }
     const command = process.platform === "win32" && /\.(?:cmd|bat)$/i.test(bun) ? "cmd" : bun;
     const commandArgs = command === "cmd" ? ["/d", "/c", bun, ...args] : args;
-    const result = spawnSync(command, commandArgs, { cwd: root, encoding: "utf8", timeout: 90_000 });
-    if (result.error || result.status !== 0) return { schema: 1, passed: false, elapsed_ms: Math.trunc(performance.now() - started), error: String(result.error ?? `${result.stderr}${result.stdout}`).slice(-2000) };
+    const result = captureCommand(command, commandArgs, { cwd: root, encoding: "utf8", timeout: 90_000 });
+    if (result.error || result.status !== 0) return { schema: 1, passed: false, elapsed_ms: Math.trunc(performance.now() - started), error: String(result.error ?? `${result.stderr}${result.stdout}`) };
     if (args[0] === "x" && args[2] === "--version" && !/^Version \d+\.\d+\.\d+/.test(result.stdout.trim())) fail("TypeScript compiler version was not observed");
     if (args.includes("-b")) {
       if (JSON.stringify(source) !== JSON.stringify(compilerSource())) fail("compiler source changed during the consumer build");

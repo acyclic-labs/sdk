@@ -1,5 +1,5 @@
+import { commandOutput } from "./buildbox/process-capture.mjs";
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -28,7 +28,7 @@ function run(command, args, options = {}) {
   const npmCli = join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js");
   const executable = process.platform === "win32" && command === "npm" ? process.execPath : command;
   const commandArgs = executable === process.execPath && command === "npm" ? [npmCli, ...args] : args;
-  const result = execFileSync(executable, commandArgs, {
+  const result = commandOutput(executable, commandArgs, {
     cwd: options.cwd ?? root,
     encoding: "utf8",
     stdio: options.stdio ?? ["ignore", "pipe", "pipe"],

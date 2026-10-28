@@ -1,5 +1,5 @@
+import { commandOutput, captureCommand } from "./buildbox/process-capture.mjs";
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { chmod, cp, lstat, mkdir, mkdtemp, rename, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -134,13 +134,13 @@ async function assertSourceSnapshot(expected) {
 }
 
 function sourceRevision() {
-  const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  const revision = commandOutput("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
   if (!/^[0-9a-f]{40,64}$/.test(revision)) throw new Error("git source revision is unavailable for native artifact provenance");
   return revision;
 }
 
 function commandOutput(command, args) {
-  return execFileSync(command, args, {
+  return commandOutput(command, args, {
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -148,7 +148,7 @@ function commandOutput(command, args) {
 }
 
 function requiredCommandIdentity(command, args) {
-  const result = spawnSync(command, args, {
+  const result = captureCommand(command, args, {
     cwd: root,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -854,7 +854,7 @@ function assertMatchingBuildInputs(left, right, options = {}) {
 }
 
 function assertCleanSource() {
-  const status = execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=all", "--", ...sourceRoots], { cwd: root, encoding: "utf8" });
+  const status = commandOutput("git", ["status", "--porcelain=v1", "--untracked-files=all", "--", ...sourceRoots], { cwd: root, encoding: "utf8" });
   if (status.trim() !== "") throw new Error("Stream native build requires a clean source closure; commit or stage source changes before building");
 }
 
@@ -865,7 +865,7 @@ function rustMetadata() {
 
 /** Explicit production generation gate; use before building or refreshing trusted source inventory. */
 function assertCurrentNativeFamily() {
-  const actual = JSON.parse(execFileSync("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, family.key], { cwd: root, encoding: "utf8" }));
+  const actual = JSON.parse(commandOutput("cargo", ["run", "--offline", "--locked", "--quiet", "-p", "sdk-proto-codegen", "--", "native-family", root, family.key], { cwd: root, encoding: "utf8" }));
   if (JSON.stringify(actual) !== JSON.stringify(family)) throw new Error("Rust native family metadata drift");
 }
 
@@ -926,13 +926,13 @@ function signDarwinAddon(output, target, /** @type {string|null} */ codesignExec
     if (artifactName === undefined) throw new Error(`native bundle ${output} has no Darwin addon to sign`);
     const artifact = resolve(output, artifactName);
     const args = ["--force", "--sign", "-", "--identifier", `acyclic.${family.key}.napi`, "--timestamp=none", artifact];
-    execFileSync(signer, args, { stdio: "inherit" });
-    const verified = spawnSync(signer, ["--verify", "--strict", artifact], { encoding: "utf8" });
+    commandOutput(signer, args, { stdio: "inherit" });
+    const verified = captureCommand(signer, ["--verify", "--strict", artifact], { encoding: "utf8" });
     if (verified.status !== 0) {
       const verification = `${verified.stdout ?? ""}${verified.stderr ?? ""}`;
       throw new Error(`codesign strict verification failed: ${verification.trim()}`);
     }
-    const observed = spawnSync(signer, ["-dvv", artifact], { encoding: "utf8" });
+    const observed = captureCommand(signer, ["-dvv", artifact], { encoding: "utf8" });
     const details = `${observed.stdout ?? ""}${observed.stderr ?? ""}`;
     if (observed.status !== 0) throw new Error(`codesign verification failed: ${details.trim()}`);
     return {
@@ -1054,7 +1054,7 @@ async function build(options) {
   // Every family enters through the same admission boundary. In particular,
   // rejected arguments cannot launch a generator (and therefore Cargo).
   try {
-    execFileSync(process.execPath, [resolve(root, "scripts/generate.mjs"), family.key], { stdio: "inherit" });
+    commandOutput(process.execPath, [resolve(root, "scripts/generate.mjs"), family.key], { stdio: "inherit" });
   } catch (cause) {
     throw new Error(`step=native-generation; recovery=node scripts/generate.mjs ${family.key}`, { cause });
   }
@@ -1110,7 +1110,7 @@ async function build(options) {
     // under this capture to supply actual compiler provenance, even when its
     // old artifact was already cached. Admit that work before the sole build;
     // discovering missing provenance afterwards must never trigger a retry.
-    execFileSync("cargo", ["clean", "--package", family.rustPackageName, "--profile", policy.profile, "--target-dir", targetDir], { cwd: root, stdio: "inherit" });
+    commandOutput("cargo", ["clean", "--package", family.rustPackageName, "--profile", policy.profile, "--target-dir", targetDir], { cwd: root, stdio: "inherit" });
     const rustcCapture = await createRustcInvocationCapture();
     try {
       // Remove only the two provenance files this command owns. Any other

@@ -69,6 +69,8 @@ for (const mutation of ["source", "baseline", "stale-dist"]) {
     try {
       for (const directory of ["scripts", "release", "target", "typescript/packages/demo/src", "compatibility/native-families"]) mkdirSync(join(stage, directory), { recursive: true });
       cpSync(qualification, join(stage, "scripts/typescript-qualification.mjs"));
+      mkdirSync(join(stage, "scripts/buildbox"), { recursive: true });
+      cpSync(join(root, "scripts/buildbox/process-capture.mjs"), join(stage, "scripts/buildbox/process-capture.mjs"));
       cpSync(join(root, "release/npm-packages.json"), join(stage, "release/npm-packages.json"));
       writeFileSync(join(stage, ".gitignore"), "target/\ntypescript/packages/*/dist/\n");
       writeFileSync(join(stage, "typescript/packages/demo/src/index.ts"), "export const value = 1;\n");
@@ -141,6 +143,8 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
       mkdirSync(join(stage, "release"));
       mkdirSync(join(stage, "target"));
       for (const name of ["typescript-qualification.mjs", "validate-npm-package.mjs", "archive-utils.mjs"]) cpSync(join(root, "scripts", name), join(stage, "scripts", name));
+      mkdirSync(join(stage, "scripts/buildbox"), { recursive: true });
+      cpSync(join(root, "scripts/buildbox/process-capture.mjs"), join(stage, "scripts/buildbox/process-capture.mjs"));
       cpSync(join(root, "release/npm-packages.json"), join(stage, "release/npm-packages.json"));
       writeFileSync(join(stage, ".gitignore"), "/target/\n/archives/\n/archive-inputs/\n/typescript/packages/*/dist/\n/typescript/packages/*/generated/wasm/\n");
       for (const item of entries) writeArchiveFixture(stage, item);
@@ -269,12 +273,14 @@ test("qualification rejects a valid archive with the wrong manifest identity", (
   }
 });
 
-test("verify-only publication staging runs with only the copied qualification script", () => {
+test("verify-only publication staging runs with the copied qualification dependency closure", () => {
   const stage = mkdtempSync(join(tmpdir(), "acyclic-qualification-stage-"));
   try {
     mkdirSync(join(stage, "scripts"), { recursive: true });
     mkdirSync(join(stage, "release"), { recursive: true });
     cpSync(qualification, join(stage, "scripts/typescript-qualification.mjs"));
+    mkdirSync(join(stage, "scripts/buildbox"), { recursive: true });
+    cpSync(join(root, "scripts/buildbox/process-capture.mjs"), join(stage, "scripts/buildbox/process-capture.mjs"));
     cpSync(join(root, "release/npm-packages.json"), join(stage, "release/npm-packages.json"));
     for (const item of releasePackages) {
       const manifest = join(root, "typescript/packages", item.directory, "package.json");
