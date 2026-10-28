@@ -9,6 +9,7 @@
 // Usage: node test/browser-qualify.mjs [page ...]   (default: every page)
 // CHROME selects Chromium. BROWSER=firefox uses GECKODRIVER and optional FIREFOX.
 import { spawn } from "node:child_process";
+import { waitForFileValue } from "../../../../scripts/graphcoder-e2e/wait-path.mjs";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
@@ -136,24 +137,29 @@ async function launchChrome(profile) {
     ],
     { stdio: "ignore", windowsHide: true },
   );
-  const exited = new Promise((resolveExit) => chrome.once("exit", resolveExit));
-  // Chrome writes its chosen port and browser endpoint here once it listens.
+  const exited = new Promise(resolveExit => chrome.once("close", resolveExit));
+  const controller = new AbortController();
+  const failed = code => controller.abort(new Error(`Chrome exited with ${code}`));
+  const failedSpawn = error => controller.abort(error);
+  chrome.once("exit", failed);
+  chrome.once("error", failedSpawn);
+  // Chrome's complete endpoint may follow its initial file creation event.
   const activePort = join(profile, "DevToolsActivePort");
-  const [port, path] = await until(Date.now() + 30_000, "Chrome DevTools endpoint", () => {
-    if (chrome.exitCode !== null) throw new Error(`Chrome exited with ${chrome.exitCode}`);
-    if (!existsSync(activePort)) return undefined;
-    let lines;
+  const [port, path] = await waitForFileValue(activePort, file => {
     try {
-      lines = readFileSync(activePort, "utf8").split("\n");
+      const lines = readFileSync(file, "utf8").split("\n");
+      return lines.length >= 2 && lines[1] !== "" ? lines : undefined;
     } catch (error) {
       if (error.code === "EBUSY" || error.code === "ENOENT") return undefined;
       throw error;
     }
-    return lines.length >= 2 && lines[1] !== "" ? lines : undefined;
-  }).catch(async (error) => {
+  }, { timeoutMs: 30_000, signal: controller.signal }).catch(async error => {
     if (chrome.exitCode === null) chrome.kill();
     await exited;
     throw error;
+  }).finally(() => {
+    chrome.off("exit", failed);
+    chrome.off("error", failedSpawn);
   });
   return { chrome, exited, endpoint: `ws://127.0.0.1:${port}${path.trim()}` };
 }

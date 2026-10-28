@@ -1,6 +1,7 @@
 // Real Chrome HTTPS qualification. Trust is limited to this fixture's ephemeral
 // public key in a private browser profile; customer transport security is unchanged.
 import assert from "node:assert/strict";
+import { waitForFileValue } from "../../../../scripts/graphcoder-e2e/wait-path.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, X509Certificate } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -178,7 +179,7 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
 await new Promise(resolveListen => server.listen(0, "127.0.0.1", resolveListen));
 const profile = mkdtempSync(join(tmpdir(), "acyclic-sdk-http-browser-"));
 const chromePath = [process.env.CHROME, "C:/Program Files/Google/Chrome/Application/chrome.exe", "/usr/bin/google-chrome", "/usr/bin/chromium", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"].find(path => path && existsSync(path));
-let chrome; let socket;
+let chrome; let socket; let chromeExited;
 async function until(description, probe, duration = 30000) {
   const end = Date.now() + duration;
   while (Date.now() < end) { const result = await probe(); if (result !== undefined) return result; await new Promise(resolveDelay => setTimeout(resolveDelay, 50)); }
@@ -187,11 +188,24 @@ async function until(description, probe, duration = 30000) {
 try {
   assert.ok(chromePath, "set CHROME to a Chrome/Chromium executable");
   chrome = spawn(chromePath, ["--headless=new", "--remote-debugging-port=0", `--user-data-dir=${profile}`, `--ignore-certificate-errors-spki-list=${trust}`, "--no-first-run", "--no-default-browser-check", "about:blank"], { stdio: "ignore" });
-  const exit = new Promise(resolveExit => chrome.once("exit", resolveExit));
-  const endpoint = await until("Chrome DevTools", () => {
-    if (chrome.exitCode !== null) throw new Error(`Chrome exited ${chrome.exitCode}`);
-    const file = join(profile, "DevToolsActivePort"); if (!existsSync(file)) return;
-    const [port, path] = readFileSync(file, "utf8").split("\n"); if (path) return `ws://127.0.0.1:${port}${path.trim()}`;
+  const exit = new Promise(resolveExit => chrome.once("close", resolveExit));
+  chromeExited = exit;
+  const controller = new AbortController();
+  const failed = code => controller.abort(new Error(`Chrome exited ${code}`));
+  const failedSpawn = error => controller.abort(error);
+  chrome.once("exit", failed);
+  chrome.once("error", failedSpawn);
+  const endpoint = await waitForFileValue(join(profile, "DevToolsActivePort"), file => {
+    try {
+      const [port, path] = readFileSync(file, "utf8").split("\n");
+      return path ? `ws://127.0.0.1:${port}${path.trim()}` : undefined;
+    } catch (error) {
+      if (error.code === "ENOENT" || error.code === "EBUSY") return undefined;
+      throw error;
+    }
+  }, { timeoutMs: 30_000, signal: controller.signal }).finally(() => {
+    chrome.off("exit", failed);
+    chrome.off("error", failedSpawn);
   });
   socket = new WebSocket(endpoint);
   await new Promise((resolveOpen, reject) => { socket.addEventListener("open", resolveOpen, { once: true }); socket.addEventListener("error", reject, { once: true }); });
@@ -234,7 +248,8 @@ try {
   await send("Browser.close"); await exit;
 } finally {
   socket?.close();
-  if (chrome && chrome.exitCode === null) { const exit = new Promise(resolveExit => chrome.once("exit", resolveExit)); chrome.kill(); await exit; }
+  if (chrome && chrome.exitCode === null && chrome.signalCode === null) chrome.kill();
+  await chromeExited;
   server.closeAllConnections(); await new Promise(resolveClose => server.close(resolveClose));
   assert.ok(resolve(profile).startsWith(`${resolve(tmpdir())}${sep}`), "browser profile must remain in the task's temporary directory");
   rmSync(profile, { recursive: true, force: true, maxRetries: 50, retryDelay: 100 });
