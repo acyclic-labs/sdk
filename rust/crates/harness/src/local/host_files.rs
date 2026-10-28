@@ -275,7 +275,11 @@ fn reply(status: &Path, operation: OperationId) -> Result<Option<Value>> {
             Err(error) => return Err(error),
         };
         let mut published: Status = serde_json::from_slice(&bytes).map_err(storage)?;
-        return Ok(published.replies.remove(&operation));
+        return published
+            .replies
+            .remove(&operation)
+            .map(|reply| serde_json::from_str(reply.get()).map_err(storage))
+            .transpose();
     }
 }
 
@@ -283,7 +287,8 @@ fn reply(status: &Path, operation: OperationId) -> Result<Option<Value>> {
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Status {
-    replies: BTreeMap<OperationId, Value>,
+    /// Each encoded reply, held as its exact bytes so the status bound holds.
+    replies: BTreeMap<OperationId, Box<serde_json::value::RawValue>>,
 }
 
 fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
@@ -461,15 +466,26 @@ async fn serve_requests(
         for request in pending {
             let key = status_key(&request.action);
             let status = published.statuses.entry(key.clone()).or_default();
+            // The whole prospective entry: its key, separators and a reply
+            // at its bound, stored byte for byte.
             let size = serde_json::to_vec(&status.1).map_err(storage)?.len() as u64;
-            if size + MAXIMUM_BYTES > STATUS_BYTES {
+            let entry = serde_json::to_vec(&request.operation)
+                .map_err(storage)?
+                .len() as u64
+                + 2
+                + MAXIMUM_BYTES;
+            if size + entry > STATUS_BYTES {
                 // Full of unread replies: dispatch once a client withdraws.
                 continue;
             }
             let operation = request.operation;
             let outcome = owner.dispatch(request.operation, request.action).await;
             let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
-            let reply = serde_json::from_slice(&bytes).map_err(storage)?;
+            let reply = String::from_utf8(bytes)
+                .map_err(storage)
+                .and_then(|reply| {
+                    serde_json::value::RawValue::from_string(reply).map_err(storage)
+                })?;
             status.1.replies.insert(operation, reply);
             published.answered.insert(operation, key.clone());
             changed_keys.insert(key);
