@@ -90,8 +90,7 @@ pub fn fork_digest(request: &ForkRequest) -> Result<[u8; 32], StreamError> {
 
 /// Normalizes and validates a commit, then returns its canonical retry digest.
 pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {
-    normalize_commit(request)?;
-    validate_commit_shape(request)?;
+    validate_commit(request)?;
     let mut hash = request_hasher(b"commit");
     hash_conditions(&mut hash, &request.conditions);
     for mutation in &mut request.mutations {
@@ -118,6 +117,13 @@ pub fn commit_digest(request: &mut CommitRequest) -> Result<[u8; 32], StreamErro
         }
     }
     Ok(hash.finalize().into())
+}
+
+/// Normalizes a commit and admits its shape and complete encoded command size.
+/// Callers that only prepare a request need not hash all record bytes again.
+pub fn validate_commit(request: &mut CommitRequest) -> Result<(), StreamError> {
+    normalize_commit(request)?;
+    validate_commit_shape(request)
 }
 
 pub(crate) fn hash_conditions(hash: &mut Sha256, conditions: &[CommitCondition]) {

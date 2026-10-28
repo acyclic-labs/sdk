@@ -140,7 +140,12 @@ mod replay;
 use append::seal;
 mod composition;
 pub use composition::{FilesystemCommit, FilesystemCommitOutcome};
+mod state;
+pub use state::{AuthorizedObservation, ObservedRecord, RecordAllocation, RecordReceipt};
 mod placement;
+pub mod state_record;
+#[cfg(test)]
+mod state_tests;
 pub use placement::AuthorityPlacement;
 mod records;
 mod reservations;
