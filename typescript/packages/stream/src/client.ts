@@ -232,7 +232,7 @@ function sameProvider(provider: StreamProvider, stream: Stream<unknown>): void {
 }
 function directParent(path: string): string { const at = path.lastIndexOf("/"); return at < 0 ? "" : path.slice(0, at); }
 function positiveInteger(value: number, name: string): void {
-  if (!Number.isSafeInteger(value) || value < 1 || value > StreamLimit.MAX_ITEMS) throw new RangeError(`${name} must be between 1 and ${StreamLimit.MAX_ITEMS}`);
+  if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`${name} must be a positive safe integer`);
 }
 export async function validateAppend(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<void> {
   // Validate path before optional fields so the canonical path error wins.
