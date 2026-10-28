@@ -10,7 +10,7 @@ export interface CredentialOptions {
 /** Validate at each request boundary; never include credential material in errors. */
 export function validateCredential(token: unknown): asserts token is string {
   if (typeof token !== "string" || !token.trim() || /[\r\n\0]/.test(token)) {
-    throw new TypeError("credential must be non-empty, at most 12 KiB, and free of CR, LF, or NUL");
+    throw new TypeError("credential must be non-empty and free of CR, LF, or NUL");
   }
 }
 
