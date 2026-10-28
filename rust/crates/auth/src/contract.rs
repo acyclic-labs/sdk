@@ -3,6 +3,8 @@ use crate::Error;
 use ts_rs::TS;
 mod identity;
 pub use identity::*;
+mod revocation;
+pub use revocation::*;
 
 /// Attested principal category.
 #[acyclic_contract_derive::enumeration(error = Error, unknown = Error::UnknownEnum)]
@@ -420,6 +422,10 @@ pub enum TipProof {
         RevocationProto,
         KeyringSnapshotProto,
         SignedKeyringSnapshotProto,
+        KeyRevocationProto,
+        RevocationDeltaProto,
+        RevocationCheckpointProto,
+        SignedRevocationProto,
         AuditRecordProto,
         ResourcePatternProto,
         ResourceGrantProto,

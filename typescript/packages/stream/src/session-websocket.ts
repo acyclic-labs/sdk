@@ -1,4 +1,4 @@
-import { credentialProvider, type CredentialProvider } from "@acyclic-labs/actors/credential";
+import { credentialProvider, resolveCredential, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import { SessionFrameSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
@@ -12,13 +12,15 @@ export type SessionWebSocketFactory = (url: string, protocols: string[]) => WebS
 export function webSocketSession(endpoint: string, token: string | CredentialProvider, factory: SessionWebSocketFactory = (url, protocols) => new WebSocket(url, protocols)): SessionConnect {
   const provider = credentialProvider(typeof token === "string" ? { token } : { credential: token });
   return async (node, signal) => {
-    const value = await provider(signal);
-    const credential = btoa(String.fromCharCode(...new TextEncoder().encode(value))).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+    const lease = await resolveCredential(provider, signal);
+    const credential = btoa(String.fromCharCode(...new TextEncoder().encode(lease.token()))).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
     const base = new URL(node?.endpoint ?? endpoint);
     if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) throw new StreamError("configuration", "session node must be an authenticated HTTPS endpoint");
     if (!base.pathname.endsWith("/")) base.pathname += "/";
     const url = new URL("v1/stream/session", base);
     url.protocol = "wss:";
+    lease.check();
+    signal.throwIfAborted();
     const socket = factory(url.href, ["acyclic.session.v1", `acyclic.bearer.${credential}`]);
     socket.binaryType = "arraybuffer";
     const incoming = new SessionQueue<import("../generated/proto/stream/v1/session_pb.js").SessionFrame>(StreamLimit.MAX_ITEMS);

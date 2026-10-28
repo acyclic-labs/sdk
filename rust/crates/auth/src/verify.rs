@@ -66,6 +66,10 @@ pub struct AccountState<'a> {
     pub issuer_keys: &'a [BlockId],
     /// Minimum epoch accepted for every online ancestor certificate.
     pub minimum_key_epoch: u64,
+    /// Earliest verification time supported by retained revocation evidence.
+    /// A checkpoint that retires authority must advance this floor atomically.
+    /// Historical authentication before it refuses, even with an older token.
+    pub not_before_unix_seconds: u64,
 }
 
 /// Every relevant ancestor must be checked against current revocation state.

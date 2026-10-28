@@ -105,16 +105,30 @@ impl HttpObjects {
         })
     }
 
-    async fn authorization(&self) -> Result<HeaderValue, Error> {
+    async fn authorization(
+        &self,
+    ) -> Result<
+        (
+            HeaderValue,
+            Option<acyclic_auth::credential::ResolvedCredential>,
+        ),
+        Error,
+    > {
         if let Some(provider) = &self.credential {
             let token = provider
                 .resolve()
                 .await
                 .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-            credential_header(&token).map_err(|_| Error::from(wire::ErrorCode::AccessDenied))
+            token
+                .check()
+                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            let header = credential_header(&token)
+                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            Ok((header, Some(token)))
         } else {
             self.authorization
                 .clone()
+                .map(|header| (header, None))
                 .ok_or_else(|| Error::from(wire::ErrorCode::AccessDenied))
         }
     }
@@ -133,15 +147,23 @@ impl HttpObjects {
             .endpoint
             .join(route)
             .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+        let (authorization, lease) = self.authorization().await?;
         let response = self
             .transport
             .post(url)
-            .header(AUTHORIZATION, self.authorization().await?)
+            .header(AUTHORIZATION, authorization)
             .header("content-type", "application/json")
             .body(json::encode(input_name, input)?)
             .send()
             .await
             .map_err(|_| unavailable())?;
+        if response.status().as_u16() == 401 {
+            if let Some(lease) = lease {
+                lease
+                    .reject()
+                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            }
+        }
         if response.status().as_u16() != 200 {
             return Err(self.failure(response).await);
         }

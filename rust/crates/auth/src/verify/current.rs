@@ -81,6 +81,9 @@ where
             return Err(VerifyError::Trust);
         }
         let account = trust.account(self.account)?;
+        if now < account.not_before_unix_seconds {
+            return Err(VerifyError::Time);
+        }
         if self.next_keys.any(|next| {
             environments
                 .iter()

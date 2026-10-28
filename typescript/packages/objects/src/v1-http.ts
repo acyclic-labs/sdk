@@ -1,4 +1,4 @@
-import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
+import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { fromBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { encode_objects_v1_json, decode_objects_v1_json, objects_v1_http_type } from "../generated/wasm/acyclic_objects_wasm.js";
@@ -52,7 +52,10 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
-      const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: controller.signal, headers: { authorization: `Bearer ${await this.credential(controller.signal)}`, "content-type": "application/json" }, body: request as Uint8Array<ArrayBuffer> });
+      const lease = await resolveCredential(this.credential, controller.signal);
+      lease.check();
+      const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: controller.signal, headers: { authorization: `Bearer ${lease.token()}`, "content-type": "application/json" }, body: request as Uint8Array<ArrayBuffer> });
+      if (response.status === 401) lease.reject();
       const declared = Number(response.headers.get("content-length") ?? 0);
       if (declared > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
       const chunks: Uint8Array[] = [];

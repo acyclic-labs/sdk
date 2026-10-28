@@ -24,7 +24,7 @@ required-features = ["local"]
 conformance = ["acyclic-stream/conformance"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 default = ["grpc"]
-grpc = ["dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/time"]
+grpc = ["acyclic-auth/grpc", "dep:tonic", "dep:tonic-prost", "dep:rustls", "tokio/time"]
 json = ["dep:prost-reflect", "dep:serde_json"]
 http = ["json", "dep:reqwest"]
 local = ["dep:libc", "tokio/rt"]
@@ -60,7 +60,6 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { workspace = true, optional = true }
 tracing.workspace = true
 rustls = { workspace = true, optional = true }
-rustls-platform-verifier = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "=0.3.67"
@@ -74,7 +73,7 @@ workspace = true
 [dev-dependencies]
 divan.workspace = true
 hyper-util.workspace = true
-tokio = { version = "1.48.0", default-features = false, features = ["io-util", "macros", "rt", "time"] }
+tokio = { version = "1.48.0", default-features = false, features = ["io-util", "macros", "rt", "time", "test-util"] }
 tower = { workspace = true, features = ["util"] }
 
 [build-dependencies]

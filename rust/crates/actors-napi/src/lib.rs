@@ -30,6 +30,10 @@ pub struct NativeActorsErrorMetadata {
     #[serde(rename = "grpcName", skip_serializing_if = "Option::is_none")]
     /// gRPC status name.
     pub grpc_name: Option<String>,
+    #[napi(js_name = "credentialRejected")]
+    #[serde(rename = "credentialRejected")]
+    /// Authenticated remote rejection of the exact request credential.
+    pub credential_rejected: bool,
     #[napi(js_name = "serviceCode")]
     #[serde(rename = "serviceCode", skip_serializing_if = "Option::is_none")]
     /// Service detail code.
@@ -173,6 +177,7 @@ fn client_error(error: client::Error) -> NativeActorsErrorMetadata {
         message: metadata.message,
         grpc_code: metadata.grpc_code,
         grpc_name: metadata.grpc_name,
+        credential_rejected: metadata.credential_rejected,
         service_code: metadata.service_code,
         service_message: metadata.service_message,
         contract_code: metadata.contract_code,
@@ -240,6 +245,10 @@ mod tests {
         );
         let json = serde_json::to_value(&metadata).expect("metadata must serialize");
         assert_eq!(json.get("rawDetails"), Some(&serde_json::json!([255, 0])));
+        assert_eq!(
+            json.get("credentialRejected"),
+            Some(&serde_json::json!(false))
+        );
     }
 
     #[test]

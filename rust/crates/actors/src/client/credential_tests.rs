@@ -30,7 +30,8 @@ fn credential_callbacks_are_fresh_sensitive_and_fail_closed() {
                 let mut interceptor = BearerAuth(None);
                 prop_assert!(interceptor.call(tonic::Request::new(())).is_err());
                 for token in &expected {
-                    let request = interceptor.call(client.request((), None).await.unwrap()).unwrap();
+                    let (request, _lease) = client.request((), None).await.unwrap();
+                    let request = interceptor.call(request).unwrap();
                     let header = request.metadata().get("authorization").unwrap();
                     prop_assert_eq!(header.to_str().unwrap(), format!("Bearer {token}"));
                     prop_assert!(header.is_sensitive());

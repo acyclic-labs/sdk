@@ -207,6 +207,11 @@ message KeyRange {
   bytes end = 2;
 }
 
+message KeyRevocation {
+  string key_id = 1;
+  uint64 expires_at_unix_seconds = 2;
+}
+
 message KeyringSnapshot {
   string account_id = 1;
   uint64 sequence = 2;
@@ -271,6 +276,25 @@ message Revocation {
   optional string label = 4;
 }
 
+message RevocationCheckpoint {
+  string account_id = 1;
+  uint64 sequence = 2;
+  uint64 retired_before_unix_seconds = 3;
+  uint64 minimum_key_epoch = 4;
+  repeated KeyRevocation keys = 5;
+  repeated Revocation blocks = 6;
+}
+
+message RevocationDelta {
+  string account_id = 1;
+  uint64 sequence = 2;
+  bytes previous_digest = 3;
+  uint64 issued_at_unix_seconds = 4;
+  repeated KeyRevocation keys = 5;
+  repeated Revocation blocks = 6;
+  optional uint64 revoke_all_before_epoch = 7;
+}
+
 message SignedBlock {
   bytes payload = 1;
   bytes signature = 2;
@@ -279,6 +303,14 @@ message SignedBlock {
 message SignedKeyringSnapshot {
   KeyringSnapshot snapshot = 1;
   bytes signature = 2;
+}
+
+message SignedRevocation {
+  oneof publication {
+    RevocationDelta delta = 1;
+    RevocationCheckpoint checkpoint = 2;
+  }
+  bytes signature = 3;
 }
 
 message SocketHostRule {

@@ -30,7 +30,7 @@ conformance = []
 model-checking = ["dep:loom", "dep:tempfile"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-auth/test-support"]
 default = ["grpc"]
-grpc = ["session", "dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt", "tokio/macros"]
+grpc = ["session", "acyclic-auth/grpc", "dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt", "tokio/macros"]
 http = ["grpc", "dep:reqwest"]
 local = ["tokio/rt"]
 # The in-process session protocol, without a network transport.

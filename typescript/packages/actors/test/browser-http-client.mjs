@@ -5,6 +5,7 @@ import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
 import * as objectsWire from "@acyclic-labs/objects";
 import { ActorId, ActorsClient, ActorsService, CodeSha256, CurrentHeadMarker, PositiveU64 } from "@acyclic-labs/actors";
 import { HttpStreamProvider, idempotencyKey } from "@acyclic-labs/stream";
+import { CredentialCache, CredentialSnapshot } from "@acyclic-labs/auth/credential";
 
 function errorCode(error) {
   if (typeof error !== "object" || error === null) return undefined;
@@ -70,6 +71,15 @@ try {
   assert.equal(methods, 12);
   const inspectActor = ActorsService.methods.find(method => method.name === "InspectActor");
   await assert.rejects(new ActorsClient({ ...options, token: "wrong" }).inspectActor(create(inspectActor.input, { actorId: "browser-actor" })), error => error.code === "unauthenticated");
+  let refreshes = 0;
+  const cache = new CredentialCache(async () => {
+    refreshes++;
+    return new CredentialSnapshot(refreshes === 1 ? "wrong" : "conformance", "source", 100);
+  }, () => ({ revision: "source", nowUnixSeconds: 1 }));
+  const renewable = new ActorsClient({ endpoint: options.endpoint, credential: cache.provider });
+  await assert.rejects(renewable.inspectActor({ actorId: "browser-actor" }), error => error.code === "unauthenticated" && error.metadata.credentialRejected === true);
+  await renewable.inspectActor({ actorId: "browser-actor" });
+  assert.equal(refreshes, 2, "browser rejection invalidates only the request lease");
   const cancellation = new AbortController();
   const pending = actors.inspectActor({ actorId: "cancel" }, { signal: cancellation.signal });
   globalThis.abortActorsRequest = () => cancellation.abort();

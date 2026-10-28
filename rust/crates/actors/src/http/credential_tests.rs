@@ -93,7 +93,7 @@ fn credential_callbacks_preserve_current_headers_and_fail_before_transport() {
                     )
                     .unwrap();
                     for value in &expected {
-                        let header = client.authorization().await.unwrap();
+                        let (header, _) = client.authorization().await.unwrap();
                         prop_assert_eq!(header.to_str().unwrap(), format!("Bearer {value}"));
                         prop_assert!(header.is_sensitive());
                     }

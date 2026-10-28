@@ -10,6 +10,7 @@ description = "Shared capability chain contract and verification"
 
 
 [features]
+grpc = ["dep:tonic", "dep:rustls", "dep:rustls-platform-verifier", "dep:tokio"]
 test-support = ["dep:acyclic-differential"]
 
 [dependencies]
@@ -26,6 +27,10 @@ zeroize.workspace = true
 ts-rs = "=12.0.1"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tonic = { workspace = true, optional = true }
+rustls = { workspace = true, optional = true }
+rustls-platform-verifier = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["time"], optional = true }
 arc-swap = "=1.9.2"
 
 [dev-dependencies]
@@ -45,6 +50,10 @@ workspace = true
 
 [[bench]]
 name = "verify"
+harness = false
+
+[[bench]]
+name = "revocation"
 harness = false
 
 [build-dependencies]

@@ -227,12 +227,24 @@ impl Client {
         })
     }
 
-    async fn authorization(&self) -> Result<HeaderValue, Error> {
+    async fn authorization(
+        &self,
+    ) -> Result<
+        (
+            HeaderValue,
+            Option<acyclic_auth::credential::ResolvedCredential>,
+        ),
+        Error,
+    > {
         if let Some(provider) = &self.credential {
             let token = provider.resolve().await?;
-            credential_header(&token)
+            token.check()?;
+            Ok((credential_header(&token)?, Some(token)))
         } else {
-            self.authorization.clone().ok_or(Error::InvalidArgument)
+            self.authorization
+                .clone()
+                .map(|header| (header, None))
+                .ok_or(Error::InvalidArgument)
         }
     }
 
@@ -272,7 +284,7 @@ impl Client {
                     .join(route)
                     .map_err(|_| Error::InvalidArgument)?,
             );
-            let authorization = self.stage(self.authorization()).await?;
+            let (authorization, lease) = self.stage(self.authorization()).await?;
             let mut response = self
                 .stage(async {
                     Ok(request
@@ -284,6 +296,11 @@ impl Client {
                 })
                 .await?;
             let status = response.status();
+            if status.as_u16() == 401 {
+                if let Some(lease) = lease {
+                    lease.reject()?;
+                }
+            }
             tracing::Span::current().record("http.status", status.as_u16());
             let bytes = self
                 .stage(async {

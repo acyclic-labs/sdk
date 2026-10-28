@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tonic::{
     Request,
     metadata::{Ascii, Binary, MetadataMap, MetadataValue},
-    transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity},
+    transport::{Channel, Endpoint, Identity},
 };
 
 /// Request metadata: one minimum revision per authority, as the protobuf bytes
@@ -144,30 +144,29 @@ impl GrpcObjects {
             return Err(ConnectError::InvalidConfiguration);
         }
         let authorization = token.map(credential_header).transpose()?;
-        let mut tls = ClientTlsConfig::new();
-        if let Some(ca) = ca {
+        let peer = if let Some(ca) = ca {
             if ca.is_empty() || ca.len() > crate::MAX_PEM_BYTES {
                 return Err(ConnectError::InvalidConfiguration);
             }
-            tls = tls.ca_certificate(Certificate::from_pem(ca));
-        }
-        if let Some(identity) = identity {
-            tls = tls.identity(identity);
-        }
-        let endpoint = if ca.is_some() {
-            endpoint.tls_config(tls)?
+            acyclic_auth::channel::PeerTrust::PrivateCa(ca)
         } else {
-            let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .map_err(ConnectError::PlatformVerifier)?;
-            endpoint.tls_config_with_verifier(tls, Arc::new(verifier))?
+            acyclic_auth::channel::PeerTrust::Platform
         };
-        let channel = endpoint
-            // Every request carries its own deadline; the channel adds none.
+        let endpoint = endpoint
             .connect_timeout(std::time::Duration::from_secs(10))
-            .connect()
-            .await?;
+            // Every request carries its own deadline; the channel adds none.
+            ;
+        let channel = acyclic_auth::channel::connect(endpoint, peer, identity)
+            .await
+            .map_err(|error| match error {
+                acyclic_auth::channel::ConnectError::Endpoint => ConnectError::InvalidConfiguration,
+                acyclic_auth::channel::ConnectError::Platform(error) => {
+                    ConnectError::PlatformVerifier(error)
+                }
+                acyclic_auth::channel::ConnectError::Transport(error) => {
+                    ConnectError::Transport(error)
+                }
+            })?;
         Ok(Self::over(channel, authorization, credential))
     }
 
@@ -185,34 +184,22 @@ impl GrpcObjects {
         }
     }
 
-    async fn request<T>(
+    fn request<T>(
         &self,
         value: T,
         timeout: std::time::Duration,
         floor: Option<&RevisionCut>,
     ) -> Result<Request<T>, Error> {
-        let authorization = if let Some(provider) = &self.credential {
-            let token = provider
-                .resolve()
-                .await
-                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-            credential_header(&token).map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?
-        } else {
-            self.authorization
-                .clone()
-                .ok_or_else(|| Error::from(wire::ErrorCode::AccessDenied))?
-        };
+        let authorization = self
+            .authorization
+            .clone()
+            .ok_or_else(|| Error::from(wire::ErrorCode::AccessDenied))?;
         let mut request = Request::new(value);
         request.set_timeout(timeout);
         request
             .metadata_mut()
             .insert("authorization", authorization);
-        for minimum in floor.into_iter().flat_map(RevisionCut::iter) {
-            request.metadata_mut().append_bin(
-                MINIMUM_REVISION,
-                MetadataValue::from_bytes(&revision_to_wire(minimum).encode_to_vec()),
-            );
-        }
+        minimum(&mut request, floor);
         Ok(request)
     }
 
@@ -254,8 +241,11 @@ impl GrpcObjects {
         outcome.map(|value| (value, revision))
     }
 
-    fn client(&self) -> wire::blobs_service_client::BlobsServiceClient<Channel> {
-        wire::blobs_service_client::BlobsServiceClient::new(self.channel.clone())
+    fn client(
+        channel: acyclic_auth::channel::CredentialChannel,
+    ) -> wire::blobs_service_client::BlobsServiceClient<acyclic_auth::channel::CredentialChannel>
+    {
+        wire::blobs_service_client::BlobsServiceClient::new(channel)
             .max_decoding_message_size(usize::MAX)
             .max_encoding_message_size(usize::MAX)
     }
@@ -330,6 +320,15 @@ fn issued(metadata: &MetadataMap) -> Result<Option<Revision>, Error> {
         .transpose()
 }
 
+fn minimum<T>(request: &mut Request<T>, floor: Option<&RevisionCut>) {
+    for minimum in floor.into_iter().flat_map(RevisionCut::iter) {
+        request.metadata_mut().append_bin(
+            MINIMUM_REVISION,
+            MetadataValue::from_bytes(&revision_to_wire(minimum).encode_to_vec()),
+        );
+    }
+}
+
 /// Writes carry no minimum; GET, HEAD and LIST forward the tracked floor.
 macro_rules! call {
     ($self:ident, $rpc:ident, $value:expr, $timeout:expr) => {
@@ -344,16 +343,37 @@ macro_rules! call {
     }};
     ($self:ident, $rpc:ident, $value:expr, $timeout:expr, $floor:expr) => {{
         let floor: Option<&RevisionCut> = $floor;
-        let request = $self.request($value, $timeout, floor).await?;
-        // The client owns its deadline: a failure once it elapsed is the
-        // deadline, whichever side's cancellation reported it first.
-        let started = tokio::time::Instant::now();
-        match tokio::time::timeout($timeout, $self.client().$rpc(request)).await {
-            Ok(Err(_)) if started.elapsed() >= $timeout => {
-                Err(wire::ErrorCode::DeadlineElapsed.into())
-            }
-            Ok(reply) => $self.observed(reply, floor),
-            Err(_) => Err(wire::ErrorCode::DeadlineElapsed.into()),
+        let timeout = $timeout;
+        let deadline = tokio::time::Instant::now() + timeout;
+        let response = if let Some(credential) = &$self.credential {
+            acyclic_auth::channel::call(
+                $self.channel.clone(),
+                credential,
+                deadline,
+                $value,
+                |channel, mut request| async move {
+                    minimum(&mut request, floor);
+                    Self::client(channel).$rpc(request).await
+                },
+            )
+            .await
+        } else {
+            let request = $self.request($value, timeout, floor)?;
+            tokio::time::timeout_at(
+                deadline,
+                Self::client(acyclic_auth::channel::guard($self.channel.clone())).$rpc(request),
+            )
+            .await
+            .unwrap_or_else(|_| {
+                Err(tonic::Status::deadline_exceeded(
+                    "operation deadline expired",
+                ))
+            })
+        };
+        if tokio::time::Instant::now() >= deadline && response.is_err() {
+            Err(wire::ErrorCode::DeadlineElapsed.into())
+        } else {
+            $self.observed(response, floor)
         }
     }};
 }

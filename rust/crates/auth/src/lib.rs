@@ -4,11 +4,14 @@ extern crate self as acyclic_auth;
 pub mod addressing;
 pub mod admission;
 pub mod authority;
+#[cfg(all(not(target_arch = "wasm32"), feature = "grpc"))]
+pub mod channel;
 pub mod contract;
 pub mod credential;
 pub mod crypto;
 pub mod operation;
 mod resource;
+pub mod revocation;
 pub mod socket;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]

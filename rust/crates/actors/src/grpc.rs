@@ -3,10 +3,9 @@
 pub use crate::client::BearerAuth;
 use crate::wire;
 use prost::Message;
-use std::sync::Arc;
 use tonic::{
     Status,
-    transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
+    transport::{Channel, Endpoint},
 };
 use tracing::field::Empty;
 
@@ -51,31 +50,25 @@ pub enum ConnectError {
 
 /// Connects a bounded TLS channel.
 async fn connect_channel(endpoint: &str, ca: Option<&[u8]>) -> Result<Channel, ConnectError> {
-    if !reqwest::Url::parse(endpoint).is_ok_and(|url| {
-        url.scheme() == "https"
-            && url.host_str().is_some()
-            && url.username().is_empty()
-            && url.password().is_none()
-            && url.query().is_none()
-            && url.fragment().is_none()
-    }) {
-        return Err(ConnectError::InsecureEndpoint);
-    }
     let configured = Endpoint::from_shared(endpoint.to_owned())?
         .http2_max_header_list_size(tonic_web_wasm_client::limits::HEADER_LIST_BYTES);
-    let configured = if let Some(ca) = ca {
+    let peer = if let Some(ca) = ca {
         if ca.is_empty() || ca.len() > 64 * 1024 {
             return Err(ConnectError::InvalidCaCertificate);
         }
-        configured.tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca)))?
+        acyclic_auth::channel::PeerTrust::PrivateCa(ca)
     } else {
-        let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .map_err(ConnectError::PlatformVerifier)?;
-        configured.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
+        acyclic_auth::channel::PeerTrust::Platform
     };
-    Ok(configured.connect().await?)
+    acyclic_auth::channel::connect(configured, peer, None)
+        .await
+        .map_err(|error| match error {
+            acyclic_auth::channel::ConnectError::Endpoint => ConnectError::InsecureEndpoint,
+            acyclic_auth::channel::ConnectError::Platform(error) => {
+                ConnectError::PlatformVerifier(error)
+            }
+            acyclic_auth::channel::ConnectError::Transport(error) => ConnectError::Transport(error),
+        })
 }
 
 /// Connect trusting exactly `ca` when supplied, otherwise the platform's roots.

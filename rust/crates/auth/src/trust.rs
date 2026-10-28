@@ -43,6 +43,7 @@ impl Trust for Snapshot {
             Ok(AccountState {
                 issuer_keys: &self.issuer_keys,
                 minimum_key_epoch: self.minimum_key_epoch,
+                not_before_unix_seconds: 0,
             })
         } else {
             Err(VerifyError::Trust)

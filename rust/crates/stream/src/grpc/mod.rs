@@ -11,7 +11,7 @@ use thiserror::Error;
 use tonic::{
     Code, Request, Response, Status,
     metadata::{Ascii, MetadataValue},
-    transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
+    transport::{Channel, Endpoint},
 };
 use tracing::field::Empty;
 
@@ -255,14 +255,22 @@ impl Client {
         self
     }
 
-    fn service(&self) -> wire::stream_service_client::StreamServiceClient<Channel> {
-        wire::stream_service_client::StreamServiceClient::new(self.channel.clone())
+    fn service(
+        &self,
+    ) -> wire::stream_service_client::StreamServiceClient<acyclic_auth::channel::CredentialChannel>
+    {
+        wire::stream_service_client::StreamServiceClient::new(acyclic_auth::channel::guard(
+            self.channel.clone(),
+        ))
     }
 
     async fn request<T>(&self, body: T) -> Result<Request<T>, Status> {
-        let authorization =
+        let (authorization, lease) =
             request_authorization(self.authorization.as_ref(), self.credential.as_ref()).await?;
         let mut request = Request::new(body);
+        if let Some(lease) = lease {
+            request.extensions_mut().insert(lease);
+        }
         request
             .metadata_mut()
             .insert("authorization", authorization);
@@ -279,7 +287,9 @@ impl Client {
     where
         T: Clone,
         F: FnMut(
-            wire::stream_service_client::StreamServiceClient<Channel>,
+            wire::stream_service_client::StreamServiceClient<
+                acyclic_auth::channel::CredentialChannel,
+            >,
             Request<T>,
         ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
     {
@@ -300,7 +310,23 @@ impl Client {
             let result = completion
                 .span
                 .scope(tokio::time::timeout_at(attempt_deadline, async {
-                    call(self.service(), self.request(body.clone()).await?).await
+                    let request = self.request(body.clone()).await?;
+                    let lease = request
+                        .extensions()
+                        .get::<acyclic_auth::credential::ResolvedCredential>()
+                        .cloned();
+                    let result = call(self.service(), request).await;
+                    if result.as_ref().is_err_and(|error| {
+                        error.code() == Code::Unauthenticated
+                            && std::error::Error::source(error).is_none()
+                    }) {
+                        if let Some(lease) = lease {
+                            lease.reject().map_err(|_| {
+                                Status::unauthenticated("credential source unavailable")
+                            })?;
+                        }
+                    }
+                    result
                 }))
                 .await;
             let error = match result {
@@ -334,16 +360,12 @@ pub(crate) async fn channel_tls(
     if endpoint.uri().scheme_str() != Some("https") {
         return Err(ConnectError::InsecureEndpoint);
     }
-    let endpoint = if let Some(pem) = certificate_pem {
-        endpoint.tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(pem)))?
+    let peer = if let Some(pem) = certificate_pem {
+        acyclic_auth::channel::PeerTrust::PrivateCa(pem)
     } else {
-        let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .map_err(ConnectError::PlatformVerifier)?;
-        endpoint.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
+        acyclic_auth::channel::PeerTrust::Platform
     };
-    Ok(endpoint.tcp_nodelay(true).connect().await?)
+    shared_channel(endpoint, peer).await
 }
 
 pub(crate) async fn channel_with_verifier(
@@ -354,26 +376,54 @@ pub(crate) async fn channel_with_verifier(
     if endpoint.uri().scheme_str() != Some("https") {
         return Err(ConnectError::InsecureEndpoint);
     }
-    Ok(endpoint
-        .tls_config_with_verifier(ClientTlsConfig::new(), verifier)?
-        .tcp_nodelay(true)
-        .connect()
-        .await?)
+    shared_channel(
+        endpoint,
+        acyclic_auth::channel::PeerTrust::Verifier(verifier),
+    )
+    .await
+}
+
+async fn shared_channel(
+    endpoint: Endpoint,
+    peer: acyclic_auth::channel::PeerTrust<'_>,
+) -> Result<Channel, ConnectError> {
+    acyclic_auth::channel::connect(endpoint.tcp_nodelay(true), peer, None)
+        .await
+        .map_err(|error| match error {
+            acyclic_auth::channel::ConnectError::Endpoint => ConnectError::InsecureEndpoint,
+            acyclic_auth::channel::ConnectError::Platform(error) => {
+                ConnectError::PlatformVerifier(error)
+            }
+            acyclic_auth::channel::ConnectError::Transport(error) => ConnectError::Endpoint(error),
+        })
 }
 
 pub(crate) async fn request_authorization(
     fixed: Option<&MetadataValue<Ascii>>,
     credential: Option<&CredentialProvider>,
-) -> Result<MetadataValue<Ascii>, Status> {
+) -> Result<
+    (
+        MetadataValue<Ascii>,
+        Option<acyclic_auth::credential::ResolvedCredential>,
+    ),
+    Status,
+> {
     if let Some(provider) = credential {
         let token = provider
             .resolve()
             .await
             .map_err(|_| Status::unauthenticated("credential provider failed"))?;
-        authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))
+        token
+            .check()
+            .map_err(|_| Status::unauthenticated("credential expired or changed"))?;
+        Ok((
+            authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))?,
+            Some(token),
+        ))
     } else {
         fixed
             .cloned()
+            .map(|header| (header, None))
             .ok_or_else(|| Status::unauthenticated("missing credential"))
     }
 }

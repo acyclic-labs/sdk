@@ -1,6 +1,6 @@
 import { checkedReadSequence } from "./record.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
-import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
+import { credentialProvider, credentialStream, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
@@ -67,8 +67,18 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
-    request.header.set("authorization", `Bearer ${await credential(request.signal)}`);
-    return next(request);
+    const lease = await resolveCredential(credential, request.signal);
+    request.header.set("authorization", `Bearer ${lease.token()}`);
+    lease.check();
+    const rejected = (error: unknown) => error instanceof ConnectError && error.code === Code.Unauthenticated;
+    try {
+      const response = await next(request);
+      return response.stream ? { ...response, message: credentialStream(response.message, lease, rejected) } : response;
+    }
+    catch (error) {
+      if (rejected(error)) lease.reject();
+      throw error;
+    }
   };
   return createGrpcTransport({ baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "stream"), readMaxBytes: maximum, writeMaxBytes: maximum, nodeOptions: {
     ...(options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] }),

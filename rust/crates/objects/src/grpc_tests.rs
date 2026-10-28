@@ -275,6 +275,75 @@ async fn the_call_deadline_bounds_the_wait() -> TestResult {
     Ok(())
 }
 
+#[tokio::test(start_paused = true)]
+async fn credential_refresh_keeps_the_original_deadline_and_cancellation() -> TestResult {
+    use acyclic_auth::credential::{
+        CredentialCache, CredentialRevision, CredentialSnapshot, CredentialValidity,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Refresh(Arc<AtomicUsize>);
+    impl Drop for Refresh {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    for cancel in [false, true] {
+        let replica = Replica::new().await?;
+        let mut objects = client(&replica).with_transfer_timeout(Duration::from_secs(17))?;
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let entered = Arc::new(Mutex::new(Some(entered)));
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let refreshed = Arc::clone(&dropped);
+        objects.credential = Some(
+            CredentialCache::new(
+                move |_| {
+                    let entered = Arc::clone(&entered);
+                    let refreshed = Arc::clone(&refreshed);
+                    async move {
+                        let _refresh = Refresh(refreshed);
+                        entered.lock().unwrap().take().unwrap().send(()).unwrap();
+                        std::future::pending::<Result<CredentialSnapshot, _>>().await
+                    }
+                },
+                || CredentialValidity {
+                    now_unix_seconds: 1,
+                    revision: Some(CredentialRevision([1; 32])),
+                },
+            )
+            .into(),
+        );
+        let beginning = tokio::time::Instant::now();
+        let mut request = Box::pin(objects.put(b"held".as_slice().into(), Vec::new()));
+        tokio::select! {
+            result = &mut request => panic!("stalled refresh completed: {result:?}"),
+            result = started => result?,
+        }
+        if cancel {
+            drop(request);
+        } else {
+            tokio::time::advance(Duration::from_secs(17)).await;
+            assert_eq!(
+                request.await.map_err(|error| error.code),
+                Err(wire::ErrorCode::DeadlineElapsed),
+            );
+            assert_eq!(beginning.elapsed(), Duration::from_secs(17));
+        }
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        assert!(
+            replica.pending.lock().unwrap().is_empty(),
+            "no RPC before refresh"
+        );
+
+        // Both refusals leave a new, valid source usable on the same channel.
+        objects.credential = Some(CredentialProvider::new(|| async { Ok("fixture".into()) }));
+        objects.put(b"ready".as_slice().into(), Vec::new()).await?;
+        assert_eq!(replica.pending.lock().unwrap().len(), 1);
+    }
+    Ok(())
+}
+
 #[test]
 fn grpc_timeouts_parse_exactly() {
     assert_eq!(grpc_timeout("300m"), Some(Duration::from_millis(300)));

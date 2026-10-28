@@ -118,15 +118,30 @@ impl HttpStream {
     fn revisions(&self) -> Result<crate::query_sync::Arc<crate::RevisionTracker>, StreamError> {
         self.session_client()?.revisions()
     }
-    async fn authorization(&self) -> Result<HeaderValue, StreamError> {
+    async fn authorization(
+        &self,
+    ) -> Result<
+        (
+            HeaderValue,
+            Option<acyclic_auth::credential::ResolvedCredential>,
+        ),
+        StreamError,
+    > {
         if let Some(provider) = &self.credential {
             let token = provider
                 .resolve()
                 .await
                 .map_err(|_| StreamError::AccessDenied)?;
-            credential_header(&token).map_err(|_| StreamError::AccessDenied)
+            token.check().map_err(|_| StreamError::AccessDenied)?;
+            Ok((
+                credential_header(&token).map_err(|_| StreamError::AccessDenied)?,
+                Some(token),
+            ))
         } else {
-            self.authorization.clone().ok_or(StreamError::AccessDenied)
+            self.authorization
+                .clone()
+                .map(|header| (header, None))
+                .ok_or(StreamError::AccessDenied)
         }
     }
 
@@ -172,15 +187,21 @@ impl HttpStream {
             .endpoint
             .join(&format!("v1/stream/{route}"))
             .map_err(|_| StreamError::Unavailable)?;
+        let (authorization, lease) = self.authorization().await?;
         let mut response = self
             .client
             .post(url)
-            .header(AUTHORIZATION, self.authorization().await?)
+            .header(AUTHORIZATION, authorization)
             .header("content-type", "application/json")
             .body(body)
             .send()
             .await
             .map_err(|_| StreamError::Unavailable)?;
+        if response.status().as_u16() == 401 {
+            if let Some(lease) = lease {
+                lease.reject().map_err(|_| StreamError::AccessDenied)?;
+            }
+        }
         let success = response.status().is_success();
         span.record("http.status", response.status().as_u16());
         if response
@@ -487,7 +508,7 @@ mod tests {
                     )
                     .unwrap();
                     for value in &expected {
-                        let header = block_on(provider.authorization()).unwrap();
+                        let (header, _) = block_on(provider.authorization()).unwrap();
                         prop_assert!(header.is_sensitive());
                         prop_assert_eq!(header.to_str().unwrap(), format!("Bearer {value}"));
                     }

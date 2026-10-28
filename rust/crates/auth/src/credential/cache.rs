@@ -9,6 +9,7 @@ use std::{
 use zeroize::Zeroizing;
 
 mod slot;
+use super::{CredentialWatch, watch::Changes};
 use slot::Slot;
 
 /// Source identity/revision, partitioned by account, audience and auth context.
@@ -127,6 +128,7 @@ struct Inner {
     flight: Mutex<Option<Flight>>,
     refresh: Shared<Refresh>,
     observe: Shared<Observe>,
+    changes: Shared<Changes>,
 }
 
 /// One credential source/auth partition, shared by all its product requests.
@@ -190,6 +192,7 @@ impl CredentialCache {
             flight: Mutex::new(None),
             refresh,
             observe,
+            changes: Shared::new(Changes::default()),
         }))
     }
 
@@ -310,7 +313,24 @@ impl CredentialCache {
         if let Some(flight) = flight {
             flight.abort.abort();
         }
+        self.0.changes.notify()?;
         Ok(true)
+    }
+
+    /// Recheck the exact lease at dispatch after channel acquisition or queuing.
+    /// This does not extend its expiry or observe the source through blocking IO.
+    pub fn check(&self, lease: &CredentialLease) -> Result<(), CredentialCacheError> {
+        valid(lease, (self.0.observe)())?;
+        if !self.0.current.matches(lease) {
+            return Err(CredentialCacheError::Stale);
+        }
+        Ok(())
+    }
+
+    /// Register for source invalidation or exact server rejection. Source
+    /// custodians must publish changed/unavailable validity before invalidate.
+    pub fn watch(&self) -> Result<CredentialWatch, CredentialCacheError> {
+        self.0.changes.watch(|| (self.0.observe)())
     }
 
     /// Custodian push invalidation (external CLI/account/policy/audience change).
@@ -329,6 +349,7 @@ impl CredentialCache {
         if let Some(flight) = flight {
             flight.abort.abort();
         }
+        self.0.changes.notify()?;
         Ok(())
     }
 }

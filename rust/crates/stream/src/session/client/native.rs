@@ -51,23 +51,42 @@ impl transport::Transport for Grpc {
         source: transport::Requests,
     ) -> crate::BoxProviderFuture<'_, Result<Response, StreamError>> {
         Box::pin(async move {
-            let authorization =
+            let (authorization, lease) =
                 grpc::request_authorization(self.authorization.as_ref(), self.credential.as_ref())
                     .await
                     .map_err(|error| grpc::status(&error))?;
             let mut request = Request::new(Input(source));
+            if let Some(lease) = &lease {
+                request.extensions_mut().insert(lease.clone());
+            }
             request
                 .metadata_mut()
                 .insert("authorization", authorization);
             let response = wire::stream_session_service_client::StreamSessionServiceClient::new(
-                self.channel.clone(),
+                acyclic_auth::channel::guard(self.channel.clone()),
             )
             .session(request)
             .await
-            .map_err(|error| grpc::status(&error))?
+            .map_err(|error| {
+                if error.code() == tonic::Code::Unauthenticated
+                    && std::error::Error::source(&error).is_none()
+                {
+                    if let Some(lease) = &lease {
+                        let _ = lease.reject();
+                    }
+                }
+                grpc::status(&error)
+            })?
             .into_inner();
-            Ok(Box::pin(response.map(|result| {
+            Ok(Box::pin(response.map(move |result| {
                 result.map_err(|error| {
+                    if error.code() == tonic::Code::Unauthenticated
+                        && std::error::Error::source(&error).is_none()
+                    {
+                        if let Some(lease) = &lease {
+                            let _ = lease.reject();
+                        }
+                    }
                     if grpc::retryable(&error) {
                         StreamError::Unavailable
                     } else {
