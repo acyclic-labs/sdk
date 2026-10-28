@@ -269,7 +269,7 @@ fn compile_historical_profiles(
     cargo: &Path,
     (plan, releases): (&historical::Plan, &[sdk_docs::historical::ReleasedPackage]),
 ) -> Result<Vec<ExecutedProfile>, CliError> {
-    use sdk_docs::rustdoc_profiles::{execute_profile, CargoExecutionContext, RustdocTarget};
+    use sdk_docs::rustdoc_profiles::{CargoExecutionContext, RustdocTarget, execute_profile};
     let host = sdk_docs::rustdoc_profiles::rustdoc_host().map_err(profile_error)?;
     let available = BTreeSet::from([host.clone()]);
     let mut executed = Vec::new();

@@ -1,9 +1,9 @@
 //! Independent JSON scalar expectations over the actual protobuf descriptor.
 use acyclic_protobuf_json::{Error, decode, encode};
-use prost::Message;
-use prost_reflect::{DescriptorPool, MessageDescriptor};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
+use prost::Message;
+use prost_reflect::{DescriptorPool, MessageDescriptor};
 
 fn descriptor() -> Result<MessageDescriptor, TestCaseError> {
     DescriptorPool::global()
@@ -39,7 +39,10 @@ fn bytes_use_base64_and_each_refusal_stage_stays_distinct() -> Result<(), TestCa
     let actual = decode(descriptor.clone(), &json, json.len())
         .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
     assert_eq!(actual.encode_to_vec(), wire);
-    assert_eq!(decode(descriptor.clone(), b"{}", 1).err(), Some(Error::Limit));
+    assert_eq!(
+        decode(descriptor.clone(), b"{}", 1).err(),
+        Some(Error::Limit)
+    );
     assert_eq!(
         decode(descriptor.clone(), br#"{"unknown":true}"#, 64).err(),
         Some(Error::Json)

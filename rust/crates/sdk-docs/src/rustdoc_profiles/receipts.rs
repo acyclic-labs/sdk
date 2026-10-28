@@ -1,7 +1,7 @@
-use super::{package_by_name, ApiOwner, ProfileError, ProfileId, ProjectionKey};
+use super::{ApiOwner, ProfileError, ProfileId, ProjectionKey, package_by_name};
 use crate::public_api;
 use cargo_metadata::Metadata;
-use rustdoc_types::{Crate as RustdocCrate, Visibility, FORMAT_VERSION};
+use rustdoc_types::{Crate as RustdocCrate, FORMAT_VERSION, Visibility};
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -75,14 +75,18 @@ fn profile_catalog_union_retains_feature_only_items() {
     merge_profile_catalog(&mut merged, variant).expect("profile family should merge");
     let items = &merged.families[0].items;
     assert_eq!(items.len(), 2);
-    assert!(items
-        .iter()
-        .any(|item| item.name == "FeatureOnly" && item.id.starts_with("profile-")));
-    assert!(merged
-        .search
-        .entries
-        .iter()
-        .any(|entry| entry.path == "demo::FeatureOnly"));
+    assert!(
+        items
+            .iter()
+            .any(|item| item.name == "FeatureOnly" && item.id.starts_with("profile-"))
+    );
+    assert!(
+        merged
+            .search
+            .entries
+            .iter()
+            .any(|entry| entry.path == "demo::FeatureOnly")
+    );
 }
 
 #[test]
@@ -143,15 +147,19 @@ fn preview_version_paths_are_injective_and_portable() {
     assert_eq!(safe_version("con.txt").unwrap(), "~636f6e2e747874");
     assert_eq!(safe_version("a/b").unwrap(), "~612f62");
     assert_eq!(safe_version(&"a".repeat(255)).unwrap().len(), 255);
-    assert!(safe_version(&"a".repeat(256))
-        .unwrap_err()
-        .to_string()
-        .contains("exceeds 255 bytes"));
+    assert!(
+        safe_version(&"a".repeat(256))
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds 255 bytes")
+    );
     assert_eq!(safe_version(&":".repeat(127)).unwrap().len(), 255);
-    assert!(safe_version(&":".repeat(128))
-        .unwrap_err()
-        .to_string()
-        .contains("exceeds 255 bytes"));
+    assert!(
+        safe_version(&":".repeat(128))
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds 255 bytes")
+    );
 }
 
 #[test]
@@ -246,9 +254,11 @@ fn generated_source_spans_require_attestation_and_preserve_lines() {
 
     let error = source_span_at_root(&repository_root, &HashMap::new(), &external_span)
         .expect_err("unattested external source must be rejected");
-    assert!(error
-        .to_string()
-        .contains("without an attested generated source"));
+    assert!(
+        error
+            .to_string()
+            .contains("without an attested generated source")
+    );
 
     let mut bad_digest = generated.clone();
     bad_digest.sha256 = "0".repeat(64);
@@ -276,9 +286,11 @@ fn generated_source_spans_require_attestation_and_preserve_lines() {
         non_portable.logical_path = PathBuf::from(logical_path);
         let error = attest_generated_sources(&repository_root, &[non_portable])
             .expect_err("non-portable generated logical path must be rejected");
-        assert!(error
-            .to_string()
-            .contains("contains a non-portable segment"));
+        assert!(
+            error
+                .to_string()
+                .contains("contains a non-portable segment")
+        );
     }
 
     let collision_path = repository_root.join("generated/actors/existing.rs");
@@ -294,9 +306,11 @@ fn generated_source_spans_require_attestation_and_preserve_lines() {
     collision.logical_path = PathBuf::from("generated/actors/existing.rs");
     let error = attest_generated_sources(&repository_root, &[collision])
         .expect_err("generated logical path colliding with repository source must be rejected");
-    assert!(error
-        .to_string()
-        .contains("collides with a repository path"));
+    assert!(
+        error
+            .to_string()
+            .contains("collides with a repository path")
+    );
 
     let mut duplicate = generated.clone();
     duplicate.logical_path = PathBuf::from("generated/actors/./wire.rs");
@@ -417,9 +431,11 @@ fn publication_rejects_navigation_that_does_not_match_sorted_families() {
     };
     let error = write_bundle(&data, &output, false)
         .expect_err("publication must reject stale or incomplete navigation");
-    assert!(error
-        .to_string()
-        .contains("navigation entries must exactly match"));
+    assert!(
+        error
+            .to_string()
+            .contains("navigation entries must exactly match")
+    );
     assert!(!output.exists());
 }
 
@@ -752,10 +768,12 @@ fn build_family_keeps_inherited_local_trait_member_and_source_span() {
             end_column: 43,
         })
     );
-    assert!(family
-        .items
-        .iter()
-        .any(|item| item.id == "21" && item.path == "demo::LocalTrait::default"));
+    assert!(
+        family
+            .items
+            .iter()
+            .any(|item| item.id == "21" && item.path == "demo::LocalTrait::default")
+    );
 
     let mut external_trait = fixture;
     external_trait["index"]["20"]["crate_id"] = serde_json::json!(1);

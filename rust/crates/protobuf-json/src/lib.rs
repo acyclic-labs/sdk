@@ -41,8 +41,7 @@ pub fn decode(
         return Err(Error::Limit);
     }
     let mut json = serde_json::Deserializer::from_slice(bytes);
-    let message =
-        DynamicMessage::deserialize(descriptor, &mut json).map_err(|_| Error::Json)?;
+    let message = DynamicMessage::deserialize(descriptor, &mut json).map_err(|_| Error::Json)?;
     json.end().map_err(|_| Error::Trailing)?;
     Ok(message)
 }
