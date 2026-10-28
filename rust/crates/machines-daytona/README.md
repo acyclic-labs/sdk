@@ -41,10 +41,10 @@ from the machine contract or the outcome, never from the provider type:
   refused until a provider snapshot or canonical immutable filesystem generation
   covers every writer. No archive capture or restore-copy path remains.
 
-Every live-fork child carries `acyclic.kind=live-fork`, `acyclic.parent=<requested machine>`,
-`acyclic.fork_source=<sandbox it was forked from>`, its index and the requested count, and
-`acyclic.ready=true` once complete. These labels support native ownership checks;
-only a durable Streams settlement proves success after restart. An admitted but
+Live-fork children retain their inherited tenant and contract labels. The core
+records accepted child addresses, ordering and readiness in Streams; it does not
+write another progress marker to the provider. Native ancestry comes from the
+forks API. Only a durable Streams settlement proves success after restart. An admitted but
 unsettled operation remains indeterminate and never authorizes redispatch. Containers cannot pause, checkpoint memory, or
 auto-suspend: their contracts carry `SuspensionPolicy::Manual`, and `suspend`, `wake`,
 `set_suspension_policy`, and `checkpoint` return `ProviderError::Unsupported`.

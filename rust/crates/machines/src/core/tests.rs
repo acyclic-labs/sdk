@@ -457,11 +457,21 @@ impl RawMachines for NativeLifecycle {
     async fn raw_observe(
         &self,
         machine: MachineId,
-        _: Option<&NativeBinding>,
+        native: Option<&NativeBinding>,
         _: Option<&MachineObservation>,
     ) -> Result<RawObservation, ProviderError> {
         self.reads.fetch_add(1, Ordering::SeqCst);
         let child = self.children.lock().await.get(&machine).cloned();
+        if child.is_some()
+            && native.is_none_or(|native| {
+                native.handle != format!("opaque-live-fork-{machine}")
+                    && native.handle != format!("opaque-fork-{machine}")
+            })
+        {
+            return Err(ProviderError::Rejected(
+                "internal readiness oracle requires canonical child custody".into(),
+            ));
+        }
         Ok(RawObservation {
             machine: match child {
                 Some(value) => value,
@@ -591,23 +601,6 @@ impl RawMachines for NativeLifecycle {
             observation: Ok(child),
             adopted: false,
         }))
-    }
-    async fn raw_finish_fork(
-        &self,
-        child: MachineId,
-        native: Option<&NativeBinding>,
-        _: &MachineObservation,
-        _: &str,
-        _: ForkSlot,
-        _: IdempotencyKey,
-    ) -> Result<(), ProviderError> {
-        if native.is_none_or(|native| native.handle != format!("opaque-live-fork-{child}")) {
-            return Err(ProviderError::Rejected(
-                "internal metadata oracle requires canonical child custody".into(),
-            ));
-        }
-        self.mutations.fetch_add(1, Ordering::SeqCst);
-        Ok(())
     }
     async fn raw_fork_children(
         &self,

@@ -19,7 +19,7 @@ publishes their canonical state and events. Native pagination is collected once
 by `core::collect_pages`, retaining the existing 256-page bound and refusing
 a repeated cursor without another request. Provider cursor decoding stays in the
 wire adapter. Native labels cannot reconstruct a fork result after a restart. Their portable
-encoding, tenant matching, native names and relabeling are `core::metadata`
+encoding, tenant matching and native names are `core::metadata`
 projections; operation authority remains in Streams.
 Usage identity/interval and console
 read bounds are admitted there before transport. Retained command output reads

@@ -115,7 +115,7 @@ use crate::{
 #[cfg(not(target_arch = "wasm32"))]
 impl OperationRegistry {
     /// One shared tree owns native fork admission, refused-only retry, custody,
-    /// metadata sequencing, readiness and the exact ordered terminal outcome.
+    /// readiness and the exact ordered terminal outcome.
     pub async fn fork_machine<D: RawMachines + ?Sized>(
         &self,
         driver: &D,
@@ -165,8 +165,6 @@ impl OperationRegistry {
                     Ok(())
                 });
                 let child = self.accept_created(driver, operation, created, key).await?;
-                let child_native = self.native_binding(child.id, driver.name()).await?;
-                driver.raw_finish_fork(child.id, child_native.as_ref(), parent_ref, &handle, slot, key).await?;
                 let ready = self.wait_machine(driver, child.id, key, interval, timeout).await?;
                 if ready.state != MachineState::Running || ready.contract != parent_ref.contract {
                     return Err(ProviderError::Failed);

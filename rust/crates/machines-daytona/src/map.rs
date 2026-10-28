@@ -426,7 +426,7 @@ mod tests {
     use super::*;
     use acyclic_machines::core::metadata::{
         KIND_CREATE, KIND_FORK, LABEL_COUNT, LABEL_INDEX, LABEL_KEY, LABEL_KIND, LABEL_MANAGED,
-        LABEL_TENANT, managed_filter, owned_by, relabel,
+        LABEL_TENANT, managed_filter, owned_by,
     };
 
     fn fixture(name: &str) -> String {
@@ -524,28 +524,6 @@ mod tests {
         assert_eq!(labels[LABEL_COUNT], "4");
         assert_eq!(labels[LABEL_TENANT], "org-demo");
         assert_eq!(contract_from_labels(&labels).unwrap(), contract());
-    }
-
-    #[test]
-    fn fork_children_drop_the_parent_provider_labels() {
-        let inherited = BTreeMap::from([
-            ("team".to_owned(), "a".to_owned()),
-            (LABEL_KEY.to_owned(), key(1).to_string()),
-            (LABEL_KIND.to_owned(), KIND_CREATE.to_owned()),
-        ]);
-        let child = relabel(
-            &inherited,
-            labels(
-                key(2),
-                Some(ForkSlot { index: 0, count: 1 }),
-                None,
-                &contract(),
-            ),
-        );
-        assert_eq!(child["team"], "a");
-        assert_eq!(child[LABEL_KEY], key(2).to_string());
-        assert_eq!(child[LABEL_KIND], KIND_FORK);
-        assert_eq!(child[LABEL_INDEX], "0");
     }
 
     #[test]

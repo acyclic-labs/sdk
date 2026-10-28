@@ -111,18 +111,6 @@ pub trait RawMachines: NativeResources {
         key: IdempotencyKey,
     ) -> Result<Dispatch<RawCreated>, ProviderError>;
 
-    /// Publish provider metadata only after canonical custody of the child.
-    /// A provider without a separate metadata call returns Ok without native IO.
-    async fn raw_finish_fork(
-        &self,
-        child: MachineId,
-        native: Option<&NativeBinding>,
-        parent: &MachineObservation,
-        source: &str,
-        slot: ForkSlot,
-        key: IdempotencyKey,
-    ) -> Result<(), ProviderError>;
-
     /// Read the native dependency states once. The core decides whether a live
     /// fork source may be deleted; native service refusals remain authoritative.
     async fn raw_fork_children(

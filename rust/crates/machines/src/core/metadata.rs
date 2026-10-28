@@ -1,5 +1,5 @@
 //! Portable provider metadata projection; canonical Streams remains authoritative.
-//! These fields label native resources for inspection and collision checks. They
+//! These fields label native resources for inspection and tenant isolation. They
 //! never establish an operation settlement or authorize adoption by themselves.
 use super::ForkSlot;
 use crate::{IdempotencyKey, MachineContract};
@@ -23,15 +23,6 @@ pub const LABEL_CONTRACT: &str = "acyclic.contract";
 pub const KIND_CREATE: &str = "create";
 /// Value of [`LABEL_KIND`] for `fork`.
 pub const KIND_FORK: &str = "fork";
-/// Value of [`LABEL_KIND`] for `fork_machine` (live fork of a running machine).
-pub const KIND_LIVE_FORK: &str = "live-fork";
-/// Native live-fork metadata marker. It is not an operation settlement.
-pub const LABEL_READY: &str = "acyclic.ready";
-/// Label holding the sandbox a live-fork child was actually forked from: the requested machine
-/// or, in a doubling fan-out, an earlier child of the same fork.
-pub const LABEL_FORK_SOURCE: &str = "acyclic.fork_source";
-/// Label holding the source machine of a live-fork child.
-pub const LABEL_PARENT: &str = "acyclic.parent";
 /// Deterministic sandbox name for the sandbox a create under `key` makes, or for child `index`
 /// of a fork under `key`. Native name collisions remain transport refusals;
 /// only the canonical operation record can establish replay or adoption.
@@ -76,22 +67,6 @@ pub fn labels(
     if let Ok(encoded) = serde_json::to_string(contract) {
         labels.insert(LABEL_CONTRACT.to_owned(), encoded);
     }
-    labels
-}
-
-/// Labels for a native fork child: whatever it inherited from its parent minus the parent's
-/// provider labels, plus `ours`.
-#[must_use]
-pub fn relabel(
-    inherited: &BTreeMap<String, String>,
-    ours: BTreeMap<String, String>,
-) -> BTreeMap<String, String> {
-    let mut labels: BTreeMap<String, String> = inherited
-        .iter()
-        .filter(|(name, _)| !name.starts_with("acyclic."))
-        .map(|(name, value)| (name.clone(), value.clone()))
-        .collect();
-    labels.extend(ours);
     labels
 }
 

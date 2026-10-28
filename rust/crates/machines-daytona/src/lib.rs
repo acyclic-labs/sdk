@@ -363,24 +363,6 @@ impl DaytonaProvider {
             adopted: false,
         }
     }
-
-    fn live_fork_labels(
-        &self,
-        key: IdempotencyKey,
-        slot: ForkSlot,
-        parent: &MachineObservation,
-        source: &str,
-    ) -> BTreeMap<String, String> {
-        let mut labels = metadata::labels(key, Some(slot), self.tenant(), &parent.contract);
-        labels.insert(
-            metadata::LABEL_KIND.to_owned(),
-            metadata::KIND_LIVE_FORK.to_owned(),
-        );
-        labels.insert(metadata::LABEL_PARENT.to_owned(), parent.id.to_string());
-        labels.insert(metadata::LABEL_FORK_SOURCE.to_owned(), source.to_owned());
-        labels.insert(metadata::LABEL_READY.to_owned(), "true".to_owned());
-        labels
-    }
 }
 
 #[async_trait]
@@ -575,28 +557,6 @@ impl RawMachines for DaytonaProvider {
             &parent.contract,
             None,
         )))
-    }
-
-    async fn raw_finish_fork(
-        &self,
-        child: MachineId,
-        native: Option<&NativeBinding>,
-        parent: &MachineObservation,
-        source: &str,
-        slot: ForkSlot,
-        key: IdempotencyKey,
-    ) -> Result<(), ProviderError> {
-        let handle = native.map_or_else(|| child.to_string(), |native| native.handle.clone());
-        let child = self.api.get(&handle).await?;
-        self.api
-            .replace_labels(
-                &handle,
-                metadata::relabel(
-                    &child.labels,
-                    self.live_fork_labels(key, slot, parent, source),
-                ),
-            )
-            .await
     }
 
     async fn raw_fork_children(
@@ -1561,13 +1521,6 @@ mod tests {
                         .collect();
                     (200, serde_json::Value::from(children).to_string())
                 }
-                ("PUT", ["sandbox", id, "labels"]) => {
-                    let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
-                    let labels = serde_json::from_value(body["labels"].clone()).unwrap();
-                    let id = self.resolve(id).unwrap();
-                    self.boxes.get_mut(&id).unwrap().labels = labels;
-                    (200, String::new())
-                }
                 ("GET", ["sandbox", id]) => match self.resolve(id) {
                     Some(id) => (200, self.json(&id, now).to_string()),
                     None => (404, String::new()),
@@ -1627,8 +1580,7 @@ mod tests {
         assert_eq!(fake.busy_violations, 0);
         assert!(fake.max_forking > 1, "forks of one round run in parallel");
         assert_eq!(fake.forks.len(), 16);
-        // Every child reports the requested machine as its parent and records the node it
-        // was forked from, following the doubling rounds.
+        // Check actual native ancestry, independently of inherited provider labels.
         let nodes: Vec<String> = std::iter::once(MACHINE.to_owned())
             .chain(children.iter().map(|child| child.id.to_string()))
             .collect();
@@ -1638,13 +1590,15 @@ mod tests {
         {
             let child = &fake.boxes[&children[index as usize].id.to_string()];
             assert_eq!(child.name, metadata::sandbox_name(key, Some(index)));
-            assert_eq!(child.labels[metadata::LABEL_PARENT], MACHINE);
-            assert_eq!(child.labels[metadata::LABEL_FORK_SOURCE], nodes[source]);
             assert_eq!(child.source.as_deref(), Some(nodes[source].as_str()));
-            assert_eq!(child.labels[metadata::LABEL_READY], "true");
-            assert_eq!(child.labels[metadata::LABEL_COUNT], "16");
+            assert_eq!(child.labels, fake.boxes[MACHINE].labels);
         }
         drop(fake);
+        assert!(
+            mock.requests()
+                .iter()
+                .all(|request| request.method != "PUT")
+        );
         let requests = mock.requests().len();
         assert_eq!(
             provider.recover(key).await.unwrap(),
