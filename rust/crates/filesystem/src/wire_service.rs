@@ -4,7 +4,9 @@ use crate::binding_contract::{metadata_to_proto as metadata_message, output_u32,
 use crate::hosted_contract;
 #[cfg(test)]
 use crate::kernel::MetadataField;
-use crate::kernel::{FileKind as EngineFileKind, FileMetadata, FilePayload, LogicalName, TreeEntry};
+use crate::kernel::{
+    FileKind as EngineFileKind, FileMetadata, FilePayload, LogicalName, TreeEntry,
+};
 use crate::model::{FilesystemProfile as EngineProfile, Lifecycle, VolumeConfig};
 use crate::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ByteRange, CancellationToken,
