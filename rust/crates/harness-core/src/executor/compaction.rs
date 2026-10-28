@@ -1,12 +1,17 @@
 use super::*;
 
 impl StockExecution<'_> {
-    pub(super) fn compaction_message_limit(&self, canonical: bool, stage_messages: usize) -> usize {
-        self.stock
-            .limits
-            .context_messages
-            .saturating_sub(if canonical { 2 } else { 0 })
-            .saturating_sub(stage_messages)
+    pub(super) fn compaction_message_limit(
+        &self,
+        canonical: bool,
+        stage_messages: usize,
+    ) -> Option<usize> {
+        self.stock.limits.context_messages.map(|maximum| {
+            maximum
+                .get()
+                .saturating_sub(if canonical { 2 } else { 0 })
+                .saturating_sub(stage_messages)
+        })
     }
 
     pub(super) async fn compact_response(
@@ -186,7 +191,8 @@ impl StockExecution<'_> {
                     .messages
                     .len()
                     .saturating_sub(context.messages.len()),
-            ),
+            )
+            .map_or(context.messages.len(), |maximum| maximum),
             self.io,
         )?;
         let mandatory = with_history_io(self.io, |work| {
