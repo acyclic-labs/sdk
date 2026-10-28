@@ -25,3 +25,10 @@ def fixture_environment(root, variables=None):
     if profile.keys() & variables.keys():
         raise RuntimeError(f"step=admit native fixture variables; recovery: remove profile overrides and use {recovery}")
     return {"PATH": os.environ["PATH"], **profile, **variables}
+
+
+def wait_for_file(path, *, timeout):
+    """Wait through the shared native filesystem subscription, never a recheck timer."""
+    primitive = Path(__file__).resolve().parents[3] / "scripts/graphcoder-e2e/wait-path.mjs"
+    subprocess.run(["node", str(primitive), str(Path(path).resolve()), str(timeout)],
+                   check=True, timeout=timeout + 1)
