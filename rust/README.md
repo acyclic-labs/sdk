@@ -4,7 +4,7 @@ Objects, Streams, Actors, Workers and fs have native Rust crates. Swarm currentl
 
 Each fenced example is a complete program. To run one in this checkout, create `examples/sdk-services/examples/objects.rs` (or `streams.rs`, `actors.rs`, `workers.rs`, `fs.rs`, `swarm.rs`), paste the corresponding block, and run `cargo run -p sdk-service-examples --example objects` with the matching filename. [The example manifest](../examples/sdk-services/Cargo.toml) supplies the dependencies. For a separate application, use these SDK crate paths and the workspace dependency versions in your own manifest. Set `ACYCLIC_API_KEY`, the service's HTTPS `*_ENDPOINT` and its existing resource variable (`OBJECTS_BUCKET`, `STREAM_PATH`, `ACTOR_ID`, `JOB_ID` or `FS_WORKSPACE`). The manifest uses the repository's stable toolchain and workspace dependency versions.
 
-From this checkout, `cargo test -p sdk-service-examples --doc --locked` compiles all six exact examples without contacting a deployment. On shared lane machines, run that cargo command through build-slot in a Linux source checkout. [TypeScript guide](../typescript/packages/sdk/README.md) · [llms.txt](../llms.txt)
+From this checkout, `cargo test -p sdk-service-examples --doc --locked` compiles all six exact examples without contacting a deployment. [TypeScript guide](../typescript/packages/sdk/README.md) · [llms.txt](../llms.txt)
 
 ## Objects
 

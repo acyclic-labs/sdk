@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """No models: exercise the installed MCP entry point for every host adapter.
 
-Run on bb2 with a prebuilt binary: python3 mcp-framing.py ACYCLIC.
+Run on a Linux host with a prebuilt binary: python3 mcp-framing.py ACYCLIC.
 The never-newline peer keeps stdin open until the server has rejected it.
 """
 import argparse

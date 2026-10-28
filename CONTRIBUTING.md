@@ -65,17 +65,6 @@ fast incremental build for development; the shipped `acyclic` executable comes
 from `node scripts/build-product.mjs`, which uses the `dist` profile (fat LTO,
 one codegen unit, stripped) and writes `target/[<triple>/]dist/acyclic`.
 
-The optional gate and Windows adapters consume separately installed infrastructure.
-Set `SDK_GATE_CLIPPY` to the external coordinator's `gate-clippy.py`,
-`SDK_WINDOWS_GATE` to its `gate-checks.sh`, and `SDK_MSVC_COMPILER` to the
-installed `msvc-compiler.py` when using nonstandard installation paths.
-Infrastructure integration tests take `SDK_BUILD_TOOLS_DIR` as their external
-source/fixture root; those sources are supplied by the operator, outside this
-checkout. For example, `SDK_GATE_CLIPPY=/external/coordinator/gate-clippy.py
-node --test scripts/main-gate-checks.test.mjs` exercises the SDK adapter against
-that decoder. Missing required tools fail explicitly; normal Cargo checks do
-not need these adapters.
-
 ## Commit messages
 
 - Summary line: imperative mood ("Add", "Fix", "Rename", not "Added"/"Fixes"), no

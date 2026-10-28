@@ -23,7 +23,7 @@ The vectors cover:
 - The same hosted protocol script on every backend: exact Prompt and Decide replay, preset approvals and wrong-binding refusal, correlated committed Reply replay and wrong-prompt conflict, immutable output, exact Spawn replay and saved cut, changed-prompt conflict, lazy children and typed outside-tree refusal. The DO entry invokes its actual named host and packaged guest, rather than substituting an in-process turn host. `protocol::Endpoint` and the fixture functions are public for client-protocol consumers.
 - A deterministic program interrupted immediately before and after every provider API call, including commit acceptance before a lost acknowledgement. Both the host and provider are dropped, storage is reopened, the caller's intents are replayed, and the final state and single conversation effect must match the uninterrupted result. This is an API-boundary crash model; physical torn writes belong to each storage provider's suite.
 
-Run from the repository root on the build box:
+Run from the repository root on a Linux host:
 
 ```sh
 bash scripts/qualify-agent-host.sh
@@ -40,10 +40,10 @@ exactly one registration per provisioned agent and leave none ready after the
 global drain. It does not measure physical memory or allocations inside a
 provider. Reported control traffic remains visible even if the scale bound passes.
 
-Run the native 1,000 versus 10,000 idle-agent vector explicitly on bb2 or ivar:
+Run the native 1,000 versus 10,000 idle-agent vector explicitly on a Linux or macOS host:
 
 ```sh
-build-slot --remote cargo test --locked -p acyclic-agent-host-conformance --features local --test local agent_scale -- --ignored --nocapture
+cargo test --locked -p acyclic-agent-host-conformance --features local --test local agent_scale -- --ignored --nocapture
 ```
 
 No CI workflow or merge-gate step invokes this workload. Downstream adapters can

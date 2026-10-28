@@ -3,8 +3,8 @@
 # this job qualifies only the uploaded source and locked packages.
 set -euo pipefail
 step=format
-trap 'rc=$?; echo "step=$step failed (exit $rc); recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/compile-storage.sh" >&2; exit "$rc"' ERR
-bash scripts/gate-rust-format.sh
+trap 'rc=$?; echo "step=$step failed (exit $rc); recovery: bash scripts/backends/compile-storage.sh" >&2; exit "$rc"' ERR
+bun scripts/qualify-rustfmt.mjs
 step=compile-storage-conformance
 cargo check --locked -p acyclic-conformance --features storage-backends,acyclic-objects/local --bin storage-conformance
 step=compile-postgres-checks

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# bb2 only; the local Dex account and client are disposable public test inputs.
+# Linux host only; the local Dex account and client are disposable public test inputs.
 set -euo pipefail
-trap 'rc=$?; echo "STEP_FAILED be-edge-oidc line=$LINENO rc=$rc; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/be-edge-oidc.sh" >&2' ERR
-root=/mnt/bb/lane-scratch/be-edge/oidc
+trap 'rc=$?; echo "STEP_FAILED be-edge-oidc line=$LINENO rc=$rc; recovery: bash scripts/be-edge-oidc.sh" >&2' ERR
+root=${BE_EDGE_ROOT:-${TMPDIR:-/tmp}/be-edge}/oidc
 mkdir -p "$root/captures"
 exec 9>"$root/emulator.lock"
 flock -n 9
@@ -58,7 +58,7 @@ for attempt in $(seq 1 45); do
 done
 if ! curl --silent --fail http://127.0.0.1:15482/dex/.well-known/openid-configuration >/dev/null; then
     docker logs "$container" >&2 || echo "STEP_FAILED dex-logs; recovery: docker logs $container" >&2
-    echo "STEP_FAILED dex-readiness; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/be-edge-oidc.sh" >&2
+    echo "STEP_FAILED dex-readiness; recovery: bash scripts/be-edge-oidc.sh" >&2
     exit 1
 fi
 docker inspect --format '{{.Image}}' "$container" > "$root/captures/image.txt"

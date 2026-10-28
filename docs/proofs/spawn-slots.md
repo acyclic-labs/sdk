@@ -42,12 +42,12 @@ checkpoint and actor envelope bound retain their separate maximum-size test.
 production file in a job-owned derivative and checks its complete tracked
 input manifest before compiling; the tests and proof harnesses stay unchanged.
 It records commands, toolchain, raw log hashes, timings, mutation hashes and
-Cargo-selected executable hashes. `rust/proofs/spawn-slots/run.py` requires canonical bb2 admission,
+Cargo-selected executable hashes. `rust/proofs/spawn-slots/run.py` requires an admitted remote build job,
 uses the existing compiler cache and caps each job's command budget at 500 s.
 Never invoke it as a local test or rerun an identical completed producer.
 
-Run the `rust`, `kani`, `mutants` and `finish` modes through canonical bb2
-`build-slot`, with `BUILD_SLOT_COMPILER=1`, SDK tenant `graphcoder`, PR 1697,
+Run the `rust`, `kani`, `mutants` and `finish` modes as admitted remote build jobs
+(`BUILD_SLOT_COMPILER=1`), SDK tenant `graphcoder`, PR 1697,
 and the actual source base in the complete input declaration. Each invocation
 needs a fresh `--evidence` directory. `remaining` resumes only the compiler
 check and missing-method control after already-captured successful doctests;
@@ -59,6 +59,5 @@ Main's correlated-turn revision adds WaitingHost. Its host must satisfy the same
 invalid driver wait into a bounded failure before publishing its effects. The
 maximum-record property includes the new phase and conversation inbox sequence.
 
-Raw captured logs are retained outside the product repository under
-Q:/lanes/verify/evidence/1697/retained-raw. The versioned admission manifest
+Raw captured logs are retained outside the product repository. The versioned admission manifest
 retains their SHA256 hashes and the original captured archive hashes.

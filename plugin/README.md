@@ -130,8 +130,8 @@ children before sampling must fail that barrier. The per-child-mount
 counterfactual must fail the same resource check. The real-host e2e
 owner runs the corresponding scale and sandbox matrix with native sessions.
 
-The plugin e2e lane owns sandbox-ON cross-OS real-host acceptance, recorded in
-`Q:/lanes/plugin-e2e/`. Source checks and no-model probes alone do not establish
+The plugin e2e lane owns sandbox-ON cross-OS real-host acceptance, recorded outside
+the repository. Source checks and no-model probes alone do not establish
 native model-session acceptance.
 
 The canonical scripted qualifier also exposes one selected scenario to an

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One bb2 job: compile gates, unchanged filesystem tests, public admission,
+# One Linux job: compile gates, unchanged filesystem tests, public admission,
 # existing host tests, and actual standard QEMU/cloud-hypervisor frontends.
 set -u
 

@@ -61,5 +61,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print(f"STEP_FAILED dex-capture: {error}; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/be-edge-oidc.sh", file=sys.stderr)
+        print(f"STEP_FAILED dex-capture: {error}; recovery: bash scripts/be-edge-oidc.sh", file=sys.stderr)
         raise SystemExit(1)

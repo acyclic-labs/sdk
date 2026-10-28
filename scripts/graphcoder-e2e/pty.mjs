@@ -37,7 +37,7 @@ function expectedTaskFailure(visible, condition) {
 export async function pty(processes, binary, fixture, input, capture) {
   let program, args;
   if (process.platform === "win32") {
-    assert.ok(process.env.E2E_CONPTY_HOST, "cross-build the ConPTY host on bb2 and set E2E_CONPTY_HOST");
+    assert.ok(process.env.E2E_CONPTY_HOST, "cross-build the ConPTY host on a Linux host and set E2E_CONPTY_HOST");
     program = process.env.E2E_CONPTY_HOST;
     args = [binary, fixture.workspace, fixture.catalog, fixture.settings, "e2e/tiny", "8000", input.resume ? "resume" : "fresh"];
   } else {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run on bb2: prove non-repository context cannot create a Git command.
+# Run on a Linux host: prove non-repository context cannot create a Git command.
 set -euo pipefail
 proof=$(mktemp -d "$CARGO_TARGET_DIR/environment-negative.XXXXXX")
 source=rust/crates/harness/src/local/context/environment.rs

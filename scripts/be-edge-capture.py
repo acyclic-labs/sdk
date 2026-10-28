@@ -1,4 +1,4 @@
-"""Capture actual credential-free llama.cpp HTTP output on bb2, without rewriting it."""
+"""Capture actual credential-free llama.cpp HTTP output on a Linux host, without rewriting it."""
 import hashlib
 import json
 import pathlib
@@ -90,6 +90,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print(f"STEP_FAILED capture: {error}; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/be-edge-local.sh",
+        print(f"STEP_FAILED capture: {error}; recovery: bash scripts/be-edge-local.sh",
               file=sys.stderr)
         sys.exit(1)

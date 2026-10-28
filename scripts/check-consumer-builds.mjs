@@ -25,7 +25,7 @@ export function commands(item) {
     && !item.targets.some(target => target.kind.includes('example') && !target['required-features']?.length)) {
     throw new Error(`consumer examples require an unconditional executable: ${item.name}`);
   }
-  // One selection per crate, --all-features (2026-10-26 bb2 compute policy).
+  // One selection per crate, --all-features (2026-10-26 compute policy).
   return [['--all-features']].flatMap(features => {
     const base = ['build', '--locked', '--package', item.name, ...features];
     // Examples are downstream crates. Opted-in provider probes must also be

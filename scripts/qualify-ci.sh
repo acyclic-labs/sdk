@@ -348,7 +348,7 @@ case "$lane" in
     ;;
   policy)
     source scripts/ensure-bun.sh
-    node --test scripts/check-feature-matrix.test.mjs scripts/gate-windows-features.test.mjs
+    node --test scripts/check-feature-matrix.test.mjs
     node --test scripts/check-test-support.test.mjs
     node scripts/check-test-support.mjs
     node --experimental-vm-modules scripts/static-ci.mjs
@@ -359,8 +359,7 @@ case "$lane" in
     node scripts/check-workflow-runners.mjs
     node --test scripts/harness-provider-evidence.test.mjs
     node --test scripts/qualify-main-green-debts.test.mjs
-    python3 scripts/with-xwin-cache.test.py
-    node --test scripts/check-harness-package.test.mjs scripts/check-machines-package.test.mjs scripts/ci-background-log.test.mjs scripts/pr-gate-payload.test.mjs
+    node --test scripts/check-harness-package.test.mjs scripts/check-machines-package.test.mjs scripts/ci-background-log.test.mjs
     install_tool actionlint_1.7.7_linux_amd64.tar.gz \
       https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz \
       023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757 \
@@ -383,11 +382,9 @@ case "$lane" in
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     # Production-only reduced sets must not inherit test/dev features. Keep
     # these with the lane feature-set checks, outside the tiny SDK Static job.
-    # Focused bb1 gate: Q:/lanes/bs.ps1 bash scripts/check-storage-feature-sets.sh
     bash scripts/check-storage-feature-sets.sh
     node scripts/clippy-feature-sets.mjs 2
-    # Every published crate alone with --all-features, the same selection the
-    # bb2 merge gate checks on every PR and on main.
+    # Every published crate alone with --all-features.
     node scripts/check-feature-matrix.mjs 2
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
     install_tool cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz \

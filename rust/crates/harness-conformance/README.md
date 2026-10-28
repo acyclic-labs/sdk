@@ -7,7 +7,7 @@ cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --report ou
 cargo run --locked -p acyclic-harness-conformance --bin scenarios -- --filter core/ --report out.json
 ```
 
-Build on bb2. The runtime budget is measured separately from Cargo compilation.
+Build on a Linux host. The runtime budget is measured separately from Cargo compilation.
 Report identity, digest, bundle-digest and receipt validation live beside their
 shared validator in `acyclic-conformance`:
 `cargo run --locked -p acyclic-conformance --bin harness-conformance -- report.json`.

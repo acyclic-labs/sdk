@@ -1,6 +1,6 @@
 """Linux, no models: native-process fixture plus the real Codex sandbox.
 
-Run on bb2: python3 managed-session.py ACYCLIC GRAPHCODER CODEX_0_164_OR_LATER lifecycle|recursive|resume.
+Run on a Linux host: python3 managed-session.py ACYCLIC GRAPHCODER CODEX_0_164_OR_LATER lifecycle|recursive|resume.
 Executables must already be built. Native model-session acceptance belongs to
 the real-host e2e suite; this regression never reads native authentication.
 """

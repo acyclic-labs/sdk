@@ -47,10 +47,10 @@ turn-provider reads/writes and no executor calls; cached admission performs no
 JWKS I/O. A disposable local Dex issuer additionally exercises real RS256
 verification and admitted scope expiry against the same host implementation.
 
-Run on bb2:
+Run on a Linux host:
 
-```powershell
-pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/be-edge-oidc-verify.sh
+```sh
+bash scripts/be-edge-oidc-verify.sh
 ```
 
 Dex binds only 127.0.0.1:15482 (OIDC) and 127.0.0.1:15483 (telemetry), uses memory
@@ -61,6 +61,6 @@ validated during capture; later executions start a fresh issuer and recapture.
 This proves local integration; it does not qualify a particular production IdP's
 configuration, discovery service, user interface or account lifecycle.
 
-Recorded bb2 qualification: complete native and guest-wire suite 2.96 seconds;
+Recorded qualification: complete native and guest-wire suite 2.96 seconds;
 complete host suite plus real Dex admission and scope deadline 2.403 seconds.
 All four captured body digests matched after transfer.

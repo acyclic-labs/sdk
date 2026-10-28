@@ -40,7 +40,7 @@ export function enabled(item, features) {
 
 /** The Cargo argument sets for one package from its `cargo metadata` entry.
  *  The gate checks each crate once, alone, with --all-features (2026-10-26
- *  bb2 compute policy). Only the explicit full matrix (eachFeature) adds the
+ *  compute policy). Only the explicit full matrix (eachFeature) adds the
  *  no-default, default and single-feature selections; sets that enable exactly
  *  the same features and optional dependencies compile the same code, so each
  *  is checked once. */
@@ -115,7 +115,7 @@ async function main() {
   async function worker(index) {
     const env = workerEnv(index);
     if (windows) {
-      if (!process.env.GATE_XWIN_CACHE_ROOT) throw new Error("Windows matrix requires with-xwin-cache.py");
+      if (!process.env.GATE_XWIN_CACHE_ROOT) throw new Error("Windows matrix requires GATE_XWIN_CACHE_ROOT (a prepared cargo-xwin cache root with one worker-<n> directory per worker)");
       env.XWIN_CACHE_DIR = join(process.env.GATE_XWIN_CACHE_ROOT, `worker-${index}`);
     }
     for (const set of queues[index]) {

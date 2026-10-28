@@ -102,7 +102,7 @@ fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!(
-                "STEP_FAILED oidc-qualification: {error}; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/be-edge-oidc.sh"
+                "STEP_FAILED oidc-qualification: {error}; recovery: bash scripts/be-edge-oidc.sh"
             );
             std::process::ExitCode::FAILURE
         }

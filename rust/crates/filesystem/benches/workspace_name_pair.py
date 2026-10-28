@@ -1,4 +1,4 @@
-"""Run from the repository root via bs.ps1 with a frozen baseline manifest."""
+"""Run from the repository root on a Linux host with a frozen baseline manifest."""
 import argparse
 import hashlib
 import json

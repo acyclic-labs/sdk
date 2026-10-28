@@ -1,4 +1,4 @@
-"""Install the pinned runner in an explicit disposable job directory on bb2."""
+"""Install the pinned runner in an explicit disposable job directory on a Linux host."""
 
 import argparse
 import hashlib

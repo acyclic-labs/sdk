@@ -15,7 +15,7 @@ mod postgres_scale;
 async fn main() {
     if let Err(error) = run().await {
         let recovery = if std::env::args().nth(1).as_deref() == Some("--postgres") {
-            "pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh"
+            "bash scripts/backends/storage-conformance.sh"
         } else if std::env::args().nth(1).as_deref() == Some("--fixture") {
             "node typescript/packages/stream/test/http-provider-conformance.mjs"
         } else {

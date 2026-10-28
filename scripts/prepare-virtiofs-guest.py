@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare a tiny real Linux guest for virtio-fs qualification on bb2."""
+"""Prepare a tiny real Linux guest for virtio-fs qualification on a Linux host."""
 
 import argparse
 import gzip

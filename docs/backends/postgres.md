@@ -43,11 +43,11 @@ the SQL journal itself has no compaction yet.
 
 ## Validation
 
-Run only on bb2:
+Run on a Linux host:
 
-```powershell
-pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/compile-storage.sh
-pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh
+```sh
+bash scripts/backends/compile-storage.sh
+bash scripts/backends/storage-conformance.sh
 ```
 
 The drivers' companion `.inputs.json` declarations name no comparison receipts
@@ -55,10 +55,10 @@ or borrowed proof artifacts; these jobs qualify the uploaded source and create
 fresh emulator fixtures.
 
 The second command creates PostgreSQL and MinIO containers with disposable data
-under `/mnt/bb`. It invokes the unchanged Stream suite, then checks independent
+under a disposable data directory. It invokes the unchanged Stream suite, then checks independent
 sessions for exact replay, a concurrent CAS winner, notification delivery within
 one second, reopening, expired-deadline retry precedence, and terminated LISTEN
-connections. On bb2, 2026-10-26, the unchanged Stream suite passed in 121 ms;
+connections. On a Linux x86_64 host, 2026-10-26, the unchanged Stream suite passed in 121 ms;
 independent-session checks passed with REPEATABLE READ as the database default.
 Creating 100,000 paths took 872 ms; opening their subscriptions completed in
 15.531 s total with two provider connections, four total runtime tasks (including
@@ -67,8 +67,7 @@ counts did not increase with streams. The unchanged filesystem smoke passed over
 Postgres + MinIO in 194 ms; a 256 KiB chunked-file check read exact content after
 independent provider reopen in 257 ms.
 
-Evidence: buildbox job `1793048750090-108901-0c54a923`, output log
-`/home/var/log/buildbox/1793048734046-108901-7d4d6f66.log`, PostgreSQL 17 Alpine,
+Evidence: PostgreSQL 17 Alpine,
 MinIO built from the pinned source release in the runner. The filesystem check
 uses the canonical public smoke export, which main explicitly distinguishes from
 full filesystem qualification; its full workload corpus has no executable runner.

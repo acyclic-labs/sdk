@@ -1,4 +1,4 @@
-//! Regression mutations of the actual bb2 llama.cpp refusal, not fabricated fixtures.
+//! Regression mutations of the actual llama.cpp refusal, not fabricated fixtures.
 use crate::{Error, HttpResponse};
 use acyclic_harness_core::ModelTransportFailure;
 use bytes::Bytes;

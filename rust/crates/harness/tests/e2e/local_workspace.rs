@@ -14,7 +14,7 @@ pub(super) type Reader = FilesystemContentVerifier<LocalAuthorityBackend, LocalO
 
 pub(super) fn temporary() -> std::io::Result<tempfile::TempDir> {
     // Real native files, including journal syncs and cold reopen, without
-    // competing with the build box's persistent disk journal.
+    // competing with the host's persistent disk journal.
     #[cfg(target_os = "linux")]
     return tempfile::tempdir_in("/dev/shm");
     #[cfg(not(target_os = "linux"))]

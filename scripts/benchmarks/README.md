@@ -5,7 +5,7 @@ agent for the shipping GraphCoder prompt mode. It never starts a benchmark.
 Every generated plan is marked BLOCKED until its explicit readiness requirements
 are satisfied. Fixture tests make no model calls and require no credentials.
 
-Run all Linux preparation on bb2. Build GraphCoder from the exact qualified main
+Run all preparation on a Linux host. Build GraphCoder from the exact qualified main
 SHA using `cargo build --locked --release -p graphcoder`. Windows and macOS live
 acceptance must qualify that same SHA before benchmark execution. Do not build
 or run benchmark tasks on a developer PC.
@@ -13,10 +13,10 @@ or run benchmark tasks on a developer PC.
 Use Harbor 0.24.0 and Python 3.12 or later. Install `requirements.lock` into a
 dedicated environment with pinned uv 0.13.5 (`uv venv`, then
 `uv pip sync --require-hashes --python ENV/bin/python scripts/benchmarks/requirements.lock`).
-The bb2 system Python lacks ensurepip; `python3 -m venv` with pip bootstrapping
+Some system Pythons lack ensurepip; `python3 -m venv` with pip bootstrapping
 is not a prerequisite. Keep tools, caches and environments in the lane target
-directory. Buildbox target directories are disposable per job: do not assume
-an environment from an earlier job still exists. The self-contained bb2 setup
+directory. Disposable per-job target directories do not keep an environment
+from an earlier job. The self-contained setup
 downloads a SHA256-pinned public uv wheel, creates the environment without
 ensurepip and installs only the hashed dependency lock:
 
@@ -26,7 +26,7 @@ bash scripts/qualify-benchmarks.sh "$CARGO_TARGET_DIR/benchmark-tools/environmen
 ```
 
 Setup network/install time is separate from the offline qualification suite.
-On bb2 also run `cargo test --locked -p acyclic-harness-providers --test benchmark_catalog`.
+On Linux also run `cargo test --locked -p acyclic-harness-providers --test benchmark_catalog`.
 It generates the actual Python catalogue, loads/resolves it through GraphCoder's
 production registry with empty explicit credentials, and rejects the old
 incomplete feature declaration. It never sends a request. The ordinary Rust
@@ -89,14 +89,14 @@ directory other than `/`. Host Docker/FUSE availability alone does not prove
 container readiness. The adapter never changes container privileges or task
 images. Native mount admission inside the actual task images still needs a
 credential-free qualification before a run. Loopback endpoint addresses refer
-to the task container, not the bb2 host.
+to the task container, not the benchmark host.
 
 Readiness also requires green-wide-main and three-platform receipts for the
 binary source, separately authorized credential-free model access for **both**
 agents, and matched effective reasoning/token budgets. The Codex job uses
 Harbor's built-in comparator; this planner does not instantiate it or invoke
 its authentication discovery. Neither host login nor API-key material may be
-placed on bb2. Model-access and effective-budget gaps remain explicit blockers.
+placed on the benchmark host. Model-access and effective-budget gaps remain explicit blockers.
 
 Interface references: [Harbor custom agents](https://docs.harborframework.com/agents/custom-agents),
 [pinned Harbor source](https://github.com/laude-institute/harbor/tree/v0.24.0),

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The parser properties and checked-in corpus run in the providers lib suite; keep the
-# cargo-fuzz entry point compiling too. Run from the repository root on the build box.
+# cargo-fuzz entry point compiling too. Run from the repository root on a Linux host.
 set -euo pipefail
 
 # Every provider timer is created by deadline::timer, which admits it on the native ledger

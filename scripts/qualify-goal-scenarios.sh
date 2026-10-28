@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Each invocation is one build-slot job, never a cold build plus another suite.
+# Each invocation is one remote build job, never a cold build plus another suite.
 phase=${1:-}
 started=$SECONDS
 artifacts=

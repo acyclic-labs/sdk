@@ -1,4 +1,4 @@
-//! The real bb2 llama.cpp recording must pass every shared inference vector.
+//! The real llama.cpp recording must pass every shared inference vector.
 
 async fn captured_backend()
 -> acyclic_harness_core::Result<impl acyclic_harness_core::model::conformance::Backend> {

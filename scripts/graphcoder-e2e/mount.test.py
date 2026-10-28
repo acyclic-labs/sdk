@@ -1,4 +1,4 @@
-"""Linux-only real FUSE resource proof; invoke explicitly on bb2, never skip."""
+"""Linux-only real FUSE resource proof; invoke explicitly on a Linux host, never skip."""
 import ctypes
 import errno
 import json

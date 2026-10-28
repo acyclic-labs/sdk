@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run on bb2. Restore both pre-review defects and reject their intended oracles.
+# Run on a Linux host. Restore both pre-review defects and reject their intended oracles.
 set -euo pipefail
 proof=$(mktemp -d "$CARGO_TARGET_DIR/retained-diff-negative.XXXXXX")
 export RETAINED_DIFF_NEGATIVE_PROOF="$proof"

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Run only on bb2, through Q:/lanes/bs.ps1. No account credentials required.
+# Run on a Linux host. Set BE_EDGE_ROOT for the persistent model/build cache (default $TMPDIR/be-edge). No account credentials required.
 set -euo pipefail
-trap 'rc=$?; echo "STEP_FAILED be-edge-local line=$LINENO rc=$rc; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/be-edge-local.sh" >&2' ERR
-root=/mnt/bb/lane-scratch/be-edge
+trap 'rc=$?; echo "STEP_FAILED be-edge-local line=$LINENO rc=$rc; recovery: bash scripts/be-edge-local.sh" >&2' ERR
+root=${BE_EDGE_ROOT:-${TMPDIR:-/tmp}/be-edge}
 mkdir -p "$root/models" "$root/captures"
 exec 9>"$root/emulators.lock"
 flock -n 9

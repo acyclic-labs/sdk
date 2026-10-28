@@ -31,11 +31,11 @@ Multiple filtered subscriptions share a polling budget; sustained earlier input
 can delay a later subscription's interrupt. Fair polling is tracked in
 [#1710](https://github.com/acyclic-labs/sdk/issues/1710). AgentHandler uses one inbox.
 
-Validation commands on bb2: `scripts/check-actor-runtime.sh`, actor and
+Validation commands on a Linux host: `scripts/check-actor-runtime.sh`, actor and
 agent-model tests, and `scripts/qualify-host-serving.sh`. The shared actor suite
 checks cancellation with intervening input and restart. The host suite checks
 saved discovery cursors and in-flight interruption for each backend unchanged.
-On bb2, both native host entries passed in 5.81 seconds and the browser entry
+On a Linux x86_64 host, both native host entries passed in 5.81 seconds and the browser entry
 passed in 10.80 seconds. Actor tests, all 34 agent-model tests and strict typed
 forwarding against the generated guest declarations also passed. Workerd runs
 the unchanged Stream and host suites plus packaged-guest restart checks.

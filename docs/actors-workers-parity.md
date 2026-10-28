@@ -99,7 +99,7 @@ competing alarm schedule does not create a second alarm; wrong WebSocket target
 and stale attachment authority fail; least-specific-first route choice fails.
 Use proptest on production framing/routing/gates, and fuzz public decoders.
 
-Area debt audit (2026-10-24): `Q:/lanes/flakes.txt` and `Q:/lanes/hangs.txt` are both empty.
+Area debt audit (2026-10-24): no flaky or hanging tests are tracked.
 No entries, skips, timeout increases or retry-based test outcomes are introduced.
 
 ## Cloud-side NEEDs for coordinator relay

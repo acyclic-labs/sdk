@@ -29,7 +29,7 @@ async fn main() {
         .await;
         if let Err(cause) = result {
             eprintln!(
-                "STEP_FAILED local-live: {cause}; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 --env BE_EDGE_RUN_SUITE=1 bash scripts/be-edge-local.sh"
+                "STEP_FAILED local-live: {cause}; recovery: BE_EDGE_RUN_SUITE=1 bash scripts/be-edge-local.sh"
             );
             std::process::exit(1);
         }

@@ -62,7 +62,7 @@ private even with inherited umask `000`. It also checks Linux peer credentials
 before reading any protocol message. Run the VMM under the daemon's effective
 host user; guest POSIX enrollment never grants another host user socket access.
 
-Review P1 correction `c5062bd91cb943c17baf066563bb90163666bd8f` passed its bb2
+Review P1 correction `c5062bd91cb943c17baf066563bb90163666bd8f` passed its
 compile gate, the complete daemon binary test (1 pass) and the public Bound/daemon
 suite (2 pass, 1.34 s). Both actual QEMU and cloud-hypervisor launched the daemon
 with inherited `umask 000`, checked socket mode `0700`, mounted the canonical
@@ -71,8 +71,7 @@ Both daemons exited0 and retired their owned sockets. The binary regression chec
 real kernel peer credentials against a mismatching and matching expected uid,
 then proves the captured INIT packet remained unread across refusal. It does not
 claim execution of a foreign-uid process. Frontend teardown warnings remain.
-Job `1793096177280-159730-b3f40792`, log
-`/home/var/log/buildbox/1793096161658-159730-d88912bb.log`, rc0. The wider
+The run ended rc0. The wider
 filesystem failures recorded below were not rerun or reclassified by this fix.
 
 ## Limits
@@ -156,17 +155,16 @@ cover device drain, live/publication generation fences, canonical history,
 source authority fences, stream error categories and exact staging work. This is
 not a passing complete filesystem suite or proof of baseline equivalence.
 
-Current bb2 job `1793094000109-149673-a133e23b`, log
-`/home/var/log/buildbox/1793093988453-149673-84bd0baa.log`, overall rc 101,
+The current run ended with overall rc 101,
 canonical wall 1017.811 s including compilation. All four cleanup fields are
 true. This job did not rerun the harness library suite; its historical failures
 below remain source-specific.
 
-The initial complete bb2 run uses signed source
+The initial complete run uses signed source
 `41955b03d096e0c8d7a180619dbba35dae40905a`:
 
-```powershell
-pwsh -NoProfile -File Q:/lanes/bs.ps1 bash -c 'bash scripts/validate-virtiofs.sh'
+```sh
+bash scripts/validate-virtiofs.sh
 ```
 
 All three compile gates passed. Complete runtime results at that source:
@@ -185,8 +183,7 @@ All three compile gates passed. Complete runtime results at that source:
 Overall rc **101**; this is not a passing complete suite. The filesystem and
 harness failures are owner-routed, without claiming main-baseline equivalence.
 Canonical cleanup confirms home, targets, outer targets and outer temporary
-storage removed. bb2 job `1793086189051-119691-9ce6908e`, log
-`/home/var/log/buildbox/1793086155710-119691-79f2abab.log`; canonical wall time
+storage removed; canonical wall time
 1851.215 s includes compilation.
 The script compiles first, then runs complete relevant suites without name
 filters, including real host FUSE/kernel replay and both actual VMMs through
@@ -201,12 +198,10 @@ Review correction `1cf95a1d3355b55a521b7216ee651068a5d7e61b` separates kernel
 INIT/DESTROY/reference retirement from caller filesystem identity checks. A
 non-root-only enrollment can negotiate the root-tagged kernel INIT without
 granting root filesystem access; negotiation still checks the original guard.
-Its bb2 compile gate passed, and the complete default filesystem library run
+Its compile gate passed, and the complete default filesystem library run
 ended **2456 pass / 21 fail / 30 ignored / 0 filtered**, 30.35 s. All five guest
 admission vectors passed, including non-root negotiation, root lookup refusal
-without source IO and revocation before INIT. Job
-`1793088963510-132230-c703d139`, log
-`/home/var/log/buildbox/1793088947516-132230-fb799c14.log`, overall rc 101,
+without source IO and revocation before INIT; overall rc 101,
 canonical wall 632.757 s and all four cleanup fields true. Ignored host/guest
 integration tests were not rerun at that correction; the actual VMM results
 above remain specific to `41955b03`. Artifact-preparation repeatability is

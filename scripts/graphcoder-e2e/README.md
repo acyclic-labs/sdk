@@ -1,15 +1,14 @@
 # Shipping acceptance cases
 
 Build `graphcoder` and `harness-mock-model` on the target OS ahead of timing.
-Windows MSVC executables must be cross-built on bb2; run Windows suites serially.
+Windows MSVC executables must be cross-built on a Linux host; run Windows suites serially.
 ConPTY preparation has no local PowerShell compiler entry point: cross-build
-`scripts/graphcoder-conpty.cs` on bb2 and supply its executable as
+`scripts/graphcoder-conpty.cs` on a Linux host and supply its executable as
 `E2E_CONPTY_HOST` before running a Windows PTY case.
 The Windows process host is the shared native-runtime `acyclic-process-host`
-binary. `scripts/windows-test.sh` cross-builds and exports it with the selected
-test artifacts; `scripts/windows-runner.py::admitted_host` verifies the complete
-source and successful Cargo receipt before its absolute executable is supplied
-as `E2E_PROCESS_HOST`. Changed host source requires a matching producer export.
+binary. Cross-build it for the Windows target with the selected test artifacts,
+verify its source and successful Cargo receipt, and supply its absolute
+executable as `E2E_PROCESS_HOST`. Changed host source requires a matching producer export.
 External acceptance
 commands run under a Linux subreaper, a macOS session or a Windows Job Object. Normal
 exit and suite cancellation drain their service descendants before returning.
@@ -29,7 +28,7 @@ headless selections load only their own runtime dependencies.
 
 ```sh
 node scripts/graphcoder-e2e/helpers.mjs
-# Linux/bb2: real FUSE mount custody, including the process-only negative control.
+# Linux: real FUSE mount custody, including the process-only negative control.
 python3 scripts/graphcoder-e2e/mount.test.py
 node scripts/graphcoder-e2e/coverage.mjs
 node scripts/graphcoder-e2e/serial.mjs /absolute/graphcoder /absolute/harness-mock-model

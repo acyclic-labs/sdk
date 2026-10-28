@@ -119,7 +119,7 @@ async function run(entry) {
 }
 
 export async function main(selected = process.argv.slice(2)) {
-  if (process.platform !== 'linux') throw new Error('run main debt qualification on bb2 Linux');
+  if (process.platform !== 'linux') throw new Error('run main debt qualification on Linux');
   process.chdir(fileURLToPath(new URL('../', import.meta.url)));
   const entries = JSON.parse(await readFile(new URL('./main-green-debts.json', import.meta.url), 'utf8'));
   const names = new Set(entries.map(entry => entry.regression));

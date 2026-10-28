@@ -14,7 +14,7 @@ fn lookup_executor() -> Result<StockExecutor> {
     ))
 }
 
-// Count decoded records as well as wall time: scheduling and shared bb2 load
+// Count decoded records as well as wall time: scheduling and shared build-host load
 // must not turn a complexity regression into a noisy timing assertion.
 #[tokio::test]
 async fn journal_lookups_do_not_replay_prefixes_from_one_to_a_thousand_turns() -> Result<()> {

@@ -177,7 +177,7 @@ impl Capture {
                 return Ok(());
             }
             let remaining = deadline.checked_duration_since(Instant::now()).ok_or(
-                "capture RELEASE completion timed out; recovery: rerun the live FUSE qualification on bb2",
+                "capture RELEASE completion timed out; recovery: rerun the live FUSE qualification on a Linux host",
             )?;
             packets = self
                 .changed

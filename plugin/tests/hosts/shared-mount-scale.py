@@ -1,6 +1,6 @@
 """Probe-only scale proof through each production MCP host adapter.
 
-Run on bb2 (or ivar): python3 shared-mount-scale.py ACYCLIC GRAPHCODER HOST.
+Run on a Linux host (or macOS): python3 shared-mount-scale.py ACYCLIC GRAPHCODER HOST.
 HOST is codex, claude-code or pi. Native sessions are explicit stand-ins;
 the separate plugin-e2e lane owns the real sandbox/model matrix. GraphCoder
 must enable test-support for the shared resource sampler/oracle request.

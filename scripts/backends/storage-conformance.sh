@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run only through bs.ps1 on bb2. Every provider is a disposable local emulator.
+# Run on a Linux host with Docker. Set STORAGE_CONFORMANCE_ROOT for the disposable data parent (default $TMPDIR or /tmp). Every provider is a disposable local emulator.
 # Caller input admission declares no comparison receipts or borrowed artifacts;
 # the uploaded source creates fresh fixtures against ordinary emulator images.
 set -euo pipefail
@@ -10,7 +10,7 @@ minio=
 cleanup() {
     rc=$?
     if (( rc != 0 )); then
-        echo "step=$step failed (exit $rc); recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/backends/storage-conformance.sh" >&2
+        echo "step=$step failed (exit $rc); recovery: bash scripts/backends/storage-conformance.sh" >&2
     fi
     for container in "$pg" "$minio"; do
         if [[ -n "$container" ]]; then
@@ -21,8 +21,9 @@ cleanup() {
     exit "$rc"
 }
 trap cleanup EXIT
-root=$(mktemp -d /mnt/bb/be-storage.XXXXXXXX)
-case "$root" in /mnt/bb/be-storage.*) ;; *) echo "step=setup: unexpected data root $root; recovery: ls -ld /mnt/bb" >&2; exit 2 ;; esac
+data_parent=${STORAGE_CONFORMANCE_ROOT:-${TMPDIR:-/tmp}}
+root=$(mktemp -d "$data_parent/be-storage.XXXXXXXX")
+case "$root" in "$data_parent"/be-storage.*) ;; *) echo "step=setup: unexpected data root $root; recovery: ls -ld $data_parent" >&2; exit 2 ;; esac
 
 step=images
 minio_image=be-storage-minio:RELEASE.2025-10-15T17-29-55Z
