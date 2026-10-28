@@ -1,5 +1,6 @@
 // Installed real native hosts against the shipping mock; no authentication fixture.
 import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
 import {mkdir,readFile,writeFile} from 'node:fs/promises';
 import {dirname,delimiter,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -36,14 +37,33 @@ export async function nativeModel({host,binary,graphcoder,mock,native,output,pac
     capture:record=>captures.push({role:'owner',...record})});
    step='start shipping mock model';
    const marker='NATIVE_PLUGIN_MODEL_DONE',script=join(output,'script.json');
-   await writeFile(script,JSON.stringify({cases:{native:{steps:[{when:{user:'NATIVE_PLUGIN_MODEL'},text:[marker]}]}}}));
+   const childMarker='NATIVE_PLUGIN_CHILD_DONE';
+   const tool=(name,args)=>({id:'native_'+name,namespace:'mcp__acyclic_sessions',name,arguments:args});
+   const steps=host==='codex'?[
+    {when:{user:'NATIVE_PLUGIN_MODEL'},tools:[tool('spawn',{reference:'native-child',prompt:'NATIVE_PLUGIN_CHILD'})]},
+    {when:{tool_result:'inbox'},tools:[tool('wait',{reference:'native-child'})]},
+    {when:{tool_result:childMarker},text:[marker]},
+    {when:{user:'NATIVE_PLUGIN_CHILD'},text:[childMarker]},
+   ]:[{when:{user:'NATIVE_PLUGIN_MODEL'},text:[marker]}];
+   await writeFile(script,JSON.stringify({cases:{native:{steps}}}));
    const model=scope.start(mock,['--script',script,'--record',join(output,'requests.jsonl')],{env});model.child.stdin.end();
    const events=new Events(model.child.stdout,model.closed),{port}=await events.wait(event=>event.event==='ready');
    step='complete installed native model request';let args;
-   if(host==='codex') args=['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
+   if(host==='codex') {
+    const initialized=await run('git',['init','--quiet']);assert.equal(initialized.code,0,initialized.stderr);
+    // Open through the same workspace API as the native launcher. The runtime
+    // supplies the task; the fixture never invents an agent or execution claim.
+    const opened=await scope.run(executable,['__workspace'],{cwd:workspace,env},
+     JSON.stringify({kind:'open',host:'codex',session:randomUUID()}));
+    captures.push({role:'open-native-root',...opened});assert.equal(opened.code,0,opened.stderr);
+    env.ACYCLIC_WORKSPACE=workspace;env.ACYCLIC_TASK=JSON.parse(opened.stdout).task;
+    const policy=['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
     '--config',`model_providers.mock.base_url="http://127.0.0.1:${port}/native/v1"`,'--config','model_providers.mock.wire_api="responses"',
-    '--config','model_providers.mock.requires_openai_auth=false','--config','approval_policy="never"',
-    'exec','--model','tiny','--json','--skip-git-repo-check','--sandbox','workspace-write','NATIVE_PLUGIN_MODEL'];
+    '--config','model_providers.mock.requires_openai_auth=false','--model','tiny',
+    '--ask-for-approval','never','--sandbox','workspace-write','--add-dir',workspace];
+    env.ACYCLIC_HOST_ARGS=JSON.stringify(policy);
+    args=[...policy,'exec','--json','NATIVE_PLUGIN_MODEL'];
+   }
    else {
     env.ACYCLIC_E2E_MODEL_URL=`http://127.0.0.1:${port}/native/v1`;
     args=['--mode','json','--print','--no-session','--no-skills','--no-prompt-templates','--no-themes',
@@ -57,7 +77,17 @@ export async function nativeModel({host,binary,graphcoder,mock,native,output,pac
    const tools=generation.body.tools;
    if(host==='codex') assert.ok(JSON.stringify(tools).includes('acyclic'),'installed Acyclic MCP tools not advertised');
    else for(const name of ['spawn','send','wait','archive','cancel','resume']) assert.ok(tools.some(t=>(t.name??t.function?.name)===name&&JSON.stringify(t).includes('separate native Pi process in an admitted workspace view')),'missing installed Pi coordination tool '+name);
-   result={host,plugin_installed:true,native_model_answer:true,advertised_tools:tools.map(t=>t.name??t.function?.name)};
+   if(host==='codex') {
+    const generations=requests.filter(row=>row.path==='responses');
+    assert.ok(generations.every(row=>row.status===200),'unexpected native generation refusal');
+    assert.deepEqual(generations.map(row=>row.step).sort(),[0,1,2,3],'native parent/child generation coverage');
+    const consumed=generations.find(row=>row.step===2).body.input.find(item=>
+     item.type==='function_call_output'&&item.call_id==='native_wait');
+    assert.ok(consumed,'parent did not consume the plugin wait result');
+    assert.ok(JSON.stringify(consumed).includes(childMarker),'native child answer missing from parent tool result');
+    assert.ok(JSON.stringify(consumed).includes('Succeeded'),'native child did not settle successfully');
+   }
+   result={host,plugin_installed:true,native_model_answer:true,plugin_child_round_trip:host==='codex',advertised_tools:tools.map(t=>t.name??t.function?.name)};
   }});
   assert.equal(receipt.expired,false,'installed native host deadline');result={...result,status:'pass',seconds:receipt.seconds};
  } catch(error) {result={host,status:'fail',step,seconds:(performance.now()-started)/1000,error:error.message,recovery:'inspect original native model result and captures; run a changed-source diagnostic only'};}
