@@ -37,7 +37,6 @@ use std::task::{Context, Poll, Wake, Waker};
 use std::time::Duration;
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
-const MAXIMUM_EXACT_INSTALL_CHANGES: u32 = 65_536;
 
 #[derive(Clone, Copy)]
 pub(super) enum HostCaptureScope {
