@@ -122,7 +122,7 @@ async fn return_observation_retries_unrelated_data_but_denies_revocation()
     Ok(())
 }
 
-#[cfg(feature = "hosting")]
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn structured_observation_derives_credentials_only_for_complete_tool_output_read()
 -> Result<(), Box<dyn Error>> {
