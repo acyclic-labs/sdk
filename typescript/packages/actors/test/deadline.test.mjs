@@ -7,13 +7,16 @@ test("host timers preserve long deadlines while finite expiry and cancellation r
   const parent = new AbortController();
   const expired = new Error("deadline expired");
   const long = deadlineSignal(0xffff_ffff + 1000, () => expired, parent.signal);
+  const huge = deadlineSignal((1n << 64n) - 1n, () => expired, parent.signal);
   const short = deadlineSignal(10, () => expired);
   try {
     await once(short.signal, "abort");
     assert.equal(short.signal.reason, expired);
     assert.equal(long.signal.aborted, false);
+    assert.equal(huge.signal.aborted, false);
     const cancelled = new Error("caller cancelled");
     parent.abort(cancelled);
     assert.equal(long.signal.reason, cancelled);
-  } finally { long.cleanup(); short.cleanup(); }
+    assert.equal(huge.signal.reason, cancelled);
+  } finally { long.cleanup(); huge.cleanup(); short.cleanup(); }
 });
