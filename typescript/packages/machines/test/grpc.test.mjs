@@ -17,10 +17,10 @@ const identity = value => ({ value: new Uint8Array(16).fill(value) });
 const machine = identity(1);
 const operation = identity(2);
 
-async function fixture(t, implementation) {
+async function fixture(t, implementation, rawExec = false) {
   const server = createSecureServer({ cert: caCertificate, key }, connectNodeAdapter({
     routes(router) {
-      router.service(wire.MachinesService, implementation.exec === undefined ? implementation : {
+      router.service(wire.MachinesService, implementation.exec === undefined || rawExec ? implementation : {
         ...implementation,
         async *exec(input, context) { yield* implementation.exec(await receiveCommand(input), context); },
       });
@@ -257,6 +257,28 @@ test("exec carries binary stdin, cwd and authority and separates stderr before i
     { case: "stopped", value: create(wire.ExecStopSchema, stopped) },
   ]);
   await cancellation;
+});
+
+test("exec delivers output while command input is backpressured and drop cancels both directions", { timeout: 5000 }, async t => {
+  const cancellation = Promise.withResolvers();
+  let complete = false;
+  const { machines } = await fixture(t, {
+    async *exec(input, context) {
+      authenticate(context);
+      context.signal.addEventListener("abort", cancellation.resolve, { once: true });
+      const reader = input[Symbol.asyncIterator]();
+      assert.equal((await reader.next()).value.input.case, "start");
+      // Do not grant input progress. Output must remain independently readable.
+      yield { machine, output: { case: "data", value: new Uint8Array([7]) } };
+      await cancellation.promise;
+      complete = true;
+    },
+  }, true);
+  const output = machines.exec({ protocol, machine, argv: ["bash", "-c", "#".repeat(200000)], stdin: new Uint8Array(200000), timeoutMs: 300000 });
+  assert.deepEqual((await output.next()).value.output, { case: "data", value: new Uint8Array([7]) });
+  assert.equal(complete, false);
+  await output.return();
+  await cancellation.promise;
 });
 
 for (const mode of ["early-exit", "malformed"]) {
