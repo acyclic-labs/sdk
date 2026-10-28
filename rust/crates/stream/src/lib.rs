@@ -111,7 +111,7 @@ pub use follow_filter::FollowFilter;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 mod wasm;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub use wasm::{WasmSessionAuthority, WasmStream};
+pub use wasm::{WasmFollow, WasmSessionAuthority, WasmStream, serve_wasm_session};
 /// Conversion helpers between the canonical Rust domain types and generated wire messages.
 pub mod wire_codec;
 

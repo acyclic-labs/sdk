@@ -9,6 +9,7 @@ pub struct Service<P> {
     limits: Limits,
     resources: Option<Arc<dyn ResourceProvider>>,
     calls: Option<Arc<dyn CallProvider>>,
+    lifetime: Option<tokio::sync::watch::Receiver<()>>,
 }
 impl<P> Service<P> {
     /// Binds an authenticated host's provider and node identity.
@@ -20,6 +21,7 @@ impl<P> Service<P> {
             limits,
             resources: None,
             calls: None,
+            lifetime: None,
         }
     }
 
@@ -32,6 +34,14 @@ impl<P> Service<P> {
     ) -> Self {
         self.resources = resources;
         self.calls = Some(calls);
+        self
+    }
+
+    /// Retains the owning host's lifetime in every accepted connection. Dropping
+    /// the sender terminates calls and follows, including sessions accepted
+    /// before the listener stopped. No background task owns this observation.
+    pub fn with_lifetime(mut self, lifetime: tokio::sync::watch::Receiver<()>) -> Self {
+        self.lifetime = Some(lifetime);
         self
     }
 }
@@ -56,6 +66,11 @@ impl<P: StreamProvider> wire::stream_session_service_server::StreamSessionServic
             self.limits,
             incoming,
             Arc::new(crate::runtime::PlatformExecutor),
+            self.lifetime.clone().map(|mut lifetime| {
+                Box::pin(async move {
+                    let _ = lifetime.changed().await;
+                }) as crate::BoxProviderFuture<'static, ()>
+            }),
         )
         .map_err(|error| Status::invalid_argument(error.code()))?;
         Ok(Response::new(

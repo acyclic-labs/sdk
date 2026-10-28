@@ -80,6 +80,7 @@ pub struct WasmAgentServer {
     platform: Arc<dyn hosting::Platform>,
     authority: Arc<acyclic_stream::session::Authority>,
     binding: Vec<u8>,
+    lifetime: RefCell<Option<tokio::sync::watch::Sender<()>>>,
 }
 
 #[wasm_bindgen]
@@ -173,6 +174,7 @@ impl WasmAgentServer {
             platform: Arc::new(Policy { policy, admitted }),
             authority: authority.authority(),
             binding,
+            lifetime: RefCell::new(Some(tokio::sync::watch::channel(()).0)),
         })
     }
 
@@ -311,6 +313,37 @@ impl WasmAgentServer {
             .map_err(agent_error)
     }
 
+    /// Serves the same authenticated session as the native endpoint. Platform
+    /// framing passes one canonical protobuf frame per pull. Closing the cursor
+    /// cancels input, active calls and follows through the shared session owner.
+    pub fn session(
+        &self,
+        next: Function,
+    ) -> std::result::Result<acyclic_stream::WasmFollow, JsValue> {
+        let server = self.served()?;
+        acyclic_stream::serve_wasm_session(
+            self.bound.agents().provider().clone(),
+            self.authority.clone(),
+            None,
+            server,
+            "harness".into(),
+            acyclic_stream::session::Limits::default(),
+            next,
+            Some({
+                let mut lifetime = self.lifetime()?;
+                Box::pin(async move {
+                    let _ = lifetime.changed().await;
+                })
+            }),
+        )
+    }
+
+    /// Stops the host's sessions and pending commands with typed Unavailable.
+    /// A failed delivery or platform disposal must close its producer lifetime.
+    pub fn close(&self) {
+        drop(self.lifetime.borrow_mut().take());
+    }
+
     pub async fn read(
         &self,
         agent: String,
@@ -369,6 +402,7 @@ impl WasmAgentServer {
             None,
             server,
             Arc::new(acyclic_stream::runtime::PlatformExecutor),
+            Some(self.lifetime()?),
         );
         client
             .register_credential(0, credential)
@@ -404,10 +438,21 @@ impl WasmAgentServer {
         })
     }
     fn served(&self) -> std::result::Result<Arc<Hosted>, JsValue> {
+        if self.lifetime.borrow().is_none() {
+            return Err(stream_error(StreamError::Unavailable));
+        }
         self.server
             .borrow()
             .clone()
             .ok_or_else(|| JsValue::from_str("complete the original root placement first"))
+    }
+
+    fn lifetime(&self) -> std::result::Result<tokio::sync::watch::Receiver<()>, JsValue> {
+        self.lifetime
+            .borrow()
+            .as_ref()
+            .map(tokio::sync::watch::Sender::subscribe)
+            .ok_or_else(|| stream_error(StreamError::Unavailable))
     }
 }
 

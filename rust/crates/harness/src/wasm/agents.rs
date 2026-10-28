@@ -20,7 +20,7 @@ use crate::{
         FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost, FilesystemTurnHost,
         PRIVATE_VOLUME, TurnAdmission,
     },
-    model::Model,
+    model::{Model, ModelProvider},
     resources::ProviderRef,
     tool::{Tool, ToolDefinition, ToolRegistry},
 };
@@ -167,8 +167,22 @@ struct WasmAgentRecord {
 #[derive(Default)]
 pub struct WasmAgentRegistry {
     tools: ToolRegistry,
-    grants: Vec<String>,
-    model: Option<(Model, HostModel, CompactionPolicy)>,
+    model: Option<(Model, Arc<dyn ModelProvider>, CompactionPolicy)>,
+}
+
+impl WasmAgentRegistry {
+    /// Installs a production provider without translating its admitted requests,
+    /// token counts, content custody or streamed events through JavaScript.
+    pub fn bind_model(
+        &mut self,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        compaction: CompactionPolicy,
+    ) -> Result<()> {
+        model.validate()?;
+        self.model = Some((model, provider, compaction));
+        Ok(())
+    }
 }
 
 #[wasm_bindgen]
@@ -188,7 +202,6 @@ impl WasmAgentRegistry {
         project: Function,
     ) -> std::result::Result<(), JsValue> {
         let definition: ToolDefinition = from_js(definition)?;
-        let grant = format!("tool:call:{}", definition.name);
         let host = Arc::new(HostTool {
             execute,
             reconcile,
@@ -209,7 +222,6 @@ impl WasmAgentRegistry {
                 None,
             )
             .map_err(js_error)?;
-        self.grants.push(grant);
         Ok(())
     }
 
@@ -243,18 +255,18 @@ impl WasmAgentRegistry {
     ) -> std::result::Result<(), JsValue> {
         let model: Model = from_js(model)?;
         model.validate().map_err(js_error)?;
-        self.model = Some((
+        self.bind_model(
             model,
-            HostModel {
+            Arc::new(HostModel {
                 generate,
                 reconcile,
                 capacity,
                 count_tokens,
                 content: None,
-            },
+            }),
             from_js(compaction)?,
-        ));
-        Ok(())
+        )
+        .map_err(js_error)
     }
 }
 

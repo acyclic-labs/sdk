@@ -285,15 +285,18 @@ impl Providers {
                 .map_err(|_| js_error(Error::Invalid("model step limit exceeds u32".into())))?,
             history_turns: HISTORY_TURNS,
         };
-        let turns = Arc::new(FilesystemTurnHost::new(
-            Arc::clone(&self.stream),
-            Arc::clone(&self.filesystem),
-            owner.issuer.clone(),
-            admission.clone(),
-            Arc::new(Self::executors(options, registry)?),
-            turn_limits,
-            options.preset.approval_policy.clone(),
-        ));
+        let turns = Arc::new(
+            FilesystemTurnHost::new(
+                Arc::clone(&self.stream),
+                Arc::clone(&self.filesystem),
+                owner.issuer.clone(),
+                admission.clone(),
+                Arc::new(Self::executors(options, registry)?),
+                turn_limits,
+                options.preset.approval_policy.clone(),
+            )
+            .with_prompt(options.preset.prompt.as_deref()),
+        );
         AgentHandler::new(
             actor_store(&self.stream).map_err(agent_error)?,
             ExecutorDriver::new(turns),
@@ -317,11 +320,14 @@ impl Providers {
             .model
             .clone()
             .ok_or_else(|| js_error(Error::Invalid("no model is configured".into())))?;
+        let mut tools = options.preset.tools(false, Vec::new()).map_err(js_error)?;
+        tools.extend(registry.tools.clone()).map_err(js_error)?;
+        let grants = options.preset.tool_grants(&tools).map_err(js_error)?;
         Ok(options.preset.executors(
-            (model, Arc::new(provider)),
-            registry.tools.clone(),
+            (model, provider),
+            tools,
             (options.limits, compaction),
-            Arc::new(Grants(registry.grants.clone())),
+            Arc::new(Grants(grants)),
         ))
     }
 

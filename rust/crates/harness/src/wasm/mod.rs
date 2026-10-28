@@ -37,7 +37,7 @@ mod content;
 use content::*;
 mod reader;
 #[cfg(feature = "browser")]
-pub use agents::WasmAgentProviders;
+pub use agents::{WasmAgentProviders, WasmAgentRegistry};
 pub use reader::BrowserContentReader;
 mod context;
 use context::*;

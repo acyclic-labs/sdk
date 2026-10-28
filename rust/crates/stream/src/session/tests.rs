@@ -356,3 +356,77 @@ async fn malformed_latest_value_closes_only_its_own_channel() -> TestResult {
     assert!(matches!(received.body, Some(Body::Data(_))));
     Ok(())
 }
+
+#[tokio::test]
+async fn host_shutdown_closes_all_channels_without_data_credit() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "events", Bytes::from_static(b"seed")).await?;
+    let (sender, receiver) = mpsc::unbounded();
+    sender.unbounded_send(Ok(hello(1_000_000, 100)))?;
+    sender.unbounded_send(Ok(interest(
+        1,
+        vec![
+            subscribe(1, "events", 0, false),
+            subscribe(3, "events", 1, false),
+        ],
+    )))?;
+    let (owner, stopped) = oneshot::channel::<()>();
+    let mut output = serve_on_with_products(
+        provider,
+        testing::authority(),
+        None,
+        None,
+        "node".into(),
+        Limits::default(),
+        receiver.boxed(),
+        Arc::new(crate::runtime::PlatformExecutor),
+        Some(Box::pin(async {
+            let _ = stopped.await;
+        })),
+    )?;
+    assert!(matches!(
+        next(&mut output).await?.body,
+        Some(Body::Welcome(_))
+    ));
+    let mut opened = 0;
+    while opened != 2 {
+        if matches!(next(&mut output).await?.body, Some(Body::Opened(_))) {
+            opened += 1;
+        }
+    }
+    let denied = [5, 7].map(|id| {
+        let mut subscription = subscribe(id, "events", 0, false);
+        subscription.credential = 9;
+        subscription
+    });
+    sender.unbounded_send(Ok(interest(2, denied.into())))?;
+    loop {
+        let frame = next(&mut output).await?;
+        if let Some(Body::Closed(close)) = frame.body {
+            assert_eq!(frame.channel_id, 5);
+            assert_eq!(close.code, "forbidden");
+            break;
+        }
+    }
+    drop(owner);
+    let mut closed = BTreeSet::new();
+    while let Some(frame) = output.next().await.transpose()? {
+        match frame.body {
+            Some(Body::Closed(close)) => {
+                assert_eq!(
+                    close.code,
+                    if frame.channel_id == 7 {
+                        "forbidden"
+                    } else {
+                        StreamError::Unavailable.code()
+                    }
+                );
+                assert!(closed.insert((frame.channel_id, frame.generation)));
+            }
+            Some(Body::InterestApplied(_)) => {}
+            other => panic!("unexpected frame after host shutdown: {other:?}"),
+        }
+    }
+    assert_eq!(closed, BTreeSet::from([(1, 1), (3, 1), (7, 1)]));
+    Ok(())
+}

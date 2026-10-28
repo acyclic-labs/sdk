@@ -50,7 +50,7 @@ mod wasm;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use wasm::BrowserContentReader;
 #[cfg(all(feature = "browser", target_arch = "wasm32"))]
-pub use wasm::WasmAgentProviders;
+pub use wasm::{WasmAgentProviders, WasmAgentRegistry};
 
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local::{LocalHarness, LocalHarnessConfig};

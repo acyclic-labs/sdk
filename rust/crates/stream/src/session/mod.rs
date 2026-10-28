@@ -158,6 +158,37 @@ struct Session<P: ?Sized> {
     head_visits: usize,
 }
 
+enum ServingSession<P: ?Sized> {
+    Active(Session<P>, Option<crate::BoxProviderFuture<'static, ()>>),
+    Closing(
+        std::collections::btree_map::IntoIter<u64, Channel>,
+        std::collections::vec_deque::IntoIter<wire::SessionFrame>,
+    ),
+}
+
+impl<P: ?Sized> ServingSession<P> {
+    fn close(
+        mut channels: std::collections::btree_map::IntoIter<u64, Channel>,
+        mut controls: std::collections::vec_deque::IntoIter<wire::SessionFrame>,
+    ) -> Option<(wire::SessionFrame, Self)> {
+        if let Some(frame) = controls.next() {
+            return Some((frame, Self::Closing(channels, controls)));
+        }
+        let (id, channel) = channels.next()?;
+        Some((
+            frame(
+                id,
+                channel.generation,
+                Body::Closed(wire::SessionClosed {
+                    code: StreamError::Unavailable.code().into(),
+                    message: String::new(),
+                }),
+            ),
+            Self::Closing(channels, controls),
+        ))
+    }
+}
+
 /// Opens one bidirectional node session over the canonical provider.
 /// The host binds authenticated public trust, audience and presenting account.
 pub fn serve<P: StreamProvider + ?Sized>(
@@ -217,11 +248,13 @@ fn serve_on_with_resources<P: StreamProvider + ?Sized>(
     executor: Arc<dyn crate::runtime::Executor>,
 ) -> Result<transport::Responses, StreamError> {
     serve_on_with_products(
-        provider, authority, resources, None, node, limits, incoming, executor,
+        provider, authority, resources, None, node, limits, incoming, executor, None,
     )
 }
 
 /// Opens follows and canonical Actors calls on one authenticated session.
+/// Completing `shutdown` drops producers and closes admitted channels without
+/// data credit. Its owner must complete it when the serving runtime stops.
 pub fn serve_with_products<P: StreamProvider + ?Sized>(
     provider: Arc<P>,
     authority: Arc<Authority>,
@@ -230,6 +263,7 @@ pub fn serve_with_products<P: StreamProvider + ?Sized>(
     node: String,
     limits: Limits,
     incoming: transport::Responses,
+    shutdown: Option<crate::BoxProviderFuture<'static, ()>>,
 ) -> Result<transport::Responses, StreamError> {
     serve_on_with_products(
         provider,
@@ -240,6 +274,7 @@ pub fn serve_with_products<P: StreamProvider + ?Sized>(
         limits,
         incoming,
         Arc::new(crate::runtime::PlatformExecutor),
+        shutdown,
     )
 }
 
@@ -252,6 +287,7 @@ fn serve_on_with_products<P: StreamProvider + ?Sized>(
     limits: Limits,
     incoming: transport::Responses,
     executor: Arc<dyn crate::runtime::Executor>,
+    shutdown: Option<crate::BoxProviderFuture<'static, ()>>,
 ) -> Result<transport::Responses, StreamError> {
     if node.is_empty()
         || limits.channels == 0
@@ -293,10 +329,41 @@ fn serve_on_with_products<P: StreamProvider + ?Sized>(
         head_visits: 0,
     };
     Ok(Box::pin(stream::try_unfold(
-        session,
-        |mut session| async move {
-            let frame = session.next_frame().await?;
-            Ok(frame.map(|frame| (frame, session)))
+        ServingSession::Active(session, shutdown),
+        |state| async move {
+            let (mut session, mut shutdown) = match state {
+                ServingSession::Active(session, shutdown) => (session, shutdown),
+                ServingSession::Closing(channels, controls) => {
+                    return Ok(ServingSession::close(channels, controls));
+                }
+            };
+            let frame = if let Some(stopped) = shutdown.as_mut() {
+                let next = match future::select(stopped, Box::pin(session.next_frame())).await {
+                    future::Either::Right((frame, _)) => Some(frame?),
+                    future::Either::Left(((), pending)) => {
+                        drop(pending);
+                        None
+                    }
+                };
+                match next {
+                    Some(frame) => frame,
+                    None => {
+                        // Drop input, calls and follows before publishing closure.
+                        // Preserve terminal responses for channels already removed.
+                        // Reuse both collections without allocating a shutdown queue.
+                        session
+                            .controls
+                            .retain(|frame| matches!(frame.body, Some(Body::Closed(_))));
+                        return Ok(ServingSession::close(
+                            session.channels.into_iter(),
+                            session.controls.into_iter(),
+                        ));
+                    }
+                }
+            } else {
+                session.next_frame().await?
+            };
+            Ok(frame.map(|frame| (frame, ServingSession::Active(session, shutdown))))
         },
     )))
 }

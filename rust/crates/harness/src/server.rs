@@ -13,7 +13,9 @@ use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
 use acyclic_stream::BoxProviderFuture;
 use std::sync::Arc;
 
+mod actors;
 mod tls;
+pub use actors::{Actors, Execution, Runtime};
 
 /// This server's identity, announced in every [`Endpoint`]: a client or a
 /// test checks that an endpoint is served by this entry point.
@@ -99,6 +101,7 @@ pub struct Hosted<P: AuthorityProvider + 'static, O: 'static, L> {
     server: Arc<crate::hosting::Server<P, O>>,
     clock: Arc<dyn acyclic_stream::UnixMillisClock>,
     resources: Option<Arc<dyn acyclic_stream::session::ResourceProvider>>,
+    completion: Option<BoxProviderFuture<'static, Result<()>>>,
     _owner: L,
 }
 
@@ -122,8 +125,20 @@ where
             server,
             clock,
             resources,
+            completion: None,
             _owner: owner,
         }
+    }
+
+    /// End the endpoint when its runtime stops. Dropping the producer must
+    /// complete this future with an error; clients then see session closure.
+    #[must_use]
+    pub fn with_completion(
+        mut self,
+        completion: impl Future<Output = Result<()>> + Send + 'static,
+    ) -> Self {
+        self.completion = Some(Box::pin(completion));
+        self
     }
 }
 
@@ -176,20 +191,37 @@ pub async fn serve<C: Composition>(
             "plain HTTP serves only a loopback address; give a TLS identity".into(),
         ));
     }
-    let host = config.harness.open(&config.verifier).await?;
+    let mut host = config.harness.open(&config.verifier).await?;
     let server = &host.server;
     let bound = server.bound();
     let authority = config.verifier.session(&Custody {
         issuer: bound.issuer(),
         clock: &host.clock,
     })?;
+    let (lifetime, ended) = tokio::sync::watch::channel(());
+    let completion = host.completion.take();
+    let (completed, mut result) = tokio::sync::oneshot::channel();
+    let shutdown = async move {
+        let runtime = async move {
+            match completion {
+                Some(completion) => completion.await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            _ = shutdown => {},
+            outcome = runtime => { let _ = completed.send(outcome); },
+        }
+        drop(lifetime);
+    };
     let service = acyclic_stream::session::Service::new(
         bound.agents().provider().clone(),
         authority,
         "self-hosted".into(),
         acyclic_stream::session::Limits::default(),
     )
-    .with_products(host.resources.clone(), server.clone());
+    .with_products(host.resources.clone(), server.clone())
+    .with_lifetime(ended);
     let tls = match config.tls {
         Some(identity) => {
             if !identity.url.starts_with("https://") {
@@ -221,22 +253,26 @@ pub async fn serve<C: Composition>(
     use acyclic_stream::wire::stream_session_service_server::StreamSessionServiceServer;
     let router =
         tonic::transport::Server::builder().add_service(StreamSessionServiceServer::new(service));
-    let result = match tls {
-        Some((tls, _)) => {
-            router
-                .serve_with_incoming_shutdown(tls::incoming(listener, tls), shutdown)
-                .await
+    let serving = async {
+        match tls {
+            Some((tls, _)) => {
+                router
+                    .serve_with_incoming_shutdown(tls::incoming(listener, tls), shutdown)
+                    .await
+            }
+            None => {
+                router
+                    .serve_with_incoming_shutdown(
+                        tonic::transport::server::TcpIncoming::from(listener),
+                        shutdown,
+                    )
+                    .await
+            }
         }
-        None => {
-            router
-                .serve_with_incoming_shutdown(
-                    tonic::transport::server::TcpIncoming::from(listener),
-                    shutdown,
-                )
-                .await
-        }
-    }
-    .map_err(failed);
+        .map_err(failed)
+    };
+    let serving = serving.await;
+    let result = result.try_recv().unwrap_or(serving);
     drop(host);
     result
 }

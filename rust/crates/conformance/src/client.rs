@@ -1,11 +1,22 @@
 //! Endpoint-independent cases over the shipping AgentClient and Streams pool.
 //!
 //! The caller provisions a disposable, authorized fixture through its real host.
-//! This suite neither replaces the endpoint with memory nor creates an agent by
-//! writing records around AgentHost. It checks observation, not turn execution.
+//! The endpoint vectors execute a model task through the public client. The
+//! fixture vectors observe host-published records at their original committed
+//! cuts. Neither creates an agent by writing records around AgentHost.
 
 pub mod controls;
+pub mod endpoint;
 pub mod tool_output;
+
+/// Original typed endpoint failure retained by a conformance refusal.
+#[derive(Debug)]
+pub enum Cause {
+    /// A session or provider stopped making progress.
+    Stream(acyclic_stream::StreamError),
+    /// Opening the selected endpoint failed.
+    Connect(acyclic_stream::grpc::ConnectError),
+}
 
 use acyclic_harness_client::{
     AgentClient, AgentClientError, AgentEvent, AgentPath, AgentRecord as _, AgentSelection,
@@ -39,6 +50,9 @@ pub struct Failure {
     pub case: &'static str,
     /// Original provider diagnostic or failed invariant.
     pub detail: String,
+    /// Original typed transport/provider cause, when the vector observed one.
+    #[serde(skip)]
+    pub cause: Option<Cause>,
 }
 
 impl std::fmt::Display for Failure {
@@ -47,16 +61,32 @@ impl std::fmt::Display for Failure {
     }
 }
 
-impl std::error::Error for Failure {}
+impl std::error::Error for Failure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.cause.as_ref().map(|cause| match cause {
+            Cause::Stream(error) => error as &dyn std::error::Error,
+            Cause::Connect(error) => error as &dyn std::error::Error,
+        })
+    }
+}
 
 fn failure(case: &'static str, error: impl std::fmt::Display) -> Failure {
     Failure {
         case,
         detail: error.to_string(),
+        cause: None,
     }
 }
 
-/// Completed observation cases only; not a credit, scale, outbox or OS proof.
+fn stream_failure(case: &'static str, error: acyclic_stream::StreamError) -> Failure {
+    Failure {
+        case,
+        detail: error.to_string(),
+        cause: Some(Cause::Stream(error)),
+    }
+}
+
+/// Completed cases only; not a credit, scale, outbox or OS proof.
 #[derive(Debug, Serialize)]
 pub struct Report {
     /// Nonempty stable case identifiers, emitted only after their oracles pass.

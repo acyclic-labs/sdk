@@ -22,6 +22,13 @@ export interface EventHostAccess {
   policy(principal: Uint8Array, command: AgentCommand): boolean | Promise<boolean>;
 }
 
+/** One canonical session cursor. Pulls carry credit in the shared Rust engine;
+ * closing aborts the corresponding input pull, calls and follows. */
+export interface HostedSession {
+  next(): Promise<Uint8Array | null>;
+  close(): void;
+}
+
 /** Shared one-actor host with event-owned delivery and durable recovery. */
 export class EventAgentHost {
   private readonly host: WasmAgentServer;
@@ -131,22 +138,30 @@ export class EventAgentHost {
   }
 
   private async drain(generation: number): Promise<void> {
-    const identity = await this.command(async () => {
-      const pending = this.identity();
-      return pending ? this.resume(pending) : undefined;
-    });
-    let alarm: bigint | undefined;
-    if (identity) {
-      alarm = await this.host.drain(identity.path);
+    try {
+      const identity = await this.command(async () => {
+        const pending = this.identity();
+        return pending ? this.resume(pending) : undefined;
+      });
+      let alarm: bigint | undefined;
+      if (identity) {
+        alarm = await this.host.drain(identity.path);
+      }
+      await this.command(async () => {
+        // A later admitted control already owns a durable recovery alarm. An
+        // earlier delivery must not erase it after observing an older input cut.
+        if (this.events.generation !== generation) return;
+        if (alarm === undefined) await this.storage.alarm(undefined);
+        else await this.storage.alarm(Number(alarm));
+      });
+    } catch (error) {
+      this.host.close();
+      throw error;
     }
-    await this.command(async () => {
-      // A later admitted control already owns a durable recovery alarm. An
-      // earlier delivery must not erase it after observing an older input cut.
-      if (this.events.generation !== generation) return;
-      if (alarm === undefined) await this.storage.alarm(undefined);
-      else await this.storage.alarm(Number(alarm));
-    });
   }
+
+  /** End pending sessions and commands when this platform owner is disposed. */
+  close(): void { this.host.close(); }
 
   create(intent: string, brief?: string): Promise<string> {
     const path = this.host.validateCreate(intent, brief);
@@ -179,6 +194,20 @@ export class EventAgentHost {
     const identity = this.identity();
     if (identity?.stage !== "ready") return [];
     return this.host.read(identity.path, stream, from, limit);
+  }
+
+  /** Expose the public session protocol through the platform's duplex binding.
+   * Input returns complete protobuf frames; null is producer EOF. The binding
+   * must cancel its pending read when signal aborts and close on disconnect. */
+  async session(next: (signal: AbortSignal) => Promise<Uint8Array | null>): Promise<HostedSession> {
+    await this.command(async () => {
+      const identity = this.identity();
+      if (identity?.stage !== "ready") {
+        throw new Error("STEP session-open failed; recovery: complete the original actor placement before opening a session");
+      }
+      await this.resume(identity);
+    });
+    return this.host.session(next);
   }
 
   private path(): string {
