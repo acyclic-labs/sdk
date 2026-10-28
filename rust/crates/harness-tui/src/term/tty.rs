@@ -6,7 +6,7 @@ use std::time::Instant;
 use rustix::fs::{OFlags, fcntl_getfl, fcntl_setfl};
 use rustix::termios::{OptionalActions, Termios, tcgetattr, tcsetattr};
 
-use super::{PROBE_TIMEOUT, ProbeIo};
+use super::PROBE_TIMEOUT;
 
 /// Exclusive controlling-terminal connection with raw mode and descriptor flags
 /// restored by the owning lifecycle before releasing ownership. DEC
@@ -230,8 +230,8 @@ impl NonblockingWrite for RawTty {
     }
 }
 
-impl ProbeIo for RawTty {
-    fn send(&mut self, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
+impl RawTty {
+    pub(crate) fn send(&mut self, mut bytes: &[u8], deadline: Instant) -> io::Result<()> {
         while !bytes.is_empty() {
             let count = self.write_until(bytes, deadline)?;
             if count == 0 {
@@ -241,8 +241,10 @@ impl ProbeIo for RawTty {
         }
         self.flush()
     }
+}
 
-    fn receive(&mut self, bytes: &mut [u8], _deadline: Instant) -> io::Result<usize> {
+impl Read for RawTty {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         // The lifecycle takes its state lock around this call. Never sleep
         // while holding it: a pending input read must not starve frame output.
         self.file.read(bytes)
