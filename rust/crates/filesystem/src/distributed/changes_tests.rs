@@ -413,7 +413,10 @@ fn bounded_index_prefix_never_authorizes_an_extension_outside_a_range() -> TestR
     }
     let path = NamespacePath::new(components, config.limits)?;
     let key = crate::publication_changes::entry::key(&path, config);
-    assert_eq!(key.slice().len(), acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES);
+    assert_eq!(
+        key.slice().len(),
+        acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES
+    );
     let full = path
         .components()
         .iter()
@@ -468,7 +471,7 @@ fn change_chunks_preserve_every_entry_and_obey_both_wire_bounds() -> TestResult 
                 record.value.len() + record.headers.payload_bytes()
                     <= acyclic_stream::MAX_RECORD_BYTES
             );
-            assert!(record.headers.keys().len() <= acyclic_stream::MAX_RECORD_KEYS);
+            assert!(record.headers.keys().len() <= super::changes::CHANGES_PAGE_ENTRIES);
             let chunk = acyclic_stream::decode_changes(record.value.as_ref())?;
             assert_eq!(chunk.context.as_ref(), context);
             decoded.extend(chunk.entries);
