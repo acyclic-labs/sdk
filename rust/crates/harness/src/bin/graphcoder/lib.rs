@@ -8,6 +8,7 @@ acyclic_test_support::counting_allocator!();
 
 mod args;
 mod headless;
+mod lifecycle;
 mod view;
 
 use acyclic_harness::{
@@ -21,6 +22,7 @@ use args::{Args, Command, InputFormat};
 use clap::Parser;
 use futures::{FutureExt as _, future::LocalBoxFuture};
 use std::{future::Future, process::ExitCode, sync::Arc};
+use tracing_subscriber::util::SubscriberInitExt as _;
 
 // Construct each phase on its own call frame. Boxing an already constructed
 // future in the awaiting frame still retains its construction scratch space
@@ -35,19 +37,31 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
 /// self-deployed and a managed server share.
 pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
     let args = Args::parse();
-    // Harness diagnostics (agent turn failures among them) go to stderr when
-    // `GRAPHCODER_LOG` names a filter, e.g. `warn`.
-    if let Ok(filter) = std::env::var("GRAPHCODER_LOG") {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
-            .with_writer(std::io::stderr)
-            .try_init();
+    let report = acyclic_native_runtime::obs::WaitReport::default();
+    if let Err(error) =
+        lifecycle::subscriber(&report, std::env::var("GRAPHCODER_LOG").ok()).try_init()
+    {
+        eprintln!("graphcoder: diagnostics initialization failed: {error}");
+        return ExitCode::FAILURE;
     }
+    let graceful = args.host_workspace || matches!(args.command, Some(Command::Serve(_)));
     let result = acyclic_native_runtime::coordination_runtime()
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
         .and_then(|runtime| {
             // Keep Tokio's entry frame independent of the size of the CLI future.
-            let result = runtime.block_on(phase(|| run(args, seams)));
+            let result = runtime.block_on(phase(|| async {
+                let shutdown = lifecycle::shutdown();
+                let operation = phase(|| run(args, seams, shutdown.clone()));
+                let (result, _) = lifecycle::observe(
+                    &report,
+                    &mut std::io::stderr(),
+                    shutdown,
+                    graceful,
+                    operation,
+                )
+                .await;
+                result
+            }));
             runtime.shutdown_background();
             result
         });
@@ -118,6 +132,7 @@ fn configure(
 async fn run(
     args: Args,
     seams: impl FnOnce(ServerConfig) -> ServerConfig,
+    shutdown: lifecycle::Shutdown,
 ) -> Result<u8, Box<dyn std::error::Error>> {
     // A server is this machine's harness alone: refuse every client mode
     // before any of them starts.
@@ -141,8 +156,9 @@ async fn run(
         );
         phase(|| {
             acyclic_harness::local::host_files::serve_until(local, async {
-                workspace_shutdown()
+                shutdown
                     .await
+                    .map(|_| ())
                     .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
             })
         })
@@ -190,7 +206,7 @@ async fn run(
                     let _ = output.flush();
                 },
                 async {
-                    let _ = workspace_shutdown().await;
+                    let _ = shutdown.await;
                 },
             )
         })
@@ -223,20 +239,4 @@ async fn drive(
     }
     drop(output);
     phase(|| view::run(conversation, args.inline)).await
-}
-
-// Drop the workspace owner while the runtime is still available so its native
-// mounts retire before process exit. The library does not install signal handlers.
-async fn workspace_shutdown() -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => result,
-            _ = terminate.recv() => Ok(()),
-        }
-    }
-    #[cfg(not(unix))]
-    tokio::signal::ctrl_c().await
 }

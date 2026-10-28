@@ -1,9 +1,5 @@
 use super::*;
 
-pub(super) use crate::native_mount::callback_errno;
-
-pub(super) use crate::native_mount::shared::outcome::stops_mount as fatal;
-
 pub(super) fn context(address: usize) -> Result<&'static DarwinMountContext, i32> {
     if address == 0 {
         return Err(libc::ESTALE);

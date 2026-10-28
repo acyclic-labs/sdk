@@ -5,8 +5,10 @@ use tracing::{Dispatch, Span};
 
 mod scoped;
 pub use scoped::Scoped;
+mod wait_report;
 mod waiting;
 pub(crate) use tracing::field::Empty;
+pub use wait_report::WaitReport;
 pub use waiting::waiting;
 
 macro_rules! span {
