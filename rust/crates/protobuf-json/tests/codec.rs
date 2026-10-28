@@ -1,5 +1,5 @@
 //! Independent JSON scalar expectations over the actual protobuf descriptor.
-use acyclic_protobuf_json::{Error, decode, encode};
+use acyclic_protobuf_json::{Error, decode, encode, encode_to_writer};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 use prost::Message;
@@ -56,5 +56,61 @@ fn bytes_use_base64_and_each_refusal_stage_stays_distinct() -> Result<(), TestCa
         Some(Error::Trailing)
     );
     assert_eq!(encode(descriptor, &[128]).err(), Some(Error::Wire));
+    Ok(())
+}
+
+struct BoundedJson {
+    bytes: Vec<u8>,
+    maximum: usize,
+}
+
+impl std::io::Write for BoundedJson {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        // Same all-or-refuse admission as Inference's original BoundedJson.
+        if bytes.len() > self.maximum.saturating_sub(self.bytes.len()) {
+            return Err(std::io::Error::other("JSON ceiling"));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn caller_writer_keeps_its_ceiling_and_wire_refuses_before_output() -> Result<(), TestCaseError> {
+    let descriptor = descriptor()?;
+    let wire = [58, 2, 0, 255];
+    let expected = br#"{"stringValue":"AP8="}"#;
+    let mut output = BoundedJson {
+        bytes: Vec::new(),
+        maximum: expected.len(),
+    };
+    encode_to_writer(descriptor.clone(), &wire, &mut output)
+        .map_err(|error| TestCaseError::fail(format!("{error:?}")))?;
+    assert_eq!(output.bytes, expected);
+
+    let mut short = BoundedJson {
+        bytes: Vec::new(),
+        maximum: expected.len() - 1,
+    };
+    assert_eq!(
+        encode_to_writer(descriptor.clone(), &wire, &mut short),
+        Err(Error::Json)
+    );
+    assert!(short.bytes.len() <= short.maximum);
+    assert_eq!(short.bytes, expected[..short.bytes.len()]);
+
+    let mut untouched = BoundedJson {
+        bytes: vec![42],
+        maximum: 1,
+    };
+    assert_eq!(
+        encode_to_writer(descriptor, &[128], &mut untouched),
+        Err(Error::Wire)
+    );
+    assert_eq!(untouched.bytes, [42]);
     Ok(())
 }
