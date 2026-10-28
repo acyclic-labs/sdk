@@ -40,6 +40,22 @@ pub(crate) async fn open(config: LocalHarnessConfig) -> Result<LocalHarness> {
 impl Opening {
     async fn configure(config: LocalHarnessConfig) -> Result<Self> {
         validate_configuration(&config)?;
+        // Settings resolve once, before the model and approvers they select.
+        #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+        let (config, settings_configuration) = {
+            let mut config = config;
+            if config.model.is_none() && config.models.is_none() {
+                (config, None)
+            } else {
+                let injected = config.settings.is_some();
+                let settings = settings::configuration(
+                    &config.project,
+                    config.settings.take(),
+                    config.hermetic,
+                )?;
+                (config.resolve(&settings, injected)?, Some(settings))
+            }
+        };
         if config.approval_issuer.is_some() {
             return Err(Error::Invalid(
                 "approval_authority belongs to an embedded runtime binding".into(),
@@ -71,16 +87,6 @@ impl Opening {
         }
         let preset = config.preset_value();
         let tools = configure_tools(&preset, &mut config)?;
-        #[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-        let settings_configuration = if passive {
-            None
-        } else {
-            Some(settings::configuration(
-                &config.project,
-                config.settings.take(),
-                config.hermetic,
-            )?)
-        };
         #[cfg(any(feature = "mcp-stdio", feature = "mcp-http"))]
         let installation = match &settings_configuration {
             Some(settings) => {

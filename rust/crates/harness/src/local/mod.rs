@@ -59,6 +59,8 @@ pub mod web;
 #[cfg(any(test, feature = "native-execution"))]
 mod workspace;
 pub use agents::{AgentFailure, LocalAgents, LocalTurns};
+#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+pub use config::ModelResolver;
 pub use config::LocalHarnessConfig;
 use config::LocalProject;
 pub use observer::{Event, Observer};

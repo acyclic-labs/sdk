@@ -3263,7 +3263,6 @@ dependencies = [
  "acyclic-test-support",
  "axum",
  "clap",
- "dirs",
  "futures",
  "serde_json",
  "tempfile",
