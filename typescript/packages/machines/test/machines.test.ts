@@ -317,14 +317,17 @@ describe("Machines simulation", () => {
   test("Rust transport validators reject coerced JavaScript values", () => {
     const validateTransport = validateTransportOptions as unknown as (token: unknown, maximum: unknown) => void;
     const validatePage = (value: unknown) => normalizePageSize(value as number, 256);
-    for (const maximum of ["1", true, new Number(1), 1n, Symbol("maximum"), null, undefined]) {
+    for (const maximum of ["1", true, new Number(1), 1n, Symbol("maximum"), null]) {
       expect(() => validateTransport("x", maximum)).toThrow();
     }
     for (const token of [null, true, new String("x"), 1n, Symbol("token"), undefined]) {
-      expect(() => validateTransport(token, 1)).toThrow();
+      for (const maximum of [undefined, 1]) {
+        expect(() => validateTransport(token, maximum)).toThrow();
+      }
     }
     expect(() => validateTransport("\uFEFF", 1)).toThrow();
     expect(() => validateTransport(" \uFEFF ", 1)).toThrow();
+    validateTransport("x", undefined);
     validateTransport("x", 1);
     for (const pageSize of ["1", true, new Number(1), 1n, Symbol("page-size"), null, undefined, 0, Number.MAX_SAFE_INTEGER + 1, 1.5]) {
       expect(() => validatePage(pageSize)).toThrow();
