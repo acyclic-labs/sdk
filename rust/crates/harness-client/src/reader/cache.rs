@@ -364,9 +364,40 @@ impl RecordCache {
 
     /// Mark displayed entries most recently used.
     pub fn touch_record(&mut self, stream: &StreamPath, sequence: u64) {
-        let key = self.resolve(stream, sequence);
-        self.touch(&key);
-        self.touch_stream(stream);
+        self.touch_range(stream, sequence, sequence.saturating_add(1));
+    }
+
+    /// Mark every cached record in `[from, to)` of `stream` displayed, gaps
+    /// included, with the facts of each stream it resolves through: an
+    /// inherited prefix is displayed through its fork sources, so their
+    /// facts (and the records they own) are in use too. The walk visits only
+    /// cached entries, so an unbounded window costs what is cached.
+    pub fn touch_range(&mut self, stream: &StreamPath, from: u64, to: u64) {
+        let mut keys = Vec::new();
+        let mut path = stream.clone();
+        let mut end = to;
+        for _ in 0..MAX_ALIAS_DEPTH {
+            self.touch_stream(&path);
+            let fork = self.fork(&path).cloned();
+            let own = fork.as_ref().map_or(from, |(_, at)| from.max(*at));
+            if own < end {
+                keys.extend(
+                    self.entries
+                        .range(Key::Record(path.clone(), own)..Key::Record(path.clone(), end))
+                        .map(|(key, _)| key.clone()),
+                );
+            }
+            match fork {
+                Some((source, at)) if from < at && from < end => {
+                    end = end.min(at);
+                    path = source;
+                }
+                _ => break,
+            }
+        }
+        for key in keys {
+            self.touch(&key);
+        }
     }
 
     /// Mark a displayed listing page most recently used.
@@ -818,6 +849,31 @@ mod tests {
         assert_eq!(cache.streams(), 4);
         assert_eq!(cache.tail(&path(3)), Some(1));
         assert_eq!(cache.tail(&path(4)), Some(1));
+    }
+
+    /// A displayed window marks cached records past a gap and the facts of
+    /// the fork source it reads through. Control: stopping at the first gap
+    /// left record 3 evictable, and touching only the child's facts let a new
+    /// stream evict the source, forgetting the inherited record on screen.
+    #[test]
+    fn displayed_ranges_mark_records_past_gaps_and_fork_sources() {
+        let source = StreamPath::new("test/source").unwrap();
+        let child = StreamPath::new("test/child").unwrap();
+        let mut cache = RecordCache::new(64 * 1024, 2);
+        cache.observe_tail(&source, 2);
+        cache.set_fork(&child, source.clone(), 2);
+        cache.insert_record(&source, 0, Bytes::from_static(b"a"), None);
+        cache.insert_record(&child, 3, Bytes::from_static(b"c"), None);
+        let mark = cache.begin_frame();
+        cache.touch_range(&child, 0, 4);
+        let large = StreamPath::new("test/z").unwrap();
+        let cached =
+            cache.insert_record(&large, 0, Bytes::from(vec![0; 64 * 1024 - 300]), Some(mark));
+        assert!(!cached);
+        assert!(cache.record(&large, 0).is_some());
+        cache.observe_tail(&StreamPath::new("test/other").unwrap(), 1);
+        assert_eq!(cache.record(&child, 0).unwrap().as_ref(), b"a");
+        assert_eq!(cache.record(&child, 3).unwrap().as_ref(), b"c");
     }
 
     #[test]

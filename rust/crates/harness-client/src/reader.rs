@@ -606,19 +606,11 @@ impl Reader {
         self.demand = demand;
     }
 
-    /// Mark one visible want's present values and facts in use this frame.
-    /// A range is walked only while it is present: its first absent position
-    /// is the read this frame issues, so the walk is bounded by what exists.
+    /// Mark one visible want's cached values and facts in use this frame.
     fn display(&mut self, want: &Want) {
         if let Some((stream, from, to)) = window(&self.cache, want) {
             let stream = stream.clone();
-            self.cache.touch_stream(&stream);
-            for sequence in from..to {
-                if self.cache.record(&stream, sequence).is_none() {
-                    break;
-                }
-                self.cache.touch_record(&stream, sequence);
-            }
+            self.cache.touch_range(&stream, from, to);
         }
         if let Want::Listing {
             parent,
