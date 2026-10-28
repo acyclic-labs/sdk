@@ -81,7 +81,13 @@ pub(crate) fn validate_projected_messages(
         {
             return Err(invalid("current input index is outside context"));
         }
-        if messages.len() > limits.context_messages || context.metadata.len() > limits.attachments {
+        if limits
+            .context_messages
+            .is_some_and(|maximum| messages.len() > maximum.get())
+            || limits
+                .attachments
+                .is_some_and(|maximum| context.metadata.len() > maximum.get())
+        {
             return Err(invalid("context projection exceeded declared bounds"));
         }
         for message in messages {
@@ -180,8 +186,16 @@ pub(crate) fn restrict_context_limits(
     })?;
     Ok(Limits {
         file_bytes: pinned.file_bytes.min(admitted.file_bytes),
-        path_bytes: pinned.path_bytes.min(admitted.path_bytes),
-        attachments: pinned.attachments.min(admitted.attachments),
+        path_bytes: pinned
+            .path_bytes
+            .into_iter()
+            .chain(admitted.path_bytes)
+            .min(),
+        attachments: pinned
+            .attachments
+            .into_iter()
+            .chain(admitted.attachments)
+            .min(),
         render_bytes: pinned.render_bytes.min(admitted.render_bytes),
         model_steps: pinned
             .model_steps
@@ -198,6 +212,10 @@ pub(crate) fn restrict_context_limits(
             .into_iter()
             .chain(admitted.tool_calls_per_step)
             .min(),
-        context_messages: pinned.context_messages.min(admitted.context_messages),
+        context_messages: pinned
+            .context_messages
+            .into_iter()
+            .chain(admitted.context_messages)
+            .min(),
     })
 }

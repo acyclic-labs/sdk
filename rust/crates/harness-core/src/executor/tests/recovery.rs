@@ -29,7 +29,7 @@ async fn fixed_custom_context_uses_its_full_message_allowance() -> Result<()> {
         ToolRegistry::default(),
     )
     .with_limits(Limits {
-        context_messages: 2,
+        context_messages: std::num::NonZeroUsize::new(2),
         ..Limits::default()
     });
     let input = TurnInput {

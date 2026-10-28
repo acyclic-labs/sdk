@@ -152,8 +152,14 @@ impl RuntimeScope {
         };
         grants.is_subset_of(&self.grants)
             && limits.file_bytes <= self.limits.file_bytes
-            && limits.path_bytes <= self.limits.path_bytes
-            && limits.attachments <= self.limits.attachments
+            && narrows(
+                self.limits.path_bytes.map(std::num::NonZeroUsize::get),
+                limits.path_bytes.map(std::num::NonZeroUsize::get),
+            )
+            && narrows(
+                self.limits.attachments.map(std::num::NonZeroUsize::get),
+                limits.attachments.map(std::num::NonZeroUsize::get),
+            )
             && limits.render_bytes <= self.limits.render_bytes
             && narrows(
                 self.limits.model_steps.map(std::num::NonZeroUsize::get),
@@ -173,7 +179,12 @@ impl RuntimeScope {
                     .map(std::num::NonZeroUsize::get),
                 limits.tool_calls_per_step.map(std::num::NonZeroUsize::get),
             )
-            && limits.context_messages <= self.limits.context_messages
+            && narrows(
+                self.limits
+                    .context_messages
+                    .map(std::num::NonZeroUsize::get),
+                limits.context_messages.map(std::num::NonZeroUsize::get),
+            )
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
