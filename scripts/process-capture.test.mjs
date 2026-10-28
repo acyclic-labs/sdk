@@ -66,7 +66,7 @@ test('retains spawn and exit failures with complete stderr', () => isolatedCaptu
 }));
 
 test('retains the configured timeout and partial diagnostics', () => isolatedCapture(() => {
-  const result = captureCommand(process.execPath, ['-e', 'process.stdout.write("started"); setInterval(() => {}, 1000)'], { encoding: 'utf8', timeout: 2000, killSignal: 'SIGKILL' });
+  const result = captureCommand(process.execPath, ['-e', 'require("node:fs").writeSync(1,"started"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0)'], { encoding: 'utf8', timeout: 2000, killSignal: 'SIGKILL' });
   assert.equal(result.error && 'code' in result.error ? result.error.code : undefined, 'ETIMEDOUT');
   assert.equal(result.stdout, 'started');
 }));
