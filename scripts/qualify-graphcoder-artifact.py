@@ -2,6 +2,7 @@
 """Run selected suites from Cargo's exact test artifact without rebuilding."""
 import json
 import hashlib
+import re
 import subprocess
 import sys
 
@@ -62,6 +63,7 @@ if inventory_only:
     names = sorted(tests)
     print(json.dumps({"executable": executable, "discovered": names,
                       "selected": sorted(selected),
+                      "execution": "NOT_RUN", "ignored_status": "NOT_OBSERVED",
                       "filters": {prefix: sum(name.startswith(prefix) for name in tests)
                                   for prefix in prefixes},
                       "case_ids_sha256": hashlib.sha256(
@@ -89,3 +91,10 @@ for names in groups:
     print(result.stderr, end="", file=sys.stderr, flush=True)
     if result.returncode:
         fail("artifact-execute", f"test returned {result.returncode}: {names}")
+    summaries = re.findall(
+        r"^test result: ok\. ([0-9]+) passed; ([0-9]+) failed; "
+        r"([0-9]+) ignored; ([0-9]+) measured; [0-9]+ filtered out;",
+        result.stdout, re.MULTILINE,
+    )
+    if not summaries or tuple(map(int, summaries[-1])) != (len(names), 0, 0, 0):
+        fail("artifact-completion", f"expected {len(names)} passed, no ignored cases: {names}")
