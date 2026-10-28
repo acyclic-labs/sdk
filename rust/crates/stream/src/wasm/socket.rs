@@ -73,11 +73,17 @@ impl Transport for Endpoint {
     ) -> crate::BoxProviderFuture<'_, Result<Responses, StreamError>> {
         Box::pin(async move {
             use base64::Engine as _;
-            let credential = self
+            let mut changed = self
                 .credential
-                .resolve()
+                .watch()
                 .await
                 .map_err(|_| StreamError::AccessDenied)?;
+            let credential = crate::session::transport::credential_event(
+                &mut changed,
+                self.credential.resolve(),
+            )
+            .await?
+            .map_err(|_| StreamError::AccessDenied)?;
             credential
                 .check()
                 .await
@@ -161,24 +167,28 @@ impl Transport for Endpoint {
                 _error: error,
                 _close: close,
             };
-            opened.await.map_err(|_| StreamError::Unavailable)??;
+            crate::session::transport::credential_event(&mut changed, opened)
+                .await?
+                .map_err(|_| StreamError::Unavailable)??;
             guard
                 .credential
                 .check()
                 .await
                 .map_err(|_| StreamError::AccessDenied)?;
             let response = futures::stream::try_unfold(
-                (guard, receiver, source, incoming),
-                |(guard, mut receiver, mut source, incoming)| async move {
+                (guard, receiver, source, incoming, changed),
+                |(guard, mut receiver, mut source, incoming, mut changed)| async move {
                     loop {
-                        let event = {
-                            let received = receiver.recv();
-                            futures::pin_mut!(received);
-                            match select(received, source.next()).await {
-                                Either::Left((frame, _)) => Either::Left(frame),
-                                Either::Right((frame, _)) => Either::Right(frame),
-                            }
-                        };
+                        let event =
+                            crate::session::transport::credential_event(&mut changed, async {
+                                let received = receiver.recv();
+                                futures::pin_mut!(received);
+                                match select(received, source.next()).await {
+                                    Either::Left((frame, _)) => Either::Left(frame),
+                                    Either::Right((frame, _)) => Either::Right(frame),
+                                }
+                            })
+                            .await?;
                         guard
                             .credential
                             .check()
@@ -189,7 +199,10 @@ impl Transport for Endpoint {
                                 // Admission occurs at consumption, before copying
                                 // or decoding the queued browser buffer.
                                 let frame = decode_frame(frame)?;
-                                return Ok(Some((frame, (guard, receiver, source, incoming))));
+                                return Ok(Some((
+                                    frame,
+                                    (guard, receiver, source, incoming, changed),
+                                )));
                             }
                             Either::Left(None) => {
                                 return Err(incoming

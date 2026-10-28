@@ -87,6 +87,19 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
                 );
             }
         }
+        if change == "unchanged" {
+            use futures::FutureExt as _;
+            let mut waiting = Box::pin(response.next());
+            assert!(waiting.as_mut().now_or_never().is_none());
+            cache.invalidate()?;
+            assert!(
+                matches!(
+                    waiting.now_or_never(),
+                    Some(Some(Err(StreamError::AccessDenied)))
+                ),
+                "source notification must retire an idle session without another frame"
+            );
+        }
         *validity.lock().unwrap() = CredentialValidity {
             now_unix_seconds: 1,
             revision: Some([1; 32].into()),
