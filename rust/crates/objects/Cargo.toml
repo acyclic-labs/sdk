@@ -1,5 +1,5 @@
 [package]
-include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "build/**", "vendor/**", "examples/**", "tests/**", "benches/**", "conformance/**", "fixtures/**", "fuzz/corpus/**"]
+include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "conformance/**"]
 name = "acyclic-objects"
 version = "0.2.0"
 edition.workspace = true
@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = true
-description = "Logical Objects contract with gRPC, HTTP, and memory clients"
+description = "Content-addressed blob contract with gRPC, HTTP, memory, local and S3 providers"
 readme = "README.md"
 documentation = "https://docs.rs/acyclic-objects"
 keywords = ["objects", "storage", "grpc"]
@@ -20,8 +20,6 @@ harness = false
 required-features = ["local"]
 
 [features]
-model-checking = ["dep:loom"]
-conformance = ["acyclic-stream/conformance"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 default = ["grpc"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/time"]
@@ -31,7 +29,6 @@ local = ["dep:libc", "tokio/rt"]
 s3 = ["dep:object_store", "dep:reqwest-s3", "dep:rustls", "tokio/rt", "tokio/macros"]
 
 [dependencies]
-loom = { version = "0.7.2", optional = true }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 pin-project-lite = "0.2.16"
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
@@ -44,17 +41,11 @@ hex.workspace = true
 prost.workspace = true
 prost-reflect = { workspace = true, features = ["serde"], optional = true }
 serde_json = { workspace = true, optional = true }
-prost-types = "0.14.4"
-ruzstd.workspace = true
 thiserror.workspace = true
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
-imbl = { version = "=7.0.2", default-features = false }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 libc = { version = "0.2.175", optional = true }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-js-sys.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 object_store = { version = "0.14.2", default-features = false, features = ["aws-base", "reqwest", "ring"], optional = true }
@@ -72,27 +63,13 @@ rustls-platform-verifier = { workspace = true, optional = true }
 wasm-bindgen-test = "=0.3.67"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
-tracing-subscriber.workspace = true
-tracing-chrome.workspace = true
-axum.workspace = true
-parking_lot = "0.12"
-rcgen = "0.14.10"
 tempfile = "3.27.0"
-tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
-tokio-stream.workspace = true
-tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring"] }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
 divan.workspace = true
-serde_json.workspace = true
-acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["conformance"] }
-acyclic-test-support = { path = "../test-support" }
-proptest.workspace = true
-syn = { version = "=3.0.6", features = ["full", "visit"] }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt"] }
 
 [build-dependencies]

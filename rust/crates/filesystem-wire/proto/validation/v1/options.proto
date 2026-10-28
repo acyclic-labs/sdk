@@ -64,10 +64,8 @@ message Product {
   optional string name = 1;
   // percent-components: canonical bytes in uppercase %HH components; only
   // [A-Za-z0-9_~-] are literal. Dot is escaped. Never decode before prefix match.
-  // objects-bucket-key: same encoding, exactly bucket / entire opaque key.
   optional string resource_encoding = 2;
-  // fs folds according to volume policy BEFORE encoding; opaque Objects keys
-  // never normalize, case-fold, collapse slashes or resolve dot segments.
+  // fs folds according to volume policy BEFORE encoding.
   optional bool canonicalize_at_owner = 3;
   repeated string actions = 4;
 }
@@ -90,7 +88,7 @@ option (products) = { name: "fs" resource_encoding: "percent-components" canonic
 option (products) = { name: "identity" resource_encoding: "percent-components" canonicalize_at_owner: false  };
 option (products) = { name: "infer" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "infer/cancel-run" actions: "infer/create-context" actions: "infer/create-evaluation" actions: "infer/follow-run" actions: "infer/generate" actions: "infer/list-models" actions: "infer/read-context" actions: "infer/read-evaluation" actions: "infer/read-retention" actions: "infer/read-run" actions: "infer/release-retention" actions: "infer/renew-retention" actions: "infer/retain-context" actions: "infer/write-context" };
 option (products) = { name: "machines" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "machines/cancel" actions: "machines/checkpoint" actions: "machines/create" actions: "machines/delete" actions: "machines/delete-checkpoint" actions: "machines/exec" actions: "machines/follow" actions: "machines/list" actions: "machines/qualify" actions: "machines/read" actions: "machines/read-checkpoint" actions: "machines/read-output" actions: "machines/read-usage" actions: "machines/recover" actions: "machines/update" };
-option (products) = { name: "objects" resource_encoding: "objects-bucket-key" canonicalize_at_owner: false actions: "objects/create-bucket" actions: "objects/delete" actions: "objects/delete-bucket" actions: "objects/get" actions: "objects/head" actions: "objects/head-bucket" actions: "objects/list" actions: "objects/list-parts" actions: "objects/put" actions: "objects/restore" };
+option (products) = { name: "objects" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "objects/collect" actions: "objects/delete" actions: "objects/get" actions: "objects/head" actions: "objects/list" actions: "objects/put" actions: "objects/retain" };
 option (products) = { name: "streams" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "streams/append" actions: "streams/commit" actions: "streams/create" actions: "streams/follow" actions: "streams/fork" actions: "streams/list" actions: "streams/read" };
 option (products) = { name: "workers" resource_encoding: "percent-components" canonicalize_at_owner: false actions: "workers/deploy" actions: "workers/delete" actions: "workers/invoke" };
 option (extractors) = { name: "actors.checkpoint" resources_only: true possible_actions: "actors/checkpoint" };
@@ -153,10 +151,6 @@ option (extractors) = { name: "machines.read-output" resources_only: true possib
 option (extractors) = { name: "machines.read-usage" resources_only: true possible_actions: "machines/read-usage" };
 option (extractors) = { name: "machines.recover" resources_only: true possible_actions: "machines/recover" };
 option (extractors) = { name: "machines.update" resources_only: true possible_actions: "machines/update" };
-option (extractors) = { name: "objects.list-visible-prefix" resources_only: true possible_actions: "objects/list" };
-option (extractors) = { name: "objects.multipart-delete" resources_only: true possible_actions: "objects/delete" };
-option (extractors) = { name: "objects.multipart-list" resources_only: true possible_actions: "objects/list-parts" };
-option (extractors) = { name: "objects.multipart-put" resources_only: true possible_actions: "objects/put" };
 option (extractors) = { name: "streams.commit-resources" resources_only: true possible_actions: "streams/read" };
 option (extractors) = { name: "streams.delivery-resource" resources_only: true possible_actions: "streams/follow" };
 option (extractors) = { name: "streams.idempotency-resources" resources_only: true possible_actions: "streams/read" };
