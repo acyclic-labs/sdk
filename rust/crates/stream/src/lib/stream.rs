@@ -72,7 +72,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
                 path: self.path.clone(),
                 records,
                 if_tail,
-                idempotency_key: Some(idempotency_key),
+                idempotency_key,
             })
             .await
     }
@@ -91,7 +91,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
                 source: self.path.clone(),
                 destination: StreamPath::new(destination)?,
                 at_tail,
-                idempotency_key: Some(idempotency_key),
+                idempotency_key,
             })
             .await
     }

@@ -90,7 +90,7 @@ async fn append_one(provider: &MemoryStream, ledger: &mut Vec<CommitId>) -> Test
             path: StreamPath::new("events")?,
             records: vec![(OwnedBytes::from(vec![sequence.to_le_bytes()[0]])).into()],
             if_tail: Some(sequence as u64),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let commit = checked::anchor(provider, "events", sequence as u64).await?;

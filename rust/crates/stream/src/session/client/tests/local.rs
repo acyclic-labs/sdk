@@ -15,13 +15,7 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
         client.register_credential(0, crate::session::testing::credential())?;
         let path = StreamPath::new("events")?;
         let mut ordinary = client
-            .follow(crate::FollowRequest {
-                path: path.clone(),
-                from: 0,
-                preceding: None,
-                filter: crate::FollowFilter::default(),
-                progress: false,
-            })
+            .follow(crate::FollowRequest::new(path.clone(), 0))
             .map_ok(crate::records_only)
             .await?;
         let first = next(&mut ordinary).await?;

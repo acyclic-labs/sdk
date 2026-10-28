@@ -365,16 +365,6 @@ mod source_bound_lost_ack {
             Ok(result)
         }
 
-        async fn commit_before(
-            &self,
-            request: CommitRequest,
-            deadline_unix_millis: u64,
-        ) -> Result<acyclic_stream::CommitOutcome, StreamError> {
-            self.inner
-                .commit_before(request, deadline_unix_millis)
-                .await
-        }
-
         async fn read_commit(
             &self,
             id: acyclic_stream::CommitId,

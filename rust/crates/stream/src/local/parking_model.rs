@@ -19,11 +19,11 @@ pub(crate) fn verify(retain_pending: bool, memory: bool) {
             path: path.clone(),
             records: vec![crate::OwnedBytes::from_static(b"seed").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
         let follow: futures::stream::BoxStream<'static, _> = {
-            block_on(provider.follow(crate::FollowRequest { path: path, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only))
+            block_on(provider.follow(crate::FollowRequest::new(path, 0)).map_ok(crate::records_only))
                 .unwrap()
                 .map(|record| record.map(|_| ()))
                 .boxed()
@@ -70,11 +70,11 @@ pub(crate) fn abandon(
             path: path.clone(),
             records: vec![crate::OwnedBytes::from_static(b"seed").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
         let follow: futures::stream::BoxStream<'static, _> = {
-            block_on(provider.follow(crate::FollowRequest { path: path, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only))
+            block_on(provider.follow(crate::FollowRequest::new(path, 0)).map_ok(crate::records_only))
                 .unwrap()
                 .map(|record| record.map(|_| ()))
                 .boxed()

@@ -12,7 +12,7 @@ async fn append(provider: &BrowserStream, path: &str) -> Result<AppendOutcome, S
             path: StreamPath::new(path)?,
             records: vec![OwnedBytes::from_static(b"value").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await
 }
@@ -79,7 +79,7 @@ async fn publications_refresh_once_and_wake_only_affected_follows() {
     for id in 0..128 {
         records.push(
             reader
-                .follow(crate::FollowRequest { path: StreamPath::new(format!("agents/{id}/events")).expect("path"), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+                .follow(crate::FollowRequest::new(StreamPath::new(format!("agents/{id}/events")).expect("path"), 1)).map_ok(crate::records_only)
                 .await
                 .expect("follow")
                 .map(move |record| Observed::Record(id, record))
@@ -121,7 +121,7 @@ async fn follow_pushes_every_record_after_its_initial_snapshot() {
         .expect("open");
     append(&provider, "events").await.expect("seed");
     let mut records = provider
-        .follow(crate::FollowRequest { path: StreamPath::new("events").expect("path"), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+        .follow(crate::FollowRequest::new(StreamPath::new("events").expect("path"), 1)).map_ok(crate::records_only)
         .await
         .expect("follow");
     let receive = async {
@@ -135,7 +135,7 @@ async fn follow_pushes_every_record_after_its_initial_snapshot() {
         path: StreamPath::new("events").expect("path"),
         records: vec![OwnedBytes::from_static(b"delta").into(); 3],
         if_tail: Some(1),
-        idempotency_key: None,
+        idempotency_key: crate::IdempotencyKey::unique(),
     });
     let ((), written) = futures::join!(receive, write);
     assert!(matches!(written, Ok(AppendOutcome::Committed(_))));
@@ -152,7 +152,7 @@ async fn follow_wakes_for_another_database_opener() {
         .await
         .expect("reader");
     let mut records = reader
-        .follow(crate::FollowRequest { path: StreamPath::new("events").expect("path"), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+        .follow(crate::FollowRequest::new(StreamPath::new("events").expect("path"), 1)).map_ok(crate::records_only)
         .await
         .expect("follow");
     let (record, written) = futures::join!(records.next(), append(&writer, "events"));
@@ -173,7 +173,7 @@ async fn follow_recovers_its_cache_without_exposing_rejected_records() {
     .expect("open");
     append(&provider, "events").await.expect("seed");
     let mut records = provider
-        .follow(crate::FollowRequest { path: StreamPath::new("events").expect("path"), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+        .follow(crate::FollowRequest::new(StreamPath::new("events").expect("path"), 1)).map_ok(crate::records_only)
         .await
         .expect("follow");
     assert_eq!(
@@ -183,7 +183,7 @@ async fn follow_recovers_its_cache_without_exposing_rejected_records() {
                 source: StreamPath::new("missing").expect("path"),
                 destination: StreamPath::new("rejected").expect("path"),
                 at_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await,
         Err(StreamError::NotFound)
@@ -213,7 +213,7 @@ async fn browser_append_follow_latency() {
         .expect("open");
     append(&provider, "latency").await.expect("seed");
     let mut records = provider
-        .follow(crate::FollowRequest { path: StreamPath::new("latency").expect("path"), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+        .follow(crate::FollowRequest::new(StreamPath::new("latency").expect("path"), 1)).map_ok(crate::records_only)
         .await
         .expect("follow");
     let performance = web_sys::window()
@@ -296,7 +296,7 @@ async fn filtered_publications_survive_cache_rebuild_without_waking_unrelated_fo
                 path: StreamPath::new("events").unwrap(),
                 records: vec![record("z")],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await
             .unwrap();
@@ -312,7 +312,7 @@ async fn filtered_publications_survive_cache_rebuild_without_waking_unrelated_fo
                 path: StreamPath::new("events").unwrap(),
                 records: vec![record("b")],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await
             .unwrap();

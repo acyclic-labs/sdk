@@ -21,7 +21,7 @@ pub(crate) fn registration(omit_wake: bool) {
             path: path.clone(),
             records: vec![Bytes::from_static(b"anchor").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
         let AppendOutcome::Committed(seed) = seed else {
@@ -40,7 +40,7 @@ pub(crate) fn registration(omit_wake: bool) {
                             path,
                             records: vec![Bytes::from_static(b"accepted").into()],
                             if_tail: Some(1),
-                            idempotency_key: None,
+                            idempotency_key: crate::IdempotencyKey::unique(),
                         })
                         .await
                         .unwrap();
@@ -70,13 +70,13 @@ pub(crate) fn cancellation(retain: bool) {
             path: path.clone(),
             records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
         let mut cancelled =
-            block_on(provider.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)).unwrap();
+            block_on(provider.follow(crate::FollowRequest::new(path.clone(), 1)).map_ok(crate::records_only)).unwrap();
         let mut kept =
-            block_on(provider.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)).unwrap();
+            block_on(provider.follow(crate::FollowRequest::new(path.clone(), 1)).map_ok(crate::records_only)).unwrap();
         let (_, wake) = crate::verification::probe();
         assert!(
             cancelled
@@ -105,7 +105,7 @@ pub(crate) fn cancellation(retain: bool) {
                     path: path.clone(),
                     records: vec![Bytes::from_static(b"next").into()],
                     if_tail: Some(1),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 })
                 .await
                 .unwrap();
@@ -142,7 +142,7 @@ pub(crate) fn failure_lock_order(hold_borrow: bool) {
             path: path.clone(),
             records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
         let AppendOutcome::Committed(seed) = seed else {

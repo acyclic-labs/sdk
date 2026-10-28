@@ -22,14 +22,14 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
         path: path.clone(),
         records: vec![OwnedBytes::from_static(b"accepted").into()],
         if_tail: Some(1),
-        idempotency_key: Some(IdempotencyKey::new(b"corrected-append".to_vec())?),
+        idempotency_key: IdempotencyKey::new(b"corrected-append".to_vec())?,
     };
     let mut fork = ForkRequest {
         source: path.clone(),
         destination: StreamPath::new("refusal/forked")?,
         at_tail: None,
         exclude: Vec::new(),
-        idempotency_key: Some(IdempotencyKey::new(b"corrected-fork".to_vec())?),
+        idempotency_key: IdempotencyKey::new(b"corrected-fork".to_vec())?,
     };
     let commit = CommitRequest {
         deadline_unix_millis: None,

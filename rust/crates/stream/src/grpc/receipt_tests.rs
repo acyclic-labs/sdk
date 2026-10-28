@@ -7,7 +7,7 @@ async fn append(provider: &impl StreamProvider, path: &StreamPath) -> TestResult
             path: path.clone(),
             records: vec![crate::OwnedBytes::from_static(b"approval").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     assert!(matches!(outcome, AppendOutcome::Committed(_)));

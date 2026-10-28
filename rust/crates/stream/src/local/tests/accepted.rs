@@ -168,7 +168,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
                             path,
                             records: vec![(Bytes::from_static(b"delta")).into()],
                             if_tail: Some(n),
-                            idempotency_key: None,
+                            idempotency_key: crate::IdempotencyKey::unique(),
                         })
                         .await
                 }
@@ -178,7 +178,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
             })
             .await??;
             let mut follow = provider
-                .follow(crate::FollowRequest { path: path.clone(), from: n, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+                .follow(crate::FollowRequest::new(path.clone(), n)).map_ok(crate::records_only)
                 .await?;
             let record = tokio::time::timeout(std::time::Duration::from_secs(1), follow.next())
                 .await?

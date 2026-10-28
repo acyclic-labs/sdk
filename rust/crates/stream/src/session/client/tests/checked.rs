@@ -29,13 +29,7 @@ async fn checked_registration_fails_before_returning_a_cursor_and_keeps_siblings
     let client = fixture.client()?;
     let path = StreamPath::new("events")?;
     let mut ordinary = client
-        .follow(crate::FollowRequest {
-            path: path.clone(),
-            from: 1,
-            preceding: None,
-            filter: crate::FollowFilter::default(),
-            progress: false,
-        })
+        .follow(crate::FollowRequest::new(path.clone(), 1))
         .map_ok(crate::records_only)
         .await?;
     assert!(matches!(
@@ -78,13 +72,7 @@ async fn unconfirmed_history_is_rejected_without_granting_credit_or_closing_sibl
     let client = fixture.client()?;
     let path = StreamPath::new("events")?;
     let mut ordinary = client
-        .follow(crate::FollowRequest {
-            path: path.clone(),
-            from: 3,
-            preceding: None,
-            filter: crate::FollowFilter::default(),
-            progress: false,
-        })
+        .follow(crate::FollowRequest::new(path.clone(), 3))
         .map_ok(crate::records_only)
         .await?;
     assert!(matches!(
@@ -211,7 +199,7 @@ async fn checked_delivery_reports_history_replacement_after_registration() -> Te
             path: StreamPath::new("events")?,
             records: vec![(OwnedBytes::from_static(b"replacement")).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     provider

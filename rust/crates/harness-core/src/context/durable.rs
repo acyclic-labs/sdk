@@ -530,7 +530,7 @@ impl DurableContextProvider {
                 path: self.path.clone(),
                 records: records.into_iter().map(Into::into).collect(),
                 if_tail: Some(expected),
-                idempotency_key: Some(key),
+                idempotency_key: key,
             })
             .await
             .map_err(|error| crate::Error::Storage(error.to_string()))?

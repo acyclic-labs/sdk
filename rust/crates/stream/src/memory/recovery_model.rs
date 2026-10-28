@@ -84,7 +84,7 @@ fn seed(provider: &MemoryStream) -> Result<(StreamPath, CommitId)> {
         path: path.clone(),
         records: vec![Bytes::from_static(b"anchor").into()],
         if_tail: Some(0),
-        idempotency_key: None,
+        idempotency_key: crate::IdempotencyKey::unique(),
     }))?;
     let AppendOutcome::Committed(receipt) = outcome else {
         return Err("seed conflicted".into());
@@ -160,7 +160,7 @@ fn subscription_and_append(omit_wake: bool) {
                     path,
                     records: vec![Bytes::from_static(b"next").into()],
                     if_tail: Some(1),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 }))
             }
         });
@@ -236,7 +236,7 @@ fn head_fence_and_recovery(ignore_head: bool) {
             path: path.clone(),
             records: vec![Bytes::from_static(b"replaced").into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))?;
         let bytes = block_on(replacement.encode_state());
         let recovery = thread::spawn({
@@ -330,7 +330,7 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
                 Bytes::from_static(b"new tail").into(),
             ],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
         let recovery = thread::spawn({
@@ -346,7 +346,7 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
             let cursor = wire_codec::session::record_cursor(1, anchor).unwrap();
             let registered = if omit_anchor {
                 provider
-                    .follow(crate::FollowRequest { path: path, from: cursor.next, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+                    .follow(crate::FollowRequest::new(path, cursor.next)).map_ok(crate::records_only)
                     .await
             } else {
                 wire_codec::session::follow_records(&provider, &follow, &cursor).await
@@ -470,7 +470,7 @@ pub fn subtree_cut(root_only: bool) {
                 path: StreamPath::new(name)?,
                 records: vec![Bytes::from_static(b"seed").into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             }))?;
         }
         let writing = thread::spawn({
@@ -508,7 +508,7 @@ pub fn subtree_cut(root_only: bool) {
                     destination: StreamPath::new("copy").unwrap(),
                     exclude: Vec::new(),
                     at_tail: Some(0),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 }))
                 .unwrap();
             }
@@ -525,7 +525,7 @@ pub fn subtree_cut(root_only: bool) {
             path: StreamPath::new("copy/a")?,
             records: vec![Bytes::from_static(b"private").into()],
             if_tail: a,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))?;
         assert_eq!(block_on(provider.tail(StreamPath::new("tree/a")?))?, 2);
         assert_eq!(
@@ -544,7 +544,7 @@ pub fn subtree_exclusions(ignore: bool) {
             path: StreamPath::new("tree/children/old/events")?,
             records: vec![Bytes::from_static(b"sibling").into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))?;
         if ignore {
             set_fault(Fault::IgnoreForkExclusions);
@@ -554,7 +554,7 @@ pub fn subtree_exclusions(ignore: bool) {
             destination: StreamPath::new("tree/children/new")?,
             exclude: vec![StreamPath::new("children")?],
             at_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))?;
         assert_eq!(
             block_on(provider.tail(StreamPath::new("tree/children/new/children/old/events")?)),
@@ -596,7 +596,7 @@ pub fn page_tail_cut(split_reads: bool) {
                 path: StreamPath::new(name)?,
                 records: vec![Bytes::from_static(b"old").into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             }))?;
         }
         let writer = thread::spawn({
@@ -747,7 +747,7 @@ pub fn stable_intent_key(retain_conflicts: bool) {
                     path,
                     records: vec![Bytes::from_static(b"other").into()],
                     if_tail: None,
-                    idempotency_key: Some(IdempotencyKey::new(b"other".to_vec()).unwrap()),
+                    idempotency_key: IdempotencyKey::new(b"other".to_vec()).unwrap(),
                 }))
                 .unwrap();
             }

@@ -8,26 +8,6 @@ pub(super) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send 
 
 pub(crate) mod retry_capture;
 
-/// An in-process HTTP/2 channel to one service.
-fn channel<S: StreamService + Clone>(service: S) -> Channel {
-    Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(tower::service_fn(
-        move |_| {
-            let service = service.clone();
-            async move {
-                let (client, server) = tokio::io::duplex(64 * 1024);
-                tokio::spawn(async move {
-                    let incoming = stream::once(async { Ok::<_, std::io::Error>(server) });
-                    let _ = tonic::transport::Server::builder()
-                        .add_service(StreamServiceServer::new(service))
-                        .serve_with_incoming(incoming)
-                        .await;
-                });
-                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
-            }
-        },
-    ))
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum TestClientError {
     #[error(transparent)]
@@ -168,7 +148,7 @@ async fn grpc_transport_passes_the_public_suite() -> TestResult {
             path: path.clone(),
             records: values.iter().cloned().map(Into::into).collect(),
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let records = transport
@@ -206,7 +186,7 @@ async fn service_rejects_oversized_commands_before_provider_dispatch() {
             16
         ],
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: Bytes::new(),
     };
     let error = service.append(Request::new(request)).await.err();
     assert_eq!(
@@ -257,12 +237,12 @@ async fn follow_resumes_after_a_clean_end_of_stream() -> TestResult {
             path: path.clone(),
             records: vec![(OwnedBytes::from_static(b"resumed")).into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let transport = client(provider)?;
     let mut records = transport
-        .follow(crate::FollowRequest { path: path, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+        .follow(crate::FollowRequest::new(path, 0)).map_ok(crate::records_only)
         .await?;
     let record = tokio::time::timeout(Duration::from_secs(1), records.next())
         .await?
@@ -282,7 +262,7 @@ async fn a_denied_follow_reports_access_denied_once_and_then_ends() -> TestResul
     let items = tokio::time::timeout(
         Duration::from_secs(1),
         transport
-            .follow(crate::FollowRequest { path: StreamPath::new("accounts/events")?, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+            .follow(crate::FollowRequest::new(StreamPath::new("accounts/events")?, 0)).map_ok(crate::records_only)
             .await?
             .collect::<Vec<_>>(),
     )
@@ -477,14 +457,14 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
             path: path.clone(),
             records: vec![(OwnedBytes::from_static(b"record")).into(); 20],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let client = client(provider)?;
     let result = tokio::time::timeout(
         Duration::from_secs(1),
         client
-            .follow(crate::FollowRequest { path: path, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+            .follow(crate::FollowRequest::new(path, 0)).map_ok(crate::records_only)
             .await?
             .collect::<Vec<_>>(),
     )

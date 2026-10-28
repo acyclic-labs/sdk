@@ -44,7 +44,7 @@ pub(super) async fn append<P: StreamProvider + ?Sized>(
                 path: target.clone(),
                 records: vec![OwnedBytes::from_static(value).into()],
                 if_tail: Some(tail),
-                idempotency_key: Some(key(history, label)?),
+                idempotency_key: key(history, label)?,
             })
             .await,
     )?;
@@ -277,7 +277,7 @@ pub(super) async fn subtree<P: StreamProvider + ?Sized>(
         source: history.path.clone(),
         destination: destination.clone(),
         at_tail: Some(1),
-        idempotency_key: Some(history.key.clone()),
+        idempotency_key: history.key.clone(),
     };
     let receipt = history.result("fork_subtree", history.provider.fork(request.clone()).await)?;
     history.check(

@@ -115,10 +115,7 @@ async fn native_append_lost_ack_reopens_exact_append_identity()
     let limits = LocalStreamLimits::default();
     let provider = LocalStream::open(directory.path(), limits).await?;
     let request = keyed_append("native-append-lost-ack", 0)?;
-    let key = request
-        .idempotency_key
-        .clone()
-        .ok_or("append fixture lacks a key")?;
+    let key = request.idempotency_key.clone();
     let meter = Arc::new(Meter::local());
     meter.cancel_on_write.store(true, Ordering::SeqCst);
     let error = provider
@@ -181,14 +178,11 @@ async fn native_append_conflicts_leave_keys_free_and_journal_unchanged()
             path: path.clone(),
             records: vec![(OwnedBytes::from_static(b"seed")).into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let request = keyed_append(path.as_str(), 0)?;
-    let key = request
-        .idempotency_key
-        .clone()
-        .ok_or("append fixture lacks a key")?;
+    let key = request.idempotency_key.clone();
     let before = std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len();
     let meter = Arc::new(Meter::local());
     let expected = AppendOutcome::TailConflict { actual_tail: 1 };
@@ -198,15 +192,6 @@ async fn native_append_conflicts_leave_keys_free_and_journal_unchanged()
     assert_eq!(conflict.value(), &expected);
     drop(conflict);
     let after_keyed = std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len();
-    let mut unkeyed = request.clone();
-    unkeyed.idempotency_key = None;
-    let conflict = provider.native_append(unkeyed, meter.original()).await??;
-    assert_eq!(conflict.value(), &expected);
-    drop(conflict);
-    assert_eq!(
-        std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len(),
-        after_keyed
-    );
     assert_eq!(after_keyed, before);
     assert!(provider.inspect_idempotency(key.clone()).await?.is_none());
     drop(provider);

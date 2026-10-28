@@ -120,7 +120,7 @@ async fn seed(
                     path: source.clone(),
                     records: vec![(Bytes::from(vec![i.to_le_bytes()[0], 0, 255])).into()],
                     if_tail: None,
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 })
                 .await,
         );
@@ -135,7 +135,7 @@ async fn seed(
                     source,
                     destination: target.clone(),
                     at_tail: Some((batches / 2) as u64),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 })
                 .await,
         );
@@ -146,7 +146,7 @@ async fn seed(
                     source: StreamPath::new("history/source").unwrap(),
                     destination: target.clone(),
                     at_tail: None,
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 })
                 .await,
         );
@@ -175,7 +175,7 @@ proptest! {
                 drop(state);
                 let appended = provider.append(AppendRequest {
                     path: path.clone(), records: vec![(Bytes::from_static(b"new\0bytes")).into()],
-                    if_tail: None, idempotency_key: None,
+                    if_tail: None, idempotency_key: crate::IdempotencyKey::unique(),
                 }).await;
                 let state = provider.state.read().await;
                 let stream = state.paths.get(&path).unwrap();
@@ -256,7 +256,7 @@ fn appended_follow_reuses_the_cursor_queue_without_scratch_allocations() {
             path: path.clone(),
             records: vec![(Bytes::from_static(b"next")).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
         let state = futures::executor::block_on(provider.state.read());

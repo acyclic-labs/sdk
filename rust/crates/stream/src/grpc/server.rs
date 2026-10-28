@@ -143,7 +143,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 source: path(request.source).map_err(|error| error_status(&error))?,
                 destination: path(request.destination).map_err(|error| error_status(&error))?,
                 at_tail: request.at_tail,
-                idempotency_key: optional_key(request.idempotency_key)
+                idempotency_key: IdempotencyKey::new(request.idempotency_key)
                     .map_err(|error| error_status(&error))?,
             };
             let receipt = self

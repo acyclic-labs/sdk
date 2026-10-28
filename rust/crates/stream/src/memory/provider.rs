@@ -535,10 +535,7 @@ impl StreamProvider for MemoryStream {
     ) -> crate::NativeProviderFuture<'_, AppendOutcome> {
         Work::start(meter, |work| async move {
             let provider = self.with_context(Arc::clone(&work));
-            let existing = match &request.idempotency_key {
-                Some(key) => provider.has_replay(key).await,
-                None => Ok(false),
-            };
+            let existing = provider.has_replay(&request.idempotency_key).await;
             let existing = match existing {
                 Ok(existing) => existing,
                 Err(error) => return work.finish(Err(error)),

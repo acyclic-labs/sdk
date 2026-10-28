@@ -36,16 +36,17 @@ pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<
 }
 
 impl Command {
+    #[cfg(any(
+        all(feature = "postgres", not(target_arch = "wasm32")),
+        all(any(feature = "wasm", feature = "wasm-journal"), target_arch = "wasm32")
+    ))]
     pub(crate) async fn has_replay(&self, provider: &MemoryStream) -> Result<bool, StreamError> {
         let key = match self {
-            Self::Append(request) => request.idempotency_key.as_ref(),
-            Self::Fork(request) => request.idempotency_key.as_ref(),
-            Self::Commit(request) => Some(&request.idempotency_key),
+            Self::Append(request) => &request.idempotency_key,
+            Self::Fork(request) => &request.idempotency_key,
+            Self::Commit(request) => &request.idempotency_key,
         };
-        match key {
-            Some(key) => provider.has_replay(key).await,
-            None => Ok(false),
-        }
+        provider.has_replay(key).await
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -152,14 +153,14 @@ mod tests {
             path: crate::StreamPath::new("codec/events")?,
             records: vec![(Bytes::from_static(b"one")).into(), (Bytes::new()).into()],
             if_tail: Some(0),
-            idempotency_key: Some(crate::IdempotencyKey::new(Bytes::from_static(b"key"))?),
+            idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(b"key"))?,
         });
         let fork = Command::Fork(ForkRequest {
             exclude: Vec::new(),
             source: crate::StreamPath::new("codec/events")?,
             destination: crate::StreamPath::new("codec/fork")?,
             at_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         });
         let commit = Command::Commit(CommitRequest {
             deadline_unix_millis: None,
@@ -197,7 +198,7 @@ mod tests {
             path: crate::StreamPath::new("events")?,
             records: vec![(Bytes::from_static(&[1])).into()],
             if_tail: None,
-            idempotency_key: Some(crate::IdempotencyKey::new(Bytes::from_static(b"first"))?),
+            idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(b"first"))?,
         };
         let encoded = Command::Append(request.clone()).encode_to_vec();
         replay(&provider, decode_command(&encoded)?).await?;

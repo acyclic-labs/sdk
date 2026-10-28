@@ -234,7 +234,7 @@ async fn prepared_ingress(provider: &impl StreamProvider) {
                 path: path.clone(),
                 records: vec![b"seed".as_slice().into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await
             .unwrap();
@@ -325,7 +325,7 @@ async fn qualify(provider: &impl StreamProvider) {
             path: path.clone(),
             records: vec![body.clone()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await
         .unwrap();
@@ -345,7 +345,7 @@ async fn qualify(provider: &impl StreamProvider) {
             path: path.clone(),
             records: vec![body],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await
         .unwrap();

@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             path: path.clone(),
             records: values.iter().cloned().map(Into::into).collect(),
             if_tail: None,
-            idempotency_key: Some(idempotency_key.clone()),
+            idempotency_key: idempotency_key.clone(),
         })
         .await?;
     let append = match append {

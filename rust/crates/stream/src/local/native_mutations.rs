@@ -146,10 +146,7 @@ impl LocalStream {
             let result = stream
                 .exclusive(&span, move |stream| async move {
                     let _input = input;
-                    let replay = match &request.idempotency_key {
-                        Some(key) => provider.has_replay(key).await?,
-                        None => false,
-                    };
+                    let replay = provider.has_replay(&request.idempotency_key).await?;
                     let command = Command::Append(request);
                     let frame = if replay {
                         None

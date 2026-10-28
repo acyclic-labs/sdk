@@ -18,7 +18,7 @@ async fn append(provider: &LocalStream, path: StreamPath) -> Result<(), StreamEr
         path,
         records: vec![(Bytes::from_static(b"accepted")).into()],
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: crate::IdempotencyKey::unique(),
     }))
     .await?;
     Ok(())
@@ -54,7 +54,7 @@ async fn qualify(broadcast: bool) -> Result<(), Box<dyn std::error::Error>> {
         let path = StreamPath::new(format!("{}/data", parent.as_str()))?;
         append(&provider, path.clone()).await?;
         let mut follow = provider
-            .follow(crate::FollowRequest { path: path, from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+            .follow(crate::FollowRequest::new(path, 1)).map_ok(crate::records_only)
             .await?;
         wakes.push(probe(follow.as_mut()));
         records.push(follow);
@@ -130,7 +130,7 @@ async fn dropped_consumers_leave_no_queued_publication_reservation()
         append(&provider, path.clone()).await?;
         let mut follow = {
             provider
-                .follow(crate::FollowRequest { path: path, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+                .follow(crate::FollowRequest::new(path, 0)).map_ok(crate::records_only)
                 .await?
                 .map(|item| item.map(|_| ()))
                 .boxed()

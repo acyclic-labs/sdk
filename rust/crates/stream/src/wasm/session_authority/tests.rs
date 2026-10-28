@@ -111,7 +111,7 @@ async fn local_session_closes_an_idle_follow_on_revocation_and_rejects_trust_rol
             path: crate::StreamPath::new("events").expect("path"),
             records: vec![crate::OwnedBytes::from_static(b"first").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await
         .expect("append");

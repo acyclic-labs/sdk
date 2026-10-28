@@ -214,7 +214,7 @@ impl<'a, P: StreamProvider + ?Sized> History<'a, P> {
                     path: self.path.clone(),
                     records: vec![OwnedBytes::from_static(b"seed").into()],
                     if_tail: Some(0),
-                    idempotency_key: Some(key),
+                    idempotency_key: key,
                 })
                 .await,
         )?;
@@ -341,7 +341,7 @@ async fn append_retry<P: StreamProvider + ?Sized>(history: &History<'_, P>) -> R
         path: history.path.clone(),
         records: vec![OwnedBytes::from_static(b"intent").into()],
         if_tail: Some(1),
-        idempotency_key: Some(history.key.clone()),
+        idempotency_key: history.key.clone(),
     };
     let conflict = history.result(
         "reject_append",

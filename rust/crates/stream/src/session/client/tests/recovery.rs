@@ -45,13 +45,7 @@ async fn check_recovery(terminal: bool) -> TestResult {
     );
     client.register_credential(0, crate::session::testing::credential())?;
     let mut records = client
-        .follow(crate::FollowRequest {
-            path: StreamPath::new("events")?,
-            from: 1,
-            preceding: None,
-            filter: crate::FollowFilter::default(),
-            progress: false,
-        })
+        .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
         .map_ok(crate::records_only)
         .await?;
     let connections = client.connections();

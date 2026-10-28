@@ -35,22 +35,19 @@ impl MemoryStream {
             .sum::<usize>();
         let digest = self.append_request_digest(&request)?;
         if let Some(result) =
-            self.replay_append(&state, request.idempotency_key.as_ref(), digest)?
+            self.replay_append(&state, &request.idempotency_key, digest)?
         {
             return Ok(Decision::Returned((result, Default::default())));
         }
         let mut probes = self.reserve_replay_probes(
-            request
-                .idempotency_key
-                .as_ref()
-                .map_or(0, |_| u64::from(state.replay_height(state.replay_root))),
+            u64::from(state.replay_height(state.replay_root)),
         )?;
         let start = state.paths.get(&request.path).map_or(0, |path| path.tail);
         if request.if_tail.is_some_and(|expected| expected != start) {
             let result = AppendOutcome::TailConflict { actual_tail: start };
             return Ok(Decision::Returned((result, Default::default())));
         }
-        admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
+        admit_replay(&state, self.limits)?;
         reserve_append(&state, &request.path, &request.records, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
@@ -111,7 +108,7 @@ impl MemoryStream {
                     state,
                     &mut || self.record_replay_probe(&mut probes),
                     Some(envelope),
-                    request.idempotency_key,
+                    Some(request.idempotency_key),
                     digest,
                     IdempotencyOutcome::Append(outcome.clone()),
                     allocation,

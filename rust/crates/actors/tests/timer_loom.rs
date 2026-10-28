@@ -63,7 +63,7 @@ fn lost_ack_restart_and_append(broken: bool) -> Result {
         path: inbox.clone(),
         records: vec![b"concurrent".to_vec().into()],
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: acyclic_stream::IdempotencyKey::unique(),
     }))?;
     let repeated = retry.join().map_err(|_| "retry panicked")??;
     assert_eq!(

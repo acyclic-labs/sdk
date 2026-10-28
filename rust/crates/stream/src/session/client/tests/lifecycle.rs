@@ -42,13 +42,7 @@ async fn registration_deadline_removes_only_the_stalled_interest() -> TestResult
     } = *open;
     let mut healthy = Box::pin(
         client
-            .follow(crate::FollowRequest {
-                path: StreamPath::new("healthy")?,
-                from: 0,
-                preceding: None,
-                filter: crate::FollowFilter::default(),
-                progress: false,
-            })
+            .follow(crate::FollowRequest::new(StreamPath::new("healthy")?, 0))
             .map_ok(crate::records_only),
     );
     assert!(futures::poll!(healthy.as_mut()).is_pending());
@@ -79,13 +73,7 @@ async fn registration_deadline_also_withdraws_blocked_queue_admission() -> TestR
     let (client, mut commands) = waiting_client();
     let mut first = Box::pin(
         client
-            .follow(crate::FollowRequest {
-                path: StreamPath::new("first")?,
-                from: 0,
-                preceding: None,
-                filter: crate::FollowFilter::default(),
-                progress: false,
-            })
+            .follow(crate::FollowRequest::new(StreamPath::new("first")?, 0))
             .map_ok(crate::records_only),
     );
     assert!(futures::poll!(first.as_mut()).is_pending());
@@ -194,13 +182,10 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
             let fixture = Fixture::open(Arc::clone(&memory), "node").await?;
             let client = fixture.client()?;
             let mut records = client
-                .follow(crate::FollowRequest {
-                    path: StreamPath::new("private/events")?,
-                    from: 1,
-                    preceding: None,
-                    filter: crate::FollowFilter::default(),
-                    progress: false,
-                })
+                .follow(crate::FollowRequest::new(
+                    StreamPath::new("private/events")?,
+                    1,
+                ))
                 .map_ok(crate::records_only)
                 .await?;
             fixture
@@ -228,13 +213,10 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
             assert_eq!(records.next().await, Some(Err(StreamError::AccessDenied)));
             drop(records);
             let cancelled = client
-                .follow(crate::FollowRequest {
-                    path: StreamPath::new("private/events")?,
-                    from: 2,
-                    preceding: None,
-                    filter: crate::FollowFilter::default(),
-                    progress: false,
-                })
+                .follow(crate::FollowRequest::new(
+                    StreamPath::new("private/events")?,
+                    2,
+                ))
                 .map_ok(crate::records_only)
                 .await?;
             drop(cancelled);

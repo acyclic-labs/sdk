@@ -15,7 +15,7 @@ async fn historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_hist
                 path: path.clone(),
                 records: vec![Bytes::from_static(b"value").into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?
         else {
@@ -146,7 +146,7 @@ async fn commit_index_work_is_admitted_before_append_or_coordinated_publication(
             path: path.clone(),
             records: vec![Bytes::from_static(b"value").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         };
         provider.append(request.clone()).await?;
         let snapshot = provider.encode_state().await;

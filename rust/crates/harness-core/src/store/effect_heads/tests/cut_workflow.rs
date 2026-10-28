@@ -49,6 +49,7 @@ fn normalized_request(mut request: CommitRequest) -> CommitRequest {
     for condition in &mut request.conditions {
         match condition {
             CommitCondition::Absent { path }
+            | CommitCondition::Present { path }
             | CommitCondition::Tail { path, .. }
             | CommitCondition::Head { path, .. } => *path = normalized_path(path),
         }

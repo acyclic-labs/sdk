@@ -79,12 +79,13 @@ pub async fn qualify_journal_deadline(
 pub async fn append_wake_record(port: JsValue, path: String) -> std::result::Result<(), JsValue> {
     let provider = acyclic_stream::WasmStream::connect_provider(port)?.provider();
     let result = async {
+        let key = acyclic_stream::IdempotencyKey::new(format!("wake-record/{path}").into_bytes())?;
         provider
             .append(acyclic_stream::AppendRequest {
                 path: acyclic_stream::StreamPath::new(path)?,
                 records: vec![acyclic_stream::AppendRecord::from(b"wake".as_slice())],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: key,
             })
             .await?;
         Ok::<_, acyclic_stream::StreamError>(())

@@ -43,7 +43,7 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     for index in 0..AGENTS {
         subscriptions.push(
             provider
-                .follow(acyclic_stream::FollowRequest { path: StreamPath::new(format!("agent-{index:06}"))?, from: 1, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only)
+                .follow(acyclic_stream::FollowRequest::new(StreamPath::new(format!("agent-{index:06}"))?, 1)).map_ok(acyclic_stream::records_only)
                 .await?,
         );
     }

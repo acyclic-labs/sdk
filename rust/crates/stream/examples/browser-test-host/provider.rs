@@ -1,5 +1,4 @@
 //! Scripted durability around the real memory provider; no extra records on save.
-use futures::TryFutureExt as _;
 use acyclic_stream::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 

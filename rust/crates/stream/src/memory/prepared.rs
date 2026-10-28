@@ -135,7 +135,7 @@ impl MemoryStream {
                 return Err(StreamError::OutOfRange);
             }
         }
-        admit_replay(state, Some(&request.idempotency_key), self.limits)?;
+        admit_replay(state, self.limits)?;
         reserve_commit(state, self.limits)?;
         reserve_records(state, 1, maximum, self.limits)?;
         let counters = Arc::clone(&state.reserved);

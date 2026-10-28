@@ -92,7 +92,7 @@ async fn latest_follows_keep_attention_and_resume_the_consumed_cut() -> TestResu
             path: StreamPath::new("status")?,
             records: values,
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let fixture = Fixture::open(provider, "node").await?;

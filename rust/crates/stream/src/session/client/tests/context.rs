@@ -30,13 +30,7 @@ fn run_context_case(observed_first: bool, retain_first: bool) -> TestResult {
         let records = origin
             .scope(
                 client
-                    .follow(crate::FollowRequest {
-                        path: StreamPath::new("events")?,
-                        from: 1,
-                        preceding: None,
-                        filter: crate::FollowFilter::default(),
-                        progress: false,
-                    })
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
                     .map_ok(crate::records_only),
             )
             .await?;
@@ -56,13 +50,7 @@ fn run_context_case(observed_first: bool, retain_first: bool) -> TestResult {
         let records = origin
             .scope(
                 client
-                    .follow(crate::FollowRequest {
-                        path: StreamPath::new("events")?,
-                        from: 1,
-                        preceding: None,
-                        filter: crate::FollowFilter::default(),
-                        progress: false,
-                    })
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
                     .map_ok(crate::records_only),
             )
             .await?;
@@ -198,13 +186,7 @@ fn overlapping(fault: u8) -> TestResult {
         let a = first
             .scope(
                 client
-                    .follow(crate::FollowRequest {
-                        path: StreamPath::new("events")?,
-                        from: 1,
-                        preceding: None,
-                        filter: crate::FollowFilter::default(),
-                        progress: false,
-                    })
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
                     .map_ok(crate::records_only),
             )
             .await?;
@@ -212,13 +194,7 @@ fn overlapping(fault: u8) -> TestResult {
         let mut b = second
             .scope(
                 client
-                    .follow(crate::FollowRequest {
-                        path: StreamPath::new("events")?,
-                        from: 1,
-                        preceding: None,
-                        filter: crate::FollowFilter::default(),
-                        progress: false,
-                    })
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
                     .map_ok(crate::records_only),
             )
             .await?;
@@ -446,13 +422,7 @@ async fn moved_owner_withdraws() -> TestResult {
     let moving = a_origin
         .scope(
             client
-                .follow(crate::FollowRequest {
-                    path: StreamPath::new("move")?,
-                    from: 1,
-                    preceding: None,
-                    filter: crate::FollowFilter::default(),
-                    progress: false,
-                })
+                .follow(crate::FollowRequest::new(StreamPath::new("move")?, 1))
                 .map_ok(crate::records_only),
         )
         .await?;
@@ -460,13 +430,7 @@ async fn moved_owner_withdraws() -> TestResult {
     let mut staying = b_origin
         .scope(
             client
-                .follow(crate::FollowRequest {
-                    path: StreamPath::new("stay")?,
-                    from: 1,
-                    preceding: None,
-                    filter: crate::FollowFilter::default(),
-                    progress: false,
-                })
+                .follow(crate::FollowRequest::new(StreamPath::new("stay")?, 1))
                 .map_ok(crate::records_only),
         )
         .await?;
@@ -575,13 +539,7 @@ fn cancelling_the_dial_origin_releases_its_span_while_b_waits_for_welcome() -> T
         let mut a = Box::pin(
             a_origin.scope(
                 client
-                    .follow(crate::FollowRequest {
-                        path: StreamPath::new("events")?,
-                        from: 1,
-                        preceding: None,
-                        filter: crate::FollowFilter::default(),
-                        progress: false,
-                    })
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
                     .map_ok(crate::records_only),
             ),
         );
@@ -591,13 +549,7 @@ fn cancelling_the_dial_origin_releases_its_span_while_b_waits_for_welcome() -> T
         let mut b = Box::pin(
             b_origin.scope(
                 client
-                    .follow(crate::FollowRequest {
-                        path: StreamPath::new("events")?,
-                        from: 1,
-                        preceding: None,
-                        filter: crate::FollowFilter::default(),
-                        progress: false,
-                    })
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
                     .map_ok(crate::records_only),
             ),
         );
@@ -653,13 +605,7 @@ fn overlapping_subscribers_cannot_alias_equal_channel_span_ids() -> TestResult {
         let a = a_origin
             .scope(
                 client
-                    .follow(crate::FollowRequest {
-                        path: StreamPath::new("events")?,
-                        from: 1,
-                        preceding: None,
-                        filter: crate::FollowFilter::default(),
-                        progress: false,
-                    })
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
                     .map_ok(crate::records_only),
             )
             .await?;
@@ -667,13 +613,7 @@ fn overlapping_subscribers_cannot_alias_equal_channel_span_ids() -> TestResult {
         let mut b = b_origin
             .scope(
                 client
-                    .follow(crate::FollowRequest {
-                        path: StreamPath::new("events")?,
-                        from: 1,
-                        preceding: None,
-                        filter: crate::FollowFilter::default(),
-                        progress: false,
-                    })
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
                     .map_ok(crate::records_only),
             )
             .await?;

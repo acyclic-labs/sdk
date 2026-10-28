@@ -56,7 +56,7 @@ message AppendRequest {
   string path = 1;
   repeated AppendRecord records = 2;
   optional uint64 if_tail = 3;
-  optional bytes idempotency_key = 4;
+  bytes idempotency_key = 4;
 }
 
 message AppendReceipt {
@@ -117,7 +117,7 @@ message ForkRequest {
   string source = 1;
   string destination = 2;
   optional uint64 at_tail = 3;
-  optional bytes idempotency_key = 4;
+  bytes idempotency_key = 4;
 }
 
 message ForkReceipt {

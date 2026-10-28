@@ -2,28 +2,6 @@ pub(crate) fn path(value: String) -> Result<StreamPath, StreamError> {
     StreamPath::new(value)
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    feature = "postgres",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(
-        any(feature = "wasm", feature = "wasm-journal"),
-        target_arch = "wasm32"
-    )
-))]
-pub(crate) fn optional_key(value: Option<Bytes>) -> Result<Option<IdempotencyKey>, StreamError> {
-    value.map(IdempotencyKey::new).transpose()
-}
-
-#[cfg(feature = "grpc")]
-/// Converts an optional wire idempotency key, rejecting an omitted key.
-pub fn required_key(value: Option<Bytes>) -> Result<IdempotencyKey, StreamError> {
-    value
-        .ok_or(StreamError::InvalidArgument)
-        .and_then(IdempotencyKey::new)
-}
-
 pub(crate) fn condition_wire(value: CommitCondition) -> wire::CommitCondition {
     let condition = match value {
         CommitCondition::Present { path } => {
@@ -250,7 +228,7 @@ pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendReque
             .map(append_record)
             .collect::<Result<_, _>>()?,
         if_tail: value.if_tail,
-        idempotency_key: optional_key(value.idempotency_key)?,
+        idempotency_key: IdempotencyKey::new(value.idempotency_key)?,
     })
 }
 
@@ -275,7 +253,7 @@ pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, St
         source: path(value.source)?,
         destination: path(value.destination)?,
         at_tail: value.at_tail,
-        idempotency_key: optional_key(value.idempotency_key)?,
+        idempotency_key: IdempotencyKey::new(value.idempotency_key)?,
     })
 }
 

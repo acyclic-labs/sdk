@@ -105,16 +105,6 @@ impl StreamProvider for PausingStream {
         self.inner.commit(request).await
     }
 
-    async fn commit_before(
-        &self,
-        request: acyclic_stream::CommitRequest,
-        deadline_unix_millis: u64,
-    ) -> Result<acyclic_stream::CommitOutcome, StreamError> {
-        self.inner
-            .commit_before(request, deadline_unix_millis)
-            .await
-    }
-
     async fn read_commit(
         &self,
         commit_id: acyclic_stream::CommitId,
@@ -774,7 +764,7 @@ async fn failed_atomic_generation_fork_leaves_no_destination_lineage()
             path: StreamPath::new(format!("{prefix}/records"))?,
             records: vec![OwnedBytes::from_static(b"conflict").into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
     let source_authority = AuthorityId::from_bytes(source.id().into_bytes());

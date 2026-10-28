@@ -12,7 +12,7 @@ async fn seed(
             path: path.clone(),
             records: vec![(OwnedBytes::from_static(body)).into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let AppendOutcome::Committed(receipt) = result else {
@@ -52,7 +52,7 @@ async fn checked_registration_never_waits_for_a_missing_or_reused_anchor()
             path,
             records: vec![(OwnedBytes::from_static(b"two")).into()],
             if_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     assert_eq!(
@@ -82,7 +82,7 @@ async fn checked_delivery_rejects_history_loss_after_registration_or_while_waiti
                 path: path.clone(),
                 records: vec![(OwnedBytes::from_static(b"two")).into()],
                 if_tail: Some(1),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
         let mut rows = provider
@@ -111,7 +111,7 @@ async fn checked_delivery_rejects_history_loss_after_registration_or_while_waiti
                         path: path.clone(),
                         records: vec![(OwnedBytes::from_static(b"different")).into()],
                         if_tail: Some(1),
-                        idempotency_key: None,
+                        idempotency_key: crate::IdempotencyKey::unique(),
                     })
                     .await?;
             }

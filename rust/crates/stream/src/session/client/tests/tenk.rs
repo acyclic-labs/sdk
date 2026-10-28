@@ -80,13 +80,7 @@ async fn agent(
     let first = id.is_multiple_of(2);
     if !first {
         let mut inbox = memory
-            .follow(crate::FollowRequest {
-                path: own.clone(),
-                from: 1,
-                preceding: None,
-                filter: crate::FollowFilter::default(),
-                progress: false,
-            })
+            .follow(crate::FollowRequest::new(own.clone(), 1))
             .map_ok(crate::records_only)
             .await?;
         assert_eq!(next(&mut inbox).await?.sequence, 1);
@@ -125,13 +119,7 @@ async fn agent(
     ));
     if first {
         let mut reply = memory
-            .follow(crate::FollowRequest {
-                path: own,
-                from: 2,
-                preceding: None,
-                filter: crate::FollowFilter::default(),
-                progress: false,
-            })
+            .follow(crate::FollowRequest::new(own, 2))
             .map_ok(crate::records_only)
             .await?;
         assert_eq!(next(&mut reply).await?.sequence, 2);
@@ -156,13 +144,7 @@ async fn run_swarm<P: StreamProvider>(
         .map(|(id, path)| async move {
             Ok::<_, StreamError>(
                 provider
-                    .follow(crate::FollowRequest {
-                        path: path,
-                        from: 1,
-                        preceding: None,
-                        filter: crate::FollowFilter::default(),
-                        progress: false,
-                    })
+                    .follow(crate::FollowRequest::new(path, 1))
                     .map_ok(crate::records_only)
                     .await?
                     .map(move |record| (id, record))
@@ -351,13 +333,7 @@ async fn unshared_session_control_is_rejected_by_the_same_node_work_counters() -
     for client in &clients {
         follows.push(
             client
-                .follow(crate::FollowRequest {
-                    path: StreamPath::new("agents/0")?,
-                    from: 1,
-                    preceding: None,
-                    filter: crate::FollowFilter::default(),
-                    progress: false,
-                })
+                .follow(crate::FollowRequest::new(StreamPath::new("agents/0")?, 1))
                 .map_ok(crate::records_only)
                 .await?,
         );
@@ -377,13 +353,7 @@ async fn redundant_control_traffic_is_rejected_by_the_same_linear_byte_budget() 
     let fixture = Fixture::open(Arc::clone(&memory), "redundant").await?;
     let client = fixture.client()?;
     let mut follow = client
-        .follow(crate::FollowRequest {
-            path: StreamPath::new("agents/0")?,
-            from: 1,
-            preceding: None,
-            filter: crate::FollowFilter::default(),
-            progress: false,
-        })
+        .follow(crate::FollowRequest::new(StreamPath::new("agents/0")?, 1))
         .map_ok(crate::records_only)
         .await?;
     assert_eq!(node_work(&fixture.counts, 1), Ok(()));
@@ -452,13 +422,7 @@ async fn quiescence_rejects_extra_deliveries_and_truncated_follow_controls() -> 
         let memory = MemoryStream::default();
         append(&memory, "probe", if extra { 3 } else { 2 }).await?;
         let follow = memory
-            .follow(crate::FollowRequest {
-                path: StreamPath::new("probe")?,
-                from: 0,
-                preceding: None,
-                filter: crate::FollowFilter::default(),
-                progress: false,
-            })
+            .follow(crate::FollowRequest::new(StreamPath::new("probe")?, 0))
             .map_ok(crate::records_only)
             .await?;
         let mut follow = if truncate {

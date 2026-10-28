@@ -34,7 +34,7 @@ async fn append(provider: &MemoryStream, path: &str) -> Result<(), StreamError> 
             path: StreamPath::new(path)?,
             records: vec![(OwnedBytes::from_static(b"delta")).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     Ok(())
@@ -57,7 +57,7 @@ async fn latest_overview(
             path: StreamPath::new("status")?,
             records: vec![latest_value.encode_to_vec().into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let mut overview = client
@@ -167,7 +167,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         let mut follows = futures::future::try_join_all(
             clones
                 .iter()
-                .map(|clone| clone.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)),
+                .map(|clone| clone.follow(crate::FollowRequest::new(path.clone(), 1)).map_ok(crate::records_only)),
         )
         .await?;
         let anchor = provider
@@ -258,7 +258,7 @@ async fn http_session_preserves_the_callers_additional_tls_root() -> TestResult 
             .session_client()?
             .register_credential(0, crate::session::testing::credential())?;
         let mut records = client
-            .follow(crate::FollowRequest { path: StreamPath::new("events")?, from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+            .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1)).map_ok(crate::records_only)
             .await?;
         append(&provider, "events").await?;
         append(&provider, "agents/one").await?;

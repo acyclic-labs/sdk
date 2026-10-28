@@ -5,25 +5,15 @@ use prost::Message;
 use serde_json::{Value, json};
 type Result<T = ()> = std::result::Result<T, &'static str>;
 
-fn options(
-    name: &str,
-    sequence: Option<u64>,
-    key: Option<&crate::IdempotencyKey>,
-) -> Option<Value> {
-    if sequence.is_none() && key.is_none() {
-        return None;
-    }
-    let mut value = serde_json::Map::from_iter([]);
+fn options(name: &str, sequence: Option<u64>, key: &crate::IdempotencyKey) -> Value {
+    let mut value = serde_json::Map::from_iter([(
+        "idempotencyKey".into(),
+        json!(STANDARD.encode(key.as_bytes())),
+    )]);
     if let Some(sequence) = sequence {
         value.insert(name.into(), json!(sequence.to_string()));
     }
-    if let Some(key) = key {
-        value.insert(
-            "idempotencyKey".into(),
-            json!(STANDARD.encode(key.as_bytes())),
-        );
-    }
-    Some(Value::Object(value))
+    Value::Object(value)
 }
 
 fn valid_token_expiry(value: &str) -> bool {
@@ -68,9 +58,10 @@ fn append_json(request: &crate::AppendRequest) -> Result<Value> {
         ("path".into(), json!(request.path.to_string())),
         ("records".into(), json!(values)),
     ]);
-    if let Some(options) = options("ifTail", request.if_tail, request.idempotency_key.as_ref()) {
-        value.insert("options".into(), options);
-    }
+    value.insert(
+        "options".into(),
+        options("ifTail", request.if_tail, &request.idempotency_key),
+    );
     Ok(Value::Object(value))
 }
 
@@ -106,9 +97,10 @@ fn request_json_fork(input: &[u8]) -> Result<Value> {
             ),
         ),
     ]);
-    if let Some(options) = options("atTail", request.at_tail, request.idempotency_key.as_ref()) {
-        value.insert("options".into(), options);
-    }
+    value.insert(
+        "options".into(),
+        options("atTail", request.at_tail, &request.idempotency_key),
+    );
     Ok(Value::Object(value))
 }
 

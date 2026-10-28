@@ -14,7 +14,7 @@ async fn native_receipt_replay_records_actual_metadata_copies_and_original_refus
     let destination = StreamPath::new("receipt-copy/z")?;
     provider.append(AppendRequest {
         path: source.clone(), records: vec![OwnedBytes::from_static(b"seed").into()],
-        if_tail: Some(0), idempotency_key: Some(IdempotencyKey::new("receipt-copy-seed")?),
+        if_tail: Some(0), idempotency_key: IdempotencyKey::new("receipt-copy-seed")?,
     }).await?;
     let request = CommitRequest {
         deadline_unix_millis: None,
@@ -91,7 +91,7 @@ async fn native_commit_owns_admitted_and_retained_fork_exclusions() -> MemoryRes
             path: source.clone(),
             records: vec![OwnedBytes::from_static(b"seed").into()],
             if_tail: Some(0),
-            idempotency_key: Some(IdempotencyKey::new("resident-seed")?),
+            idempotency_key: IdempotencyKey::new("resident-seed")?,
         })
         .await?;
     let mut exclude = Vec::with_capacity(7);
@@ -162,7 +162,7 @@ async fn retained_fork_inspection_owns_every_exclusion_buffer() -> MemoryResult<
     let destination = StreamPath::new("inspection-fork")?;
     provider.append(AppendRequest {
         path: source.clone(), records: vec![OwnedBytes::from_static(b"seed").into()],
-        if_tail: Some(0), idempotency_key: Some(IdempotencyKey::new("inspection-seed")?),
+        if_tail: Some(0), idempotency_key: IdempotencyKey::new("inspection-seed")?,
     }).await?;
     let key = IdempotencyKey::new("inspection-exclusions")?;
     provider.commit(CommitRequest {
@@ -202,9 +202,9 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
                     path: path("replay/growth")?,
                     records: vec![(OwnedBytes::from_static(b"value")).into()],
                     if_tail: Some(index),
-                    idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(
+                    idempotency_key: IdempotencyKey::new(OwnedBytes::from(
                         (255 - index).to_be_bytes().to_vec(),
-                    ))?),
+                    ))?,
                 },
                 meter.original(),
             )
@@ -223,9 +223,9 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
         path: path("replay/growth")?,
         records: vec![(OwnedBytes::from_static(b"value")).into()],
         if_tail: Some(0),
-        idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(
+        idempotency_key: IdempotencyKey::new(OwnedBytes::from(
             255_u64.to_be_bytes().to_vec(),
-        ))?),
+        ))?,
     };
     let denied = Arc::new(Meter::default());
     denied.examination_limit.store(0, Ordering::SeqCst);
@@ -250,9 +250,9 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
                 path: path("replay/growth")?,
                 records: vec![(OwnedBytes::from_static(b"value")).into()],
                 if_tail: Some(0),
-                idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(
+                idempotency_key: IdempotencyKey::new(OwnedBytes::from(
                     256_u64.to_be_bytes().to_vec(),
-                ))?),
+                ))?,
             },
             insertion.original(),
         )
@@ -311,9 +311,9 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
                     path: path("other")?,
                     records: vec![(OwnedBytes::from_static(b"other")).into()],
                     if_tail: Some(index),
-                    idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(format!(
+                    idempotency_key: IdempotencyKey::new(OwnedBytes::from(format!(
                         "other/{index}"
-                    )))?),
+                    )))?,
                 },
                 meter.original(),
             )
@@ -383,7 +383,7 @@ async fn prepared_fixture(limits: MemoryLimits) -> MemoryResult<(MemoryStream, C
                 path: path(name)?,
                 records: vec![(OwnedBytes::from_static(b"seed")).into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }
@@ -570,7 +570,7 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
                     path: path("completion/target")?,
                     records: vec![(OwnedBytes::from_static(b"foreign-append")).into()],
                     if_tail: Some(1),
-                    idempotency_key: Some(foreign_key.clone()),
+                    idempotency_key: foreign_key.clone(),
                 })
                 .await?;
             assert!(matches!(&outcome, AppendOutcome::Committed(_)));
@@ -708,7 +708,7 @@ async fn competing_tail_keeps_canonical_conflict_and_target_unchanged() -> Memor
             path: path("completion/owner")?,
             records: vec![(OwnedBytes::from_static(b"competing")).into()],
             if_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let allocations = meter.allocations.load(Ordering::SeqCst);
@@ -759,14 +759,14 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
             path: path("unrelated")?,
             records: vec![(OwnedBytes::new()).into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         };
         let fork = ForkRequest {
             exclude: Vec::new(),
             source: path("completion/owner")?,
             destination: path("unrelated")?,
             at_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         };
         let commit = CommitRequest {
             deadline_unix_millis: None,

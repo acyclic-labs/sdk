@@ -23,23 +23,14 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
         );
         client.register_credential(0, crate::session::testing::credential())?;
         let mut healthy = client
-            .follow(crate::FollowRequest {
-                path: StreamPath::new("healthy")?,
-                from: 1,
-                preceding: None,
-                filter: crate::FollowFilter::default(),
-                progress: false,
-            })
+            .follow(crate::FollowRequest::new(StreamPath::new("healthy")?, 1))
             .map_ok(crate::records_only)
             .await?;
         let mut children = client
-            .follow(crate::FollowRequest {
-                path: StreamPath::new("agents/first")?,
-                from: 0,
-                preceding: None,
-                filter: crate::FollowFilter::default(),
-                progress: false,
-            })
+            .follow(crate::FollowRequest::new(
+                StreamPath::new("agents/first")?,
+                0,
+            ))
             .map_ok(crate::records_only)
             .await?;
         assert_eq!(children.next().await.ok_or("discovery ended")??.sequence, 0);
@@ -77,13 +68,7 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
         );
         assert!(children.next().await.is_none());
         let mut later = client
-            .follow(crate::FollowRequest {
-                path: StreamPath::new("healthy")?,
-                from: 1,
-                preceding: None,
-                filter: crate::FollowFilter::default(),
-                progress: false,
-            })
+            .follow(crate::FollowRequest::new(StreamPath::new("healthy")?, 1))
             .map_ok(crate::records_only)
             .await?;
         append(&memory, "healthy", 1).await?;

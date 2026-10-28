@@ -184,7 +184,7 @@ mod replay_tests {
         // The response is lost after the existing provider has accepted it.
         let first = provider.append(AppendRequest {
             path: path.clone(), records: vec!["first".into()], if_tail: None,
-            idempotency_key: Some(first_key.clone()),
+            idempotency_key: first_key.clone(),
         }).await.unwrap();
         let restored = Arc::new(MemoryStream::default());
         restored.install_state(&provider.encode_state().await).await.unwrap();

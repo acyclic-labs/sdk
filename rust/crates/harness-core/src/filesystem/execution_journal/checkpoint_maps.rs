@@ -421,7 +421,7 @@ mod tests {
                     path: path.clone(),
                     records: records.iter().cloned().map(Into::into).collect(),
                     if_tail: Some(offset),
-                    idempotency_key: None,
+                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
                 })
                 .await?;
             assert!(matches!(

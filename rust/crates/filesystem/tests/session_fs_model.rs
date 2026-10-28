@@ -10,7 +10,7 @@ fn append(stream: &MemoryStream, path: &StreamPath, value: &'static [u8], from: 
         path: path.clone(),
         records: vec![Bytes::from_static(value).into()],
         if_tail: Some(from),
-        idempotency_key: None,
+        idempotency_key: acyclic_stream::IdempotencyKey::unique(),
     }))
     .unwrap() else {
         panic!("unexpected conflict")

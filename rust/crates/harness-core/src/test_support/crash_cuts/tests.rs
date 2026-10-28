@@ -52,7 +52,7 @@ async fn cuts(limits: LocalStreamLimits) -> Result<CrashCuts<Frames>, CutSimulat
                     path: path(),
                     records: vec![OwnedBytes::from_static(b"setup").into()],
                     if_tail: Some(0),
-                    idempotency_key: None,
+                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
                 })
                 .await
                 .unwrap();
@@ -80,7 +80,7 @@ async fn cuts(limits: LocalStreamLimits) -> Result<CrashCuts<Frames>, CutSimulat
                     path: path(),
                     records: vec![OwnedBytes::from_static(b"after").into()],
                     if_tail: None,
-                    idempotency_key: None,
+                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
                 })
                 .await;
         },

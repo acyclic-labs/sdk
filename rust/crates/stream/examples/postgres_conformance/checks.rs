@@ -23,18 +23,18 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
         path: path.clone(),
         records: vec![OwnedBytes::from_static(b"first").into()],
         if_tail: Some(0),
-        idempotency_key: Some(IdempotencyKey::new(b"cross-session-first".to_vec())?),
+        idempotency_key: IdempotencyKey::new(b"cross-session-first".to_vec())?,
     };
     let receipt = provider.append(first.clone()).await?;
     assert_eq!(peer.append(first).await?, receipt);
     let mut follow = peer
-        .follow(acyclic_stream::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only)
+        .follow(acyclic_stream::FollowRequest::new(path.clone(), 1)).map_ok(acyclic_stream::records_only)
         .await?;
     let request = AppendRequest {
         path: path.clone(),
         records: vec![OwnedBytes::from_static(b"second").into()],
         if_tail: Some(1),
-        idempotency_key: None,
+        idempotency_key: crate::IdempotencyKey::unique(),
     };
     let (left, right) = tokio::join!(provider.append(request.clone()), peer.append(request));
     assert!(matches!(
@@ -53,14 +53,14 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(record.sequence, 1);
     let observer = PostgresStream::connect(database, &namespace).await?;
     let mut remote = observer
-        .follow(acyclic_stream::FollowRequest { path: path.clone(), from: 2, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only)
+        .follow(acyclic_stream::FollowRequest::new(path.clone(), 2)).map_ok(acyclic_stream::records_only)
         .await?;
     provider
         .append(AppendRequest {
             path: path.clone(),
             records: vec![OwnedBytes::from_static(b"notification-only").into()],
             if_tail: Some(2),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     assert_eq!(
@@ -103,7 +103,7 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
                 path: path.clone(),
                 records: vec![OwnedBytes::from_static(b"anchor").into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?
         else {
@@ -126,7 +126,7 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
                     path: path.clone(),
                     records: vec![OwnedBytes::from_static(b"still-following").into()],
                     if_tail: Some(sequence),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 })
                 .await?;
             let update = tokio::time::timeout(Duration::from_secs(1), subscription.next())
@@ -148,11 +148,11 @@ async fn listener_failure(database: &str) -> Result<(), Box<dyn std::error::Erro
             path: path.clone(),
             records: vec![OwnedBytes::new().into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let mut records = provider
-        .follow(acyclic_stream::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only)
+        .follow(acyclic_stream::FollowRequest::new(path.clone(), 1)).map_ok(acyclic_stream::records_only)
         .await?;
     let mut updates = provider
         .follow(acyclic_stream::FollowRequest { path: path, from: 1, preceding: None, filter: FollowFilter::default(), progress: true })

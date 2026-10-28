@@ -82,10 +82,14 @@ impl StreamProvider for Client {
     }
 
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        let body = wire::HeadRequest { path: path.to_string() };
-        let response = self.unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-            Box::pin(async move { service.head(request).await })
-        }).await?;
+        let body = wire::HeadRequest {
+            path: path.to_string(),
+        };
+        let response = self
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.head(request).await })
+            })
+            .await?;
         decode_response(response, crate::wire_codec::head_from_wire)
     }
 
@@ -101,7 +105,6 @@ impl StreamProvider for Client {
             .await?;
         decode_response(response, |response| Ok(response.tail))
     }
-
 
     async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
         let response = self
@@ -147,7 +150,7 @@ impl StreamProvider for Client {
                 .map(crate::wire_codec::append_record_wire)
                 .collect(),
             if_tail: request.if_tail,
-            idempotency_key: Some(retry_identity(request.idempotency_key)?),
+            idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
         };
         let response = self
             .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
@@ -167,7 +170,7 @@ impl StreamProvider for Client {
             source: request.source.to_string(),
             destination: request.destination.to_string(),
             at_tail: request.at_tail,
-            idempotency_key: Some(retry_identity(request.idempotency_key)?),
+            idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
         };
         let response = self
             .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
@@ -192,10 +195,14 @@ impl StreamProvider for Client {
             .await
     }
 
-    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
-        self.session()?.follow_with_ack(request, self.acknowledge_deliveries).await
+    async fn follow(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<crate::FollowStream, StreamError> {
+        self.session()?
+            .follow_with_ack(request, self.acknowledge_deliveries)
+            .await
     }
-
 
     async fn children_page(
         &self,
@@ -214,7 +221,6 @@ impl StreamProvider for Client {
         decode_response(response, commit_outcome_from_wire)
     }
 
-
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let body = wire::ReadCommitRequest {
             commit_id: Bytes::copy_from_slice(commit_id.as_bytes()),
@@ -226,11 +232,4 @@ impl StreamProvider for Client {
             .await?;
         decode_response(response, envelope_from_wire)
     }
-}
-
-
-/// A mutation's retry identity belongs to its caller, including transport retries.
-fn retry_identity(key: Option<IdempotencyKey>) -> Result<Bytes, StreamError> {
-    let key = key.ok_or(StreamError::InvalidArgument)?;
-    Ok(Bytes::copy_from_slice(key.as_bytes()))
 }

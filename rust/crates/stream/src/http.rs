@@ -365,9 +365,7 @@ impl StreamProvider for HttpStream {
             source: source.to_string(),
             destination: destination.to_string(),
             at_tail: request.at_tail,
-            idempotency_key: request
-                .idempotency_key
-                .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
+            idempotency_key: bytes::Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
         };
         let result = parse_fork(&self.request("fork", wire.encode_to_vec()).await?)?;
         if result.source != source || result.destination != destination {

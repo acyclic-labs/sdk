@@ -19,7 +19,7 @@ proptest! {
                 path: path.clone(),
                 records: vec![(Bytes::from_static(b"record")).into(); count],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             };
             provider.append(append(count)).await.unwrap();
             let from = offset.min(count);

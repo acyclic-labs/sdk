@@ -596,7 +596,7 @@ async fn release_refuses_a_committed_different_request_or_mutation_family() -> T
                         path: stream_path(reservation.authority_id, "/publication-gate")?,
                         records: vec![value.into()],
                         if_tail: Some(reservation.gate_tail),
-                        idempotency_key: Some(key)
+                        idempotency_key: key
                     })
                     .await?,
                 AppendOutcome::Committed(_)
@@ -675,10 +675,8 @@ impl ReleaseSpy {
                         path: path.clone(),
                         records: vec![acyclic_stream::OwnedBytes::from_static(b"closed").into()],
                         if_tail: Some(1),
-                        idempotency_key: Some(
-                            stream_key(b"close-lease", path.as_str().as_bytes())
+                        idempotency_key: stream_key(b"close-lease", path.as_str().as_bytes())
                                 .map_err(|_| StreamError::InvalidArgument)?,
-                        ),
                     })
                     .await?;
             }

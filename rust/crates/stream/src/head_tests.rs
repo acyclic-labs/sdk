@@ -28,7 +28,7 @@ async fn seed<P: StreamProvider>(provider: &P, path: &StreamPath) -> Result<Comm
             path: path.clone(),
             records: vec![(OwnedBytes::from_static(b"seed")).into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let AppendOutcome::Committed(receipt) = result else {
@@ -84,7 +84,7 @@ async fn head_condition_on_a_fork_uses_the_inherited_record_identity() -> Result
             source,
             destination: path.clone(),
             at_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     assert_ne!(fork.commit_id, original);

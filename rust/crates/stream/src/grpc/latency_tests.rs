@@ -52,11 +52,11 @@ async fn measure<P: StreamProvider>(writer: &P, reader: &P, label: &str) -> Test
             path: path.clone(),
             records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let mut follow = reader
-        .follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+        .follow(crate::FollowRequest::new(path.clone(), 1)).map_ok(crate::records_only)
         .await?;
     let mut samples = Vec::new();
     for sequence in 1..=144 {
@@ -69,7 +69,7 @@ async fn measure<P: StreamProvider>(writer: &P, reader: &P, label: &str) -> Test
                             path: path.clone(),
                             records: vec![Bytes::from_static(b"delta").into()],
                             if_tail: None,
-                            idempotency_key: None,
+                            idempotency_key: crate::IdempotencyKey::unique(),
                         })
                         .await?,
                 )

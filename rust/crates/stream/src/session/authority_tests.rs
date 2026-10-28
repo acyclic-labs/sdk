@@ -273,7 +273,7 @@ async fn live_sessions_close_idle_and_queued_follows_before_disclosure() {
                             path,
                             records: vec![Bytes::from_static(value).into()],
                             if_tail: None,
-                            idempotency_key: None,
+                            idempotency_key: crate::IdempotencyKey::unique(),
                         })
                         .await
                         .unwrap();

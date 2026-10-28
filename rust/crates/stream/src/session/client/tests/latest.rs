@@ -29,7 +29,7 @@ async fn status(memory: &MemoryStream, sequence: u64, attention: bool) -> Result
             path: StreamPath::new("status")?,
             records: vec![value(sequence, attention).encode_to_vec().into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     Ok(())
@@ -127,13 +127,7 @@ async fn saturated_latest_conflates_only_ordinary_values_and_shares_healthy_all(
         )
         .await?;
     let mut full = client
-        .follow(crate::FollowRequest {
-            path: StreamPath::new("events")?,
-            from: 1,
-            preceding: None,
-            filter: crate::FollowFilter::default(),
-            progress: false,
-        })
+        .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
         .map_ok(crate::records_only)
         .await?;
     for (sent, sequence) in (1..=2).enumerate() {

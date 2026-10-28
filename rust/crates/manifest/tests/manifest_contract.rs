@@ -538,16 +538,17 @@ async fn cron_inbox_append_reaches_lowered_actor_wake_subscription()
             path: path.clone(),
             records: vec![bytes::Bytes::from_static(b"deployed").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
-    let mut wake = stream
-        .follow(
-            path.clone(),
-            subscription.start().cursor_value().ok_or("cursor")?,
-            acyclic_stream::FollowFilter::default(),
-        )
-        .await?;
+    let mut wake = acyclic_stream::records_only(
+        stream
+            .follow(acyclic_stream::FollowRequest::new(
+                path.clone(),
+                subscription.start().cursor_value().ok_or("cursor")?,
+            ))
+            .await?,
+    );
     let initialized = wake.next().await.ok_or("missing initialization")??;
     assert_eq!(initialized.sequence, 0);
     let pending = wake.next();
@@ -559,9 +560,9 @@ async fn cron_inbox_append_reaches_lowered_actor_wake_subscription()
         path,
         records: vec![record.clone().into()],
         if_tail: None,
-        idempotency_key: Some(IdempotencyKey::new(bytes::Bytes::from_static(
+        idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(
             b"cron:tick:123",
-        ))?),
+        ))?,
     };
     stream.append(append.clone()).await?;
     stream.append(append).await?;

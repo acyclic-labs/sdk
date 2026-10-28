@@ -383,7 +383,7 @@ impl MemoryStream {
             // Old behaviour, for negative controls only: the conflict spends the key.
             #[cfg(all(loom, feature = "local"))]
             if crate::verification::fault_is(crate::verification::Fault::RetainConflictKey) {
-                admit_replay(state, Some(&request.idempotency_key), self.limits)?;
+                admit_replay(state, self.limits)?;
                 retain(
                     state,
                     &mut || self.record_replay_probe(&mut probes),
@@ -402,7 +402,7 @@ impl MemoryStream {
         crate::preparation::authority(&request, |path| {
             Ok(state.paths.get(path).map(|path| path.tail))
         })?;
-        admit_replay(state, Some(&request.idempotency_key), self.limits)?;
+        admit_replay(state, self.limits)?;
         reserve_coordinated(state, &request, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;

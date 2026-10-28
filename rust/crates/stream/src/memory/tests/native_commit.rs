@@ -14,7 +14,7 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
                 path: path(name)?,
                 records: vec![(OwnedBytes::from_static(b"seed")).into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }

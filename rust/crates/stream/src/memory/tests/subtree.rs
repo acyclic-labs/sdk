@@ -13,11 +13,11 @@ proptest! {
         let result: Result<(), StreamError> = futures::executor::block_on(async {
             let provider = MemoryStream::default();
             let root = StreamPath::new("tree")?;
-            provider.append(AppendRequest { path: root.clone(), records: vec![Bytes::from_static(b"root").into()], if_tail: Some(0), idempotency_key: None }).await?;
+            provider.append(AppendRequest { path: root.clone(), records: vec![Bytes::from_static(b"root").into()], if_tail: Some(0), idempotency_key: crate::IdempotencyKey::unique() }).await?;
             for (index, value) in values.iter().enumerate() {
-                provider.append(AppendRequest { path: StreamPath::new(format!("tree/items/{index}"))?, records: vec![vec![*value].into()], if_tail: Some(0), idempotency_key: None }).await?;
+                provider.append(AppendRequest { path: StreamPath::new(format!("tree/items/{index}"))?, records: vec![vec![*value].into()], if_tail: Some(0), idempotency_key: crate::IdempotencyKey::unique() }).await?;
             }
-            provider.append(AppendRequest { path: StreamPath::new("tree/items-suffix/keep")?, records: vec![Bytes::from_static(b"keep").into()], if_tail: Some(0), idempotency_key: None }).await?;
+            provider.append(AppendRequest { path: StreamPath::new("tree/items-suffix/keep")?, records: vec![Bytes::from_static(b"keep").into()], if_tail: Some(0), idempotency_key: crate::IdempotencyKey::unique() }).await?;
             provider.commit(CommitRequest {
                 deadline_unix_millis: None,
                 conditions: vec![CommitCondition::Tail { path: root.clone(), expected: 1 },
@@ -35,7 +35,7 @@ proptest! {
                 else {
                     let records: Vec<_> = provider.read(ReadRequest { path: target.clone(), from: 0, limit: 2 }).await?.try_collect().await?;
                     assert_eq!(records.first().map(|record| record.value.as_ref()), Some([*value].as_slice()));
-                    provider.append(AppendRequest { path: target, records: vec![Bytes::from_static(b"private").into()], if_tail: Some(1), idempotency_key: None }).await?;
+                    provider.append(AppendRequest { path: target, records: vec![Bytes::from_static(b"private").into()], if_tail: Some(1), idempotency_key: crate::IdempotencyKey::unique() }).await?;
                 }
                 assert_eq!(provider.tail(StreamPath::new(format!("tree/items/{index}"))?).await?, 1);
             }
@@ -60,7 +60,7 @@ async fn fork_namespace_allocation_is_independent_of_descendant_count() -> Resul
                     path: StreamPath::new(format!("tree/{index}"))?,
                     records: vec![Bytes::from_static(b"body").into()],
                     if_tail: Some(0),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 })
                 .await?;
         }
@@ -133,7 +133,7 @@ async fn page_projection_charges_record_bytes_and_headers() -> Result<(), Stream
                 path: StreamPath::new(format!("agents/{index:04}/status"))?,
                 records: vec![value.clone().into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }
@@ -162,7 +162,7 @@ async fn page_projection_skips_a_child_whose_named_tail_cannot_exist() -> Result
                     path: StreamPath::new(path)?,
                     records: vec![Bytes::from_static(value).into()],
                     if_tail: Some(0),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 })
                 .await
         }

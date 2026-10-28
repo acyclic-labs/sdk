@@ -102,7 +102,7 @@ async fn present_send_requires_the_precommit_path_and_preserves_retry_and_close_
         destination: inbox.clone(),
         at_tail: Some(0),
         exclude: Vec::new(),
-        idempotency_key: Some(IdempotencyKey::new(b"open".as_slice())?),
+        idempotency_key: IdempotencyKey::new(b"open".as_slice())?,
     }).await?;
     assert_eq!(provider.tail(inbox.clone()).await?, 0);
     let sent = provider.commit(request.clone()).await?;
@@ -123,7 +123,7 @@ async fn append(provider: &MemoryStream, path: &str, key: &str) -> Result<(), St
         path: StreamPath::new(path)?,
         records: vec![Bytes::from_static(b"record").into()],
         if_tail: None,
-        idempotency_key: Some(IdempotencyKey::new(key.as_bytes().to_vec())?),
+        idempotency_key: IdempotencyKey::new(key.as_bytes().to_vec())?,
     }).await?;
     assert!(matches!(outcome, AppendOutcome::Committed(_)));
     Ok(())
@@ -140,7 +140,7 @@ async fn head_preserves_each_inherited_cut_through_nested_forks_and_reopen() -> 
         destination: StreamPath::new("first")?,
         at_tail: Some(0),
         exclude: vec![StreamPath::new("excluded")?],
-        idempotency_key: Some(IdempotencyKey::new(b"first".to_vec())?),
+        idempotency_key: IdempotencyKey::new(b"first".to_vec())?,
     }).await?;
     append(&provider, "tree/child", "source-later").await?;
     append(&provider, "first/child", "private-later").await?;
@@ -166,7 +166,7 @@ async fn head_preserves_each_inherited_cut_through_nested_forks_and_reopen() -> 
         destination: StreamPath::new("first/nested")?,
         at_tail: None,
         exclude: Vec::new(),
-        idempotency_key: Some(IdempotencyKey::new(b"nested".to_vec())?),
+        idempotency_key: IdempotencyKey::new(b"nested".to_vec())?,
     }).await?;
     assert_eq!(provider.head(StreamPath::new("first/nested")?).await?.origin, Some(crate::ForkOrigin {
         source: StreamPath::new("tree/child")?, forked_at: 2, commit_id: nested.commit_id,
@@ -176,7 +176,7 @@ async fn head_preserves_each_inherited_cut_through_nested_forks_and_reopen() -> 
         destination: StreamPath::new("second")?,
         at_tail: Some(0),
         exclude: Vec::new(),
-        idempotency_key: Some(IdempotencyKey::new(b"second".to_vec())?),
+        idempotency_key: IdempotencyKey::new(b"second".to_vec())?,
     }).await?;
     for (path, source, cut) in [
         ("second/child", "first/child", 2),

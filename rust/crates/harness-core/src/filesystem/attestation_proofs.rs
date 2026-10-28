@@ -26,7 +26,7 @@ proptest::proptest! {
                 let path = super::StreamPath::new("proof/source").expect("path");
                 let append = super::AppendRequest {
                     path: path.clone(), records: vec![bytes::Bytes::copy_from_slice(&payload).into()],
-                    if_tail: Some(0), idempotency_key: Some(super::IdempotencyKey::new(identity.clone()).expect("key")),
+                    if_tail: Some(0), idempotency_key: super::IdempotencyKey::new(identity.clone()).expect("key"),
                 };
                 let fork = super::ForkRequest {
                     source: path.clone(), destination: super::StreamPath::new("proof/fork").expect("path"),

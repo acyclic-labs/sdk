@@ -162,13 +162,7 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
         client.register_credential(0, crate::session::testing::credential())?;
         phase.set("opening redirected healthy follow");
         let mut records = client
-            .follow(crate::FollowRequest {
-                path: StreamPath::new("healthy")?,
-                from: 1,
-                preceding: None,
-                filter: crate::FollowFilter::default(),
-                progress: false,
-            })
+            .follow(crate::FollowRequest::new(StreamPath::new("healthy")?, 1))
             .map_ok(crate::records_only)
             .await?;
         let rejected = Arc::new(tokio::sync::Notify::new());
@@ -179,13 +173,7 @@ async fn a_peer_that_stops_reading_controls_cannot_stall_healthy_nodes_or_cancel
             let mut opens: FuturesUnordered<_> = (0..1400)
                 .map(|_| {
                     opening
-                        .follow(crate::FollowRequest {
-                            path: path.clone(),
-                            from: 0,
-                            preceding: None,
-                            filter: crate::FollowFilter::default(),
-                            progress: false,
-                        })
+                        .follow(crate::FollowRequest::new(path.clone(), 0))
                         .map_ok(crate::records_only)
                 })
                 .collect();

@@ -36,7 +36,7 @@ pub(crate) async fn qualify_progress(provider: &impl StreamProvider) -> TestResu
             record("a", "alice")?,
         ],
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: crate::IdempotencyKey::unique(),
     };
     provider.append(request).await?;
     for expected in [4, 6] {
@@ -132,7 +132,7 @@ async fn append(
             path: StreamPath::new("filtered")?,
             records: vec![body],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?
     else {
@@ -214,7 +214,7 @@ async fn retry_headers(provider: &impl StreamProvider) -> TestResult {
         path: path.clone(),
         records: vec![record("a", "alice")?],
         if_tail: None,
-        idempotency_key: Some(IdempotencyKey::new("append")?),
+        idempotency_key: IdempotencyKey::new("append")?,
     };
     let outcome = provider.append(request.clone()).await?;
     assert_eq!(provider.append(request.clone()).await?, outcome);

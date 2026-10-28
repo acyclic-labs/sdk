@@ -39,6 +39,16 @@ impl IdempotencyKey {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+
+    /// A key no other call in this process has used, for fixtures whose
+    /// writes carry no retry identity of their own.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn unique() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(Bytes::from(format!("fixture/{next}")))
+    }
 }
 
 /// One immutable record.
@@ -147,8 +157,8 @@ pub struct AppendRequest {
     pub records: Vec<AppendRecord>,
     /// Optional exact tail condition.
     pub if_tail: Option<u64>,
-    /// Optional stable recovery identity.
-    pub idempotency_key: Option<IdempotencyKey>,
+    /// Stable recovery identity; a retry with the same key observes the first outcome.
+    pub idempotency_key: IdempotencyKey,
 }
 
 /// Successful immutable subtree fork, constant in descendant count.
@@ -179,8 +189,8 @@ pub struct ForkRequest {
     pub destination: StreamPath,
     /// Optional exact prefix.
     pub at_tail: Option<u64>,
-    /// Optional stable recovery identity.
-    pub idempotency_key: Option<IdempotencyKey>,
+    /// Stable recovery identity; a retry with the same key observes the first outcome.
+    pub idempotency_key: IdempotencyKey,
 }
 
 /// Required-bounds finite read.
@@ -207,6 +217,20 @@ pub struct FollowRequest {
     pub filter: crate::FollowFilter,
     /// Emit contiguous skipped-prefix progress. False retains indexed record-only wakes.
     pub progress: bool,
+}
+
+impl FollowRequest {
+    /// Every record from `from`, unanchored and unfiltered.
+    #[must_use]
+    pub fn new(path: StreamPath, from: u64) -> Self {
+        Self {
+            path,
+            from,
+            preceding: None,
+            filter: crate::FollowFilter::default(),
+            progress: false,
+        }
+    }
 }
 
 /// Accepted visibility and confirmed persistence at one observation cut.

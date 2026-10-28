@@ -13,7 +13,7 @@ fn race<const REQUIRE: bool>() {
             path: StreamPath::new("replay-work")?,
             records: vec![crate::OwnedBytes::from_static(b"one").into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })))?;
         let (file, durability) = {
             let journal = stream.inner.journal.lock().unwrap();

@@ -219,7 +219,7 @@ async fn request_path_typed_append_preserves_json_responses_and_validation_trace
             path: path(),
             records: Vec::new(),
             if_tail: Some(0),
-            idempotency_key: Some(IdempotencyKey::new(bytes::Bytes::from_static(b"key")).unwrap()),
+            idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(b"key")).unwrap(),
         };
         assert_eq!(server.client.append(request.clone()).await, Err(StreamError::LimitExceeded));
         assert!(server.requests().is_empty());

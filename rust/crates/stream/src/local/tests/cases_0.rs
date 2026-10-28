@@ -139,7 +139,7 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
                             path: StreamPath::new("cancelled-persist")?,
                             records: vec![(Bytes::from_static(b"record")).into()],
                             if_tail: Some(0),
-                            idempotency_key: None,
+                            idempotency_key: crate::IdempotencyKey::unique(),
                         })
                         .await
                 }
@@ -206,7 +206,7 @@ fn a_cancelled_mutation_is_invisible_until_its_frame_is_durable()
                         path,
                         records: vec![(Bytes::from_static(b"record")).into()],
                         if_tail: Some(0),
-                        idempotency_key: None,
+                        idempotency_key: crate::IdempotencyKey::unique(),
                     })
                     .await
             }
@@ -447,7 +447,7 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
         path: StreamPath::new("partial")?,
         records: vec![(Bytes::from_static(b"record")).into()],
         if_tail: Some(0),
-        idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"partial"))?),
+        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"partial"))?,
     });
     let frame = PreparedFrame::encode(&command, 42, None)?;
     for cut in 0..=frame.encoded.len() {
@@ -575,7 +575,7 @@ async fn recovery_rejects_receipt_overcapacity_without_rewriting_the_prefix()
         path: StreamPath::new("capacity/replay")?,
         records: vec![(Bytes::from_static(b"first")).into()],
         if_tail: Some(0),
-        idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"first"))?),
+        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"first"))?,
     };
     let outcome = provider.append(first.clone()).await?;
     let state = provider.inner.provider.encode_state().await;
@@ -587,7 +587,7 @@ async fn recovery_rejects_receipt_overcapacity_without_rewriting_the_prefix()
         .compact(&state, None)?;
     drop(provider);
     let second = AppendRequest {
-        idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"second"))?),
+        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"second"))?,
         if_tail: Some(1),
         ..first.clone()
     };
@@ -626,7 +626,7 @@ async fn retry_outcomes_survive_clock_exhaustion_and_reopen()
         path: StreamPath::new("retained/local")?,
         records: vec![(Bytes::from_static(b"once")).into()],
         if_tail: None,
-        idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"local-once"))?),
+        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"local-once"))?,
     };
     let first = provider.append(request.clone()).await?;
     clock.0.store(u64::MAX, Ordering::SeqCst);
@@ -663,7 +663,7 @@ async fn journal_replay_preserves_monotonic_commit_times() -> Result<(), Box<dyn
                 path: path.clone(),
                 records: vec![(Bytes::copy_from_slice(body)).into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }
@@ -676,7 +676,7 @@ async fn journal_replay_preserves_monotonic_commit_times() -> Result<(), Box<dyn
             path: path.clone(),
             records: vec![(Bytes::from_static(b"after-restart")).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let records = reopened
@@ -761,7 +761,7 @@ async fn deferred_mutations_wait_for_the_next_flush() -> Result<(), Box<dyn std:
                 path: StreamPath::new("deferred")?,
                 records: vec![(Bytes::from_static(b"record")).into()],
                 if_tail: None,
-                idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(key))?),
+                idempotency_key: IdempotencyKey::new(Bytes::from_static(key))?,
             })
             .await?;
         Ok::<_, Box<dyn std::error::Error>>(())
@@ -810,7 +810,7 @@ async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::
             path: StreamPath::new("traced")?,
             records: vec![(Bytes::from_static(b"record")).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         };
         provider.append(request).await?;
         provider.flush()?;
@@ -858,7 +858,7 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
                 path: path.clone(),
                 records: vec![(Bytes::from_static(b"record")).into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
         let captured = acyclic_grpc_observability::tests::Capture::default();
@@ -868,7 +868,7 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
                 let parent = obs::OperationSpan::new(tracing::info_span!("origin_parent"));
                 parent.scope(async {
                     provider
-                        .follow(crate::FollowRequest { path: path, from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+                        .follow(crate::FollowRequest::new(path, 1)).map_ok(crate::records_only)
                         .await
                 })
             },
@@ -930,12 +930,12 @@ async fn follow_out_of_range_is_rejected_at_registration() -> Result<(), Box<dyn
             path: path.clone(),
             records: vec![(Bytes::from_static(b"record")).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     assert!(matches!(
         provider
-            .follow(crate::FollowRequest { path: path, from: 2, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+            .follow(crate::FollowRequest::new(path, 2)).map_ok(crate::records_only)
             .await,
         Err(StreamError::OutOfRange)
     ));

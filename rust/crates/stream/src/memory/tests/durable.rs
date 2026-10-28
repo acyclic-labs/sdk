@@ -9,7 +9,7 @@ fn request(tail: u64) -> Result<AppendRequest, StreamError> {
         path: StreamPath::new("durable/events")?,
         records: vec![Bytes::from_static(b"accepted").into()],
         if_tail: Some(tail),
-        idempotency_key: Some(IdempotencyKey::new(b"durable-identity".to_vec())?),
+        idempotency_key: IdempotencyKey::new(b"durable-identity".to_vec())?,
     })
 }
 
@@ -53,7 +53,7 @@ async fn refusals_and_retries_never_enter_the_durable_boundary() -> Result<(), S
         destination: StreamPath::new("destination")?,
         at_tail: None,
         exclude: Vec::new(),
-        idempotency_key: None,
+        idempotency_key: crate::IdempotencyKey::unique(),
     };
     assert!(matches!(
         core.apply_durable(Command::Fork(fork), None, persist())
@@ -94,7 +94,7 @@ async fn failed_or_cancelled_durability_never_installs_or_notifies() -> Result<(
     core.append(initial).await?;
     let append = request(1)?;
     let mut follow = core
-        .follow(crate::FollowRequest { path: append.path.clone(), from: 1, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+        .follow(crate::FollowRequest::new(append.path.clone(), 1)).map_ok(crate::records_only)
         .await?;
     let refused = core
         .apply_durable(Command::Append(append.clone()), None, async {

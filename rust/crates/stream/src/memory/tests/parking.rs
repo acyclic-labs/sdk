@@ -12,7 +12,7 @@ async fn unpolled_streams_do_not_block_appends() {
                 path: path.clone(),
                 records: vec![(Bytes::from_static(b"seed")).into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await
             .unwrap()
@@ -27,7 +27,7 @@ async fn unpolled_streams_do_not_block_appends() {
                     .unwrap()
             } else {
                 provider
-                    .follow(crate::FollowRequest { path: path.clone(), from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+                    .follow(crate::FollowRequest::new(path.clone(), 0)).map_ok(crate::records_only)
                     .await
                     .unwrap()
             };
@@ -47,7 +47,7 @@ async fn unpolled_streams_do_not_block_appends() {
                     path,
                     records: vec![(Bytes::from_static(b"next")).into()],
                     if_tail: Some(1),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 })
                 .await
                 .unwrap(),
@@ -71,13 +71,13 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
                 path: path.clone(),
                 records: vec![(Bytes::from_static(b"seed")).into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await
             .unwrap();
         let mut follow = {
             provider
-                .follow(crate::FollowRequest { path: path, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+                .follow(crate::FollowRequest::new(path, 0)).map_ok(crate::records_only)
                 .await
                 .unwrap()
                 .map(|item| item.map(|_| ()))

@@ -107,14 +107,16 @@ async fn due_fire_wakes_follow_once_and_rejects_identity_reuse()
             path: inbox.clone(),
             records: vec![vec![0].into()],
             if_tail: None,
-            idempotency_key: Some(acyclic_stream::IdempotencyKey::new(
+            idempotency_key: acyclic_stream::IdempotencyKey::new(
                 b"initialize-inbox".to_vec(),
-            )?),
+            )?,
         })
         .await?;
-    let mut follow = provider
-        .follow(inbox.clone(), 1, acyclic_stream::FollowFilter::default())
-        .await?;
+    let mut follow = acyclic_stream::records_only(
+        provider
+            .follow(acyclic_stream::FollowRequest::new(inbox.clone(), 1))
+            .await?,
+    );
     let mut next = Box::pin(follow.next());
     assert!(poll!(&mut next).is_pending());
     assert!(fire(&provider, &record, inbox.clone(), 19).await?.is_none());

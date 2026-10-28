@@ -61,7 +61,7 @@ async fn local_append_emits_its_span() -> Result<(), Box<dyn std::error::Error>>
                 (Bytes::from_static(b"more")).into(),
             ],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let append = captured.fields("acyclic.stream.append");
@@ -188,7 +188,7 @@ async fn local_provider_excludes_a_second_process_owner_and_repairs_a_torn_tail(
             path: StreamPath::new("durable")?,
             records: vec![(Bytes::from_static(b"one")).into()],
             if_tail: Some(0),
-            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"append"))?),
+            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"append"))?,
         })
         .await?;
     drop(provider);
@@ -218,7 +218,7 @@ async fn reopen_streams_more_commands_than_the_pipeline_window()
                 path: path.clone(),
                 records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
                 if_tail: Some(index),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }
@@ -244,7 +244,7 @@ async fn replay_failure_drains_the_bounded_pipeline_and_releases_the_root()
             source: StreamPath::new("missing-source")?,
             destination: path.clone(),
             at_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }),
         0,
         None,
@@ -254,7 +254,7 @@ async fn replay_failure_drains_the_bounded_pipeline_and_releases_the_root()
             path,
             records: vec![(Bytes::from_static(b"later")).into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }),
         0,
         None,
@@ -300,7 +300,7 @@ async fn journal_capacity_rejects_before_mutating_visible_state()
                 path: StreamPath::new("capacity")?,
                 records: vec![(Bytes::from_static(b"must-not-appear")).into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await,
         Err(StreamError::Capacity)
@@ -323,7 +323,7 @@ async fn append_one(
             path: StreamPath::new(path)?,
             records: vec![(Bytes::from_static(b"body")).into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     Ok(std::fs::metadata(journal)?.len())
@@ -420,9 +420,9 @@ async fn append_keyed(
             path: StreamPath::new("compacted")?,
             records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
             if_tail: Some(index),
-            idempotency_key: Some(IdempotencyKey::new(Bytes::copy_from_slice(
+            idempotency_key: IdempotencyKey::new(Bytes::copy_from_slice(
                 &index.to_le_bytes(),
-            ))?),
+            ))?,
         })
         .await?)
 }
@@ -472,7 +472,7 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
             source: StreamPath::new("compacted")?,
             destination: StreamPath::new("compacted-fork")?,
             at_tail: Some(21),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let fork_history = reopened

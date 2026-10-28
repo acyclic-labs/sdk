@@ -34,7 +34,7 @@ async fn committed_record_times_never_regress_with_the_clock() -> Result<(), Str
                 path: path.clone(),
                 records: vec![(Bytes::copy_from_slice(body)).into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }
@@ -92,7 +92,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
                 .map(crate::wire_codec::append_record_wire)
                 .collect(),
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: bytes::Bytes::new(),
         };
         if wire.encoded_len() <= MAX_COMMAND_BYTES {
             low = middle;
@@ -104,7 +104,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
         path: StreamPath::new("x".repeat(low))?,
         records,
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: crate::IdempotencyKey::unique(),
     };
     assert!(validate_append_size(&request).is_ok());
     let next = StreamPath::new("x".repeat(low + 1))?;
@@ -117,7 +117,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
             .map(crate::wire_codec::append_record_wire)
             .collect(),
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: bytes::Bytes::new(),
     };
     assert!(next_wire.encoded_len() > MAX_COMMAND_BYTES);
     Ok(())
@@ -132,7 +132,7 @@ async fn paginates_more_children_than_one_wire_page_without_gaps() -> Result<(),
                 path: path(&format!("agents/agent-{index:04}"))?,
                 records: vec![(Bytes::from_static(b"bound")).into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }
@@ -174,7 +174,7 @@ async fn deep_fork_history_is_dropped_without_recursive_stack_growth() -> Result
             path: source.clone(),
             records: vec![(Bytes::from_static(b"root")).into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     for depth in 0..2_048 {
@@ -185,7 +185,7 @@ async fn deep_fork_history_is_dropped_without_recursive_stack_growth() -> Result
                 source,
                 destination: destination.clone(),
                 at_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
         source = destination;
@@ -255,7 +255,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
                 path: source.clone(),
                 records: vec![(Bytes::from(index.to_string())).into()],
                 if_tail: Some(index),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }
@@ -266,7 +266,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
             source: source.clone(),
             destination: destination.clone(),
             at_tail: Some(128),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
 
@@ -294,7 +294,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
             source: source.clone(),
             destination: child.clone(),
             at_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     provider
@@ -302,7 +302,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
             path: child.clone(),
             records: vec![(Bytes::from_static(b"child")).into()],
             if_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     for (path, expected) in [(child, b"child".as_slice()), (source, b"1".as_slice())] {
@@ -333,12 +333,12 @@ async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
                     path: stream.clone(),
                     records: vec![(Bytes::from_static(b"x")).into()],
                     if_tail: Some(index),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 })
                 .await?;
         }
         let mut follow = provider
-            .follow(crate::FollowRequest { path: stream, from: 0, preceding: None, filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+            .follow(crate::FollowRequest::new(stream, 0)).map_ok(crate::records_only)
             .await?;
         for expected in 0..count {
             let record = follow.next().await.ok_or(StreamError::Unavailable)??;
@@ -365,7 +365,7 @@ async fn exact_replay_precedes_capacity_and_changed_arguments_never_reclassify()
         path: path("a/b")?,
         records: vec![(Bytes::from_static(b"one")).into()],
         if_tail: Some(0),
-        idempotency_key: Some(key(b"only-key")?),
+        idempotency_key: key(b"only-key")?,
     };
     let committed = provider.append(request.clone()).await?;
     assert_eq!(
@@ -403,7 +403,7 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
             path: source.clone(),
             records: bodies.into_iter().map(Into::into).collect(),
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     for cut in 0_u64..=32 {
@@ -414,7 +414,7 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
                 source: source.clone(),
                 destination: destination.clone(),
                 at_tail: Some(cut),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
         let records = provider
@@ -436,7 +436,7 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
                 path: destination.clone(),
                 records: vec![(Bytes::from_static(b"own")).into(); 2],
                 if_tail: Some(cut),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
         let from = cut.saturating_sub(3);
@@ -509,9 +509,7 @@ async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), Str
         path: StreamPath::new("retained").unwrap_or_else(|_| unreachable!()),
         records: vec![(Bytes::from_static(name)).into()],
         if_tail: None,
-        idempotency_key: Some(
-            crate::IdempotencyKey::new(Bytes::from_static(name)).unwrap_or_else(|_| unreachable!()),
-        ),
+        idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(name)).unwrap_or_else(|_| unreachable!()),
     };
     let AppendOutcome::Committed(first) = provider.append(append(b"first")).await? else {
         return Err(StreamError::Unavailable);
@@ -581,7 +579,7 @@ proptest::proptest! {
                         path: path(&format!("root/{name}"))?,
                         records: vec![(Bytes::from_static(b"x")).into()],
                         if_tail: None,
-                        idempotency_key: None,
+                        idempotency_key: crate::IdempotencyKey::unique(),
                     })
                     .await?;
             }
@@ -593,7 +591,7 @@ proptest::proptest! {
                         path: log.clone(),
                         records: chunk.iter().cloned().map(Into::into).collect(),
                         if_tail: None,
-                        idempotency_key: None,
+                        idempotency_key: crate::IdempotencyKey::unique(),
                     })
                     .await?;
             }
@@ -659,7 +657,7 @@ async fn hierarchy_page_starts_after_prefix_siblings() -> Result<(), StreamError
                 path: path(name)?,
                 records: vec![(Bytes::new()).into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }

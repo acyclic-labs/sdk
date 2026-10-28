@@ -205,7 +205,7 @@ pub(super) async fn qualify() -> TestResult {
         path: source_path.clone(),
         records: vec![value.into()],
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: acyclic_stream::IdempotencyKey::unique(),
     };
     assert!(matches!(
         source.append(append(b"before-subscription")).await?,

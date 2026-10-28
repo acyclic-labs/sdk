@@ -245,7 +245,7 @@ async fn detached_and_forged_checkpoint_heads_cannot_authorize_recovery() -> Res
             path: (*head).clone(),
             records: vec![original.clone().into()],
             if_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
     assert!(

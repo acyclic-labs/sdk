@@ -271,7 +271,7 @@ impl Fixture {
                 path: StreamPath::new(path)?,
                 records: vec![vec![value].into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: acyclic_stream::IdempotencyKey::unique(),
             })
             .await?;
         Ok(())
@@ -559,7 +559,7 @@ async fn cancellation_case(
             path: StreamPath::new("replacement")?,
             records: vec![vec![91].into(), vec![92].into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
     let cancellation = NativeStreamCancellation::new();

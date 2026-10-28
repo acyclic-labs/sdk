@@ -41,12 +41,12 @@ async fn real_provider_receipts_preserve_append_fork_atomic_commit_and_conflicts
         path: source.clone(),
         records: vec![(Bytes::from_static(b"one")).into()],
         if_tail: Some(0),
-        idempotency_key: Some(key(b"append")?),
+        idempotency_key: key(b"append")?,
     };
     provider.append(append.clone()).await?;
     round_trip(&provider, key(b"append")?).await?;
     let mut conflict = append.clone();
-    conflict.idempotency_key = Some(key(b"append-conflict")?);
+    conflict.idempotency_key = key(b"append-conflict")?;
     provider.append(conflict).await?;
     assert!(
         provider
@@ -60,7 +60,7 @@ async fn real_provider_receipts_preserve_append_fork_atomic_commit_and_conflicts
             source: source.clone(),
             destination: StreamPath::new("copy")?,
             at_tail: Some(1),
-            idempotency_key: Some(key(b"fork")?),
+            idempotency_key: key(b"fork")?,
         })
         .await?;
     round_trip(&provider, key(b"fork")?).await?;
@@ -185,7 +185,7 @@ async fn invalid_record_identity_sequence_time_and_positions_are_rejected()
                 (Bytes::from_static(b"b")).into(),
             ],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?
     else {

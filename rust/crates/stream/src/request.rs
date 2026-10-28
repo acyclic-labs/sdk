@@ -497,7 +497,7 @@ mod tests {
             path: StreamPath::new("digest/events")?,
             records: vec![Bytes::from_static(b"record").into()],
             if_tail: Some(0),
-            idempotency_key: Some(key.clone()),
+            idempotency_key: key.clone(),
         };
         let digest = append_digest(&request)?;
         let provider = MemoryStream::default();

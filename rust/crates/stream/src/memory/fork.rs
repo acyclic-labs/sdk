@@ -11,15 +11,12 @@ impl MemoryStream {
         StreamError,
     > {
         let digest = fork_digest(&request)?;
-        if let Some(result) = self.replay_fork(&state, request.idempotency_key.as_ref(), digest)? {
+        if let Some(result) = self.replay_fork(&state, &request.idempotency_key, digest)? {
             return Ok(Decision::Returned(result));
         }
-        admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
+        admit_replay(&state, self.limits)?;
         let mut probes = self.reserve_replay_probes(
-            request
-                .idempotency_key
-                .as_ref()
-                .map_or(0, |_| u64::from(state.replay_height(state.replay_root))),
+            u64::from(state.replay_height(state.replay_root)),
         )?;
         let forked_at = crate::preparation::fork_cut(
             &request,
@@ -75,7 +72,7 @@ impl MemoryStream {
                     state,
                     &mut || self.record_replay_probe(&mut probes),
                     Some(envelope),
-                    request.idempotency_key,
+                    Some(request.idempotency_key),
                     digest,
                     IdempotencyOutcome::Fork(receipt.clone()),
                     Default::default(),

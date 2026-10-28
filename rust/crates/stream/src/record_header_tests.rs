@@ -29,7 +29,7 @@ fn indexed_headers_share_the_value_payload_bound() -> Result<(), StreamError> {
             headers: RecordHeaders::new(vec![b"k".as_slice().into()], vec![])?,
         }],
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: crate::IdempotencyKey::unique(),
     };
     crate::request::append_digest(&request)?;
     request
@@ -84,7 +84,7 @@ fn append(record: AppendRecord) -> Result<AppendRequest, StreamError> {
         path: StreamPath::new("headers/append")?,
         records: vec![record],
         if_tail: Some(0),
-        idempotency_key: Some(IdempotencyKey::new(b"same retry".as_slice())?),
+        idempotency_key: IdempotencyKey::new(b"same retry".as_slice())?,
     })
 }
 
@@ -157,9 +157,7 @@ fn manual_append_and_commit_codecs_match_the_generated_header_contract() -> Resu
             .map(crate::wire_codec::append_record_wire)
             .collect(),
         if_tail: request.if_tail,
-        idempotency_key: request
-            .idempotency_key
-            .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
+        idempotency_key: bytes::Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
     };
     assert_eq!(actual, expected.encode_to_vec());
     for fork in [false, true] {

@@ -47,7 +47,7 @@ pub(crate) fn verify_barrier(broken: bool) {
             path: path.clone(),
             records: vec![crate::OwnedBytes::from_static(b"approval").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })))?;
         if broken {
             set_fault(Fault::BarrierAsFlushed);
@@ -67,7 +67,7 @@ pub(crate) fn verify_barrier(broken: bool) {
             path: path.clone(),
             records: vec![crate::OwnedBytes::from_static(b"next").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })))?;
         // A native ordering operation owns the device outside the model. Race
         // its real completion publication against the full-flush wait: the

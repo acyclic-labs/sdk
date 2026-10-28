@@ -13,7 +13,7 @@ async fn append(provider: &LocalStream, record: &'static [u8]) -> Result {
             path: path(),
             records: vec![Bytes::from_static(record).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     assert!(matches!(outcome, crate::AppendOutcome::Committed(_)));
@@ -144,7 +144,7 @@ async fn native_publication(provider: &LocalStream, entry: u8) -> Result<Arc<Met
                     path: path(),
                     records,
                     if_tail: Some(1),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 },
                 meter.original(),
             )
@@ -215,7 +215,7 @@ async fn native_publication_workers_preserve_provider_scope_and_both_device_pref
                         path: StreamPath::new("native-deferral-owner")?,
                         records: vec![Bytes::from_static(b"owner").into()],
                         if_tail: Some(0),
-                        idempotency_key: None,
+                        idempotency_key: crate::IdempotencyKey::unique(),
                     })
                     .await?;
             }

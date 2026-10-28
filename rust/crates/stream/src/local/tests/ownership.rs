@@ -88,7 +88,7 @@ fn a_reopen_after_the_last_provider_waits_for_the_store_to_close()
                 path: path.clone(),
                 records: vec![Bytes::from_static(b"kept").into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
         // A latch on the close: the journal stays open, as it does while

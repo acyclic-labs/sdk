@@ -27,6 +27,7 @@ ts-rs = "=12.0.1"
 wasm-bindgen.workspace = true
 
 [dev-dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["test-support"] }
 proptest.workspace = true
 bytes.workspace = true
 futures.workspace = true

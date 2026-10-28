@@ -37,7 +37,7 @@ fn retained_v1_golden_frame_and_unknown_marker_control() {
         path: crate::StreamPath::new("retained").unwrap(),
         records: vec![body.clone()],
         if_tail: Some(4),
-        idempotency_key: None,
+        idempotency_key: crate::IdempotencyKey::unique(),
     };
     let digest = crate::request::append_digest(&request).unwrap();
     let reopened = wire_codec::append_record(wire_codec::append_record_wire(body)).unwrap();
