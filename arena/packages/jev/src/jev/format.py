@@ -1,9 +1,9 @@
-"""The System One prompt format and its limits. Pure Python; no model code.
+"""The System One prompt format and batch planning. Pure Python; no model code.
 
 The scorer was trained on `State:\\n{state}` (the head) concatenated with
 `\\n\\nQuestion:\\n{q}\\n\\nOption:\\n{o}` (the tail). The head is the shared
 prefix every branch reuses; each tail is one branch. Everything in this
-module mirrors the Space's app.py so a local run and a Space run agree.
+module shares the Space's scoring format; local work is batched without request-size ceilings.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ TEMPERATURE = 1.75          # fitted on the validation split; ECE 0.044 held-out
 TRAIN_MAX_LEN = 384         # sequences were truncated here in training
 TRAIN_MAX_OPTIONS = 16
 MAX_QUESTIONS = 24          # per Space call; the swarm chunks above this
-MAX_OPTIONS = 32
 BRANCH_CHUNK = 96
 BRANCH_TOKEN_BUDGET = 200_000
 NAIVE_FORWARD_TOKENS = 48_000
@@ -50,15 +49,6 @@ def branch_chunk(state_tokens: int) -> int:
 def approx_token_len(text: str) -> int:
     """A tokenizer-free estimate (~4 chars per token) for planning when no tokenizer is loaded."""
     return max(1, len(text) // 4)
-
-
-def validate(questions: Sequence[Question]) -> None:
-    """Raise ValueError for anything the scorer refuses rather than truncates."""
-    if not questions:
-        raise ValueError("at least one question is required")
-    for q in questions:
-        if len(q.options) > MAX_OPTIONS:
-            raise ValueError(f"{q.question!r}: {len(q.options)} options; the limit is {MAX_OPTIONS}")
 
 
 def plan(state: str, questions: Sequence[Question], token_len: TokenLen = approx_token_len) -> Plan:
