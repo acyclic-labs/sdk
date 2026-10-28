@@ -1,7 +1,7 @@
 use super::*;
 use crate::foundation::Digest;
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
-use crate::simulation::{Simulation, SimulationFault, SimulationOperation, SimulationOptions};
+use crate::simulation::{Simulation, SimulationFault, SimulationOperation};
 use crate::storage::{
     ObjectKind, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, object_digest,
 };
@@ -749,11 +749,7 @@ async fn simulated_remote_promotion_fails_exactly_and_retries_idempotently()
         &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &crate::CancellationToken::new()),
     )
     .await?;
-    let source_simulation = Simulation::wrap(
-        MemoryAuthorityStore::default(),
-        source_inner,
-        SimulationOptions::default(),
-    )?;
+    let source_simulation = Simulation::wrap(MemoryAuthorityStore::default(), source_inner);
     let destination_simulation = Simulation::default();
     destination_simulation.schedule_next(
         SimulationOperation::ObjectPut,
