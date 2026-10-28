@@ -151,12 +151,15 @@ impl RecordCache {
     }
 
     pub(super) fn reset_access(&mut self, access: super::Access) {
-        let mut empty = Self::new(self.max_bytes, self.max_streams);
-        empty.backings = self.backings.clone();
-        empty.clock = self.clock;
-        empty.mark = self.mark;
-        empty.access = access;
-        *self = empty;
+        self.access = access;
+        self.entries.clear();
+        self.lru.clear();
+        self.meta.clear();
+        self.passed.clear();
+        self.passed_bytes = 0;
+        self.bytes = 0;
+        self.cached_payload = 0;
+        self.resident.clear();
     }
 
     pub(super) fn snapshot_limit(&self) -> usize {
