@@ -69,6 +69,74 @@ impl ProcessWake {
         }
     }
 
+    /// Waits on the retained kernel signal without consuming it. No thread or
+    /// task is created. A stop remains observable by every concurrent waiter.
+    /// Returns false only when the caller's optional timeout expires.
+    pub fn wait(&self, timeout: Option<Duration>) -> io::Result<bool> {
+        let deadline = timeout
+            .map(|timeout| {
+                Instant::now()
+                    .checked_add(timeout)
+                    .ok_or(io::ErrorKind::InvalidInput)
+            })
+            .transpose()?;
+        loop {
+            let remaining = deadline.map(|at| at.saturating_duration_since(Instant::now()));
+            match self.wait_once(remaining) {
+                Ok(true) => return Ok(true),
+                Ok(false) if deadline.is_some_and(|at| Instant::now() >= at) => return Ok(false),
+                Ok(false) => {} // native timeout representation chunk; continue the same wait
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn wait_once(&self, timeout: Option<Duration>) -> io::Result<bool> {
+        #[cfg(unix)]
+        {
+            let milliseconds = timeout.map_or(-1, |timeout| {
+                i32::try_from(timeout.as_nanos().div_ceil(1_000_000)).unwrap_or(i32::MAX)
+            });
+            let mut event = libc::pollfd {
+                fd: self.raw(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: the retained signal and this writable descriptor remain
+            // live for the complete kernel wait. No periodic recheck is armed.
+            let result = unsafe { libc::poll(&raw mut event, 1, milliseconds) };
+            if result < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if event.revents & libc::POLLNVAL != 0 {
+                return Err(io::ErrorKind::InvalidInput.into());
+            }
+            Ok(result != 0)
+        }
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::{
+                Foundation::{WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT},
+                System::Threading::{INFINITE, WaitForSingleObject},
+            };
+            let milliseconds = timeout.map_or(INFINITE, |timeout| {
+                u32::try_from(timeout.as_nanos().div_ceil(1_000_000))
+                    .unwrap_or(INFINITE - 1)
+                    .min(INFINITE - 1)
+            });
+            // SAFETY: this retained manual-reset event remains owned throughout
+            // the kernel wait and is neither closed nor acknowledged here.
+            let result = unsafe { WaitForSingleObject(self.raw(), milliseconds) };
+            match result {
+                WAIT_OBJECT_0 => Ok(true),
+                WAIT_TIMEOUT => Ok(false),
+                WAIT_FAILED => Err(io::Error::last_os_error()),
+                _ => Err(io::ErrorKind::InvalidData.into()),
+            }
+        }
+    }
+
     /// Makes the capture owner runnable. Repeated notifications coalesce.
     pub fn notify(&self) -> io::Result<()> {
         #[cfg(unix)]
@@ -171,53 +239,27 @@ impl std::os::fd::AsFd for ProcessWake {
 mod tests {
     use super::*;
 
-    fn ready(wake: &ProcessWake) -> io::Result<bool> {
-        #[cfg(unix)]
-        {
-            let mut event = libc::pollfd {
-                fd: wake.raw(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: this one retained descriptor and writable output stay live.
-            let answer = unsafe { libc::poll(&raw mut event, 1, 0) };
-            if answer < 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(answer != 0)
-        }
-        #[cfg(windows)]
-        {
-            // SAFETY: the retained event is observed without blocking.
-            let answer = unsafe {
-                windows_sys::Win32::System::Threading::WaitForSingleObject(wake.raw(), 0)
-            };
-            if answer == windows_sys::Win32::Foundation::WAIT_FAILED {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(answer == windows_sys::Win32::Foundation::WAIT_OBJECT_0)
-        }
-    }
-
     #[test]
     fn ordinary_notifications_are_acknowledged_but_stops_remain_broadcast() -> io::Result<()> {
         let wake = ProcessWake::new()?;
-        assert!(!ready(&wake)?);
+        assert!(!wake.wait(Some(Duration::ZERO))?);
         wake.notify()?;
-        assert!(ready(&wake)?);
+        assert!(wake.wait(None)?);
+        assert!(wake.wait(Some(Duration::ZERO))?);
         wake.consume()?;
-        assert!(!ready(&wake)?);
+        assert!(!wake.wait(Some(Duration::ZERO))?);
         wake.stop()?;
         for _ in 0..4 {
             let consumer = wake.clone();
+            assert!(consumer.wait(None)?);
             assert!(
-                ready(&consumer)?,
+                consumer.wait(Some(Duration::ZERO))?,
                 "a stopped owner must wake every consumer"
             );
             consumer.consume()?;
         }
         assert!(
-            ready(&wake)?,
+            wake.wait(Some(Duration::ZERO))?,
             "acknowledging a stop must not clear the fence"
         );
         Ok(())
