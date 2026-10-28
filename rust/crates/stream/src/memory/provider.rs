@@ -319,20 +319,55 @@ impl StreamProvider for MemoryStream {
             let count = usize::try_from((path.tail - request.from).min(u64::from(request.limit)))
                 .map_err(|_| std::io::ErrorKind::InvalidInput)?;
             let mut allocation = acyclic_native_runtime::ReadAllocation::empty(&meter);
-            let mut windows = crate::native::vector(count, &meter, &mut allocation)?;
+            let mut windows = crate::native::vector(
+                count.min(crate::CHILDREN_PAGE_ITEMS as usize),
+                &meter,
+                &mut allocation,
+            )?;
             let end = path
                 .tail
                 .min(request.from.saturating_add(u64::from(request.limit)));
-            admit_windows(path, request.from, end, &*meter, &mut windows)?;
+            let page_end = end.min(
+                request
+                    .from
+                    .saturating_add(u64::from(crate::CHILDREN_PAGE_ITEMS)),
+            );
+            admit_windows(path, request.from, page_end, &*meter, &mut windows)?;
             windows.reverse();
             let cursor_meter = Arc::clone(&meter);
-            // A bounded native read never refreshes a history root. Keep only
-            // its already-admitted windows, rather than a live follow cursor.
-            let cursor: VecDeque<HistoryWindow> = windows.into();
+            let cursor = NativeReadCursor {
+                windows,
+                path: (page_end < end).then(|| path.clone()),
+                next: page_end,
+                end,
+            };
             let cursor = stream::try_unfold(cursor, move |mut cursor| {
                 let meter = Arc::clone(&cursor_meter);
                 async move {
-                    let Some(window) = cursor.front() else {
+                    if cursor.windows.is_empty() && cursor.next < cursor.end {
+                        meter.check()?;
+                        let end = cursor.end.min(
+                            cursor
+                                .next
+                                .saturating_add(u64::from(crate::CHILDREN_PAGE_ITEMS)),
+                        );
+                        admit_windows(
+                            cursor
+                                .path
+                                .as_ref()
+                                .ok_or(std::io::ErrorKind::InvalidData)?,
+                            cursor.next,
+                            end,
+                            &*meter,
+                            &mut cursor.windows,
+                        )?;
+                        cursor.windows.reverse();
+                        cursor.next = end;
+                        if end == cursor.end {
+                            cursor.path = None;
+                        }
+                    }
+                    let Some(window) = cursor.windows.last() else {
                         return Ok(None);
                     };
                     let length = window
@@ -350,7 +385,10 @@ impl StreamProvider for MemoryStream {
                     )?;
                     let copied = std::mem::size_of::<Record>() as u64;
                     meter.admit_examination(1, copied)?;
-                    let window = cursor.front_mut().ok_or(std::io::ErrorKind::InvalidData)?;
+                    let window = cursor
+                        .windows
+                        .last_mut()
+                        .ok_or(std::io::ErrorKind::InvalidData)?;
                     let record = window
                         .records
                         .records
@@ -363,7 +401,7 @@ impl StreamProvider for MemoryStream {
                         .checked_add(1)
                         .ok_or(std::io::ErrorKind::InvalidData)?;
                     if window.start == window.end {
-                        cursor.pop_front();
+                        cursor.windows.pop();
                     }
                     #[cfg(test)]
                     let read = crate::test_meter::trace::recordings_reordered()
@@ -579,6 +617,15 @@ impl StreamProvider for MemoryStream {
             work.finish(provider.append_inner(request).await)
         })
     }
+}
+
+/// A finite immutable snapshot, with one funded page reused through completion.
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeReadCursor {
+    windows: Vec<HistoryWindow>,
+    path: Option<PathState>,
+    next: u64,
+    end: u64,
 }
 
 /// Admit the history windows that cover `from..end`, newest first.
