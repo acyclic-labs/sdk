@@ -425,24 +425,27 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     }
 
     /// Explicitly advances one clean manual or tracking checkout to head.
-    pub async fn refresh_head(
+    pub async fn refresh_head<W: FsWork>(
         &mut self,
-        budget: WorkBudget,
+        work: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<GenerationId> {
-        if !matches!(
-            self.mode.consistency,
-            ConsistencyMode::Manual | ConsistencyMode::TrackingSafe
-        ) {
-            return Err(OperationFailure::before_work(FsError::RefreshNotAllowed));
-        }
-        if self.has_pending_mutations() {
-            return Err(OperationFailure::before_work(
-                FsError::PendingMutationsRequireRebase,
-            ));
-        }
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    ) -> W::Output<GenerationId, FsError> {
+        let mut accounting = work.accounting(cancellation);
         let result = async {
+            if !matches!(
+                self.mode.consistency,
+                ConsistencyMode::Manual | ConsistencyMode::TrackingSafe
+            ) {
+                return Err(FsError::RefreshNotAllowed);
+            }
+            if self.has_pending_mutations() {
+                return Err(FsError::PendingMutationsRequireRebase);
+            }
+            accounting.check()?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                self.validate_native_work(original)?;
+            }
             let (root, head) = self
                 .volume
                 .resolve_head_generation(&mut accounting, cancellation)
@@ -456,7 +459,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             Ok(self.generation_id())
         }
         .await;
-        measured(result, &accounting)
+        work.finish(result, &accounting)
     }
 
     async fn reset_root(
