@@ -33,7 +33,11 @@ export class Actors extends DurableObject<Env> {
       await this.ctx.storage.setAlarm(Date.now());
       await this.journal.append(index, admit, changes);
     },
-  }, (address: Uint8Array, paused: boolean) => this.owner(address).pause(paused), () => this.restart()));
+  }, async (address: Uint8Array, paused: boolean) => {
+    await this.discover();
+    if (this.routes.get(key(address)) === undefined) refuse("pause-owner");
+    await this.owner(address).pause(paused);
+  }, () => this.restart()));
   private readonly journal = new SqliteJournal(this.ctx.storage, "actors", changes => {
     if (changes.some(([path]) => path === root)) {
       const generation = Number(this.metadata.get("generation") ?? "0") + 1;
@@ -120,6 +124,7 @@ export class Actors extends DurableObject<Env> {
     if (this.metadata.get("pending") !== "1" && !this.rows().some(([, route]) => route.pending)) await this.ctx.storage.deleteAlarm();
   }
   private async restart() {
+    await this.discover();
     for (const [, row] of this.rows()) {
       const address = Uint8Array.from(row.address);
       const before = await this.owner(address).incarnation();
