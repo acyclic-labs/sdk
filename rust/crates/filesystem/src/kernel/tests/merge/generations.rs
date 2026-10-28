@@ -19,7 +19,7 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
     let union_limit = (merge_generation_async(
         &store,
         MergeGenerationRequest {
-            maximum_changes: 1,
+            maximum_changes: Some(1),
             ..request(
                 generation(base_table),
                 generation(ours_table),
@@ -38,6 +38,38 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
         MergeGenerationError::ChangeLimit
     ));
 
+    let selected_request = stored_request(
+        &store,
+        generation(base_table),
+        generation(ours_table),
+        generation(theirs_table),
+    )
+    .await?;
+    let mut no_policy = selected_request.clone();
+    no_policy.maximum_changes = None;
+    no_policy.maximum_conflicts = None;
+    let complete = merge_generation_async(
+        &store,
+        no_policy,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    let selected = merge_generation_async(
+        &store,
+        selected_request,
+        DecodeLimits::default(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .await?;
+    assert_eq!(complete.value, selected.value);
+    assert!(matches!(
+        complete.value,
+        MergeGenerationOutcome::Prepared { .. }
+    ));
+
     let base_third = record(3, 3, 1, FilePayload::Empty, FileKind::Fifo);
     let ours_second = record(2, 5, 1, FilePayload::Empty, FileKind::Fifo);
     let theirs_second_overlap = record(2, 6, 1, FilePayload::Empty, FileKind::Fifo);
@@ -45,7 +77,7 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
     let three_way_union_limit = (merge_generation_async(
         &store,
         MergeGenerationRequest {
-            maximum_changes: 2,
+            maximum_changes: Some(2),
             ..request(
                 generation(put_table(&store, vec![base_first, base_second, base_third]).await?),
                 generation(put_table(&store, vec![ours_first, ours_second, base_third]).await?),
@@ -162,7 +194,7 @@ async fn generation_merge_covers_union_directory_and_field_resolution_limits()
     let directory_limit = (merge_generation_async(
         &store,
         MergeGenerationRequest {
-            maximum_changes: 1,
+            maximum_changes: Some(1),
             ..request(
                 generation(put_table(&store, vec![directory_with(empty)]).await?),
                 generation(put_table(&store, vec![directory_with(ours_tree)]).await?),

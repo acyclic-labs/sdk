@@ -21,7 +21,7 @@ pub async fn git_merge_resolution<
         paths.insert(path.clone(), true);
     }
     for renamed in current
-        .paths_for_file_ids(conflicts.values().filter_map(|id| *id), u32::MAX)
+        .paths_for_file_ids(conflicts.values().filter_map(|id| *id), None)
         .await?
         .into_values()
     {

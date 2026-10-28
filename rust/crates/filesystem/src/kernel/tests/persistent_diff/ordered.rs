@@ -50,7 +50,7 @@ async fn root(store: &MemoryObjectStore, keys: &[u8], width: usize, after: bool)
 async fn run<const PREFIX: bool, const RESET: bool>(
     store: &MemoryObjectStore,
     roots: (ObjectId, ObjectId),
-    maximum: u32,
+    maximum: impl Into<Option<u32>>,
     items: u64,
 ) -> (Outcome, WorkCounters) {
     let cancellation = CancellationToken::new();
@@ -92,6 +92,14 @@ async fn compare(
         root(&store, before, widths.0, false).await,
         root(&store, after, widths.1, true).await,
     );
+    // Absence follows the same full traversal and physical receipts as a
+    // finite selection that admits this generated input. Its exact item
+    // receipt must also admit a complete run on the original budget.
+    let full = run::<true, true>(&store, roots, None, u64::MAX).await;
+    let selected = run::<true, true>(&store, roots, u32::MAX, u64::MAX).await;
+    prop_assert_eq!(&full, &selected);
+    let exact = run::<true, true>(&store, roots, None, full.1.items_examined).await;
+    prop_assert_eq!(exact, full);
     // The old-search mode uses the same real read/frontier/insertion/retirement
     // path. Only the known-prefix optimization is disabled.
     let (old, old_work) = run::<false, true>(&store, roots, maximum, u64::MAX).await;

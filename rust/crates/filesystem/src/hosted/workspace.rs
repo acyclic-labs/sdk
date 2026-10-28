@@ -277,14 +277,13 @@ impl HostedWorkspace {
     pub async fn rebase(
         &self,
         maximum_generations: impl Into<Option<u32>>,
-        maximum_changes: u32,
-        maximum_conflicts: u32,
+        maximum_changes: impl Into<Option<u32>>,
+        maximum_conflicts: impl Into<Option<u32>>,
         idempotency_key: IdempotencyKey,
     ) -> Result<wire::RebaseResponse, HostedFsError> {
-        self.filesystem
-            .require_page_bound(maximum_changes, "rebase changes")?;
-        self.filesystem
-            .require_page_bound(maximum_conflicts, "rebase conflicts")?;
+        let maximum_changes = maximum_changes.into();
+        let maximum_conflicts = maximum_conflicts.into();
+
         let mut client = self.filesystem.client.clone();
         Ok(client
             .rebase(

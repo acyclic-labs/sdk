@@ -4,6 +4,55 @@ use crate::kernel::{AttributeClass, OwnedSourceChunk};
 
 mod binding;
 
+/// One original-ledger reservation for all storage discovered while compiling.
+/// State discovery has no fixed number of allocation stages.
+struct PolicyStorage {
+    allocation: KernelOwnedAllocation,
+    bytes: u64,
+}
+
+impl PolicyStorage {
+    fn new(accounting: &mut KernelAccounting<'_>) -> Result<Self, FsError> {
+        Ok(Self {
+            allocation: accounting.claim_owned(0, 0)?,
+            bytes: 0,
+        })
+    }
+
+    fn admit(
+        &mut self,
+        bytes: usize,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), FsError> {
+        let bytes = u64::try_from(bytes).map_err(|_| crate::WorkError::Overflow)?;
+        let total = self
+            .bytes
+            .checked_add(bytes)
+            .ok_or(crate::WorkError::Overflow)?;
+        let mut allocation = accounting.claim_owned(bytes, u64::from(bytes != 0))?;
+        self.allocation.absorb(&mut allocation)?;
+        self.bytes = total;
+        Ok(())
+    }
+
+    fn retain(
+        mut self,
+        bytes: u64,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<KernelOwnedAllocation, FsError> {
+        if bytes > self.bytes {
+            accounting.release_owned(&mut self.allocation, self.bytes)?;
+            return Err(FsError::InvalidAccessPolicy);
+        }
+        accounting.reconcile_owned(&mut self.allocation, self.bytes, bytes)?;
+        Ok(self.allocation)
+    }
+
+    fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        self.retain(0, accounting).map(drop)
+    }
+}
+
 fn policy_name(accounting: &mut KernelAccounting<'_>) -> Result<Owned<AttributeName>, FsError> {
     let copied = WorkCounters {
         bytes_copied: POLICY_METADATA_KEY.len() as u64,
@@ -326,8 +375,7 @@ fn compile_cached_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .checked_mul((size_of::<crate::access::Rule>() + 128) as u64)
         .ok_or(crate::WorkError::Overflow)?;
     let mut decode = accounting.claim_owned(decode_bytes, 1)?;
-    let mut stages = [None, None];
-    let mut stage = 0;
+    let mut storage = PolicyStorage::new(accounting)?;
     let mut admission_error = None;
     let compiled = (|| {
         accounting.charge(WorkCounters {
@@ -343,14 +391,8 @@ fn compile_cached_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             &policy,
             volume.config,
             &mut remaining,
-            |bytes| match accounting.claim_owned(bytes as u64, 1) {
-                Ok(allocation) => {
-                    *stages.get_mut(stage).ok_or(crate::access::InvalidPolicy(
-                        "invalid policy compilation stage",
-                    ))? = Some((allocation, bytes as u64));
-                    stage += 1;
-                    Ok(())
-                }
+            |bytes| match storage.admit(bytes, accounting) {
+                Ok(()) => Ok(()),
                 Err(error) => {
                     admission_error = Some(error);
                     Err(crate::access::InvalidPolicy(
@@ -382,9 +424,7 @@ fn compile_cached_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         cache.insert(volume.id, revision, Arc::clone(&compiled))?;
         Ok(compiled)
     })();
-    for (mut allocation, bytes) in stages.into_iter().flatten() {
-        accounting.release_owned(&mut allocation, bytes)?;
-    }
+    storage.retire(accounting)?;
     accounting.release_owned(&mut decode, decode_bytes)?;
     compiled
 }
