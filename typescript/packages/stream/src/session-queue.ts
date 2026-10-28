@@ -1,19 +1,30 @@
 import { StreamError } from "./types.js";
 
-/** Bounded asynchronous storage; wakeups come only from producers/consumers. */
+/** FIFO storage with optional caller-selected send credit and event wakeups. */
 export class SessionQueue<T> implements AsyncIterable<T> {
   #values: (T | undefined)[] = [];
   #head = 0;
   #length = 0;
-  readonly #capacity: number;
+  #capacity: number;
+  readonly #credit: number | undefined;
   readonly #readers = new Set<() => void>();
   readonly #writers = new Set<() => void>();
   #ended = false;
   #error: unknown;
-  constructor(capacity: number) { this.#capacity = capacity; }
-  get available(): number { return this.#capacity - this.#length; }
+  constructor(credit?: number) { this.#credit = credit; this.#capacity = credit ?? 64; }
+  get available(): number { return this.#credit === undefined ? Infinity : this.#credit - this.#length; }
   push(value: T): void {
-    if (this.#ended || this.available === 0) throw new StreamError("capacity", "session queue capacity exceeded");
+    if (this.#ended) throw this.#error ?? new StreamError("unavailable", "session ended");
+    if (this.available === 0) throw new StreamError("capacity", "session queue credit exhausted");
+    if (this.#length === this.#capacity) {
+      // Grow geometrically; every retained item moves only amortized O(1)
+      // times, and consumed references are cleared by the shared take path.
+      const values: (T | undefined)[] = [];
+      for (let index = 0; index < this.#length; index += 1) values[index] = this.#values[(this.#head + index) % this.#capacity];
+      this.#values = values;
+      this.#head = 0;
+      this.#capacity *= 2;
+    }
     this.#values[(this.#head + this.#length) % this.#capacity] = value;
     this.#length += 1;
     this.#wake(this.#readers);
