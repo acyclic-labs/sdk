@@ -4,6 +4,7 @@
 use super::*;
 use crate::local::Subscription;
 use acyclic_stream::ChildrenPageRequest;
+use acyclic_stream::StreamProviderExt as _;
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
     pub(super) fn dispatcher_store(&self) -> Result<(Store<P>, ActorReference), Error> {

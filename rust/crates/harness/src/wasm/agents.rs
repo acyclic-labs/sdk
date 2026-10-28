@@ -26,6 +26,7 @@ use crate::{
 };
 use acyclic_actors::{addressing::ActorReference, guest::Handler, local::SystemClock};
 use acyclic_fs::StreamAuthorityStore;
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     ChildrenPageRequest, CommitId, ReadRequest, StreamError, StreamPath, StreamProvider,
 };

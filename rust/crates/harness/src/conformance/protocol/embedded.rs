@@ -15,6 +15,7 @@ use acyclic_harness_core::{
     preset::Preset,
     tool::{JsonToolProjection, Tool, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult},
 };
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{BoxProviderStream, session::Client};
 use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};

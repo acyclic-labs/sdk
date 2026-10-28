@@ -2,6 +2,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 acyclic_test_support::counting_allocator!();
 use acyclic_actors::timers::{MAX_TIMER_RECORD_BYTES, TimerError, TimerRecord, fire};
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{MemoryStream, StreamError, StreamPath, StreamProvider};
 use futures::{StreamExt, poll};
 use proptest::prelude::*;

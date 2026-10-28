@@ -15,8 +15,9 @@ pub mod runner;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs};
 use acyclic_objects::Blobs;
-#[cfg(test)]
 use acyclic_stream::StreamProvider;
+#[cfg(test)]
+use acyclic_stream::StreamProviderExt as _;
 
 /// Canonical language-neutral Objects conformance inventory.
 pub const OBJECTS_SUITE: &[u8] = acyclic_objects::conformance::SUITE;

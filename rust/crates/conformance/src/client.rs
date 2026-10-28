@@ -11,6 +11,7 @@ use acyclic_harness_client::{
     AgentClient, AgentClientError, AgentEvent, AgentPath, AgentRecord as _, AgentSelection,
     ConversationEntry, DemandError, StatusRecord, WireSessionError,
 };
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{StreamProvider, session::Client};
 use serde::{Deserialize, Serialize};
 
