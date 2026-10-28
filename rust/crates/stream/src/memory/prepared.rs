@@ -66,7 +66,7 @@ impl MemoryStream {
         ))?;
         let _publication = self.publication.lock().await;
         let mut state = self.state.write().await;
-        let capacity = self.reserve_prepared_capacity(&state, &request, maximum)?;
+        let capacity_reservation = self.reserve_prepared_capacity(&state, &request, maximum)?;
         let retained = self.reserve_retained(&state)?;
         // The tree can grow up to the admitted replay limit while this completion is pending.
         let mut probes = self.reserve_replay_probes(2 * self.maximum_replay_height() + 16)?;
@@ -115,7 +115,7 @@ impl MemoryStream {
         let recovery = self.prepare_recovery(
             key.clone(),
             conditions.clone(),
-            maximum,
+            capacity,
             maximum_hash,
             prototype,
         )?;
@@ -139,7 +139,7 @@ impl MemoryStream {
                 retained,
                 namespace,
                 conflicts: conflict,
-                capacity,
+                capacity: capacity_reservation,
                 probes,
                 codec,
                 headers,
@@ -189,7 +189,7 @@ impl MemoryStream {
         &self,
         recovery_key: IdempotencyKey,
         recovery_conditions: [CommitCondition; 2],
-        maximum: usize,
+        capacity: crate::PreparedRecordCapacity,
         maximum_hash: u64,
         prototype: (CommittedEnvelope, Allocation),
     ) -> Result<NativeProviderFuture<'static, Option<IdempotencyObservation>>, StreamError> {
@@ -203,7 +203,7 @@ impl MemoryStream {
         let mut bytes = work.record(NativeByteReservation::new(
             Arc::clone(&meter),
             NativeOperationKind::Read,
-            maximum,
+            capacity.payload_bytes,
         ))?;
         let mut codec = work.record(NativeCodecReservation::new(
             Arc::clone(&meter),
@@ -230,7 +230,7 @@ impl MemoryStream {
                 let (mut value, claim) = prototype;
                 let target = envelope_append(&value);
                 let envelope =
-                    prepared_envelope(stored, maximum, &target.path, target.start, target.tail)?;
+                    prepared_envelope(stored, capacity, &target.path, target.start, target.tail)?;
                 let source = envelope_append(envelope);
                 let record = source.records.first().ok_or(StreamError::Unavailable)?;
                 *envelope_append_mut(&mut value)
@@ -330,7 +330,11 @@ impl PreparedCommit {
                 let result = copy_outcome(
                     stored,
                     self.provider.revisions.at(stored.index),
-                    body.payload_bytes(),
+                    crate::PreparedRecordCapacity {
+                        payload_bytes: body.payload_bytes(),
+                        keys: body.headers.keys().len(),
+                        attributes: body.headers.attributes().len(),
+                    },
                     (self.plan.result, self.plan.output_claim),
                 )?;
                 let _ = work.record(record_codec(&mut self.codec, copied_bytes(&result.0), 0));
@@ -534,11 +538,11 @@ fn digest(
 fn copy_outcome(
     stored: &Retained,
     revision: crate::Revision,
-    maximum: usize,
+    capacity: crate::PreparedRecordCapacity,
     (mut output, output_claim): (CommitOutcome, Allocation),
 ) -> Result<(CommitOutcome, Allocation), StreamError> {
     let target = append(&output);
-    let envelope = prepared_envelope(stored, maximum, &target.path, target.start, target.tail)?;
+    let envelope = prepared_envelope(stored, capacity, &target.path, target.start, target.tail)?;
     let CommitOutcome::Committed(receipt) = &mut output else {
         unreachable!()
     };
@@ -550,7 +554,7 @@ fn copy_outcome(
 
 fn prepared_envelope<'a>(
     stored: &'a Retained,
-    maximum: usize,
+    capacity: crate::PreparedRecordCapacity,
     path: &StreamPath,
     start: u64,
     tail: u64,
@@ -580,9 +584,7 @@ fn prepared_envelope<'a>(
     {
         return Err(StreamError::IdempotencyMismatch);
     }
-    if record.payload_bytes() > maximum {
-        return Err(StreamError::LimitExceeded);
-    }
+    capacity.validate(&record.value, &record.headers)?;
     Ok(envelope)
 }
 fn copied_bytes(value: &CommitOutcome) -> u64 {
