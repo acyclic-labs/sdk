@@ -1,4 +1,5 @@
 [package]
+autotests = false
 include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "build/**", "vendor/**", "examples/**", "tests/**", "benches/**", "conformance/**", "fixtures/**", "fuzz/corpus/**"]
 name = "acyclic-inference"
 version = "0.2.0"
@@ -53,6 +54,6 @@ tracing-subscriber.workspace = true
 workspace = true
 
 [[test]]
-name = "http_codec"
-path = "tests/http_codec.rs"
+name = "main"
+path = "tests/main.rs"
 required-features = ["http-codec"]

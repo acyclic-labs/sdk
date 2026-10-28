@@ -51,7 +51,7 @@ provider. Reported control traffic remains visible even if the scale bound passe
 Run the native 1,000 versus 10,000 idle-agent vector explicitly on bb2 or ivar:
 
 ```sh
-build-slot --remote cargo test --locked -p acyclic-agent-host-conformance --features local --test local agent_scale -- --ignored --nocapture
+build-slot --remote cargo test --locked -p acyclic-agent-host-conformance --features local --test main local::agent_scale -- --ignored --nocapture
 ```
 
 No CI workflow or merge-gate step invokes this workload. Downstream adapters can
@@ -66,3 +66,8 @@ cargo test -p acyclic-agent-host-conformance --features browser --target wasm32-
 ```
 
 These wire-handler vectors do not by themselves qualify the generated JavaScript `AgentGuest.open` facade, its `AbortSignal` bridge, or a production model. The harness's `browser-agent-guest.html` artifact test covers that facade separately. Durable Objects must run these same vectors and the unchanged Stream suite inside workerd/Miniflare before claiming conformance.
+
+The backend features admit one `tests/main.rs` executable: `local` selects the
+native module and `browser` selects the Wasm module. Both imply the test-admission
+feature `backend-tests`; enabling that marker alone refuses compilation with the
+backend recovery command instead of reporting an empty successful suite.

@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "acyclic-agent-host-conformance"
 version.workspace = true
 edition.workspace = true
@@ -8,8 +9,10 @@ publish = false
 description = "Portable black-box AgentHost conformance vectors"
 
 [features]
-local = ["acyclic-stream/local", "acyclic-harness-core/oidc-http", "dep:tempfile"]
-browser = ["acyclic-stream/wasm", "acyclic-harness/wasm"]
+# Either real backend opts the shared test executable in; neither is required by the other.
+backend-tests = []
+local = ["backend-tests", "acyclic-stream/local", "acyclic-harness-core/oidc-http", "dep:tempfile"]
+browser = ["backend-tests", "acyclic-stream/wasm", "acyclic-harness/wasm"]
 
 [dependencies]
 acyclic-actors = { path = "../../actors" }
@@ -40,14 +43,9 @@ name = "oidc-qualify"
 path = "src/bin/oidc_qualify.rs"
 required-features = ["local"]
 
-# Each suite runs only with its feature: naming one without it is a cargo
-# error, never a silent run of zero tests.
+# Neither backend is enabled by default. Either backend admits this target;
+# module gates retain its actual architecture and original provider.
 [[test]]
-name = "local"
-path = "tests/local.rs"
-required-features = ["local"]
-
-[[test]]
-name = "browser"
-path = "tests/browser.rs"
-required-features = ["browser"]
+name = "main"
+path = "tests/main.rs"
+required-features = ["backend-tests"]

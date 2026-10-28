@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "acyclic-contract-derive"
 description = "First-party semantic contract and protobuf derivation"
 version.workspace = true
@@ -27,3 +28,7 @@ tempfile = "3.27.0"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "main"
+path = "tests/main.rs"
