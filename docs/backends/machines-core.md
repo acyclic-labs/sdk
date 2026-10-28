@@ -205,3 +205,31 @@ documents a WebSocket events hub for its different API. This draft does not clai
 that no native push mechanism exists, or silently substitute that API for the
 selected one. Raw completion-backed adapters should await native completion;
 operation watch/join always follows Streams rather than a readiness timer.
+
+The WASM simulator's `watchOperation` returns an `OperationWatch`, with
+`next(): Promise<OperationOut | null>`, `close()`, and an ownership `status`
+(`open`, `completed`, `closed`, or `failed`). It uses `acyclic_stream::pull`,
+the same cursor as browser Stream follows: one item of demand, no producer
+task or item queue, close waking a pending pull, and upstream destruction
+outside the ownership lock. An overlapping pull is refused; abandoning a
+pending Rust pull closes it. Source errors reject once and retain `failed`.
+The TypeScript simulator closes that cursor when iteration ends. The gRPC
+watch and exec share one RPC cancellation owner; breaking iteration aborts
+only that call. Watch validates the operation identity and terminal ordering,
+and retains the original transport error. These source changes do not yet
+remove the hosted HTTP watch array or supply hosted WASM exec bindings.
+
+The v3 measurement plan separates source vectors from performance evidence.
+At a pinned before/after source, measure native dispatches, observation and
+Streams requests, first validated observation latency, maximum retained bytes,
+and source pulls versus consumer pulls. Use a blocked first watch followed by
+128 observations, a slow reader, no reader, close during a pending pull, and
+a midstream failure. Retention must depend on the admitted credit window,
+not total stream length; close must drop upstream once. Restart/lost-create-
+reply/unknown-exec/cleanup vectors must retain their original operation and
+native-effect counts. Destroy vectors must distinguish accepted teardown
+from terminal deletion, preserve failed teardown, reject a replacement native
+generation, and replay the exact original settlement without another delete.
+No first-byte, retained-memory, or request reduction measurement is claimed
+by compiling those vectors. Cloud's provider tombstones and retained receipts
+remain its server responsibility; the SDK adds no private mount field.

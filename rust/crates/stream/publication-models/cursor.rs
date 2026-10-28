@@ -53,7 +53,7 @@ fn delivery_racing_close_never_restores_a_closed_cursor() {
         }
         drop(next);
         assert_eq!(loom::future::block_on(Box::pin(state.next())), Ok(None));
-        assert!(state.stream.lock().unwrap().is_none());
+        assert!(state.slot.lock().unwrap().stream.is_none());
     });
 }
 
@@ -70,7 +70,7 @@ fn close_wakeup(broken: bool) {
         );
         if broken {
             // Former close without its cancellation publication.
-            let stream = state.stream.lock().unwrap().take();
+            let stream = state.slot.lock().unwrap().stream.take();
             drop(stream);
         } else {
             state.close();
@@ -101,7 +101,7 @@ fn source_drop(broken: bool) {
         fn drop(&mut self) {
             if let Some(state) = self.0.borrow().upgrade() {
                 assert!(
-                    state.stream.try_lock().is_ok(),
+                    state.slot.try_lock().is_ok(),
                     "cursor dropped a source under its lock"
                 );
             }
@@ -118,9 +118,9 @@ fn source_drop(broken: bool) {
         let state = Rc::new(FollowState::new(frames));
         *owner.borrow_mut() = Rc::downgrade(&state);
         if broken {
-            let mut slot = state.stream.lock().unwrap();
+            let mut slot = state.slot.lock().unwrap();
             let violation =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(slot.take())));
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(slot.stream.take())));
             drop(slot);
             if let Err(violation) = violation {
                 std::panic::resume_unwind(violation);

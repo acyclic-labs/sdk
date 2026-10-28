@@ -386,6 +386,61 @@ test("watch delivers before completion and cancellation reaches the server", asy
   await cancellation;
 });
 
+test("breaking a watch closes its RPC and leaves an independent watch active", { timeout: 5000 }, async t => {
+  let cancelled;
+  let finishOther;
+  let otherCancelled = false;
+  const cancellation = new Promise(resolve => { cancelled = resolve; });
+  const otherCompletion = new Promise(resolve => { finishOther = resolve; });
+  const other = identity(3);
+  const { machines } = await fixture(t, {
+    async *watchOperation(query, context) {
+      authenticate(context);
+      const isOther = query.operation.value[0] === 3;
+      context.signal.addEventListener("abort", () => {
+        if (isOther) { otherCancelled = true; finishOther(); }
+        else cancelled();
+      }, { once: true });
+      yield { operation: query.operation, status: wire.OperationStatus.PENDING };
+      await (isOther ? otherCompletion : cancellation);
+      if (isOther) yield { operation: query.operation, status: wire.OperationStatus.FAILED };
+    },
+  });
+  const independent = machines.watchOperation({ protocol, operation: other })[Symbol.asyncIterator]();
+  assert.equal((await independent.next()).value.status, wire.OperationStatus.PENDING);
+  for await (const frame of machines.watchOperation({ protocol, operation })) {
+    assert.equal(frame.status, wire.OperationStatus.PENDING);
+    break;
+  }
+  await cancellation;
+  assert.equal(otherCancelled, false);
+  finishOther();
+  assert.equal((await independent.next()).value.status, wire.OperationStatus.FAILED);
+  assert.equal((await independent.next()).done, true);
+});
+
+test("watch preserves midstream errors and refuses missing, substituted and post-terminal observations", async t => {
+  const { machines } = await fixture(t, {
+    async *watchOperation(query) {
+      const mode = query.operation.value[0];
+      if (mode === 4) return;
+      if (mode === 5) { yield { operation, status: wire.OperationStatus.PENDING }; return; }
+      if (mode === 6) { yield { operation: query.operation, status: wire.OperationStatus.UNSPECIFIED }; return; }
+      yield { operation: query.operation, status: wire.OperationStatus.PENDING };
+      if (mode === 7) throw new ConnectError("original watch failure", Code.Unavailable);
+      yield { operation: query.operation, status: wire.OperationStatus.SUCCEEDED };
+      yield { operation: query.operation, status: wire.OperationStatus.FAILED };
+    },
+  });
+  for (const mode of [4, 5, 6, 7, 8]) {
+    const values = [];
+    await assert.rejects(async () => {
+      for await (const value of machines.watchOperation({ protocol, operation: identity(mode) })) values.push(value.status);
+    }, error => error.code === (mode === 7 ? Code.Unavailable : Code.DataLoss));
+    if (mode === 7) assert.deepEqual(values, [wire.OperationStatus.PENDING]);
+  }
+});
+
 test("authentication failures preserve gRPC status and requests are not retried", async t => {
   let attempts = 0;
   const { options } = await fixture(t, {

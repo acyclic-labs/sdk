@@ -11,6 +11,8 @@ use wasm_bindgen::prelude::*;
 
 mod http;
 mod public;
+mod watch;
+pub use watch::OperationWatch;
 
 /// Largest integer a JavaScript number represents exactly.
 pub(crate) const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -428,12 +430,12 @@ impl WasmSimulatedMachines {
             .await
     }
 
-    #[wasm_bindgen(js_name = watchOperation, unchecked_return_type = "readonly OperationOut[]")]
+    #[wasm_bindgen(js_name = watchOperation)]
     pub async fn watch_operation(
         &self,
         #[wasm_bindgen(unchecked_param_type = "string")] operation_id: JsValue,
-    ) -> Result<JsValue, JsValue> {
-        self.public_call_raw("watchOperation", operation_id).await
+    ) -> Result<OperationWatch, JsValue> {
+        public::watch(&self.inner, operation_id).await
     }
 
     async fn public_call_value<Output: Tsify>(
@@ -454,14 +456,6 @@ impl WasmSimulatedMachines {
         value
             .as_string()
             .ok_or_else(|| js_error("invalid", "Machines operation returned a non-string result"))
-    }
-
-    async fn public_call_raw(
-        &self,
-        operation_name: &str,
-        payload: JsValue,
-    ) -> Result<JsValue, JsValue> {
-        public::dispatch(&self.inner, operation_name, payload).await
     }
 
     /// Decodes a hosted HTTP response using the Rust-owned scalar wrappers and

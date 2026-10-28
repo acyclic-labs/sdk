@@ -210,6 +210,30 @@ describe("Machines simulation", () => {
     await expect(provider.inspectOperation("operation:unknown:0")).rejects.toMatchObject({ name: "MachinesError", code: "not-found" });
   });
 
+  test("WASM watch pulls one observation and exposes terminal ownership", async () => {
+    const wasm = new WasmSimulatedMachines();
+    try {
+      await wasm.create(request("pull-watch"));
+      const operation = await wasm.recoverOperation("pull-watch");
+      const watch = await wasm.watchOperation(operation);
+      try {
+        expect(watch.status).toBe("open");
+        expect(await watch.next()).toEqual({ id: operation, phase: "succeeded" });
+        expect(watch.status).toBe("open");
+        expect(await watch.next()).toBe(null);
+        expect(watch.status).toBe("completed");
+        watch.close();
+        expect(watch.status).toBe("completed");
+      } finally { watch.close(); watch.free(); }
+      const closed = await wasm.watchOperation(operation);
+      try {
+        closed.close();
+        expect(closed.status).toBe("closed");
+        expect(await closed.next()).toBe(null);
+      } finally { closed.free(); }
+    } finally { wasm.free(); }
+  });
+
   test("uses the lineage receipt commitment instead of the retired quantity", async () => {
     const provider = new SimulatedMachines();
     const created = await provider.create(request("usage-1"));

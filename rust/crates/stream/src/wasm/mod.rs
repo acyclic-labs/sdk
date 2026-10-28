@@ -27,7 +27,7 @@ pub use session_authority::WasmSessionAuthority;
 
 include!("wasm_stream.rs");
 
-include!("follow_state.rs");
+type FollowState = crate::pull::PullCursor<Vec<u8>, crate::StreamError>;
 
 include!("wasm_follow.rs");
 

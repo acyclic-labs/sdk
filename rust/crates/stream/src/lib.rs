@@ -28,6 +28,8 @@ pub mod persistence;
 #[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
 pub mod postgres;
 pub mod preparation;
+#[path = "wasm/follow_state.rs"]
+pub mod pull;
 pub mod request;
 pub mod runtime;
 #[cfg(any(

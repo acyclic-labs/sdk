@@ -2,6 +2,7 @@
 //! Backends must never reconstruct an absent operation by redispatching it.
 use crate::*;
 pub use crate::{OperationSettlement, SettledMutation};
+pub use acyclic_stream::pull::{CursorStatus, PullCursor, PullError};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 mod admission;

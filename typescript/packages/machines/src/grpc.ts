@@ -39,6 +39,20 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
       join(request: MessageInitShape<typeof wire.JoinRequestSchema>, callOptions?: CallOptions) {
         return machines.join(request, { ...callOptions, timeoutMs: callOptions?.timeoutMs ?? 0 });
       },
+      async *watchOperation(request: MessageInitShape<typeof wire.OperationRequestSchema>, callOptions?: CallOptions) {
+        const query = create(wire.OperationRequestSchema, request);
+        const expected = query.operation;
+        if (!expected || expected.value.length !== 16 || expected.value.every(byte => byte === 0)) throw new RangeError("watch operation must be a nonzero 16-byte identity");
+        let terminal = false;
+        for await (const frame of ownedRpc(signal => machines.watchOperation(query, { ...callOptions, signal, timeoutMs: callOptions?.timeoutMs ?? 0 }), callOptions?.signal)) {
+          const actual = frame.operation;
+          if (!actual || expected.value.length !== actual.value.length || expected.value.some((byte, index) => byte !== actual.value[index])) throw new ConnectError("watch operation identity differs from request", Code.DataLoss);
+          if (terminal || !Number.isInteger(frame.status) || frame.status < wire.OperationStatus.PENDING || frame.status > wire.OperationStatus.FAILED) throw new ConnectError("invalid watch terminal order or status", Code.DataLoss);
+          terminal = frame.status !== wire.OperationStatus.PENDING;
+          yield frame;
+        }
+        if (!terminal) throw new ConnectError("watch ended without terminal observation", Code.DataLoss);
+      },
       async *exec(request: MessageInitShape<typeof wire.ExecRequestSchema>, callOptions?: CallOptions) {
         const query = create(wire.ExecRequestSchema, request);
         const lengths = query.argv.map(value => new TextEncoder().encode(value).byteLength);
@@ -46,35 +60,24 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
         if (!Number.isInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 60000) throw new RangeError("timeoutMs must be 1..60000");
         if (query.expiryUnixMs !== undefined && (query.expiryUnixMs < 0n || query.expiryUnixMs > MAX_OFFSET)) throw new RangeError("expiryUnixMs must be uint64");
         if (query.maximumOutputBytes !== undefined && (query.maximumOutputBytes < 0n || query.maximumOutputBytes > MAX_OFFSET)) throw new RangeError("maximumOutputBytes must be uint64");
-        const controller = new AbortController();
-        const signal = callOptions?.signal;
-        const abort = () => controller.abort(signal?.reason);
-        signal?.addEventListener("abort", abort, { once: true });
-        if (signal?.aborted) abort();
-        try {
-          let exited = false;
-          for await (const frame of machines.exec(query, { ...callOptions, signal: controller.signal, timeoutMs: callOptions?.timeoutMs ?? query.timeoutMs + 1000 })) {
-            checkMachine(query.machine, frame.machine);
-            if (exited) throw new ConnectError("exec frame follows terminal result", Code.DataLoss);
-            if (frame.output.case === "exitCode") exited = true;
-            else if (frame.output.case === "stopped") {
-              const stop = frame.output.value;
-              let scalars = 0;
-              for (const scalar of stop.message) {
-                if (++scalars > 128 || (scalar.length === 1 && scalar.charCodeAt(0) >= 0xd800 && scalar.charCodeAt(0) <= 0xdfff)) throw new ConnectError("invalid exec stop message", Code.DataLoss);
-              }
-              if (!Number.isInteger(stop.kind) || stop.kind < wire.ExecStopKind.TIMEOUT || stop.kind > wire.ExecStopKind.CAPTURE_FAILED) throw new ConnectError("invalid exec stop", Code.DataLoss);
-              exited = true;
+        let exited = false;
+        for await (const frame of ownedRpc(signal => machines.exec(query, { ...callOptions, signal, timeoutMs: callOptions?.timeoutMs ?? query.timeoutMs + 1000 }), callOptions?.signal)) {
+          checkMachine(query.machine, frame.machine);
+          if (exited) throw new ConnectError("exec frame follows terminal result", Code.DataLoss);
+          if (frame.output.case === "exitCode") exited = true;
+          else if (frame.output.case === "stopped") {
+            const stop = frame.output.value;
+            let scalars = 0;
+            for (const scalar of stop.message) {
+              if (++scalars > 128 || (scalar.length === 1 && scalar.charCodeAt(0) >= 0xd800 && scalar.charCodeAt(0) <= 0xdfff)) throw new ConnectError("invalid exec stop message", Code.DataLoss);
             }
-            else if ((frame.output.case !== "stdout" && frame.output.case !== "stderr") || frame.output.value.byteLength < 1 || frame.output.value.byteLength > MAX_OUTPUT_READ_BYTES) throw new ConnectError("invalid exec output frame", Code.DataLoss);
-            yield frame;
+            if (!Number.isInteger(stop.kind) || stop.kind < wire.ExecStopKind.TIMEOUT || stop.kind > wire.ExecStopKind.CAPTURE_FAILED) throw new ConnectError("invalid exec stop", Code.DataLoss);
+            exited = true;
           }
-          if (!exited) throw new ConnectError("exec stream ended without terminal result", Code.DataLoss);
-        } finally {
-          // Connect's promise-client iterator does not forward return() to the RPC.
-          controller.abort();
-          signal?.removeEventListener("abort", abort);
+          else if ((frame.output.case !== "stdout" && frame.output.case !== "stderr") || frame.output.value.byteLength < 1 || frame.output.value.byteLength > MAX_OUTPUT_READ_BYTES) throw new ConnectError("invalid exec output frame", Code.DataLoss);
+          yield frame;
         }
+        if (!exited) throw new ConnectError("exec stream ended without terminal result", Code.DataLoss);
       },
       async readOutput(request: MessageInitShape<typeof wire.ReadOutputRequestSchema>, callOptions?: CallOptions) {
         const query = create(wire.ReadOutputRequestSchema, request);
@@ -88,6 +91,19 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
     },
     close: () => session.abort(),
   };
+}
+
+async function* ownedRpc<T>(open: (signal: AbortSignal) => AsyncIterable<T>, signal?: AbortSignal): AsyncIterable<T> {
+  const controller = new AbortController();
+  const abort = () => controller.abort(signal?.reason);
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted) abort();
+  try { yield* open(controller.signal); }
+  finally {
+    // Connect's promise-client iterator does not forward return() to the RPC.
+    controller.abort();
+    signal?.removeEventListener("abort", abort);
+  }
 }
 
 function checkMachine(request: wire.MachineId | undefined, response: wire.MachineId | undefined): void {
