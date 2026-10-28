@@ -84,11 +84,12 @@ impl StreamProvider for LocalStream {
                     .map_err(|_| StreamError::Unavailable)?;
                 for (path, head) in request.paths.iter().zip(&mut view.heads) {
                     if let Some(head) = head {
-                        let durable = tails.entry(path.clone()).or_default();
-                        if synced {
-                            *durable = (*durable).max(head.tail);
+                        let mut durable = tails.get(path).copied().unwrap_or(0);
+                        if synced && head.tail > durable {
+                            durable = head.tail;
+                            tails.insert(path.clone(), durable);
                         }
-                        head.durable = (*durable).min(head.tail);
+                        head.durable = durable.min(head.tail);
                         head.retained_through = through.filter(|through| *through <= head.durable);
                     }
                 }
