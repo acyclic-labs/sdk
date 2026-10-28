@@ -73,6 +73,9 @@ struct View {
     phase: Option<Phase>,
     /// The latest failed delivery, until the next status.
     failure: Option<String>,
+    /// The failed task's error while its conversation stays failed, shown
+    /// whole on the status row.
+    ended: Option<String>,
     /// A cancel was sent and its turn has not stopped yet.
     cancelling: bool,
     outcome: Outcome,
@@ -159,6 +162,7 @@ impl View {
             Event::Output => return Ok(()),
             Event::Status(status) => {
                 self.failure = None;
+                self.ended = None;
                 self.approval_prompt = match &status.phase {
                     Phase::WaitingApproval { id } => conversation.approval_prompt(id).await?,
                     _ => None,
@@ -168,10 +172,7 @@ impl View {
                 } = &status.phase
                 {
                     self.settle_pending();
-                    self.transcript.push(
-                        false,
-                        &format!("task {} failed: {message}", conversation.task()),
-                    );
+                    self.ended = Some(format!("task {} failed: {message}", conversation.task()));
                     self.outcome = Outcome::Failed;
                     self.ring = true;
                 } else if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
@@ -328,7 +329,7 @@ impl View {
         if let Some(CommandRequest::ClearAll) = &self.confirm {
             return "Clear all conversations? Enter yes or no.".into();
         }
-        if let Some(notice) = &self.notice {
+        if let Some(notice) = self.notice.as_ref().or(self.ended.as_ref()) {
             return notice.clone();
         }
         match (&self.phase, self.approval()) {
@@ -350,10 +351,6 @@ impl View {
     }
 }
 
-/// The terminal's input batches, read on a thread of their own: the runtime's
-/// single blocking worker stays free for the agent's file work, which would
-/// otherwise wait behind a read that lasts until the next key. A full channel
-/// holds the reader back; a dropped view ends it at its next batch.
 /// The page keys scroll the transcript, or an open panel, by one page of
 /// `page` rows.
 fn paged(effect: InputEffect, page: usize) -> InputEffect {
@@ -365,6 +362,10 @@ fn paged(effect: InputEffect, page: usize) -> InputEffect {
     }
 }
 
+/// The terminal's input batches, read on a thread of their own: the runtime's
+/// single blocking worker stays free for the agent's file work, which would
+/// otherwise wait behind a read that lasts until the next key. A full channel
+/// holds the reader back; a dropped view ends it at its next batch.
 fn terminal_events(
     mut tty: Tty,
 ) -> std::io::Result<LocalBoxStream<'static, std::io::Result<Vec<InputEvent>>>> {
