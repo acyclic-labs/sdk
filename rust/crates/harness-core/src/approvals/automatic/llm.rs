@@ -102,7 +102,10 @@ async fn collect_review(
     let mut completed = false;
     while let Some(event) = events.next().await {
         count += 1;
-        if count > limits.model_events_per_step {
+        if limits
+            .model_events_per_step
+            .is_some_and(|maximum| count > maximum)
+        {
             return Err(Error::Invalid("approver event bound exceeded".into()));
         }
         match event? {
