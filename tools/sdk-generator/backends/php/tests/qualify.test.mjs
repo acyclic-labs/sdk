@@ -52,7 +52,13 @@ function fixture(t, failure = "") {
       if (failure === "zip-root") entries[1].path = "other/source.php";
       if (failure === "zip-data") entries[1].data = "not-base64!";
       if (failure === "zip-metadata") entries[0].data = Buffer.from("{}").toString("base64");
-      return { status: 0, stdout: JSON.stringify(entries) };
+      const lines = entries.flatMap(entry => [
+        { path: entry.path, directory: entry.directory, size: Buffer.from(entry.data, "base64").length },
+        ...(entry.data ? [{ data: entry.data }] : []),
+        { end: true },
+      ]);
+      put(argv.at(-1), lines.map(line => JSON.stringify(line) + "\n").join(""));
+      return { status: 0, stdout: "" };
     }
     if (argv.includes("-czf")) {
       const index = argv.indexOf("-C"), source = argv[index + 1];
