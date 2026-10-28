@@ -441,7 +441,10 @@ impl RecordCache {
 
     /// Retained pages of one parent, including displayed pass-through pages.
     /// Work is proportional to cached pages, never the requested page index.
-    pub fn listings(&self, parent: &StreamPath) -> impl Iterator<Item = (u32, &Listing)> {
+    pub fn listings<'a>(
+        &'a self,
+        parent: &StreamPath,
+    ) -> impl Iterator<Item = (u32, &'a Listing)> + use<'a> {
         let range = Key::Listing(parent.clone(), 0)..=Key::Listing(parent.clone(), u32::MAX);
         self.entries
             .range(range.clone())

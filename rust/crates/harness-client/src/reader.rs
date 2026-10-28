@@ -362,7 +362,6 @@ pub(super) enum HeadObservation {
 }
 
 struct Demand {
-    key: OpKey,
     priority: Priority,
     paging: Paging,
     /// Kept across frames; moved to the back after dispatch. Renderer
@@ -407,7 +406,7 @@ pub struct Residency {
 pub struct Reader {
     policy: ReaderPolicy,
     cache: RecordCache,
-    demand: Vec<Demand>,
+    demand: BTreeMap<OpKey, Demand>,
     next_ticket: u64,
     inflight: BTreeMap<u64, InFlight>,
     keys: BTreeMap<OpKey, u64>,
@@ -441,7 +440,7 @@ impl Reader {
         Ok(Self {
             policy,
             cache: RecordCache::new(policy.cache_bytes, policy.streams),
-            demand: Vec::new(),
+            demand: BTreeMap::new(),
             next_ticket: 0,
             inflight: BTreeMap::new(),
             keys: BTreeMap::new(),
@@ -604,7 +603,7 @@ impl Reader {
             .retain_passed(|cache, key| wants.iter().any(|(want, _)| covers(cache, want, key)));
         let mut previous: BTreeMap<_, _> = std::mem::take(&mut self.demand)
             .into_iter()
-            .map(|demand| (demand.key, demand.ticket))
+            .map(|(key, demand)| (key, demand.ticket))
             .collect();
         let mut demand = BTreeMap::<OpKey, Demand>::new();
         for (want, priority) in wants {
@@ -621,9 +620,8 @@ impl Reader {
                 ticket
             });
             demand.insert(
-                key.clone(),
+                key,
                 Demand {
-                    key,
                     priority,
                     paging,
                     ticket,
@@ -648,7 +646,7 @@ impl Reader {
         for id in stale {
             self.cancel(id);
         }
-        self.demand = demand.into_values().collect();
+        self.demand = demand;
     }
 
     /// Mark one visible want's cached values and facts in use this frame.
@@ -785,8 +783,8 @@ impl Reader {
             .values()
             .filter(|flight| flight.priority == Priority::Prefetch)
             .count();
-        let mut demand = std::mem::take(&mut self.demand);
-        demand.sort_by_key(|demand| {
+        let mut demand: Vec<_> = self.demand.iter_mut().collect();
+        demand.sort_by_key(|(_, demand)| {
             let head_start = if demand.priority == Priority::Prefetch {
                 self.policy.requests as u128
             } else {
@@ -794,9 +792,8 @@ impl Reader {
             };
             (u128::from(demand.ticket) + head_start, demand.ticket)
         });
-        for pending in &mut demand {
+        for (key, pending) in demand {
             let Demand {
-                key,
                 priority,
                 paging,
                 ticket,
@@ -856,7 +853,6 @@ impl Reader {
             self.issued += 1;
             ops.push(op);
         }
-        self.demand = demand;
         ops
     }
 
@@ -948,6 +944,9 @@ impl Reader {
             _ => false,
         };
         if accepted {
+            // The driver may wake again before the renderer plans its next
+            // frame. Completed work must not be dispatched a second time.
+            self.demand.remove(&flight.key);
             self.failures = 0;
             self.since = None;
             self.retry_at = 0;
@@ -1005,7 +1004,7 @@ impl Reader {
             }
             // The asynchronous driver can poll again before the next UI frame
             // replans demand. Do not reissue those same obsolete boundaries.
-            self.demand.retain(|demand| !later(&demand.key));
+            self.demand.retain(|key, _| !later(key));
             if let Some(anchors) = self.anchors.get_mut(parent) {
                 anchors.at.retain(|at, _| *at <= index);
             }
@@ -1267,6 +1266,7 @@ impl Reader {
 
     fn invalidate(&mut self, stream: &StreamPath, inherited: bool) {
         let affected = self.cache.remove_stream(stream, inherited);
+        self.demand.retain(|key, _| !affected.contains(key.path()));
         self.follows.retain(|path, _| !affected.contains(path));
         let cancelled: Vec<_> = self
             .inflight
@@ -1450,7 +1450,12 @@ mod reader_tests {
             forked_at: 1,
             commit_id: CommitId::from_bytes([9; 32]),
         };
-        let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+        let mut reader = Reader::new(ReaderPolicy {
+            requests: 2,
+            prefetch_requests: 1,
+            ..ReaderPolicy::default()
+        })
+        .unwrap();
         reader.cache.observe_origin(&source, None);
         reader.cache.observe_origin(&child, Some(origin.clone()));
         reader.cache.observe_tail(&child, 1);
@@ -1481,10 +1486,25 @@ mod reader_tests {
         assert_eq!(reader.cache.record(&source, 0).unwrap().as_ref(), b"new");
         reader.acknowledge_issue(&child);
         reader.cache.observe_origin(&child, Some(origin));
+        reader.plan([1, 2, 3].map(|from| {
+            (
+                Want::Range {
+                    stream: child.clone(),
+                    from,
+                    to: from + 1,
+                },
+                Priority::Visible,
+            )
+        }));
+        assert_eq!(reader.poll(0).len(), 2);
         // A checked follow's retention failure uses the same backing
         // invalidation as a conflicting Head, even without a new Head record.
         reader.replaced(&child);
         assert!(reader.cache.record(&source, 0).is_none());
+        // Both in-flight reads and the unsent third request use the old cut.
+        // Another driver wake must wait for the renderer to replan a Head.
+        assert_eq!(reader.take_cancelled().len(), 2);
+        assert!(reader.poll(1).is_empty());
     }
 
     #[test]
@@ -1569,7 +1589,9 @@ mod reader_tests {
         assert_eq!(reader.residency().demand, 4097);
         let mut completed = BTreeSet::new();
         for now in 1..=4097 {
-            let ops = frame(&mut reader, now, &wants);
+            // The driver can consume successive credit windows before the
+            // renderer plans another frame. A completion retires that key.
+            let ops = reader.poll(now);
             if ops.is_empty() {
                 break;
             }
@@ -1586,6 +1608,7 @@ mod reader_tests {
             }
         }
         assert_eq!(completed.len(), wants.len());
+        assert!(reader.poll(4098).is_empty());
         assert!(frame(&mut reader, 4098, &wants).is_empty());
     }
 
@@ -1764,12 +1787,14 @@ mod reader_tests {
             },
         );
         reader.keys.insert(key.clone(), 7);
-        reader.demand.push(Demand {
+        reader.demand.insert(
             key,
-            priority: Priority::Visible,
-            paging,
-            ticket: 0,
-        });
+            Demand {
+                priority: Priority::Visible,
+                paging,
+                ticket: 0,
+            },
+        );
         reader.listed(&parent, 0, &Paging::default(), Vec::new(), Some(new), None);
         assert_eq!(reader.take_cancelled(), vec![7]);
         assert!(reader.poll(0).is_empty());
