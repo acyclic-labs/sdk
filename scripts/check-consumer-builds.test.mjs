@@ -13,7 +13,7 @@ function item(name, { publish = [], kind = 'lib', fuzz = false, examples = false
 const packages = [item('acyclic-public', { publish: null }), item('acyclic-harness-conformance', { examples: true }),
   item('acyclic-harness-adapter'), item('fixture-tool', { kind: 'bin' }), item('registry-tool', { publish: ['internal'], kind: 'bin' }),
   item('acyclic-fuzz', { kind: 'bin', fuzz: true }), item('registry-library')];
-const metadata = { workspace_default_members: packages.slice(0, -1).map(entry => entry.id), packages };
+const metadata = { workspace_members: packages.map(entry => entry.id), workspace_default_members: packages.slice(0, -1).map(entry => entry.id), packages };
 
 test('all public and internal library surfaces generate code separately with --all-features', () => {
   const selected = consumers(metadata);
@@ -37,6 +37,8 @@ test('shared gate rejects codegen-only failures and scopes PR consumers; old che
     writeFileSync(join(cwd, 'metadata.json'), JSON.stringify(metadata));
     writeFileSync(join(cwd, 'scripts/check-consumer-builds.mjs'),
       readFileSync(new URL('./check-consumer-builds.mjs', import.meta.url)));
+    writeFileSync(join(cwd, 'scripts/workspace-defaults.mjs'),
+      readFileSync(new URL('./workspace-defaults.mjs', import.meta.url)));
     writeFileSync(join(cwd, 'feature.mjs'), 'process.exit(Number(process.env.FEATURE_RC ?? 0));\n');
     const cargo = join(cwd, 'bin/cargo');
     writeFileSync(cargo, `#!/usr/bin/env node

@@ -5,10 +5,10 @@
 import { spawn, execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { workspaceDefaults } from "./workspace-defaults.mjs";
 
 export function workspacePackages(metadata) {
-  const members = new Set(metadata.workspace_members);
-  return metadata.packages.filter(pkg => members.has(pkg.id)).map(pkg => pkg.name).sort();
+  return workspaceDefaults(metadata).map(pkg => pkg.name);
 }
 
 export async function checkCrateTests(packages, workers, target, run) {

@@ -1,19 +1,32 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import test from "node:test";
 import { checkCrateTests, workspacePackages } from "./check-crate-tests.mjs";
 
-test("checks every workspace member alone, reusing one target with bounded workers", async () => {
-  const packages = workspacePackages({
-    workspace_members: ["c", "a", "b"],
-    packages: [
-      { id: "a", name: "first" }, { id: "external", name: "external" },
-      { id: "b", name: "second" }, { id: "c", name: "third" },
-    ],
-  });
-  assert.deepEqual(packages, ["first", "second", "third"]);
+test("checks original default members alone, reusing one target with bounded workers", async () => {
+  // Capture the real workspace; fabricated metadata cannot establish Kani routing.
+  const metadata = JSON.parse(execFileSync("cargo",
+    ["metadata", "--locked", "--no-deps", "--format-version", "1"],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }));
+  const selected = workspacePackages(metadata);
+  const ids = new Set(metadata.workspace_default_members);
+  assert.deepEqual(selected, metadata.packages.filter(item => ids.has(item.id)).map(item => item.name).sort());
+  assert.ok(selected.includes("acyclic-harness-fuzz"));
+  assert.ok(selected.includes("acyclic-fs-fuzz"));
+  assert.ok(selected.includes("acyclic-sdk-fuzz"));
+  assert.ok(!selected.includes("agent-spawn-slot-proofs"));
+  for (const mutate of [
+    item => { delete item.workspace_default_members; },
+    item => { item.workspace_default_members = []; },
+    item => { item.packages = item.packages.filter(pkg => pkg.id !== item.workspace_default_members[0]); },
+  ]) {
+    const incomplete = structuredClone(metadata);
+    mutate(incomplete);
+    assert.throws(() => workspacePackages(incomplete), /STEP_FAILED workspace-default-selection/);
+  }
+  const packages = ["first", "second", "third"];
   let active = 0, peak = 0;
   const commands = [], buildDirectories = [];
   const failures = await checkCrateTests(packages, 2, "/shared target", async (args, buildDirectory) => {

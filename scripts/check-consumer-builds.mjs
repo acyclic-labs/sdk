@@ -7,14 +7,13 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { selectionWorker, workerEnv } from './check-feature-matrix.mjs';
+import { workspaceDefaults } from './workspace-defaults.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const libraryKinds = new Set(['lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro']);
 
 export function consumers(metadata) {
-  const members = new Set(metadata.workspace_default_members);
-  return metadata.packages.filter(item => members.has(item.id)
-    && !item.metadata?.['cargo-fuzz']
+  return workspaceDefaults(metadata).filter(item => !item.metadata?.['cargo-fuzz']
     && (item.publish === null || item.publish?.length > 0
       || item.targets.some(target => target.kind.some(kind => libraryKinds.has(kind)))))
     .sort((a, b) => a.name.localeCompare(b.name));
