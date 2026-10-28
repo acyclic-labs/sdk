@@ -2,7 +2,7 @@
 
 use acyclic_harness_client::{
     AgentBinding, AgentControlFailure, AgentControls, AgentExchangeError, CommandError,
-    MAX_AGENT_COMMAND_BYTES, PreparedAgentInvocation, PreparedCommand, decode_agent_reply,
+    PreparedAgentInvocation, PreparedCommand, decode_agent_reply,
 };
 use js_sys::Uint8Array;
 use std::rc::Rc;
@@ -174,25 +174,15 @@ pub struct WasmAgentCommand {
 
 #[wasm_bindgen]
 impl WasmAgentCommand {
-    /// Canonical pre-copy limits, shared with endpoint conformance drivers.
-    #[wasm_bindgen(js_name = maximumCommandBytes)]
-    pub fn maximum_command_bytes() -> u32 {
-        MAX_AGENT_COMMAND_BYTES as u32
-    }
+    /// Current logical invocation transport bound, pending shared chunking.
     #[wasm_bindgen(js_name = maximumInvocationBytes)]
     pub fn maximum_invocation_bytes() -> u32 {
         acyclic_stream::MAX_COMMAND_BYTES as u32
     }
-    /// Snapshot only after the encoded byte length passes the Rust limit.
+    /// Snapshot the complete command before canonical Rust validation.
     #[wasm_bindgen(constructor)]
     pub fn new(encoded: &Uint8Array) -> Result<WasmAgentCommand, JsValue> {
-        let (bytes, ()) = super::bytes::snapshot(encoded, |length| {
-            if length > MAX_AGENT_COMMAND_BYTES as u64 {
-                Err(command_error(CommandError::Capacity))
-            } else {
-                Ok(())
-            }
-        })?;
+        let (bytes, ()) = super::bytes::snapshot(encoded, |_| Ok(()))?;
         let command = PreparedCommand::from_bytes(bytes).map_err(command_error)?;
         Ok(Self { command })
     }
