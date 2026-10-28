@@ -44,8 +44,11 @@ pub struct ProviderSpec {
     /// compatible endpoints must configure their own tokenizer contract.
     #[serde(default)]
     pub token_counter: Option<crate::TokenCounterSpec>,
-    /// Maximum bytes in one SSE event and aggregate retained protocol state.
-    pub max_event_bytes: usize,
+    /// Optional caller policy for one SSE event and aggregate retained protocol state.
+    /// Absent means unbounded; native work still uses its original caller budget.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
+    pub max_event_bytes: Option<usize>,
     /// Bounded redelivery of a request the endpoint refused before generating anything.
     #[serde(default, skip_serializing_if = "RetrySpec::is_default")]
     #[cfg_attr(all(target_arch = "wasm32", feature = "browser"), tsify(optional))]
