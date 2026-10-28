@@ -1,3 +1,4 @@
+import { deadlineSignal } from "@acyclic-labs/actors/deadline";
 import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider, type CredentialRequest } from "@acyclic-labs/actors/credential";
 import { fromBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
@@ -11,7 +12,7 @@ export interface ObjectsV1HttpOptions extends CredentialOptions {
   readonly maximumRequestBytes?: number;
   readonly fetch?: typeof globalThis.fetch;
   readonly observer?: AcyclicObserver;
-  /** The caller's deadline for one call, in milliseconds; defaults to 30 s. */
+  /** Optional caller deadline for one call, in milliseconds. */
   readonly timeoutMs?: number;
 }
 const STATUS: Readonly<Record<number, wire.ErrorCode>> = {
@@ -28,7 +29,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
   private readonly maximumRequest: number | undefined;
   private readonly fetcher: typeof globalThis.fetch;
   private readonly observer: AcyclicObserver | undefined;
-  private readonly timeoutMs: number;
+  private readonly timeoutMs: number | undefined;
   constructor(options: ObjectsV1HttpOptions) {
     super();
     const endpoint = new URL(options.endpoint);
@@ -41,9 +42,8 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     this.endpoint = endpoint;
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.observer = resolveObserver(options.observer);
-    this.timeoutMs = options.timeoutMs ?? 30000;
-    // setTimeout carries at most a signed 32-bit millisecond delay.
-    if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 0x7fff_ffff) throw new RangeError("timeoutMs must be a positive int32");
+    this.timeoutMs = options.timeoutMs;
+    if (this.timeoutMs !== undefined && (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1)) throw new RangeError("timeoutMs must be a positive safe integer");
   }
   protected invoke(route: string, input: Uint8Array): Promise<Uint8Array> {
     return observed(this.observer, "objects", route, sizes => this.send(route, input, sizes));
@@ -51,14 +51,13 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
   private async send(route: string, input: Uint8Array, sizes?: OperationSizes): Promise<Uint8Array> {
     const request = encode_objects_v1_json(objects_v1_http_type(route, false), input, this.maximumRequest);
     if (sizes) sizes.requestBytes = request.byteLength;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const deadline = deadlineSignal(this.timeoutMs, () => new ObjectsV1Error(wire.ErrorCode.DEADLINE_ELAPSED));
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     let admitted: CredentialRequest | undefined;
     try {
-      const lease = await resolveCredential(this.credential, controller.signal).catch(() => { throw new ObjectsV1Error(wire.ErrorCode.ACCESS_DENIED); });
+      const lease = await resolveCredential(this.credential, deadline.signal).catch(() => { throw new ObjectsV1Error(wire.ErrorCode.ACCESS_DENIED); });
       checkCredential(lease);
-      const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: controller.signal, headers: { authorization: `Bearer ${lease.token()}`, "content-type": "application/json" }, body: request as Uint8Array<ArrayBuffer> });
+      const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: deadline.signal, headers: { authorization: `Bearer ${lease.token()}`, "content-type": "application/json" }, body: request as Uint8Array<ArrayBuffer> });
       if (response.status === 401) lease.reject();
       const declared = Number(response.headers.get("content-length") ?? 0);
       if (this.maximumResponse !== undefined && declared > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
@@ -91,9 +90,9 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       return decoded;
     } catch (error) {
       // The caller's deadline, whichever layer reported the abort.
-      throw controller.signal.aborted ? new ObjectsV1Error(wire.ErrorCode.DEADLINE_ELAPSED) : error;
+      throw deadline.signal.aborted ? deadline.signal.reason : error;
     } finally {
-      clearTimeout(timeout);
+      deadline.cleanup();
       await reader?.cancel().catch(() => {});
       reader?.releaseLock();
       if (admitted) checkCredential(admitted);
