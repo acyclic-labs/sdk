@@ -88,6 +88,7 @@ pub struct Client {
     /// Last observed revision per authority: raised by receipts and every
     /// served open, forwarded as the floor of every read and follow.
     revisions: Arc<crate::RevisionTracker>,
+    registration_timeout: Option<u32>,
 }
 struct Delivery {
     before: Option<wire::SessionFrame>,
@@ -333,6 +334,7 @@ impl Client {
             attempt_epoch,
             abandoned,
             revisions,
+            registration_timeout: None,
         }
     }
     /// This pool's revision tracker; transports record their receipts here so
@@ -340,6 +342,15 @@ impl Client {
     #[must_use]
     pub fn revisions(&self) -> &Arc<crate::RevisionTracker> {
         &self.revisions
+    }
+    /// Selects an optional registration deadline in milliseconds for this client.
+    /// By default registration waits for its outcome or caller cancellation.
+    /// Dropping an expired opening withdraws only that interest, including its
+    /// pending queue admission; already opened siblings retain their owners.
+    #[must_use]
+    pub fn with_registration_timeout(mut self, milliseconds: Option<u32>) -> Self {
+        self.registration_timeout = milliseconds;
+        self
     }
     /// Registers or renews a bounded capability slot on every physical session.
     /// Empty bytes drop it. Registration is ordered before subsequent opens;
@@ -673,9 +684,17 @@ impl Client {
         };
         let registered = operation
             .clone()
-            .scope(deadline::until(registration, self.executor.sleep(10_000)))
-            .await
-            .unwrap_or(Err(StreamError::DeadlineElapsed));
+            .scope(async {
+                match self.registration_timeout {
+                    Some(milliseconds) => {
+                        deadline::until(registration, self.executor.sleep(milliseconds))
+                            .await
+                            .unwrap_or(Err(StreamError::DeadlineElapsed))
+                    }
+                    None => registration.await,
+                }
+            })
+            .await;
         if let Err(error) = registered {
             cursor.observation.finish(Some(&error));
             return Err(error);

@@ -131,6 +131,7 @@ pub(in crate::session::client) fn route(
 pub(in crate::session::client) fn client(pool: &Pool) -> Client {
     let (commands, _) = mpsc::channel(2);
     Client {
+        registration_timeout: None,
         connections: super::super::super::Connections::new(),
         executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
         commands,
