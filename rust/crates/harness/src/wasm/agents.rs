@@ -666,6 +666,7 @@ impl WasmAgents {
             .agents
             .provider()
             .read(ReadRequest {
+                key: None,
                 path,
                 from,
                 limit,

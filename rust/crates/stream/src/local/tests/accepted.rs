@@ -224,6 +224,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
             );
             let mut head = provider
                 .read(ReadRequest {
+                    key: None,
                     path: path.clone(),
                     from: n,
                     limit: 1,

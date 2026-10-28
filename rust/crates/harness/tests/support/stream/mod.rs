@@ -88,6 +88,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                         &mut self
                             .inner
                             .read(acyclic_stream::ReadRequest {
+                                key: None,
                                 path,
                                 from: head.tail - 1,
                                 limit: 1,

@@ -36,6 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tail = provider.tail(path.clone()).await?;
     let records = provider
         .read(ReadRequest {
+            key: None,
             path: path.clone(),
             from: 0,
             limit: u32::try_from(values.len())?,

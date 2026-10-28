@@ -204,7 +204,7 @@ export class Stream<Value = Uint8Array> {
     return { stream: new Stream(this.provider, destination, this.codec), tail: value.tail, forkedAt: value.forkedAt, commitId: value.commitId };
   }
   read(options: ReadOptions): AsyncIterable<Record<Value>> {
-    const authored = { from: options.from, limit: options.limit };
+    const authored = structuredClone(options);
     return this.readAfterCapture(authored);
   }
   private async *readAfterCapture(options: ReadOptions): AsyncIterable<Record<Value>> {

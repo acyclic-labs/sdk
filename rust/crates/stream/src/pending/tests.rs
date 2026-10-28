@@ -1,6 +1,5 @@
 use super::*;
 use crate::{CommitCondition, CommitMutation, IdempotencyKey, MemoryStream, Stream};
-use futures::FutureExt as _;
 use std::sync::Mutex;
 
 #[derive(Default)]

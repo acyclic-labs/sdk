@@ -376,6 +376,7 @@ async fn deleting_workspace_preserves_committed_stream_history()
     );
     let retained = streams
         .read(ReadRequest {
+            key: None,
             path: records,
             from: 0,
             limit: u32::try_from(after)?,
@@ -545,6 +546,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
     let inherited = streams.tail(source_lineage.clone()).await?;
     let mut source_records = streams
         .read(ReadRequest {
+            key: None,
             path: source_lineage,
             from: 0,
             limit: u32::try_from(inherited)?,
@@ -553,6 +555,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
         .await?;
     let mut child_records = streams
         .read(ReadRequest {
+            key: None,
             path: child_lineage,
             from: 0,
             limit: u32::try_from(inherited)?,

@@ -87,6 +87,21 @@ pub fn validate_follow(
     resume: &wire::SessionCursor,
 ) -> Result<(), StreamError> {
     validate_resource(&follow.resource)?;
+    if let Some(key) = &follow.key {
+        super::read_key_from_wire(Some(key.clone()))?;
+        crate::memory::validate_limit(follow.read_limit)?;
+        if follow.delivery != wire::SessionDelivery::All as i32
+            || !tracks_revisions(follow)
+            || follow.until != key.before
+            || !follow.preceding_commit_id.is_empty()
+            || follow.bootstrap_head
+            || follow.when_absent != wire::WhenAbsent::NotFound as i32
+        {
+            return Err(StreamError::InvalidArgument);
+        }
+    } else if follow.read_limit != 0 {
+        return Err(StreamError::InvalidArgument);
+    }
     let when_absent = crate::WhenAbsent::from_wire(follow.when_absent)?;
     if !resume.opaque.is_empty()
         || (when_absent != crate::WhenAbsent::NotFound
@@ -118,13 +133,40 @@ pub fn tracks_revisions(follow: &wire::SessionFollow) -> bool {
 /// Only an ALL follow of a `streams:/` resource can be bounded: LATEST conflates
 /// away the positions a bound counts, and product resources own their cursors.
 pub fn follow_bound(follow: &wire::SessionFollow) -> Result<Option<u64>, StreamError> {
-    if follow.until == 0 {
+    if follow.until == 0 && follow.key.is_none() {
         return Ok(None);
     }
     if follow.delivery != wire::SessionDelivery::All as i32 || !tracks_revisions(follow) {
         return Err(StreamError::InvalidArgument);
     }
     Ok(Some(follow.until))
+}
+
+/// Checks data on a logical follow, including sparse indexed read sequences.
+pub fn follow_data_sequence(
+    follow: &wire::SessionFollow,
+    next: u64,
+    data: &wire::SessionData,
+) -> Result<u64, StreamError> {
+    let Some(key) = &follow.key else {
+        return follow_sequence(follow.delivery, next, data);
+    };
+    let Some(wire::session_data::Item::Record(record)) = &data.item else {
+        return Err(StreamError::InvalidResponse);
+    };
+    let after = data.after.as_ref().ok_or(StreamError::InvalidResponse)?;
+    if record.sequence < next
+        || record.sequence >= key.before
+        || record.commit_id.len() != 32
+        || !record.keys.iter().any(|value| value == &key.key)
+        || record.sequence.checked_add(1) != Some(after.next)
+        || !after.opaque.is_empty()
+        || data.accepted < after.next
+        || data.durable > data.accepted
+    {
+        return Err(StreamError::InvalidResponse);
+    }
+    Ok(record.sequence)
 }
 
 /// Decodes the optional atomic history guard of a full-fidelity follow.

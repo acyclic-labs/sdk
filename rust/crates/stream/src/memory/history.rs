@@ -6,12 +6,14 @@ enum History {
     Batch {
         parent: Option<Arc<Self>>,
         jump: HistoryJump,
+        keys: KeyTree,
         records: Arc<RecordBatch>,
         _allocation: Allocation,
     },
     Prefix {
         source: Option<Arc<Self>>,
         jump: HistoryJump,
+        keys: KeyTree,
         tail: u64,
         _allocation: Allocation,
     },
@@ -73,6 +75,12 @@ impl HistoryJump {
 }
 
 impl History {
+    fn keys(&self) -> &KeyTree {
+        match self {
+            Self::Batch { keys, .. } | Self::Prefix { keys, .. } => keys,
+        }
+    }
+
     fn parent(&self) -> Option<&Arc<Self>> {
         match self {
             Self::Batch { parent, .. } => parent.as_ref(),

@@ -27,6 +27,7 @@ async fn point_read(
     HISTORY_VISITS.with(|count| count.set(0));
     let records = provider
         .read(ReadRequest {
+            key: None,
             path: path.clone(),
             from: sequence,
             limit: 1,
@@ -46,6 +47,7 @@ async fn point_read(
     let mut output = provider
         .native_read(
             ReadRequest {
+                key: None,
                 path: path.clone(),
                 from: sequence,
                 limit: 1,
@@ -117,6 +119,7 @@ async fn assert_records(
     for from in 0..expected.len() {
         let actual = provider
             .read(ReadRequest {
+                key: None,
                 path: path.clone(),
                 from: from as u64,
                 limit: 3,
@@ -143,6 +146,7 @@ async fn assert_records(
         let mut output = provider
             .native_read(
                 ReadRequest {
+                    key: None,
                     path: path.clone(),
                     from: from as u64,
                     limit: 3,

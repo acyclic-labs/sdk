@@ -255,6 +255,7 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
         let mut records = self
             .provider
             .read(ReadRequest {
+                key: None,
                 path: path.clone(),
                 from: sequence,
                 limit: 1,

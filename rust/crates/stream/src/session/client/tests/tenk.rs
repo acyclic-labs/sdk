@@ -4,7 +4,6 @@ use crate::{
     CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
     IdempotencyObservation, ReadRequest,
 };
-use futures::TryFutureExt as _;
 use futures::{
     stream::{FuturesUnordered, SelectAll},
     task::{ArcWake, AtomicWaker, waker_ref},

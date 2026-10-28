@@ -1,5 +1,4 @@
 use super::*;
-use futures::TryFutureExt as _;
 
 fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
     let (commands, receiver) = mpsc::channel(1);

@@ -403,6 +403,7 @@ async fn concurrent_commits_on_distinct_paths_replay_after_reopen()
         assert_eq!(reopened.tail(StreamPath::new(&path)?).await?, COMMITS);
         let records = reopened
             .read(ReadRequest {
+                key: None,
                 path: StreamPath::new(&path)?,
                 from: 0,
                 limit: 100,
@@ -682,6 +683,7 @@ async fn journal_replay_preserves_monotonic_commit_times() -> Result<(), Box<dyn
         .await?;
     let records = reopened
         .read(ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: 3,
@@ -819,6 +821,7 @@ async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::
         assert!(
             provider
                 .read(ReadRequest {
+                    key: None,
                     path: StreamPath::new("missing")?,
                     from: 0,
                     limit: 1,

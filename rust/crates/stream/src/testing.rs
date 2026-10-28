@@ -201,6 +201,7 @@ mod tests {
             async {
                 provider
                     .read(ReadRequest {
+                        key: None,
                         path,
                         from: 0,
                         limit: 2,

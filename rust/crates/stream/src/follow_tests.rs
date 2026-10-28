@@ -105,6 +105,7 @@ async fn checked_delivery_rejects_history_loss_after_registration_or_while_waiti
             .await?;
         let mut rows = provider
             .read(ReadRequest {
+                key: None,
                 path: path.clone(),
                 from: 1,
                 limit: 1,

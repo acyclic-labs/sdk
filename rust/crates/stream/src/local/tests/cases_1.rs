@@ -13,6 +13,7 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
             parent.scope(async {
                 provider
                     .read(ReadRequest {
+                        key: None,
                         path: StreamPath::new("pending")?,
                         from: 0,
                         limit: 1,
@@ -461,6 +462,7 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
     assert_eq!(reopened.tail(StreamPath::new("compacted")?).await?, 21);
     let history = reopened
         .read(ReadRequest {
+            key: None,
             path: StreamPath::new("compacted")?,
             from: 0,
             limit: 21,
@@ -487,6 +489,7 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
         .await?;
     let fork_history = reopened
         .read(ReadRequest {
+            key: None,
             path: StreamPath::new("compacted-fork")?,
             from: 0,
             limit: 21,

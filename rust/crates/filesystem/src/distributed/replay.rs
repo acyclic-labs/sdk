@@ -86,6 +86,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let result = self
             .authority_read(
                 acyclic_stream::ReadRequest {
+                    key: None,
                     path,
                     from: after.get().saturating_add(1),
                     limit: limit.records,

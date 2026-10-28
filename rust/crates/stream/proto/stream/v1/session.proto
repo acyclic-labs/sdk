@@ -108,6 +108,11 @@ message SessionFollow {
   // one Head snapshot, then follow its checked prefix. Resumes replay normally
   // so attention records after an acknowledged cut cannot be skipped.
   bool bootstrap_head = 7;
+  // Bounded indexed read. Requires ALL, no preceding anchor or bootstrap,
+  // NOT_FOUND, a Streams resource, until == key.before and a positive limit.
+  // Data retains its original sequence, so gaps are valid and never conflate.
+  ReadKeySeek key = 8;
+  uint32 read_limit = 9;
 }
 message SessionCursor {
   uint64 next = 1; // exclusive, next record / actor frame offset

@@ -263,6 +263,7 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                     "path": request.path.to_string(),
                     "from": request.from.to_string(),
                     "limit": request.limit,
+                    "key": request.key.map(|key| json!({ "key": STANDARD.encode(&key.key), "before": key.before.to_string() })),
                 }),
                 &at_least,
             ))

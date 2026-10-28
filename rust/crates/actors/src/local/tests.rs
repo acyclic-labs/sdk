@@ -488,6 +488,7 @@ async fn atomic_history<P: StreamProvider + ?Sized>(
     );
     let mut records = provider
         .read(ReadRequest {
+            key: None,
             path: output,
             from: 0,
             limit: 2,

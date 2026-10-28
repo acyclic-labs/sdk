@@ -852,6 +852,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 .store
                 .provider()
                 .read(acyclic_stream::ReadRequest {
+                    key: None,
                     path: subscription.path.clone(),
                     from: subscription.cursor,
                     limit: 1,

@@ -160,6 +160,7 @@ impl Before {
                     while next < after {
                         let mut batch = provider
                             .read(ReadRequest {
+                                key: None,
                                 path: path.clone(),
                                 from: next,
                                 limit: crate::wire::StreamLimit::MaxItems as u32,

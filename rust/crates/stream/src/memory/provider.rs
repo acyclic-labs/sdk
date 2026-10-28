@@ -266,6 +266,9 @@ impl StreamProvider for MemoryStream {
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         validate_limit(request.limit)?;
+        if let Some(key) = &request.key {
+            key.validate()?;
+        }
         self.revisions.wait(&request.at_least).await?;
         let state = self.state.read().await;
         let path = state
@@ -274,6 +277,41 @@ impl StreamProvider for MemoryStream {
             .ok_or(StreamError::NotFound)?;
         if request.from > path.tail {
             return Err(StreamError::OutOfRange);
+        }
+        if let Some(key) = request.key {
+            let keys = path
+                .history
+                .as_ref()
+                .map_or_else(KeyTree::default, |history| history.keys().clone());
+            let before = key.before.min(path.tail);
+            let history = PinnedHistory {
+                root: path.history.clone(),
+                tail: before,
+            };
+            drop(state);
+            return Ok(stream::try_unfold(
+                (keys, history, key.key, request.from, request.limit),
+                move |(keys, history, key, from, remaining)| async move {
+                    if remaining == 0 {
+                        return Ok(None);
+                    }
+                    let Some(sequence) =
+                        keys.seek(&key, from, before, &mut || Ok::<_, StreamError>(()))?
+                    else {
+                        return Ok(None);
+                    };
+                    let mut window = history
+                        .page(sequence, 1, || Ok::<_, StreamError>(()))?
+                        .ok_or(StreamError::Unavailable)?;
+                    let record = window.next().ok_or(StreamError::Unavailable)?;
+                    let next = record
+                        .sequence
+                        .checked_add(1)
+                        .ok_or(StreamError::OutOfRange)?;
+                    Ok(Some((record, (keys, history, key, next, remaining - 1))))
+                },
+            )
+            .boxed());
         }
         let end = path
             .tail
@@ -348,6 +386,11 @@ impl StreamProvider for MemoryStream {
             if let Err(error) = validate_limit(request.limit) {
                 return Ok(Err(error));
             }
+            if let Some(key) = &request.key
+                && let Err(error) = key.validate()
+            {
+                return Ok(Err(error));
+            }
             if let Err(error) = self.revisions.wait(&request.at_least).await {
                 return Ok(Err(error));
             }
@@ -366,8 +409,35 @@ impl StreamProvider for MemoryStream {
             let end = path
                 .tail
                 .min(request.from.saturating_add(u64::from(request.limit)));
-            admit_windows(path, request.from, end, &*meter, &mut windows)?;
-            windows.reverse();
+            if let Some(key) = &request.key {
+                let before = key.before.min(path.tail);
+                let mut from = request.from;
+                if let Some(history) = &path.history {
+                    while windows.len() < request.limit as usize {
+                        let Some(sequence) =
+                            history
+                                .keys()
+                                .seek(&key.key, from, before, &mut || inspect(&meter, || ()))?
+                        else {
+                            break;
+                        };
+                        let window = PinnedHistory {
+                            root: Some(Arc::clone(history)),
+                            tail: before,
+                        }
+                        .page(sequence, 1, || inspect(&meter, || ()))?
+                        .ok_or(std::io::ErrorKind::InvalidData)?;
+                        from = window.records.records[window.start]
+                            .sequence
+                            .checked_add(1)
+                            .ok_or(std::io::ErrorKind::InvalidData)?;
+                        windows.push(window);
+                    }
+                }
+            } else {
+                admit_windows(path, request.from, end, &*meter, &mut windows)?;
+                windows.reverse();
+            }
             let cursor_meter = Arc::clone(&meter);
             // A bounded native read never refreshes a history root. Keep only
             // its already-admitted windows, rather than a live follow cursor.

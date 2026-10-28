@@ -33,7 +33,8 @@ proptest! {
                 let target = StreamPath::new(format!("tree/children/new/items/{index}"))?;
                 if exclude_items { assert_eq!(provider.tail(target).await, Err(StreamError::NotFound)); }
                 else {
-                    let records: Vec<_> = provider.read(ReadRequest { path: target.clone(), from: 0, limit: 2, at_least: Default::default() }).await?.try_collect().await?;
+                    let records: Vec<_> = provider.read(ReadRequest {
+ key: None, path: target.clone(), from: 0, limit: 2, at_least: Default::default() }).await?.try_collect().await?;
                     assert_eq!(records.first().map(|record| record.value.as_ref()), Some([*value].as_slice()));
                     provider.append(AppendRequest { path: target, records: vec![Bytes::from_static(b"private").into()], if_tail: Some(1), idempotency_key: crate::IdempotencyKey::unique() }).await?;
                 }

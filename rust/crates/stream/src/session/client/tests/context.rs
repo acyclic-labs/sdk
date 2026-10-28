@@ -1,7 +1,6 @@
 use super::*;
 use crate::grpc::tests::retry_capture;
 use acyclic_grpc_observability::tests::Capture;
-use futures::TryFutureExt as _;
 
 const CLOSE: &str = "the first request must close while its pool remains cached";
 

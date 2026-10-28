@@ -109,10 +109,18 @@ impl LocalStream {
                     continue;
                 }
                 _ if replay_error.is_some() => continue,
-                Recovered::State { encoded } => provider
-                    .install_state(&encoded)
-                    .await
-                    .map_err(|_| LocalStreamError::Corrupt),
+                Recovered::State { encoded } => {
+                    provider
+                        .restore_state(&encoded)
+                        .await
+                        .map_err(|error| match error {
+                            crate::memory::RestoreError::PreRevision => {
+                                LocalStreamError::UnsupportedPreRevisionStore
+                            }
+                            crate::memory::RestoreError::State(StreamError::InvalidArgument) => LocalStreamError::Corrupt,
+                            crate::memory::RestoreError::State(error) => LocalStreamError::Replay(error),
+                        })
+                }
                 Recovered::Command {
                     committed_at_millis,
                     command,

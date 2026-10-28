@@ -180,6 +180,14 @@ message ReadRequest {
   uint32 limit = 3;
   // Minimum cut, as in TailRequest.
   repeated Revision at_least = 4;
+  // Exact indexed key, with a pinned exclusive search bound. limit counts
+  // matching records; without this clause it counts consecutive positions.
+  ReadKeySeek key = 5;
+}
+
+message ReadKeySeek {
+  bytes key = 1;
+  uint64 before = 2;
 }
 
 enum WhenAbsent {

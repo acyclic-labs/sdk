@@ -1,5 +1,4 @@
 use super::*;
-use futures::TryFutureExt as _;
 
 struct Outage {
     endpoint: super::super::transport::Endpoint,

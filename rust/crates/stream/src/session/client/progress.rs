@@ -12,6 +12,7 @@ struct State {
     track_records: bool,
 }
 pub(super) struct Progress {
+    sparse_records: bool,
     // Lock order: this is the only cursor lock. Never nest it with another
     // lock or hold it across an await; sequence, opaque cursor and checked
     // preceding commit form one cut. Received-but-unconsumed records never enter it.
@@ -41,6 +42,7 @@ impl Progress {
         preceding: Option<[u8; 32]>,
     ) -> Self {
         Self {
+            sparse_records: false,
             state: Mutex::new(State {
                 position: Position {
                     next: cursor.next,
@@ -53,6 +55,10 @@ impl Progress {
             cancelled: AtomicU64::new(0),
             ended: AtomicU64::new(0),
         }
+    }
+    pub(super) fn with_sparse_records(mut self) -> Self {
+        self.sparse_records = true;
+        self
     }
     pub(super) fn end(&self) {
         self.ended.store(1, Ordering::Release);
@@ -96,7 +102,7 @@ impl Progress {
         sequence: u64,
         commit: [u8; 32],
     ) -> Result<bool, StreamError> {
-        self.consume_cut(generation, sequence, &[], Some(commit), false)
+        self.consume_cut(generation, sequence, &[], Some(commit), self.sparse_records)
     }
     pub(super) fn current(&self, generation: u64) -> Result<bool, StreamError> {
         Ok(self

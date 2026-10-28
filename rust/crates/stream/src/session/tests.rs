@@ -141,6 +141,7 @@ async fn checked_follow_confirms_the_provider_guard_and_refuses_only_a_bad_chann
     append(&provider, "events", Bytes::from_static(b"seed")).await?;
     let mut read = provider
         .read(crate::ReadRequest {
+            key: None,
             path: StreamPath::new("events")?,
             from: 0,
             limit: 1,

@@ -1,6 +1,5 @@
 //! In-process I/O uses the public pool, including checked admission and credit.
 use super::*;
-use futures::TryFutureExt as _;
 
 #[tokio::test]
 async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult {

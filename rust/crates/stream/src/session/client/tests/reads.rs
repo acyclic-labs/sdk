@@ -12,12 +12,61 @@ fn local(provider: &Arc<MemoryStream>) -> Result<Client, StreamError> {
 }
 fn read(path: &str, from: u64, limit: u32) -> Result<crate::ReadRequest, StreamError> {
     Ok(crate::ReadRequest {
+        key: None,
         path: StreamPath::new(path)?,
         from,
         limit,
         at_least: Default::default(),
     })
 }
+#[tokio::test]
+async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let client = local(&provider)?;
+    crate::conformance::key_seek::verify_with(&*provider, async |request| {
+        client.read(request).await
+    })
+    .await?;
+    let follow = wire::SessionFollow {
+        key: Some(wire::ReadKeySeek {
+            key: Bytes::from_static(b"a"),
+            before: 4,
+        }),
+        read_limit: 1,
+        until: 4,
+        delivery: wire::SessionDelivery::All as i32,
+        resource: wire_codec::session::stream_resource("conformance/keys"),
+        ..Default::default()
+    };
+    let record = wire_codec::record_wire(
+        provider
+            .read(read("conformance/keys", 0, 1)?)
+            .await?
+            .next()
+            .await
+            .ok_or(StreamError::Unavailable)??,
+    );
+    let mut data = wire::SessionData {
+        after: Some(wire::SessionCursor {
+            next: 1,
+            opaque: Bytes::new(),
+        }),
+        accepted: 4,
+        item: Some(Item::Record(record)),
+        ..Default::default()
+    };
+    wire_codec::session::follow_data_sequence(&follow, 0, &data)?;
+    let Some(Item::Record(record)) = &mut data.item else {
+        unreachable!()
+    };
+    record.keys = vec![Bytes::from_static(b"a\0")];
+    assert_eq!(
+        wire_codec::session::follow_data_sequence(&follow, 0, &data),
+        Err(StreamError::InvalidResponse)
+    );
+    Ok(())
+}
+
 async fn sequences(
     mut records: RecordStream,
 ) -> Result<Vec<u64>, Box<dyn std::error::Error + Send + Sync>> {
@@ -29,6 +78,8 @@ async fn sequences(
 }
 fn bounded(path: &str, until: u64) -> wire::SessionFollow {
     wire::SessionFollow {
+        key: None,
+        read_limit: 0,
         bootstrap_head: false,
         when_absent: Default::default(),
         resource: wire_codec::session::stream_resource(path),

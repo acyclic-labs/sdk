@@ -271,10 +271,35 @@ pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, St
 /// Decodes a read request from its generated wire representation.
 pub fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, StreamError> {
     Ok(crate::ReadRequest {
+        key: read_key_from_wire(value.key)?,
         path: path(value.path)?,
         from: value.from,
         limit: value.limit,
         at_least: cut_from_wire(value.at_least)?,
+    })
+}
+
+/// Decodes the exact byte key and exclusive historical search bound.
+pub fn read_key_from_wire(
+    value: Option<wire::ReadKeySeek>,
+) -> Result<Option<crate::ReadKeySeek>, StreamError> {
+    value
+        .map(|value| {
+            let key = crate::ReadKeySeek {
+                key: value.key.into(),
+                before: value.before,
+            };
+            key.validate()?;
+            Ok(key)
+        })
+        .transpose()
+}
+
+/// Encodes a bounded indexed lookup without interpreting its key.
+pub fn read_key_to_wire(value: &Option<crate::ReadKeySeek>) -> Option<wire::ReadKeySeek> {
+    value.as_ref().map(|value| wire::ReadKeySeek {
+        key: Bytes::copy_from_slice(&value.key),
+        before: value.before,
     })
 }
 
@@ -292,12 +317,6 @@ pub fn follow_from_wire(value: wire::FollowRequest) -> Result<crate::FollowReque
     })
 }
 
-#[cfg(any(
-    feature = "grpc",
-    all(feature = "session", not(target_arch = "wasm32")),
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
 /// Decodes a paginated children request from its generated wire representation.
 pub fn children_page_from_wire(
     value: wire::ChildrenPageRequest,

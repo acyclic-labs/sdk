@@ -179,6 +179,9 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                             filter,
                             at_least,
                             records: None,
+                            key: wire_codec::read_key_from_wire(follow.key.clone())?,
+                            read_limit: follow.read_limit,
+                            key_records: None,
                             opened: false,
                             ended: 0,
                         },
@@ -365,6 +368,9 @@ struct Follow<P: ?Sized> {
     at_least: crate::RevisionCut,
     when_absent: crate::WhenAbsent,
     records: Option<crate::FollowStream>,
+    key: Option<crate::ReadKeySeek>,
+    read_limit: u32,
+    key_records: Option<crate::RecordStream>,
     bootstrap_head: bool,
     bootstrap: Option<crate::Record>,
     opened: bool,
@@ -393,6 +399,9 @@ fn follow_source<P: StreamProvider + ?Sized>(
 
 impl<P: StreamProvider + ?Sized> Follow<P> {
     async fn event(&mut self) -> Result<Event, StreamError> {
+        if self.key.is_some() {
+            return self.key_event().await;
+        }
         loop {
             if self.records.is_none() {
                 let confirmation = self.preceding;
@@ -501,6 +510,47 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
                 self.executor.sleep(10).await;
             }
         }
+    }
+
+    async fn key_event(&mut self) -> Result<Event, StreamError> {
+        if !self.opened {
+            let applied = crate::revision::served(&*self.provider, &self.at_least).await?;
+            self.key_records = Some(
+                self.provider
+                    .read(crate::ReadRequest {
+                        key: self.key.clone(),
+                        path: self.path.clone(),
+                        from: self.next,
+                        limit: self.read_limit,
+                        at_least: self.at_least.clone(),
+                    })
+                    .await?,
+            );
+            self.opened = true;
+            let applied = crate::revision::captured(&*self.provider, applied).await?;
+            return Ok(Event::Opened(
+                None,
+                applied.as_ref().map(wire_codec::revision_to_wire),
+            ));
+        }
+        let Some(record) = self
+            .key_records
+            .as_mut()
+            .ok_or(StreamError::Unavailable)?
+            .next()
+            .await
+            .transpose()?
+        else {
+            return Ok(Event::End);
+        };
+        if !self.filter.matches(&record.headers) {
+            return Err(StreamError::AccessDenied);
+        }
+        self.next = record
+            .sequence
+            .checked_add(1)
+            .ok_or(StreamError::OutOfRange)?;
+        Ok(Event::Record(record))
     }
 }
 

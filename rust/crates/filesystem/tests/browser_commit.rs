@@ -122,6 +122,7 @@ async fn browser_disjoint_transactions_use_the_canonical_group_and_original_rece
     }
     let records: Vec<_> = provider
         .read(acyclic_stream::ReadRequest {
+            key: None,
             path,
             from: before,
             limit: 2,

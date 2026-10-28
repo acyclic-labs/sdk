@@ -94,6 +94,7 @@ async fn composed_merge(stale: bool, native: bool) -> TestResult {
             .authority
             .provider()
             .read(acyclic_stream::ReadRequest {
+                key: None,
                 path: acyclic_stream::StreamPath::new(format!(
                     "fs/authorities/{}/records",
                     hex::encode(volume_authority_id(volume.id).into_bytes())

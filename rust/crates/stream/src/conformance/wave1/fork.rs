@@ -93,6 +93,7 @@ pub(super) async fn values<P: StreamProvider + ?Sized>(
     let reader = match history
         .provider
         .read(ReadRequest {
+            key: None,
             path: target.clone(),
             from: 0,
             limit: 8,

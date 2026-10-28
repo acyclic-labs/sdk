@@ -184,6 +184,8 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
     let mut data = client
         .follow_data(
             wire::SessionFollow {
+                key: None,
+                read_limit: 0,
                 bootstrap_head: false,
                 when_absent: Default::default(),
                 resource: crate::wire_codec::session::stream_resource("events"),

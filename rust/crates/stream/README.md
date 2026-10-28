@@ -54,6 +54,19 @@ The hierarchy continuation retains its existing revision fence. A refused named
 path refuses the entire view; it never appears as absence. Remote adapters carry
 this operation intact through the shared session rather than composing head calls.
 
+`ReadRequest.key` seeks an exact opaque header key within
+`[from, min(key.before, tail at open))`. Its limit counts matching records;
+returned sequences keep their original gaps. Resume a full page at the last
+sequence plus one with the same exclusive bound. EOF proves the captured interval
+has no further match. The memory index shares inherited fork cuts and is rebuilt
+from canonical snapshot facts. Native seek work and retained index nodes remain
+on the original work owner's ledger. Session reads use the same credit and
+authorization as ordinary finite reads and reject changed key bytes.
+
+Opening a local snapshot written before receipt revisions returns
+`UnsupportedPreRevisionStore`, with instructions to re-create the store. It does
+not infer a missing revision or alter the persisted snapshot.
+
 `Stream::submit` returns an owned `'static` `Pending` for one canonical Commit.
 Submission transfers custody to the executor immediately. Cloned handles share
 one result; cancelling or dropping a waiter never withdraws or retries the write.

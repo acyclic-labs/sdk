@@ -11,6 +11,31 @@ const NODE_PREFIX: u8 = 1;
 const RETAINS_REPLAY: u8 = 1;
 const RETAINS_COMMIT: u8 = 2;
 
+pub(crate) enum RestoreError {
+    State(StreamError),
+    PreRevision,
+}
+
+impl From<StreamError> for RestoreError {
+    fn from(error: StreamError) -> Self {
+        Self::State(error)
+    }
+}
+
+#[cfg(test)]
+impl RestoreError {
+    fn stream(self) -> StreamError {
+        match self {
+            Self::State(error) => error,
+            Self::PreRevision => StreamError::InvalidArgument,
+        }
+    }
+}
+
+fn invalid() -> RestoreError {
+    RestoreError::State(StreamError::InvalidArgument)
+}
+
 impl MemoryStream {
     /// Encodes the whole state.
     pub(crate) async fn encode_state(&self) -> Vec<u8> {
@@ -19,8 +44,15 @@ impl MemoryStream {
     }
 
     /// Replaces the whole state with one [`Self::encode_state`] encoded.
+    #[cfg(test)]
     pub(crate) async fn install_state(&self, encoded: &[u8]) -> Result<(), StreamError> {
-        let decoded = decode(encoded).ok_or(StreamError::InvalidArgument)?;
+        self.restore_state(encoded)
+            .await
+            .map_err(RestoreError::stream)
+    }
+
+    pub(crate) async fn restore_state(&self, encoded: &[u8]) -> Result<(), RestoreError> {
+        let decoded = decode(encoded)?;
         if decoded.paths.len() > self.limits.paths
             || decoded.path_bytes > self.limits.path_bytes
             || decoded.record_count > self.limits.records
@@ -28,7 +60,7 @@ impl MemoryStream {
             || decoded.decision > self.limits.commits as u64
             || decoded.replay_count() > self.limits.idempotency_results
         {
-            return Err(StreamError::Capacity);
+            return Err(StreamError::Capacity.into());
         }
         #[cfg(loom)]
         if crate::verification::fault_is(crate::verification::Fault::RetainReplacedState) {
@@ -138,8 +170,15 @@ fn encode(state: &State) -> Vec<u8> {
     out
 }
 
-fn decode(encoded: &[u8]) -> Option<State> {
-    let mut input = Input(encoded.strip_prefix(MAGIC)?);
+fn decode(encoded: &[u8]) -> Result<State, RestoreError> {
+    let mut input = Input(encoded.strip_prefix(MAGIC).ok_or_else(invalid)?);
+    let (decision, time, hierarchy) = preamble(&mut input).ok_or_else(invalid)?;
+    let mut state = State::default();
+    decode_retained(&mut input, &mut state)?;
+    reconstruct(state, decision, time, hierarchy, encoded, input).ok_or_else(invalid)
+}
+
+fn preamble(input: &mut Input<'_>) -> Option<(u64, u64, CommitId)> {
     let decision = input.u64()?;
     let time = input.u64()?;
     let hierarchy = CommitId::from_bytes(input.array()?);
@@ -165,8 +204,17 @@ fn decode(encoded: &[u8]) -> Option<State> {
         input.len()?;
         input.u64()?;
     }
-    let mut state = State::default();
-    decode_retained(&mut input, &mut state)?;
+    Some((decision, time, hierarchy))
+}
+
+fn reconstruct(
+    mut state: State,
+    decision: u64,
+    time: u64,
+    hierarchy: CommitId,
+    encoded: &[u8],
+    input: Input<'_>,
+) -> Option<State> {
     if !input.0.is_empty()
         || decision
             != u64::try_from(
@@ -252,74 +300,97 @@ fn retained_fact_bound() -> Option<usize> {
         .checked_add(128)
 }
 
-fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
-    for _ in 0..input.len()? {
-        let flags = input.u8()?;
+fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Result<(), RestoreError> {
+    for _ in 0..input.len().ok_or_else(invalid)? {
+        let flags = input.u8().ok_or_else(invalid)?;
         if flags == 0 || flags & !(RETAINS_REPLAY | RETAINS_COMMIT) != 0 {
-            return None;
+            return Err(invalid());
         }
         let observation = if flags & RETAINS_REPLAY == 0 {
             None
         } else {
-            Some(
-                crate::persistence::decode_observation(input.bytes()?, retained_fact_bound()?)
-                    .ok()?,
-            )
+            let wire = crate::persistence::decode::<crate::wire::IdempotencyObservation>(
+                input.bytes().ok_or_else(invalid)?,
+                retained_fact_bound().ok_or_else(invalid)?,
+            )?;
+            use crate::wire::{append_response, idempotency_observation::Outcome};
+            let pre_revision = match &wire.outcome {
+                Some(Outcome::Append(response)) => matches!(&response.outcome,
+                    Some(append_response::Outcome::Committed(receipt)) if receipt.revision.is_none()),
+                Some(Outcome::Fork(receipt)) => receipt.revision.is_none(),
+                _ => false,
+            };
+            if pre_revision {
+                return Err(RestoreError::PreRevision);
+            }
+            Some(crate::persistence::observation_from_wire(wire)?)
         };
         let envelope = if flags & RETAINS_COMMIT == 0 {
             None
         } else {
-            Some(crate::persistence::decode_envelope(input.bytes()?, retained_fact_bound()?).ok()?)
+            Some(crate::persistence::decode_envelope(
+                input.bytes().ok_or_else(invalid)?,
+                retained_fact_bound().ok_or_else(invalid)?,
+            )?)
         };
-        if envelope
-            .as_ref()
-            .is_some_and(|envelope| state.commit(&envelope.commit_id).is_some())
-        {
-            return None;
-        }
-        let (key, digest, result, envelope) = match observation {
-            Some(observation) => {
-                let key = observation.idempotency_key;
-                let commit_id = replay_commit_id(envelope.as_ref(), &observation.outcome)?;
-                if state
-                    .replay(key.as_bytes(), || Ok::<_, StreamError>(()))
-                    .ok()?
-                    .is_some()
-                    || commit_id.is_some_and(|id| state.commit(&id).is_some())
-                {
-                    return None;
-                }
-                (
-                    Some(key),
-                    observation.request_digest,
-                    observation.outcome,
-                    envelope,
-                )
-            }
-            None => {
-                let envelope = envelope?;
-                (
-                    None,
-                    [0; 32],
-                    crate::IdempotencyOutcome::Commit(envelope),
-                    None,
-                )
-            }
-        };
-        // Each envelope-bearing entry is the next publication in decision order.
-        if envelope.is_some() || matches!(result, crate::IdempotencyOutcome::Commit(_)) {
-            state.decision = state.decision.checked_add(1)?;
-        }
-        retain(
-            state,
-            &mut || {},
-            envelope,
-            key,
-            digest,
-            result,
-            Default::default(),
-        );
+        restore_retained(state, observation, envelope).ok_or_else(invalid)?;
     }
+    Ok(())
+}
+
+fn restore_retained(
+    state: &mut State,
+    observation: Option<IdempotencyObservation>,
+    envelope: Option<crate::CommittedEnvelope>,
+) -> Option<()> {
+    if envelope
+        .as_ref()
+        .is_some_and(|envelope| state.commit(&envelope.commit_id).is_some())
+    {
+        return None;
+    }
+    let (key, digest, result, envelope) = match observation {
+        Some(observation) => {
+            let key = observation.idempotency_key;
+            let commit_id = replay_commit_id(envelope.as_ref(), &observation.outcome)?;
+            if state
+                .replay(key.as_bytes(), || Ok::<_, StreamError>(()))
+                .ok()?
+                .is_some()
+                || commit_id.is_some_and(|id| state.commit(&id).is_some())
+            {
+                return None;
+            }
+            (
+                Some(key),
+                observation.request_digest,
+                observation.outcome,
+                envelope,
+            )
+        }
+        None => {
+            let envelope = envelope?;
+            (
+                None,
+                [0; 32],
+                crate::IdempotencyOutcome::Commit(envelope),
+                None,
+            )
+        }
+    };
+    // Each envelope-bearing entry is the next publication in decision order.
+    if envelope.is_some() || matches!(result, crate::IdempotencyOutcome::Commit(_)) {
+        state.decision = state.decision.checked_add(1)?;
+    }
+    retain(
+        state,
+        &mut || {},
+        envelope,
+        key,
+        digest,
+        result,
+        Default::default(),
+    );
     Some(())
 }
 fn replay_commit_id(

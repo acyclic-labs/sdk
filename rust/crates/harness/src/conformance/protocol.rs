@@ -102,6 +102,7 @@ async fn records(
     match endpoint
         .provider()
         .read(ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: 64,

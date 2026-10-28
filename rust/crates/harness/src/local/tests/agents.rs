@@ -25,6 +25,7 @@ fn agent(error: impl std::fmt::Display) -> Error {
 async fn records(stream: &impl StreamProvider, path: StreamPath) -> Result<Vec<Vec<u8>>> {
     match stream
         .read(ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: 16,

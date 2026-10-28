@@ -131,6 +131,7 @@ async fn observe(
         ..Meter::default()
     });
     let request = ReadRequest {
+        key: None,
         path,
         from,
         limit,

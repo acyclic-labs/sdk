@@ -132,6 +132,7 @@ async fn collect_registry_upload_paths<P: acyclic_stream::StreamProvider>(
         .map_err(|_| s3s::s3_error!(InternalError))?;
         let mut records = provider
             .read(acyclic_stream::ReadRequest {
+                key: None,
                 path: registry.clone(),
                 from,
                 limit,

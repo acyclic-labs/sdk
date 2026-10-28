@@ -25,6 +25,7 @@ proptest! {
             let from = offset.min(count);
             let expected = (count - from).min(maximum as usize);
             let mut records = provider.read(ReadRequest {
+                key: None,
                 path: path.clone(), from: from as u64, limit: maximum,
                 at_least: Default::default(),
             }).await.unwrap();
