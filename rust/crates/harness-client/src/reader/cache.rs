@@ -439,6 +439,24 @@ impl RecordCache {
         }
     }
 
+    /// Retained pages of one parent, including displayed pass-through pages.
+    /// Work is proportional to cached pages, never the requested page index.
+    pub fn listings(&self, parent: &StreamPath) -> impl Iterator<Item = (u32, &Listing)> {
+        let range = Key::Listing(parent.clone(), 0)..=Key::Listing(parent.clone(), u32::MAX);
+        self.entries
+            .range(range.clone())
+            .map(|(key, entry)| (key, &entry.value))
+            .chain(
+                self.passed
+                    .range(range)
+                    .map(|(key, (value, _))| (key, value)),
+            )
+            .filter_map(|(key, value)| match (key, value) {
+                (Key::Listing(_, index), Value::Listing(listing)) => Some((*index, listing)),
+                _ => None,
+            })
+    }
+
     /// Mark displayed entries most recently used.
     pub fn touch_record(&mut self, stream: &StreamPath, sequence: u64) {
         self.touch_range(stream, sequence, sequence.saturating_add(1));

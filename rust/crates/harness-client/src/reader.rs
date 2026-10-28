@@ -746,27 +746,22 @@ impl Reader {
 
     /// The highest page at or before `index` whose start is known.
     fn reachable(&self, parent: &StreamPath, index: u32) -> Option<(u32, Option<StreamPath>)> {
-        let anchors = self.anchors.get(parent);
-        let floor = anchors
-            .and_then(|anchors| anchors.at.range(..=index).next_back())
-            .map_or(0, |(at, _)| *at);
-        let mut page = index;
-        loop {
-            if page == 0 {
-                return Some((0, None));
-            }
-            if let Some(after) = anchors.and_then(|anchors| anchors.at.get(&page)) {
-                return Some((page, Some(after.clone())));
-            }
-            if let Some(previous) = self.cache.listing(parent, page - 1) {
-                return previous.next.clone().map(|next| (page, Some(next)));
-            }
-            if page <= floor {
-                break;
-            }
-            page -= 1;
+        let anchor = self
+            .anchors
+            .get(parent)
+            .and_then(|anchors| anchors.at.range(..=index).next_back());
+        let floor = anchor.map_or(0, |(at, _)| *at);
+        // Search retained pages instead of counting down from a potentially
+        // enormous logical offset through evicted pages.
+        let cached = self
+            .cache
+            .listings(parent)
+            .filter(|(page, _)| *page < index && *page >= floor)
+            .max_by_key(|(page, _)| *page);
+        if let Some((page, listing)) = cached {
+            return listing.next.clone().map(|next| (page + 1, Some(next)));
         }
-        Some((0, None))
+        Some(anchor.map_or((0, None), |(page, after)| (*page, Some(after.clone()))))
     }
 
     /// Reads to start now, in aged priority order, within every budget.

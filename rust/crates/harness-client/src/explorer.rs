@@ -21,8 +21,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 const MAX_LOOKAHEAD: usize = 256;
 /// Agents remembered as recently active, for prefetch.
 const MAX_RECENT: usize = 16;
-/// Cached sibling pages scanned to relocate a moved row.
-const MAX_SCAN_PAGES: u32 = 64;
 /// Rows in one frame, at most.
 const MAX_ROWS: usize = 512;
 /// History rows in one window, at most.
@@ -47,6 +45,112 @@ pub enum Pos {
         /// Page index.
         page: u32,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reader::{ListedChild, Listing, Op, Outcome};
+    use acyclic_harness_core::agent::AgentId;
+    use acyclic_stream::{
+        AppendRequest, ChildrenPageRequest, IdempotencyKey, MemoryStream, StreamProvider,
+    };
+
+    /// Directory data comes from the actual provider. Only the first and
+    /// late pages remain cached, as after scrolling through a large tree.
+    #[test]
+    fn retained_late_pages_relocate_rows_and_resume_large_logical_offsets() {
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            for id in 1..=130u64 {
+                let agent = AgentPath::root(&AgentId::try_from(format!("{id:032x}")).unwrap());
+                provider
+                    .append(AppendRequest {
+                        path: StreamPath::new(agent.as_str()).unwrap(),
+                        records: vec![b"directory entry".to_vec().into()],
+                        if_tail: None,
+                        idempotency_key: IdempotencyKey::new(id.to_be_bytes().to_vec()).unwrap(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            let mut explorer = Explorer::new(ReaderPolicy {
+                listing_limit: 1,
+                ..ReaderPolicy::default()
+            })
+            .unwrap();
+            let parent = explorer.root.clone();
+            let want = explorer.page(parent.clone(), 0);
+            explorer.reader.plan([(want, Priority::Visible)]);
+            let [first]: [Op; 1] = explorer.reader.poll(0).try_into().unwrap();
+            let first_id = first.id();
+            let mut after = None;
+            let mut version = None;
+            let mut target = None;
+            for index in 0..=128 {
+                let page = provider
+                    .children_page(ChildrenPageRequest {
+                        parent: Some(parent.clone()),
+                        after: after.clone(),
+                        hierarchy_version: version,
+                        limit: 1,
+                        tail_stream: None,
+                    })
+                    .await
+                    .unwrap();
+                version = Some(page.hierarchy_version);
+                if index == 0 {
+                    explorer.reader.complete(
+                        first_id,
+                        Outcome::Children {
+                            children: page
+                                .children
+                                .iter()
+                                .map(|child| ListedChild {
+                                    path: child.path.clone(),
+                                    origin: child.origin.clone(),
+                                    tail: None,
+                                })
+                                .collect(),
+                            next: page.next_after.clone(),
+                            version: page.hierarchy_version,
+                        },
+                        0,
+                    );
+                } else if index == 128 {
+                    target = Some(
+                        AgentPath::try_from(page.children[0].path.as_str().to_owned()).unwrap(),
+                    );
+                    explorer.reader.cache_mut().insert_listing(
+                        &parent,
+                        index,
+                        Listing {
+                            after: after.clone(),
+                            children: page.children.into_iter().map(|child| child.path).collect(),
+                            next: page.next_after.clone(),
+                            fresh: true,
+                            witnessed: None,
+                        },
+                        None,
+                    );
+                }
+                after = page.next_after;
+            }
+            let target = target.unwrap();
+            assert!(matches!(
+                explorer.locate(&target),
+                Some(Pos::Row { page: 128, .. })
+            ));
+            explorer.expand(&target);
+            assert_eq!(explorer.expanded.get(&target), Some(&128));
+            let want = explorer.page(parent, 1_000_000);
+            explorer.reader.plan([(want, Priority::Visible)]);
+            assert!(matches!(
+                explorer.reader.poll(1).as_slice(),
+                [Op::Children { index: 129, .. }]
+            ));
+        });
+    }
 }
 
 /// One rendered tree row.
@@ -293,11 +397,12 @@ impl Explorer {
     fn locate(&self, agent: &AgentPath) -> Option<Pos> {
         let parent = parent_listing(agent)?;
         let hint = self.expanded.get(agent).copied();
-        // Pages are sorted, so each cached page is one binary search.
-        for page in hint.into_iter().chain(0..MAX_SCAN_PAGES) {
-            let Some(listing) = self.reader.cache().listing(&parent, page) else {
-                continue;
-            };
+        // The hint is fast when still cached; otherwise search only retained
+        // pages, including pages beyond the former fixed scan window.
+        let cache = self.reader.cache();
+        let hinted =
+            hint.and_then(|page| cache.listing(&parent, page).map(|listing| (page, listing)));
+        for (page, listing) in hinted.into_iter().chain(cache.listings(&parent)) {
             if let Ok(offset) = listing
                 .children
                 .binary_search_by(|child| child.as_str().cmp(agent.as_str()))
@@ -314,9 +419,10 @@ impl Explorer {
 
     /// The first row at or after `page`. Pages may be empty yet continue
     /// (children the credential cannot list are omitted), so empty pages
-    /// with a cursor are skipped, within the scan bound.
-    fn first_of(&self, parent: StreamPath, page: u32) -> Option<Pos> {
-        for page in page..page.saturating_add(MAX_SCAN_PAGES) {
+    /// with a cursor are skipped. A cache miss yields a resumable gap, so
+    /// the walk is bounded by retained pages rather than a logical cutoff.
+    fn first_of(&self, parent: StreamPath, mut page: u32) -> Option<Pos> {
+        loop {
             match self.reader.cache().listing(&parent, page) {
                 None => return Some(Pos::Gap { parent, page }),
                 Some(listing) if !listing.children.is_empty() => {
@@ -329,8 +435,8 @@ impl Explorer {
                 Some(listing) if listing.next.is_none() => return None,
                 Some(_) => {}
             }
+            page = page.checked_add(1)?;
         }
-        None
     }
 
     /// The want for one listing page. An agent's children change only in a
@@ -451,7 +557,8 @@ impl Explorer {
                 return pos;
             };
             let mut last = None;
-            for page in 0..MAX_SCAN_PAGES {
+            let mut page = 0;
+            loop {
                 match self.reader.cache().listing(&children, page) {
                     None => {
                         last = Some(Pos::Gap {
@@ -474,6 +581,10 @@ impl Explorer {
                     }
                     Some(_) => {}
                 }
+                let Some(next) = page.checked_add(1) else {
+                    break;
+                };
+                page = next;
             }
             match last {
                 Some(next) => pos = next,
