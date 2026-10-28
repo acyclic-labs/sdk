@@ -89,7 +89,7 @@ impl PostgresStream {
         client.batch_execute(SCHEMA).await.map_err(unavailable)?;
         let publish = client
             .prepare(
-                "SELECT revision, at_millis, accepted FROM acyclic_stream_publish($1,$2,$3,$4)",
+                "SELECT revision, at_millis, accepted FROM acyclic_stream_publish($1,$2,$3,$4,$5)",
             )
             .await
             .map_err(unavailable)?;
@@ -304,54 +304,85 @@ impl PostgresStream {
         if command.has_replay(&self.inner.core).await? {
             return self.apply(command).await;
         }
+        // Admission and the recorded commit time are the transaction's database
+        // clock, read before the canonical core plans. Replay restores exactly
+        // this time from the journal row.
+        let millis: i64 = tx
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint",
+                &[],
+            )
+            .await
+            .map_err(unavailable)?
+            .get(0);
+        let at = u64::try_from(millis).map_err(unavailable)?;
+        if deadline.is_some_and(|deadline| at >= deadline) {
+            return Err(StreamError::DeadlineElapsed);
+        }
         let bytes = command.encode_to_vec();
         // The journal's protobuf oneof adds a field tag and length delimiter;
         // the public request ceiling remains MAX_COMMAND_BYTES.
         if bytes.len() > crate::wire_codec::requests::block_len(MAX_COMMAND_BYTES) {
             return Err(StreamError::LimitExceeded);
         }
-        // Clock, physical cursor CAS, insertion, notification and the final
-        // acceptance deadline share one server-side statement. The transaction
-        // fence still serializes catch-up/publication; Stream conditions remain
-        // in the canonical core.
-        let deadline = deadline.map(|value| i64::try_from(value).unwrap_or(i64::MAX));
-        let row = tx
-            .query_one(
-                &*publish,
-                &[&self.inner.namespace, &*cursor, &bytes, &deadline],
-            )
-            .await
-            .map_err(|error| {
-                if error
-                    .as_db_error()
-                    .is_some_and(|error| error.code().code() == "PST01")
-                {
-                    StreamError::DeadlineElapsed
-                } else {
-                    unavailable(error)
-                }
-            })?;
-        if !row.get::<_, bool>(2) {
-            // A cursor mismatch is impossible under this publication fence.
-            // The future shared replica owns refresh/replan, not the SQL adapter.
-            self.fail();
-            return Err(unavailable(
-                "journal changed while holding its namespace fence",
-            ));
-        }
-        let revision: i64 = row.get(0);
-        let at = u64::try_from(row.get::<_, i64>(1)).map_err(unavailable)?;
-        tx.commit().await.map_err(unavailable)?;
         self.inner.clock.0.store(at, Ordering::Release);
-        let result = self.apply(command).await;
-        if matches!(
-            result,
-            Err(StreamError::Unavailable | StreamError::InvalidResponse)
-        ) {
+        let sql_deadline = deadline.map(|value| i64::try_from(value).unwrap_or(i64::MAX));
+        let mut published = None;
+        // The canonical core decides before durability: a refused command is
+        // never journaled. Physical cursor CAS, insertion at the planned time,
+        // notification and the final acceptance deadline share one statement.
+        let result = self
+            .inner
+            .core
+            .apply_durable(command, deadline, async {
+                let row = tx
+                    .query_one(
+                        &*publish,
+                        &[
+                            &self.inner.namespace,
+                            &*cursor,
+                            &bytes,
+                            &millis,
+                            &sql_deadline,
+                        ],
+                    )
+                    .await
+                    .map_err(|error| {
+                        if error
+                            .as_db_error()
+                            .is_some_and(|error| error.code().code() == "PST01")
+                        {
+                            StreamError::DeadlineElapsed
+                        } else {
+                            unavailable(error)
+                        }
+                    })?;
+                if !row.get::<_, bool>(2) {
+                    // A cursor mismatch is impossible under this publication
+                    // fence; the shared replica owns refresh/replan.
+                    self.fail();
+                    return Err(unavailable(
+                        "journal changed while holding its namespace fence",
+                    ));
+                }
+                let revision: i64 = row.get(0);
+                tx.commit().await.map_err(unavailable)?;
+                published = Some(revision);
+                Ok(())
+            })
+            .await;
+        if (published.is_some() && result.is_err())
+            || matches!(
+                result,
+                Err(StreamError::Unavailable | StreamError::InvalidResponse)
+            )
+        {
             self.fail();
             return result;
         }
-        *cursor = revision;
+        if let Some(revision) = published {
+            *cursor = revision;
+        }
         result
     }
 

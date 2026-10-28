@@ -320,7 +320,7 @@ describe("website Stream contract", () => {
         { fork: { source: jobs, destination: "runs/42/attempt-2", atTail: 1n } },
       ],
     }, { idempotencyKey: key("assignment-1") });
-    expect(result).toMatchObject({ ok: true, appends: [{ path: "runs/42/jobs", tail: 2n }, { path: "runs/42/workers", tail: 2n }], forks: [{ path: "runs/42/attempt-2", tail: 1n }] });
+    expect(result).toMatchObject({ ok: true, appends: [{ path: "runs/42/jobs", tail: 2n }, { path: "runs/42/workers", tail: 2n }], forks: [{ destination: "runs/42/attempt-2", tail: 1n }] });
     if (!result.ok) throw new Error("commit unexpectedly conflicted");
     expect((await client.readCommit(result.commitId)).mutations).toHaveLength(3);
     await expect(jobs.read({ from: -1n, limit: 1 }).next()).rejects.toBeInstanceOf(RangeError);
@@ -414,21 +414,19 @@ describe("website Stream contract", () => {
     })))).toThrow();
   });
 
-  test("projects commit responses larger than the bounded request size", () => {
+  test("projects committed envelopes larger than the bounded request size", () => {
     const commitId = new Uint8Array(32).fill(9);
     const records = Array.from({ length: 1024 }, (_, sequence) => ({
-      sequence: BigInt(sequence), value: new Uint8Array(1050).fill(sequence & 0xff), commitId,
+      sequence: BigInt(sequence), value: new Uint8Array(1050).fill(sequence & 0xff), commitId, committedAtMicros: 1n,
     }));
-    const bytes = toBinary(CommitResponseSchema, create(CommitResponseSchema, {
-      outcome: { case: "committed", value: {
-        commitId,
-        mutations: [{ mutation: { case: "append", value: {
-          path: "events", start: 0n, end: 1024n, tail: 1024n, records,
-        } } }],
-      } },
+    const bytes = toBinary(CommittedEnvelopeSchema, create(CommittedEnvelopeSchema, {
+      commitId,
+      committedAtMicros: 1n,
+      mutations: [{ mutation: { case: "append", value: { path: "events", start: 0n, end: 1024n, tail: 1024n, records } } }],
     }));
     expect(bytes.byteLength).toBeGreaterThan(StreamLimit.MAX_COMMAND_BYTES);
-    expect(projectMemoryResponse("commit", bytes)).toMatchObject({ ok: true, appends: [{ path: "events", start: 0n, tail: 1024n }], forks: [] });
+    const envelope = projectMemoryResponse("read_commit", bytes) as { mutations: { type: string }[] };
+    expect(envelope.mutations.map(mutation => mutation.type)).toEqual(["append"]);
   });
 
   test("binds commit identities to request content", async () => {

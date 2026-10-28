@@ -397,10 +397,11 @@ async fn local_retry_refusals_preserve_lost_ack_commit_and_collection_hold() -> 
     };
     let outcome = CommitOutcome::Committed(acyclic_stream::CommitReceipt::project(
         &envelope,
-        Vec::new(),
-        Vec::new(),
+        Vec::with_capacity(envelope.mutations.len()),
+        Vec::with_capacity(envelope.mutations.len()),
         |_, _| Ok::<(), StreamError>(()),
     )?);
+    drop(envelope);
     let mut collecting = Box::pin(collection.begin());
     assert!(futures::poll!(collecting.as_mut()).is_pending());
 
