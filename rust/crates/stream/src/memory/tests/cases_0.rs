@@ -83,7 +83,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
     let records = vec![crate::AppendRecord::from(vec![0_u8; MAX_RECORD_BYTES]); 16];
     let idempotency_key = key(b"size")?;
     let mut low = 1_usize;
-    let mut high = crate::MAX_PATH_BYTES;
+    let mut high = MAX_COMMAND_BYTES;
     while low < high {
         let middle = low + (high - low).div_ceil(2);
         let path = StreamPath::new("x".repeat(middle))?;
@@ -549,11 +549,6 @@ fn permanent_path_validation_rejects_ambiguous_names() {
     ] {
         assert_eq!(StreamPath::new(invalid), Err(StreamError::InvalidPath));
     }
-    assert!(StreamPath::new("a".repeat(crate::MAX_PATH_BYTES)).is_ok());
-    assert_eq!(
-        StreamPath::new("a".repeat(crate::MAX_PATH_BYTES + 1)),
-        Err(StreamError::InvalidPath)
-    );
     assert!(StreamPath::new("runs/run_42/agents/researcher").is_ok());
 }
 
