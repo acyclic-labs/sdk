@@ -35,8 +35,16 @@ async fn native_receipt_replay_records_actual_metadata_copies_and_original_refus
     };
     let accepted = provider.commit(request.clone()).await?;
     assert!(matches!(&accepted, CommitOutcome::Committed(_)));
-    for refusal in 0..3 {
-        let meter = Arc::new(Meter::local());
+    let first_copy = std::mem::size_of::<crate::AppendRange>() as u64;
+    let complete_copy = first_copy + std::mem::size_of::<ForkReceipt>() as u64;
+    for refusal in 0..5 {
+        let mut meter = Meter::local();
+        meter.codec_limit.copied = match refusal {
+            3 => first_copy - 1,
+            4 => complete_copy - 1,
+            _ => complete_copy,
+        };
+        let meter = Arc::new(meter);
         meter.cancelled.store(refusal == 1, Ordering::SeqCst);
         meter.cancel_on_copy.store(refusal == 2, Ordering::SeqCst);
         let result = provider.native_commit(request.clone(), None, meter.original()).await;
@@ -44,19 +52,24 @@ async fn native_receipt_replay_records_actual_metadata_copies_and_original_refus
             0 => {
                 let output = result??;
                 assert_eq!(output.value(), &accepted);
-                let expected = (std::mem::size_of::<crate::AppendRange>()
-                    + std::mem::size_of::<ForkReceipt>()) as u64;
-                assert_eq!(meter.held.load(Ordering::SeqCst), expected);
+                assert_eq!(meter.held.load(Ordering::SeqCst), complete_copy);
                 drop(output);
-                expected
+                complete_copy
             }
-            _ => {
+            1 | 2 => {
                 assert!(matches!(result, Err(error)
                     if error.kind() == std::io::ErrorKind::Interrupted
                         && error.get_ref().is_some_and(|cause|
                             cause.downcast_ref::<crate::test_meter::NativeDenial>()
                                 .is_some_and(|cause| cause.0 == "cancelled"))));
-                if refusal == 1 { 0 } else { std::mem::size_of::<crate::AppendRange>() as u64 }
+                if refusal == 1 { 0 } else { first_copy }
+            }
+            _ => {
+                assert!(matches!(result, Err(error)
+                    if error.get_ref().is_some_and(|cause|
+                        cause.downcast_ref::<crate::test_meter::NativeDenial>()
+                            .is_some_and(|cause| cause.0 == "codec"))));
+                if refusal == 3 { 0 } else { first_copy }
             }
         };
         assert_eq!(meter.copied.load(Ordering::SeqCst), expected_copied);
