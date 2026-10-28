@@ -91,6 +91,7 @@ pub use workspace_mount::*;
 mod write;
 
 use acyclic_fs::MountPublication;
+use acyclic_fs::binding_contract::attribute_class_name as native_attribute_class_name;
 use acyclic_fs::kernel::{
     AttributeClass, AttributeName, DecodeLimits, ExtentKind, ExtentSeekTarget, FileKind,
     FileMetadata, FilePayload, FilePayloadKind, FileRecord, LogicalName, NameEncoding,

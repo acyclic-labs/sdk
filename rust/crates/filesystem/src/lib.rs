@@ -66,6 +66,7 @@ pub mod accounting;
 #[path = "tests/accounting/mod.rs"]
 mod accounting_tests;
 pub mod async_storage;
+pub mod binding_contract;
 mod collection;
 pub use collection::{Collection, PublicationHold};
 pub mod cache;

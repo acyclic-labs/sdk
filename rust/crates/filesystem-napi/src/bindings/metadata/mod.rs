@@ -280,25 +280,8 @@ impl NativeCheckout {
 }
 
 pub(in crate::bindings) fn native_attribute_class(value: &str) -> Result<AttributeClass> {
-    match value {
-        "posix-xattr" => Ok(AttributeClass::PosixXattr),
-        "windows-stream" => Ok(AttributeClass::WindowsStream),
-        "mac-resource-fork" => Ok(AttributeClass::MacResourceFork),
-        _ => Err(Error::new(
-            Status::InvalidArg,
-            "unknown named-attribute class",
-        )),
-    }
-}
-
-pub(in crate::bindings) const fn native_attribute_class_name(
-    value: AttributeClass,
-) -> &'static str {
-    match value {
-        AttributeClass::PosixXattr => "posix-xattr",
-        AttributeClass::WindowsStream => "windows-stream",
-        AttributeClass::MacResourceFork => "mac-resource-fork",
-    }
+    acyclic_fs::binding_contract::attribute_class(value)
+        .map_err(|message| Error::new(Status::InvalidArg, message))
 }
 
 pub(in crate::bindings) fn native_attribute_name(
@@ -317,13 +300,6 @@ pub(in crate::bindings) fn native_attribute_name(
 pub(in crate::bindings) fn native_attribute_write_mode(
     value: &str,
 ) -> Result<NamedAttributeWriteMode> {
-    match value {
-        "upsert" => Ok(NamedAttributeWriteMode::Upsert),
-        "create" => Ok(NamedAttributeWriteMode::Create),
-        "replace" => Ok(NamedAttributeWriteMode::Replace),
-        _ => Err(Error::new(
-            Status::InvalidArg,
-            "unknown named-attribute write mode",
-        )),
-    }
+    acyclic_fs::binding_contract::attribute_write_mode(value)
+        .map_err(|message| Error::new(Status::InvalidArg, message))
 }
