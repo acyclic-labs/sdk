@@ -25,7 +25,7 @@ test("the guest artifact runs one agent turn over in-memory host storage", async
       onRecord: (delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => { deliveries += 1; return guest.onRecord(delivery, signal, interrupt); },
     });
     const agent = await agents.create("agent-guest", "hello");
-    const entries = await until(() => agents.read(agent, "conversation", 0n, 16), (entries: unknown[]) => entries.length === 1);
+    const entries = await until(agents, agent, "conversation", (entries: unknown[]) => entries.length === 1);
     expect(await turnText(agents, agent, entries[0])).toBe("guest:hello");
     expect(deliveries).toBeGreaterThanOrEqual(1);
     expect(fixture.failures).toEqual([]);
