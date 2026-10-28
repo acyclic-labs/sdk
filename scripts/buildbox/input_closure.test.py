@@ -138,7 +138,7 @@ class InputClosureTests(unittest.TestCase):
         # Execute the real shared JavaScript client adapter, not a second parser.
         generator=self.root/'generator.mjs'
         generator.write_text((HERE/'buildbox.mjs').read_text()+'\nexport {admitInputs};\n')
-        for name in ['buildbox-receipt.mjs','input_closure.py','admission_policy.py']:
+        for name in ['buildbox-receipt.mjs','process-capture.mjs','input_closure.py','admission_policy.py']:
             shutil.copyfile(HERE/name,self.root/name)
         code="import {admitInputs} from './generator.mjs';import fs from 'node:fs';if(!admitInputs(['bash','candidate.sh'],process.cwd(),'"+BASE+"'))process.exit(224);fs.appendFileSync('compiled','dispatch\\n');"
         for present in [False,True]:
@@ -232,6 +232,7 @@ class InputClosureTests(unittest.TestCase):
         source=(HERE/'buildbox.mjs').read_text()
         (self.root/'generator.mjs').write_text(source+'\nexport {treeIdentity};\n')
         shutil.copyfile(HERE/'buildbox-receipt.mjs',self.root/'buildbox-receipt.mjs')
+        shutil.copyfile(HERE/'process-capture.mjs',self.root/'process-capture.mjs')
         probe="import {treeIdentity} from './generator.mjs';console.log(JSON.stringify(treeIdentity({top:process.cwd()})));"
         result=subprocess.run(['node','--input-type=module','-e',probe],cwd=self.root,env={**self.env(),'BUILD_SLOT_CLIENT_CACHE':str(cache)},capture_output=True,text=True)
         self.assertEqual(result.returncode,0,result.stderr)

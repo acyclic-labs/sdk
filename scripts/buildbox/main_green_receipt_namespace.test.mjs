@@ -30,6 +30,7 @@ async function mutant(root) {
   const needle = 'return namespace !== null && owner?.pid_namespace === namespace;';
   assert.equal(source.split(needle).length, 2);
   const file = path.join(root, 'unfenced.mjs');
+  fs.copyFileSync(new URL('./process-capture.mjs', import.meta.url), path.join(path.dirname(file), 'process-capture.mjs'));
   fs.writeFileSync(file, source.replace(needle, 'return owner != null;'));
   return import(pathToFileURL(file).href);
 }

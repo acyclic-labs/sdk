@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { captureCommand } from './process-capture.mjs';
 import { pathToFileURL } from 'node:url';
 
 export function atomic(file, value) {
@@ -117,7 +118,7 @@ export function execution(metaFile) {
   const meta = read(metaFile);
   const a = meta.argv;
   const override = a.find(x => x.startsWith('+'));
-  const r = spawnSync('rustc', [...(override ? [override] : []), '-vV'], { encoding: 'utf8', timeout: 15000 });
+  const r = captureCommand('rustc', [...(override ? [override] : []), '-vV'], { encoding: 'utf8', timeout: 15000 });
   const vv = r.status === 0 ? r.stdout : null;
   const targets = [];
   for (let i = 0; i < a.length; i++) {
@@ -137,10 +138,9 @@ function kernelWriter(file, operation, value) {
   // Kernel custody ends on exit, including SIGKILL. Legacy mkdir locks are
   // deliberately not consulted or stolen: their PID coordinates are unknown.
   fs.closeSync(fs.openSync(file + '.writer-lock', 'a', 0o600));
-  const writer = spawnSync('flock', ['--exclusive', '--no-fork', file + '.writer-lock',
+  const writer = captureCommand('flock', ['--exclusive', '--no-fork', file + '.writer-lock',
     process.execPath, new URL(import.meta.url).pathname, operation], {
-    input: JSON.stringify(value), encoding: 'utf8', maxBuffer: 1 << 28
-  });
+    input: JSON.stringify(value), encoding: 'utf8', });
   if (writer.stderr) process.stderr.write(writer.stderr);
   if (writer.status !== 0) throw new Error(`receipt writer failed: ${writer.status ?? writer.signal ?? writer.error}`);
   return JSON.parse(writer.stdout);
@@ -175,7 +175,7 @@ function finishLocked(metaFile, rc, category, extra = {}) {
     const runtimeFile = metaFile + '.runtime';
     let runtime, cleanupAllowed = true;
     if (!foreignEnded && m.side === 'bb2' && category !== 'command' && read(metaFile + '.job')) {
-      const stopped = spawnSync('python3', ['/home/var/bin/bb-job.py', 'stop-job', metaFile + '.job'], { encoding: 'utf8', timeout: 15000 });
+      const stopped = captureCommand('python3', ['/home/var/bin/bb-job.py', 'stop-job', metaFile + '.job'], { encoding: 'utf8', timeout: 15000 });
       if (stopped.status !== 0) {
         cleanupAllowed = false;
         extra = {...extra, namespace_custody:'unproven', cleanup_deferred:String(stopped.stderr || stopped.error)};
@@ -183,7 +183,7 @@ function finishLocked(metaFile, rc, category, extra = {}) {
     }
     runtime = read(runtimeFile);
     if (cleanupAllowed && runtime && m.side === 'bb2') {
-      const clean = spawnSync('python3', ['/home/var/bin/bb-job.py', 'cleanup', runtimeFile], { encoding: 'utf8', timeout: 30000 });
+      const clean = captureCommand('python3', ['/home/var/bin/bb-job.py', 'cleanup', runtimeFile], { encoding: 'utf8', timeout: 30000 });
       runtime = read(runtimeFile);
       if (clean.status !== 0) {
         runtime.cleanup_error = String(clean.stderr || clean.error);
@@ -191,7 +191,7 @@ function finishLocked(metaFile, rc, category, extra = {}) {
       }
     }
     if (cleanupAllowed && m.side === 'bb2' && m.job_prefix) {
-      const clean = spawnSync('python3', ['/home/var/bin/bb-job.py', 'cleanup-outer', m.job_prefix], { encoding: 'utf8', timeout: 30000 });
+      const clean = captureCommand('python3', ['/home/var/bin/bb-job.py', 'cleanup-outer', m.job_prefix], { encoding: 'utf8', timeout: 30000 });
       runtime ||= {};
       if (clean.status === 0) Object.assign(runtime, JSON.parse(clean.stdout));
       else {
@@ -343,7 +343,7 @@ export async function runBb(script, args) {
   const argv = process.env.BUILD_SLOT_RECEIPT_ARGV ? JSON.parse(process.env.BUILD_SLOT_RECEIPT_ARGV) : [...args]; while (/^--(remote|local|cold)$/.test(argv[0] || '')) argv.shift();
   let source = parent?.source || null, repo = parent?.repo || 'unknown';
   const git = (a, env = process.env) => {
-    const r = spawnSync('git', a, { env, encoding: 'utf8', maxBuffer: 1 << 28 });
+    const r = captureCommand('git', a, { env, encoding: 'utf8', });
     if (r.status !== 0) throw new Error(String(r.stderr)); return r.stdout.trim();
   };
   const meta = { schema_version: 1, admission_backend: 'bb2', repo, lane: process.env.BUILD_SLOT_LABEL || parent?.lane || path.basename(process.cwd()),

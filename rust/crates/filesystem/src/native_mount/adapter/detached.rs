@@ -231,11 +231,6 @@ where
         maximum_bytes: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        if u64::from(maximum_bytes) > self.limits.maximum_read_bytes {
-            return Err(MountSourceError::from(FsError::FileRead(
-                crate::kernel::FileRangeReadError::InvalidRange,
-            )));
-        }
         invoke(&self.runtime, work, || async {
             let mut carrier = NativeDemandCarrier::Native(work);
             let cancellation = work.cancellation();

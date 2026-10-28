@@ -185,7 +185,7 @@ async fn inverse_private_mutations_restore_the_base_and_clear_replay_state() -> 
 #[tokio::test]
 async fn authored_transactions_preflight_expansion_noops_and_byte_bounds() -> TestResult {
     let cancel = CancellationToken::new();
-    let mut limited = config();
+    let limited = config();
     let (_, mut checkout) = fixture(limited, &cancel).await?;
     assert!(matches!(
         checkout
@@ -317,53 +317,6 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds() -> Te
     )
     .await?;
     assert_eq!(noop.generation_id(), generation);
-    limited = config();
-    limited.limits.maximum_read_bytes = 1;
-    let (_, mut checkout) = fixture(limited, &cancel).await?;
-    for mutation in [
-        AuthoredMutation::CreateFile {
-            path: path("created-file")?,
-            bytes: OwnedBytes::from_static(b"xx"),
-            metadata: FileMetadata::default(),
-        },
-        AuthoredMutation::Write {
-            path: path("file")?,
-            offset: 0,
-            bytes: OwnedBytes::from_static(b"xx"),
-        },
-        AuthoredMutation::CreateSymbolicLink {
-            path: path("link")?,
-            target: OwnedBytes::from_static(b"xx"),
-            metadata: FileMetadata::default(),
-        },
-    ] {
-        assert!(matches!(
-            checkout
-                .apply_authored_transaction(vec![mutation], B, &cancel)
-                .await,
-            Err(OperationFailure {
-                error: FsError::FileRead(FileRangeReadError::InvalidRange),
-                ..
-            })
-        ));
-    }
-    assert!(matches!(
-        checkout
-            .create(
-                AuthoredMutation::CreateSymbolicLink {
-                    path: path("direct-link")?,
-                    target: OwnedBytes::from_static(b"xx"),
-                    metadata: FileMetadata::default()
-                },
-                B,
-                &cancel
-            )
-            .await,
-        Err(OperationFailure {
-            error: FsError::FileRead(FileRangeReadError::InvalidRange),
-            ..
-        })
-    ));
     Ok(())
 }
 

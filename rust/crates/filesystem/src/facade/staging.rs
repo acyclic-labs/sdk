@@ -389,9 +389,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<StagedContent, FsError> {
-        if content.len() as u64 > self.volume.config.limits.maximum_read_bytes {
-            return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-        }
         let mut source = std::io::Cursor::new(content.as_ref());
         let result = self
             .stage_content_with_accounting(

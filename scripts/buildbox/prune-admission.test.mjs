@@ -12,6 +12,7 @@ test('failed shared maintenance cannot refuse either independently admitted work
     assert.ok(source.includes('await maintainSourceCopies(co.repo, notes, async () => maint.result ?? { status: 255, stderr: Buffer.alloc(0) });'));
     fs.writeFileSync(path.join(root,'generator.mjs'),source+'\nexport {maintainSourceCopies};\n');
     fs.copyFileSync(new URL('./buildbox-receipt.mjs',import.meta.url),path.join(root,'buildbox-receipt.mjs'));
+    fs.copyFileSync(new URL('./process-capture.mjs',import.meta.url),path.join(root,'process-capture.mjs'));
     const {maintainSourceCopies}=await import(path.join(root,'generator.mjs'));
     process.stderr.write=(text)=>{diagnostics.push(String(text));return true;};
     const prepared=[];

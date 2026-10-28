@@ -517,7 +517,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }
                 _ => return Ok(false),
             };
-            let step = config.limits.maximum_read_bytes.max(1);
+            let step = crate::kernel::CONTENT_READ_CHUNK_BYTES;
             let mut offset = 0;
             while offset < logical_bytes {
                 let length = step.min(logical_bytes - offset);

@@ -56,7 +56,6 @@ pub struct BrowserVolumeLimits {
     pub(in crate::bindings) maximum_paths_per_batch: u32,
     pub(in crate::bindings) maximum_directory_page_entries: u32,
     pub(in crate::bindings) maximum_page_height: u16,
-    pub(in crate::bindings) maximum_read_bytes: u64,
 }
 
 #[derive(Deserialize, Tsify)]
@@ -124,7 +123,6 @@ pub(in crate::bindings) fn browser_volume_config(
             maximum_paths_per_batch: limits.maximum_paths_per_batch,
             maximum_directory_page_entries: limits.maximum_directory_page_entries,
             maximum_page_height: limits.maximum_page_height,
-            maximum_read_bytes: limits.maximum_read_bytes,
         },
     }
     .validate()

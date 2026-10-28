@@ -55,6 +55,7 @@ test('the shared client ships an attested snapshot and refuses a tree changed af
    assert.equal(source.split(guard).length,2);
    fs.writeFileSync(path.join(mutant,'buildbox.mjs'),source.replace(guard,'false'));
    fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(mutant,'buildbox-receipt.mjs'));
+   fs.copyFileSync(path.join(here,'process-capture.mjs'),path.join(mutant,'process-capture.mjs'));
    const made=verb(root,'snapshot','--out',file);assert.equal(made.status,0,made.stderr);
    fs.writeFileSync(path.join(root,'untracked.txt'),'changed again\n');
    assert.equal(verb(root,'snapshot-attest','--snapshot',file).status,0);

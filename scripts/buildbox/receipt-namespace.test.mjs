@@ -8,6 +8,7 @@ const original=fs.readFileSync(path.join(here,'buildbox-receipt.mjs'),'utf8');
 function fixture(){
  const root=fs.mkdtempSync('/mnt/bb/tmp/receipt-pidns-');
  const module=path.join(root,'receipt.mjs');
+ fs.copyFileSync(path.join(here,'process-capture.mjs'),path.join(root,'process-capture.mjs'));
  fs.writeFileSync(module,original.replaceAll('/mnt/bb/jobs/',root+'/'));
  return {root,module};
 }

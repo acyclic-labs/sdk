@@ -114,8 +114,6 @@ pub struct VolumeLimits {
     pub maximum_directory_page_entries: u32,
     /// Maximum authenticated B+tree levels followed by one operation.
     pub maximum_page_height: u16,
-    /// Maximum bytes returned by one range request.
-    pub maximum_read_bytes: u64,
 }
 
 impl Default for VolumeLimits {
@@ -127,7 +125,6 @@ impl Default for VolumeLimits {
             maximum_paths_per_batch: 65_536,
             maximum_directory_page_entries: 1_024,
             maximum_page_height: 64,
-            maximum_read_bytes: 16 * 1024 * 1024,
         }
     }
 }
@@ -206,7 +203,6 @@ impl VolumeConfig {
             || limits.maximum_paths_per_batch == 0
             || limits.maximum_directory_page_entries == 0
             || limits.maximum_page_height == 0
-            || limits.maximum_read_bytes == 0
         {
             return Err(VolumeConfigError::ZeroLimit);
         }

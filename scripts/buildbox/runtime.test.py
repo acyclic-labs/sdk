@@ -708,6 +708,7 @@ raise SystemExit(module.client(sys.argv[3:]))
         # Match the generated-wrapper control's injected watcher cadence. The
         # assertion waits for the actual terminal receipt, never a timed PASS.
         source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace('/mnt/bb/jobs/',str(receipts)+'/').replace("const dir = '/mnt/bb/jobs'",f'const dir = {str(receipts)!r}').replace('interval = 1000','interval = 20')
+        (self.d/'process-capture.mjs').write_bytes((HERE/'process-capture.mjs').read_bytes())
         receipt.write_text(source);(self.d/'buildbox-receipt.mjs').write_text(source)
         env=self.worker_env({'BUILD_SLOT_DEFER_EXEC':'1','BUILD_SLOT_LABEL':'gate-speed-r19-kill-control'})
         marker=self.d/'target-path'
@@ -744,6 +745,7 @@ raise SystemExit(module.client(sys.argv[3:]))
                                     'PATH':str(Path(job.NODE).parent)+':'+os.environ['PATH']})
         generator=self.d/'generator.mjs';generator.write_text((HERE/'buildbox.mjs').read_text()+'\nexport {launchScript};\n')
         receipt_source=(HERE/'buildbox-receipt.mjs').read_text().replace('/home/var/bin/bb-job.py',str(worker)).replace('/mnt/bb/jobs/',str(self.d/'jobs')+'/').replace('interval = 1000','interval = 20')
+        (self.d/'process-capture.mjs').write_bytes((HERE/'process-capture.mjs').read_bytes())
         (self.d/'buildbox-receipt.mjs').write_text(receipt_source)
         for negative in [False,True]:
             prefix=self.d/'jobs'/f'r19-wrapper-{os.getpid()}-{negative}'

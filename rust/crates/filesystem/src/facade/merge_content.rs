@@ -51,9 +51,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             FilePayload::Regular { logical_bytes, .. } => logical_bytes,
             _ => return Ok(None),
         };
-        if logical_bytes > workspace.config.limits.maximum_read_bytes {
-            return Ok(None);
-        }
         let cancellation = CancellationToken::new();
         let mut accounting = WorkBudget::UNBOUNDED.accounting(&cancellation);
         crate::kernel::read_file_range_with_accounting(
@@ -119,10 +116,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         bytes: impl Into<acyclic_stream::OwnedBytes>,
     ) -> Result<FileRecord, WorkspaceError> {
         let bytes = bytes.into();
-        if record.kind != FileKind::Regular
-            || u64::try_from(bytes.len()).unwrap_or(u64::MAX)
-                > workspace.config.limits.maximum_read_bytes
-        {
+        if record.kind != FileKind::Regular {
             return Err(WorkspaceError::InvalidMergeResolution);
         }
         if bytes.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {

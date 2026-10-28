@@ -28,7 +28,7 @@ BIN = Path('/home/var/bin')
 NODE = '/home/var/tools/node24/node-v24.3.0-linux-x64/bin/node'
 # The complete tool set of one generation; it is only ever published whole.
 TOOLS = ['admission_policy.py', 'input_closure.py', 'job_caps.py', 'cpu_leases.py', 'bbcgroup-systemd-run', 'bb-cache.py', 'sccache-rustc', 'job_exports.py', 'bb_target_store.py', 'bb_cargo_cache.py',
-         'prune-wt-sdk.py', 'buildbox-receipt.mjs', 'bb-job.py', 'bb-admit.py', 'bb-admit', 'build-slot', 'bb-install.py']
+         'prune-wt-sdk.py', 'buildbox-receipt.mjs', 'process-capture.mjs', 'bb-job.py', 'bb-admit.py', 'bb-admit', 'build-slot', 'bb-install.py']
 # Generations are complete, immutable tool directories. Store entries are
 # absolute links through CURRENT, so one rename switches every tool at once and
 # a name absent from the live generation is absent (dangling), never stale.

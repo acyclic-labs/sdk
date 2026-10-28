@@ -302,7 +302,7 @@ try:
  old.qualify=qualify_old;stage=old.prepare(candidate);stages.append(stage)
  assert set(json.loads((stage/'.qualified.json').read_text()))==set(old.TOOLS)
  new=load('candidate',stage/'bb-install.py');new.BIN=live;new.secure_bin=lambda:live
- assert len(old.TOOLS)==12 and len(new.TOOLS)==17
+ assert len(old.TOOLS)==12 and len(new.TOOLS)==18
  own_file=new.__file__;new.__file__=str(fixture/'predecessor.py')
  try:new.prepare(stage)
  except ValueError as error:assert 'run the reviewed source installer' in str(error)

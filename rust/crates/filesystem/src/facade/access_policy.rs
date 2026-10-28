@@ -45,7 +45,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             FileMetadata::default(),
             &name.value,
             Some((bytes, NamedAttributeWriteMode::Create)),
-            usize_to_u64(bytes.len()),
             accounting,
             cancellation,
         )
@@ -95,7 +94,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             &self.volume,
             metadata,
             &name.value,
-            None,
             accounting,
             cancellation,
         )
@@ -144,7 +142,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     &self.volume,
                     metadata,
                     &name.value,
-                    None,
                     &mut accounting,
                     cancellation,
                 )
@@ -206,7 +203,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     metadata,
                     &name.value,
                     Some((bytes, mode)),
-                    usize_to_u64(bytes.len()),
                     &mut accounting,
                     cancellation,
                 )

@@ -73,7 +73,7 @@ class LimitTests(unittest.TestCase):
             root=Path(temporary);(root/'jobs').mkdir()
             self.stage_worker_bundle(root)
             names=['build-slot','bb-admit','bb-admit.py','bb-job.py','admission_policy.py',
-                   'bb_target_store.py','job_exports.py','buildbox-receipt.mjs']
+                   'bb_target_store.py','job_exports.py','buildbox-receipt.mjs','process-capture.mjs']
             for name in names:
                 data=(HERE/name).read_text().replace('/home/var/bin/',str(root)+'/')
                 if name=='bb-job.py':data=data.replace("JOBS=Path('/mnt/bb/jobs')",f"JOBS=Path({str(root/'jobs')!r})")

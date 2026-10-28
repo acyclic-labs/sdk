@@ -20,6 +20,7 @@ mod extent;
 mod extent_clone;
 mod extent_mutation;
 mod file_read;
+pub(crate) use file_read::CONTENT_READ_CHUNK_BYTES;
 mod file_table;
 mod file_table_mutation;
 mod generation;

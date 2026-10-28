@@ -66,8 +66,8 @@ pub struct ProbeLimits {
     pub maximum_cached_records: u32,
     /// Maximum sparse spans produced for one content dependency.
     pub maximum_extent_spans: Option<u32>,
-    /// Maximum semantic file bytes in one observed content range.
-    pub maximum_content_payload_bytes: u64,
+    /// Optional caller-selected maximum semantic bytes in an observed content range.
+    pub maximum_content_payload_bytes: Option<u64>,
     /// Maximum entries in one observed directory page.
     pub maximum_directory_entries: u32,
 }
@@ -79,7 +79,7 @@ impl Default for ProbeLimits {
             maximum_cached_generations: 64,
             maximum_cached_records: 4_096,
             maximum_extent_spans: None,
-            maximum_content_payload_bytes: 16 * 1024 * 1024,
+            maximum_content_payload_bytes: None,
             maximum_directory_entries: 1_024,
         }
     }
@@ -91,7 +91,7 @@ impl<'a, S> AuthenticatedGenerationProbe<'a, S> {
         if limits.maximum_cached_generations == 0
             || limits.maximum_cached_records == 0
             || limits.maximum_extent_spans == Some(0)
-            || limits.maximum_content_payload_bytes == 0
+            || limits.maximum_content_payload_bytes == Some(0)
             || limits.maximum_directory_entries == 0
             || !limits.decode.page_limits_valid(1)
         {
@@ -154,7 +154,10 @@ impl<'a, S> AuthenticatedGenerationProbe<'a, S> {
         region.validate()?;
         match region {
             DependencyRegion::ContentRange { length, .. }
-                if *length > self.limits.maximum_content_payload_bytes =>
+                if self
+                    .limits
+                    .maximum_content_payload_bytes
+                    .is_some_and(|maximum| *length > maximum) =>
             {
                 return Err(AuthenticatedProbeError::ContentRangeTooLarge);
             }

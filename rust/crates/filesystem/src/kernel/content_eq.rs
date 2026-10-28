@@ -191,7 +191,7 @@ async fn compare<S: AsyncObjectStore>(
         }
         // Partial chunk comparisons retain at most one admitted range per side,
         // rather than allocating or hashing a whole potentially enormous file.
-        let length = length.min(config.limits.maximum_read_bytes);
+        let length = length.min(super::CONTENT_READ_CHUNK_BYTES);
         if length == 0 {
             return Err(FileRangeReadError::InvalidRange.into());
         }

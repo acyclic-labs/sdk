@@ -30,7 +30,8 @@
 //
 // Unreachable VM: returns 222 at once (Daytona takes this call) and starts `buildbox-ctl heal` in the background: refresh
 // the NSG's source IP, start the VM if the idle watcher deallocated it. BUILD_SLOT_BUILDBOX=0 skips the VM for one call.
-import { spawn, spawnSync, execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import { commandOutput, captureCommand } from './process-capture.mjs';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import zlib from 'node:zlib';
@@ -38,7 +39,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { arm, atomic, finish } from './buildbox-receipt.mjs';
-const RECEIPT_TOOL = fs.readFileSync(new URL('./buildbox-receipt.mjs', import.meta.url), 'utf8');
+const RECEIPT_TOOL = fs.readFileSync(new URL('./buildbox-receipt.mjs', import.meta.url), 'utf8').replace(
+  "import { captureCommand } from './process-capture.mjs';",
+  fs.readFileSync(new URL('./process-capture.mjs', import.meta.url), 'utf8'));
 
 // One build box (user, 2026-10-21): the pool is bb2 and only bb2; "we only ever stay at a single build box". Every other
 // host is refused with rc 2, so no override can route a job elsewhere.
@@ -232,7 +235,7 @@ function gitEnvFor(cwd) {
     // (sdk sets none, so git.exe hashed with the Windows global core.autocrlf=input; WSL git would not have).
     const cfg = [...DRVFS_GIT_CFG];
     const get = (file) => { const o = {}; try {
-      const r = spawnSync('git', ['config', ...(file ? ['--file', file] : ['--local']), '--get-regexp', WIN_EOL_KEYS], { cwd, env: { ...process.env, ...env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000 });
+      const r = captureCommand('git', ['config', ...(file ? ['--file', file] : ['--local']), '--get-regexp', WIN_EOL_KEYS], { cwd, env: { ...process.env, ...env }, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 30000 });
       if (r.status !== 0 && r.status !== 1) return null;  // 1: no such key; else not a repo (or no such file)
       for (const l of String(r.stdout || '').split('\n')) { const m = /^(\S+) (.*)$/.exec(l); if (m) o[m[1].toLowerCase()] = m[2]; }
     } catch { return null; } return o; };
@@ -246,7 +249,7 @@ function gitEnvFor(cwd) {
 }
 function gitIn(top, genv = {}) {
   const env = { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', ...genv };
-  return (args, o = {}) => spawnSync('git', args, { cwd: top, env, maxBuffer: 1 << 30, timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL', stdio: [o.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], ...o });
+  return (args, o = {}) => captureCommand('git', args, { cwd: top, env, timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL', stdio: [o.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'], ...o });
 }
 // {top, genv, drvfs, repo, git}: the checkout root, the env its git calls need, whether it is on a Windows drive, its
 // repo, a git runner for it.
@@ -258,8 +261,8 @@ function checkout(cwd) {
 function lookupCheckout(cwd) {
   const genv = gitEnvFor(cwd);
   let top = genv.GIT_WORK_TREE || '';
-  if (!top) try { top = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd, env: { ...process.env, ...genv }, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS }).toString().trim(); } catch {}
-  if (!top) top = path.dirname(execFileSync('cargo', ['locate-project', '--workspace', '--message-format', 'plain'], { cwd, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim());
+  if (!top) try { top = commandOutput('git', ['rev-parse', '--show-toplevel'], { cwd, env: { ...process.env, ...genv }, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_TIMEOUT_MS }).toString().trim(); } catch {}
+  if (!top) top = path.dirname(commandOutput('cargo', ['locate-project', '--workspace', '--message-format', 'plain'], { cwd, stdio: ['ignore', 'pipe', 'pipe'] }).toString().trim());
   const git = gitIn(top, genv);
   const url = String(git(['config', '--get', 'remote.origin.url'], { encoding: 'utf8' }).stdout || '').trim();
   return { top, genv, drvfs: /^\/mnt\/[a-z]\//.test(top), repo: repoOf(url), git };
@@ -297,10 +300,10 @@ function syncWith(top, key, rf, t0) {
   fs.mkdirSync(`${LOGDIR}/sync-slots`, { recursive: true });
   // -rlpc, no -t: changed files land with a fresh mtime and unchanged ones (by checksum) are untouched, so a changed file's
   // mtime never goes backwards for cargo (client mtimes can be older than the last build: git checkout, tar restores).
-  const r = spawnSync('/home/var/bin/bb-slot-run', [`${LOGDIR}/sync-slots`, String(Number(process.env.BUILD_SLOT_BUILDBOX_SYNC_SLOTS || 6)), 'rsync', '-rlpcz', '--delete', '--info=stats2', '--timeout=300', '-e', `ssh ${SSH.join(' ')} -o ConnectTimeout=15`,
+  const r = captureCommand('/home/var/bin/bb-slot-run', [`${LOGDIR}/sync-slots`, String(Number(process.env.BUILD_SLOT_BUILDBOX_SYNC_SLOTS || 6)), 'rsync', '-rlpcz', '--delete', '--info=stats2', '--timeout=300', '-e', `ssh ${SSH.join(' ')} -o ConnectTimeout=15`,
     '--rsync-path', `/usr/local/bin/bb-rsync-recv /mnt/bb/src/${key}`, '--exclude=/.bb-synced',
     '--exclude=/.git', '--exclude=target/', '--exclude=node_modules', '--exclude=/managed-agents/', '--exclude=.wsl-sync-*',
-    `--filter=merge ${rf}`, '--filter=:-r .gitignore', '--filter=H *', `${top}/`, `${HOST}:/mnt/bb/src/${key}/`], { encoding: 'utf8', timeout: 900000, maxBuffer: 1 << 26 });
+    `--filter=merge ${rf}`, '--filter=:-r .gitignore', '--filter=H *', `${top}/`, `${HOST}:/mnt/bb/src/${key}/`], { encoding: 'utf8', timeout: 900000 });
   if (r.status !== 0) throw new Error(`rsync rc ${r.status}${r.error ? ` (${r.error.code})` : ''}: ${(r.stderr || '').trim().slice(-200)}`);
   const sent = /Total bytes sent: ([\d,.]+)/.exec(r.stdout)?.[1] || '?';
   const files = /Number of regular files transferred: ([\d,.]+)/.exec(r.stdout)?.[1] || '?';
@@ -355,7 +358,7 @@ function readHave(co, head = '') {
   // On a Windows drive, HEAD and origin/main only: Q:\cloud has ~13k loose refs, and listing them over drvfs took 35 s
   // (only ancestors of HEAD can trim the bundle anyway; origin/main keeps main's SHAs usable as before).
   const refs = co.drvfs ? ['HEAD', ...(co.git(['rev-parse', '-q', '--verify', 'refs/remotes/origin/main^{commit}']).status === 0 ? ['refs/remotes/origin/main'] : [])] : ['HEAD', '--branches', '--remotes'];
-  const r = co.git(['rev-list', '--max-count=50000', ...refs], { encoding: 'utf8', maxBuffer: 1 << 28 });
+  const r = co.git(['rev-list', '--max-count=50000', ...refs], { encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`git rev-list for the VM-have filter rc ${r.status}${r.error ? ` (${r.error.code})` : ''}: ${String(r.stderr || '').trim().slice(-160)}`);
   const local = new Set((r.stdout || '').split('\n').map((s) => s.trim()));
   return [...new Set(l)].filter((s) => local.has(s));
@@ -394,11 +397,13 @@ function gitPayload(co, have, id, bundled) {
       const added = (id.patch.toString('latin1').match(/^new file mode /gm) || []).length;
       parts.push(`diff ${id.patch.length} B${added ? ` (${added} new files)` : ''}`);
     }
-    const tar = spawnSync('tar', ['-czf', '-', '-C', d, '.'], { maxBuffer: 1 << 30 });
+    const tar = captureCommand('tar', ['-czf', '-', '-C', d, '.']);
     if (tar.status !== 0) throw new Error(`payload tar rc ${tar.status}`);
-    // No rsync alternative (sdk): send larger payloads too, up to 32 MB.
-    const cap = REPOS[co.repo].rsync ? MAX_PAYLOAD : 32 << 20;
-    if (tar.stdout.length > cap) throw new Error(`payload ${tar.stdout.length} B is over ${cap}`);
+    // Repositories with an rsync route may switch transports for large deltas.
+    // The SDK's git-only route carries its complete payload without a ceiling.
+    if (REPOS[co.repo].rsync && tar.stdout.length > MAX_PAYLOAD) {
+      throw new Error(`payload ${tar.stdout.length} B uses the rsync route`);
+    }
     return { head, buf: tar.stdout, desc: `git ${head.slice(0, 12)}${parts.length ? ` + ${parts.join(', ')}` : ''}, ${tar.stdout.length} B sent` };
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 }
@@ -432,7 +437,7 @@ function treeIdentity(co) {
   const tmp = fs.mkdtempSync(`${CACHE}/ident-`);
   const g = (args, env = {}, ok = false, raw = false) => {
     const e = { ...process.env, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', ...genv, ...env };
-    const r = spawnSync('git', args, { cwd: top, env: e, encoding: raw ? 'buffer' : 'utf8', maxBuffer: 1 << 30, timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'] });
+    const r = captureCommand('git', args, { cwd: top, env: e, encoding: raw ? 'buffer' : 'utf8', timeout: GIT_TIMEOUT_MS, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'] });
     if (r.status !== 0 && !ok) throw new Error(`git ${args.find((a) => !a.includes('=') && a !== '-c')} rc ${r.status}${r.error ? ` (${r.error.code}, ${GIT_TIMEOUT_MS / 1000}s cap)` : ''}: ${String(r.stderr || r.error?.message || '').trim().slice(-160)}`);
     return r.status !== 0 ? null : raw ? r.stdout : String(r.stdout);
   };
@@ -447,7 +452,7 @@ function treeIdentity(co) {
       fs.mkdirSync(`${tmp}/objects`);
       env = { GIT_INDEX_FILE: `${tmp}/index`, GIT_OBJECT_DIRECTORY: `${tmp}/objects`, GIT_ALTERNATE_OBJECT_DIRECTORIES: objs };
     } else {  // not a git checkout (snapshot copies): a scratch repo over the tree, honouring its .gitignore like the rsync filter
-      execFileSync('git', ['init', '-q', `${tmp}/r`], { stdio: ['ignore', 'ignore', 'pipe'], timeout: GIT_TIMEOUT_MS });
+      commandOutput('git', ['init', '-q', `${tmp}/r`], { stdio: ['ignore', 'ignore', 'pipe'], timeout: GIT_TIMEOUT_MS });
       env = { GIT_DIR: `${tmp}/r/.git`, GIT_WORK_TREE: top, GIT_COMMON_DIR: undefined };
     }
     // The client's line-ending conversion is the VM's for the digest: an rsynced untracked CRLF file arrives raw, and with
@@ -1032,7 +1037,7 @@ async function copyBack(J, top, src, tkey, rel) {
     if (result.status !== 0) throw new Error('missing declared-output archive');
     const dest = copyBackDestination(group, top, rel);
     fs.mkdirSync(dest, { recursive: true });
-    const extract = spawnSync('tar', ['-xzf', '-', '-C', dest, '--no-same-owner'], { input: result.stdout });
+    const extract = captureCommand('tar', ['-xzf', '-', '-C', dest, '--no-same-owner'], { input: result.stdout });
     if (extract.status !== 0) throw new Error(`copy-back extract rc ${extract.status}`);
     say(`copy-back: ${group.count} file(s) from job export into ${dest}`);
   }
@@ -1043,7 +1048,7 @@ async function copyBack(J, top, src, tkey, rel) {
 // Host tools the sync and copy-back use (gzip only: the WSL host has no zstd, 2026-10-15). Checked before a job runs, so a
 // missing tool sends the job elsewhere instead of losing its outputs after a remote pass.
 const HOST_TOOLS = ['ssh', 'rsync', 'tar', 'gzip', 'flock'];
-const missingTools = () => HOST_TOOLS.filter((t) => spawnSync('sh', ['-c', `command -v ${t}`], { stdio: 'ignore' }).status !== 0);
+const missingTools = () => HOST_TOOLS.filter((t) => captureCommand('sh', ['-c', `command -v ${t}`], { stdio: 'ignore' }).status !== 0);
 
 // Verdict cache (2026-10-16 compute reduction: 75% of the build box's CPU went to lane and review jobs, many of them the
 // same command on the same tree again). A compile-class job that passed is recorded under sha256(repo, the tree's content
@@ -1170,7 +1175,7 @@ const GLIBC_TRIPLE = 'x86_64-unknown-linux-gnu';
 let glibcPin = null;  // { version, dirs: profile dirs under the triple dir } for this job
 let buildJob = false;  // cargo build/zigbuild job: named target files come back even when cargo found them fresh
 function hostGlibc() {
-  const o = spawnSync('getconf', ['GNU_LIBC_VERSION'], { encoding: 'utf8' });
+  const o = captureCommand('getconf', ['GNU_LIBC_VERSION'], { encoding: 'utf8' });
   return (/glibc (\d+\.\d+)/.exec(o.stdout || '') || [])[1] || '';
 }
 function pinGlibc(argv) {
@@ -1282,7 +1287,7 @@ async function runTrackedOnce(argv, ctx) {
 const LIGHT_CARGO = new Set(['fmt', 'metadata', 'locate-project', 'tree', 'pkgid', 'version', '--version', '-V', 'search', 'verify-project']);
 function admitInputs(argv, root, base) {
   const policy = fileURLToPath(new URL('./input_closure.py', import.meta.url));
-  const result = spawnSync('python3', ['-B', policy, 'validate', '--stage', 'client', '--root', root,
+  const result = captureCommand('python3', ['-B', policy, 'validate', '--stage', 'client', '--root', root,
     '--base', base || 'none', '--', ...argv], { encoding: 'utf8', env: process.env });
   if (result.status !== 0) {
     if (result.stderr) process.stderr.write(result.stderr);

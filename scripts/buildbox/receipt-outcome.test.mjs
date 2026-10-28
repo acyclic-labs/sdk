@@ -20,6 +20,7 @@ function fixture(negative = false) {
     text = text.slice(0, start) + text.slice(end);
   }
   const module = path.join(root, 'buildbox-receipt.mjs');
+  fs.copyFileSync(path.join(here, 'process-capture.mjs'), path.join(root, 'process-capture.mjs'));
   fs.writeFileSync(module, text);
   return {root, module};
 }

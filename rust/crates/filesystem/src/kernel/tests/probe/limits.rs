@@ -7,7 +7,7 @@ async fn probe_limits_reject_oversized_dependencies_before_backend_work()
     let probe = AuthenticatedGenerationProbe::new(
         &store,
         ProbeLimits {
-            maximum_content_payload_bytes: 8,
+            maximum_content_payload_bytes: Some(8),
             maximum_directory_entries: 2,
             ..ProbeLimits::default()
         },
@@ -134,7 +134,7 @@ fn every_zero_probe_bound_is_rejected_before_cache_or_backend_access() {
             ..defaults
         },
         ProbeLimits {
-            maximum_content_payload_bytes: 0,
+            maximum_content_payload_bytes: Some(0),
             ..defaults
         },
         ProbeLimits {

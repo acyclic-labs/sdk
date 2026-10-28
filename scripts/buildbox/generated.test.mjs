@@ -88,6 +88,7 @@ test('new admission never traverses unrelated receipt records',()=>{
    }
    fs.writeFileSync(file,selected);
    fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(root,'buildbox-receipt.mjs'));
+   fs.copyFileSync(path.join(here,'process-capture.mjs'),path.join(root,'process-capture.mjs'));
    const result=spawnSync(process.execPath,['--input-type=module','-e',`
     import fs from 'node:fs';
     const original=fs.readdirSync;
@@ -110,6 +111,7 @@ test('launch acknowledgement follows observable wrapper readiness, including slo
  try{
   fs.writeFileSync(path.join(cwd,'generator.mjs'),fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport {launchScript};\n');
   fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  fs.copyFileSync(path.join(here,'process-capture.mjs'),path.join(cwd,'process-capture.mjs'));
   const {launchScript}=await import(path.join(cwd,'generator.mjs'));
   const id={commit:'a'.repeat(40),tree:'b'.repeat(40),content:'c'.repeat(64),forced:[],autocrlf:'false',groups:'e30='};
   const script=launchScript('/mnt/bb/wt-sdk/fixture.0','sdk/fixture','.', ['true'],'/mnt/bb/jobs/fixture','','sdk','',id,60,true,{});
@@ -188,6 +190,7 @@ test('both services require an explicit tenant and generated phases inherit one 
   const source=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
   fs.writeFileSync(file,source+'\nexport {tenantOf};\n');
   fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  fs.copyFileSync(path.join(here,'process-capture.mjs'),path.join(cwd,'process-capture.mjs'));
   const {tenantOf}=await import(file);
   for(const tenant of ['graphcoder','cloud']){
    process.env.BUILD_SLOT_TENANT=tenant;
@@ -211,6 +214,7 @@ test('gate execution never replays a historical PASS verdict',async()=>{
   const module=path.join(cwd,'generator.mjs');
   fs.writeFileSync(module,fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport { cacheable };\n');
   fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  fs.copyFileSync(path.join(here,'process-capture.mjs'),path.join(cwd,'process-capture.mjs'));
   const {cacheable}=await import(module);
   delete process.env.BUILD_SLOT_REMOTE_FETCH;delete process.env.BUILD_SLOT_STRESS;
   process.env.BUILD_SLOT_LABEL='gate-execution-control';process.env.BUILD_SLOT_VERDICT_CACHE='1';
@@ -227,6 +231,7 @@ test('exact private inputs preserve source times across fresh checkouts',async()
   const generator=path.join(cwd,'generator.mjs');
   fs.writeFileSync(generator,fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport { SOURCE_TIMES, IDENT_ADD, IDENT_SKIP };\n');
   fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  fs.copyFileSync(path.join(here,'process-capture.mjs'),path.join(cwd,'process-capture.mjs'));
   const {SOURCE_TIMES,IDENT_ADD,IDENT_SKIP}=await import(generator);
   const input=path.join(cwd,'lib.rs'),records=path.join(cwd,'records');
   fs.writeFileSync(input,'exact content');fs.writeFileSync(records,'a'.repeat(40)+' 0\tlib.rs\0');
@@ -267,6 +272,7 @@ test('watched source directories retain content-derived times across fresh check
   const source=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
   fs.writeFileSync(generator,source+'\nexport { SOURCE_TIMES };\n');
   fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  fs.copyFileSync(path.join(here,'process-capture.mjs'),path.join(cwd,'process-capture.mjs'));
   const {SOURCE_TIMES}=await import(generator);
   const root=path.join(cwd,'src'),proto=path.join(root,'proto'),records=path.join(cwd,'records');
   fs.mkdirSync(proto,{recursive:true});fs.writeFileSync(path.join(proto,'schema.proto'),'schema');
@@ -299,6 +305,7 @@ test('dependency preparation cannot change source under the original uploaded id
   const module=path.join(cwd,'generator.mjs');
   fs.writeFileSync(module,fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport { launchScript, NPM_ENSURE };\n');
   fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  fs.copyFileSync(path.join(here,'process-capture.mjs'),path.join(cwd,'process-capture.mjs'));
   const {launchScript,NPM_ENSURE}=await import(module);
   const root=path.join(cwd,'input');fs.mkdirSync(root);
   function git(...args){const r=spawnSync('git',args,{cwd:root,encoding:'utf8'});assert.equal(r.status,0,r.stderr);return r.stdout;}
@@ -329,6 +336,7 @@ test('remote wrappers parse, retain isolation and archive outputs before cleanup
  try{
   fs.writeFileSync(path.join(cwd,'generator.mjs'),fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8')+'\nexport { launchScript, pinGlibc };\n');
   fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  fs.copyFileSync(path.join(here,'process-capture.mjs'),path.join(cwd,'process-capture.mjs'));
   const probe=String.raw`import {launchScript,pinGlibc} from './generator.mjs';
 import fs from 'node:fs';
 import {spawnSync} from 'node:child_process';
@@ -407,6 +415,7 @@ test('a restarted client cannot reuse a detached jobs source copy',()=>{
  try{
   const original=fs.readFileSync(path.join(here,'buildbox.mjs'),'utf8');
   fs.copyFileSync(path.join(here,'buildbox-receipt.mjs'),path.join(cwd,'buildbox-receipt.mjs'));
+  fs.copyFileSync(path.join(here,'process-capture.mjs'),path.join(cwd,'process-capture.mjs'));
   for(const negative of [false,true]){
    const source=negative?original.replace('return `${key}-${path.basename(jobPrefix)}`;','return key;'):original;
    fs.writeFileSync(path.join(cwd,'generator.mjs'),source+'\nexport { sourceCopyKey };\n');
@@ -448,7 +457,8 @@ test('gate capture has one log writer and preserves child status and both stream
   fs.writeFileSync(fixture,`import os,sys\nout=os.open('/proc/self/fd/1',os.O_WRONLY)\nerr=os.open('/proc/self/fd/2',os.O_WRONLY)\nos.write(out,b'CHILD\\n'*100)\nos.write(err,b'DIAGNOSTIC\\n'*100)\nsys.exit(17)\n`);
   for(const name of ['pr-gate.sh','main-gate.sh']){
    const source=fs.readFileSync(path.join(here,'coordinator',name),'utf8');
-   const start=source.indexOf('(cd ');const tail=source.slice(start);
+   const pipeline=/^[ \t]*\(cd [^\n]+\) 2>&1 \| tee/m.exec(source);assert.ok(pipeline);
+   const tail=source.slice(pipeline.index).trimStart();
    const marker=tail.indexOf('capture_status=');
    // Execute the production pipeline and status handling with only the
    // Windows dispatch command substituted by the independent-fd fixture.
@@ -493,6 +503,7 @@ test('outer cleanup failure is INFRA and the former status handling is a negativ
  const cwd=fs.mkdtempSync(path.join(tmpdir(),'outer-cleanup-status-'));
  try{
   const helper=path.join(cwd,'refuse.py');fs.writeFileSync(helper,'import sys\nprint("forced outer cleanup refusal",file=sys.stderr)\nsys.exit(1)\n');
+  fs.copyFileSync(path.join(here,'process-capture.mjs'),path.join(cwd,'process-capture.mjs'));
   const source=fs.readFileSync(path.join(here,'buildbox-receipt.mjs'),'utf8').replaceAll('/home/var/bin/bb-job.py',helper);
   for(const [negative,expected] of [[false,224],[true,0]]){
    const module=path.join(cwd,`receipt-${negative}.mjs`);fs.writeFileSync(module,negative?source.replaceAll("rc = 224; category = 'infra';",''):source);

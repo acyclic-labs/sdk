@@ -9,7 +9,6 @@ pub struct NativeVolumeLimits {
     pub maximum_paths_per_batch: NapiU32,
     pub maximum_directory_page_entries: NapiU32,
     pub maximum_page_height: NapiU32,
-    pub maximum_read_bytes: BigInt,
 }
 
 /// Complete independently configured volume semantics.
@@ -66,7 +65,6 @@ pub(in crate::bindings) fn native_volume_config(
             maximum_paths_per_batch: limits.maximum_paths_per_batch.into_inner(),
             maximum_directory_page_entries: limits.maximum_directory_page_entries.into_inner(),
             maximum_page_height,
-            maximum_read_bytes: bigint_u64(&limits.maximum_read_bytes, "maximumReadBytes")?,
         },
     }
     .validate()
