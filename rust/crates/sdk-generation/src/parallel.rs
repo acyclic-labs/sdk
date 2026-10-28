@@ -82,8 +82,11 @@ mod tests {
     fn bounded_workers_preserve_input_order_and_visit_every_owner() {
         let active = Arc::new(AtomicUsize::new(0));
         let peak = Arc::new(AtomicUsize::new(0));
+        let workers = Arc::new(Mutex::new(std::collections::HashSet::new()));
+        let worker_ids = Arc::clone(&workers);
         let (running, observed) = (Arc::clone(&active), Arc::clone(&peak));
         let result = map_with_workers((0..100).collect(), 2, move |index| {
+            worker_ids.lock().unwrap().insert(thread::current().id());
             let count = running.fetch_add(1, Ordering::SeqCst) + 1;
             observed.fetch_max(count, Ordering::SeqCst);
             thread::yield_now();
@@ -91,6 +94,7 @@ mod tests {
             index * 2
         });
         assert_eq!(result, (0..100).map(|index| index * 2).collect::<Vec<_>>());
+        assert!(workers.lock().unwrap().len() <= 2, "owner thread budget exceeded");
         assert!(peak.load(Ordering::SeqCst) <= 2);
         assert_eq!(active.load(Ordering::SeqCst), 0);
     }
