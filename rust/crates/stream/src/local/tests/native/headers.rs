@@ -5,10 +5,10 @@ fn body() -> Result<crate::AppendRecord, StreamError> {
         value: OwnedBytes::from_static(b"completed"),
         headers: crate::RecordHeaders::new(
             (0..=u8::MAX)
-                .take(crate::MAX_RECORD_KEYS)
+                .take(129)
                 .map(|key| OwnedBytes::from(vec![key]))
                 .collect(),
-            (0..crate::MAX_RECORD_ATTRIBUTES)
+            (0..65)
                 .map(|index| crate::Attribute {
                     name: format!("k{index:02}"),
                     value: OwnedBytes::from_static(b"v"),
@@ -32,7 +32,15 @@ async fn prepared_memory_and_local_commits_cover_every_late_header_field()
         let body = body()?;
         let meter = Arc::new(Meter::default());
         let packet = provider
-            .native_prepare_commit(request, body.payload_bytes(), meter.original())
+            .native_prepare_commit(
+                request,
+                crate::PreparedRecordCapacity {
+                    payload_bytes: body.payload_bytes(),
+                    keys: body.headers.keys().len(),
+                    attributes: body.headers.attributes().len(),
+                },
+                meter.original(),
+            )
             .await??;
         let (mut packet, guard) = packet.into_parts();
         let recovery = packet.take_recovery_future().ok_or("missing recovery")?;

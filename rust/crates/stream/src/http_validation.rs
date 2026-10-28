@@ -83,9 +83,6 @@ fn validate_record(value: &Value) -> Result {
     let value = bytes(field(item, "value")?)?;
     let keys = array(field(item, "keys")?)?;
     let attributes = array(field(item, "attributes")?)?;
-    if keys.len() > crate::MAX_RECORD_KEYS || attributes.len() > crate::MAX_RECORD_ATTRIBUTES {
-        return Err("record header count exceeded");
-    }
     let headers = crate::changes::record_headers(
         &value,
         keys.iter()
