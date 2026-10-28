@@ -53,10 +53,6 @@ pub struct FilesystemS3Limits {
     pub response_chunk_bytes: u64,
     /// Largest combined object/prefix page.
     pub maximum_list_keys: u32,
-    /// Largest authenticated namespace frontier examined by one list request.
-    pub maximum_list_entries_examined: u32,
-    /// Largest encoded object key or continuation marker.
-    pub maximum_key_bytes: u32,
     /// Largest number of parts retained by one durable multipart upload.
     pub maximum_multipart_parts: u32,
     /// Largest logical byte count admitted for one multipart part.
@@ -95,8 +91,6 @@ impl Default for FilesystemS3Limits {
             maximum_request_bytes: 5 * 1024 * 1024 * 1024,
             response_chunk_bytes: 8 * 1024 * 1024,
             maximum_list_keys: 1_000,
-            maximum_list_entries_examined: 100_000,
-            maximum_key_bytes: 32 * 1024,
             maximum_multipart_parts: 10_000,
             maximum_multipart_part_bytes: 5 * 1024 * 1024 * 1024,
             minimum_multipart_part_bytes: 5 * 1024 * 1024,
@@ -110,8 +104,6 @@ impl FilesystemS3Limits {
         if self.maximum_request_bytes == 0
             || self.response_chunk_bytes == 0
             || self.maximum_list_keys == 0
-            || self.maximum_list_entries_examined == 0
-            || self.maximum_key_bytes == 0
             || self.maximum_multipart_parts == 0
             || self.maximum_multipart_part_bytes == 0
             || self.minimum_multipart_part_bytes > self.maximum_multipart_part_bytes
