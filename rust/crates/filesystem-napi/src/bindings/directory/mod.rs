@@ -107,14 +107,7 @@ impl NativeCheckout {
                 Ok(NativeDirectoryRecordEntry {
                     name: Buffer::from(entry.name.as_bytes().to_vec()),
                     record: encode_file_record(entry.record),
-                    metadata_canonical_bytes: Buffer::from(
-                        encode_file_metadata(
-                            entry.metadata,
-                            |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-                            |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
-                        )
-                        .map_err(napi_error)?,
-                    ),
+                    metadata_canonical_bytes: native_metadata_bytes(entry.metadata)?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;

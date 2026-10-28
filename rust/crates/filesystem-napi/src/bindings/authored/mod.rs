@@ -175,12 +175,7 @@ pub(in crate::bindings) fn native_authored_transaction(
         },
         "set-metadata" => AuthoredMutation::SetMetadata {
             path: native_path(&required(path, "path")?, config)?,
-            metadata: decode_file_metadata(
-                &required(canonical_bytes, "canonicalBytes")?,
-                DecodeLimits::for_volume(config),
-                &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-            )
-            .map_err(napi_error)?,
+            metadata: native_metadata(&required(canonical_bytes, "canonicalBytes")?, config)?,
         },
         "resize" => AuthoredMutation::Resize {
             path: native_path(&required(path, "path")?, config)?,

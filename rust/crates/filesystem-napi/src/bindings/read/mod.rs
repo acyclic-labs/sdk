@@ -96,14 +96,7 @@ impl NativeCheckout {
         let (record, metadata_canonical_bytes) = match receipt.value {
             Some(value) => (
                 Some(encode_file_record(value.record)),
-                Some(Buffer::from(
-                    encode_file_metadata(
-                        value.metadata,
-                        |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-                        |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
-                    )
-                    .map_err(napi_error)?,
-                )),
+                Some(native_metadata_bytes(value.metadata)?),
             ),
             None => (None, None),
         };

@@ -1,5 +1,27 @@
 use super::*;
 
+pub(in crate::bindings) fn native_metadata_bytes(metadata: FileMetadata) -> Result<Buffer> {
+    encode_file_metadata(
+        metadata,
+        |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+        |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
+    )
+    .map(Buffer::from)
+    .map_err(napi_error)
+}
+
+pub(in crate::bindings) fn native_metadata(
+    bytes: &[u8],
+    config: VolumeConfig,
+) -> Result<FileMetadata> {
+    decode_file_metadata(
+        bytes,
+        DecodeLimits::for_volume(config),
+        &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+    )
+    .map_err(napi_error)
+}
+
 /// Complete canonical metadata bytes plus exact work.
 #[napi(object)]
 pub struct NativeMetadataResult {
@@ -38,14 +60,7 @@ impl NativeCheckout {
         let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout_call!(self, checkout, read_metadata(&path,))?;
         Ok(NativeMetadataResult {
-            canonical_bytes: Buffer::from(
-                encode_file_metadata(
-                    receipt.value,
-                    |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-                    |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
-                )
-                .map_err(napi_error)?,
-            ),
+            canonical_bytes: native_metadata_bytes(receipt.value)?,
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -56,14 +71,7 @@ impl NativeCheckout {
         let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout_call!(self, checkout, read_metadata(file_id,))?;
         Ok(NativeMetadataResult {
-            canonical_bytes: Buffer::from(
-                encode_file_metadata(
-                    receipt.value,
-                    |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-                    |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
-                )
-                .map_err(napi_error)?,
-            ),
+            canonical_bytes: native_metadata_bytes(receipt.value)?,
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -75,12 +83,7 @@ impl NativeCheckout {
         canonical_bytes: Buffer,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            DecodeLimits::for_volume(self.config),
-            &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-        )
-        .map_err(napi_error)?;
+        let metadata = native_metadata(canonical_bytes.as_ref(), self.config)?;
         let receipt = checkout_mutation!(
             self,
             apply_authored_transaction(vec![acyclic_fs::AuthoredMutation::SetMetadata {
@@ -98,12 +101,7 @@ impl NativeCheckout {
         canonical_bytes: Buffer,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            DecodeLimits::for_volume(self.config),
-            &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-        )
-        .map_err(napi_error)?;
+        let metadata = native_metadata(canonical_bytes.as_ref(), self.config)?;
         let receipt = checkout_mutation!(self, set_attributes(file_id, metadata, None,))?;
         mutation_result(receipt.work)
     }
@@ -116,12 +114,7 @@ impl NativeCheckout {
         logical_bytes: Option<BigInt>,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            DecodeLimits::for_volume(self.config),
-            &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-        )
-        .map_err(napi_error)?;
+        let metadata = native_metadata(canonical_bytes.as_ref(), self.config)?;
         let logical_bytes = logical_bytes
             .as_ref()
             .map(|value| bigint_u64(value, "logicalBytes"))
@@ -138,12 +131,7 @@ impl NativeCheckout {
         logical_bytes: Option<BigInt>,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            DecodeLimits::for_volume(self.config),
-            &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-        )
-        .map_err(napi_error)?;
+        let metadata = native_metadata(canonical_bytes.as_ref(), self.config)?;
         let logical_bytes = logical_bytes
             .as_ref()
             .map(|value| bigint_u64(value, "logicalBytes"))

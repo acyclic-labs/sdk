@@ -55,13 +55,7 @@ impl NativeResolvedFile {
 
     #[napi(getter)]
     pub fn metadata_canonical_bytes(&self) -> Result<Buffer> {
-        encode_file_metadata(
-            self.inner.description().metadata,
-            |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-            |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
-        )
-        .map(Buffer::from)
-        .map_err(napi_error)
+        native_metadata_bytes(self.inner.description().metadata)
     }
 
     #[napi]
