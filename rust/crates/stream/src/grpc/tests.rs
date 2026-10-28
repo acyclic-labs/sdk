@@ -196,7 +196,7 @@ async fn grpc_transport_passes_the_public_suite() -> TestResult {
 async fn service_rejects_oversized_commands_before_provider_dispatch() {
     let service = Service::new(Arc::new(MemoryStream::default()));
     let request = wire::AppendRequest {
-        path: "x".repeat(crate::MAX_PATH_BYTES),
+        path: "x".repeat(65_535),
         records: vec![
             wire::AppendRecord {
                 value: Bytes::from(vec![0_u8; crate::MAX_RECORD_BYTES]),

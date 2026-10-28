@@ -166,8 +166,6 @@ const REPLAY_PAGE: u32 = 1_024;
 pub const CHILDREN_PAGE_ITEMS: u32 = 1_024;
 /// Maximum canonical application command, including metadata.
 pub const MAX_COMMAND_BYTES: usize = wire::StreamLimit::MaxCommandBytes as usize;
-/// Maximum canonical path text accepted by the single-command wire format.
-pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
 
 /// Bytes indexed from a filesystem resource path. The complete lossless path
 /// remains in change metadata and is authorized after coarse indexed selection.
