@@ -109,6 +109,7 @@ impl CommandJournal for HostPort {
         }
         let accepted = Rc::new(Cell::new(None));
         let sampled = accepted.clone();
+        let at_millis = frames.last().ok_or(StreamError::InvalidArgument)?.at_millis;
         let deadline = frames.iter().filter_map(|frame| frame.deadline).min();
         let factory = Closure::<dyn FnMut() -> Result<js_sys::Array, JsValue>>::new(move || {
             if sampled.get().is_some() {
@@ -121,7 +122,7 @@ impl CommandJournal for HostPort {
             }
             let output = js_sys::Array::new();
             for frame in &frames {
-                let mut encoded = at.to_le_bytes().to_vec();
+                let mut encoded = frame.at_millis.to_le_bytes().to_vec();
                 encoded.push(u8::from(frame.deadline.is_some()));
                 encoded.extend_from_slice(&frame.deadline.unwrap_or(0).to_le_bytes());
                 encoded.extend_from_slice(&frame.command);
@@ -149,7 +150,7 @@ impl CommandJournal for HostPort {
             .as_f64()
             .filter(|head| head.fract() == 0.0 && *head >= 0.0 && *head <= f64::from(u32::MAX))
             .ok_or(StreamError::InvalidResponse)? as u32;
-        let Some(at_millis) = accepted.get() else {
+        let Some(_) = accepted.get() else {
             return Ok(AppendIf::Stale {
                 head: u64::from(head),
             });

@@ -8,6 +8,15 @@ struct CommitPlan {
     _scratch: Allocation,
 }
 
+struct CommitPublication {
+    envelope: CommittedEnvelope,
+    result: CommitOutcome,
+    namespace: Namespace,
+    resident: Allocation,
+    output_claim: Allocation,
+    _scratch: Allocation,
+}
+
 impl CommitPlan {
     fn bind(
         &mut self,
@@ -37,7 +46,37 @@ impl CommitPlan {
         digest: [u8; 32],
         time: u64,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        publish(state, self.paths, self.histories, &self.envelope, build)?;
+        self.stage(state, build)?
+            .publish(state, probe, key, digest, time)
+    }
+
+    fn stage(
+        self,
+        state: &State,
+        build: &mut NamespaceBuilder<'_>,
+    ) -> Result<CommitPublication, StreamError> {
+        let namespace = stage_namespace(state, self.paths, self.histories, &self.envelope, build)?;
+        Ok(CommitPublication {
+            envelope: self.envelope,
+            result: self.result,
+            namespace,
+            resident: self.resident,
+            output_claim: self.output_claim,
+            _scratch: self._scratch,
+        })
+    }
+}
+
+impl CommitPublication {
+    fn publish(
+        self,
+        state: &mut State,
+        probe: &mut impl FnMut(),
+        key: IdempotencyKey,
+        digest: [u8; 32],
+        time: u64,
+    ) -> Result<(CommitOutcome, Allocation), StreamError> {
+        install_namespace(state, self.namespace, &self.envelope)?;
         state.decision += 1;
         state.last_committed_at_micros = time;
         retain(
@@ -349,14 +388,14 @@ impl MemoryStream {
         digest: [u8; 32],
         deadline: Option<u64>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        self.plan_commit_locked(state, request, digest, deadline)?
+        self.plan_commit_locked(state, &request, digest, deadline)?
             .install(self, state)
     }
 
     fn plan_commit_locked<'a>(
         &'a self,
         state: &mut State,
-        request: CommitRequest,
+        request: &'a CommitRequest,
         digest: [u8; 32],
         deadline: Option<u64>,
     ) -> Result<
@@ -408,7 +447,7 @@ impl MemoryStream {
                     state,
                     &mut || self.record_replay_probe(&mut probes),
                     None,
-                    Some(request.idempotency_key),
+                    Some(request.idempotency_key.clone()),
                     digest,
                     // Spending a refused key is the injected defect. Its invalid
                     // retained family cannot be emitted by successful commits.
@@ -436,23 +475,27 @@ impl MemoryStream {
             work.record(work.meter.record_codec(0, 0, identity_bytes()))?;
         }
         self.reserve_retained(state)?;
-        let mut plan = self.plan_commit(state, &request, commit_id, 0)?;
+        let time = crate::preparation::committed_time(
+            state.last_committed_at_micros,
+            self.commit_clock.now_unix_millis(),
+        );
+        let mut plan = self.plan_commit(state, &request, commit_id, time)?;
+        plan.bind(commit_id, time, &self.revisions.at(decision))?;
+        let bytes = envelope_payload_bytes(&plan.envelope);
+        let publication = plan.stage(
+            state,
+            &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
+        )?;
         Ok(Decision::Accepted {
-            bytes: envelope_payload_bytes(&plan.envelope),
+            bytes,
             install: move |state: &mut State, durable: bool| {
                 if !durable {
                     check_deadline()?;
                 }
-                let time = crate::preparation::committed_time(
-                    state.last_committed_at_micros,
-                    self.commit_clock.now_unix_millis(),
-                );
-                plan.bind(commit_id, time, &self.revisions.at(decision))?;
-                plan.publish(
+                publication.publish(
                     state,
-                    &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
                     &mut || self.record_replay_probe(&mut probes),
-                    request.idempotency_key,
+                    request.idempotency_key.clone(),
                     digest,
                     time,
                 )
@@ -552,13 +595,13 @@ fn bind_envelope(envelope: &mut CommittedEnvelope, commit_id: CommitId, time: u6
     }
 }
 
-fn publish(
-    state: &mut State,
+fn stage_namespace(
+    state: &State,
     paths: Vec<(StreamPath, PathState)>,
     histories: Vec<Arc<History>>,
     envelope: &CommittedEnvelope,
     build: &mut NamespaceBuilder<'_>,
-) -> Result<(), StreamError> {
+) -> Result<Namespace, StreamError> {
     let mut next = state.paths.clone();
     for (path, data) in paths {
         next.put_data(&path, data, None, build)?;
@@ -607,6 +650,14 @@ fn publish(
         let data = fact_data(&state.paths, fact, history, tail)?;
         next.put_data(path, data, origin, build)?;
     }
+    Ok(next)
+}
+
+fn install_namespace(
+    state: &mut State,
+    next: Namespace,
+    envelope: &CommittedEnvelope,
+) -> Result<(), StreamError> {
     if next.len() != state.paths.len() {
         state.hierarchy_version = envelope.commit_id;
     }

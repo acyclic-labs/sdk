@@ -56,17 +56,14 @@ impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
 impl MemoryStream {
     pub(crate) async fn apply_durable(
         &self,
-        command: crate::journal::Command,
+        command: &mut crate::journal::Command,
         deadline: Option<u64>,
         persist: impl Future<Output = Result<(), StreamError>>,
     ) -> Result<crate::journal::Outcome, StreamError> {
         use crate::journal::{Command, Outcome};
-        let (command, digest) = match command {
-            Command::Commit(mut request) => {
-                let digest = self.commit_request_digest(&mut request)?;
-                (Command::Commit(request), Some(digest))
-            }
-            command => (command, None),
+        let digest = match command {
+            Command::Commit(request) => Some(self.commit_request_digest(request)?),
+            _ => None,
         };
         let mut state = self.state.write().await;
         match command {

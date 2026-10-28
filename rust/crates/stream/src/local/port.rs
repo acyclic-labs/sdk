@@ -79,18 +79,20 @@ impl CommandJournal for LocalPort {
         if frames.is_empty() {
             return Err(StreamError::InvalidArgument);
         }
-        let at_millis = self.stream.inner.commit_clock.source.now_unix_millis();
+        let at_millis = frames.last().ok_or(StreamError::InvalidArgument)?.at_millis;
+        let now = self.stream.inner.commit_clock.source.now_unix_millis();
         if frames
             .iter()
-            .any(|frame| frame.deadline.is_some_and(|deadline| at_millis >= deadline))
+            .any(|frame| frame.deadline.is_some_and(|deadline| now >= deadline))
         {
             return Err(StreamError::DeadlineElapsed);
         }
         let mut prepared = Vec::with_capacity(frames.len());
         for frame in frames {
             let command = decode_command(&frame.command)?;
-            let mut encoded = PreparedFrame::encode(&command, at_millis, self.stream.work.clone())
-                .map_err(|error| self.stream.frame_error(error))?;
+            let mut encoded =
+                PreparedFrame::encode(&command, frame.at_millis, self.stream.work.clone())
+                    .map_err(|error| self.stream.frame_error(error))?;
             encoded.deadline = encoded.deadline.into_iter().chain(frame.deadline).min();
             prepared.push(encoded);
         }
