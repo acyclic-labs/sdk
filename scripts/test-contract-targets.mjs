@@ -3,8 +3,30 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { buildContractTargets, runContractTarget } from "./contract-targets.mjs";
+
+test("contract selection refuses every unknown family before Cargo or publication", () => {
+  const root = mkdtempSync(join(tmpdir(), "sdk-contract-selection-"));
+  try {
+    for (const families of [["absent-family"], ["stream", "absent-family"], [""]]) {
+      const result = spawnSync(process.execPath, [
+        fileURLToPath(new URL("./generate-contracts.mjs", import.meta.url)), "check", ...families,
+      ], { cwd: root, encoding: "utf8", env: {
+        ...process.env, ACYCLIC_CARGO_BIN: join(root, "cargo-must-not-start"), SDK_TEMP_DIR: root,
+      } });
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /STEP_FAILED contract-selection: unknown family/);
+      assert.match(result.stderr, /recovery: bun scripts\/generate-contracts\.mjs check/);
+      assert.equal(result.stdout, "");
+      assert.equal(statSync(root).isDirectory(), true);
+      assert.throws(() => statSync(join(root, "observability")), { code: "ENOENT" });
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 // Exercise real Cargo freshness, feature resolution and executable discovery
 // with a dependency-free workspace. No substitute artifact planner is mocked.

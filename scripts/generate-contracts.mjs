@@ -7,7 +7,7 @@ import { buildContractTargets, runContractTarget } from "./contract-targets.mjs"
 // Rust-owned contracts mirrored into TypeScript. Each module lists the Rust
 // targets it reads as [package, kind, name] and renders their stdout into
 // repository-relative files.
-const modules = [
+const availableModules = [
   "generate-actors-routes.mjs",
   "generate-inference-routes.mjs",
   "filesystem-napi-types.mjs",
@@ -25,15 +25,19 @@ const modules = [
   "generate-harness-model-fixtures.mjs",
   "generate-harness-file-tools-contract.mjs",
   "generate-machines-managed-oci-contract.mjs",
-].filter(name => {
-  const families = process.argv.slice(3);
-  if (!families.length) return true;
-  return families.some(family => name.startsWith(`generate-${family}-`) || name.startsWith(`${family}-`));
-});
+];
+const families = process.argv.slice(3);
+const matchesFamily = (name, family) => name.startsWith(`generate-${family}-`) || name.startsWith(`${family}-`);
+for (const family of families) {
+  if (!availableModules.some(name => matchesFamily(name, family))) {
+    throw new Error(`STEP_FAILED contract-selection: unknown family ${JSON.stringify(family)}; recovery: bun scripts/generate-contracts.mjs check`);
+  }
+}
+const modules = availableModules.filter(name => !families.length || families.some(family => matchesFamily(name, family)));
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const mode = process.argv[2] ?? "write";
-if (mode !== "write" && mode !== "check") throw new Error("usage: generate-contracts.mjs write|check");
+if (mode !== "write" && mode !== "check") throw new Error("STEP_FAILED contract-mode: expected write|check; recovery: bun scripts/generate-contracts.mjs check");
 // One build compiles every contract target from current Rust source; the
 // emitted executables are then run directly instead of one `cargo run` each.
 // Selected packages omit defaults; Cargo still unifies dependency features.
