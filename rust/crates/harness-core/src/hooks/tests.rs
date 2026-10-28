@@ -99,13 +99,12 @@ async fn exec_form_placeholders_launch_guards_without_retokenizing_paths_or_argu
             ]
         }]}]}}).to_string().as_bytes())?;
         let output = hooks
-            .run_checked(
+            .run(
                 HookEvent::PreToolUse,
-                (root, &cwd),
-                (&json!({"tool_name":"shell"})).into(),
+                root,
+                &cwd,
+                &json!({"tool_name":"shell"}),
                 &registry()?,
-                262_144,
-                (Arc::new(|| Ok(())), None),
             )
             .await?;
         assert_eq!(
@@ -255,7 +254,7 @@ async fn cancelling_the_hook_future_terminates_its_running_child() -> Result<()>
         Arc::new(hook),
         Arc::new((root.clone(), root, vec![])),
         Arc::new(|| Ok(())),
-        65_536,
+        Some(65_536),
         None,
     ));
     let (mut stream, _) = tokio::select! {
@@ -1207,7 +1206,10 @@ fn aggregate_failure_preserves_an_already_decoded_denial() -> Result<()> {
                         }
                         _ => vec![0; 100],
                     };
-                    assert!(stdout.len() <= quota, "fixture exceeds capture quota");
+                    assert!(
+                        stdout.len() <= quota.expect("selected finite capture policy"),
+                        "fixture exceeds capture quota"
+                    );
                     std::future::ready(Ok((Some(0), stdout, vec![])))
                 },
             )
@@ -1255,7 +1257,7 @@ fn runner_folds_deny_after_encoded_overflow_in_config_order() -> Result<()> {
                 let stdout = if matches!(&hook.run, HookRun::Executable { executable, .. } if executable == "expand") {
                     vec![0;1000]
                 } else { br#"{"continue":false,"stopReason":"deny"}"#.to_vec() };
-                assert!(stdout.len() <= quota);
+                assert!(stdout.len() <= quota.expect("selected finite capture policy"));
                 std::future::ready(Ok((Some(0),stdout,vec![])))
             }).await?;
         assert_eq!(calls, 2);
