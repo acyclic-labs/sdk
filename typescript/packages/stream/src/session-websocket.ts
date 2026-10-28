@@ -21,7 +21,7 @@ export function webSocketSession(endpoint: string, token: string | CredentialPro
     url.protocol = "wss:";
     const socket = factory(url.href, ["acyclic.session.v1", `acyclic.bearer.${credential}`]);
     socket.binaryType = "arraybuffer";
-    const incoming = new SessionQueue<import("../generated/proto/stream/v1/session_pb.js").SessionFrame>(StreamLimit.MAX_ITEMS);
+    const incoming = new SessionQueue<import("../generated/proto/stream/v1/session_pb.js").SessionFrame>();
     let opened = false;
     let resolve!: () => void;
     let reject!: (error: unknown) => void;
@@ -54,7 +54,7 @@ export function webSocketSession(endpoint: string, token: string | CredentialPro
       async send(frame) {
         if (signal.aborted || socket.readyState !== WebSocket.OPEN) throw new StreamError("unavailable", "Streams session is closed");
         const bytes = toBinary(SessionFrameSchema, frame);
-        if (bytes.byteLength > StreamLimit.MAX_COMMAND_BYTES || socket.bufferedAmount + bytes.byteLength > StreamLimit.MAX_COMMAND_BYTES) throw new StreamError("capacity", "Streams session output capacity exceeded");
+        if (bytes.byteLength > StreamLimit.MAX_COMMAND_BYTES) throw new StreamError("limit_exceeded", "Streams session frame is too large");
         socket.send(bytes);
       },
       close() { signal.removeEventListener("abort", abort); incoming.end(); socket.close(); },
