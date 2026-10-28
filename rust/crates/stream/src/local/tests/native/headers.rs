@@ -137,6 +137,7 @@ async fn prepared_recovery_refuses_unreserved_header_counts_before_codec_work()
                 value: OwnedBytes::from_static(b"v"),
                 headers: crate::RecordHeaders::new(keys, fields)?,
             }];
+            let unreserved = records.first().ok_or("missing unreserved body")?.clone();
             assert!(matches!(
                 provider.commit(request).await?,
                 CommitOutcome::Committed(_)
@@ -149,7 +150,14 @@ async fn prepared_recovery_refuses_unreserved_header_counts_before_codec_work()
             assert!(matches!(recovery.await?, Err(StreamError::LimitExceeded)));
             assert_eq!(meter.hashed.load(Ordering::SeqCst), hashed);
             assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
-            drop(packet);
+            // Await the original completion as well: Local's accepted writer
+            // owns its reservations until the closed ingress has drained.
+            assert!(matches!(
+                packet.finish(unreserved).await?,
+                Err(StreamError::LimitExceeded)
+            ));
+            assert_eq!(meter.hashed.load(Ordering::SeqCst), hashed);
+            assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
             drop(guard);
             drop(provider);
             meter.assert_refunded();
