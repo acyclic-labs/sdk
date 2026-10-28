@@ -19,12 +19,10 @@ use std::collections::BTreeMap;
 mod tools;
 pub use tools::serve;
 
-/// Byte bound of one native event line and of a retained answer's source.
+/// Byte bound of one native event line.
 const EVENT_LIMIT: usize = 65_536;
 /// The saved log's line where the bounded framer dropped one native event.
 const EVENT_OMITTED: &[u8] = b"{\"type\":\"acyclic.event_omitted\"}";
-/// Byte bound of a retained answer.
-const ANSWER_LIMIT: usize = 4096;
 
 struct Running {
     process: HostSessionProcess,
@@ -469,27 +467,18 @@ fn answer(event: &Value) -> Option<String> {
         event.get("result")
     };
     if let Some(text) = text.and_then(Value::as_str) {
-        return Some(bounded(text));
+        return Some(text.to_owned());
     }
     let parts = (event.pointer("/message/role").and_then(Value::as_str) == Some("assistant")
         && event.get("type").and_then(Value::as_str) == Some("message_end"))
     .then(|| event.pointer("/message/content").and_then(Value::as_array))
     .flatten()?;
-    Some(bounded(
-        &parts
+    Some(
+        parts
             .iter()
             .filter_map(|part| part.get("text").and_then(Value::as_str))
-            .collect::<String>(),
-    ))
-}
-
-fn bounded(text: &str) -> String {
-    text.chars()
-        .scan(0, |bytes, ch| {
-            *bytes += ch.len_utf8();
-            (*bytes <= ANSWER_LIMIT).then_some(ch)
-        })
-        .collect()
+            .collect(),
+    )
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -517,10 +506,5 @@ mod framing {
         };
         let event: Value = serde_json::from_str(line).expect("frame is JSON");
         assert_eq!(answer(&event).as_deref(), Some("probe"));
-    }
-
-    #[test]
-    fn native_answers_are_bounded_on_character_boundaries() {
-        assert!(bounded(&"😀".repeat(4096)).len() <= ANSWER_LIMIT);
     }
 }
