@@ -125,6 +125,7 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
         };
         let mut subscription = provider
             .follow(acyclic_stream::FollowRequest {
+                when_absent: Default::default(),
                 path: path.clone(),
                 from: 1,
                 preceding: anchored.then_some(receipt.commit_id),
@@ -178,6 +179,7 @@ async fn listener_failure(database: &str) -> Result<(), Box<dyn std::error::Erro
         .await?;
     let mut updates = provider
         .follow(acyclic_stream::FollowRequest {
+            when_absent: Default::default(),
             path: path,
             from: 1,
             preceding: None,

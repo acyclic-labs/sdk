@@ -270,6 +270,8 @@ impl Connection {
                     }),
                     kind: Some(wire::session_subscription::Kind::Follow(
                         wire::SessionFollow {
+                            bootstrap_head: false,
+                            when_absent: Default::default(),
                             resource,
                             delivery: delivery as i32,
                             preceding_commit_id: anchor,

@@ -1,5 +1,6 @@
 //! Reusable black-box qualification of the complete public Stream contract.
 
+mod absence;
 mod atomic;
 mod backend;
 #[path = "conformance"]
@@ -35,6 +36,7 @@ const _: () = assert!(!SUITE.is_empty(), "conformance inventory is empty");
     reason = "one public contract walkthrough"
 )]
 async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
+    absence::verify(provider).await?;
     let source = path("conformance/source")?;
     let child = path("conformance/child")?;
     let append_key = key(b"stream-append")?;

@@ -68,7 +68,13 @@ async fn records(provider: BaselineProvider) -> RecordStream {
     let local = matches!(&provider, BaselineProvider::Local(_));
     let (_, cursor) = provider
         .memory()
-        .prepare_follow(&path, 0, None, crate::FollowFilter::default())
+        .prepare_follow(
+            &path,
+            0,
+            None,
+            crate::WhenAbsent::NotFound,
+            crate::FollowFilter::default(),
+        )
         .await
         .unwrap();
     let records = stream::unfold(

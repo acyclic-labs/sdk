@@ -6,11 +6,9 @@ use wasm_bindgen::closure::Closure;
 pub(super) struct Publications {
     channel: web_sys::BroadcastChannel,
     pub(super) interests: crate::interest::Interests<Key>,
-    pub(super) follows: RefCell<
-        std::collections::BTreeMap<
-            StreamPath,
-            Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>>,
-        >,
+    pub(super) follows: crate::interest::Interests<
+        StreamPath,
+        Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>>,
     >,
     target: Rc<RefCell<Weak<Inner>>>,
     refresh: Rc<crate::interest::Refresh>,
@@ -34,7 +32,7 @@ impl Publications {
         Ok(Self {
             channel,
             interests: crate::interest::Interests::new(),
-            follows: RefCell::new(std::collections::BTreeMap::new()),
+            follows: crate::interest::Interests::new(),
             target,
             refresh,
             _receive: receive,
@@ -43,15 +41,23 @@ impl Publications {
     pub(super) fn follow_index(
         &self,
         path: &StreamPath,
-    ) -> Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>> {
-        self.follows
-            .borrow_mut()
-            .entry(path.clone())
-            .or_default()
-            .clone()
+    ) -> Result<
+        crate::interest::Interest<
+            StreamPath,
+            Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>>,
+        >,
+        StreamError,
+    > {
+        self.follows.subscribe_with(path.clone(), Arc::default)
     }
     pub(super) fn invalidate_follows(&self) {
-        let indices: Vec<_> = self.follows.borrow().values().cloned().collect();
+        let Ok(paths) = self.follows.keys_in::<StreamPath, _>(..) else {
+            return;
+        };
+        let indices = paths
+            .into_iter()
+            .filter_map(|path| self.follows.get(&path).ok().flatten())
+            .collect::<Vec<_>>();
         for index in indices {
             index
                 .lock()

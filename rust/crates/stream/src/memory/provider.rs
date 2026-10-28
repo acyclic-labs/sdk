@@ -165,13 +165,16 @@ impl StreamProvider for MemoryStream {
             preceding,
             filter,
             progress,
+            when_absent,
             at_least,
         } = request;
         self.revisions.wait(&at_least).await?;
         if progress {
-            self.progress_from(path, from, preceding, filter).await
+            self.progress_from(path, from, preceding, when_absent, filter)
+                .await
         } else {
-            self.follow_from(path, from, preceding, filter).await
+            self.follow_from(path, from, preceding, when_absent, filter)
+                .await
         }
     }
 

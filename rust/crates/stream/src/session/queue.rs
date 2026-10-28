@@ -47,9 +47,23 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     .checked_add(1)
                     .ok_or(StreamError::OutOfRange)?;
                 let (item, key) = if channel.latest {
-                    let value = match wire::SessionLatestValue::decode(record.value.as_ref()) {
-                        Ok(value) if !value.key.is_empty() => value,
+                    let [key] = record.headers.keys() else {
+                        return self.record(identity, Err(StreamError::InvalidArgument));
+                    };
+                    let attention = record
+                        .headers
+                        .attributes()
+                        .iter()
+                        .find(|a| a.name == "attention");
+                    let attention = match attention.map(|a| a.value.as_ref()) {
+                        None | Some(b"false") => false,
+                        Some(b"true") => true,
                         _ => return self.record(identity, Err(StreamError::InvalidArgument)),
+                    };
+                    let value = wire::SessionLatestValue {
+                        key: Bytes::from_owner(key.clone()),
+                        value: Bytes::from_owner(record.value),
+                        attention,
                     };
                     let key = (!value.attention).then(|| value.key.clone());
                     (Item::LatestValue(value), key)

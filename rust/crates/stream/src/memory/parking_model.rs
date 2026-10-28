@@ -28,6 +28,7 @@ pub(crate) fn verify(retain_pending: bool, checked: bool) {
                 block_on(
                     provider
                         .follow(crate::FollowRequest {
+                            when_absent: Default::default(),
                             path: path.clone(),
                             from: 1,
                             preceding: Some(seed.commit_id),
@@ -102,6 +103,7 @@ pub(crate) fn shutdown(discard: bool, checked: bool, cancel: bool, poll_worker: 
                 block_on(
                     provider
                         .follow(crate::FollowRequest {
+                            when_absent: Default::default(),
                             path: path.clone(),
                             from: 1,
                             preceding: Some(seed.commit_id),

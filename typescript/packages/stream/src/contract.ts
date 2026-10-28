@@ -1,3 +1,4 @@
+import { WhenAbsent } from "../generated/proto/stream/v1/stream_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
@@ -309,3 +310,10 @@ export async function normalizeWireCommit(request: ProviderCommitRequest, option
 
 // Resource spelling stays in the same Rust codec as node admission.
 export { streamResource, streamResourcePath } from "../generated/wasm/acyclic_stream_wasm.js";
+
+/** Preserve initial absence policy at every provider boundary. */
+export function wireWhenAbsent(value: "not_found" | "wait" | undefined): WhenAbsent {
+  if (value === undefined || value === "not_found") return WhenAbsent.NOT_FOUND;
+  if (value === "wait") return WhenAbsent.WAIT;
+  throw new StreamError("invalid_argument", "invalid absence policy");
+}

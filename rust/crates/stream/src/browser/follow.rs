@@ -6,6 +6,7 @@ impl BrowserStream {
         path: StreamPath,
         from: u64,
         anchor: Option<CommitId>,
+        when_absent: crate::WhenAbsent,
         filter: crate::FollowFilter,
     ) -> Result<crate::FollowStream, StreamError> {
         let changed = self
@@ -14,7 +15,11 @@ impl BrowserStream {
             .interests
             .subscribe(publication::Key::Records(path.clone()))?;
         let (_, cursor) = self
-            .with_provider(async |memory| memory.prepare_progress(&path, from, anchor).await)
+            .with_provider(async |memory| {
+                memory
+                    .prepare_progress(&path, from, anchor, when_absent)
+                    .await
+            })
             .await?;
         Ok(stream::try_unfold(
             (self.clone(), path, cursor, anchor, changed, filter),
@@ -43,22 +48,26 @@ impl BrowserStream {
         path: StreamPath,
         from: u64,
         anchor: Option<CommitId>,
+        when_absent: crate::WhenAbsent,
         filter: crate::FollowFilter,
     ) -> Result<crate::FollowStream, StreamError> {
         // The publication index survives replay-cache replacement. Registration
         // and the initial cursor are captured under the same cache lock as writes.
-        let (changed, cursor) = self
+        let (changed, cursor, registration) = self
             .with_provider(async |memory| {
-                let (_, cursor) = memory.prepare_progress(&path, from, anchor).await?;
-                let index = self.inner.publications.follow_index(&path);
+                let (_, cursor) = memory
+                    .prepare_progress(&path, from, anchor, when_absent)
+                    .await?;
+                let registration = self.inner.publications.follow_index(&path)?;
+                let index = registration.value();
                 let changed =
-                    crate::follow_index::FollowIndex::subscribe(&index, filter.clone(), from)?;
-                Ok((changed, cursor))
+                    crate::follow_index::FollowIndex::subscribe(index, filter.clone(), from)?;
+                Ok((changed, cursor, registration))
             })
             .await?;
         Ok(stream::try_unfold(
-            (self.clone(), path, cursor, anchor, changed, filter),
-            |(provider, path, mut cursor, mut anchor, mut changed, filter)| async move {
+            (self.clone(), path, cursor, anchor, changed, filter, registration),
+            |(provider, path, mut cursor, mut anchor, mut changed, filter, registration)| async move {
                 loop {
                     if let Some(record) = provider
                         .with_cached_provider(async |memory| {
@@ -70,7 +79,7 @@ impl BrowserStream {
                     {
                         return Ok(Some((
                             crate::FollowUpdate::Record(record),
-                            (provider, path, cursor, anchor, changed, filter),
+                            (provider, path, cursor, anchor, changed, filter, registration),
                         )));
                     }
                     changed

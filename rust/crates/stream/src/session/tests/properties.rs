@@ -60,11 +60,9 @@ proptest! {
     ) {
         let mut session = empty_session(latest);
         for (index, (key, value, attention)) in history.iter().enumerate() {
-            let value = wire::SessionLatestValue {
-                key: Bytes::copy_from_slice(&[*key]), value: Bytes::copy_from_slice(&[*value]), attention: *attention,
-            }.encode_to_vec();
-            let record = Record { headers: Default::default(),
-                sequence: index as u64, value: OwnedBytes::from(value),
+            let value = crate::AppendRecord::latest(OwnedBytes::from(vec![*value]), OwnedBytes::from(vec![*key]), *attention)?;
+            let record = Record { headers: value.headers,
+                sequence: index as u64, value: value.value,
                 commit_id: CommitId::from_bytes([1; 32]), committed_at_micros: 0,
             };
             let identity = wire::SessionChannel { channel_id: 1, generation: 1 };

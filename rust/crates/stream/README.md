@@ -2,6 +2,61 @@
 
 Hierarchical append-only streams with exact sequence cursors, conditional appends, forks, and coordinated commits. A `StreamClient` wraps any `StreamProvider` without changing provider semantics.
 
+Remote consumers adopt `grpc::Client` for the provider contract and obtain its
+`session_client()` for multiplexed calls and live queries. Reuse those handles
+within an authority scope: `session::Client` owns channel credit, checked resume,
+revision floors and reconnection. A consumer must not introduce a second follow
+loop or connection pool. Forwarding adapters preserve filters, absence policy,
+history fences, deadlines and revisions, including across reconnects. Credentials
+remain transport-owned and never enter record payloads or persisted cursors.
+
+An application receipt stream is ordinary retained stream history. Retain its
+terminal outcomes for at least as long as a caller may replay the corresponding
+identity, and publish the receipt in the same Commit as the effects it certifies.
+Transport delivery and credit release do not certify application completion.
+After a disconnect, cancellation or crash before a terminal receipt is observed,
+the outcome is ambiguous: inspect retained facts or retry the exact request with
+the same identity. Absence of a receipt, including an empty inspection while an
+operation may still be in flight, never proves nonexecution. Retiring receipts
+must not make a previously accepted identity executable again.
+
+An actor fork is `CommitMutation::Fork` plus its activation append in one
+`CommitRequest`, guarded by destination absence and the required source head.
+The fork mutation's `records` append to the inherited root; a separate activation
+stream outside the destination subtree may be another `CommitMutation::Append`.
+Mutations below the destination remain invalid. The actor runtime consumes the
+committed activation; consumers must not publish activation before the fork or
+register the child in a second transaction. The receipt certifies both facts or
+neither, and exact replay cannot activate a second child.
+
+`FollowRequest::when_absent` defaults to `NotFound`. `Wait` registers under the
+same publication lock that captures the cursor, then waits for creation without
+rewinding that cursor. Creation through an inherited fork is also publication.
+Dropping the follow releases its registration. An existing checked prefix that
+disappears or changes fails with `PrefixNotRetained`; authorization refusal stays
+`AccessDenied`. Neither event turns into a new creation wait.
+
+LATEST projects opaque record bytes using exactly one indexed header key and an
+optional `attention` attribute (`true` or `false`, encoded as ASCII). Attention
+records are lossless; ordinary pending values conflate only within the same key.
+ALL preserves the original record. `SessionFollow.bootstrap_head` starts a fresh
+LATEST subscription with the last record at one captured Head, followed from its
+checked tail. It does not reconstruct older keys or historical attention events.
+A resumed nonzero cursor replays forward without repeating the head bootstrap.
+Harness status publishers use `StatusRecord::append_record`, retaining their
+existing JSON encoding and declaring attention on approval, host and terminal
+transitions.
+
+The follow-up measurement plan compares 1, 8 and 64 observations and logical
+backlogs of 10^6 through 10^9 records. Report lock acquisitions, retained RAM,
+first-output latency and work during cancellation, withheld application completion
+and reconnect. Compare coherent heads against separate observations while a root
+advances; indexed seek against the same reader with its index disabled; and lazy
+pinned history against eager window construction. Correctness controls include
+replaced fork prefixes, creation during registration, distinct opaque keys,
+attention, malformed JSON, tiny credit, a crash before application commit and
+changed key bytes. These are planned measurements, not performance results.
+
 ```sh
 cargo add acyclic-stream
 ```

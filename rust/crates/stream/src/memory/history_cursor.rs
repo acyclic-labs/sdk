@@ -4,8 +4,44 @@ pub(crate) struct HistoryCursor {
     first: Option<HistoryWindow>,
     windows: VecDeque<HistoryWindow>,
     next: u64,
+    awaiting_creation: bool,
+    registration: Option<crate::interest::Interest<StreamPath, Signals>>,
 }
 impl HistoryCursor {
+    fn initial(
+        path: Option<&PathState>,
+        from: u64,
+        anchor: Option<CommitId>,
+        when_absent: crate::WhenAbsent,
+    ) -> Result<Self, StreamError> {
+        match path {
+            Some(path) => Self::prepare(path, from, anchor),
+            None if anchor.is_some() && when_absent == crate::WhenAbsent::Wait => {
+                Err(StreamError::PrefixNotRetained)
+            }
+            None if when_absent == crate::WhenAbsent::Wait => {
+                let mut cursor = Self::at(from);
+                cursor.awaiting_creation = true;
+                Ok(cursor)
+            }
+            None => Err(StreamError::NotFound),
+        }
+    }
+    fn observe_creation(
+        &mut self,
+        path: Option<&PathState>,
+        anchor: Option<CommitId>,
+    ) -> Result<bool, StreamError> {
+        if self.awaiting_creation {
+            let Some(path) = path else {
+                return Ok(false);
+            };
+            let mut cursor = Self::prepare(path, self.next, anchor)?;
+            cursor.registration = self.registration.take();
+            *self = cursor;
+        }
+        Ok(true)
+    }
     fn prepare(path: &PathState, from: u64, anchor: Option<CommitId>) -> Result<Self, StreamError> {
         if from > path.tail {
             return Err(StreamError::OutOfRange);
@@ -54,6 +90,8 @@ impl HistoryCursor {
             first: None,
             windows: VecDeque::new(),
             next,
+            awaiting_creation: false,
+            registration: None,
         }
     }
     fn new(path: &PathState, tail: u64, next: u64) -> Self {
@@ -63,6 +101,8 @@ impl HistoryCursor {
                 first: Some(window),
                 windows: VecDeque::new(),
                 next,
+                awaiting_creation: false,
+                registration: None,
             };
         }
         let mut cursor = Self::at(next);

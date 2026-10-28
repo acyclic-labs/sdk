@@ -57,6 +57,7 @@ fn pending_stream_survives_its_polling_runtime() {
                     futures::executor::block_on(
                         provider
                             .follow(crate::FollowRequest {
+                                when_absent: Default::default(),
                                 path: path,
                                 from: 1,
                                 preceding: Some(seed.commit_id),

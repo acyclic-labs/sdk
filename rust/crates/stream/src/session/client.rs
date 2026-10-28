@@ -404,6 +404,8 @@ impl Client {
         crate::memory::validate_limit(request.limit)?;
         // The pool adds the tracked floor on every physical open.
         let follow = wire::SessionFollow {
+            bootstrap_head: false,
+            when_absent: Default::default(),
             resource: crate::wire_codec::session::stream_resource(request.path.as_str()),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: Bytes::new(),
@@ -773,6 +775,8 @@ impl Drop for Cursor {
 /// resume never lowers it.
 fn follow_kind(request: crate::FollowRequest) -> Kind {
     Kind::Follow(wire::SessionFollow {
+        bootstrap_head: false,
+        when_absent: request.when_absent.to_wire(),
         resource: crate::wire_codec::session::stream_resource(request.path.as_str()),
         delivery: wire::SessionDelivery::All as i32,
         preceding_commit_id: request
