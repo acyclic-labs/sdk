@@ -47,6 +47,9 @@ pub struct Observer {
     /// The conversation stream does not exist yet: the step that creates it
     /// also appends a status, so it reopens after the next status.
     missing: bool,
+    /// A settled step's status arrived since the conversation was last
+    /// followed: one that may have created it.
+    settled_since_follow: bool,
     failures: Option<(broadcast::Receiver<AgentFailure>, ActorReference)>,
     tail: OutputTail,
 }
@@ -89,6 +92,7 @@ impl Observer {
             resource: connection.tools.clone(),
             next_turn: from,
             missing: false,
+            settled_since_follow: false,
             failures: connection
                 .failures
                 .as_ref()
@@ -140,25 +144,15 @@ impl Observer {
                 Ok(AgentEvent::Status { status, .. }) => {
                     // Only a settled step creates the conversation: reopen
                     // there, never while a turn runs or waits.
-                    if self.missing
-                        && status.cursor > 0
+                    let settled = status.cursor > 0
                         && matches!(
                             status.phase,
                             crate::agent::Phase::Idle | crate::agent::Phase::Done { .. }
-                        )
-                    {
-                        tracing::debug!(from = self.next_turn, "conversation reopen");
-                        self.missing = false;
-                        self.client
-                            .set_view(
-                                AgentSelection {
-                                    agent: self.agent.clone(),
-                                    conversation_from: self.next_turn,
-                                    status_from: 0,
-                                },
-                                std::iter::empty(),
-                            )
-                            .map_err(storage)?;
+                        );
+                    if settled && self.missing {
+                        self.follow_conversation()?;
+                    } else if settled {
+                        self.settled_since_follow = true;
                     }
                     tracing::debug!(phase = ?status.phase, cursor = status.cursor, "agent status");
                     // An idle or finished agent runs no turn: an interrupted
@@ -185,7 +179,13 @@ impl Observer {
                 Ok(AgentEvent::Progress) => {}
                 Err(error) if self.conversation_missing(&error) => {
                     tracing::debug!(%error, "conversation missing");
-                    self.missing = true;
+                    // The settled status that announces the conversation
+                    // may have been read before this refusal.
+                    if self.settled_since_follow {
+                        self.follow_conversation()?;
+                    } else {
+                        self.missing = true;
+                    }
                 }
                 Err(error) => {
                     tracing::debug!(%error, "observer follow failed");
@@ -193,6 +193,23 @@ impl Observer {
                 }
             }
         }
+    }
+
+    /// Follows the conversation again from the next unseen turn.
+    fn follow_conversation(&mut self) -> Result<()> {
+        tracing::debug!(from = self.next_turn, "conversation reopen");
+        self.missing = false;
+        self.settled_since_follow = false;
+        self.client
+            .set_view(
+                AgentSelection {
+                    agent: self.agent.clone(),
+                    conversation_from: self.next_turn,
+                    status_from: 0,
+                },
+                std::iter::empty(),
+            )
+            .map_err(storage)
     }
 
     /// Ends the displayed output: records announced so far are never shown.
