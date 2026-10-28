@@ -1360,7 +1360,7 @@ Check170 canonical descriptor generation PASS on actual signedc077200c2a source 
 
 ## S3 multipart retention policy and additional inventory
 
-| Constant / policy | File:line (current source) | Category | Action |
+| Constant / policy | File:line (discovery source5c385221fa) | Category | Action |
 |---|---|---|---|
 | `S3MultipartRetentionLimits.maximum_uploads` | `rust/crates/filesystem/src/s3_http.rs:77` | 1, optional caller policy | Deleted the one-million-entry default. None scans every registry page; Some retains explicit positive caller admission. Page-sized reads continue from their authenticated sequence to the captured tail. |
 | `S3MultipartRetentionLimits.maximum_objects` | `rust/crates/filesystem/src/s3_http.rs:79` | 1, optional caller policy | Deleted the ten-million-object default. None retains the complete distinct root closure; Some preserves explicit finite policy. Canonical root authentication, deduplication and supplied WorkBudget remain. |
@@ -1369,9 +1369,17 @@ Check170 canonical descriptor generation PASS on actual signedc077200c2a source 
 | `FilesystemS3Limits.response_chunk_bytes` / `maximum_list_keys` | `rust/crates/filesystem/src/s3_http.rs:53,55` | 2 | Keep actual response chunks and continuation pages; verify every caller continues instead of refusing aggregate work. |
 | `FilesystemS3Limits.maximum_list_entries_examined` | `rust/crates/filesystem/src/s3_http.rs:57` | 1 / 2 | Pending: listing uses this as a scan bound, while ListBuckets also refuses aggregate names. Convert scan exhaustion to authenticated continuation and delete aggregate count refusal. |
 | `FilesystemS3Limits.maximum_key_bytes` | `rust/crates/filesystem/src/s3_http.rs:59` | 1 | Pending deletion of logical key/cursor width refusals across common validation and durable multipart records. |
-| `FilesystemS3Limits.maximum_multipart_parts` / `maximum_multipart_records` | `rust/crates/filesystem/src/s3_http.rs:61,63` | 1 | Pending removal of default part/history ceilings; retain ordered distinct part identities and exact replay, with history streaming rather than whole-value refusal. |
-| `FilesystemS3Limits.maximum_multipart_cas_retries` | `rust/crates/filesystem/src/s3_http.rs:69` | 1 | Pending removal of the attempt ceiling; retry the same operation under caller cancellation/deadline with contention backpressure. |
+| `FilesystemS3Limits.maximum_multipart_parts` | `rust/crates/filesystem/src/s3_http.rs:61` | 1 | Pending removal of the default part ceiling; preserve ordered distinct part identities and exact replay. |
+| `FilesystemS3Limits.maximum_multipart_records` | `rust/crates/filesystem/src/s3_http.rs:63` (removed) | 1 | Deleted field, 20003-record default, whole-tail refusal and pre-publication history refusal. One incremental replay state consumes every page through the captured tail; only current parts and exact retry identities survive each record. No whole-history payload vector remains. |
+| `FilesystemS3Limits.maximum_multipart_cas_retries` | `rust/crates/filesystem/src/s3_http.rs:69` (removed) | 1 | Deleted the field and32-attempt default in all5 CAS paths. A real conflict yields via the shared runtime primitive and retries the same original operation; successful/terminal/typed failures still end the operation. The now-impossible false terminalization result and count-exhaustion errors are deleted. |
 
 The S3 retention policy change has static formatting/diff verification only; its optional s3-http feature requires bb2 compilation. Existing explicit finite upload and byte negatives are unchanged except for Some presence. No new Objects producer, replacement ledger, native funding change or runtime proof is claimed.
 
 Check171 on signed a338a45c6e06ab3099696ad4721c62d90a5c03c4 has passed the global compatibility/descriptor baseline, native workspace all-target compilation (1m43s) and the storage-backends conformance endpoint compile (1m09s), actual job1793217791601-578801-44b70a74. Its runtime and WASM phases are still running. The descriptor P1 PRRT_kwDOUMoiI86xR76S was resolved after the real baseline result, reply https://github.com/acyclic-labs/sdk/pull/1744#discussion_r4405538162. No full runtime or latest S3 source qualification is inferred.
+
+
+Check171 ended20:11:08 UTC with admission-daemon disconnection/INFRA, rc224,494.1s (final relay1793217774470-578801-7c87a491). The previously recorded baseline/workspace/required-feature compiles passed before that interruption. No library runtime, model or WASM result is credited.
+
+Check172 on signed5c385221fada32056f2f6dc234ac1a34510546c6 passed filesystem all-target compilation with s3-http (1m33s) and Harness browser compilation (48.85s). It then failed the standalone Stream session model compile with15 API-drift errors: missing canonical SessionCursor import and retired Gate.current/next, policy.enabled and Progress.consume_opaque APIs. Actual source job1793218380736-584351-b85a162f, final relay1793218365724-584351-d3fe920b,20:15:52 UTC,rc101,186.8s. Stream WASM/TypeScript commands were after the failed && and did not run. Sent exact diagnostics/ownership steer to streams-cp in Q:/lanes/unbounded/steer-session-model172.md; no production shims, fake wire types or filtered tests are introduced.
+
+The later streaming S3 history/CAS changes await bb2 compilation. The new integration control authors20004 part updates over a20005-record history, replays every page, checks every original operation identity and the exact current part, then confirms that conflicting reuse of the oldest identity still fails. Existing terminal/cancellation/access controls remain. No runtime proof is claimed.
