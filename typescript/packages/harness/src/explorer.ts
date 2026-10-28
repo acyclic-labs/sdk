@@ -142,7 +142,11 @@ export class AgentExplorer {
     globalThis.removeEventListener?.("offline", this.#offline);
     globalThis.document?.removeEventListener("visibilitychange", this.#hidden);
     if (this.#timer !== undefined) clearTimeout(this.#timer);
-    if (this.#frame !== undefined) globalThis.cancelAnimationFrame?.(this.#frame);
+    // Cancel with the counterpart of whichever scheduler `schedule` used.
+    if (this.#frame !== undefined) {
+      if (globalThis.requestAnimationFrame) globalThis.cancelAnimationFrame(this.#frame);
+      else clearTimeout(this.#frame as unknown as ReturnType<typeof setTimeout>);
+    }
     this.#core.free();
   }
 }

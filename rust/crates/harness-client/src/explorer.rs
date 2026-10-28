@@ -730,9 +730,10 @@ impl Explorer {
                 follows.push(status);
             }
         }
-        if let Some(history) = &self.history
-            && history.end
-        {
+        // The open history is followed wherever its window is: the follow's
+        // `follow_checked` anchor is what proves cached (possibly restored)
+        // records were not replaced, so a seek must not skip it.
+        if let Some(history) = &self.history {
             follows.push(history.stream.clone());
         }
         // Each displayed page's witness, so new children appear live.
