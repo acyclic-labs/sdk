@@ -186,7 +186,7 @@ impl ProbeIo for Tty {
             self.input.acknowledge_changes()?;
             // Only the nonblocking syscall holds state. Both output and the
             // signal worker remain runnable while input waits for another byte.
-            let result = lifecycle::active(&self.state, |guard| guard.receive(bytes, deadline));
+            let result = lifecycle::active(&self.state, |guard| guard.receive(bytes));
             match result {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     let active = lifecycle::input_active(&self.state)?;
@@ -322,9 +322,8 @@ mod tests {
                 if tracked_read {
                     // Negative control: the former polling path classified a
                     // read as outside output through the generic writer.
-                    let count = lifecycle::active(&tty.state, |guard| {
-                        guard.writer().receive(&mut [0; 8], deadline)
-                    })?;
+                    let count =
+                        lifecycle::active(&tty.state, |guard| guard.writer().read(&mut [0; 8]))?;
                     assert_eq!(count, 1);
                 } else {
                     let events = tty.read_events(deadline)?;
