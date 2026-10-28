@@ -2,6 +2,69 @@ use super::*;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 #[tokio::test]
+async fn evicted_generation_facts_require_locator_reads_without_widening_a_frontier() -> TestResult
+{
+    let (store, authority) = super::super::super::append::group_tests::fixture().await?;
+    let cancel = CancellationToken::new();
+    let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancel);
+    let actor = store.actor(authority, &mut work)?;
+    let mut held = actor.lease(&mut work).await?;
+    let mut projection = store
+        .activate(authority, None, &mut held, &mut work)
+        .await?;
+    let catalog = projection
+        .generations
+        .as_ref()
+        .ok_or("fresh authority lost catalog")?
+        .clone();
+    let generation = |number: u64| {
+        let mut bytes = [0; 32];
+        bytes[..8].copy_from_slice(&number.to_le_bytes());
+        GenerationId::new(Digest::from_bytes(bytes))
+    };
+    assert!(matches!(
+        projection.generation(generation(1000), &mut work)?,
+        GenerationKnowledge::Absent
+    ));
+    // This is a catalog/frontier control, not a claim that these staged rows
+    // were published. Use the fixture's actual creation receipt to seal facts.
+    let receipt = projection.snapshot.record_commit_id;
+    for number in 0..513 {
+        let identity = GenerationIdentity::new(&mut work)?;
+        catalog.stage(generation(number), number + 1, &identity, &mut work)?;
+        identity.seal(receipt);
+    }
+    projection.lineage_tail = 513;
+    assert!(matches!(
+        projection.generation(generation(0), &mut work)?,
+        GenerationKnowledge::Unknown
+    ));
+    assert!(matches!(
+        projection.generation(generation(1000), &mut work)?,
+        GenerationKnowledge::Unknown
+    ));
+    for number in [256, 512] {
+        assert!(
+            matches!(projection.generation(generation(number), &mut work)?, GenerationKnowledge::Present(actual) if actual == receipt)
+        );
+    }
+    projection.lineage_tail = 256;
+    assert!(matches!(
+        projection.generation(generation(0), &mut work)?,
+        GenerationKnowledge::Unknown
+    ));
+    assert!(matches!(
+        projection.generation(generation(256), &mut work)?,
+        GenerationKnowledge::Absent
+    ));
+    assert!(matches!(
+        projection.generation(generation(512), &mut work)?,
+        GenerationKnowledge::Absent
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn generation_catalog_separates_cold_unknown_from_verified_fork_absence() -> TestResult {
     let (store, authority) = super::super::super::append::group_tests::fixture().await?;
     let cancel = CancellationToken::new();

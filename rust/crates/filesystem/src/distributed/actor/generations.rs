@@ -1,8 +1,10 @@
 //! Locator coverage follows successful authority creation, not lineage ancestry.
 //! A fork inherits a lineage prefix but creates only its own source locator.
 //! Cold activation has no catalog: missing knowledge never certifies absence.
+//! Recent facts retain at most two 256-entry windows. After forgetting history,
+//! a miss also requires the canonical locator read; it cannot certify absence.
 use super::*;
-use crate::kernel::allocation::fixed_index::FixedIndex;
+use crate::kernel::allocation::fixed_index::RecentIndex;
 use crate::kernel::allocation::retained::RetainedArc;
 
 pub(super) struct GenerationIdentity(RetainedArc<std::sync::OnceLock<acyclic_stream::CommitId>>);
@@ -27,7 +29,7 @@ struct GenerationFact {
 }
 
 pub(super) struct GenerationCatalog {
-    facts: std::sync::Mutex<FixedIndex<GenerationFact, { ObjectId::ENCODED_LEN }>>,
+    facts: std::sync::Mutex<RecentIndex<GenerationFact, { ObjectId::ENCODED_LEN }, 256>>,
 }
 
 pub(in crate::distributed) enum GenerationKnowledge {
@@ -60,7 +62,8 @@ impl Projection {
             .get(generation.object_id().index_key(), &mut work.accounting())
             .map_err(authority_error)?;
         Ok(match fact {
-            None => GenerationKnowledge::Absent,
+            None if facts.complete() => GenerationKnowledge::Absent,
+            None => GenerationKnowledge::Unknown,
             // A shared catalog may contain a prepared successor. Its entries
             // cannot widen an earlier projection's verified lineage frontier.
             Some(fact) if fact.tail > self.lineage_tail => GenerationKnowledge::Absent,
@@ -80,7 +83,7 @@ impl GenerationCatalog {
     ) -> Result<(RetainedArc<Self>, GenerationIdentity), AuthorityStoreError> {
         let catalog = RetainedArc::new(
             Self {
-                facts: std::sync::Mutex::new(FixedIndex::default()),
+                facts: std::sync::Mutex::new(RecentIndex::default()),
             },
             &mut work.accounting(),
         )

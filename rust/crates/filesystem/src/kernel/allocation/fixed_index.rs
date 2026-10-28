@@ -7,6 +7,9 @@ use crate::FsError;
 use crate::kernel::KernelAccounting;
 use crate::kernel::allocation::retained::RetainedAllocation;
 
+mod recent;
+pub(crate) use recent::RecentIndex;
+
 type Link<V, const N: usize> = Option<Box<Node<V, N>>>;
 
 enum Kind<V, const N: usize> {
