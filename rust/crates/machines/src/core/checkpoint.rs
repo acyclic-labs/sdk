@@ -31,7 +31,7 @@ impl OperationRegistry {
                 ));
             }
             let native = self.native_binding(machine, driver.name()).await?;
-            self.bind_target(operation, native.as_ref().map_or_else(|| machine.to_string(), |value| value.handle.clone()).as_str()).await?;
+            self.bind_target(operation, &NativeResource::Machine(native.as_ref().map_or_else(|| machine.to_string(), |value| value.handle.clone()))).await?;
             let resource = super::NativeResource::Checkpoint(driver.raw_checkpoint(&source, native.as_ref(), key).await?);
             self.claim(driver, operation, &resource, false).await?;
             let checkpoint = settle(key, interval, timeout, || async {

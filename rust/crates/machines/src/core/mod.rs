@@ -299,17 +299,12 @@ impl OperationRegistry {
         self.bind_resource(id, None, resource, false).await
     }
 
-    pub async fn bind_adopted(
+    pub async fn bind_target(
         &self,
         id: OperationId,
-        resource: &str,
-    ) -> Result<bool, ProviderError> {
-        self.bind_resource(id, None, &NativeResource::Machine(resource.into()), true)
-            .await
-    }
-
-    pub async fn bind_target(&self, id: OperationId, resource: &str) -> Result<(), ProviderError> {
-        let pending = self.bind_adopted(id, resource).await?;
+        resource: &NativeResource,
+    ) -> Result<(), ProviderError> {
+        let pending = self.bind_resource(id, None, resource, true).await?;
         if pending {
             Ok(())
         } else {
@@ -544,21 +539,15 @@ impl OperationRegistry {
         let id = operation_id(key);
         let row = self
             .journal
-            .load::<StoredOperation>(&format!("ops/{id}"))
-            .await?;
-        let record = row
-            .value
-            .ok_or_else(|| ProviderError::NotFound(key.to_string()))?;
-        if !terminal(record.phase) {
-            return Err(ProviderError::Indeterminate(key));
-        }
-        let row = self
-            .journal
             .load::<StoredSettlement>(&format!("ops/{id}/settlement"))
             .await?;
-        let record = row
-            .value
-            .ok_or_else(|| storage(acyclic_stream::StreamError::InvalidResponse))?;
+        let Some(record) = row.value else {
+            return match self.inspect(id).await? {
+                None => Err(ProviderError::NotFound(key.to_string())),
+                Some(record) if !terminal(record.phase) => Err(ProviderError::Indeterminate(key)),
+                Some(_) => Err(storage(acyclic_stream::StreamError::InvalidResponse)),
+            };
+        };
         if record.id != id || record.key != key || !terminal(record.phase) {
             return Err(storage(acyclic_stream::StreamError::InvalidResponse));
         }

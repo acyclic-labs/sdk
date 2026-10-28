@@ -151,7 +151,7 @@ impl OperationRegistry {
                 let slot = ForkSlot { index, count };
                 let native = self.native_binding(source, driver.name()).await?;
                 let handle = native.as_ref().map_or_else(|| source.to_string(), |native| native.handle.clone());
-                self.bind_target(operation, &handle).await?;
+                self.bind_target(operation, &NativeResource::Machine(handle)).await?;
                 let created = retry_refused(key, interval, timeout, || async {
                     let ready = self.wait_machine(driver, source, key, interval, timeout).await?;
                     if ready.state != MachineState::Running {

@@ -6,7 +6,7 @@ use futures::TryStreamExt;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub(super) enum Resource {
     Created(NativeResource),
-    Target(String),
+    Target(NativeResource),
 }
 
 #[derive(Default)]
@@ -128,23 +128,18 @@ impl OperationRegistry {
     async fn target_resource(
         &self,
         record: &mut StoredOperation,
-        handle: &str,
+        resource: &NativeResource,
         changes: &mut ResourceChanges,
     ) -> Result<(), ProviderError> {
-        for value in [
-            NativeResource::Machine(handle.into()),
-            NativeResource::Checkpoint(handle.into()),
-        ] {
-            if self
-                .resource_id(record, &value)
-                .await?
-                .is_some_and(|index| record.created.contains(&index))
-            {
-                return Ok(());
-            }
+        if self
+            .resource_id(record, resource)
+            .await?
+            .is_some_and(|index| record.created.contains(&index))
+        {
+            return Ok(());
         }
         let index = self
-            .intern_resource(record, Resource::Target(handle.into()), changes)
+            .intern_resource(record, Resource::Target(resource.clone()), changes)
             .await?;
         if !record.targets.contains(&index) {
             record.targets.push(index);
@@ -175,8 +170,7 @@ impl OperationRegistry {
         }
         let mut changes = ResourceChanges::default();
         if adopted {
-            self.target_resource(record, resource.handle(), &mut changes)
-                .await?;
+            self.target_resource(record, resource, &mut changes).await?;
         } else {
             let index = self
                 .intern_resource(record, Resource::Created(resource.clone()), &mut changes)
@@ -242,7 +236,7 @@ impl OperationRegistry {
     pub(super) async fn custody(
         &self,
         record: &StoredOperation,
-    ) -> Result<(Vec<NativeResource>, Vec<String>), ProviderError> {
+    ) -> Result<(Vec<NativeResource>, Vec<NativeResource>), ProviderError> {
         if record.created.is_empty() && record.targets.is_empty() {
             return Ok((Vec::new(), Vec::new()));
         }

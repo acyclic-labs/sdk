@@ -87,7 +87,10 @@ impl SimulatedMachines {
                     }
                     MutationOutcome::Checkpointed(value) => {
                         self.ops
-                            .bind_target(operation, &value.source.to_string())
+                            .bind_target(
+                                operation,
+                                &NativeResource::Machine(value.source.to_string()),
+                            )
                             .await?;
                         let handle = value.id.to_string();
                         self.ops
@@ -123,7 +126,10 @@ impl SimulatedMachines {
                     }
                     MutationOutcome::CheckpointDestroyed(checkpoint) => {
                         self.ops
-                            .bind_target(operation, &checkpoint.to_string())
+                            .bind_target(
+                                operation,
+                                &NativeResource::Checkpoint(checkpoint.to_string()),
+                            )
                             .await?;
                         self.ops.mark_checkpoint_destroyed(*checkpoint).await?;
                     }
@@ -132,7 +138,7 @@ impl SimulatedMachines {
                     | MutationOutcome::SuspensionPolicySet(machine, _)
                     | MutationOutcome::MachineDestroyed(machine) => {
                         self.ops
-                            .bind_target(operation, &machine.to_string())
+                            .bind_target(operation, &NativeResource::Machine(machine.to_string()))
                             .await?;
                         let value = state
                             .machines

@@ -191,7 +191,7 @@ impl OperationRegistry {
             }
             let native = self.native_binding(machine, driver.name()).await?;
             let handle = native.as_ref().map_or_else(|| machine.to_string(), |value| value.handle.clone());
-            self.bind_target(operation, &handle).await?;
+            self.bind_target(operation, &NativeResource::Machine(handle)).await?;
             driver.raw_change(machine, native.as_ref(), if wake {
                 MachineChange::Wake
             } else {
@@ -229,7 +229,8 @@ impl OperationRegistry {
                 let handle = native
                     .as_ref()
                     .map_or_else(|| machine.to_string(), |value| value.handle.clone());
-                self.bind_target(operation, &handle).await?;
+                self.bind_target(operation, &NativeResource::Machine(handle))
+                    .await?;
                 driver
                     .raw_change(
                         machine,

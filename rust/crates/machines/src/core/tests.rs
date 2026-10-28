@@ -56,7 +56,7 @@ fn fresh(admission: Admission) -> Result<OperationId, ProviderError> {
 async fn custody(
     core: &OperationRegistry,
     operation: OperationId,
-) -> Result<(Vec<NativeResource>, Vec<String>), ProviderError> {
+) -> Result<(Vec<NativeResource>, Vec<NativeResource>), ProviderError> {
     let record = core
         .journal
         .load::<StoredOperation>(&format!("ops/{operation}"))
@@ -92,6 +92,26 @@ async fn restart_preserves_success_and_exact_settlement_identity() -> TestResult
     assert!(core.created(id).await?.is_empty());
     assert_eq!(core.cancel(OperationId::new()).await?, None);
     assert_eq!(settled, core.settled(key).await?);
+    // Internal fault injection: the immutable terminal publication remains the
+    // recovery authority even when a later mutable-point read cannot decode.
+    core.journal
+        .update(
+            &format!("ops/{id}"),
+            |point: &mut Option<serde_json::Value>| {
+                *point = Some(serde_json::json!({ "internal_fault": "unreadable point" }));
+                Ok(())
+            },
+        )
+        .await?;
+    assert!(matches!(
+        core.inspect(id).await,
+        Err(ProviderError::Unavailable)
+    ));
+    assert_eq!(settled, core.settled(key).await?);
+    assert!(matches!(
+        core.admit(key, &"suspend").await,
+        Err(ProviderError::Unavailable)
+    ));
     Ok(())
 }
 
@@ -100,7 +120,14 @@ async fn pending_restart_never_authorizes_redispatch() -> TestResult {
     let dir = tempfile::tempdir()?;
     let key = IdempotencyKey::new();
     let core = open(dir.path()).await?;
+    assert!(matches!(
+        core.settlement(key).await,
+        Err(ProviderError::NotFound(_))
+    ));
     fresh(core.admit(key, &"create").await?)?;
+    assert!(
+        matches!(core.settlement(key).await, Err(ProviderError::Indeterminate(value)) if value == key)
+    );
     drop(core);
     let core = open(dir.path()).await?;
     let calls = AtomicUsize::new(0);
@@ -155,7 +182,8 @@ async fn cancellation_retains_cleanup_until_each_delete_is_acknowledged() -> Tes
     let core = open(dir.path()).await?;
     let id = fresh(core.admit(key, &"fork").await?)?;
     assert!(core.bind_created(id, &machine_resource("child-0")).await?);
-    core.bind_target(id, "existing-parent").await?;
+    core.bind_target(id, &machine_resource("existing-parent"))
+        .await?;
     core.fail(id, &ProviderError::Unavailable).await?;
     core.cancel(id).await?;
     let cancelled = core.join_settlement(key, id).await?;
@@ -736,7 +764,7 @@ async fn shared_transition_reopens_exact_result_without_native_dispatch_or_read(
     );
     assert_eq!(
         custody(&core, operation_id(policy_key)).await?.1,
-        ["opaque-running-vm"]
+        [machine_resource("opaque-running-vm")]
     );
     core.mark_destroyed(machine, 7).await?;
     assert_eq!(
@@ -1319,11 +1347,12 @@ async fn shared_destruction_reopens_bindings_guards_children_and_replays_exactly
     // The target is the opaque creation address, not the logical checkpoint UUID.
     assert_eq!(
         custody(&core, operation_id(checkpoint_key)).await?.1,
-        [core
-            .native_checkpoint_binding(checkpoint.id, "internal")
-            .await?
-            .ok_or("missing checkpoint binding")?
-            .handle]
+        [NativeResource::Checkpoint(
+            core.native_checkpoint_binding(checkpoint.id, "internal")
+                .await?
+                .ok_or("missing checkpoint binding")?
+                .handle
+        )]
     );
     let mutations = native.mutations.load(Ordering::SeqCst);
     let mut live_child = value.clone();
@@ -1345,7 +1374,7 @@ async fn shared_destruction_reopens_bindings_guards_children_and_replays_exactly
         .await?;
     assert_eq!(
         custody(&core, operation_id(machine_key)).await?.1,
-        ["opaque-created-vm"]
+        [machine_resource("opaque-created-vm")]
     );
     let machine_settlement = core.settled(machine_key).await?;
     let mutations = native.mutations.load(Ordering::SeqCst);
@@ -1720,6 +1749,32 @@ async fn checkpoint_cleanup_reopens_the_admitted_projection_and_revokes_forkabil
 }
 
 #[tokio::test]
+async fn native_target_kind_survives_reopen_without_claiming_created_custody() -> TestResult {
+    let streams = Arc::new(MemoryStream::new(Default::default()));
+    let core = OperationRegistry::new(streams.clone(), "account")?;
+    let operation = fresh(
+        core.admit(IdempotencyKey::new(), &"internal typed custody")
+            .await?,
+    )?;
+    let machine = machine_resource("equal-opaque-address");
+    let checkpoint = NativeResource::Checkpoint(machine.handle().into());
+    core.bind_created(operation, &machine).await?;
+    core.bind_target(operation, &machine).await?;
+    core.bind_target(operation, &checkpoint).await?;
+    drop(core);
+    let core = OperationRegistry::new(streams, "account")?;
+    assert_eq!(
+        custody(&core, operation).await?,
+        (vec![machine.clone()], vec![checkpoint.clone()])
+    );
+    core.deleted(operation, &checkpoint).await?;
+    assert_eq!(core.created(operation).await?, [machine.clone()]);
+    core.deleted(operation, &machine).await?;
+    assert_eq!(custody(&core, operation).await?, (vec![], vec![checkpoint]));
+    Ok(())
+}
+
+#[tokio::test]
 async fn owned_fork_sources_are_not_copied_into_existing_targets() -> TestResult {
     let streams = Arc::new(MemoryStream::new(Default::default()));
     let core = OperationRegistry::new(streams.clone(), "account")?;
@@ -1727,12 +1782,13 @@ async fn owned_fork_sources_are_not_copied_into_existing_targets() -> TestResult
         core.admit(IdempotencyKey::new(), &"internal bounded fork custody")
             .await?,
     )?;
-    core.bind_target(operation, "existing-parent").await?;
+    core.bind_target(operation, &machine_resource("existing-parent"))
+        .await?;
     for index in 0..MAX_FORK_CHILDREN {
         // Internal long-address vectors, not external-provider response fixtures.
         let resource = machine_resource(&format!("opaque-{index:04}-{}", "x".repeat(4096)));
         assert!(core.bind_created(operation, &resource).await?);
-        core.bind_target(operation, resource.handle()).await?;
+        core.bind_target(operation, &resource).await?;
     }
     let row = core
         .journal
@@ -1747,7 +1803,7 @@ async fn owned_fork_sources_are_not_copied_into_existing_targets() -> TestResult
     drop(core);
     let core = OperationRegistry::new(streams, "account")?;
     let (created, targets) = custody(&core, operation).await?;
-    assert_eq!(targets, ["existing-parent"]);
+    assert_eq!(targets, [machine_resource("existing-parent")]);
     assert_eq!(created.len(), MAX_FORK_CHILDREN as usize);
     assert!(
         created
@@ -1767,7 +1823,10 @@ async fn owned_fork_sources_are_not_copied_into_existing_targets() -> TestResult
         core.created(operation).await?.len(),
         MAX_FORK_CHILDREN as usize - 2
     );
-    assert_eq!(custody(&core, operation).await?.1, ["existing-parent"]);
+    assert_eq!(
+        custody(&core, operation).await?.1,
+        [machine_resource("existing-parent")]
+    );
     Ok(())
 }
 

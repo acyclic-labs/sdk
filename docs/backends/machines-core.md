@@ -66,6 +66,11 @@ operations replay from Streams without another native dispatch.
 
 `watch` and `join` follow the point projection through Streams' checked cursor.
 `SettledMutation` includes the operation, final `CommitId`, and exact result.
+Recovery reads that immutable terminal publication directly; it consults the
+mutable operation point only to distinguish a missing key from a pending result
+or an invalid terminal publication. Native targets retain their machine or
+checkpoint kind, even when both kinds use the same opaque address. A target is
+never acquired as created cleanup debt merely because its address matches.
 Core lifecycle methods return this value directly, on first execution and replay;
 `MachinesProvider` projects its public outcome at the backend composition boundary.
 A terminal transition publishes `ops/<id>/settlement` atomically with the mutable

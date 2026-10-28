@@ -64,7 +64,7 @@ impl OperationRegistry {
         operation: OperationId,
         resource: NativeResource,
     ) -> Result<Option<u64>, ProviderError> {
-        self.bind_target(operation, resource.handle()).await?;
+        self.bind_target(operation, &resource).await?;
         match driver.raw_destroy(&resource).await {
             Ok(at) => Ok(Some(at)),
             Err(ProviderError::NotFound(_)) => Ok(None),
