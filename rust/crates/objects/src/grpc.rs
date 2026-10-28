@@ -344,8 +344,14 @@ macro_rules! call {
     }};
     ($self:ident, $rpc:ident, $value:expr, $timeout:expr, $floor:expr) => {{
         let floor: Option<&RevisionCut> = $floor;
-        let timeout = $timeout;
-        let deadline = tokio::time::Instant::now() + timeout;
+        let timeout: Option<std::time::Duration> = $timeout;
+        let deadline = timeout
+            .map(|timeout| {
+                tokio::time::Instant::now()
+                    .checked_add(timeout)
+                    .ok_or_else(|| Error::from(wire::ErrorCode::InvalidArgument))
+            })
+            .transpose()?;
         let response = if let Some(credential) = &$self.credential {
             acyclic_auth::channel::call(
                 $self.channel.clone(),
@@ -360,18 +366,22 @@ macro_rules! call {
             .await
         } else {
             let request = $self.request($value, timeout, floor)?;
-            tokio::time::timeout_at(
-                deadline,
-                Self::client(acyclic_auth::channel::guard($self.channel.clone())).$rpc(request),
-            )
-            .await
-            .unwrap_or_else(|_| {
-                Err(tonic::Status::deadline_exceeded(
-                    "operation deadline expired",
-                ))
-            })
+            let mut client = Self::client(acyclic_auth::channel::guard($self.channel.clone()));
+            let operation = client.$rpc(request);
+            match deadline {
+                Some(deadline) => tokio::time::timeout_at(deadline, operation)
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(tonic::Status::deadline_exceeded(
+                            "operation deadline expired",
+                        ))
+                    }),
+                None => operation.await,
+            }
         };
-        if tokio::time::Instant::now() >= deadline && response.is_err() {
+        if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+            && response.is_err()
+        {
             Err(wire::ErrorCode::DeadlineElapsed.into())
         } else {
             $self.observed(response, floor)

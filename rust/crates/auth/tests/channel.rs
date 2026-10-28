@@ -104,7 +104,7 @@ async fn tonic_dispatch_waits_for_its_owner_and_releases_cancelled_admission() {
         let mut operation = Box::pin(channel::call(
             Endpoint::from_static("https://fixture.invalid").connect_lazy(),
             &provider,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            Some(tokio::time::Instant::now() + std::time::Duration::from_secs(30)),
             Empty {},
             |channel, request| async move {
                 let mut client = tonic::client::Grpc::new(channel);
@@ -179,7 +179,7 @@ async fn local_dispatch_refusal_survives_the_tonic_client_without_remote_rejecti
     let result = channel::call(
         Endpoint::from_static("https://fixture.invalid").connect_lazy(),
         &provider,
-        tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+        Some(tokio::time::Instant::now() + std::time::Duration::from_secs(30)),
         Empty {},
         move |channel, request| async move {
             // Expire after request preparation, before tonic service dispatch.
@@ -229,7 +229,7 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
         let call = channel::call(
             Endpoint::from_static("https://fixture.invalid").connect_lazy(),
             &provider,
-            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            Some(tokio::time::Instant::now() + std::time::Duration::from_secs(30)),
             (),
             move |_, _| async move {
                 entered.send(()).unwrap();
