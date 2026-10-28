@@ -2,11 +2,11 @@
 
 use super::{Error, ObjectsProvider, wire};
 use acyclic_stream::testing::{Counted, RequestLedger, Requests};
-use acyclic_stream::{OwnedBytes, UnixMillisClock as _};
+use acyclic_stream::{OwnedBytes, ProviderPlatform, UnixMillisClock as _};
 
 /// Backend setup and dispatch instrumentation; assertions belong to this suite.
 /// Each factory must retain fresh disposable storage for the complete invocation.
-pub trait Backend: Send + Sync {
+pub trait Backend: ProviderPlatform {
     /// The same public logical provider used by consumers.
     fn provider(&self) -> &dyn ObjectsProvider;
     /// A namespace unused by any previous invocation or concurrent writer.
