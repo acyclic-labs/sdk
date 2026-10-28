@@ -8,7 +8,7 @@ use crate::memory::MemoryObjectStore;
 use crate::test_support::OwnedReadObjectStore;
 use crate::{CachedObjectStore, ObjectCacheOptions};
 
-use crate::kernel::Child;
+use crate::kernel::{AttributePage, Child};
 fn limits() -> ClosureLimits {
     ClosureLimits {
         decode: DecodeLimits::default(),
