@@ -131,9 +131,11 @@ describe("website Stream contract", () => {
     } });
     await expect(hosted.append("bounded", [], { idempotencyKey: key("empty-hosted") })).rejects.toMatchObject({ code: "limit_exceeded" });
     expect(hostedCalls).toBe(0);
-    await expect(stream.read({ from: 0n, limit: 1_025 }).next()).rejects.toThrow();
     const cursor = client.bytes("cursor-bounds");
     await cursor.append(new Uint8Array([1]), { idempotencyKey: key("stream.test-136") });
+    const replay = [];
+    for await (const record of cursor.read({ from: 0n, limit: 0xffff_ffff })) replay.push(record.value);
+    expect(replay).toEqual([new Uint8Array([1])]);
     await expect(cursor.read({ from: 2n, limit: 1 }).next()).rejects.toMatchObject({ code: "out_of_range" });
     await expect(cursor.follow({ from: 2n })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "out_of_range" });
     expect(await stream.tail().catch(() => "absent")).toBe("absent");
@@ -651,12 +653,15 @@ describe("website Stream contract", () => {
 
 
   test("hosted children pages use the Rust response contract", async () => {
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
-      expect(JSON.parse(String(init?.body))).toEqual({ parent: "runs", after: "runs/a", hierarchyVersion: encodedCommitId, limit: 2 });
-      return new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [{ path: "runs/b" }], nextAfter: "runs/b" }));
-    } });
-    const page = await provider.childrenPage({ parent: "runs", after: "runs/a", hierarchyVersion: new Uint8Array(32).fill(7), limit: 2 });
-    expect(page).toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), children: [{ path: "runs/b" }], nextAfter: "runs/b" });
+    for (const limit of [2, 0xffff_ffff]) {
+      const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
+        expect(JSON.parse(String(init?.body))).toEqual({ parent: "runs", after: "runs/a", hierarchyVersion: encodedCommitId, limit: Math.min(limit, 1024) });
+        return new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [{ path: "runs/b" }], nextAfter: "runs/b" }));
+      } });
+      const page = await provider.childrenPage({ parent: "runs", after: "runs/a", hierarchyVersion: new Uint8Array(32).fill(7), limit });
+      expect(page).toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), children: [{ path: "runs/b" }], nextAfter: "runs/b" });
+
+    }
 
     const nullContinuation = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ hierarchyVersion: encodedCommitId, children: [], nextAfter: null })) });
     await expect(nullContinuation.childrenPage({ parent: "runs", limit: 2 })).resolves.toEqual({ hierarchyVersion: new Uint8Array(32).fill(7), children: [] });
