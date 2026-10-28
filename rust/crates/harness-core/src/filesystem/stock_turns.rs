@@ -94,7 +94,7 @@ impl TurnContext for Grants {
         &'a self,
         (executor, limits): (StockExecutor, Limits),
         _: &'a AgentState,
-        _: OperationId,
+        turn: OperationId,
         _: &'a ModelContent,
         authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, Result<StockExecutor>> {
@@ -107,10 +107,22 @@ impl TurnContext for Grants {
                     .chain(self.0.iter().cloned())
                     .chain([crate::contract::capability::MODEL_GENERATE.to_owned()]),
             );
-            executor.with_tool_authority(
-                RuntimeScope::new(grants, limits)?,
+            let scope = RuntimeScope::new(grants, limits)?;
+            let executor = executor.with_tool_authority(
+                scope.clone(),
                 authority.approval.clone(),
-            )
+            )?;
+            if authority.workspace_tools.is_none() {
+                return Ok(executor);
+            }
+            let harness = crate::runtime::Bindings {
+                workspace_tools: authority.workspace_tools.clone(),
+                scope,
+                content: Some(authority.content.clone()),
+                artifacts: None,
+            }.build()?;
+            let task = harness.agent_context(&authority.grants, authority.content.clone())?;
+            executor.with_task_context(&task, turn)
         })
     }
 }

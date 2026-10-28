@@ -367,11 +367,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An SDK git operation failure retaining the complete typed cause.
-    #[cfg(all(
-        feature = "filesystem-local",
-        feature = "native-execution",
-        not(target_arch = "wasm32")
-    ))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeGit {
         /// Original capture, coordination, patch, lineage or durable-state cause.
@@ -543,7 +539,9 @@ impl Error {
                 feature = "native-execution",
                 not(target_arch = "wasm32")
             ))]
-            Self::NativeWorkspacePublication { .. } | Self::NativeGit { .. } => ErrorCode::Storage,
+            Self::NativeWorkspacePublication { .. } => ErrorCode::Storage,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::NativeGit { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeWork { cause, .. } => native_work_error_code(cause),
         }
@@ -731,11 +729,7 @@ impl Error {
                 not(target_arch = "wasm32")
             ))]
             Self::NativeWorkspacePublication { .. } => true,
-            #[cfg(all(
-                feature = "filesystem-local",
-                feature = "native-execution",
-                not(target_arch = "wasm32")
-            ))]
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeGit { .. } => true,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeTimeout { .. } => true,

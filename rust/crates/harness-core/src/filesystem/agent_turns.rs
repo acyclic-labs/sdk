@@ -77,6 +77,8 @@ pub struct TurnAuthority {
     pub journal: Arc<dyn crate::executor::ExecutionJournal>,
     /// What the turn's `wait` observes of the agent's children.
     pub children: Option<Arc<dyn crate::agent::TurnChildren>>,
+    /// Commands bound to the original filesystem placement, if supplied.
+    pub workspace_tools: Option<Arc<dyn crate::tool::ToolExecutor>>,
 }
 
 /// The conversation authority of one agent over its bound volumes.
@@ -405,11 +407,14 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     issuer: RuntimeAuthority,
     admission: TurnAdmission,
     executors: Arc<dyn TurnExecutors>,
+    workspace_tools: Option<WorkspaceToolsFactory>,
     limits: TurnLimits,
     approvers: crate::approvals::ApproverModels,
     goals: Option<crate::goal::GoalContinuationPolicy>,
     policy: crate::approvals::ApprovalPolicy,
 }
+
+pub(in crate::filesystem) type WorkspaceToolsFactory = Arc<dyn Fn(&AgentState, &TurnAuthority) -> Result<Arc<dyn crate::tool::ToolExecutor>> + Send + Sync>;
 
 /// A turn's bindings before its approval gate is resolved.
 struct Bindings {
@@ -446,11 +451,17 @@ where
             issuer: issuer.into(),
             admission,
             executors,
+            workspace_tools: None,
             limits,
             approvers: Default::default(),
             goals: Some(Default::default()),
             policy,
         }
+    }
+
+    pub(in crate::filesystem) fn with_workspace_tools(mut self, factory: WorkspaceToolsFactory) -> Self {
+        self.workspace_tools = Some(factory);
+        self
     }
 
     /// Continues each agent's active goal within `goals`; `None` runs no goals.
@@ -1119,7 +1130,7 @@ where
                 .await?;
             let journal = journal.with_bound_selection(selected.clone());
             let journal: Arc<dyn crate::executor::ExecutionJournal> = Arc::new(journal);
-            let authority = TurnAuthority {
+            let mut authority = TurnAuthority {
                 issuer: bindings.issuer,
                 scope: bindings.scope,
                 grants: bindings.grants,
@@ -1128,7 +1139,11 @@ where
                 effects: Some(Arc::clone(&effects)),
                 journal: Arc::clone(&journal),
                 children: Some(children),
+                workspace_tools: None,
             };
+            if let Some(factory) = &self.workspace_tools {
+                authority.workspace_tools = Some(factory(agent, &authority)?);
+            }
             Ok(OpenTurn {
                 executor: self
                     .executors

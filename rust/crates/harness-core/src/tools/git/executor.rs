@@ -1,7 +1,10 @@
 use super::*;
 
-impl<F, Fut> GitFilesystemExecutor for WorkspaceGitExecutor<'_, F>
+impl<F, Fut, P, O, S> GitFilesystemExecutor for WorkspaceGitExecutor<'_, F, P, O, S>
 where
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+    S: CommandStore,
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = Result<(), Error>> + Send,
 {
@@ -52,7 +55,7 @@ where
         let pending = GitCompatRepository::new(self.repository_id, self.store.clone())
             .pending_transition()
             .await
-            .map_err(super::errors::compat_error)?
+            .map_err(super::errors::compat_error::<S>)?
             .filter(|pending| pending.id.operation_id() == operation)
             .ok_or_else(|| Self::error("Git merge transition changed"))?;
         let acyclic_fs::GitPendingMutation::Join {

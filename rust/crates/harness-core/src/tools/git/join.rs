@@ -1,8 +1,11 @@
 //! Project text markers and retain other conflicting entries for manual edits.
 use super::*;
 
-impl<F, Fut> WorkspaceGitExecutor<'_, F>
+impl<F, Fut, P, O, S> WorkspaceGitExecutor<'_, F, P, O, S>
 where
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+    S: CommandStore,
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = Result<(), Error>> + Send,
 {
@@ -35,7 +38,7 @@ where
             let paths = conflict_paths(&typed)?;
             let (candidate, unresolved_here) = self.merge_candidate(typed).await?;
             unresolved |= unresolved_here;
-            let resolutions = super::materialize::prepared(
+            let resolutions = super::helpers::prepared(
                 async {
                     plan.prepare_candidate(&candidate)
                         .await
@@ -57,7 +60,7 @@ where
                 GitCompatRepository::new(self.repository_id, self.store.clone())
                     .record_merge_conflicts(operation, &paths)
                     .await
-                    .map_err(super::errors::compat_error)?;
+                    .map_err(super::errors::compat_error::<S>)?;
             }
             outcome
         } else {
@@ -101,7 +104,7 @@ where
         typed: acyclic_fs::MergePlan,
     ) -> crate::Result<(acyclic_fs::UnpublishedMergeCandidate, bool)> {
         let mut unresolved = false;
-        let candidate = super::materialize::prepared(
+        let candidate = super::helpers::prepared(
             async {
                 let mut cache = self.merge_cache.lock().await;
                 let mut resolutions = BTreeMap::new();
@@ -159,10 +162,10 @@ where
     /// either side holds.
     async fn without_reserved(
         &self,
-        plan: acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
+        plan: acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>,
         operation: OperationId,
         rebase: bool,
-    ) -> crate::Result<acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>> {
+    ) -> crate::Result<acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>> {
         // A mounted child projection authors its host-owned volume aliases.
         // Join from a fork that holds the target's own entries there, so a
         // merge never publishes them into the target's tree.
@@ -194,12 +197,12 @@ where
     /// the plan that applied with its outcome.
     async fn apply_on_exact_base(
         &self,
-        plan: acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
-        source: &LocalWorkspace,
+        plan: acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>,
+        source: &ManagedWorkspace<P, O>,
         options: ApplyOptions,
     ) -> crate::Result<(
-        acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
-        acyclic_fs::JoinOutcome<LocalAuthorityBackend, LocalObjectBackend>,
+        acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>,
+        acyclic_fs::JoinOutcome<acyclic_fs::StreamAuthorityStore<P>, O>,
     )> {
         let initial = plan.apply(options, BTreeMap::new(), self.permit).await?;
         Ok(match initial {
@@ -233,7 +236,7 @@ where
         &self,
         operation: OperationId,
         target_tree: GitTreeRef,
-        generation: &LocalGeneration,
+        generation: &ManagedGeneration<P, O>,
         tracked: &BTreeSet<String>,
     ) -> crate::Result<BTreeSet<String>> {
         // Tracking is a function of the recorded transition, not of this
@@ -270,14 +273,14 @@ where
 
     async fn plan_join(
         &self,
-        source: &LocalWorkspace,
+        source: &ManagedWorkspace<P, O>,
         rebase: bool,
-    ) -> crate::Result<acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>> {
+    ) -> crate::Result<acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>> {
         let mut builder = source.join_into(&self.current).git_metadata();
         if rebase {
             builder = builder.history(acyclic_fs::JoinHistory::Rebase);
         }
-        super::materialize::prepared(
+        super::helpers::prepared(
             async {
                 builder
                     .plan(WorkBudget::UNBOUNDED, &CancellationToken::new())
@@ -306,13 +309,17 @@ where
     /// of either
     /// side's fork counts, so a parent merging its child and a child merging
     /// its parent agree.
+    #[cfg(not(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32"))))]
+    async fn exact_base(&self, _: &acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>, _: &ManagedWorkspace<P, O>, _: Vec<acyclic_fs::MergeConflict>, _: bool) -> crate::Result<Option<ManagedGeneration<P, O>>> { Ok(None) }
+
+#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
     async fn exact_base(
         &self,
-        plan: &acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
-        source: &LocalWorkspace,
+        plan: &acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>,
+        source: &ManagedWorkspace<P, O>,
         conflicts: Vec<acyclic_fs::MergeConflict>,
         truncated: bool,
-    ) -> crate::Result<Option<LocalGeneration>> {
+    ) -> crate::Result<Option<ManagedGeneration<P, O>>> {
         let View::Checkout(current) = self.lazy_current else {
             return Ok(None);
         };
@@ -372,9 +379,9 @@ where
 
     async fn join_generation(
         &self,
-        workspace: &LocalWorkspace,
+        workspace: &ManagedWorkspace<P, O>,
         generation: acyclic_fs::GenerationId,
-    ) -> crate::Result<LocalGeneration> {
+    ) -> crate::Result<ManagedGeneration<P, O>> {
         workspace
             .generation(generation, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await
@@ -385,7 +392,7 @@ where
     /// Reserved host paths present in either side of a planned join.
     async fn reserved_in(
         &self,
-        plan: &acyclic_fs::JoinPlan<LocalAuthorityBackend, LocalObjectBackend>,
+        plan: &acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>,
     ) -> crate::Result<Vec<String>> {
         let sides = [
             self.join_generation(plan.source(), plan.source_head())

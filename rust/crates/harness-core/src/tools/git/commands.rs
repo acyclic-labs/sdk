@@ -37,8 +37,8 @@ pub(crate) fn git_transition_command(argv: &[String]) -> bool {
 /// executes this command; the caller already returned a saved result.
 /// Recovering another request's transition returns `None`: the command's
 /// view and tree predate that recovery.
-pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
-    repository: &GitCompatRepository<LocalCoreStateStore>,
+pub(crate) async fn run_git_command<S: CommandStore, E: GitFilesystemExecutor<Error = Error>>(
+    repository: &GitCompatRepository<S>,
     argv: &[String],
     workspace_tree: GitTreeRef,
     patch: Option<&[u8]>,
@@ -50,14 +50,14 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
         && repository
             .resume(executor)
             .await
-            .map_err(super::errors::run_error)?
+            .map_err(super::errors::run_error::<S>)?
             .is_some()
     {
         // The recovered transition may be this request's own.
         return repository
             .request_result()
             .await
-            .map_err(super::errors::compat_error);
+            .map_err(super::errors::compat_error::<S>);
     }
     let output = if let Some(patch) = patch {
         repository
@@ -74,12 +74,12 @@ pub(crate) async fn run_git_command<E: GitFilesystemExecutor<Error = Error>>(
             .run_argv(argv, workspace_tree, author, authored_at_seconds, executor)
             .await
     };
-    output.map(Some).map_err(super::errors::run_error)
+    output.map(Some).map_err(super::errors::run_error::<S>)
 }
 
 /// Reads a patch file from the managed workspace.
-pub(crate) async fn git_apply_patch(
-    workspace: View<'_>,
+pub(crate) async fn git_apply_patch<P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static, O: acyclic_fs::AsyncObjectStore + 'static>(
+    workspace: View<'_, P, O>,
     root: &Path,
     argv: &[String],
 ) -> Result<Option<acyclic_stream::OwnedBytes>, Error> {
@@ -105,8 +105,8 @@ pub(crate) async fn git_apply_patch(
 }
 
 /// Captures the lazy or exact tree required by the command.
-pub(crate) fn git_workspace_tree(
-    workspace: View<'_>,
+pub(crate) fn git_workspace_tree<P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static, O: acyclic_fs::AsyncObjectStore + 'static>(
+    workspace: View<'_, P, O>,
     argv: &[String],
     permit: Option<PublicationPermit>,
 ) -> impl Future<Output = Result<GitTreeRef, Error>> {
@@ -117,8 +117,8 @@ pub(crate) fn git_workspace_tree(
 }
 
 /// Loads ignore and merge policies from the workspace.
-pub(crate) async fn git_policy(
-    workspace: View<'_>,
+pub(crate) async fn git_policy<P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static, O: acyclic_fs::AsyncObjectStore + 'static>(
+    workspace: View<'_, P, O>,
 ) -> Result<(GitIgnorePolicy, Arc<MergeDriverRegistry>), Error> {
     Ok((
         crate::filesystem::workspace_policy::ignore_for(workspace).await?,

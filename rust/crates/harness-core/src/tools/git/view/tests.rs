@@ -141,7 +141,7 @@ async fn manual_binary_resolution_can_continue_without_committing_markers() -> T
             let pending = GitCompatRepository::new(repository, store.clone())
                 .pending_transition()
                 .await
-                .map_err(super::super::errors::compat_error)?;
+                .map_err(super::super::errors::compat_error::<acyclic_fs::LocalCoreStateStore>)?;
             if let Some(pending) = pending {
                 let published = main
                     .operation_generation(

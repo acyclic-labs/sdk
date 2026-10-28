@@ -4,8 +4,11 @@ use super::*;
 /// Largest committed file `git show REV:PATH` returns, matching blame and grep.
 const SHOWN_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
-impl<F, Fut> WorkspaceGitExecutor<'_, F>
+impl<F, Fut, P, O, S> WorkspaceGitExecutor<'_, F, P, O, S>
 where
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+    S: CommandStore,
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = Result<(), Error>> + Send,
 {
@@ -70,7 +73,7 @@ where
         let proof = captured
             .authenticated_proof(operation_id, &WorkspaceGraph::new(self.store.clone()))
             .await
-            .map_err(Error::from)?;
+            .map_err(S::capture_error)?;
         Ok(GitFilesystemResult::Captured {
             tree: GitTreeRef::exact(captured.generation.workspace_id(), captured.generation.id()),
             tracked_paths: captured.tracked_paths,
@@ -139,7 +142,7 @@ where
                 fork_generation,
             )
             .await
-            .map_err(Error::from)?;
+            .map_err(S::lineage_error)?;
         let workspace_id = workspace.workspace().id();
         if switch {
             *self
