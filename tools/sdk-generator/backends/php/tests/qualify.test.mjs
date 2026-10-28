@@ -52,11 +52,18 @@ function fixture(t, failure = "") {
       if (failure === "zip-root") entries[1].path = "other/source.php";
       if (failure === "zip-data") entries[1].data = "not-base64!";
       if (failure === "zip-metadata") entries[0].data = Buffer.from("{}").toString("base64");
-      const lines = entries.flatMap(entry => [
+      const lines = [{ path: "root/", directory: true, size: 0 }, { end: true }, ...entries.flatMap(entry => [
         { path: entry.path, directory: entry.directory, size: Buffer.from(entry.data, "base64").length },
-        ...(entry.data ? [{ data: entry.data }] : []),
+        ...(entry.data ? (failure === "zip-data" && entry.data === "not-base64!"
+          ? [{ data: entry.data }]
+          : Array.from({ length: Math.ceil(Buffer.from(entry.data, "base64").length / 7) }, (_, index) => ({
+            data: Buffer.from(entry.data, "base64").subarray(index * 7, (index + 1) * 7).toString("base64"),
+          }))) : []),
         { end: true },
-      ]);
+      ])];
+      if (failure === "zip-truncated") lines.pop();
+      if (failure === "zip-length") lines[2].size++;
+      if (failure === "zip-staged-drift") put(argv.at(-2), "archive changed during inspection");
       put(argv.at(-1), lines.map(line => JSON.stringify(line) + "\n").join(""));
       return { status: 0, stdout: "" };
     }
@@ -174,7 +181,7 @@ test("ambient Composer and PHP configuration cannot enter child commands", async
   const f = fixture(t); await qualify(f.args, f);
   for (const { options } of f.calls) for (const key of keys) assert.equal(options.env[key], undefined);
 });
-for (const failure of ["php-version", "composer-version", "tar-version", "zip-inspection", "zip-path", "zip-case-collision", "zip-root", "zip-data", "zip-metadata",
+for (const failure of ["php-version", "composer-version", "tar-version", "zip-inspection", "zip-path", "zip-case-collision", "zip-root", "zip-data", "zip-metadata", "zip-truncated", "zip-length", "zip-staged-drift",
   "build-payload", "build-inventory", "gzip-time", "lock-inventory", "lock-version", "lock-url", "lock-reference", "lock-dev", "installed-reference", "install-payload", "install-inventory",
   "dependency-payload", "dependency-inventory", "install-lock", "install-project", "positive", "silent", "native", "native-silent", "accepted", "unrelated", "extra-diagnostic", "wrong-negative-line",
   "late-sdk", "late-dependency", "late-runtime", "late-runtime-inventory", "late-composer", "late-extension", "late-archiver", "late-lock", "late-project", "late-control", "late-autoloader", "late-installed-metadata", "late-vendor-package"]) {
