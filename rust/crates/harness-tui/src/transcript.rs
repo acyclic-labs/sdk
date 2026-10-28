@@ -1,207 +1,354 @@
-//! Bounded transcript storage and incremental display-width wrapping.
+//! Complete transcript storage with a disk-backed row index and viewport cache.
 
-use crate::{Editor, Layout};
+use crate::Layout;
 use ratatui::{
     style::{Modifier, Style},
     text::Line,
 };
-use std::collections::VecDeque;
-use unicode_segmentation::UnicodeSegmentation;
+use std::{
+    fs::File,
+    io::{self, BufWriter, Read, Seek, SeekFrom, Write},
+    ops::Range,
+};
 
-const MAX_BLOCKS: usize = 128;
-const MAX_BYTES: usize = 1024 * 1024;
-const MAX_BLOCK_BYTES: usize = 64 * 1024;
-const MAX_ROWS: usize = 8192;
-const OMITTED: &str = "… earlier text omitted …";
+// Search continues through successive windows; this never limits the source.
+const SEARCH_ROWS: usize = 256;
+const INDEX_BYTES: usize = 16;
 
 struct Block {
     prompt: bool,
-    text: String,
+    source: Range<u64>,
+    row_end: usize,
+    rendered_end: u64,
+}
+
+struct Rendered {
+    text: BufWriter<File>,
+    index: BufWriter<File>,
+    bytes: u64,
     rows: usize,
 }
 
-/// One bounded transcript shared by terminal applications. Appending wraps only
-/// the new block; resizing rewraps the retained window. Older text is evicted.
+impl Rendered {
+    fn new() -> io::Result<Self> {
+        Ok(Self {
+            text: BufWriter::new(tempfile::tempfile()?),
+            index: BufWriter::new(tempfile::tempfile()?),
+            bytes: 0,
+            rows: 0,
+        })
+    }
+
+    fn push(&mut self, text: &str) -> io::Result<()> {
+        let end = self
+            .bytes
+            .checked_add(text.len() as u64)
+            .ok_or_else(overflow)?;
+        let rows = self.rows.checked_add(1).ok_or_else(overflow)?;
+        self.index.write_all(&self.bytes.to_le_bytes())?;
+        self.index.write_all(&(text.len() as u64).to_le_bytes())?;
+        self.text.write_all(text.as_bytes())?;
+        self.bytes = end;
+        self.rows = rows;
+        Ok(())
+    }
+
+    fn truncate(&mut self, rows: usize, bytes: u64) -> io::Result<()> {
+        self.text.flush()?;
+        self.index.flush()?;
+        self.text.get_mut().set_len(bytes)?;
+        self.text.seek(SeekFrom::Start(bytes))?;
+        let index_bytes = (rows as u64)
+            .checked_mul(INDEX_BYTES as u64)
+            .ok_or_else(overflow)?;
+        self.index.get_mut().set_len(index_bytes)?;
+        self.index.seek(SeekFrom::Start(index_bytes))?;
+        self.bytes = bytes;
+        self.rows = rows;
+        Ok(())
+    }
+
+    fn block(&mut self, prompt: bool, text: &str, width: usize) -> io::Result<()> {
+        let marked = width > 2;
+        let mut previous_end = None;
+        let mut first = true;
+        Layout::visit_text_rows(text, if marked { width - 2 } else { width }, |row| {
+            let skip = row.cells.is_empty() && previous_end == Some(row.start);
+            previous_end = Some(row.end);
+            if skip {
+                return Ok(());
+            }
+            let mut text = String::from(if !marked {
+                ""
+            } else if prompt && first {
+                "› "
+            } else {
+                "  "
+            });
+            first = false;
+            text.extend(row.cells.iter().map(|cell| cell.symbol.as_str()));
+            self.push(&text)
+        })?;
+        self.push("")
+    }
+}
+
+struct Spool {
+    source: File,
+    rendered: Rendered,
+}
+
+/// Complete settled and pending text. Source and wrapped rows live in temporary
+/// files; only block addresses and the requested viewport are retained in memory.
+/// Appending wraps the new block once; a width change rebuilds the disk index.
+/// The committed conversation remains the durable source of truth.
 pub struct TranscriptRows {
-    blocks: VecDeque<Block>,
-    lines: Vec<Line<'static>>,
-    bytes: usize,
+    spool: Option<Spool>,
+    blocks: Vec<Block>,
+    settled: usize,
+    rows: usize,
     width: usize,
-    pending_rows: usize,
-    truncated: bool,
+    window: Option<Range<usize>>,
+    lines: Vec<Line<'static>>,
 }
 
 impl Default for TranscriptRows {
     fn default() -> Self {
         Self {
-            blocks: VecDeque::new(),
-            lines: Vec::new(),
-            bytes: 0,
+            spool: None,
+            blocks: Vec::new(),
+            settled: 0,
+            rows: 0,
             width: 80,
-            pending_rows: 0,
-            truncated: false,
+            window: None,
+            lines: Vec::new(),
         }
     }
 }
 
 impl TranscriptRows {
-    /// Append a settled prompt or answer, retaining a bounded suffix of a large
-    /// block. Truncation is shown explicitly in the transcript.
-    pub fn push(&mut self, prompt: bool, text: &str) {
-        self.clear_pending();
-        self.truncated |= text.len() > MAX_BLOCK_BYTES;
-        let text = bounded_text(text);
-        self.bytes += text.len();
-        let rows = wrap(prompt, &text, self.width.max(1));
-        self.blocks.push_back(Block {
+    /// Append a complete settled prompt or answer.
+    ///
+    /// # Errors
+    /// Temporary storage or address representation failed.
+    pub fn push(&mut self, prompt: bool, text: &str) -> io::Result<()> {
+        self.clear_pending()?;
+        self.append(prompt, text)?;
+        self.settled = self.blocks.len();
+        Ok(())
+    }
+
+    fn append(&mut self, prompt: bool, text: &str) -> io::Result<()> {
+        if self.spool.is_none() {
+            self.spool = Some(Spool {
+                source: tempfile::tempfile()?,
+                rendered: Rendered::new()?,
+            });
+        }
+        let spool = self.spool.as_mut().expect("created above");
+        let (source, rendered) = self
+            .blocks
+            .last()
+            .map_or((0, 0), |block| (block.source.end, block.rendered_end));
+        let end = source.checked_add(text.len() as u64).ok_or_else(overflow)?;
+        // An earlier failed append owns no visible block. Retire its partial
+        // writes before retrying, rather than publishing a partial row index.
+        spool.source.set_len(source)?;
+        spool.source.seek(SeekFrom::Start(source))?;
+        spool.rendered.truncate(self.rows, rendered)?;
+        spool.source.write_all(text.as_bytes())?;
+        spool.rendered.block(prompt, text, self.width)?;
+        self.rows = spool.rendered.rows;
+        self.blocks.push(Block {
             prompt,
-            text,
-            rows: rows.len(),
+            source: source..end,
+            row_end: self.rows,
+            rendered_end: spool.rendered.bytes,
         });
-        self.lines.extend(rows);
-        self.evict();
+        Ok(())
     }
 
-    /// Wrapped rows for `width` terminal columns, including the prompt marker.
-    /// Call `pending` again after a width change to restore transient prompts.
-    pub fn rows(&mut self, width: u16) -> &[Line<'static>] {
+    /// Rebuild wrapping when terminal columns change, without retaining all rows.
+    /// Existing source and index remain valid if rebuilding fails.
+    ///
+    /// # Errors
+    /// Temporary storage or address representation failed.
+    pub fn set_width(&mut self, width: u16) -> io::Result<()> {
         let width = usize::from(width).max(1);
-        if width != self.width {
-            self.width = width;
-            self.pending_rows = 0;
+        if width == self.width {
+            return Ok(());
+        }
+        if let Some(spool) = &mut self.spool {
+            let mut rendered = Rendered::new()?;
+            let mut ends = Vec::with_capacity(self.blocks.len());
+            for block in &self.blocks {
+                spool.source.seek(SeekFrom::Start(block.source.start))?;
+                let bytes = read_bytes(&mut spool.source, block.source.end - block.source.start)?;
+                let text = std::str::from_utf8(&bytes).map_err(invalid)?;
+                rendered.block(block.prompt, text, width)?;
+                ends.push((rendered.rows, rendered.bytes));
+            }
+            rendered.text.flush()?;
+            rendered.index.flush()?;
+            for (block, (row_end, rendered_end)) in self.blocks.iter_mut().zip(ends) {
+                block.row_end = row_end;
+                block.rendered_end = rendered_end;
+            }
+            self.rows = rendered.rows;
+            spool.rendered = rendered;
+        }
+        self.width = width;
+        self.window = None;
+        self.lines.clear();
+        Ok(())
+    }
+
+    /// Replace transient prompts, retaining every pending operation's text.
+    ///
+    /// # Errors
+    /// Temporary storage or address representation failed.
+    pub fn pending<'a>(&mut self, prompts: impl Iterator<Item = &'a str>) -> io::Result<()> {
+        self.clear_pending()?;
+        for text in prompts {
+            self.append(true, text)?;
+        }
+        Ok(())
+    }
+
+    fn clear_pending(&mut self) -> io::Result<()> {
+        if self.settled == self.blocks.len() {
+            return Ok(());
+        }
+        let (source, rows, bytes) = self.settled.checked_sub(1).map_or((0, 0, 0), |index| {
+            let block = &self.blocks[index];
+            (block.source.end, block.row_end, block.rendered_end)
+        });
+        let spool = self.spool.as_mut().expect("pending blocks have storage");
+        spool.source.set_len(source)?;
+        spool.rendered.truncate(rows, bytes)?;
+        self.blocks.truncate(self.settled);
+        self.rows = rows;
+        if self.window.as_ref().is_some_and(|window| window.end > rows) {
+            self.window = None;
             self.lines.clear();
-            self.bytes = 0;
-            for block in std::mem::take(&mut self.blocks) {
-                self.push(block.prompt, &block.text);
-            }
         }
-        &self.lines
+        Ok(())
     }
 
-    /// Replace the transient prompt suffix without rewrapping settled text.
-    /// Display budgets do not change the caller's pending operation identities.
-    pub fn pending<'a>(&mut self, prompts: impl DoubleEndedIterator<Item = &'a str>) {
-        self.clear_pending();
-        let mut rows = VecDeque::new();
-        for text in prompts.rev().take(MAX_BLOCKS) {
-            let wrapped = wrap(true, &bounded_text(text), self.width.max(1));
-            for row in wrapped.into_iter().rev() {
-                if rows.len() == MAX_ROWS {
-                    break;
+    /// Materialize just the requested visual rows. Repeating the same viewport
+    /// after a status update or append reuses its allocations.
+    ///
+    /// # Errors
+    /// Temporary storage, UTF-8 validation or address representation failed.
+    pub fn window(&mut self, range: Range<usize>) -> io::Result<&[Line<'static>]> {
+        let range =
+            range.start.min(self.rows)..range.end.min(self.rows).max(range.start.min(self.rows));
+        if self.window.as_ref() == Some(&range) {
+            return Ok(&self.lines);
+        }
+        let mut lines = Vec::with_capacity(range.len());
+        if !range.is_empty() {
+            let spool = self.spool.as_mut().expect("rows have storage");
+            let rendered = &mut spool.rendered;
+            rendered.index.flush()?;
+            rendered.text.flush()?;
+            let start = (range.start as u64)
+                .checked_mul(INDEX_BYTES as u64)
+                .ok_or_else(overflow)?;
+            rendered.index.get_mut().seek(SeekFrom::Start(start))?;
+            let count = range.len().checked_mul(INDEX_BYTES).ok_or_else(overflow)?;
+            let index = read_bytes(rendered.index.get_mut(), count as u64)?;
+            let mut entries = Vec::with_capacity(range.len());
+            for entry in index.chunks_exact(INDEX_BYTES) {
+                let offset = u64::from_le_bytes(entry[..8].try_into().map_err(invalid)?);
+                let length = u64::from_le_bytes(entry[8..].try_into().map_err(invalid)?);
+                if offset
+                    .checked_add(length)
+                    .is_none_or(|end| end > rendered.bytes)
+                {
+                    return Err(invalid("row index outside storage"));
                 }
-                rows.push_front(row);
+                entries.push((offset, length));
             }
-            if rows.len() == MAX_ROWS {
-                break;
+            let first = entries[0].0;
+            let (last, length) = entries[entries.len() - 1];
+            let end = last.checked_add(length).ok_or_else(overflow)?;
+            let length = end.checked_sub(first).ok_or_else(overflow)?;
+            rendered.text.get_mut().seek(SeekFrom::Start(first))?;
+            let bytes = read_bytes(rendered.text.get_mut(), length)?;
+            for (row, (offset, length)) in range.clone().zip(entries) {
+                let offset = usize::try_from(offset.checked_sub(first).ok_or_else(overflow)?)
+                    .map_err(invalid)?;
+                let length = usize::try_from(length).map_err(invalid)?;
+                let end = offset.checked_add(length).ok_or_else(overflow)?;
+                let text = std::str::from_utf8(bytes.get(offset..end).ok_or_else(overflow)?)
+                    .map_err(invalid)?
+                    .to_owned();
+                let block = self.blocks.partition_point(|block| block.row_end <= row);
+                let style = if self.blocks[block].prompt {
+                    Style::default().add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::styled(text, style));
             }
         }
-        self.pending_rows = rows.len();
-        self.lines.extend(rows);
+        self.lines = lines;
+        self.window = Some(range);
+        Ok(&self.lines)
     }
 
-    /// Search the retained display before an exclusive row index. Call again
-    /// with the previous hit to search backward; an empty query has no hit.
-    #[must_use]
-    pub fn find(&self, query: &str, before: usize) -> Option<usize> {
+    /// Search backward before an exclusive row index, through successive disk
+    /// windows. An empty query has no hit.
+    ///
+    /// # Errors
+    /// Temporary storage or address representation failed.
+    pub fn find(&mut self, query: &str, before: usize) -> io::Result<Option<usize>> {
         if query.is_empty() {
-            return None;
+            return Ok(None);
         }
-        self.lines[..before.min(self.lines.len())]
-            .iter()
-            .rposition(|line| line.spans.iter().any(|span| span.content.contains(query)))
+        let mut end = before.min(self.rows);
+        while end > 0 {
+            let start = end.saturating_sub(SEARCH_ROWS);
+            if let Some(row) = self
+                .window(start..end)?
+                .iter()
+                .rposition(|line| line.spans.iter().any(|span| span.content.contains(query)))
+            {
+                return Ok(Some(start + row));
+            }
+            end = start;
+        }
+        Ok(None)
     }
 
-    /// Retained display rows, including transient prompts.
+    /// Complete visual row count, including pending prompts.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.lines.len()
+        self.rows
     }
 
-    /// Whether the display is empty.
+    /// Whether no visual rows exist.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.lines.is_empty()
-    }
-
-    /// Whether settled source text was omitted from this retained window.
-    #[must_use]
-    pub fn truncated(&self) -> bool {
-        self.truncated
-    }
-
-    fn clear_pending(&mut self) {
-        self.lines
-            .truncate(self.lines.len().saturating_sub(self.pending_rows));
-        self.pending_rows = 0;
-    }
-
-    fn evict(&mut self) {
-        let mut removed = 0;
-        while self.blocks.len() > MAX_BLOCKS
-            || self.bytes > MAX_BYTES
-            || self.lines.len().saturating_sub(removed) > MAX_ROWS
-        {
-            let Some(block) = self.blocks.pop_front() else {
-                break;
-            };
-            self.bytes -= block.text.len();
-            removed += block.rows;
-        }
-        if removed > 0 {
-            self.truncated = true;
-            self.lines.drain(..removed);
-        }
+        self.rows == 0
     }
 }
 
-fn bounded_text(text: &str) -> String {
-    let text = text.trim_end_matches('\n');
-    if text.len() <= MAX_BLOCK_BYTES {
-        return text.to_owned();
-    }
-    let minimum = text.len() - (MAX_BLOCK_BYTES - OMITTED.len() - 1);
-    let start = text
-        .grapheme_indices(true)
-        .find(|(at, _)| *at >= minimum)
-        .map_or(text.len(), |(at, _)| at);
-    format!("{OMITTED}\n{}", &text[start..])
+fn read_bytes(input: &mut File, length: u64) -> io::Result<Vec<u8>> {
+    let length = usize::try_from(length).map_err(invalid)?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length).map_err(io::Error::other)?;
+    bytes.resize(length, 0);
+    input.read_exact(&mut bytes)?;
+    Ok(bytes)
 }
 
-fn wrap(prompt: bool, text: &str, width: usize) -> Vec<Line<'static>> {
-    let marked = width > 2;
-    let layout = Layout::new(&Editor::new(text), if marked { width - 2 } else { width });
-    let first = layout.rows.len().saturating_sub(MAX_ROWS - 2);
-    let style = if prompt {
-        Style::default().add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    let mut rows = Vec::new();
-    if first > 0 {
-        // The marker must itself fit even in a one-column text area.
-        rows.push(Line::raw("…"));
-    }
-    for (index, row) in layout.rows.iter().enumerate().skip(first) {
-        if row.cells.is_empty()
-            && index
-                .checked_sub(1)
-                .and_then(|previous| layout.rows.get(previous))
-                .is_some_and(|previous| previous.end == row.start)
-        {
-            continue;
-        }
-        let mut text = String::from(if !marked {
-            ""
-        } else if prompt && index == 0 {
-            "› "
-        } else {
-            "  "
-        });
-        text.extend(row.cells.iter().map(|cell| cell.symbol.as_str()));
-        rows.push(Line::styled(text, style));
-    }
-    rows.push(Line::default());
-    rows
+fn invalid(error: impl std::fmt::Display) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+}
+fn overflow() -> io::Error {
+    invalid("transcript address cannot be represented")
 }
 
 #[cfg(test)]
@@ -209,52 +356,94 @@ mod tests {
     use super::*;
 
     #[test]
-    fn append_keeps_existing_rows_and_status_work_needs_no_wrap() {
+    fn append_and_status_updates_reuse_the_existing_viewport() {
         let mut transcript = TranscriptRows::default();
-        transcript.rows(20);
-        transcript.push(true, "retained prompt");
-        let allocation = transcript.lines[0].spans[0].content.as_ptr();
-        transcript.push(false, "answer");
-        assert_eq!(transcript.rows(20)[0].spans[0].content.as_ptr(), allocation);
-        assert_eq!(transcript.find("prompt", transcript.len()), Some(0));
-        transcript.pending(["pending"].into_iter());
-        transcript.pending(["replacement"].into_iter());
-        assert_eq!(transcript.find("pending", transcript.len()), None);
-        assert_eq!(transcript.rows(20)[0].spans[0].content.as_ptr(), allocation);
+        transcript.set_width(20).unwrap();
+        transcript.push(true, "retained prompt").unwrap();
+        let allocation = transcript.window(0..1).unwrap()[0].spans[0]
+            .content
+            .as_ptr();
+        transcript.push(false, "answer").unwrap();
+        transcript.pending(["pending"].into_iter()).unwrap();
+        transcript.pending(["replacement"].into_iter()).unwrap();
+        assert_eq!(
+            transcript.window(0..1).unwrap()[0].spans[0]
+                .content
+                .as_ptr(),
+            allocation
+        );
+        assert_eq!(
+            transcript.find("prompt", transcript.len()).unwrap(),
+            Some(0)
+        );
+        assert_eq!(transcript.find("pending", transcript.len()).unwrap(), None);
     }
 
     #[test]
-    fn retained_source_and_rows_stay_bounded_under_append_and_resize() {
+    fn complete_source_remains_searchable_while_only_visible_rows_are_materialized() {
         let mut transcript = TranscriptRows::default();
-        for _ in 0..MAX_BLOCKS + 10 {
-            transcript.push(false, &"界".repeat(MAX_BLOCK_BYTES));
-            assert!(transcript.bytes <= MAX_BYTES);
-            assert!(transcript.blocks.len() <= MAX_BLOCKS);
-            assert!(transcript.lines.len() <= MAX_ROWS);
+        transcript
+            .push(false, &format!("begin\n{}\nend", "界\n".repeat(22_000)))
+            .unwrap();
+        for index in 0..300 {
+            transcript.push(true, &format!("prompt {index}")).unwrap();
         }
-        for width in [1, 2, 3, 12, 80] {
-            let rows = transcript.rows(width);
-            assert!(rows.len() <= MAX_ROWS);
-            assert!(rows.iter().all(|row| row.width() <= usize::from(width)));
-        }
-        assert!(transcript.truncated());
+        assert!(transcript.len() > 22_000);
+        assert_eq!(transcript.find("begin", transcript.len()).unwrap(), Some(0));
+        let end = transcript.find("end", transcript.len()).unwrap().unwrap();
+        assert!(end > 22_000);
+        let row = transcript
+            .find("prompt 299", transcript.len())
+            .unwrap()
+            .unwrap();
+        assert!(row > end);
+        assert_eq!(transcript.window(0..1).unwrap().len(), 1);
+        assert_eq!(transcript.lines.len(), 1);
+        transcript.set_width(1).unwrap();
+        assert!(
+            transcript
+                .window(0..10)
+                .unwrap()
+                .iter()
+                .all(|line| line.width() <= 1)
+        );
     }
 
     #[test]
-    fn display_width_and_graphemes_survive_wrapping() {
+    fn display_width_graphemes_and_pending_text_survive_wrapping_and_resize() {
         let mut transcript = TranscriptRows::default();
-        transcript.push(true, "界e\u{301}👩‍💻\ttext\nlast");
+        transcript.push(true, "界e\u{301}👩‍💻\ttext\nlast").unwrap();
+        transcript.pending(["still pending"].into_iter()).unwrap();
         for width in 1..12 {
+            transcript.set_width(width).unwrap();
+            let len = transcript.len();
             assert!(
                 transcript
-                    .rows(width)
+                    .window(0..len)
+                    .unwrap()
                     .iter()
                     .all(|line| line.width() <= usize::from(width))
             );
         }
-        let text = bounded_text(&format!("{}e\u{301}end", "界".repeat(MAX_BLOCK_BYTES)));
-        assert!(text.len() <= MAX_BLOCK_BYTES);
-        assert!(text.ends_with("e\u{301}end"));
-        assert!(text.starts_with(OMITTED));
+        transcript.set_width(80).unwrap();
+        assert!(
+            transcript
+                .find("e\u{301}👩‍💻", transcript.len())
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            transcript
+                .find("still pending", transcript.len())
+                .unwrap()
+                .is_some()
+        );
+        transcript.push(false, "settled").unwrap();
+        assert!(
+            transcript
+                .find("still pending", transcript.len())
+                .unwrap()
+                .is_none()
+        );
     }
 }
