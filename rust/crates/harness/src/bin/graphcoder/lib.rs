@@ -52,7 +52,7 @@ pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
             let result = runtime.block_on(phase(|| async {
                 let shutdown = lifecycle::shutdown();
                 let operation = phase(|| run(args, seams, shutdown.clone()));
-                let (result, diagnostic) = lifecycle::observe(
+                let (result, _) = lifecycle::observe(
                     &report,
                     &mut std::io::stderr(),
                     shutdown,
@@ -60,9 +60,6 @@ pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
                     operation,
                 )
                 .await;
-                if let Err(error) = diagnostic {
-                    eprintln!("graphcoder: wait report failed: {error}");
-                }
                 result
             }));
             runtime.shutdown_background();
