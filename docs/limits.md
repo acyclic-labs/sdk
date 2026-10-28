@@ -930,8 +930,12 @@ Pending entries remain unfinished. A retained page must make all remaining data 
 | Reader delivery credit256 | `rust/crates/harness-client/src/reader/driver.rs:143` | 3 | Keep per-frame credit; rotate BTreeMap traversal after the last visited follow so every follow can progress. Wake after consuming credit. |
 | Compact-key expanded record budget | `rust/crates/stream/src/changes.rs:296` | 4 (existing whole-record mechanism pending replacement) | Check expanded key lengths before reconstruction/copy, using the existing record budget; preserve corruption, native-custody and explicit finite negatives. Generic key-width caps remain deleted. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | PHP dependency ZIP members20,000, compressed16MiB, expanded32MiB; PHP memory256MiB, command output48MiB and timeout180s | `tools/sdk-generator/backends/php/src/qualify.mjs`; `tests/fixtures/consumer/archive_inventory.php` | 1 -> 2 | Delete defaults. Libzip verifies each member through64KiB reads and CRC into a private inspection file; Node consumes entry/chunk records through the same canonical/type/collision/payload admission as tar. Commands use the shared file capture primitive. Empty archives, single package root, exact pinned bytes, installed inventories, CRC, length and type negatives remain. Individual required file bodies remain retained for exact installed comparison; no full expanded ZIP JSON is materialized. Qualification pending. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | Session registration10-second deadline | `rust/crates/stream/src/session/client.rs:635` | 1, optional caller policy retained | DefaultNone awaits the actual registration outcome or caller cancellation. with_registration_timeout explicitly selects a finite millisecond deadline per client; queue withdrawal, sibling isolation, trace outcomes and the Loom deadline/cursor race remain. Existing lifecycle controls select10s explicitly; physical handshake/reconnect controls are unchanged and separately pending. Qualification pending. |
 
 | Constant / limit | File:line | Category | Action |
@@ -962,10 +966,16 @@ Pending entries remain unfinished. A retained page must make all remaining data 
 |---|---|---|---|
 | Implicit BOUNDARY_BUDGET during agent observation, native skill discovery and checkout instructions | `rust/crates/harness-core/src/filesystem/tool_output.rs:70`; `context/native_skills.rs:699`; `rust/crates/harness/src/local/context/checkout.rs:67` | 1 -> explicit caller policy retained | Root operations without supplied work select WorkBudget::UNBOUNDED. Supplied PreparationIo continues to borrow its exact original native work; no fresh budget replaces caller funding. All access grants, native allocation/cancellation/custody and qualification finite controls remain. The public finite qualification constant is unchanged. Compile qualification pending. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | Shell omitted timeout300s and u32-millisecond ceiling | `rust/crates/harness-core/src/tools/shell.rs:22,47`; `filesystem/native_process/{invocation,capture}.rs`; `rust/crates/native-runtime/src/process_tree/pump.rs:16`; native checkout shell | 1 -> optional caller policy | Preserve timeout absence through the shared capture schedule and process provider. No timer is armed without a caller deadline; owned pipe/exit/control events still drive capture and cancellation. Positive finite seconds use lossless u64 milliseconds, without the former approximately49-day artificial ceiling. Explicit approved NativeProcessRequest capture/control allowances, original native work, output funding and custody negatives remain unchanged. Existing quiet readiness control covers both finite and unbounded schedules. Compile qualification pending. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | Hosted Filesystem connect10s/request30s; Daytona request60s | `rust/crates/filesystem/src/hosted.rs:49,51,83,84`; `rust/crates/machines-daytona/src/lib.rs:76,98`; `api.rs:253` | 1 -> optional caller policy | Public timeout fields carry Option<Duration>, default None, through the existing transport builders; explicit Some deadlines remain enforced. No new timer or retry loop. Hosted frame/logical request sizing and Daytona readiness observation are separate pending mechanisms. TLS, credential validation, original custody and typed operation outcomes remain. Compile qualification pending. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | ReaderPolicy timeout_ms10,000 | `rust/crates/harness-client/src/reader.rs:53,76,788` | 1 -> optional caller policy | Default None gives in-flight reads no deadline or deadline timer. A slow valid read keeps its admitted request slot until its actual completion, cancellation or caller-selected Some deadline; transport-error backoff and request/follow credit remain. Finite simulation fixtures retain their exact1500ms policy and deadline-race controls. Compile qualification pending. |
 
 | Constant / limit | File:line | Category | Action |
@@ -1063,15 +1073,21 @@ The exact transaction staging fixture in `rust/crates/filesystem/src/workspace/t
 Reader composition on refreshed source retains exact primitive `PathHead`/`ForkOrigin` publication cuts, requested-child authorization and separate observation/display clocks. Removed demand, failure, expansion, page-scan, viewport, history and snapshot-admission ceilings again after adapting to that shared reader contract. Metadata LRU and reverse alias indexes scale eviction and invalidation with retained or affected facts; cycle detection uses the actual graph. Larger persisted caches stream into selected residency. Scale, alias-cycle, snapshot and priority controls are preserved alongside the original authority/observation negatives. Compilation of this composition is pending.
 
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | `FilesystemWireLimits.maximum_credential_seconds` | `rust/crates/filesystem/src/wire_service.rs:56`; `wire_service/credentials.rs:9` | 1, opt-in deployment policy | Default None replaces the automatic one-hour refusal; explicit positive finite values remain supported as `Option<NonZeroU64>`. Requested positive lifetime, checked deadline arithmetic, actual authority expiry intersection, issuer deadline validation and original authority negatives remain. Existing control requests 6,000 seconds under a 60-second authority, rejects a wider issuer, and separately refuses the same request under an explicit 3,600-second deployment policy. Compile pending. |
 
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | `MAX_PAGE_SIZE`, `MAX_EVENT_PAGE_SIZE`, `MAX_OUTPUT_READ_BYTES` | `rust/crates/machines/src/lib.rs:45,47,49`; simulation, gRPC, Daytona, WASM and TypeScript adapters | 2 | KEEP physical chunk widths. One shared positive-hint normalizer returns shorter pages/chunks instead of refusing larger hints. Existing cursors and output offsets continue through all data. Machine range lookup and event partitioning avoid rescanning prior history. Original wrong-identity, malformed numeric, backward/overflow offset and oversized physical output negatives remain; actual 257-machine/1,027-event, wide-console and 1,025-machine TypeScript continuation controls added. Compile pending. |
 | TypeScript `listMachines` implicit `maximum = 1024` | `typescript/packages/machines/src/client.ts:27` | 1 | DELETE default stopping count. An absent maximum follows all pages; explicitly selected finite maximum and zero remain meaningful caller policies. Shared Rust/WASM page normalization applies to custom providers too. Compile pending. |
 
 Linux x86_64 compilation on signed source `53cf60f94fb3303f58241a8184b44a1a20137b57`: `cargo check --locked -p acyclic-harness-client -p acyclic-stream -p acyclic-fs -p acyclic-harness --all-targets --features acyclic-harness-client/agents,acyclic-stream/local,acyclic-stream/http,acyclic-fs/s3-http,acyclic-harness/filesystem-local,acyclic-harness/native-execution,acyclic-harness/test-support` passed, 1m42s. This compiles exact primitive-origin reader composition, dynamic prepared headers, projected child-page continuation and existing native controls. No runtime result inferred. Subsequent optional credential lifetime and Machines hint changes are not covered by that source.
 
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | TypeScript Machines HTTP default 8-MiB response bound | `typescript/packages/machines/src/http.ts:30,98` | 1 | DELETE automatic whole-response refusal. Absent policy reads every delivered body chunk; explicit positive finite `maximumResponseBytes` still cancels the physical reader at its selected bound. Existing malformed-UTF8, authority, redirect, schema and finite streaming cancellation negatives remain. Logical framed RPC streaming remains separate pending work. Compile pending. |
 
 
@@ -1081,29 +1097,53 @@ Linux x86_64 on signed `f088e41901f217de3438e7fd4fc57bd43050e670`: Machines/Dayt
 
 The shared Machines WASM transport validator now accepts an absent HTTP response policy; token validation still runs before every fetch. Explicit finite positive safe-integer validation and stream cancellation remain unchanged. Existing coercion controls cover malformed tokens both with and without a response policy; default HTTP adapter controls remain active. Source repair pending portable validation.
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | Native host `EVENT_LIMIT` (65536-byte event lines) | `rust/crates/harness/src/local/host_process/children.rs` (removed); `rust/crates/native-runtime/src/lines.rs` | 1 | DELETE automatic event-line refusal and cap-only omission test. Shared line framing accepts an optional explicit byte policy; None uses the ordinary incremental codec. Explicit finite malformed/oversized-frame and cancellation controls remain. Native answer framing verifies complete Codex/Claude/Pi JSON events across chunk boundaries, including a 132000-byte Unicode answer. Whole event-log publication remains separate pending work. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | ForkArena default `max_files = 12` / `max_chars_per_file = 1500` | `arena/packages/jev/src/jev/acyclic.py:173` | 1, opt-in excerpt policy | DELETE default diff omission. Both policies default to None; rendering includes every changed path and complete diff. Explicit finite caller excerpts remain useful and retain their omission marker. Model context remains a physical backend constraint. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | `MAX_PATH_BYTES` (65535) and encoded resource width | `rust/crates/stream/src/lib/path.rs:72`; `wire_codec/session/resource.rs:30`; `memory/capacity.rs:183`; `memory/provider.rs:37` (removed) | 1 | DELETE byte-width refusal, fork-width refusal, projected-tail omission and protocol limit enum. Remove the now-unused augmented maximum-suffix tree metadata. Canonical grammar, exact native allocation/codec funding and independent original representation oracle remain. Existing real-provider projected-tail control now reads a complete tail through a 131073-byte component. Recursive depth and whole-message framing remain separate pending work; the descriptor was regenerated by the canonical producer. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | Derived Stream path byte ceilings in filesystem and Harness WASM | `rust/crates/filesystem/src/distributed/native.rs`; `rust/crates/harness/src/wasm/{wire_session,agent_client}.rs` | 1 | DELETE inherited width refusals. Authority path encoding uses one exact byte iterator for inline scratch and caller-funded spill storage; values larger than scratch continue without refusal. Existing small-path receipts, original finite accounting and independent lease encoder controls remain. Long-path control checks actual additional allocation rather than increasing any original budget. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | Actors private-CA PEM byte ceiling (65536) | `rust/crates/actors/src/grpc.rs:67` | 1 | DELETE independent bundle-width refusal. Nonempty configured trust, actual PEM parsing, platform verification, HTTPS endpoint and per-request sensitive credential checks remain. |
 
 Canonical descriptor and Stream contract generation passed on `dabc96ee038356b37baed3b3a759f23064cc469f`. The manifest records the actual resulting Stream descriptor digest `sha256:7b6c47045b63304e3d095f9dbf1e5665b6958162b1b1bb0ee0929ba5383a183f`. Reader composition compile errors were repaired; current native validation remains pending.
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | Provider event/retained-state policy and HTTP chunk count | `rust/crates/harness-providers/src/{spec,endpoints,catalog,sse,http/bounded,stream/budget}.rs` | 1 -> optional caller policy | Delete built-in 1MiB event/state default and hidden 1024 retained-item ceiling. Omitted max_event_bytes is None across native/browser SSE and JSON body readers. Explicit finite event-byte policies and original native WorkBudget admission/custody remain. Remove chunk-count coupling so fragmentation cannot refuse an otherwise valid response. A complete SSE regression carries a >1MiB Unicode event and 2049 tool calls across 8192-byte chunks. Qualification pending. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | Provider default idle5min/total1h deadlines and u32 milliseconds | `rust/crates/harness-providers/src/spec.rs`; `deadline.rs` | 1 -> optional caller policy | Remove automatic deadlines. Optional positive u64 milliseconds apply through the shared native/browser exchange owner; absent deadlines never arm a timer. Explicit finite deadline/readiness/cancellation/native timer-funding controls remain. Virtual-clock real exchange controls cover >49-day headers/body, independent idle/total policies and an instrumented transport that refuses any timer under the unbounded default. Qualification pending. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | `MAX_DEADLINE` | `rust/crates/objects/src/grpc.rs:25` | 4: physical wire representation | Keep the largest representable grpc-timeout (99,999,999 hours, over11,000 years), validating explicit caller transfer policy before tonic encodes it. This never supplies a default deadline. |
 | Objects HTTP/gRPC default30s and int32 deadline refusal | `typescript/packages/objects/src/{v1-http,v1-grpc}.ts` | 1 -> optional caller policy | Delete default deadline and int32 refusal. Reuse shared monotonic deadline owner, chunking host timer waits; positive safe-integer caller policies remain. Canonical blob routes and verification are preserved. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | Stream HTTP automatic8MiB response/30s request/1s connect policy | `typescript/packages/stream/src/http.ts:30`; `rust/crates/stream/src/http.rs:95`; `http/session.rs:69` | 1 -> optional caller policy | Delete automatic response/deadline ceilings. Rust and TypeScript accept absent response policy and enforce only explicit positive byte policies while reading chunks. Canonical validation, finite streaming cancellation, authorization and redirect negatives remain. Existing portable control additionally receives a complete >8MiB token response in8192-byte chunks. Logical atomic message streaming remains separate pending work. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | Search/fetch whole exchange30s; browser Stream unary1s | `rust/crates/harness-search/src/http.rs:75`; `url_fetch/http.rs:38`; `rust/crates/stream/src/wasm/remote.rs:33` | 1 | Delete automatic time-based refusal. Preserve original native await_io cancellation/admission, exact transport failure custody, caller-owned future cancellation and canonical redirect/SSRF policies. Browser transport still supports explicit caller timeout options. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | Actors/Objects/Workers native HTTP required whole-response policy | `rust/crates/actors/src/http.rs:197`; `rust/crates/objects/src/http.rs:40`; `rust/crates/workers/src/deployment.rs:24` | 1 -> optional caller policy | Accept None at the public constructor and shared descriptor decoder. Omitted policy consumes every delivered response chunk; explicit positive policy preserves early content-length and actual byte-count refusal. Worker composition forwards the same selected policy to both clients. Original OperationContext cancellation/deadlines, current credentials, exact remote diagnostics and canonical response verification remain. |
 
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
 | Browser deadline clamp to `i32::MAX` milliseconds | `rust/vendor/tonic-web-wasm-client-0.9.2/src/abort_guard.rs:35` | 1 → 2 | Deleted shortened deadline and its cap test. One callback rearms host-sized intervals using elapsed monotonic time; finite expiry, replacement and drop cleanup use the same timer owner. |
