@@ -26,9 +26,6 @@ from .backends.base import Backend
 from .log import DecisionLog
 from .swarm import Swarm, FunctionAgent
 
-MAX_INPUT_CHARS = 1_200
-
-
 @dataclass
 class GateVerdict:
     decision: str            # allow | ask | deny
@@ -48,8 +45,6 @@ def render_tool_call(payload: dict, task: Optional[str] = None) -> str:
     if payload.get("command") and not inp:
         inp = {"command": payload["command"]}
     body = json.dumps(inp, ensure_ascii=False, indent=1)
-    if len(body) > MAX_INPUT_CHARS:
-        body = body[:MAX_INPUT_CHARS] + "\n... (truncated)"
     lines = []
     if task:
         lines += ["Task the agent is working on:", task.strip(), ""]
