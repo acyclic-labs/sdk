@@ -27,12 +27,6 @@ pub type LocalTurns = FilesystemTurnHost<LocalStream, LocalAuthorityBackend, Loc
 /// Every agent of one local harness.
 pub type LocalAgents = AgentHost<LocalStream>;
 
-/// Settled turns of history in each agent turn's model context.
-/// Backstop on one agent delivery, which awaits a whole turn. A turn is
-/// bounded by its model steps and each model and tool call's own deadline;
-/// this only reclaims a delivery whose provider never answers.
-const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
-
 /// The served agent tree: the same [`crate::hosting::Server`] a remote host
 /// serves, and the runtime task that ends with it.
 pub(super) struct Hosted {
@@ -231,7 +225,7 @@ impl LocalHarness {
                         .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
                     history_turns: None,
                 },
-                actors: ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
+                actors: ActorLimits::new(None, None, None).map_err(storage)?,
                 clock: Arc::new(SystemClock),
                 approval_policy: self.preset.approval_policy.clone(),
             },
@@ -303,7 +297,7 @@ impl LocalHarness {
                     .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
                 history_turns: None,
             },
-            actors: ActorLimits::new(TURN_BACKSTOP_MS, 1 << 20, 1 << 16).map_err(storage)?,
+            actors: ActorLimits::new(None, None, None).map_err(storage)?,
             clock: Arc::new(SystemClock),
             approval_policy: self.preset.approval_policy.clone(),
         };
