@@ -38,6 +38,7 @@ pub mod persistence;
 pub mod postgres;
 pub mod preparation;
 pub use pending::Pending;
+mod projection;
 pub mod request;
 pub mod runtime;
 #[cfg(any(
