@@ -32,7 +32,7 @@ impl FileAccess {
     }
 
     /// Checks a single transport chunk without bounding the whole file.
-    pub(crate) fn range(&self, length: usize) -> Result<(), ProviderError> {
+    pub fn validate_range(&self, length: usize) -> Result<(), ProviderError> {
         if length > MAX_OUTPUT_READ_BYTES as usize
             || self.offset.checked_add(length as u64).is_none()
         {

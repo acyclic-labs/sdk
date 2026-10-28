@@ -143,20 +143,7 @@ machine_mutations! {
         fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
     )]
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
-        obs::finish(
-            async {
-                let response = self.client().await?
-                    .qualify_image(wire::QualifyImageRequest {
-                        protocol: Some(protocol()),
-                        image: Some(encode_image(&image)?),
-                    })
-                    .await
-                    .map_err(|error| read_error(&error))?
-                    .into_inner();
-                decode_qualification(response, &image)
-            }
-            .await,
-        )
+        obs::finish(self.qualification(Some(image)).await)
     }
 
     #[tracing::instrument(

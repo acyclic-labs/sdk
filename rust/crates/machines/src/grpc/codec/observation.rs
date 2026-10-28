@@ -2,10 +2,10 @@ use super::*;
 
 pub(in super::super) fn decode_qualification(
     value: wire::ImageQualification,
-    expected: &Image,
+    expected: Option<&Image>,
 ) -> Result<ImageQualification, ProviderError> {
     let image = decode_image(value.image.as_ref())?;
-    if &image != expected {
+    if expected.is_some_and(|expected| &image != expected) {
         return Err(ProviderError::Rejected(
             "qualified image was substituted".into(),
         ));

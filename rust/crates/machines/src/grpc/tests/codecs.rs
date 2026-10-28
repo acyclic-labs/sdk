@@ -1,6 +1,32 @@
 use super::*;
 
 #[test]
+fn default_image_discovery_validates_the_immutable_result_and_explicit_images_stay_bound() {
+    let image = Image::custom([9; 32]).unwrap();
+    let mut response = wire::ImageQualification {
+        image: Some(encode_image(&image).unwrap()),
+        capabilities: vec![],
+        compatibility_revision: vec![3; 32],
+    };
+    assert_eq!(
+        decode_qualification(response.clone(), None).unwrap().image,
+        image
+    );
+    let other = Image::custom([8; 32]).unwrap();
+    assert!(matches!(
+        decode_qualification(response.clone(), Some(&other)),
+        Err(ProviderError::Rejected(_))
+    ));
+    response.image = None;
+    assert!(decode_qualification(response.clone(), None).is_err());
+    response.image = Some(wire::Image {
+        kind: wire::ImageKind::Custom as i32,
+        immutable_reference: Some(wire::image::ImmutableReference::CustomDigest(vec![0; 32])),
+    });
+    assert!(decode_qualification(response, None).is_err());
+}
+
+#[test]
 fn wire_decoders_reject_nil_and_duplicate_capabilities() {
     assert!(decode_machine(Some(&wire::MachineId { value: vec![0; 16] })).is_err());
     let capabilities = BTreeSet::from([Capability::ElasticCpu]);

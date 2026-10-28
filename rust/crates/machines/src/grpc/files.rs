@@ -12,7 +12,7 @@ impl GrpcProvider {
                 "guest file read admission failed; recovery: supply a positive chunk length".into(),
             ));
         }
-        access.range(limit as usize)?;
+        access.validate_range(limit as usize)?;
         let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
         let mut client = self.file_client(&deadline).await?;
         let mut request = Request::new(wire::ReadFileRequest {
@@ -47,7 +47,7 @@ impl GrpcProvider {
         data: Vec<u8>,
         truncate: bool,
     ) -> Result<FileWrite, ProviderError> {
-        access.range(data.len())?;
+        access.validate_range(data.len())?;
         if truncate && access.offset != 0 {
             return Err(ProviderError::Invalid("file truncation admission failed; recovery: truncate only the first chunk at offset zero".into()));
         }

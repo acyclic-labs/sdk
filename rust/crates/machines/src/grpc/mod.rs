@@ -117,6 +117,29 @@ impl GrpcProvider {
             .with_credential_provider(credential))
     }
 
+    /// Qualifies the service's installed default and returns its actual immutable
+    /// identity. Use that image in CreateMachine; no guessed image alias is used.
+    pub async fn qualify_default_image(&self) -> Result<ImageQualification, ProviderError> {
+        self.qualification(None).await
+    }
+
+    async fn qualification(
+        &self,
+        expected: Option<Image>,
+    ) -> Result<ImageQualification, ProviderError> {
+        let response = self
+            .client()
+            .await?
+            .qualify_image(wire::QualifyImageRequest {
+                protocol: Some(protocol()),
+                image: expected.as_ref().map(encode_image).transpose()?,
+            })
+            .await
+            .map_err(|error| read_error(&error))?
+            .into_inner();
+        decode_qualification(response, expected.as_ref())
+    }
+
     async fn authorization(&self) -> Result<BearerAuth, ProviderError> {
         if let Some(provider) = &self.credential {
             let token = provider.resolve().await.map_err(|_| {

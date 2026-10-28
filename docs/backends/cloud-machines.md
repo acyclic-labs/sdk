@@ -11,6 +11,11 @@ the public bearer-authenticated service. `ca: None` selects public trust roots;
 self-hosted services can add a private CA. Mutual TLS and owner-confined local
 socket constructors remain available for those deployments.
 
+`GrpcProvider::qualify_default_image()` obtains the service's installed immutable
+image identity. Use the returned image in `CreateMachine`; explicit qualification
+continues to reject substituted identities. No upstream distribution digest is
+assumed to identify a provider's guest image.
+
 `MachinesHost` creates and inspects machines, dispatches streamed exec, reads and
 writes guest files, suspends and deletes machines. Native `ReadFile`/`WriteFile`
 carry exact binary chunks, an absolute guest path and offset, and one absolute
