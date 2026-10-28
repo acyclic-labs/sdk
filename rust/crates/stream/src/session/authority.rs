@@ -276,7 +276,7 @@ impl Authority {
     /// Admits `action` on one stream resource for an already admitted credential.
     pub(super) fn permits(
         &self,
-        capability: &VerifiedCapability,
+        capability: &dyn Admission,
         action: &'static str,
         resource: &str,
         channels: usize,
@@ -287,7 +287,7 @@ impl Authority {
     /// `scoped` follows a product resource through its owner's authorization.
     fn check(
         &self,
-        capability: &VerifiedCapability,
+        capability: &dyn Admission,
         action: &'static str,
         resource: &str,
         scoped: bool,
@@ -412,9 +412,10 @@ impl Authority {
         if revision == binding.credential_revision {
             return self.authorize(slots, binding, channels);
         }
-        if binding.is_reply() {
-            self.authorize(slots, binding, channels)?;
-        } else if self.filter(slots, binding, channels)?.digest() != binding.filter_digest {
+        // Every binding, follow or finite reply, keeps the ceiling it was
+        // admitted under: principal and grants through `renew`, record filters
+        // and pins through this digest. A changed ceiling closes the channel.
+        if self.filter(slots, binding, channels)?.digest() != binding.filter_digest {
             return Err(Rejection::Forbidden);
         }
         if let Some(authorization) = &binding.resource_authorization {
@@ -445,7 +446,7 @@ impl Authority {
         let mut authorization =
             ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
         authorization.action = "actors/invoke";
-        let binding = Binding {
+        let mut binding = Binding {
             credential_revision: *revision,
             slot,
             resource,
@@ -453,12 +454,13 @@ impl Authority {
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
         };
-        self.authorize(slots, &binding, channels)?;
+        binding.filter_digest = self.filter(slots, &binding, channels)?.digest();
         Ok((binding, CallAuthorization(authorization)))
     }
     /// Admits one children page: `streams/list` on the parent, as
     /// StreamService.ChildrenPage requires. Each returned child and tail
-    /// record is then checked through the returned visibility.
+    /// record is then checked through the returned visibility, which reads the
+    /// binding's current (renewed) credential when the reply is projected.
     pub(super) fn bind_list(
         self: &Arc<Self>,
         slots: &Slots,
@@ -472,20 +474,20 @@ impl Authority {
         let mut authorization =
             ResourceAuthorization::new(Arc::clone(self), resource.clone(), Arc::clone(capability));
         authorization.action = "streams/list";
-        let binding = Binding {
+        let mut binding = Binding {
             credential_revision: *revision,
             slot,
             resource,
             requested: wire::SessionFilter::default(),
             filter_digest: [0; 32],
-            resource_authorization: Some(authorization),
+            resource_authorization: Some(authorization.clone()),
         };
-        self.authorize(slots, &binding, channels)?;
+        binding.filter_digest = self.filter(slots, &binding, channels)?.digest();
         Ok((
             binding,
             super::pages::Visibility {
                 authority: Arc::clone(self),
-                capability: Arc::clone(capability),
+                authorization,
                 channels,
             },
         ))

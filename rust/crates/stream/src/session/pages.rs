@@ -1,20 +1,26 @@
 //! Finite children pages on the session: the session form of
 //! `StreamService.ChildrenPage`, answered as one fragmented one-shot reply.
 use super::*;
-use acyclic_auth::verify::VerifiedCapability;
 
-/// The admitted credential of one page. A child is returned only when the
-/// credential may list it, and its tail record only when the same credential
-/// could follow that stream: its grant and its mandatory record predicate.
+/// The page channel's credential, read through its binding's authorization
+/// when the reply is projected, so a replacement while the page is pending
+/// applies to the reply. A child is returned only when that credential may
+/// list it, and its tail record only when it could follow that stream: its
+/// grant and its mandatory record predicate.
 pub(super) struct Visibility {
     pub(super) authority: Arc<Authority>,
-    pub(super) capability: Arc<VerifiedCapability>,
+    pub(super) authorization: ResourceAuthorization,
     pub(super) channels: usize,
 }
 impl Visibility {
-    fn permits(&self, action: &'static str, path: &StreamPath) -> Result<bool, StreamError> {
+    fn permits(
+        &self,
+        capability: &dyn Admission,
+        action: &'static str,
+        path: &StreamPath,
+    ) -> Result<bool, StreamError> {
         match self.authority.permits(
-            &self.capability,
+            capability,
             action,
             &authority::stream_resource(Some(path)),
             self.channels,
@@ -29,19 +35,18 @@ impl Visibility {
         mut page: crate::ChildrenPage,
         tail_stream: Option<&crate::RelativePath>,
     ) -> Result<crate::ChildrenPage, StreamError> {
+        let capability = self.authorization.current()?;
         let mut children = Vec::with_capacity(page.children.len());
         for mut child in page.children {
-            if !self.permits("streams/list", &child.path)? {
+            if !self.permits(&*capability, "streams/list", &child.path)? {
                 continue;
             }
             if let (Some(record), Some(relative)) = (child.tail_record.take(), tail_stream) {
                 let target = StreamPath::new(format!("{}/{}", child.path, relative))?;
-                if self.permits("streams/follow", &target)? {
-                    child.tail_record = crate::FollowFilter::authorized(
-                        wire::SessionFilter::default(),
-                        &self.capability,
-                    )?
-                    .project(record)?;
+                if self.permits(&*capability, "streams/follow", &target)? {
+                    child.tail_record = capability
+                        .follow_filter(wire::SessionFilter::default())?
+                        .project(record)?;
                 }
             }
             children.push(child);

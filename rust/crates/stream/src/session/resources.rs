@@ -26,13 +26,16 @@ impl ResourceAuthorization {
             action: "fs/list",
         }
     }
+    /// The channel's current credential; `renew` replaces it in place.
+    pub(super) fn current(&self) -> Result<Arc<dyn Admission>, StreamError> {
+        self.capability
+            .lock()
+            .map(|capability| Arc::clone(&capability))
+            .map_err(|_| StreamError::AccessDenied)
+    }
     /// Issuer-attested structured identity, including delegation lineage.
     pub fn principal(&self) -> Result<Principal, StreamError> {
-        let capability = self
-            .capability
-            .lock()
-            .map_err(|_| StreamError::AccessDenied)?;
-        Ok(capability.principal().clone())
+        Ok(self.current()?.principal().clone())
     }
     /// Current trusted runtime clock for the volume policy's time conditions.
     pub fn now_unix_seconds(&self) -> Result<u64, StreamError> {
@@ -65,11 +68,7 @@ impl ResourceAuthorization {
             .authority
             .snapshot()
             .map_err(|_| StreamError::AccessDenied)?;
-        let capability = self
-            .capability
-            .lock()
-            .map_err(|_| StreamError::AccessDenied)?
-            .clone();
+        let capability = self.current()?;
         capability
             .authorize(
                 snapshot.trust.as_ref(),
@@ -108,11 +107,7 @@ impl ResourceAuthorization {
         volume_resource: &str,
         filter: &crate::FollowFilter,
     ) -> Result<crate::FollowFilter, StreamError> {
-        let capability = self
-            .capability
-            .lock()
-            .map_err(|_| StreamError::AccessDenied)?
-            .clone();
+        let capability = self.current()?;
         let mut wire = filter.transport_filter()?;
         for grants in capability.grants() {
             let mut ranges = Vec::new();
