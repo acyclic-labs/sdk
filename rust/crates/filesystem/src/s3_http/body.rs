@@ -121,8 +121,8 @@ fn validate_http_key(key: &str) -> S3Result {
 
 fn encode_multipart_created(
     key: &str,
-    maximum_parts: u32,
-    maximum_part_bytes: u64,
+    maximum_parts: Option<u32>,
+    maximum_part_bytes: Option<u64>,
     minimum_part_bytes: u64,
 ) -> S3Result<Bytes> {
     let key_length = u32::try_from(key.len()).map_err(|_| s3s::s3_error!(InvalidArgument))?;
@@ -130,8 +130,8 @@ fn encode_multipart_created(
     output.extend_from_slice(&[MULTIPART_RECORD_VERSION, 1]);
     output.extend_from_slice(&key_length.to_le_bytes());
     output.extend_from_slice(key.as_bytes());
-    output.extend_from_slice(&maximum_parts.to_le_bytes());
-    output.extend_from_slice(&maximum_part_bytes.to_le_bytes());
+    output.extend_from_slice(&maximum_parts.unwrap_or(0).to_le_bytes());
+    output.extend_from_slice(&maximum_part_bytes.unwrap_or(0).to_le_bytes());
     output.extend_from_slice(&minimum_part_bytes.to_le_bytes());
     Ok(Bytes::from(output))
 }
@@ -261,7 +261,7 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
 fn decode_multipart_header(
     created: &acyclic_stream::OwnedBytes,
     limits: FilesystemS3Limits,
-) -> S3Result<(String, u32, u64, u64)> {
+) -> S3Result<(String, Option<u32>, Option<u64>, u64)> {
     let mut cursor = RecordCursor::new(created);
     cursor.header(1)?;
     let key_length = cursor.u32()?;
@@ -271,15 +271,18 @@ fn decode_multipart_header(
     let key = std::str::from_utf8(cursor.take(key_length as usize)?)
         .map_err(|_| s3s::s3_error!(InvalidRequest))?
         .to_owned();
-    let maximum_parts = cursor.u32()?;
-    let maximum_part_bytes = cursor.u64()?;
+    let maximum_parts = std::num::NonZeroU32::new(cursor.u32()?).map(std::num::NonZeroU32::get);
+    let maximum_part_bytes =
+        std::num::NonZeroU64::new(cursor.u64()?).map(std::num::NonZeroU64::get);
     let minimum_part_bytes = cursor.u64()?;
     cursor.finish()?;
-    if maximum_parts == 0
-        || maximum_parts > limits.maximum_multipart_parts
-        || maximum_part_bytes == 0
-        || maximum_part_bytes > limits.maximum_multipart_part_bytes
-        || minimum_part_bytes > maximum_part_bytes
+    if limits
+        .maximum_multipart_parts
+        .is_some_and(|maximum| maximum_parts.is_none_or(|saved| saved > maximum))
+        || limits
+            .maximum_multipart_part_bytes
+            .is_some_and(|maximum| maximum_part_bytes.is_none_or(|saved| saved > maximum))
+        || maximum_part_bytes.is_some_and(|maximum| minimum_part_bytes > maximum)
     {
         return Err(s3s::s3_error!(InvalidRequest));
     }
@@ -290,8 +293,8 @@ fn decode_multipart_header(
 /// identities survive a page. Historical payloads retire before the next page.
 struct MultipartReplay {
     snapshot: MultipartSnapshot,
-    maximum_parts: u32,
-    maximum_part_bytes: u64,
+    maximum_parts: Option<u32>,
+    maximum_part_bytes: Option<u64>,
 }
 
 impl MultipartReplay {
@@ -307,6 +310,8 @@ impl MultipartReplay {
                 key,
                 tail,
                 minimum_part_bytes,
+                maximum_parts,
+                maximum_part_bytes,
                 parts: BTreeMap::new(),
                 operations: BTreeMap::new(),
                 terminal: None,
@@ -340,8 +345,12 @@ impl MultipartReplay {
                 let etag_digest = cursor.array32()?;
                 cursor.finish()?;
                 if part_number == 0
-                    || part_number > self.maximum_parts
-                    || logical_bytes > self.maximum_part_bytes
+                    || self
+                        .maximum_parts
+                        .is_some_and(|maximum| part_number > maximum)
+                    || self
+                        .maximum_part_bytes
+                        .is_some_and(|maximum| logical_bytes > maximum)
                 {
                     return Err(s3s::s3_error!(InvalidRequest));
                 }
@@ -365,7 +374,14 @@ impl MultipartReplay {
             }
             3 => {
                 let count = cursor.u32()?;
-                if count == 0 || count > self.maximum_parts {
+                if count == 0 || self.maximum_parts.is_some_and(|maximum| count > maximum) {
+                    return Err(s3s::s3_error!(InvalidRequest));
+                }
+                if usize::try_from(count)
+                    .ok()
+                    .and_then(|count| count.checked_mul(36))
+                    != Some(cursor.bytes.len() - cursor.offset)
+                {
                     return Err(s3s::s3_error!(InvalidRequest));
                 }
                 let mut selected = Vec::with_capacity(count as usize);
