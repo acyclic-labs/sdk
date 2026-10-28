@@ -2,20 +2,17 @@ use super::*;
 
 /// Validates an atomic head without reconstructing it through other operations.
 pub fn head_from_wire(value: wire::PathHead) -> Result<crate::PathHead, StreamError> {
-    let last = value.last.map(record).transpose()?;
-    if value.durable > value.tail
-        || match &last {
-            Some(record) => record.sequence.checked_add(1) != Some(value.tail),
-            None => value.tail != 0,
-        }
-    {
-        return Err(StreamError::InvalidResponse);
-    }
-    let origin = value.origin.map(fork_origin_from_wire).transpose()?;
-    if origin.as_ref().is_some_and(|origin| origin.forked_at > value.tail) {
-        return Err(StreamError::InvalidResponse);
-    }
-    Ok(crate::PathHead { tail: value.tail, last, durable: value.durable, origin })
+    let mut head = crate::PathHead {
+        tail: value.tail,
+        last: value.last.map(record).transpose()?,
+        durable: value.durable,
+        origin: None,
+    };
+    // Preserve refusal ordering before decoding an independently malformed origin.
+    head.validate()?;
+    head.origin = value.origin.map(fork_origin_from_wire).transpose()?;
+    head.validate()?;
+    Ok(head)
 }
 
 /// Projects one provider observation, retaining the original record bytes.

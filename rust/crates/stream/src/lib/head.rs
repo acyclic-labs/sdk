@@ -11,6 +11,21 @@ pub struct PathHead {
     pub origin: Option<ForkOrigin>,
 }
 
+impl PathHead {
+    pub(crate) fn validate(&self) -> Result<(), StreamError> {
+        if self.durable > self.tail
+            || match &self.last {
+                Some(record) => record.sequence.checked_add(1) != Some(self.tail),
+                None => self.tail != 0,
+            }
+            || self.origin.as_ref().is_some_and(|origin| origin.forked_at > self.tail)
+        {
+            return Err(StreamError::InvalidResponse);
+        }
+        Ok(())
+    }
+}
+
 /// The source of this path's most recent enclosing subtree fork.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ForkOrigin {

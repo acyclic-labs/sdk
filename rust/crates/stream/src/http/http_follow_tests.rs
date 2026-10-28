@@ -154,6 +154,54 @@ async fn request(socket: &mut TcpStream) -> (String, Value) {
 fn path() -> StreamPath {
     StreamPath::new("follow/test").unwrap()
 }
+fn record(sequence: u64) -> Value {
+    json!({"sequence":sequence.to_string(),"value":"eA==", "commitId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "committedAtMicros":"1", "keys":[], "attributes":[]})
+}
+
+#[tokio::test]
+async fn head_refuses_incoherent_cuts_without_another_provider_request()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (tail, durable, sequence, inherited, valid) in [
+        (0, 0, None, None, true),
+        (0, 0, None, Some(0), true),
+        (1, 1, Some(0), Some(1), true),
+        (1, 0, None, None, false),
+        (0, 0, Some(0), None, false),
+        (2, 0, Some(0), None, false),
+        (1, 2, Some(0), None, false),
+        (1, 0, Some(0), Some(2), false),
+        (u64::MAX, 0, Some(u64::MAX), None, false),
+    ] {
+        let origin = inherited.map(|cut| json!({
+            "source":"head/source", "forkedAt":cut.to_string(),
+            "commitId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        }));
+        let server = Server::new(vec![Reply::ok(json!({
+            "tail":tail.to_string(), "durable":durable.to_string(),
+            "last":sequence.map(record), "origin":origin,
+        }))]).await;
+        let actual = server.client.head(StreamPath::new("head/child")?).await;
+        let wire = crate::wire::PathHead {
+            tail, durable,
+            last: sequence.map(|n| parse_record(&record(n))
+                .map(crate::wire_codec::record_wire)).transpose()?,
+            origin: inherited.map(|forked_at| crate::wire::ForkOrigin {
+                source: "head/source".into(), forked_at,
+                commit_id: Bytes::from_static(&[0; 32]),
+            }),
+        };
+        assert_eq!(actual, crate::wire_codec::head_from_wire(wire));
+        if valid {
+            assert_eq!(actual?.tail, tail);
+        } else {
+            assert_eq!(actual, Err(StreamError::InvalidResponse));
+        }
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0, "/v1/stream/head");
+    }
+    Ok(())
+}
 
 #[tokio::test]
 async fn request_path_typed_append_preserves_json_responses_and_validation_trace() {

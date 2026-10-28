@@ -310,7 +310,7 @@ impl StreamProvider for HttpStream {
     }
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
         let value = self.request("head", wire::HeadRequest { path: path.to_string() }.encode_to_vec()).await?;
-        Ok(crate::PathHead {
+        let head = crate::PathHead {
             tail: parse_u64(field(&value, "tail")?)?,
             last: value.get("last").filter(|last| !last.is_null()).map(parse_record).transpose()?,
             durable: parse_u64(field(&value, "durable")?)?,
@@ -321,7 +321,9 @@ impl StreamProvider for HttpStream {
                     commit_id: parse_id(field(origin, "commitId")?)?,
                 })
             }).transpose()?,
-        })
+        };
+        head.validate()?;
+        Ok(head)
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
