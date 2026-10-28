@@ -17,11 +17,7 @@ impl WasmAgentAuthority {
 impl WasmAgentAuthority {
     /// Owns the host-managed signing authority used by the agent runtime.
     #[wasm_bindgen(constructor)]
-    pub fn new(
-        authority: JsValue,
-        issuer_id: String,
-        issuer_key: Vec<u8>,
-    ) -> Result<Self, JsValue> {
+    pub fn new(authority: JsValue, issuer_id: String, issuer_key: Vec<u8>) -> Result<Self, JsValue> {
         let authority: Authority = from_js(authority)?;
         let issuer = AuthorityRoot::new(issuer_id, key_bytes(issuer_key)?, authority);
         issuer.verifier(&mut None).map_err(js_error)?;
