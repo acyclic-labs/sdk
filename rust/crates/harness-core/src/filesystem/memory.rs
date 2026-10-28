@@ -6,14 +6,17 @@ use crate::filesystem::{
     FilesystemHost, agent_internal::AgentInternalFiles,
 };
 use crate::{
-    AgentId, Capabilities, ConversationId, Error, OperationId, Result,
-    approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalFiles, ApprovalPolicy},
+    AgentId, Capabilities, ConversationId, Error, InteractionId, OperationId, Result,
+    approvals::{
+        AgentApprovalPolicy, AgentApprovals, ApprovalFiles, ApprovalPolicy, ApprovalResponder,
+    },
     conversation::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, VolumeClass, VolumeOperation,
         VolumeOwner, VolumeRef,
     },
     core::{AggregateKind, Authority, AuthorityRoot, Scope},
     executor::ExecutionJournal,
+    interaction::InteractionOutcome,
     resources::{GenerationRef, ProviderRef},
     runtime::{ContentBindings, RuntimeScope},
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
@@ -100,6 +103,7 @@ pub struct MemoryHarnessStorage<
 > {
     journal: Arc<FilesystemExecutionJournal<P, A, O>>,
     approval_files: Arc<dyn ApprovalFiles>,
+    approvals: Arc<AgentApprovals>,
     content_verifier: Arc<FilesystemContentVerifier<A, O>>,
     publisher: Arc<FilesystemContentPublisher<A, O>>,
     host: Arc<FilesystemHost<A, O>>,
@@ -250,6 +254,11 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
                 &mut None,
             )?,
         ));
+        let approvals = agent_approvals(
+            &approval_files,
+            ApprovalPolicy::default(),
+            maximum_file_bytes,
+        )?;
         let journal = Arc::new(
             FilesystemExecutionJournal::new(
                 stream.clone(),
@@ -263,11 +272,7 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
                 },
             )?
             .with_input_verifier(input.clone())
-            .with_agent_approvals(agent_approvals(
-                &approval_files,
-                ApprovalPolicy::default(),
-                maximum_file_bytes,
-            )?),
+            .with_agent_approvals(Arc::clone(&approvals)),
         );
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(&host),
@@ -280,6 +285,7 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
         Ok(Self {
             journal,
             approval_files,
+            approvals,
             content_verifier: input,
             publisher,
             host,
@@ -305,8 +311,25 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
         let journal = Arc::try_unwrap(self.journal).map_err(|_| {
             Error::Conflict("approval policy must be bound before the journal is shared".into())
         })?;
-        self.journal = Arc::new(journal.with_agent_approvals(approvals));
+        self.journal = Arc::new(journal.with_agent_approvals(Arc::clone(&approvals)));
+        self.approvals = approvals;
         Ok(self)
+    }
+
+    /// Records `responder`'s decision on approval `id` through the bound
+    /// approval owner, then returns its settled outcome: `None` while a later
+    /// stage of the policy chain still waits on its decider.
+    pub async fn decide_approval(
+        &self,
+        id: InteractionId,
+        responder: ApprovalResponder<'_>,
+        approved: bool,
+        reason: Option<String>,
+    ) -> Result<Option<InteractionOutcome>> {
+        self.approvals
+            .decide(id, responder, approved, reason)
+            .await?;
+        self.approvals.outcome(id).await
     }
 
     /// Supplies the exact ref-only journal required by `HarnessBuilder`.

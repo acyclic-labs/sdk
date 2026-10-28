@@ -204,6 +204,26 @@ impl AgentApprovals {
         Err(Error::Conflict("approval chain did not settle".into()))
     }
 
+    /// `responder` decides approval `id` through this owner's files and
+    /// policy; see [`decide`].
+    pub async fn decide(
+        &self,
+        id: InteractionId,
+        responder: super::ApprovalResponder<'_>,
+        approved: bool,
+        reason: Option<String>,
+    ) -> Result<()> {
+        decide(
+            &*self.files,
+            &self.policy,
+            &request_id(id),
+            responder,
+            approved,
+            reason,
+        )
+        .await
+    }
+
     /// Proves `id` approved exactly `operation`'s action with `digest`: its
     /// request names that intent and its chain settled to an approval.
     pub async fn verify(
