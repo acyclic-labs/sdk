@@ -21,7 +21,7 @@ The Cloud product API uses gRPC. In Node or Bun, import `createMachinesGrpcClien
 
 `machines.exec({ protocol, machine, argv, timeoutMs })` streams merged guest stdout/stderr bytes as `output.data` frames, followed by one terminal `output.exitCode` frame. Output is yielded as it arrives. Pass 1–64 arguments (at most 4,096 UTF-8 bytes each and 32,768 total) and a timeout of 1–60,000 milliseconds. There is no implicit shell evaluation. Execution has no lifecycle operation ID and is never automatically retried: a canceled, timed-out or lost reply does not prove that the command did not run. Missing exit codes, empty or oversized data frames and frames after the exit code fail the stream.
 
-`machines.readOutput({ protocol, machine, offset, limit })` reads live guest console bytes. Offsets use `bigint`; `MAX_OUTPUT_READ_BYTES` from the gRPC entry point is 65,536. Continue from the returned `offset + BigInt(data.length)`. A later returned offset exposes discarded console bytes; an empty read means no newer bytes are available now, rather than permanent EOF. The client rejects substituted machine identities, backward offsets, oversized data and offset overflow.
+`machines.readOutput({ protocol, machine, offset, limit })` reads live guest console bytes. Offsets use `bigint`; `MAX_OUTPUT_READ_BYTES` from the gRPC entry point is 65,536. Larger positive read hints return one chunk. Continue from the returned `offset + BigInt(data.length)`. A later returned offset exposes discarded console bytes; an empty read means no newer bytes are available now, rather than permanent EOF. The client rejects substituted machine identities, backward offsets, oversized data and offset overflow.
 
 ```ts
 import { createMachinesGrpcClient } from "@acyclic-labs/machines/grpc";
@@ -48,3 +48,5 @@ try {
 `forkMachine` forks a running machine directly when its contract declares `live-fork` (memory and disk) or `disk-fork` (disk only). The returned fidelity is explicit; open network connections are never inherited. Children have fresh identities and must be destroyed before their source. Providers without either capability require a checkpoint fork or restart instead. The Rust-backed simulator lets callers test both fidelity paths with `SimulatedMachines({ capabilities: [...] })`.
 
 [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/machines/src) · [Protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/machines)
+
+`listMachines(provider)` follows all pages by default. `maximum` is an optional caller-selected stopping point; `pageSize` is normalized to the shared physical page width without refusing larger positive hints.
