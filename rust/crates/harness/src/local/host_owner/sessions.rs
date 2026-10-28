@@ -238,9 +238,9 @@ impl HostWorkspaceOwner {
         match session.claimed() {
             Some(claimed) if claimed == claim.operation => {
                 view.capture(operation).await?;
-                // The process recorded its whole event stream; the settled
-                // conversation entry carries it.
-                let events = match quiescence.events()? {
+                // The turn's process recorded its whole event stream; the
+                // settled conversation entry carries it.
+                let events = match quiescence.events(claim.operation)? {
                     Some(bytes) => Some(
                         self.native
                             .stage_events(child, claim.operation, &bytes)
@@ -258,10 +258,11 @@ impl HostWorkspaceOwner {
                             events,
                         },
                     )
-                    .await
+                    .await?;
+                quiescence.retire_events(claim.operation)
             }
             // A replayed completion of a turn that already settled.
-            _ if session.settled >= claim.turn => Ok(()),
+            _ if session.settled >= claim.turn => quiescence.retire_events(claim.operation),
             _ => Err(Error::Conflict(
                 "native completion differs from its original claim".into(),
             )),

@@ -10,8 +10,11 @@ use acyclic_native_runtime::{FileLock, FileLockMode, ProcessCustody, ProcessTree
 pub mod children;
 pub mod launch;
 
-/// The running turn's native event log, in its custody directory.
-const EVENT_LOG: &str = "events.jsonl";
+/// The native event log of the turn `claim`, in its custody directory. Each
+/// turn claim owns its own log, so a settlement never reads another turn's.
+fn event_log(claim: OperationId) -> PathBuf {
+    PathBuf::from(format!("events-{claim}.jsonl"))
+}
 /// Bound of one turn's native event log, its omission marker included.
 pub const EVENT_LOG_BYTES: u64 = 4 * 1024 * 1024;
 /// The line ending a log whose later events exceeded its bound.
@@ -184,9 +187,10 @@ impl HostProcessLease {
 }
 
 impl QuiescentHostProcess {
-    /// The settled turn's native event log, which its process recorded.
-    pub(crate) fn events(&self) -> Result<Option<Vec<u8>>> {
-        let file = match self.0.root.open_file(Path::new(EVENT_LOG), false) {
+    /// The native event log the process of turn `claim` recorded; `None`
+    /// when that turn's process never started.
+    pub(crate) fn events(&self, claim: OperationId) -> Result<Option<Vec<u8>>> {
+        let file = match self.0.root.open_file(&event_log(claim), false) {
             Ok(file) => file,
             Err(acyclic_fs::demand::DemandError::Absent) => return Ok(None),
             Err(acyclic_fs::demand::DemandError::Io(error))
@@ -206,6 +210,11 @@ impl QuiescentHostProcess {
             return Err(Error::Invalid("native event log exceeds its bound".into()));
         }
         Ok(Some(bytes))
+    }
+
+    /// Removes the log of turn `claim` once its conversation entry holds it.
+    pub(crate) fn retire_events(&self, claim: OperationId) -> Result<()> {
+        remove_absent(&self.0.root, &event_log(claim))
     }
 
     /// Refuses applying one task's physical proof to another view or claim.
@@ -236,6 +245,19 @@ struct EventLog {
     omitted: bool,
 }
 
+/// Removes `leaf` from `root`; an absent file is already removed.
+fn remove_absent(root: &acyclic_fs::HeldRoot, leaf: &Path) -> Result<()> {
+    match root.remove_file(leaf) {
+        Ok(()) | Err(acyclic_fs::demand::DemandError::Absent) => Ok(()),
+        Err(acyclic_fs::demand::DemandError::Io(error))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(storage(error)),
+    }
+}
+
 fn polling_work() -> Result<acyclic_fs::NativeMaterializationWork> {
     acyclic_fs::NativeMaterializationWork::new(
         acyclic_fs::performance::work_budget(65_536, 65_536),
@@ -245,8 +267,9 @@ fn polling_work() -> Result<acyclic_fs::NativeMaterializationWork> {
 }
 
 impl HostSessionProcess {
-    /// Starts in the exact admitted view. Hosts retain their tools and policy.
-    pub fn spawn(&mut self, command: &mut std::process::Command) -> Result<()> {
+    /// Starts the process of turn `claim` in the exact admitted view. Hosts
+    /// retain their tools and policy.
+    pub fn spawn(&mut self, command: &mut std::process::Command, claim: OperationId) -> Result<()> {
         let lease = self.lease.as_ref().ok_or_else(|| Error::Conflict(
             "step=spawn native session: process already released; recovery: reopen the task through acyclic host".into()
         ))?;
@@ -258,17 +281,10 @@ impl HostSessionProcess {
         command
             .env("ACYCLIC_WORKSPACE", &lease.view)
             .env("ACYCLIC_TASK", lease.task.to_string());
-        // Each turn's log starts empty; settlement reads the one it wrote.
-        match lease.root.remove_file(Path::new(EVENT_LOG)) {
-            Ok(()) | Err(acyclic_fs::demand::DemandError::Absent) => {}
-            Err(acyclic_fs::demand::DemandError::Io(error))
-                if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(storage(error)),
-        }
-        let file = lease
-            .root
-            .open_file(Path::new(EVENT_LOG), true)
-            .map_err(storage)?;
+        // A relaunch of the same claim restarts its log.
+        let log = event_log(claim);
+        remove_absent(&lease.root, &log)?;
+        let file = lease.root.open_file(&log, true).map_err(storage)?;
         self.events = Some(EventLog {
             file,
             written: 0,
@@ -436,7 +452,7 @@ mod tests {
             .current_dir(&view)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
-        process.spawn(&mut command)?;
+        process.spawn(&mut command, OperationId::new())?;
         let before = work.remaining().map_err(storage)?;
         let live = work.live_allocation_bytes();
         let mut progressed = false;
@@ -486,11 +502,11 @@ mod tests {
         let mut process = HostProcessLease::acquire(&view, &task, &view)?.process(&work)?;
         let mut command = std::process::Command::new(view.join("absent-native-program"));
         command.current_dir(&view);
-        assert!(process.spawn(&mut command).is_err());
+        assert!(process.spawn(&mut command, OperationId::new()).is_err());
         assert!(HostProcessLease::acquire(&view, &task, &view).is_err());
         process.release()?;
         assert!(
-            process.spawn(&mut command).is_err(),
+            process.spawn(&mut command, OperationId::new()).is_err(),
             "retired owner cannot spawn again"
         );
         HostProcessLease::acquire(&view, &task, &view)?
@@ -515,7 +531,7 @@ mod tests {
         let mut command = std::process::Command::new("must-not-execute");
         command.current_dir(outside.path());
         let error = process
-            .spawn(&mut command)
+            .spawn(&mut command, OperationId::new())
             .expect_err("foreign cwd admitted");
         assert!(error.to_string().contains("cwd differs from admitted view"));
         process.release()?;

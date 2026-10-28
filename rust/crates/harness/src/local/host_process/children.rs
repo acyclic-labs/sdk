@@ -246,9 +246,10 @@ impl NativeChildren {
             answer: String::new(),
             session: None,
         });
+        let turn = running.claim.operation;
         if let Err(error) = running
             .process
-            .spawn(&mut command)
+            .spawn(&mut command, turn)
             .and_then(|()| running.process.queue_stdin(prompt))
         {
             running.failure = Some(error.to_string());

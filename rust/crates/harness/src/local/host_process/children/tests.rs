@@ -92,7 +92,8 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result {
     let mut command = std::process::Command::new("/bin/sh");
     command.args(["-c", "echo $$ > \"$1/pid\"; while test ! -f \"$1/exit\"; do :; done; printf captured > partial.txt; printf native-diagnostic >&2; exit 17", "fixture"])
         .arg(state).current_dir(&view).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    running.process.spawn(&mut command)?;
+    let claim = running.claim.operation;
+    running.process.spawn(&mut command, claim)?;
     let pid = loop {
         if let Ok(pid) = fs::read_to_string(state.join("pid"))
             && let Ok(pid) = pid.trim().parse::<u32>()
