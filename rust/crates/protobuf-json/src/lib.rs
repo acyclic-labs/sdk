@@ -3,7 +3,6 @@
 //! Callers retain descriptor ownership, transport limits, typed error mapping,
 //! semantic validation and request/response identity checks.
 
-use prost::Message;
 use prost_reflect::{DynamicMessage, MessageDescriptor};
 
 /// Conversion stage, mapped into the original caller's error vocabulary.
