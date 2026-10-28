@@ -107,7 +107,7 @@ impl BrowserCheckout {
                 theirs,
                 maximum_changes,
                 maximum_conflicts,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
