@@ -1,5 +1,5 @@
 fn authorization(api_key: &str) -> Result<Zeroizing<String>, Error> {
-    if api_key.is_empty() || api_key.len() > 8_192 {
+    if api_key.is_empty() {
         return Err(Error::Invalid("invalid API key"));
     }
     let value = Zeroizing::new(format!("Bearer {api_key}"));
