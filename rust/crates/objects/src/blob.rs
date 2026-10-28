@@ -196,7 +196,9 @@ pub(crate) struct Envelope {
     /// index keys, so no actor working on an earlier blob of the same digest
     /// can match anything of this one.
     pub(crate) version: [u8; 16],
-    /// The deleter that owns this blob's removal, if any.
+    /// The deleter that owns this blob's removal, if any. Encoded at a fixed
+    /// width, so marking and reviving never change the envelope's size and a
+    /// full bounded medium can still free space.
     pub(crate) dying: Option<[u8; 16]>,
 }
 
@@ -215,13 +217,8 @@ impl Envelope {
             bytes.extend_from_slice(reference.as_bytes());
         }
         bytes.extend_from_slice(&self.version);
-        match self.dying {
-            None => bytes.push(0),
-            Some(deleter) => {
-                bytes.push(1);
-                bytes.extend_from_slice(&deleter);
-            }
-        }
+        bytes.push(u8::from(self.dying.is_some()));
+        bytes.extend_from_slice(&self.dying.unwrap_or_default());
         bytes
     }
 
@@ -244,9 +241,9 @@ impl Envelope {
             reader.take(16)?.try_into().map_err(|_| corrupt())
         };
         let version = nonce(&mut reader)?;
-        let dying = match reader.take(1)? {
-            [0] => None,
-            [1] => Some(nonce(&mut reader)?),
+        let dying = match (reader.take(1)?, nonce(&mut reader)?) {
+            ([0], deleter) if deleter == [0; 16] => None,
+            ([1], deleter) => Some(deleter),
             _ => return Err(corrupt()),
         };
         reader.finish()?;

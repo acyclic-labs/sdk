@@ -47,6 +47,37 @@ async fn a_bounded_memory_medium_holds_its_budget_exactly() -> Result<(), Medium
     Ok(())
 }
 
+#[tokio::test]
+async fn a_full_bounded_account_can_still_delete() -> Result<(), Box<dyn std::error::Error>> {
+    async fn stored(medium: &MemoryMedium) -> Result<u64, MediumError> {
+        Ok(medium
+            .list("", None, usize::MAX)
+            .await?
+            .iter()
+            .map(|(_, bytes)| bytes)
+            .sum())
+    }
+    let probe = Store::new(MemoryMedium::default());
+    probe
+        .account(b"acct")?
+        .put(vec![5; 8].into(), Vec::new())
+        .await?;
+    let full = stored(probe.medium()).await?;
+    // Exactly full after one put: the delete mark must not need more room.
+    let store = Store::new(MemoryMedium::bounded(full));
+    let blobs = store.account(b"acct")?;
+    let digest = blobs
+        .put(vec![5; 8].into(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("unknown")?
+        .digest;
+    assert_eq!(stored(store.medium()).await?, full);
+    assert_eq!(blobs.delete(digest).await?, Delete::Deleted);
+    assert!(stored(store.medium()).await? < full);
+    Ok(())
+}
+
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn local_store_passes_the_shared_suite_and_reopens() -> Result<(), Box<dyn std::error::Error>>
