@@ -227,6 +227,7 @@ test("console reads preserve uint64 offsets, discarded-byte gaps and temporary e
   const { machines } = await fixture(t, {
     readOutput(query, context) {
       authenticate(context);
+      assert.ok(query.limit > 0 && query.limit <= MAX_OUTPUT_READ_BYTES);
       seen.push(query.offset);
       return { machine, offset: query.offset + (seen.length === 1 ? 4n : 0n), data: seen.length === 2 ? new Uint8Array() : new Uint8Array([0, 255]) };
     },
@@ -238,6 +239,7 @@ test("console reads preserve uint64 offsets, discarded-byte gaps and temporary e
   assert.equal((await machines.readOutput({ protocol, machine, offset: next, limit: 2 })).data.length, 0);
   assert.deepEqual((await machines.readOutput({ protocol, machine, offset: next, limit: 2 })).data, first.data);
   assert.deepEqual(seen, [offset, next, next]);
+  assert.deepEqual((await machines.readOutput({ protocol, machine, offset: next, limit: 0xffff_ffff })).data, first.data);
 });
 
 test("an exec RPC deadline cancels the pending call without redispatch", async t => {
@@ -268,7 +270,7 @@ test("exec and console request bounds fail before reaching the server", async t 
     await assert.rejects(exec(machines, { ...request, argv }), RangeError);
   }
   for (const timeoutMs of [0, -1, 0x1_0000_0000, 1.5]) await assert.rejects(exec(machines, { ...request, timeoutMs }), RangeError);
-  for (const limit of [0, 65537, 1.5]) await assert.rejects(machines.readOutput({ protocol, machine, offset: 0n, limit }), RangeError);
+  for (const limit of [0, Number.MAX_SAFE_INTEGER + 1, 1.5]) await assert.rejects(machines.readOutput({ protocol, machine, offset: 0n, limit }), RangeError);
   for (const offset of [-1n, 1n << 64n]) await assert.rejects(machines.readOutput({ protocol, machine, offset, limit: 1 }), RangeError);
   assert.equal(attempts, 0);
 });
