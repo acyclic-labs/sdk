@@ -17,18 +17,12 @@ from .types import Question
 from .backends.base import Backend
 
 
-MAX_BODY = int(os.environ.get("JEV_SERVE_MAX_BODY", str(1 << 20)))        # bytes per request
-MAX_QUESTIONS = int(os.environ.get("JEV_SERVE_MAX_QUESTIONS", "64"))       # per request
-MAX_OPTIONS = int(os.environ.get("JEV_SERVE_MAX_OPTIONS", "64"))           # per question
-MAX_STATE = int(os.environ.get("JEV_SERVE_MAX_STATE", "200000"))           # characters
-
-
 def make_server(backend: Backend, host: str = "127.0.0.1", port: int = 8788, token: str | None = None) -> ThreadingHTTPServer:
     """One locked backend behind a small HTTP API.
 
     `token` (or JEV_SERVE_TOKEN) makes every /decide require `Authorization: Bearer <token>`; without one the
-    server refuses to bind anything but a loopback address. Bodies, question counts, option counts and state
-    length are capped before anything is parsed or scheduled, so one client cannot exhaust the backend.
+    server refuses to bind anything but a loopback address. The backend's existing batching and lock
+    schedule the complete request without a separate HTTP count or size ceiling.
     """
     token = token or os.environ.get("JEV_SERVE_TOKEN")
     if not token and host not in ("127.0.0.1", "localhost", "::1"):
@@ -61,16 +55,10 @@ def make_server(backend: Backend, host: str = "127.0.0.1", port: int = 8788, tok
                 n = int(self.headers.get("Content-Length", "0"))
                 if n < 0:
                     return self._send(400, {"error": "invalid Content-Length"})
-                if n > MAX_BODY:
-                    return self._send(413, {"error": f"body exceeds {MAX_BODY} bytes"})
                 req = json.loads(self.rfile.read(n) or b"{}")
                 questions = req.get("questions", [])
-                if not isinstance(questions, list) or len(questions) > MAX_QUESTIONS:
-                    return self._send(400, {"error": f"questions must be a list of at most {MAX_QUESTIONS}"})
-                if len(str(req.get("state", ""))) > MAX_STATE:
-                    return self._send(413, {"error": f"state exceeds {MAX_STATE} characters"})
-                if any(len(q.get("options", ())) > MAX_OPTIONS for q in questions):
-                    return self._send(400, {"error": f"a question has more than {MAX_OPTIONS} options"})
+                if not isinstance(questions, list):
+                    return self._send(400, {"error": "questions must be a list"})
                 qs = [Question(q["question"], tuple(q.get("options", ())), q.get("type", "choice"), q.get("id"))
                       for q in questions]
                 with lock:
