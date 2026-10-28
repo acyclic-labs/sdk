@@ -23,7 +23,7 @@
     "filesystem": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:df7fdd0312fff4478e67ac8e94e65d1651bd8fa6e22ca37fbeb65077924c948d",
+      "schemaDigest": "sha256:76293e20721bc773fc99423f3b413f498ea41ecf485dd33b72ff3e688c69a9c6",
       "descriptorDigest": "sha256:bf1fe4de0dc70b3822012c461e9f67287ec8d2b274ea2ec019feccececdf4d09",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
