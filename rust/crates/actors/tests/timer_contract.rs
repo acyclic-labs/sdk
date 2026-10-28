@@ -1,7 +1,7 @@
 //! Timer source compatibility, stable identities and inbox wake behavior.
 #[cfg(not(target_arch = "wasm32"))]
 acyclic_test_support::counting_allocator!();
-use acyclic_actors::timers::{MAX_TIMER_RECORD_BYTES, TimerError, TimerRecord, fire, schedule};
+use acyclic_actors::timers::{MAX_TIMER_RECORD_BYTES, TimerError, TimerRecord, fire};
 use acyclic_stream::{MemoryStream, StreamError, StreamPath, StreamProvider};
 use futures::{StreamExt, poll};
 use proptest::prelude::*;
@@ -64,36 +64,6 @@ fn oracle_detects_bypassed_deadline_admission() {
     let mut record = timer([1; 16], [2; 16], 1).expect("valid identity");
     record.deadline_unix_ms = 0;
     oracle::check(&record);
-}
-
-#[tokio::test]
-async fn scheduling_delegates_validated_ids_to_the_scoped_publisher()
--> Result<(), Box<dyn std::error::Error>> {
-    let record = timer([1; 16], [2; 16], 20)?;
-    let result = schedule(
-        async |task, operation, deadline| {
-            Ok::<_, TimerError>((task.into_bytes(), operation.into_bytes(), deadline))
-        },
-        &record,
-    )
-    .await?;
-    assert_eq!(result, ([1; 16], [2; 16], 20));
-    let invalid = TimerRecord {
-        deadline_unix_ms: 0,
-        ..record
-    };
-    let mut called = false;
-    let result = schedule(
-        async |_, _, _| {
-            called = true;
-            Ok::<_, TimerError>(())
-        },
-        &invalid,
-    )
-    .await;
-    assert_eq!(result, Err(TimerError::Deadline));
-    assert!(!called);
-    Ok(())
 }
 
 #[tokio::test]

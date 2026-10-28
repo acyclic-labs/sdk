@@ -459,385 +459,61 @@ impl NativeActorsClient {
             Err(error) => NativeActorsOperationResult::failure(error),
         })
     }
+}
 
-    #[napi(js_name = "deployNamespaceResult")]
-    /// Execute `DeployNamespace` and return encoded bytes or structured error.
-    pub async fn deploy_namespace_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeActorsCancellation>,
-    ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<wire::DeploymentRequest, domain::DeploymentRequest>(
-            &request,
-            "deploy_namespace",
-        ) {
-            Ok(value) => value,
-            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
-        };
-        let value = cancellable(
-            self.inner.deploy_namespace(&decoded),
-            cancellation.map(|value| value.state.clone()),
-        )
-        .await;
-        Ok(match value {
-            Ok(value) => NativeActorsOperationResult {
-                value: Some(
-                    encode(&wire::DeploymentResponse::from(value), "deploy_namespace")
-                        .map_err(napi_error)?,
-                ),
-                error: None,
-            },
-            Err(error) => NativeActorsOperationResult::failure(error),
-        })
-    }
-    #[napi(js_name = "deployWorkerResult")]
-    /// Execute `DeployWorker` and return encoded bytes or structured error.
-    pub async fn deploy_worker_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeActorsCancellation>,
-    ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<wire::DeploymentRequest, domain::DeploymentRequest>(
-            &request,
-            "deploy_worker",
-        ) {
-            Ok(value) => value,
-            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
-        };
-        let value = cancellable(
-            self.inner.deploy_worker(&decoded),
-            cancellation.map(|value| value.state.clone()),
-        )
-        .await;
-        Ok(match value {
-            Ok(value) => NativeActorsOperationResult {
-                value: Some(
-                    encode(&wire::DeploymentResponse::from(value), "deploy_worker")
-                        .map_err(napi_error)?,
-                ),
-                error: None,
-            },
-            Err(error) => NativeActorsOperationResult::failure(error),
-        })
-    }
-    #[napi(js_name = "invokeWorkerResult")]
-    /// Execute `InvokeWorker` and return encoded bytes or structured error.
-    pub async fn invoke_worker_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeActorsCancellation>,
-    ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<wire::InvokeWorkerRequest, domain::InvokeWorkerRequest>(
-            &request,
-            "invoke_worker",
-        ) {
-            Ok(value) => value,
-            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
-        };
-        let value = cancellable(
-            self.inner.invoke_worker(&decoded),
-            cancellation.map(|value| value.state.clone()),
-        )
-        .await;
-        Ok(match value {
-            Ok(value) => NativeActorsOperationResult {
-                value: Some(
-                    encode(&wire::InvokeActorResponse::from(value), "invoke_worker")
-                        .map_err(napi_error)?,
-                ),
-                error: None,
-            },
-            Err(error) => NativeActorsOperationResult::failure(error),
-        })
-    }
-    #[napi(js_name = "deleteWorkerResult")]
-    /// Execute `DeleteWorker` and return encoded bytes or structured error.
-    pub async fn delete_worker_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeActorsCancellation>,
-    ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<wire::DeleteWorkerRequest, domain::DeleteWorkerRequest>(
-            &request,
-            "delete_worker",
-        ) {
-            Ok(value) => value,
-            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
-        };
-        let value = cancellable(
-            self.inner.delete_worker(&decoded),
-            cancellation.map(|value| value.state.clone()),
-        )
-        .await;
-        Ok(match value {
-            Ok(value) => NativeActorsOperationResult {
-                value: Some(
-                    encode(&wire::DeleteWorkerResponse::from(value), "delete_worker")
-                        .map_err(napi_error)?,
-                ),
-                error: None,
-            },
-            Err(error) => NativeActorsOperationResult::failure(error),
-        })
-    }
-    #[napi(js_name = "updateNamespaceResult")]
-    /// Execute `UpdateNamespace` and return encoded bytes or structured error.
-    pub async fn update_namespace_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeActorsCancellation>,
-    ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<
-            wire::UpdateNamespaceRequest,
-            domain::UpdateNamespaceRequest,
-        >(&request, "update_namespace")
-        {
-            Ok(value) => value,
-            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
-        };
-        let value = cancellable(
-            self.inner.update_namespace(&decoded),
-            cancellation.map(|value| value.state.clone()),
-        )
-        .await;
-        Ok(match value {
-            Ok(value) => NativeActorsOperationResult {
-                value: Some(
-                    encode(
-                        &wire::UpdateNamespaceResponse::from(value),
-                        "update_namespace",
-                    )
-                    .map_err(napi_error)?,
-                ),
-                error: None,
-            },
-            Err(error) => NativeActorsOperationResult::failure(error),
-        })
-    }
-    #[napi(js_name = "inspectActorResult")]
-    /// Execute `InspectActor` and return encoded bytes or structured error.
-    pub async fn inspect_actor_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeActorsCancellation>,
-    ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<wire::InspectActorRequest, domain::InspectActorRequest>(
-            &request,
-            "inspect_actor",
-        ) {
-            Ok(value) => value,
-            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
-        };
-        let value = cancellable(
-            self.inner.inspect_actor(&decoded),
-            cancellation.map(|value| value.state.clone()),
-        )
-        .await;
-        Ok(match value {
-            Ok(value) => NativeActorsOperationResult {
-                value: Some(
-                    encode(&wire::InspectActorResponse::from(value), "inspect_actor")
-                        .map_err(napi_error)?,
-                ),
-                error: None,
-            },
-            Err(error) => NativeActorsOperationResult::failure(error),
-        })
-    }
-    #[napi(js_name = "addSubscriptionResult")]
-    /// Execute `AddSubscription` and return encoded bytes or structured error.
-    pub async fn add_subscription_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeActorsCancellation>,
-    ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<
-            wire::AddSubscriptionRequest,
-            domain::AddSubscriptionRequest,
-        >(&request, "add_subscription")
-        {
-            Ok(value) => value,
-            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
-        };
-        let value = cancellable(
-            self.inner.add_subscription(&decoded),
-            cancellation.map(|value| value.state.clone()),
-        )
-        .await;
-        Ok(match value {
-            Ok(value) => NativeActorsOperationResult {
-                value: Some(
-                    encode(
-                        &wire::AddSubscriptionResponse::from(value),
-                        "add_subscription",
-                    )
-                    .map_err(napi_error)?,
-                ),
-                error: None,
-            },
-            Err(error) => NativeActorsOperationResult::failure(error),
-        })
-    }
-    #[napi(js_name = "removeSubscriptionResult")]
-    /// Execute `RemoveSubscription` and return encoded bytes or structured error.
-    pub async fn remove_subscription_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeActorsCancellation>,
-    ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<
-            wire::RemoveSubscriptionRequest,
-            domain::RemoveSubscriptionRequest,
-        >(&request, "remove_subscription")
-        {
-            Ok(value) => value,
-            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
-        };
-        let value = cancellable(
-            self.inner.remove_subscription(&decoded),
-            cancellation.map(|value| value.state.clone()),
-        )
-        .await;
-        Ok(match value {
-            Ok(value) => NativeActorsOperationResult {
-                value: Some(
-                    encode(
-                        &wire::RemoveSubscriptionResponse::from(value),
-                        "remove_subscription",
-                    )
-                    .map_err(napi_error)?,
-                ),
-                error: None,
-            },
-            Err(error) => NativeActorsOperationResult::failure(error),
-        })
-    }
-    #[napi(js_name = "resumeSubscriptionResult")]
-    /// Execute `ResumeSubscription` and return encoded bytes or structured error.
-    pub async fn resume_subscription_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeActorsCancellation>,
-    ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<
-            wire::ResumeSubscriptionRequest,
-            domain::ResumeSubscriptionRequest,
-        >(&request, "resume_subscription")
-        {
-            Ok(value) => value,
-            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
-        };
-        let value = cancellable(
-            self.inner.resume_subscription(&decoded),
-            cancellation.map(|value| value.state.clone()),
-        )
-        .await;
-        Ok(match value {
-            Ok(value) => NativeActorsOperationResult {
-                value: Some(
-                    encode(
-                        &wire::ResumeSubscriptionResponse::from(value),
-                        "resume_subscription",
-                    )
-                    .map_err(napi_error)?,
-                ),
-                error: None,
-            },
-            Err(error) => NativeActorsOperationResult::failure(error),
-        })
-    }
-    #[napi(js_name = "checkpointActorResult")]
-    /// Execute `CheckpointActor` and return encoded bytes or structured error.
-    pub async fn checkpoint_actor_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeActorsCancellation>,
-    ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<
-            wire::CheckpointActorRequest,
-            domain::CheckpointActorRequest,
-        >(&request, "checkpoint_actor")
-        {
-            Ok(value) => value,
-            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
-        };
-        let value = cancellable(
-            self.inner.checkpoint_actor(&decoded),
-            cancellation.map(|value| value.state.clone()),
-        )
-        .await;
-        Ok(match value {
-            Ok(value) => NativeActorsOperationResult {
-                value: Some(
-                    encode(
-                        &wire::CheckpointActorResponse::from(value),
-                        "checkpoint_actor",
-                    )
-                    .map_err(napi_error)?,
-                ),
-                error: None,
-            },
-            Err(error) => NativeActorsOperationResult::failure(error),
-        })
-    }
-    #[napi(js_name = "deleteAllResult")]
-    /// Execute `DeleteAll` and return encoded bytes or structured error.
-    pub async fn delete_all_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeActorsCancellation>,
-    ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<wire::DeleteAllRequest, domain::DeleteAllRequest>(
-            &request,
-            "delete_all",
-        ) {
-            Ok(value) => value,
-            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
-        };
-        let value = cancellable(
-            self.inner.delete_all(&decoded),
-            cancellation.map(|value| value.state.clone()),
-        )
-        .await;
-        Ok(match value {
-            Ok(value) => NativeActorsOperationResult {
-                value: Some(
-                    encode(&wire::DeleteAllResponse::from(value), "delete_all")
-                        .map_err(napi_error)?,
-                ),
-                error: None,
-            },
-            Err(error) => NativeActorsOperationResult::failure(error),
-        })
-    }
-    #[napi(js_name = "invokeActorResult")]
-    /// Execute `InvokeActor` and return encoded bytes or structured error.
-    pub async fn invoke_actor_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeActorsCancellation>,
-    ) -> Result<NativeActorsOperationResult> {
-        let decoded = match decode_semantic::<wire::InvokeActorRequest, domain::InvokeActorRequest>(
-            &request,
-            "invoke_actor",
-        ) {
-            Ok(value) => value,
-            Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
-        };
-        let value = cancellable(
-            self.inner.invoke_actor(&decoded),
-            cancellation.map(|value| value.state.clone()),
-        )
-        .await;
-        Ok(match value {
-            Ok(value) => NativeActorsOperationResult {
-                value: Some(
-                    encode(&wire::InvokeActorResponse::from(value), "invoke_actor")
-                        .map_err(napi_error)?,
-                ),
-                error: None,
-            },
-            Err(error) => NativeActorsOperationResult::failure(error),
-        })
-    }
+// The ABI owns only names and carriers; validation, cancellation and metadata
+// stay in the same Rust semantic client path for every operation.
+macro_rules! operation_wrappers {
+    ($(($export:ident, $js:literal, $method:ident, $input:ident, $output:ident)),+ $(,)?) => {
+        #[napi]
+        impl NativeActorsClient {
+            $(
+            #[napi(js_name = $js)]
+            #[doc = concat!("Execute `", stringify!($method), "` and return encoded bytes or structured error.")]
+            pub async fn $export(
+                &self,
+                request: Buffer,
+                cancellation: Option<&NativeActorsCancellation>,
+            ) -> Result<NativeActorsOperationResult> {
+                let decoded = match decode_semantic::<wire::$input, domain::$input>(
+                    &request,
+                    stringify!($method),
+                ) {
+                    Ok(value) => value,
+                    Err(error) => return Ok(NativeActorsOperationResult::failure(error)),
+                };
+                let value = cancellable(
+                    self.inner.$method(&decoded),
+                    cancellation.map(|value| value.state.clone()),
+                )
+                .await;
+                Ok(match value {
+                    Ok(value) => NativeActorsOperationResult {
+                        value: Some(
+                            encode(&wire::$output::from(value), stringify!($method))
+                                .map_err(napi_error)?,
+                        ),
+                        error: None,
+                    },
+                    Err(error) => NativeActorsOperationResult::failure(error),
+                })
+            }
+            )+
+        }
+    };
+}
+
+operation_wrappers! {
+    (deploy_namespace_result, "deployNamespaceResult", deploy_namespace, DeploymentRequest, DeploymentResponse),
+    (deploy_worker_result, "deployWorkerResult", deploy_worker, DeploymentRequest, DeploymentResponse),
+    (invoke_worker_result, "invokeWorkerResult", invoke_worker, InvokeWorkerRequest, InvokeActorResponse),
+    (delete_worker_result, "deleteWorkerResult", delete_worker, DeleteWorkerRequest, DeleteWorkerResponse),
+    (update_namespace_result, "updateNamespaceResult", update_namespace, UpdateNamespaceRequest, UpdateNamespaceResponse),
+    (inspect_actor_result, "inspectActorResult", inspect_actor, InspectActorRequest, InspectActorResponse),
+    (add_subscription_result, "addSubscriptionResult", add_subscription, AddSubscriptionRequest, AddSubscriptionResponse),
+    (remove_subscription_result, "removeSubscriptionResult", remove_subscription, RemoveSubscriptionRequest, RemoveSubscriptionResponse),
+    (resume_subscription_result, "resumeSubscriptionResult", resume_subscription, ResumeSubscriptionRequest, ResumeSubscriptionResponse),
+    (checkpoint_actor_result, "checkpointActorResult", checkpoint_actor, CheckpointActorRequest, CheckpointActorResponse),
+    (delete_all_result, "deleteAllResult", delete_all, DeleteAllRequest, DeleteAllResponse),
+    (invoke_actor_result, "invokeActorResult", invoke_actor, InvokeActorRequest, InvokeActorResponse),
 }

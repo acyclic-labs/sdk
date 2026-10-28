@@ -7,6 +7,7 @@ pub mod authority;
 pub mod contract;
 pub mod credential;
 pub mod crypto;
+pub mod operation;
 mod resource;
 pub mod socket;
 #[cfg(any(test, feature = "test-support"))]

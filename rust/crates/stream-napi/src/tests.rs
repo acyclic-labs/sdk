@@ -69,14 +69,13 @@ async fn pending_operation_is_interrupted_by_cancellation() {
         operation_polled.store(true, Ordering::SeqCst);
         Poll::Pending::<std::result::Result<(), NativeStreamErrorMetadata>>
     });
-    let pending = tokio::spawn(run_with_cancellation(operation, Some(cancellation.clone())));
-
-    while !polled.load(Ordering::SeqCst) {
-        tokio::task::yield_now().await;
-    }
+    let pending = run_with_cancellation(operation, Some(cancellation.clone()));
+    futures::pin_mut!(pending);
+    assert!(futures::poll!(&mut pending).is_pending());
+    assert!(polled.load(Ordering::SeqCst));
     cancellation.cancel();
 
-    let error = cancellation_error(pending.await.expect("cancellation task panicked"));
+    let error = cancellation_error(pending.await);
     assert_eq!(error.code, "cancelled");
 }
 
@@ -121,35 +120,23 @@ async fn concurrent_follow_reads_are_serialized_instead_of_false_end() {
         },
     });
 
-    let first = tokio::spawn({
-        let follow = Arc::clone(&follow);
-        async move { follow.next_result().await }
-    });
-    while !polled.load(Ordering::SeqCst) {
-        tokio::task::yield_now().await;
-    }
-    let mut second = tokio::spawn({
-        let follow = Arc::clone(&follow);
-        async move { follow.next_result().await }
-    });
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), &mut second)
-            .await
-            .is_err()
-    );
+    let first = follow.next_result();
+    futures::pin_mut!(first);
+    assert!(futures::poll!(&mut first).is_pending());
+    assert!(polled.load(Ordering::SeqCst));
+    let second = follow.next_result();
+    futures::pin_mut!(second);
+    assert!(futures::poll!(&mut second).is_pending());
 
-    follow.close().await;
+    let close = follow.close();
+    futures::pin_mut!(close);
+    assert!(futures::poll!(&mut close).is_pending());
+    let (first, second, ()) = futures::join!(first, second, close);
     assert!(dropped.load(Ordering::SeqCst));
-    let first = first
-        .await
-        .expect("first follow task panicked")
-        .expect("first read failed");
+    let first = first.expect("first read failed");
     assert!(first.value.is_none());
     assert!(first.error.is_none());
-    let second = second
-        .await
-        .expect("second follow task panicked")
-        .expect("second read failed");
+    let second = second.expect("second read failed");
     assert!(second.value.is_none());
     assert!(second.error.is_none());
 }
@@ -444,4 +431,39 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
         result.is_ok(),
         "real TCP follow lifecycle failed: {result:?}"
     );
+}
+
+#[tokio::test]
+async fn finite_cursor_yields_before_the_rest_of_the_page_and_releases_on_close() {
+    use std::sync::atomic::AtomicUsize;
+    let polled = Arc::new(AtomicUsize::new(0));
+    let seen = polled.clone();
+    let dropped = Arc::new(AtomicBool::new(false));
+    let sentinel = DropSentinel(dropped.clone());
+    let records = futures::stream::poll_fn(move |_| {
+        let _retain = &sentinel;
+        let sequence = seen.fetch_add(1, Ordering::SeqCst) as u64;
+        Poll::Ready(Some(Ok(acyclic_stream::Record {
+            sequence,
+            value: vec![7].into(),
+            commit_id: Default::default(),
+            committed_at_micros: 0,
+            headers: Default::default(),
+        })))
+    });
+    let cursor = NativeStreamFollow {
+        state: FollowState {
+            records: Arc::new(Mutex::new(Some(record_frames(records)))),
+            token: CancellationToken::new(),
+            closed: Arc::new(AtomicBool::new(false)),
+        },
+    };
+    let first = cursor.next_result().await.expect("cursor read failed");
+    assert!(first.error.is_none());
+    assert!(first.value.is_some());
+    assert_eq!(polled.load(Ordering::SeqCst), 1);
+    assert!(!dropped.load(Ordering::SeqCst));
+    cursor.close().await;
+    assert!(dropped.load(Ordering::SeqCst));
+    assert_eq!(polled.load(Ordering::SeqCst), 1);
 }

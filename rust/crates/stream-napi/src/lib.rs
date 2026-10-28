@@ -87,7 +87,7 @@ impl NativeStreamConnectResult {
     }
 }
 
-/// Result of opening a Rust-owned follow cursor.
+/// Result of opening a Rust-owned finite read or follow cursor.
 #[napi(object, object_from_js = false)]
 pub struct NativeStreamFollowResult {
     /// Follow cursor on success.
@@ -119,33 +119,6 @@ pub struct NativeStreamNextResult {
     pub value: Option<Buffer>,
     /// Structured Rust error on failure.
     pub error: Option<NativeStreamErrorMetadata>,
-}
-
-/// Typed result for bounded stream or child-list operations. Exactly one of
-/// `values` and `error` is populated at the operation level; an empty values
-/// vector is a successful empty result.
-#[napi(object)]
-pub struct NativeStreamSequenceResult {
-    /// Encoded protobuf response messages on success.
-    pub values: Vec<Buffer>,
-    /// Structured Rust error on failure.
-    pub error: Option<NativeStreamErrorMetadata>,
-}
-
-impl NativeStreamSequenceResult {
-    fn success(values: Vec<Buffer>) -> Self {
-        Self {
-            values,
-            error: None,
-        }
-    }
-
-    fn failure(error: NativeStreamErrorMetadata) -> Self {
-        Self {
-            values: Vec::new(),
-            error: Some(error),
-        }
-    }
 }
 
 impl NativeStreamNextResult {
@@ -313,7 +286,7 @@ impl NativeStreamCancellation {
     }
 }
 
-/// One Rust-owned live follow cursor. A fresh cursor is required after close.
+/// One Rust-owned finite read or live follow cursor. A fresh cursor is required after close.
 #[napi]
 pub struct NativeStreamFollow {
     state: FollowState,
@@ -636,16 +609,16 @@ impl NativeStreamClient {
         operation_result(fork(&self.provider, request, cancellation)).await
     }
 
-    /// Reads one bounded page as encoded `ReadResponse` values.
+    /// Opens a finite cursor without collecting the page before its first yield.
     #[napi(js_name = "readResult")]
     pub async fn read_result(
         &self,
         request: Buffer,
         cancellation: Option<&NativeStreamCancellation>,
-    ) -> Result<NativeStreamSequenceResult> {
+    ) -> Result<NativeStreamFollowResult> {
         Ok(match read(&self.provider, request, cancellation).await {
-            Ok(values) => NativeStreamSequenceResult::success(values),
-            Err(error) => NativeStreamSequenceResult::failure(error),
+            Ok(cursor) => NativeStreamFollowResult::success(cursor),
+            Err(error) => NativeStreamFollowResult::failure(error),
         })
     }
 

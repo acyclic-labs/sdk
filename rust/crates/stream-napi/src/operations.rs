@@ -112,38 +112,26 @@ pub(super) async fn read(
     client: &Arc<grpc::Client>,
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<Vec<Buffer>, NativeStreamErrorMetadata> {
+) -> std::result::Result<NativeStreamFollow, NativeStreamErrorMetadata> {
     let request = wire_codec::read_from_wire(decode::<wire::ReadRequest>(&request, "read")?)
         .map_err(|error| stream_error(&error))?;
-    let stream =
-        acyclic_stream::Stream::new(std::sync::Arc::clone(client), request.path.to_string())
-            .map_err(|error| stream_error(&error))?;
-    let token = cancellation_state(cancellation);
-    let records = stream.read(request.from, request.limit);
-    let mut records = run_with_cancellation(
-        async { records.await.map_err(|error| stream_error(&error)) },
-        token.clone(),
-    )
-    .await?;
-    let mut output = Vec::new();
-    while let Some(value) = run_with_cancellation(
+    let records = run_with_cancellation(
         async {
-            records
-                .next()
+            client
+                .read(request)
                 .await
-                .transpose()
                 .map_err(|error| stream_error(&error))
         },
-        token.clone(),
+        cancellation_state(cancellation),
     )
-    .await?
-    {
-        output.push(encode(
-            &wire_codec::read_response_wire(vec![wire_codec::record_wire(value)]),
-            "read",
-        )?);
-    }
-    Ok(output)
+    .await?;
+    Ok(NativeStreamFollow {
+        state: FollowState {
+            records: Arc::new(Mutex::new(Some(record_frames(records)))),
+            token: cancellation_state(cancellation).unwrap_or_default(),
+            closed: Arc::new(AtomicBool::new(false)),
+        },
+    })
 }
 
 pub(super) async fn open_follow(
