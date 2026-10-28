@@ -102,63 +102,8 @@ pub struct ObjectCacheStats {
     pub in_flight: u64,
 }
 
-struct CacheEntry {
-    bytes: OwnedBytes,
-    touched: u64,
-}
-
-struct DecodedCacheEntry {
-    value: DecodedCacheValue,
-    touched: u64,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum RecencyKey {
-    Canonical(ObjectId),
-    Decoded(DecodedCacheKey),
-}
-
-struct CacheState {
-    entries: BTreeMap<ObjectId, CacheEntry>,
-    decoded: BTreeMap<DecodedCacheKey, DecodedCacheEntry>,
-    recency: BTreeSet<(u64, RecencyKey)>,
-    flights: BTreeMap<ObjectId, Arc<Flight>>,
-    resident_bytes: u64,
-    resident_canonical_bytes: u64,
-    resident_decoded_bytes: u64,
-    clock: u64,
-    hits: u64,
-    decoded_hits: u64,
-    misses: u64,
-    coalesced_reads: u64,
-    evictions: u64,
-}
-
-impl Default for CacheState {
-    fn default() -> Self {
-        Self {
-            entries: BTreeMap::new(),
-            decoded: BTreeMap::new(),
-            recency: BTreeSet::new(),
-            flights: BTreeMap::new(),
-            resident_bytes: 0,
-            resident_canonical_bytes: 0,
-            resident_decoded_bytes: 0,
-            clock: 1,
-            hits: 0,
-            decoded_hits: 0,
-            misses: 0,
-            coalesced_reads: 0,
-            evictions: 0,
-        }
-    }
-}
-
-struct Shared {
-    options: ObjectCacheOptions,
-    // Cache/view precedes any retained payload custody; never held over provider I/O.
-    state: Mutex<CacheState>,
-}
+mod pool;
+use pool::{CacheEntry, CacheState, DecodedCacheEntry, Namespace, RecencyKey, Shared};
 
 enum FlightState {
     Running(Owned<Vec<Waker>>),
@@ -331,20 +276,20 @@ struct BatchLeader {
 struct PreparedBatch {
     slots: Owned<Vec<BatchSlot>>,
     leaders: Owned<Vec<BatchLeader>>,
-    shared: Arc<Shared>,
+    shared: Namespace,
 }
 
 impl Drop for PreparedBatch {
     fn drop(&mut self) {
         for leader in &self.leaders.value {
             leader.flight.finish(None);
-            if let Ok(mut state) = self.shared.state.lock()
+            if let Ok(mut state) = self.shared.pool.state.lock()
                 && state
                     .flights
-                    .get(&leader.object_id)
+                    .get(&self.shared.key(leader.object_id))
                     .is_some_and(|flight| Arc::ptr_eq(flight, &leader.flight))
             {
-                state.flights.remove(&leader.object_id);
+                state.flights.remove(&self.shared.key(leader.object_id));
             }
         }
     }
@@ -353,14 +298,14 @@ impl Drop for PreparedBatch {
 /// Async immutable-object accelerator over any conforming backend.
 pub struct CachedObjectStore<S> {
     inner: S,
-    shared: Arc<Shared>,
+    shared: Namespace,
 }
 
 impl<S: Clone> Clone for CachedObjectStore<S> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            shared: Arc::clone(&self.shared),
+            shared: self.shared.clone(),
         }
     }
 }
@@ -374,10 +319,13 @@ impl<S> CachedObjectStore<S> {
     fn with_options(inner: S, options: ObjectCacheOptions) -> Self {
         Self {
             inner,
-            shared: Arc::new(Shared {
-                options,
-                state: Mutex::new(CacheState::default()),
-            }),
+            shared: Namespace {
+                id: 0,
+                pool: Arc::new(Shared {
+                    options,
+                    state: Mutex::new(CacheState::default()),
+                }),
+            },
         }
     }
 
@@ -386,13 +334,32 @@ impl<S> CachedObjectStore<S> {
         Self::with_options(inner, ObjectCacheOptions::default())
     }
 
+    /// Wraps another backend in a fresh namespace of this same bounded pool.
+    /// Canonical bytes, decoded values and fills never cross namespaces. Cloning
+    /// a store retains its existing namespace and continues to share its fills.
+    pub fn share_cache_with<T>(&self, inner: T) -> Result<CachedObjectStore<T>, ObjectStoreError> {
+        let id = {
+            let mut state = self.lock_state()?;
+            let id = state.next_namespace;
+            state.next_namespace = increment(id)?;
+            id
+        };
+        Ok(CachedObjectStore {
+            inner,
+            shared: Namespace {
+                id,
+                pool: Arc::clone(&self.shared.pool),
+            },
+        })
+    }
+
     /// Returns the wrapped correctness backend.
     #[must_use]
     pub const fn inner(&self) -> &S {
         &self.inner
     }
 
-    /// Returns exact current and cumulative accelerator observations.
+    /// Returns exact current and cumulative observations of the shared pool.
     pub fn stats(&self) -> Result<ObjectCacheStats, ObjectStoreError> {
         let state = self.lock_state()?;
         Ok(ObjectCacheStats {
@@ -414,20 +381,16 @@ impl<S> CachedObjectStore<S> {
         })
     }
 
-    /// Discards every resident byte. In-flight reads remain valid and may
+    /// Discards this namespace's resident bytes. In-flight reads remain valid.
     pub fn clear(&self) -> Result<(), ObjectStoreError> {
         let mut state = self.lock_state()?;
-        state.entries.clear();
-        state.decoded.clear();
-        state.recency.clear();
-        state.resident_bytes = 0;
-        state.resident_canonical_bytes = 0;
-        state.resident_decoded_bytes = 0;
+        self.shared.clear(&mut state)?;
         Ok(())
     }
 
     fn lock_state(&self) -> Result<MutexGuard<'_, CacheState>, ObjectStoreError> {
         self.shared
+            .pool
             .state
             .lock()
             .map_err(|_| ObjectStoreError::Corrupt)
@@ -438,6 +401,7 @@ impl<S> CachedObjectStore<S> {
         object_id: ObjectId,
         #[cfg(not(target_arch = "wasm32"))] work: Option<&NativeMaterializationWork>,
     ) -> Result<ReadPlan, ObjectStoreError> {
+        let object_id = self.shared.key(object_id);
         let mut state = self.lock_state()?;
         let tick = next_tick(&mut state)?;
         if let Some(entry) = state.entries.get_mut(&object_id) {
@@ -458,7 +422,7 @@ impl<S> CachedObjectStore<S> {
             return Ok(ReadPlan::Follower(Arc::clone(flight)));
         }
         if state.flights.len()
-            >= usize::try_from(self.shared.options.maximum_in_flight).unwrap_or(usize::MAX)
+            >= usize::try_from(self.shared.pool.options.maximum_in_flight).unwrap_or(usize::MAX)
         {
             return Err(ObjectStoreError::Rejected(
                 "immutable-object single-flight identity bound exhausted".to_owned(),
@@ -475,7 +439,7 @@ impl<S> CachedObjectStore<S> {
                 )
             })
             .transpose()?;
-        let flight = Flight::new(self.shared.options.maximum_waiters_per_object);
+        let flight = Flight::new(self.shared.pool.options.maximum_waiters_per_object);
         #[cfg(not(target_arch = "wasm32"))]
         let flight = Flight {
             _allocation: allocation,
@@ -487,6 +451,7 @@ impl<S> CachedObjectStore<S> {
     }
 
     fn cached_contains(&self, object_id: ObjectId) -> Result<bool, ObjectStoreError> {
+        let object_id = self.shared.key(object_id);
         let mut state = self.lock_state()?;
         let tick = next_tick(&mut state)?;
         let Some(entry) = state.entries.get_mut(&object_id) else {
@@ -506,8 +471,9 @@ impl<S> CachedObjectStore<S> {
     }
 
     fn insert(&self, object_id: ObjectId, bytes: OwnedBytes) -> Result<bool, ObjectStoreError> {
+        let object_id = self.shared.key(object_id);
         let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-        if length > self.shared.options.maximum_bytes {
+        if length > self.shared.pool.options.maximum_bytes {
             return Ok(false);
         }
         let mut state = self.lock_state()?;
@@ -518,11 +484,11 @@ impl<S> CachedObjectStore<S> {
             return Ok(true);
         }
         while state.entries.len().saturating_add(state.decoded.len())
-            >= usize::try_from(self.shared.options.maximum_entries).unwrap_or(usize::MAX)
+            >= usize::try_from(self.shared.pool.options.maximum_entries).unwrap_or(usize::MAX)
             || state
                 .resident_bytes
                 .checked_add(length)
-                .is_none_or(|total| total > self.shared.options.maximum_bytes)
+                .is_none_or(|total| total > self.shared.pool.options.maximum_bytes)
         {
             evict_oldest(&mut state)?;
         }
@@ -559,6 +525,7 @@ impl<S> CachedObjectStore<S> {
         &self,
         key: DecodedCacheKey,
     ) -> Result<Option<DecodedCacheValue>, ObjectStoreError> {
+        let key = self.shared.key(key);
         let mut state = self.lock_state()?;
         let tick = next_tick(&mut state)?;
         let selected = if MATCH_IDENTITY {
@@ -594,7 +561,8 @@ impl<S> CachedObjectStore<S> {
         key: DecodedCacheKey,
         value: DecodedCacheValue,
     ) -> Result<DecodedCacheAdmission, ObjectStoreError> {
-        if value.logical_bytes > self.shared.options.maximum_bytes {
+        let key = self.shared.key(key);
+        if value.logical_bytes > self.shared.pool.options.maximum_bytes {
             return Ok(DecodedCacheAdmission::Uncached(value));
         }
         let mut state = self.lock_state()?;
@@ -603,11 +571,11 @@ impl<S> CachedObjectStore<S> {
         }
         while ENFORCE
             && (state.entries.len().saturating_add(state.decoded.len())
-                >= usize::try_from(self.shared.options.maximum_entries).unwrap_or(usize::MAX)
+                >= usize::try_from(self.shared.pool.options.maximum_entries).unwrap_or(usize::MAX)
                 || state
                     .resident_bytes
                     .checked_add(value.logical_bytes)
-                    .is_none_or(|total| total > self.shared.options.maximum_bytes))
+                    .is_none_or(|total| total > self.shared.pool.options.maximum_bytes))
         {
             evict_oldest(&mut state)?;
         }
@@ -636,6 +604,7 @@ impl<S> CachedObjectStore<S> {
         object_id: ObjectId,
         flight: &Arc<Flight>,
     ) -> Result<(), ObjectStoreError> {
+        let object_id = self.shared.key(object_id);
         let mut state = self.lock_state()?;
         if state
             .flights
