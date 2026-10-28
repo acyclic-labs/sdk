@@ -14,6 +14,7 @@ def fail(step, detail):
 
 
 executable = None
+build_finished = False
 for number, line in enumerate(sys.stdin, 1):
     try:
         message = json.loads(line)
@@ -21,6 +22,10 @@ for number, line in enumerate(sys.stdin, 1):
         fail("cargo-artifact-json", f"invalid Cargo JSON at line {number}")
     if not isinstance(message, dict):
         fail("cargo-artifact-json", f"Cargo JSON object required at line {number}")
+    if message.get("reason") == "build-finished":
+        if build_finished or message.get("success") is not True:
+            fail("cargo-artifact-build", "Cargo did not finish one successful build")
+        build_finished = True
     if message.get("reason") == "compiler-message":
         rendered = message["message"].get("rendered")
         if rendered:
@@ -31,6 +36,8 @@ for number, line in enumerate(sys.stdin, 1):
         if executable is not None and executable != message["executable"]:
             fail("cargo-artifact-target", "qualification requires one focused test target")
         executable = message["executable"]
+if not build_finished:
+    fail("cargo-artifact-build", "Cargo success record is missing")
 if executable is None:
     fail("cargo-artifact-target", "Cargo did not produce a test executable")
 

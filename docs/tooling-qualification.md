@@ -94,6 +94,8 @@ At source `82a4a73b4f`, the ordinary Auth/Fs/Core/Harness all-feature main check
 
 Normal artifact qualification also requires the final Rust test summary to report exactly the selected number of passed cases, with no failed, ignored or measured cases. Exit status zero alone cannot admit an ignored selection. The inventory reports execution as `NOT_RUN` and ignored status as `NOT_OBSERVED`. Pure guard checks over a real captured seven-case summary and the actual 901-case inventory accept the original completion and prefixes, while derived incomplete/ignored/missing-summary inputs and a missing prefix refuse. These controls execute the guard code only; they are not new runtime, model or production omission-mutant results.
 
+Before listing or executing an artifact, the helper also requires exactly one successful Cargo `build-finished` record. A truncated or failed build stream cannot admit an earlier executable record. Pure parser controls accept the original captured `hst-reporting-v1/positive-compile.out` stream and refuse derived missing, failed, duplicate and truncated completion records. The original capture and its producer/source receipts remain unchanged; these controls invoke neither Cargo nor the captured executable.
+
 The compile/list inventory now has these source-specific results. Every row lists cases without executing their bodies; ignored status remains unobserved. The `33b2aa2e3c` aggregate timed out during the final CLI compile, after its three preceding inventories completed. Its original client receipt retains the embedded remote receipt; separate remote raw copies await restored buildbox connectivity.
 
 | Target | Source | Discovered | Selected | Complete case-ID SHA256 prefix |
