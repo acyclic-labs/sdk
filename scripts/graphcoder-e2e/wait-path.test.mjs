@@ -1,9 +1,26 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { waitForFile } from './wait-path.mjs';
+import { waitForFile, waitForFileValue } from './wait-path.mjs';
+
+test('waits for an event after an incomplete publication', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'acyclic-file-value-'));
+  try {
+    const path = join(root, 'endpoint');
+    writeFileSync(path, 'port\n');
+    let incomplete = false;
+    const ready = waitForFileValue(path, file => {
+      const [port, endpoint] = readFileSync(file, 'utf8').split('\n');
+      if (!endpoint) { incomplete = true; return undefined; }
+      return { port, endpoint };
+    }, { timeoutMs: 2000 });
+    assert.equal(incomplete, true);
+    writeFileSync(path, 'port\n/ready\n');
+    assert.deepEqual(await ready, { port: 'port', endpoint: '/ready' });
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test('observes an atomic publication through newly created ancestors', async () => {
   const root = mkdtempSync(join(tmpdir(), 'acyclic-file-notification-'));
