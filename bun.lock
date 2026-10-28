@@ -177,6 +177,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "@napi-rs/cli@3.10.9": "patches/napi-rs-cli-3.10.9.patch",
+  },
   "packages": {
     "@acyclic-labs/actors": ["@acyclic-labs/actors@workspace:typescript/packages/actors"],
 
