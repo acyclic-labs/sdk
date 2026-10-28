@@ -71,7 +71,7 @@ fn merge_regular_record_async<'a, 'accounting, S: AsyncObjectStore>(
             root,
             file_size: length,
             range: ByteRange { offset: 0, length },
-            maximum_spans: maximum_changes,
+            maximum_spans: Some(maximum_changes),
             limits,
             budget: WorkBudget::UNBOUNDED,
         };
@@ -140,7 +140,6 @@ fn merge_regular_record_async<'a, 'accounting, S: AsyncObjectStore>(
                                         store,
                                         (ours_root, ours_bytes),
                                         &mutations.value,
-                                        maximum_changes,
                                         limits,
                                         accounting,
                                         cancellation,

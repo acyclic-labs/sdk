@@ -1,13 +1,10 @@
 use super::*;
-use crate::access::{MAXIMUM_POLICY_RECORD_BYTES, POLICY_METADATA_KEY};
+use crate::access::POLICY_METADATA_KEY;
 use crate::kernel::{AttributeClass, OwnedSourceChunk};
 
 mod binding;
 
-fn policy_name(
-    maximum_bytes: u32,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<Owned<AttributeName>, FsError> {
+fn policy_name(accounting: &mut KernelAccounting<'_>) -> Result<Owned<AttributeName>, FsError> {
     let copied = WorkCounters {
         bytes_copied: POLICY_METADATA_KEY.len() as u64,
         ..WorkCounters::UNCHARGED
@@ -16,7 +13,7 @@ fn policy_name(
     let mut bytes = Owned::<Vec<u8>>::allocate(POLICY_METADATA_KEY.len(), accounting)?;
     bytes.value.extend_from_slice(POLICY_METADATA_KEY);
     accounting.record_completed(copied)?;
-    match AttributeName::new(AttributeClass::PosixXattr, bytes.value, maximum_bytes) {
+    match AttributeName::new(AttributeClass::PosixXattr, bytes.value) {
         Ok(name) => Ok(Owned::new(name, bytes.allocation, bytes.bytes)),
         Err(error) => {
             retire_allocation(bytes.allocation, bytes.bytes, accounting)?;
@@ -34,21 +31,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileMetadata, FsError> {
-        if bytes.len() as u64 > MAXIMUM_POLICY_RECORD_BYTES.min(config.limits.maximum_read_bytes) {
-            return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-        }
         let volume = Volume {
             fs: self.clone(),
             id,
             config,
         };
-        let name = policy_name(config.limits.maximum_component_bytes, accounting)?;
+        let name = policy_name(accounting)?;
         let result = attributes::change_attribute(
             &volume,
             FileMetadata::default(),
             &name.value,
             Some((bytes, NamedAttributeWriteMode::Create)),
-            MAXIMUM_POLICY_RECORD_BYTES.min(config.limits.maximum_read_bytes),
             accounting,
             cancellation,
         )
@@ -90,15 +83,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         if let Some(view) = cache.get(self.volume.id, revision) {
             return Ok(view);
         }
-        let name = policy_name(
-            self.volume.config.limits.maximum_component_bytes,
-            accounting,
-        )?;
+        let name = policy_name(accounting)?;
         let bytes = attributes::read_attribute(
             &self.volume,
             metadata,
             &name.value,
-            MAXIMUM_POLICY_RECORD_BYTES,
             accounting,
             cancellation,
         )
@@ -131,10 +120,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     > {
         let mut accounting = work.accounting(cancellation);
         let result = async {
-            let name = policy_name(
-                self.volume.config.limits.maximum_component_bytes,
-                &mut accounting,
-            )?;
+            let name = policy_name(&mut accounting)?;
             let result = async {
                 let metadata = self
                     .read_metadata_with_accounting(
@@ -147,7 +133,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     &self.volume,
                     metadata,
                     &name.value,
-                    MAXIMUM_POLICY_RECORD_BYTES,
                     &mut accounting,
                     cancellation,
                 )
@@ -191,19 +176,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             if self.mode.mutations == MutationMode::None {
                 return Err(FsError::MutationNotAllowed);
             }
-            if bytes.len() as u64
-                > MAXIMUM_POLICY_RECORD_BYTES.min(self.volume.config.limits.maximum_read_bytes)
-            {
-                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-            }
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
                 self.validate_native_work(original)?;
             }
-            let name = policy_name(
-                self.volume.config.limits.maximum_component_bytes,
-                &mut accounting,
-            )?;
+            let name = policy_name(&mut accounting)?;
             let result = async {
                 let root = self.root.root_file_id;
                 let metadata = self
@@ -214,7 +191,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     metadata,
                     &name.value,
                     Some((bytes, mode)),
-                    MAXIMUM_POLICY_RECORD_BYTES.min(self.volume.config.limits.maximum_read_bytes),
                     &mut accounting,
                     cancellation,
                 )

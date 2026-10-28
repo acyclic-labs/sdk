@@ -10,9 +10,7 @@ use crate::{CancellationToken, WorkCounters};
 
 const DOMAIN: &[u8; 8] = b"ACYFSGEN";
 const VERSION: u16 = 1;
-const MAXIMUM_PARENTS: u32 = 2;
-/// Largest canonical generation-root object in this format version.
-pub const MAXIMUM_GENERATION_ROOT_BYTES: u64 = 150;
+const PARENTS_OFFSET: usize = DOMAIN.len() + 2 + 16 + 16 + 32 + 4;
 
 /// One immutable volume generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,7 +21,7 @@ pub struct GenerationRoot {
     pub root_file_id: FileId,
     /// Authenticated file-table root containing every reachable file record.
     pub file_table: ObjectId,
-    /// Ordered zero-, one-, or two-parent lineage.
+    /// Ordered parent lineage.
     pub parents: Vec<GenerationId>,
     /// Required format semantics; unknown bits are rejected by this version.
     pub required_features: u64,
@@ -40,14 +38,6 @@ impl GenerationRoot {
     fn validate(&self) -> Result<(), CanonicalDecodeError> {
         if self.file_table.kind != ObjectKind::FileTablePage {
             return Err(invariant("generation file table has the wrong object kind"));
-        }
-        if self.parents.len() > usize::try_from(MAXIMUM_PARENTS).unwrap_or(usize::MAX) {
-            return Err(invariant("generation has too many parents"));
-        }
-        if let [first, second] = self.parents.as_slice()
-            && first == second
-        {
-            return Err(invariant("generation parents are duplicated"));
         }
         if self.required_features & !Self::FILTERED_FORK != 0 {
             return Err(invariant("generation requires unsupported format features"));
@@ -74,9 +64,16 @@ pub fn encode_generation_root<E: From<CanonicalDecodeError>>(
     let length = generation_root_encoded_length(root);
     observe(EncodeWorkStep::Completed(item))?;
     let length = length?;
+    let parent_bytes = root
+        .parents
+        .len()
+        .checked_mul(32)
+        .ok_or(CanonicalDecodeError::LengthOverflow)?;
     let encoded = WorkCounters {
         bytes_encoded: length as u64,
-        bytes_copied: (64 + root.parents.len() * 32) as u64,
+        bytes_copied: parent_bytes
+            .checked_add(64)
+            .ok_or(CanonicalDecodeError::LengthOverflow)? as u64,
         ..WorkCounters::default()
     };
     observe(EncodeWorkStep::Admit(encoded))?;
@@ -94,6 +91,7 @@ pub fn encode_generation_root<E: From<CanonicalDecodeError>>(
     encoder
         .u32(u32::try_from(root.parents.len()).map_err(|_| CanonicalDecodeError::LengthOverflow)?);
     for parent in &root.parents {
+        observe(EncodeWorkStep::Check)?;
         encoder.fixed(parent.digest().as_bytes());
     }
     encoder.u64(root.required_features);
@@ -102,13 +100,53 @@ pub fn encode_generation_root<E: From<CanonicalDecodeError>>(
         bytes_copied: encoded.bytes_copied,
         ..WorkCounters::default()
     }))?;
-    Ok(encoder.finish())
+    let mut bytes = encoder.finish();
+    let end = PARENTS_OFFSET
+        .checked_add(parent_bytes)
+        .ok_or(CanonicalDecodeError::LengthOverflow)?;
+    let (parents, remainder) = bytes[PARENTS_OFFSET..end].as_chunks_mut::<32>();
+    debug_assert!(remainder.is_empty());
+    validate_unique_parents(parents, |step| {
+        observe(match step {
+            ParentWork::BeforeItem => EncodeWorkStep::Admit(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            }),
+            ParentWork::Item => EncodeWorkStep::Completed(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            }),
+            ParentWork::BeforeCopy(bytes) => EncodeWorkStep::Admit(WorkCounters {
+                bytes_copied: bytes,
+                ..WorkCounters::UNCHARGED
+            }),
+            ParentWork::Copied(bytes) => EncodeWorkStep::Completed(WorkCounters {
+                bytes_copied: bytes,
+                ..WorkCounters::UNCHARGED
+            }),
+        })
+    })?;
+    if root.parents.len() > 2 {
+        for (target, source) in parents.iter_mut().zip(&root.parents) {
+            observe(EncodeWorkStep::Admit(WorkCounters {
+                bytes_copied: 32,
+                ..WorkCounters::UNCHARGED
+            }))?;
+            *target = source.digest().into_bytes();
+            observe(EncodeWorkStep::Completed(WorkCounters {
+                bytes_copied: 32,
+                ..WorkCounters::UNCHARGED
+            }))?;
+        }
+    }
+    Ok(bytes)
 }
 
 pub(crate) fn generation_root_encoded_length(
     root: &GenerationRoot,
 ) -> Result<usize, CanonicalDecodeError> {
     root.validate()?;
+    u32::try_from(root.parents.len()).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
     DOMAIN
         .len()
         .checked_add(2 + 16 + 16 + 32 + 4 + 8)
@@ -144,15 +182,17 @@ where
         decoder.fixed::<32, E>(&mut observe)?,
     );
     let parent_count = decoder.u32(&mut observe)?;
-    if parent_count > MAXIMUM_PARENTS {
-        return Err(CanonicalDecodeError::FieldTooLarge {
-            observed: parent_count,
-            maximum: MAXIMUM_PARENTS,
-        }
-        .into());
-    }
     let parent_count =
         usize::try_from(parent_count).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
+    let parent_bytes = parent_count
+        .checked_mul(32)
+        .ok_or(CanonicalDecodeError::LengthOverflow)?;
+    let required_bytes = parent_bytes
+        .checked_add(8)
+        .ok_or(CanonicalDecodeError::LengthOverflow)?;
+    if required_bytes > decoder.remaining_bytes() {
+        return Err(CanonicalDecodeError::Truncated.into());
+    }
     observe(ReadAllocationStep::CheckCopy(
         (parent_count * std::mem::size_of::<GenerationId>()) as u64,
     ))?;
@@ -166,6 +206,25 @@ where
         observe(ReadAllocationStep::Item)?;
     }
     let required_features = decoder.u64(&mut observe)?;
+    validate_unique_parents(&mut parents, |step| {
+        observe(match step {
+            ParentWork::BeforeItem => ReadAllocationStep::BeforeItem,
+            ParentWork::Item => ReadAllocationStep::Item,
+            ParentWork::BeforeCopy(bytes) => ReadAllocationStep::BeforeCopy(bytes),
+            ParentWork::Copied(bytes) => ReadAllocationStep::Copied(bytes),
+        })
+    })?;
+    if parent_count > 2 {
+        for (target, source) in parents.iter_mut().zip(
+            bytes[PARENTS_OFFSET..PARENTS_OFFSET + parent_bytes]
+                .as_chunks::<32>()
+                .0,
+        ) {
+            observe(ReadAllocationStep::BeforeCopy(32))?;
+            *target = GenerationId::new(Digest::from_bytes(*source));
+            observe(ReadAllocationStep::Copied(32))?;
+        }
+    }
     decoder.finish()?;
     let root = GenerationRoot {
         volume_id,
@@ -204,7 +263,9 @@ pub(crate) async fn read_generation_root_with_limits_and_accounting<S: crate::As
 ) -> Result<(GenerationRoot, super::allocation::KernelOwnedAllocation), crate::FsError> {
     accounting.check()?;
     cancellation.check()?;
-    let maximum_bytes = MAXIMUM_GENERATION_ROOT_BYTES.min(limits.maximum_object_bytes);
+    let maximum_bytes = limits
+        .maximum_object_bytes
+        .min(accounting.remaining()?.object_bytes_read);
     let (read, retained) = super::file_read::read_object_with_accounting(
         objects,
         generation_root,
@@ -245,6 +306,55 @@ pub fn generation_root_id(
         digest: object_digest(&bytes),
     };
     Ok((object, GenerationId::new(object.digest)))
+}
+
+// Sorting uses the already funded output storage, then the caller restores
+// source order. No scratch allocation or quadratic scan grows with parent count.
+enum ParentWork {
+    BeforeItem,
+    Item,
+    BeforeCopy(u64),
+    Copied(u64),
+}
+
+fn validate_unique_parents<T: Ord, E: From<CanonicalDecodeError>>(
+    parents: &mut [T],
+    mut observe: impl FnMut(ParentWork) -> Result<(), E>,
+) -> Result<(), E> {
+    if parents.len() <= 2 {
+        if parents.len() == 2 && parents[0] == parents[1] {
+            return Err(invariant("generation parents are duplicated").into());
+        }
+        return Ok(());
+    }
+    super::sort::heap_sort(
+        parents,
+        &mut observe,
+        |left, right, observe| {
+            observe(ParentWork::BeforeItem)?;
+            let order = left.cmp(right);
+            observe(ParentWork::Item)?;
+            Ok::<_, E>(order)
+        },
+        |values, left, right, observe| {
+            let copied = (std::mem::size_of::<T>() as u64)
+                .checked_mul(3)
+                .ok_or(CanonicalDecodeError::LengthOverflow)?;
+            observe(ParentWork::BeforeCopy(copied))?;
+            values.swap(left, right);
+            observe(ParentWork::Copied(copied))
+        },
+        |_| Ok(()),
+    )?;
+    for pair in parents.windows(2) {
+        observe(ParentWork::BeforeItem)?;
+        let duplicate = pair[0] == pair[1];
+        observe(ParentWork::Item)?;
+        if duplicate {
+            return Err(invariant("generation parents are duplicated").into());
+        }
+    }
+    Ok(())
 }
 
 fn invariant(message: &'static str) -> CanonicalDecodeError {

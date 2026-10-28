@@ -1,10 +1,10 @@
 #!/usr/bin/env node
+import { captureCommand } from "./process-capture.mjs";
 
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { verifyNativeAssembly } from "./assemble-stream-native-package.mjs";
 import { verifyNativeAssembly as verifyActorsNativeAssembly } from "./assemble-actors-native-package.mjs";
@@ -16,7 +16,7 @@ function fail(message) {
 }
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", ...options });
+  const result = captureCommand(command, args, { cwd: root, encoding: "utf8", ...options });
   if (result.error) throw result.error;
   return result;
 }

@@ -23,8 +23,6 @@ use crate::DaytonaConfig;
 const ORGANIZATION_HEADER: &str = "X-Daytona-Organization-ID";
 /// Largest page `GET /sandbox` accepts.
 const LIST_PAGE_LIMIT: u32 = 200;
-/// Upper bound on list pages followed, so a cursor loop cannot run forever.
-const MAX_LIST_PAGES: usize = 256;
 
 /// One Daytona sandbox (`Sandbox` and `SandboxListItem` in the specification).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -387,7 +385,8 @@ impl DaytonaApi {
             .map_err(|error| ProviderError::Invalid(format!("label filter: {error}")))?;
         let mut sandboxes = Vec::new();
         let mut cursor: Option<String> = None;
-        for _ in 0..MAX_LIST_PAGES {
+        let mut seen = std::collections::HashSet::new();
+        loop {
             let mut query = vec![("limit", LIST_PAGE_LIMIT.to_string())];
             if let Some(encoded) = &encoded {
                 query.push(("labels", encoded.clone()));
@@ -400,13 +399,17 @@ impl DaytonaApi {
                 .await?;
             sandboxes.extend(page.items);
             match page.next_cursor.filter(|value| !value.is_empty()) {
-                Some(next) => cursor = Some(next),
+                Some(next) => {
+                    if !seen.insert(next.clone()) {
+                        return Err(ProviderError::Rejected(
+                            "Daytona sandbox cursor repeated".into(),
+                        ));
+                    }
+                    cursor = Some(next);
+                }
                 None => return Ok(sandboxes),
             }
         }
-        Err(ProviderError::Rejected(
-            "Daytona sandbox listing did not terminate".into(),
-        ))
     }
 
     /// Starts a stopped or archived sandbox, or resumes a paused one:

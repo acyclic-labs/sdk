@@ -94,7 +94,7 @@ impl HttpStream {
             .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(30));
         if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > MAX_CA_CERTIFICATE_BYTES {
+            if ca.is_empty() {
                 return Err(ConnectError);
             }
             client = client.add_root_certificate(
@@ -546,8 +546,7 @@ mod tests {
 
     #[test]
     fn endpoint_and_credential_policy_matches_other_families() {
-        let long = "t".repeat(crate::MAX_BEARER_TOKEN_BYTES + 1);
-        for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
+        for token in ["", " ", "a\r\nb", "a\0b"] {
             assert!(HttpStream::new("https://example.test", token, 1).is_err());
         }
         for endpoint in ["http://example.test", "https://u@example.test"] {

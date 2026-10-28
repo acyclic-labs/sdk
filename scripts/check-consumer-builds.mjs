@@ -1,8 +1,9 @@
 #!/usr/bin/env node
+import { captureCommand } from "./process-capture.mjs";
 // Code generation is a separate boundary from `cargo check`: async layout
 // queries can overflow only when a downstream executable is monomorphized.
 // One package per invocation keeps unrelated workspace features out of it.
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -42,8 +43,8 @@ export async function main(args = process.argv.slice(2)) {
   if (scope.length > 1 || workerArgs.length > 1 || !Number.isSafeInteger(workers) || workers < 1
     || args.some(arg => !arg.startsWith('--scope-file=') && !arg.startsWith('--workers=')
       && !arg.startsWith('--package=') && arg !== '--list')) throw new Error('invalid consumer build arguments');
-  const result = spawnSync('cargo', ['metadata', '--locked', '--no-deps', '--format-version', '1'],
-    { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const result = captureCommand('cargo', ['metadata', '--locked', '--no-deps', '--format-version', '1'],
+    { cwd: root, encoding: 'utf8', });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(result.stderr || 'consumer metadata failed');
   const all = consumers(JSON.parse(result.stdout));

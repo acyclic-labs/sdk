@@ -17,31 +17,19 @@ mod cancellation;
 mod native;
 use cancellation::CancelOnDrop;
 
-/// Positive discovery and tool-exchange bounds, independent of task allowances.
-#[derive(Clone, Copy)]
+/// Optional host-selected discovery and exchange allowances. No default ceiling.
+#[derive(Clone, Copy, Default)]
 pub struct McpClientLimits {
     /// Maximum concurrently initialized servers.
-    pub servers: u32,
+    pub servers: Option<u32>,
     /// Maximum advertised tools from each server, before filtering.
-    pub tools_per_server: u32,
+    pub tools_per_server: Option<u32>,
     /// Maximum pages from one tools/list traversal.
-    pub pages_per_server: u32,
+    pub pages_per_server: Option<u32>,
     /// Maximum aggregate catalog bytes from each server.
-    pub catalog_bytes: u32,
+    pub catalog_bytes: Option<u32>,
     /// Maximum request or response bytes for an installed tool call.
-    pub tool_bytes: u32,
-}
-
-impl Default for McpClientLimits {
-    fn default() -> Self {
-        Self {
-            servers: 32,
-            tools_per_server: 128,
-            pages_per_server: 16,
-            catalog_bytes: 1_048_576,
-            tool_bytes: 1_048_576,
-        }
-    }
+    pub tool_bytes: Option<u32>,
 }
 
 /// A server that could not be installed; no connection configuration is retained.
@@ -100,12 +88,14 @@ impl McpConfig {
     where
         F: for<'a> Fn(&'a McpServer) -> BoxProviderFuture<'a, Result<Connected>>,
     {
-        if limits.servers == 0
-            || limits.tools_per_server == 0
-            || limits.pages_per_server == 0
-            || limits.catalog_bytes == 0
-            || limits.tool_bytes == 0
-            || self.servers.len() as u64 > u64::from(limits.servers)
+        if limits.servers == Some(0)
+            || limits.tools_per_server == Some(0)
+            || limits.pages_per_server == Some(0)
+            || limits.catalog_bytes == Some(0)
+            || limits.tool_bytes == Some(0)
+            || limits
+                .servers
+                .is_some_and(|maximum| self.servers.len() as u64 > u64::from(maximum))
         {
             return Err(Error::Invalid(
                 "MCP startup bounds must be positive and sufficient".into(),
@@ -203,7 +193,10 @@ fn register(
     check: &(impl Fn() -> Result<()> + ?Sized),
 ) -> Result<(ToolRegistry, Capabilities)> {
     check()?;
-    if connected.tools.len() as u64 > u64::from(limits.tools_per_server) {
+    if limits
+        .tools_per_server
+        .is_some_and(|maximum| connected.tools.len() as u64 > u64::from(maximum))
+    {
         return Err(Error::Invalid("MCP discovery exceeds tool bound".into()));
     }
     let mut catalog = McpCatalog {

@@ -62,9 +62,6 @@ pub async fn active_s3_multipart_objects<P: acyclic_stream::StreamProvider, O: A
             staged.logical_bytes(),
             ClosureLimits {
                 decode: DecodeLimits::default(),
-                maximum_objects: retention_limits.maximum_objects,
-                maximum_files: 0,
-                maximum_object_bytes: retention_limits.maximum_object_bytes,
                 profile: FilesystemProfile::Portable,
                 symbolic_links: false,
                 hard_links: false,

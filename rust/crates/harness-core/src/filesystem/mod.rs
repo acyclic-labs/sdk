@@ -297,12 +297,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 let receipt_path = crate::executor::with_history_io(io, |work| {
                     crate::executor::preparation_format(format_args!("/{receipt_path}"), work)
                 })?;
-                const RECORD_BYTES: u64 = 6
-                    * (crate::conversation::MAX_PATH_BYTES as u64
-                        + 32 * crate::conversation::MAX_LABEL_BYTES as u64
-                        + 1024);
-                let original_receipt =
-                    read_generation(&prior, &receipt_path, RECORD_BYTES, io).await?;
+                let original_receipt = read_metadata(&prior, &receipt_path, io).await?;
                 let original_receipt = if internal_class.is_some() {
                     recover_internal_upload_receipt(&prior, receipt_identity, original_receipt, io)
                         .await?

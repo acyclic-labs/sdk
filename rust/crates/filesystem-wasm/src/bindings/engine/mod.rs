@@ -47,8 +47,8 @@ pub(in crate::bindings) enum Acceleration {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(in crate::bindings) struct MemoryOptions {
-    pub(in crate::bindings) maximum_object_bytes: u64,
-    pub(in crate::bindings) maximum_memory_bytes: u64,
+    pub(in crate::bindings) maximum_object_bytes: Option<u64>,
+    pub(in crate::bindings) maximum_memory_bytes: Option<u64>,
     pub(in crate::bindings) object_cache: BrowserObjectCacheOptions,
 }
 
@@ -457,19 +457,24 @@ pub(in crate::bindings) fn browser_fs(
 }
 
 pub(in crate::bindings) fn memory_engine(
-    maximum_object_bytes: u64,
-    maximum_memory_bytes: u64,
+    maximum_object_bytes: Option<u64>,
+    maximum_memory_bytes: Option<u64>,
     cache: ObjectCacheOptions,
 ) -> Result<Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>, JsValue> {
     let streams: Arc<dyn acyclic_stream::StreamProvider> =
         Arc::new(acyclic_stream::MemoryStream::default());
-    if maximum_object_bytes == 0
-        || maximum_object_bytes > maximum_memory_bytes
-        || usize::try_from(maximum_object_bytes).is_err()
+    if maximum_object_bytes.is_some_and(|bytes| bytes == 0 || usize::try_from(bytes).is_err())
+        || maximum_memory_bytes == Some(0)
+        || maximum_object_bytes
+            .zip(maximum_memory_bytes)
+            .is_some_and(|(object, memory)| object > memory)
     {
         return Err(js_error("invalid memory object limit"));
     }
-    let objects = acyclic_objects::MemoryObjects::bounded(maximum_memory_bytes);
+    let objects = maximum_memory_bytes.map_or_else(
+        acyclic_objects::MemoryObjects::memory,
+        acyclic_objects::MemoryObjects::bounded,
+    );
     Ok(Fs::new(
         StreamAuthorityStore::new(streams),
         CachedObjectStore::new(
