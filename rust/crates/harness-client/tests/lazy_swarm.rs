@@ -754,6 +754,31 @@ fn swarm_scroll_and_history_stay_bounded() {
     );
 }
 
+/// The open history is followed before tree rows spend the follow budget,
+/// so its new records stay live. Control: following it after every visible
+/// status left it outside a full budget.
+#[test]
+fn the_open_history_keeps_its_follow_under_a_full_follow_budget() {
+    let policy = ReaderPolicy {
+        follows: 2,
+        ..policy()
+    };
+    let mut client = Client::new(policy, RTT);
+    client.run_until(5_000, statuses).expect("render");
+    let root = agent(1, None);
+    client.explorer.open(root.clone(), 40);
+    client.frame();
+    let history = root.conversation().unwrap();
+    let follows: Vec<StreamPath> = client
+        .explorer
+        .reader_ref()
+        .follows()
+        .map(|(path, _)| path.clone())
+        .collect();
+    assert_eq!(follows.len(), 2, "{follows:?}");
+    assert!(follows.contains(&history), "{follows:?}");
+}
+
 /// The eager variant — every listing page read, every status followed and
 /// retained — fails the same oracle at 10^5 agents.
 #[test]

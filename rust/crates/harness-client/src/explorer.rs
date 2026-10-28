@@ -713,6 +713,13 @@ impl Explorer {
         // Follow only displayed live tails: visible statuses, the displayed
         // pages' witnesses and the open history.
         let mut follows = Vec::new();
+        // The open history is followed first, wherever its window is: the
+        // follow's `follow_checked` anchor is what proves cached (possibly
+        // restored) records were not replaced, so a seek must not skip it,
+        // and the follow budget is spent on tree rows only after it.
+        if let Some(history) = &self.history {
+            follows.push(history.stream.clone());
+        }
         let mut seen = BTreeMap::new();
         for at in &visible {
             if let Pos::Row {
@@ -729,12 +736,6 @@ impl Explorer {
                 seen.insert(status.clone(), (agent, tail));
                 follows.push(status);
             }
-        }
-        // The open history is followed wherever its window is: the follow's
-        // `follow_checked` anchor is what proves cached (possibly restored)
-        // records were not replaced, so a seek must not skip it.
-        if let Some(history) = &self.history {
-            follows.push(history.stream.clone());
         }
         // Each displayed page's witness, so new children appear live.
         let pages = visible

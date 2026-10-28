@@ -129,7 +129,7 @@ pub enum Priority {
 }
 
 /// One rendering need, stated each frame.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Want {
     /// Records `[from, to)` of a stream.
     Range {
@@ -570,8 +570,10 @@ impl Reader {
     /// passed-through values no want covers any longer are released.
     pub fn plan(&mut self, wants: impl IntoIterator<Item = (Want, Priority)>) {
         let wants: Vec<(Want, Priority)> = wants.into_iter().collect();
+        // Rows of one page each state the same page want; display it once.
+        let mut displayed = BTreeSet::new();
         for (want, priority) in &wants {
-            if *priority == Priority::Visible {
+            if *priority == Priority::Visible && displayed.insert(want) {
                 self.display(want);
             }
         }
@@ -619,6 +621,9 @@ impl Reader {
             ..
         } = want
         {
+            for (stream, last) in projected(&self.cache, want) {
+                self.cache.touch_record(&stream, last);
+            }
             self.cache.touch_listing(parent, *index);
             self.cache.touch_stream(parent);
             if let Some(witness) = witness {
@@ -1197,12 +1202,42 @@ fn window<'a>(cache: &RecordCache, want: &'a Want) -> Option<(&'a StreamPath, u6
     }
 }
 
+/// The projected last record of each child row of a cached listing page:
+/// the page delivered them, so its want covers them while its rows show.
+fn projected(cache: &RecordCache, want: &Want) -> Vec<(StreamPath, u64)> {
+    let Want::Listing {
+        parent,
+        index,
+        tail: Some(relative),
+        ..
+    } = want
+    else {
+        return Vec::new();
+    };
+    let Some(listing) = cache.listing(parent, *index) else {
+        return Vec::new();
+    };
+    listing
+        .children
+        .iter()
+        .filter_map(|child| {
+            let stream =
+                StreamPath::new(format!("{}/{}", child.as_str(), relative.as_str())).ok()?;
+            let last = cache.tail(&stream)?.checked_sub(1)?;
+            Some((stream, last))
+        })
+        .collect()
+}
+
 /// Whether `want` reads the value cached or passed through under `key`.
 fn covers(cache: &RecordCache, want: &Want, key: &Key) -> bool {
     match (want, key) {
         (Want::Listing { parent, index, .. }, Key::Listing(path, at)) => {
             parent == path && index == at
         }
+        (Want::Listing { .. }, Key::Record(..)) => projected(cache, want)
+            .iter()
+            .any(|(stream, last)| cache.resolve(stream, *last) == *key),
         (_, Key::Record(_, sequence)) => window(cache, want).is_some_and(|(stream, from, to)| {
             (from..to).contains(sequence) && cache.resolve(stream, *sequence) == *key
         }),
@@ -1404,6 +1439,55 @@ mod reader_tests {
         for now in 2..6 {
             assert!(frame(&mut reader, now, &want).is_empty(), "thrashed");
             assert!(reader.cache.has_range(&stream, 0, 2));
+        }
+        assert!(reader.residency().cache_bytes <= 64 * 1024);
+    }
+
+    /// Projected heads of a displayed listing page that do not fit together
+    /// stay served while the page is wanted: the page is their only reader.
+    /// Control: a listing want covered only the page, so the passed head
+    /// was dropped and never requested again.
+    #[test]
+    fn projected_heads_stay_served_while_their_page_is_wanted() {
+        let parent = StreamPath::new("test/agents").unwrap();
+        let relative = StreamPath::new("conversation").unwrap();
+        let mut reader = Reader::new(ReaderPolicy {
+            cache_bytes: 64 * 1024,
+            ..ReaderPolicy::default()
+        })
+        .unwrap();
+        let want = [(
+            Want::Listing {
+                parent: parent.clone(),
+                index: 0,
+                tail: Some(relative),
+                witness: None,
+            },
+            Priority::Visible,
+        )];
+        let ops = frame(&mut reader, 0, &want);
+        let [op] = ops.as_slice() else {
+            panic!("one page");
+        };
+        let children = ["a", "b"].map(|name| ListedChild {
+            path: StreamPath::new(format!("test/agents/{name}")).unwrap(),
+            tail: Some(fetched(0, 40 * 1024)),
+        });
+        reader.complete(
+            op.id(),
+            Outcome::Children {
+                children: children.to_vec(),
+                next: None,
+                version: CommitId::from_bytes([1; 32]),
+            },
+            1,
+        );
+        for now in 2..6 {
+            assert!(frame(&mut reader, now, &want).is_empty());
+            for name in ["a", "b"] {
+                let head = StreamPath::new(format!("test/agents/{name}/conversation")).unwrap();
+                assert!(reader.cache.record(&head, 0).is_some(), "{name} at {now}");
+            }
         }
         assert!(reader.residency().cache_bytes <= 64 * 1024);
     }
