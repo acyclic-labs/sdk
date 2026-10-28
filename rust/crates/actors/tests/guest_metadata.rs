@@ -1,6 +1,4 @@
 //! Downstream metadata construction, immutable fields and validating deserialization.
-#[cfg(not(target_arch = "wasm32"))]
-acyclic_test_support::counting_allocator!();
 use acyclic_actors::guest::*;
 use proptest::prelude::*;
 use serde_json::json;

@@ -38,3 +38,12 @@ Actor-call opaque bytes still describe immutable response length. Actor-call
 fragment, reassembly, refusal, and cancellation assertions remain at their
 existing owners; this mapping introduces no resumable actor-call cursor. Existing
 source wake/recheck models remain distinct from these admission histories.
+
+The record and progress split-observation controls are independent test functions,
+so either expected panic cannot prevent the other control from reaching its pair
+assertion. These source changes have not executed either control.
+
+The source-admission fixtures use `binding = None`. They establish that fixture's
+credit/consumption contract; authority-bound non-call follows retain their actual
+bounded lookahead and are not qualified by this fixture as never polling after
+credit removal.

@@ -1,4 +1,5 @@
 [package]
+autotests = false
 include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "examples/**", "tests/**", "benches/**", "fuzz/corpus/**"]
 name = "acyclic-actors"
 version.workspace = true
@@ -83,11 +84,5 @@ protoc-bin-vendored = "=3.3.0"
 workspace = true
 
 [[test]]
-name = "guest_loom"
-path = "tests/guest_loom.rs"
-required-features = ["model-checking"]
-
-[[test]]
-name = "timer_loom"
-path = "tests/timer_loom.rs"
-required-features = ["model-checking"]
+name = "main"
+path = "tests/main.rs"

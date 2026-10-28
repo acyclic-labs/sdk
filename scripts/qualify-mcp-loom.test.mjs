@@ -245,25 +245,25 @@ test("timer qualification instruments production Stream locks through the worksp
   const calls = [];
   qualifyTimerLoom((command, args, options) => {
     calls.push([command, args, options.env?.RUSTC_WORKSPACE_WRAPPER]);
-    const timer = { ...artifact, target: { name: "timer_loom" } };
-    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(timer) : summary(1) };
+    const timer = { ...artifact, target: { name: "main" } };
+    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(timer) : summary(2, 0, 4) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "timer_loom", "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"), "--features", "model-checking"], loomEnvironment().RUSTC_WORKSPACE_WRAPPER],
-    ["model-binary", [], undefined],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "main", "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"), "--features", "model-checking"], loomEnvironment().RUSTC_WORKSPACE_WRAPPER],
+    ["model-binary", ["timer_loom::"], undefined],
   ]);
 });
 
-test("guest qualification instruments only the guest target and runs its models", () => {
+test("guest qualification selects every guest model in the instrumented main target", () => {
   const calls = [];
-  qualifyGuestLoom((command, args) => {
-    calls.push([command, args]);
-    const guest = { ...artifact, target: { name: "guest_loom" } };
-    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(guest) : summary(4) };
+  qualifyGuestLoom((command, args, options) => {
+    calls.push([command, args, options.env?.RUSTC_WORKSPACE_WRAPPER]);
+    const guest = { ...artifact, target: { name: "main" } };
+    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(guest) : summary(4, 0, 2) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "guest_loom", "--features", "model-checking", "--", "--cfg", "loom"]],
-    ["model-binary", []],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-actors", "--test", "main", "--features", "model-checking"], loomEnvironment().RUSTC_WORKSPACE_WRAPPER],
+    ["model-binary", ["guest_loom::"], undefined],
   ]);
 });
 

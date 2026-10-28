@@ -1,4 +1,4 @@
-//! Instrument Stream's actual append/recovery locks with `RUSTFLAGS=--cfg loom`.
+//! Instrument Stream's actual append/recovery locks with the workspace wrapper.
 #![cfg(loom)]
 use acyclic_actors::timers::{TimerRecord, fire};
 use acyclic_stream::{AppendRequest, MemoryStream, StreamPath, StreamProvider};

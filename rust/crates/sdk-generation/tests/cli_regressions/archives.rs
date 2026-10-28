@@ -50,7 +50,7 @@ proptest::proptest! {
             "[a-z][a-z0-9_]{0,8}(/[a-z][a-z0-9_]{0,8}){0,2}",
             proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512), 1..8)
     ) {
-        crate::runtime::time_control();
+        super::runtime::time_control();
         let bytes = encode("fixture-1.0.0", &members);
         proptest::prop_assert_eq!(
             sdk_generation::historical::decode_archive_members(&bytes, "fixture", "1.0.0").unwrap(),

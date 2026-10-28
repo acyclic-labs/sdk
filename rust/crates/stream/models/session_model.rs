@@ -93,52 +93,56 @@ fn cursor(broken: bool) {
 
 // The retired child-only opaque consumer is mapped in README.md. The retained
 // oracle races the real anchored record/progress cut against generation fencing.
-fn anchored_cursor(broken: bool) {
-    for progress_update in [false, true] {
-        loom::model(move || {
-            let cursor = Arc::new(progress::Progress::with_preceding(0, Some([1; 32])));
-            let consuming = Arc::clone(&cursor);
-            let consuming = loom::thread::spawn(move || {
-                if progress_update {
-                    consuming.consume_progress(1, 1, [2; 32])
-                } else {
-                    consuming.consume_record(1, 0, [2; 32])
-                }
-            });
-            let moving = Arc::clone(&cursor);
-            let moving = loom::thread::spawn(move || {
-                let early = if broken {
-                    Some(moving.subscription()?.preceding)
-                } else {
-                    None
-                };
-                assert_eq!(moving.fence()?, 2);
-                let position = moving.subscription()?;
-                Ok::<_, StreamError>((position.next, early.unwrap_or(position.preceding)))
-            });
-            let consumed = consuming.join().unwrap().unwrap();
-            let position = moving.join().unwrap().unwrap();
-            assert_eq!(
-                position,
-                if consumed { (1, Some([2; 32])) } else { (0, Some([1; 32])) },
-                "resume must atomically retain the anchored cursor"
-            );
-            assert!(!cursor.consume_record(1, position.0, [3; 32]).unwrap());
-            assert!(!cursor.consume_progress(1, position.0 + 1, [3; 32]).unwrap());
-            let retained = cursor.subscription().unwrap();
-            assert_eq!((retained.next, retained.preceding), position);
-            assert!(retained.opaque.is_empty());
+fn anchored_cursor(broken: bool, progress_update: bool) {
+    loom::model(move || {
+        let cursor = Arc::new(progress::Progress::with_preceding(0, Some([1; 32])));
+        let consuming = Arc::clone(&cursor);
+        let consuming = loom::thread::spawn(move || {
+            if progress_update {
+                consuming.consume_progress(1, 1, [2; 32])
+            } else {
+                consuming.consume_record(1, 0, [2; 32])
+            }
         });
-    }
+        let moving = Arc::clone(&cursor);
+        let moving = loom::thread::spawn(move || {
+            let early = if broken {
+                Some(moving.subscription()?.preceding)
+            } else {
+                None
+            };
+            assert_eq!(moving.fence()?, 2);
+            let position = moving.subscription()?;
+            Ok::<_, StreamError>((position.next, early.unwrap_or(position.preceding)))
+        });
+        let consumed = consuming.join().unwrap().unwrap();
+        let position = moving.join().unwrap().unwrap();
+        assert_eq!(
+            position,
+            if consumed { (1, Some([2; 32])) } else { (0, Some([1; 32])) },
+            "resume must atomically retain the anchored cursor"
+        );
+        assert!(!cursor.consume_record(1, position.0, [3; 32]).unwrap());
+        assert!(!cursor.consume_progress(1, position.0 + 1, [3; 32]).unwrap());
+        let retained = cursor.subscription().unwrap();
+        assert_eq!((retained.next, retained.preceding), position);
+        assert!(retained.opaque.is_empty());
+    });
 }
 #[test]
 fn anchored_consumption_and_movement_keep_one_cursor() {
-    anchored_cursor(false);
+    anchored_cursor(false, false);
+    anchored_cursor(false, true);
 }
 #[test]
 #[should_panic(expected = "resume must atomically retain the anchored cursor")]
-fn anchored_cursor_negative_control_splits_the_resume_cut() {
-    anchored_cursor(true);
+fn anchored_record_negative_control_splits_the_resume_cut() {
+    anchored_cursor(true, false);
+}
+#[test]
+#[should_panic(expected = "resume must atomically retain the anchored cursor")]
+fn anchored_progress_negative_control_splits_the_resume_cut() {
+    anchored_cursor(true, true);
 }
 
 #[test]

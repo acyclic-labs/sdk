@@ -88,15 +88,17 @@ export function qualifyNativeRegistryLoom(run = spawnSync) {
 }
 
 export function qualifyTimerLoom(run = spawnSync) {
-  return qualifyLoom("acyclic-actors", "timer_loom", [
+  return qualifyLoom("acyclic-actors", "main", [
     "--features", "acyclic-stream/local", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "timer-loom"),
   ], run, {
-    env: loomEnvironment(), targetCfg: [],
+    env: loomEnvironment(), targetCfg: [], suites: [["timer_loom::", 2]],
   });
 }
 
 export function qualifyGuestLoom(run = spawnSync) {
-  return qualifyLoom("acyclic-actors", "guest_loom", [], run);
+  return qualifyLoom("acyclic-actors", "main", [], run, {
+    env: loomEnvironment(), targetCfg: [], suites: [["guest_loom::", 4]],
+  });
 }
 
 export function qualifyE2eProgressLoom(features = ["--features", "filesystem-local,native-execution,test-support,grpc"], run = spawnSync) {
