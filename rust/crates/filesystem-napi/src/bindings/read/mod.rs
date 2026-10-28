@@ -192,10 +192,7 @@ impl NativeCheckout {
         let receipt = checkout_call!(
             self,
             checkout,
-            read_file_range(
-                &path,
-                byte_range(&offset, &length)?,
-            )
+            read_file_range(&path, byte_range(&offset, &length)?,)
         )?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.bytes.to_vec()),
@@ -215,10 +212,7 @@ impl NativeCheckout {
         let receipt = checkout_call!(
             self,
             checkout,
-            read_file_range(
-                file_id,
-                byte_range(&offset, &length)?,
-            )
+            read_file_range(file_id, byte_range(&offset, &length)?,)
         )?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.bytes.to_vec()),
