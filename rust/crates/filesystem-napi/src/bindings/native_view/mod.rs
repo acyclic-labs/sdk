@@ -240,21 +240,13 @@ impl NativeCheckout {
     }
 
     #[napi]
-    pub fn watch(
-        &self,
-        source_root: String,
-        maximum_queued_changes: NapiU32,
-        recursive: bool,
-    ) -> Result<NativeWatcher> {
-        let maximum_queued_changes = maximum_queued_changes.into_inner();
-
+    pub fn watch(&self, source_root: String, recursive: bool) -> Result<NativeWatcher> {
         let source_root = PathBuf::from(source_root);
         let watcher = FsNativeWatch::open_with_profile(
             &source_root,
             self.config.profile,
             NativeWatchOptions {
                 limits: self.config.limits,
-                maximum_queued_changes,
                 recursive,
             },
         )

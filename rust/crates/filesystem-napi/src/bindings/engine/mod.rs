@@ -140,7 +140,6 @@ impl NativeFs {
             mode,
             maximum_paths: options.maximum_paths.map(NapiU32::into_inner),
             maximum_extent_spans: options.maximum_extent_spans.into_inner(),
-            maximum_queued_changes: options.maximum_queued_changes.into_inner(),
             excluded_paths: options
                 .excluded_paths
                 .unwrap_or_default()
@@ -148,10 +147,7 @@ impl NativeFs {
                 .map(|path| PortablePath::parse(&path, VolumeLimits::default()).map_err(napi_error))
                 .collect::<Result<Vec<_>>>()?,
         };
-        if options.maximum_paths == Some(0)
-            || options.maximum_extent_spans == 0
-            || options.maximum_queued_changes == 0
-        {
+        if options.maximum_paths == Some(0) || options.maximum_extent_spans == 0 {
             return Err(Error::new(
                 Status::InvalidArg,
                 "source bounds must be nonzero",
