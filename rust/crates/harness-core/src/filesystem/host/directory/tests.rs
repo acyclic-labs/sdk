@@ -4,6 +4,104 @@ use crate::{AgentId, conversation::VolumeOwner};
 use acyclic_fs::access::{Capability, Generations, Grant, ResourcePattern};
 use proptest::prelude::*;
 
+#[tokio::test]
+async fn inherited_directory_intersects_current_root_and_data_policy()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (host, volume, grant) = fixture([true; 8]).await?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let reference = bounded_io::content_workspace(&host.provider, &volume, None)?;
+    let root = host.open(&reference, None).await?;
+    let store = acyclic_fs::StreamGitCompatStore::new(acyclic_fs::StreamAuthorityStore::new(
+        host.filesystem.stream_provider(),
+    ));
+    let graph = acyclic_fs::WorkspaceGraph::new(store.clone());
+    graph.register_root(&root).await?;
+    let child = graph
+        .fork(&root, "directory-branch", acyclic_fs::IdempotencyKey::new())
+        .await?;
+    let pinned = child
+        .head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await?
+        .value;
+    let generation = host.generation_ref_id(pinned.id(), None)?;
+    let host = host.with_project_family(root.id(), store)?;
+    let options = DirectoryOptions {
+        generation: Some(&generation),
+        after: None,
+        maximum_entries: 8,
+        ceiling: None,
+    };
+    let (_, before) = host
+        .list_private_directory(&volume, &grant, "rows", options)
+        .await?;
+    assert_eq!(before.entries.len(), 8);
+    for (workspace, hidden) in [(&child, "rows/00"), (&root, "rows/01")] {
+        let mut policy: acyclic_fs::access::Policy =
+            serde_json::from_slice(access::INITIAL_POLICY)?;
+        policy.version = 2;
+        let mut deny = policy.layers[0][0].clone();
+        deny.id = "inherited-list-denial".into();
+        deny.effect = acyclic_fs::access::Effect::Deny;
+        deny.actions = [Action::List].into_iter().collect();
+        deny.resource.path = hidden.into();
+        policy.layers[0].push(deny);
+        let mut checkout = workspace
+            .checkout(
+                acyclic_fs::model::GenerationSelector::Head,
+                acyclic_fs::model::CheckoutMode::tracking_transaction(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?
+            .value;
+        checkout
+            .write_access_policy(
+                &serde_json::to_vec(&policy)?,
+                acyclic_fs::NamedAttributeWriteMode::Replace,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await?;
+        checkout
+            .commit::<acyclic_fs::FsError, _, _>(
+                acyclic_fs::OperationId::new(),
+                None,
+                None,
+                None,
+                acyclic_fs::PublicationPermit::Unrestricted,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &cancellation,
+                |_| {
+                    std::future::ready(Ok(acyclic_fs::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    }))
+                },
+            )
+            .await?;
+        let (_, page) = host
+            .list_private_directory(&volume, &grant, "rows", options)
+            .await?;
+        assert!(!page.entries.iter().any(|entry| entry.name.as_bytes() == hidden.rsplit('/').next().unwrap().as_bytes()));
+        assert!(
+            !page
+                .entries
+                .iter()
+                .any(|entry| entry.name.as_bytes() == b"00"),
+            "a root policy update must not restore names hidden by the data owner"
+        );
+    }
+    let (selected, page) = host
+        .list_private_directory(&volume, &grant, "rows", options)
+        .await?;
+    assert_eq!(
+        selected, generation,
+        "policy changes must not replace the pinned data cut"
+    );
+    assert_eq!(page.entries.len(), 6);
+    Ok(())
+}
+
 async fn fixture(
     mask: [bool; 8],
 ) -> Result<(
