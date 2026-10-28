@@ -17,7 +17,7 @@ async fn replacing_a_journal_in_place_discards_its_cached_execution_prefix() -> 
             },
         });
         let (tail, records) = execution
-            .step_records(&journal, operation, 0, true, 1, |event| {
+            .step_records(&journal, operation, 0, true, Some(1), |event| {
                 matches!(event, ExecutionEvent::Started { .. })
             })
             .await?;
