@@ -134,7 +134,7 @@ That run also passed both local host baselines (6.38 s), the cross-session and
 listener-loss checks, and the idle 100,000-stream/subscription check in 17.65 s
 (700 ms path creation), with two provider connections, four total tasks including
 the observer, one OS thread and 321,380 KiB RSS. Browser and Cloudflare host
-fixtures compiled for wasm. After #1705 and #1746, the adapter inventory is
+fixtures compiled for wasm. The current source adapter inventory is
 542 Rust lines plus 100 SQL lines. This exceeds the approximately 300-line budget;
 shared journal catch-up, dispatch and publication orchestration still need
 extraction under [follow-up #1629](https://github.com/acyclic-labs/sdk/issues/1629).
@@ -189,6 +189,19 @@ short writes, dropped physical completion and cancelled observers. Shared native
 backend pipelining belongs in native-runtime, with the portable replica owner
 retaining the journal's visibility boundary. No such native batching or runtime
 qualification is claimed by this Postgres source change.
+
+The native batching prerequisite groups contiguous Linux `NativeFile` write
+buffers into one owned vectored operation, bounded by 16 buffers and 1 MiB.
+Payloads retain their original backing storage. Each contiguous run completes
+before the next run, and a short completion is an ordered byte prefix completed
+by the existing positional write-all path. An uncertain operation keeps the
+entire buffer group in the existing retired-proactor custody. An unavailable
+ring retains the existing positional backend. Windows batches with multiple
+members use the existing IOCP driver even when inline blocking is permitted;
+Apple already uses its shared vectored path. These are source changes, without a
+new OS/runtime or performance qualification claim. LocalStream still writes one
+frame under its publication guard: the ordered journal queue and its original
+work/cut integration remain separate from this native prerequisite.
 
 Any further frame batching or mutable-read elision needs an ordered-observation
 proof and the same conflict, deadline, notification-loss and crash oracles. G20

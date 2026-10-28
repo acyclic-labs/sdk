@@ -3,6 +3,47 @@ use proptest::prelude::*;
 
 const UNSUPPORTED: [i32; 4] = [libc::EPERM, libc::EACCES, libc::ENOSYS, libc::EOPNOTSUPP];
 
+#[test]
+fn owned_write_batches_preserve_contiguous_runs_gaps_and_chunk_boundaries() -> io::Result<()> {
+    // Compare the actual file against a sequential independent byte image. The
+    // first run crosses the vector width; the last crosses the I/O byte chunk.
+    let chunks = (0..IO_ENTRIES + 5)
+        .map(|index| vec![u8::try_from(index).unwrap(); index + 1])
+        .chain([Vec::new(), vec![0x91; MAX_IO_BYTES + 17]])
+        .collect::<Vec<_>>();
+    for positional in [false, true] {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("owned-batch");
+        let file = Arc::new(NativeFilePayload {
+            file: std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)?,
+            _allocation: None,
+        });
+        let mut expected = vec![0; 7];
+        let mut writes = Vec::new();
+        for (index, chunk) in chunks.iter().enumerate() {
+            if index == IO_ENTRIES + 1 {
+                expected.extend_from_slice(&[0; 3]);
+            }
+            writes.push(OwnedWrite {
+                offset: expected.len() as u64,
+                bytes: Bytes::copy_from_slice(chunk),
+            });
+            expected.extend_from_slice(chunk);
+        }
+        let mut owner = Owner::new();
+        if positional {
+            owner.backend = Backend::Positional;
+        }
+        owner.write_batch(&file, writes)?;
+        assert_eq!(std::fs::read(path)?, expected);
+    }
+    Ok(())
+}
+
 // Count probes at the actual backend-selection entry, with the original fault
 // injected into its retained state. No substitute selection algorithm is used.
 fn probe_count(code: i32, requests: usize, forget_selection: bool) -> io::Result<usize> {

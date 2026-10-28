@@ -19,7 +19,7 @@ use bytes::Bytes;
 use compio_buf::{IntoInner, SetLen, Slice};
 use compio_driver::{
     Key, Proactor, PushEntry, SharedFd,
-    op::{ReadAt, WriteAt},
+    op::{ReadAt, WriteVectoredAt},
 };
 
 const IO_ENTRIES: usize = 16;
@@ -156,7 +156,7 @@ const OWNER_IO_DEADLINE: Duration = Duration::from_secs(30);
 // Each owner retains at most one retired request and its original buffer.
 
 type OwnedReadOp = ReadAt<Slice<Vec<u8>>, SharedFd<Arc<NativeFilePayload>>>;
-type OwnedWriteOp = WriteAt<Bytes, SharedFd<Arc<NativeFilePayload>>>;
+type OwnedWriteOp = WriteVectoredAt<[Bytes; IO_ENTRIES], SharedFd<Arc<NativeFilePayload>>>;
 type ReadFinish = Box<dyn FnOnce(io::Result<Vec<Bytes>>) + Send>;
 type WriteFinish = Box<dyn FnOnce(io::Result<()>) + Send>;
 
