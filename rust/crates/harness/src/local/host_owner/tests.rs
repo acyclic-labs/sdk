@@ -400,6 +400,76 @@ async fn native_owner_teardown_removes_storage_after_retiring_retained_views() -
     Ok(())
 }
 
+/// Settled and archived children retire their views, so residency follows
+/// running or waiting sessions only; a later request reattaches lazily over
+/// the same captured fork, and a claimed child stays resident and fenced.
+#[tokio::test]
+async fn idle_native_views_retire_and_reattach_lazily() -> Result<()> {
+    let mut fixture = Fixture::for_host("codex").await?;
+    for reference in ["settled", "archived"] {
+        let spawn = SessionAction::Spawn {
+            prompt: "work".into(),
+        };
+        fixture.session(reference, spawn).await?;
+    }
+    assert_eq!(
+        fixture.owner.views().unwrap().len(),
+        3,
+        "waiting children stay resident"
+    );
+    let turn = fixture.session("settled", SessionAction::Next).await?;
+    native_write(&cwd(&turn)?.join("kept.txt"), b"kept")?;
+    let outcome = crate::Outcome::Failed {
+        message: "settled after write".into(),
+    };
+    let complete = SessionAction::Complete {
+        claim: claim(&turn)?,
+        outcome,
+    };
+    fixture.session("settled", complete).await?;
+    let archive = SessionAction::Control {
+        control: Control::Archive,
+    };
+    fixture.session("archived", archive).await?;
+    assert_eq!(
+        fixture.owner.views().unwrap().len(),
+        1,
+        "idle children retired"
+    );
+    let observed = fixture.session("settled", SessionAction::Observe).await?;
+    assert_eq!(
+        fixture.owner.views().unwrap().len(),
+        2,
+        "observe reattaches lazily"
+    );
+    assert_eq!(
+        std::fs::read(cwd(&observed)?.join("kept.txt")).map_err(storage)?,
+        b"kept"
+    );
+    let send = SessionAction::Send {
+        prompt: "again".into(),
+    };
+    fixture.session("settled", send).await?;
+    fixture.session("settled", SessionAction::Next).await?;
+    let agents = HostAction::Agents {
+        task: fixture.parent.clone(),
+    };
+    fixture.owner.dispatch(OperationId::new(), agents).await?;
+    assert_eq!(
+        fixture.owner.views().unwrap().len(),
+        2,
+        "a claimed child stays resident"
+    );
+    assert!(
+        fixture
+            .session("settled", SessionAction::Next)
+            .await
+            .is_err(),
+        "a resident claimed child keeps exclusive custody"
+    );
+    Ok(())
+}
+
 fn prompt(value: &Value) -> Result<SessionAction> {
     Ok(SessionAction::Reply {
         id: serde_json::from_value(value["id"].clone()).map_err(storage)?,

@@ -97,7 +97,8 @@ pub enum HostAction {
 type View = Arc<tokio::sync::OnceCell<Arc<host_workspace::HostWorkspace>>>;
 
 /// Disposable view handles over the native agent runtime; agents, lineage,
-/// files and history are its commits, so this holds no durable index.
+/// files and history are its commits, so this holds no durable index. Only
+/// roots and children whose sessions run or wait on input stay resident.
 ///
 /// Requests dispatch concurrently. Each one that changes an agent holds that
 /// agent's lock, taken in one global order, so effects on one agent stay
@@ -191,7 +192,8 @@ impl HostWorkspaceOwner {
             } => self.resource_probe(&task, agents, previous).await,
             HostAction::Sessions { parent } => {
                 self.attach(&parent).await?;
-                self.sessions(&parent).await
+                let sessions = self.sessions(&parent).await;
+                self.release_idle([parent], sessions).await
             }
             HostAction::Session {
                 parent,
@@ -200,12 +202,19 @@ impl HostWorkspaceOwner {
                 next,
             } => {
                 let child = agents::child(&parent, &reference)?;
-                let mut changed = vec![child];
+                let mut changed = vec![child.clone()];
                 if matches!(action, SessionAction::Spawn { .. }) {
                     changed.push(parent.clone());
                 }
-                let _locks = self.locks.hold(changed).await;
-                self.session(operation, &parent, &reference, action, next)
+                // An observed child's cwd stays resident for the claim that follows.
+                let observe = matches!(action, SessionAction::Observe);
+                let session = {
+                    let _locks = self.locks.hold(changed).await;
+                    self.session(operation, &parent, &reference, action, next)
+                        .await
+                };
+                let child = (!observe).then_some(child);
+                self.release_idle(child.into_iter().chain([parent]), session)
                     .await
             }
             HostAction::Hook { host, event, input } => {
@@ -225,19 +234,14 @@ impl HostWorkspaceOwner {
                 let _lock = self.locks.hold(vec![task.clone()]).await;
                 self.capture_native(operation, &task).await
             }
-            HostAction::Fs { task, command } => self.native_fs(operation, &task, &command).await,
+            HostAction::Fs { task, command } => {
+                let output = self.native_fs(operation, &task, &command).await;
+                self.release_idle([task], output).await
+            }
             HostAction::Agents { task } => {
                 self.attach(&task).await?;
-                let (state, _) = self.native.session(&task).await?;
-                let mut agents = Vec::with_capacity(state.open_children.len());
-                for child in &state.open_children {
-                    let (child_state, session) = self.native.session(child).await?;
-                    agents.push(json!({"task":child,"reference":session.reference,
-                        "control":session.control,"settled":session.settled,
-                        "running":session.claimed().is_some(),
-                        "pending":session.pending(&child_state)}));
-                }
-                Ok(json!({ "agents": agents }))
+                let agents = self.agents(&task).await;
+                self.release_idle([task], agents).await
             }
         }
     }
@@ -246,6 +250,59 @@ impl HostWorkspaceOwner {
     async fn open(&self, host: &str, session: &str) -> Result<AgentPath> {
         let _opening = self.opening.lock().await;
         self.native.open(host, session).await
+    }
+
+    async fn agents(&self, task: &AgentPath) -> Result<Value> {
+        let (state, _) = self.native.session(task).await?;
+        let mut agents = Vec::with_capacity(state.open_children.len());
+        for child in &state.open_children {
+            let (child_state, session) = self.native.session(child).await?;
+            agents.push(json!({"task":child,"reference":session.reference,
+                "control":session.control,"settled":session.settled,
+                "running":session.claimed().is_some(),
+                "pending":session.pending(&child_state)}));
+        }
+        Ok(json!({ "agents": agents }))
+    }
+
+    /// Retires each resident child view in `agents` whose session neither
+    /// runs nor waits on input, after `result`'s request: a later request
+    /// attaches it again lazily, so mounts and descriptors stay O(active
+    /// sessions), not O(every agent this owner touched). Root views live
+    /// until owner retirement. A view retires under its agent's lock and only
+    /// while this table holds its sole reference, so a concurrent request
+    /// never sees the same project mounted twice. Retirement joins off the
+    /// coordination thread.
+    async fn release_idle(
+        &self,
+        agents: impl IntoIterator<Item = AgentPath>,
+        result: Result<Value>,
+    ) -> Result<Value> {
+        let mut idle = Vec::new();
+        for agent in agents {
+            if agent.parent().is_none() || !self.views()?.contains_key(&agent) {
+                continue;
+            }
+            let _lock = self.locks.hold(vec![agent.clone()]).await;
+            let (state, session) = self.native.session(&agent).await?;
+            if session.claimed().is_some() || session.pending(&state) != 0 {
+                continue;
+            }
+            let mut views = self.views()?;
+            let sole = views.get(&agent).is_some_and(|view| {
+                Arc::strong_count(view) == 1
+                    && view.get().is_none_or(|view| Arc::strong_count(view) == 1)
+            });
+            if sole {
+                idle.extend(views.remove(&agent));
+            }
+        }
+        if !idle.is_empty() {
+            acyclic_native_runtime::spawn_blocking(move || drop(idle))
+                .await
+                .map_err(storage)?;
+        }
+        result
     }
 
     #[cfg(feature = "test-support")]
