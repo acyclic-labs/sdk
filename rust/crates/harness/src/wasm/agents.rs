@@ -50,10 +50,6 @@ type BrowserTurns = FilesystemTurnHost<dyn StreamProvider, Authorities, Objects>
 type BrowserAgents = AgentHost<dyn StreamProvider>;
 type BrowserHandler = AgentHandler<dyn StreamProvider, ExecutorDriver<Arc<BrowserTurns>>>;
 
-/// Settled turns of history in each turn's model context, as in the local host.
-/// Backstop on one delivery, which awaits a whole turn, as in the local host.
-const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
-
 fn to_js<T: Serialize>(value: &T) -> std::result::Result<JsValue, JsValue> {
     value
         .serialize(
