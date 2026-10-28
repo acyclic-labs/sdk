@@ -76,7 +76,7 @@ fn machine_admission_cycles_and_cleanup_are_fail_closed() -> Result<(), Box<dyn 
     let cancellation = CancellationToken::new();
     let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
     assert!(matches!(
-        Machine::<AttributeFormat>::new(wrong, &keys, 1, DecodeLimits::default(), &mut accounting),
+        Machine::<AttributeFormat>::new(wrong, &keys, DecodeLimits::default(), &mut accounting),
         Err(crate::FsError::FileRecord(
             crate::kernel::FileRecordReadError::WrongRootKind
         ))
@@ -86,13 +86,13 @@ fn machine_admission_cycles_and_cleanup_are_fail_closed() -> Result<(), Box<dyn 
         ..DecodeLimits::default()
     };
     assert!(matches!(
-        Machine::<AttributeFormat>::new(root, &keys, 1, invalid, &mut accounting),
+        Machine::<AttributeFormat>::new(root, &keys, invalid, &mut accounting),
         Err(crate::FsError::FileRecord(
             crate::kernel::FileRecordReadError::InvalidHeightLimit
         ))
     ));
     let mut cycle =
-        Machine::<AttributeFormat>::new(root, &keys, 1, DecodeLimits::default(), &mut accounting)?;
+        Machine::<AttributeFormat>::new(root, &keys, DecodeLimits::default(), &mut accounting)?;
     cycle.visit(root, &mut accounting)?;
     assert!(matches!(
         cycle.visit(root, &mut accounting),
@@ -134,7 +134,7 @@ fn native_batch_denial_keeps_its_actual_constructor_prefix()
     let baseline = original.live_allocation_bytes();
     let mut accounting = KernelAccounting::native(&original, &cancellation);
     assert!(
-        Machine::<AttributeFormat>::new(root, &keys, 2, DecodeLimits::default(), &mut accounting)
+        Machine::<AttributeFormat>::new(root, &keys, DecodeLimits::default(), &mut accounting)
             .is_err()
     );
     assert_eq!(original.receipt().allocation_operations, 2);

@@ -19,10 +19,9 @@ use std::ops::Range;
 
 mod support;
 pub use support::Child;
-pub(crate) use support::{
-    Error, Format, Mutation, Page, PageRef, TARGET_PAGE_BYTES, children_within, leaf_within,
-    within_bounds,
-};
+#[cfg(test)]
+pub(crate) use support::TARGET_PAGE_BYTES;
+pub(crate) use support::{Error, Format, Mutation, Page, PageRef, children_within, leaf_within};
 use support::{
     PAGE_WRITE, PageChunks, append_owned, push_summary, push_value, sort_indexed, storage_error,
     validate,
@@ -74,7 +73,6 @@ pub(crate) async fn apply_with_accounting<S, F, M>(
     store: &S,
     root: ObjectId,
     mutations: &[M],
-    maximum_mutations: u32,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -85,7 +83,7 @@ where
     M: Mutation<F>,
 {
     accounting.check()?;
-    validate::<F, M>(root, mutations, maximum_mutations, limits).map_err(M::map_error)?;
+    validate::<F, M>(root, mutations, limits).map_err(M::map_error)?;
     let copied = WorkCounters {
         bytes_copied: usize_to_u64(
             mutations
@@ -100,16 +98,7 @@ where
     ordered.value.extend(mutations.iter().enumerate());
     accounting.record_completed(copied)?;
     sort_indexed::<F, M>(&mut ordered.value, accounting)?;
-    let maximum_visited = mutations
-        .len()
-        .checked_mul(usize::from(limits.maximum_page_height))
-        .and_then(|value| value.checked_add(1))
-        .ok_or_else(|| M::map_error(Error::InvalidLimits))?
-        .min(
-            usize::try_from(limits.maximum_visited_pages)
-                .map_err(|_| M::map_error(Error::InvalidLimits))?,
-        );
-    let visited = VisitedObjectSet::new_with_accounting(maximum_visited, accounting)?;
+    let visited = VisitedObjectSet::new_with_accounting(accounting)?;
     let mut context = Context::<S, F, M> {
         store,
         limits,

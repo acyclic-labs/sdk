@@ -484,7 +484,7 @@ pub(crate) async fn capture_subtrees_with_native_work<
             let mut paths = Vec::new();
             for path in &canonical {
                 let path = clone_capture_path(path, meter)?;
-                append_scanned_path(&mut paths, path, maximum, meter)?;
+                capture_push_entry(&mut paths, path, (), meter)?;
             }
             let host_policy = CapturePolicy {
                 excluded_prefixes: clone_capture_paths(&policy.excluded_prefixes, None, meter)?,
@@ -538,10 +538,8 @@ pub(crate) async fn capture_subtrees_with_native_work<
         };
         let (result, _capture) = result.map_err(capture_demand_error)?;
         let (canonical, source_root, observed) = result?;
-        collect_captured_checkout_roots(
-            checkout, canonical, limits, policy, maximum, &mut paths, meter,
-        )
-        .await?;
+        collect_captured_checkout_roots(checkout, canonical, limits, policy, &mut paths, meter)
+            .await?;
         let ordered = order_host_checkout_union(observed, paths, maximum, meter)?;
         capture_observed_paths_from_root(
             checkout,
@@ -603,7 +601,6 @@ async fn collect_captured_checkout_roots<A: AsyncAuthorityStore, O: AsyncObjectS
     canonical: Vec<NamespacePath>,
     limits: crate::model::VolumeLimits,
     policy: &CapturePolicy,
-    maximum: Option<usize>,
     paths: &mut Vec<(NamespacePath, ())>,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
@@ -618,8 +615,7 @@ async fn collect_captured_checkout_roots<A: AsyncAuthorityStore, O: AsyncObjectS
             .record
             .is_some_and(|record| record.kind == FileKind::Directory)
         {
-            collect_checkout_subtree_paths(checkout, limits, root, policy, maximum, paths, meter)
-                .await?;
+            collect_checkout_subtree_paths(checkout, limits, root, policy, paths, meter).await?;
         } else {
             capture_drop_path(root, meter)?;
         }
@@ -690,16 +686,8 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         )?;
         capture_order_entries(&mut observed, maximum, meter)?;
         let root = NamespacePath::new(Vec::new(), limits).map_err(CaptureError::from)?;
-        collect_checkout_subtree_paths(
-            &mut candidate,
-            limits,
-            root,
-            policy,
-            maximum,
-            &mut paths,
-            meter,
-        )
-        .await?;
+        collect_checkout_subtree_paths(&mut candidate, limits, root, policy, &mut paths, meter)
+            .await?;
         let ordered = order_host_checkout_union(observed, paths, maximum, meter)?;
         capture_observed_paths_from_root(
             &mut candidate,

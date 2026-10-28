@@ -29,7 +29,7 @@ use crate::{
     runtime::ContentBindings,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-use acyclic_stream::{BoxProviderFuture as BoxFuture, ReadRequest, StreamError, StreamProvider};
+use acyclic_stream::{BoxProviderFuture as BoxFuture, ReadRequest, StreamProvider};
 use futures::TryStreamExt;
 use std::sync::Arc;
 
@@ -329,8 +329,8 @@ pub struct TurnLimits {
     pub maximum_bytes: u64,
     /// Model and tool steps per turn.
     pub max_steps: u32,
-    /// Settled turns of history in the model context.
-    pub history_turns: u32,
+    /// Optional caller-selected tail of settled turns; None selects the complete history.
+    pub history_turns: Option<u64>,
 }
 
 /// [`TurnHost`] binding every agent to its executor and a journal on its
@@ -640,28 +640,41 @@ where
         agent: &AgentState,
     ) -> Result<Vec<ConversationEntry>> {
         let tail = agent.conversation_tail;
-        let from = tail.saturating_sub(u64::from(self.limits.history_turns));
-        if from == tail {
-            return Ok(Vec::new());
-        }
+        let mut next = self
+            .limits
+            .history_turns
+            .map_or(0, |turns| tail.saturating_sub(turns));
         let path = agent.path.conversation().map_err(agent_error)?;
-        let records = match self
-            .stream
-            .read(ReadRequest {
-                path,
-                from,
-                limit: u32::try_from(tail - from).unwrap_or(u32::MAX),
-            })
-            .await
-        {
-            Ok(records) => records.try_collect::<Vec<_>>().await?,
-            Err(StreamError::NotFound) => Vec::new(),
-            Err(error) => return Err(error.into()),
-        };
-        records
-            .iter()
-            .map(|record| ConversationEntry::decode(&record.value).map_err(agent_error))
-            .collect()
+        let mut history = Vec::new();
+        while next < tail {
+            let limit = u32::try_from((tail - next).min(128))
+                .map_err(|_| Error::Invalid("conversation page length overflow".into()))?;
+            let mut records = self
+                .stream
+                .read(ReadRequest {
+                    path: path.clone(),
+                    from: next,
+                    limit,
+                })
+                .await?;
+            let through = next
+                .checked_add(u64::from(limit))
+                .ok_or_else(|| Error::Invalid("conversation page offset overflow".into()))?;
+            while let Some(record) = records.try_next().await? {
+                if record.sequence != next || next >= through {
+                    return Err(Error::Invalid("conversation page is discontinuous".into()));
+                }
+                history.try_reserve(1).map_err(Error::Allocation)?;
+                history.push(ConversationEntry::decode(&record.value).map_err(agent_error)?);
+                next = next
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("conversation offset overflow".into()))?;
+            }
+            if next != through {
+                return Err(Error::Invalid("conversation page is incomplete".into()));
+            }
+        }
+        Ok(history)
     }
 }
 
@@ -708,7 +721,6 @@ fn prompt_id(prompt: &str) -> uuid::Uuid {
 async fn select(
     agent: &AgentState,
     reader: &dyn ContentResidencyVerifier,
-    maximum_bytes: u64,
     prompt: Option<&str>,
     history: Vec<ConversationEntry>,
     turn: OperationId,
@@ -717,7 +729,12 @@ async fn select(
     if history.is_empty() && prompt.is_none() {
         return Ok(None);
     }
-    let mut messages = Vec::with_capacity(2 * history.len() + 2);
+    let capacity = history
+        .len()
+        .checked_mul(2)
+        .and_then(|n| n.checked_add(2))
+        .ok_or_else(|| Error::Invalid("conversation message count overflow".into()))?;
+    let mut messages = Vec::with_capacity(capacity);
     let mut message_ids = Vec::with_capacity(messages.capacity());
     if let Some(prompt) = prompt {
         messages.push(ModelMessage {
@@ -729,7 +746,12 @@ async fn select(
     for entry in history {
         let settled = crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?;
         let bytes = reader
-            .read(&entry.output, maximum_bytes, None, None)?
+            .read(
+                &entry.output,
+                entry.output.descriptor().byte_length(),
+                None,
+                None,
+            )?
             .await?;
         let output: TurnOutput = serde_json::from_slice(&bytes)
             .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
@@ -828,7 +850,6 @@ where
             let selected = select(
                 agent,
                 &*authority.content.reader,
-                self.limits.maximum_bytes,
                 self.prompt.as_deref(),
                 history,
                 turn,

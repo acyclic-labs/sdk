@@ -586,7 +586,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             .map_err(MountSourceError::from)?;
         let decision = checkout
             .rebase_head(
-                self.config.limits.maximum_checkout_dependencies,
+                self.config.limits.maximum_directory_page_entries,
                 WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )

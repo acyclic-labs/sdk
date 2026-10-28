@@ -1,4 +1,4 @@
-//! Canonical bounded generation-transfer manifests.
+//! Canonical generation-transfer manifests with optional caller allowances.
 
 use super::codec::{CanonicalDecodeError, Decoder, Encoder};
 use super::volume::{decode_config, encode_config};
@@ -80,12 +80,16 @@ pub fn encode_generation_export_manifest(
     Ok(encoder.finish())
 }
 
-/// Decodes one bounded canonical complete manifest.
+/// Decodes one canonical complete manifest under optional caller allowances.
 pub fn decode_generation_export_manifest(
     bytes: &[u8],
-    maximum_bytes: u64,
-    maximum_objects: u64,
+    maximum_bytes: impl Into<Option<u64>>,
+    maximum_objects: impl Into<Option<u64>>,
 ) -> Result<GenerationExportManifest, GenerationExportManifestError> {
+    let maximum_bytes = maximum_bytes
+        .into()
+        .unwrap_or_else(|| usize_to_u64(bytes.len()));
+    let maximum_objects = maximum_objects.into();
     let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, maximum_bytes, &mut |_| {
         Ok::<_, crate::kernel::CanonicalDecodeError>(())
     })?;
@@ -102,12 +106,20 @@ pub fn decode_generation_export_manifest(
     ));
     let file_count = decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     let count = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    let admitted = maximum_objects.min(config.limits.maximum_objects_per_generation);
+    let admitted = maximum_objects
+        .map_or(config.limits.maximum_objects_per_generation, |maximum| {
+            maximum.min(config.limits.maximum_objects_per_generation)
+        });
     if u64::from(count) > admitted {
         return Err(GenerationExportManifestError::TooManyObjects);
     }
     let capacity =
         usize::try_from(count).map_err(|_| GenerationExportManifestError::TooManyObjects)?;
+    // Every identity is one kind byte and a 32-byte digest. An untrusted
+    // announced count cannot cause allocation before its bytes are present.
+    if capacity > decoder.remaining_bytes() / 33 {
+        return Err(CanonicalDecodeError::Truncated.into());
+    }
     let mut objects = Vec::new();
     objects
         .try_reserve_exact(capacity)
@@ -131,8 +143,9 @@ pub fn decode_generation_export_manifest(
 /// Validates one decoded or caller-constructed manifest without backend work.
 pub fn validate_generation_export_manifest(
     manifest: &GenerationExportManifest,
-    maximum_objects: u64,
+    maximum_objects: impl Into<Option<u64>>,
 ) -> Result<(), GenerationExportManifestError> {
+    let maximum_objects = maximum_objects.into();
     manifest.config.validate()?;
     if manifest.generation_root.kind != ObjectKind::GenerationRoot {
         return Err(GenerationExportManifestError::WrongRootKind);
@@ -144,7 +157,9 @@ pub fn validate_generation_export_manifest(
         return Err(GenerationExportManifestError::TooManyFiles);
     }
     let count = usize_to_u64(manifest.objects.len());
-    if count > maximum_objects || count > manifest.config.limits.maximum_objects_per_generation {
+    if maximum_objects.is_some_and(|maximum| count > maximum)
+        || count > manifest.config.limits.maximum_objects_per_generation
+    {
         return Err(GenerationExportManifestError::TooManyObjects);
     }
     if !manifest.objects.contains(&manifest.generation_root) {

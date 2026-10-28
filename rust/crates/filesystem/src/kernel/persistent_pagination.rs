@@ -209,14 +209,11 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         let target = maximum_values
             .checked_add(1)
             .ok_or_else(|| fail(Error::LimitOverflow))?;
-        let configured_maximum = usize::try_from(limits.maximum_visited_pages)
-            .map_err(|_| fail(Error::InvalidLimits))?;
         // One cursor-exhausted subtree plus each requested value/witness frontier.
         let maximum_traversal_pages = target
             .checked_add(1)
             .and_then(|value| value.checked_mul(usize::from(limits.maximum_page_height)))
-            .ok_or_else(|| fail(Error::LimitOverflow))?
-            .min(configured_maximum);
+            .ok_or_else(|| fail(Error::LimitOverflow))?;
         accounting
             .admit(WorkCounters {
                 items_returned: usize_to_u64(maximum_values),
@@ -244,8 +241,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                 return Err(failed(project_failure(error), accounting.spent()));
             }
         };
-        let visited_result =
-            VisitedObjectSet::new_with_accounting(maximum_traversal_pages, accounting);
+        let visited_result = VisitedObjectSet::new_with_accounting(accounting);
         let completed = finish_custody_leaf(accounting, data_custody, prefix);
         let visited = match visited_result {
             Ok(result) => result,

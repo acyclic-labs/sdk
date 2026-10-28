@@ -650,7 +650,6 @@ mod model {
         maximum_page_items: 4,
         maximum_page_bytes: 64 * 1024,
         maximum_page_height: 16,
-        maximum_visited_pages: 4_096,
     };
 
     fn key(byte: u8) -> String {
@@ -692,7 +691,6 @@ mod model {
             store,
             root,
             mutations,
-            256,
             LIMITS,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),

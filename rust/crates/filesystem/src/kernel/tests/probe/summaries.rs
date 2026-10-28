@@ -152,7 +152,6 @@ async fn inserted_directory_entry_conflicts_with_an_observed_empty_page()
             expected: captured.value,
         }],
         [],
-        1,
     )?;
     let decision = classify_rebase_async(
         &probe,

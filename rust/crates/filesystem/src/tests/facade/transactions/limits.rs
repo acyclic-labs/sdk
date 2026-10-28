@@ -279,17 +279,6 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
             .is_err()
     );
 
-    let mut writable = open_checkout(&first, writable_pinned(), &cancellation).await?;
-    let excessive_capacity = Vec::<Mutation>::with_capacity(
-        usize::try_from(config().limits.maximum_mutations_per_batch)? + 1,
-    );
-    let failure = (writable.mutate(excessive_capacity, B, &cancellation))
-        .await
-        .err()
-        .ok_or("excessive mutation capacity unexpectedly succeeded")?;
-    assert!(matches!(failure.error, FsError::ExcessiveMutationCapacity));
-    assert_eq!(*failure.work, WorkCounters::default());
-
     let mut clean = open_checkout(&first, writable_pinned(), &cancellation).await?;
     assert!(
         (clean.commit(

@@ -217,7 +217,6 @@ async fn volume_object_ceiling_does_not_size_a_tiny_cursor_allocation()
     let store = MemoryObjectStore::default();
     let root = tree(&store).await?;
     let limits = DecodeLimits {
-        maximum_visited_pages: u32::MAX,
         maximum_page_height: 64,
         ..DecodeLimits::default()
     };

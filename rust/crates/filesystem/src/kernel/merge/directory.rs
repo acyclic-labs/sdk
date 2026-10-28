@@ -318,7 +318,6 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                     store,
                     ours_entries,
                     &mutations.value,
-                    maximum,
                     limits,
                     accounting,
                     cancellation,

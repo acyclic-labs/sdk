@@ -50,7 +50,6 @@ fn reads(regions: impl IntoIterator<Item = DependencyRegion>) -> Proof<CheckoutD
             expected: DependencyState::Absent,
         }),
         [],
-        100,
     )
     .map_err(failure)
 }

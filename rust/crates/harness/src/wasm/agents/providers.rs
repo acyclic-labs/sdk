@@ -6,7 +6,7 @@
 //! their StreamProvider and immutable object store through the same boundary.
 
 use super::{
-    Authorities, BrowserHandler, Error, HISTORY_TURNS, TURN_BACKSTOP_MS, WasmAgentRegistry,
+    Authorities, BrowserHandler, Error, TURN_BACKSTOP_MS, WasmAgentRegistry,
     WasmBrowserAgentOptions, WasmReducer, agent_error, from_js, js_error, stream_error,
 };
 use crate::{
@@ -288,7 +288,7 @@ impl Providers {
             maximum_bytes: options.limits.file_bytes,
             max_steps: u32::try_from(options.limits.model_steps)
                 .map_err(|_| js_error(Error::Invalid("model step limit exceeds u32".into())))?,
-            history_turns: HISTORY_TURNS,
+            history_turns: None,
         };
         let turns = Arc::new(FilesystemTurnHost::new(
             Arc::clone(&self.stream),

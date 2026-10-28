@@ -114,8 +114,6 @@ pub struct VolumeLimits {
     pub maximum_mutations_per_batch: u32,
     /// Maximum exact paths admitted in one shared lookup/stat batch.
     pub maximum_paths_per_batch: u32,
-    /// Maximum distinct observation and mutation regions retained by one checkout.
-    pub maximum_checkout_dependencies: u32,
     /// Maximum directory entries returned in one page.
     pub maximum_directory_page_entries: u32,
     /// Maximum authenticated B+tree levels followed by one operation.
@@ -139,7 +137,6 @@ impl Default for VolumeLimits {
             maximum_object_bytes: 64 * 1024 * 1024,
             maximum_mutations_per_batch: 2_048,
             maximum_paths_per_batch: 65_536,
-            maximum_checkout_dependencies: 262_144,
             maximum_directory_page_entries: 1_024,
             maximum_page_height: 64,
             maximum_read_bytes: 16 * 1024 * 1024,
@@ -224,7 +221,6 @@ impl VolumeConfig {
             || limits.maximum_object_bytes == 0
             || limits.maximum_mutations_per_batch == 0
             || limits.maximum_paths_per_batch == 0
-            || limits.maximum_checkout_dependencies == 0
             || limits.maximum_directory_page_entries == 0
             || limits.maximum_page_height == 0
             || limits.maximum_read_bytes == 0

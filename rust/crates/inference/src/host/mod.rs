@@ -11,9 +11,7 @@ use crate::contract;
 use crate::obs;
 use crate::wire;
 
-/// Largest caller-supplied PEM trust bundle accepted by [`Inference::connect`].
-pub const MAXIMUM_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
-const INVALID_CA_CERTIFICATE_LENGTH: &str = "CA certificate must contain 1 to 65536 bytes";
+const INVALID_CA_CERTIFICATE_LENGTH: &str = "CA certificate must be nonempty";
 
 impl Drop for wire::Item {
     fn drop(&mut self) {
@@ -122,7 +120,7 @@ impl Inference {
                 if endpoint.uri().scheme_str() != Some("https") {
                     return Err(Error::Invalid("HTTPS is required"));
                 }
-                if ca_pem.is_empty() || ca_pem.len() > MAXIMUM_CA_CERTIFICATE_BYTES {
+                if ca_pem.is_empty() {
                     return Err(Error::Invalid(INVALID_CA_CERTIFICATE_LENGTH));
                 }
                 let authorization = api_key.map(authorization).transpose()?;

@@ -122,7 +122,7 @@ fn backend<T>(_: T) -> StreamError {
 impl BrowserStream {
     /// Opens one browser-local database. Construction acquires no runtime lease.
     pub async fn open(name: &str, limits: BrowserStreamLimits) -> Result<Self, StreamError> {
-        if name.is_empty() || limits.words().contains(&0) || limits.commands > u64::from(u32::MAX) {
+        if name.is_empty() || limits.capacities().contains(&Some(0)) {
             return Err(StreamError::InvalidArgument);
         }
         let database = Database::open(name)
@@ -398,7 +398,7 @@ enum Outcome {
     Commit(CommitOutcome),
 }
 impl BrowserStreamLimits {
-    fn words(self) -> [u64; 16] {
+    fn capacities(self) -> [Option<u64>; 8] {
         [
             self.commands,
             self.journal_bytes,
@@ -409,10 +409,14 @@ impl BrowserStreamLimits {
             self.memory.commits.map(|value| value as u64),
             self.memory.idempotency_results.map(|value| value as u64),
         ]
-        .map(|value| [u64::from(value.is_some()), value.unwrap_or_default()])
-        .as_flattened()
-        .try_into()
-        .expect("eight encoded capacity fields")
+    }
+
+    fn words(self) -> [u64; 16] {
+        self.capacities()
+            .map(|value| [u64::from(value.is_some()), value.unwrap_or_default()])
+            .as_flattened()
+            .try_into()
+            .expect("eight encoded capacity fields")
     }
 }
 

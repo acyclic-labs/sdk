@@ -374,7 +374,7 @@ pub async fn read_pinned_context_path(
     maximum_bytes: u32,
 ) -> std::result::Result<JsValue, JsValue> {
     let source: PinnedContextPath = from_js(source)?;
-    let reader = BrowserReader::new(reader, u64::from(maximum_bytes)).map_err(js_error)?;
+    let reader = BrowserReader::new(reader, Some(u64::from(maximum_bytes))).map_err(js_error)?;
     let (file, bytes) = source
         .read(&reader, u64::from(maximum_bytes))
         .await

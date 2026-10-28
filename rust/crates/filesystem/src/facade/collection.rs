@@ -24,7 +24,6 @@ pub(super) fn widest_limits(left: DecodeLimits, right: DecodeLimits) -> DecodeLi
         maximum_page_items: left.maximum_page_items.max(right.maximum_page_items),
         maximum_page_bytes: left.maximum_page_bytes.max(right.maximum_page_bytes),
         maximum_page_height: left.maximum_page_height.max(right.maximum_page_height),
-        maximum_visited_pages: left.maximum_visited_pages.max(right.maximum_visited_pages),
     }
 }
 

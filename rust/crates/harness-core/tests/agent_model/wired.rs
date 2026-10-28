@@ -29,7 +29,7 @@ use std::sync::Arc;
 const LIMITS: TurnLimits = TurnLimits {
     maximum_bytes: 64 * 1024,
     max_steps: 4,
-    history_turns: 8,
+    history_turns: Some(8),
 };
 
 /// A memory filesystem host with agent `path`'s private volume.

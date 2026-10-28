@@ -480,12 +480,12 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
         Err(Error::Conflict(message)) if message == "discovered skill names are repeated"
     ));
     declaration.policy.skill_name = None;
-    declaration.limits.entries = 1;
+    declaration.limits.entries = Some(1);
     assert!(matches!(
         declaration.capture(fixture.reader.as_ref()).await,
         Err(Error::Invalid(_))
     ));
-    declaration.limits.entries = 64;
+    declaration.limits.entries = Some(64);
     let scope = fixture
         .issuer
         .bootstrap_scope(

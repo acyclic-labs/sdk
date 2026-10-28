@@ -224,10 +224,9 @@ async fn pre_cancelled_single_path_operations_do_no_backend_work()
 }
 
 #[tokio::test]
-async fn empty_and_excessive_path_batches_reject_before_backend_work()
--> Result<(), Box<dyn std::error::Error>> {
+async fn empty_path_batches_reject_before_backend_work() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (generation, path) = fixture(&store).await?;
+    let (generation, _) = fixture(&store).await?;
     let empty = lookup_paths(
         &store,
         &generation,
@@ -242,21 +241,6 @@ async fn empty_and_excessive_path_batches_reject_before_backend_work()
     assert!(matches!(empty.error, PathLookupError::EmptyBatch));
     assert_eq!(*empty.work, WorkCounters::default());
 
-    let mut bounded = config();
-    bounded.limits.maximum_paths_per_batch = 1;
-    let excessive = lookup_paths(
-        &store,
-        &generation,
-        &[path.clone(), path],
-        bounded,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await
-    .err()
-    .ok_or("excessive path batch succeeded")?;
-    assert!(matches!(excessive.error, PathLookupError::TooManyPaths));
-    assert_eq!(*excessive.work, WorkCounters::default());
     Ok(())
 }
 

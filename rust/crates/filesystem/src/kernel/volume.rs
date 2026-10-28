@@ -14,7 +14,7 @@ use thiserror::Error;
 const DOMAIN: &[u8] = b"acyclic-fs-volume-created-v1\0";
 const VERSION: u16 = 1;
 
-pub(crate) const CONFIG_ENCODED_BYTES: usize = 80;
+pub(crate) const CONFIG_ENCODED_BYTES: usize = 76;
 /// Immutable creation fact at sequence one of a volume authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VolumeCreated {
@@ -29,7 +29,7 @@ pub struct VolumeCreated {
 /// Canonical volume-creation codec failures.
 #[derive(Debug, Error)]
 pub enum VolumeCreatedError {
-    /// The volume configuration is contradictory or unbounded.
+    /// The volume configuration is contradictory.
     #[error(transparent)]
     Config(#[from] VolumeConfigError),
     /// The canonical payload is malformed or unsupported.
@@ -178,7 +178,6 @@ pub(crate) fn encode_config(encoder: &mut Encoder, config: VolumeConfig) {
     encoder.u64(config.limits.maximum_object_bytes);
     encoder.u32(config.limits.maximum_mutations_per_batch);
     encoder.u32(config.limits.maximum_paths_per_batch);
-    encoder.u32(config.limits.maximum_checkout_dependencies);
     encoder.u32(config.limits.maximum_directory_page_entries);
     encoder.u32(u32::from(config.limits.maximum_page_height));
     encoder.u64(config.limits.maximum_read_bytes);
@@ -242,7 +241,6 @@ pub(crate) fn decode_config<E: From<CanonicalDecodeError>>(
             maximum_object_bytes: decoder.u64(observe)?,
             maximum_mutations_per_batch: decoder.u32(observe)?,
             maximum_paths_per_batch: decoder.u32(observe)?,
-            maximum_checkout_dependencies: decoder.u32(observe)?,
             maximum_directory_page_entries: decoder.u32(observe)?,
             maximum_page_height: u16::try_from(decoder.u32(observe)?)
                 .map_err(|_| invariant("maximum page height exceeds u16"))?,

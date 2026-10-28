@@ -177,9 +177,6 @@ impl WasmWireSession {
     /// Register the credential on the shared pool after checking its byte bound.
     #[wasm_bindgen(js_name = registerCredential)]
     pub fn register_credential(&self, slot: u32, credential: Uint8Array) -> Result<(), JsValue> {
-        if slot as usize >= acyclic_stream::session::Limits::default().channels {
-            return Err(error("CLIENT_CREDENTIAL_CAPACITY"));
-        }
         let credential = command_bytes(&credential, "CLIENT_CREDENTIAL_CAPACITY")?;
         self.session
             .borrow()

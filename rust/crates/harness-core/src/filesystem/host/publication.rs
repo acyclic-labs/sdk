@@ -13,7 +13,7 @@ pub(in crate::filesystem) struct PublicationLookup<'a> {
     pub volume: &'a VolumeRef,
     pub key: &'a IdempotencyKey,
     pub expected_path: Option<&'a str>,
-    pub maximum_bytes: u64,
+    pub maximum_bytes: Option<u64>,
     pub internal_class: Option<InternalContentClass>,
     pub purpose: PublicationPurpose,
     pub scope: &'a Scope,
@@ -326,7 +326,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .0
             .pin_version(version, &mut Some(&mut io.history_io()))?;
         let bytes = self
-            .read_retained_file(original, &recorded.0.0, request.maximum_bytes, Some(io))?
+            .read_retained_file(
+                original,
+                &recorded.0.0,
+                request
+                    .maximum_bytes
+                    .unwrap_or(recorded.0.0.descriptor().byte_length().max(1)),
+                Some(io),
+            )?
             .await?;
         let hold = io.guard_bytes(&bytes)?;
         let bytes = (bytes, hold);

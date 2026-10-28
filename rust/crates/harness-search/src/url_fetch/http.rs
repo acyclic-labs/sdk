@@ -1,6 +1,4 @@
-use super::{
-    FetchProvider, FetchRequest, FetchResponse, MAXIMUM_URL_BYTES, rejection, validate_url_text,
-};
+use super::{FetchProvider, FetchRequest, FetchResponse, rejection, validate_url_text};
 use crate::tool::edit::{allocation, charge, reserve_string};
 use crate::{Error, NativeCustody, NativeWork, Result};
 use acyclic_stream::BoxProviderFuture;
@@ -12,9 +10,6 @@ mod native_tests;
 #[cfg(test)]
 pub(crate) mod tests;
 mod transport;
-
-const MAXIMUM_RESPONSE_BYTES: usize = 1_048_576;
-const MAXIMUM_REDIRECTS: usize = 5;
 
 /// Direct GET adapter. No keys, cookies, proxy credentials, or search provider are used.
 pub struct HttpFetch {
@@ -62,7 +57,8 @@ impl HttpFetch {
                 .is_ok_and(|ip| !public_address(ip))
                 || host.eq_ignore_ascii_case("localhost")
         });
-        for redirects in 0..=MAXIMUM_REDIRECTS {
+        let mut redirected = false;
+        loop {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(work) = work {
                 work.admit(acyclic_fs::WorkCounters {
@@ -79,7 +75,7 @@ impl HttpFetch {
             let response = transport::send(
                 &endpoint,
                 &self.tls,
-                redirects > 0 && (!explicitly_local || endpoint.origin() != original_origin),
+                redirected && (!explicitly_local || endpoint.origin() != original_origin),
                 work,
                 &mut failure,
             )
@@ -89,15 +85,13 @@ impl HttpFetch {
             }
             match response? {
                 transport::Response::Redirect(location, _location_held) => {
-                    if redirects == MAXIMUM_REDIRECTS {
-                        return Err(rejection(work, "fetch redirect limit exceeded"));
-                    }
-                    let next_held = url_allocation(endpoint.as_str().len() + location.len(), work)?;
-                    charge(
-                        &next_held,
-                        (endpoint.as_str().len() + location.len()) as u64,
-                        location.len() as u64,
-                    )?;
+                    let length = endpoint
+                        .as_str()
+                        .len()
+                        .checked_add(location.len())
+                        .ok_or_else(|| crate::error(work, "fetch redirect size overflow"))?;
+                    let next_held = url_allocation(length, work)?;
+                    charge(&next_held, length as u64, location.len() as u64)?;
                     let next = endpoint
                         .join(&location)
                         .map_err(|_| rejection(work, "invalid fetch redirect URL"))?;
@@ -108,6 +102,7 @@ impl HttpFetch {
                     if endpoint.scheme() == "https" && next.scheme() != "https" {
                         return Err(rejection(work, "fetch redirect cannot downgrade HTTPS"));
                     }
+                    redirected = true;
                     endpoint = next;
                     endpoint_held = next_held;
                 }
@@ -141,7 +136,6 @@ impl HttpFetch {
                 }
             }
         }
-        Err(rejection(work, "fetch redirect limit exceeded"))
     }
 }
 
@@ -155,7 +149,11 @@ fn copy_text(text: &str, held: &mut NativeCustody) -> Result<String> {
 
 fn url_allocation(length: usize, work: NativeWork<'_>) -> Result<NativeCustody> {
     // Fund the URL serializer's old/replacement text and host representation while parsing.
-    let held = allocation(work, length * 4 + std::mem::size_of::<Url>() + 128)?;
+    let bytes = length
+        .checked_mul(4)
+        .and_then(|n| n.checked_add(std::mem::size_of::<Url>() + 128))
+        .ok_or_else(|| crate::error(work, "fetch URL ownership overflow"))?;
+    let held = allocation(work, bytes)?;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         work.charge(acyclic_fs::WorkCounters {
@@ -194,7 +192,6 @@ fn validate_endpoint(endpoint: &Url, work: NativeWork<'_>) -> Result<()> {
         || !endpoint.username().is_empty()
         || endpoint.password().is_some()
         || endpoint.fragment().is_some()
-        || endpoint.as_str().len() > MAXIMUM_URL_BYTES
     {
         return Err(rejection(work, "invalid fetch URL"));
     }

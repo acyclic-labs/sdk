@@ -8,8 +8,6 @@ use serde::Deserialize;
 use std::{cell::RefCell, sync::Arc};
 use wasm_bindgen::prelude::*;
 
-const MAXIMUM_PAGE_BYTES: u64 = 16 * 1024 * 1024;
-
 #[derive(Deserialize, tsify::Tsify)]
 #[serde(deny_unknown_fields)]
 struct WasmPageEntry {
@@ -151,7 +149,7 @@ impl WasmPageWindow {
         Ok(Self {
             window: PageWindow::new(policy),
             cache: RefCell::new(None),
-            maximum_encoded_bytes: u64::from(bytes).min(MAXIMUM_PAGE_BYTES),
+            maximum_encoded_bytes: u64::from(bytes),
         })
     }
 

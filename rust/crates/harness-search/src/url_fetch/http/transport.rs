@@ -1,4 +1,4 @@
-use super::{MAXIMUM_RESPONSE_BYTES, copy_text, transport_error};
+use super::{copy_text, transport_error};
 use crate::{NativeCustody, NativeWork, Result};
 use http_body_util::{BodyExt as _, Empty};
 use hyper_util::rt::TokioIo;
@@ -135,10 +135,8 @@ async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
                 .headers()
                 .get(http::header::LOCATION)
                 .and_then(|value| value.to_str().ok())
-                .filter(|location| {
-                    !location.is_empty() && location.len() <= super::MAXIMUM_URL_BYTES
-                })
-                .ok_or_else(|| super::rejection(work, "fetch redirect has no bounded location"))?;
+                .filter(|location| !location.is_empty())
+                .ok_or_else(|| super::rejection(work, "fetch redirect has no location"))?;
             let mut held = crate::tool::edit::allocation(work, std::mem::size_of::<String>())?;
             let location = copy_text(location, &mut held)?;
             return Ok(Response::Redirect(location, held));
@@ -146,15 +144,7 @@ async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
         if !status.is_success() {
             return Err(super::rejection(work, "fetch HTTP request rejected"));
         }
-        if response
-            .headers()
-            .get(http::header::CONTENT_LENGTH)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok())
-            .is_some_and(|length| length > MAXIMUM_RESPONSE_BYTES as u64)
-        {
-            return Err(super::rejection(work, "fetch response exceeds byte limit"));
-        }
+
         for encoding in response.headers().get_all(http::header::CONTENT_ENCODING) {
             if !encoding
                 .to_str()
@@ -184,10 +174,10 @@ async fn exchange<I: AsyncRead + AsyncWrite + Unpin>(
             let Ok(chunk) = frame.into_data() else {
                 continue;
             };
-            if chunk.len() > MAXIMUM_RESPONSE_BYTES - bytes.len() {
-                return Err(super::rejection(work, "fetch response exceeds byte limit"));
-            }
-            let length = bytes.len() + chunk.len();
+            let length = bytes
+                .len()
+                .checked_add(chunk.len())
+                .ok_or_else(|| crate::error(work, "HTTP response size overflow"))?;
             crate::tool::edit::reserve_vec(&mut held, &mut bytes, length)?;
             crate::tool::edit::charge(&held, chunk.len() as u64, 1)?;
             bytes.extend_from_slice(&chunk);

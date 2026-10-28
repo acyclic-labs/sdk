@@ -296,7 +296,6 @@ pub async fn lookup_file_records<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     file_ids: &[FileId],
-    maximum_queries: u32,
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -305,7 +304,6 @@ pub async fn lookup_file_records<S: AsyncObjectStore>(
         store,
         root,
         file_ids,
-        maximum_queries,
         limits,
         budget,
         cancellation,
@@ -322,7 +320,6 @@ pub(crate) async fn lookup_file_records_async_with_custody<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     file_ids: &[FileId],
-    maximum_queries: u32,
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
@@ -336,7 +333,6 @@ pub(crate) async fn lookup_file_records_async_with_custody<S: AsyncObjectStore>(
                 store,
                 root,
                 file_ids,
-                maximum_queries,
                 limits,
                 budget,
                 cancellation,
@@ -360,7 +356,6 @@ pub(crate) async fn lookup_file_records_async_with_accounting<S: AsyncObjectStor
     store: &S,
     root: ObjectId,
     file_ids: &[FileId],
-    maximum_queries: u32,
     limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -376,7 +371,6 @@ pub(crate) async fn lookup_file_records_async_with_accounting<S: AsyncObjectStor
         store,
         root,
         file_ids,
-        maximum_queries,
         limits,
         accounting,
         cancellation,
@@ -394,7 +388,6 @@ pub(super) fn map_batch_error(error: persistent_batch::Error) -> FileRecordReadE
     match error {
         persistent_batch::Error::Cancelled => FileRecordReadError::Cancelled,
         persistent_batch::Error::Empty => FileRecordReadError::EmptyBatch,
-        persistent_batch::Error::TooManyQueries => FileRecordReadError::TooManyQueries,
         persistent_batch::Error::WrongRootKind => FileRecordReadError::WrongRootKind,
         persistent_batch::Error::InvalidLimits => FileRecordReadError::InvalidHeightLimit,
         persistent_batch::Error::HeightExceeded => FileRecordReadError::HeightExceeded,
@@ -412,7 +405,6 @@ pub(super) fn unmap_batch_error(error: FileRecordReadError) -> persistent_batch:
     match error {
         FileRecordReadError::Cancelled => persistent_batch::Error::Cancelled,
         FileRecordReadError::EmptyBatch => persistent_batch::Error::Empty,
-        FileRecordReadError::TooManyQueries => persistent_batch::Error::TooManyQueries,
         FileRecordReadError::WrongRootKind => persistent_batch::Error::WrongRootKind,
         FileRecordReadError::InvalidHeightLimit => persistent_batch::Error::InvalidLimits,
         FileRecordReadError::Cycle => persistent_batch::Error::CycleOrAlias,
@@ -505,9 +497,6 @@ pub enum FileRecordReadError {
     /// Batch lookup requires at least one identity.
     #[error("file-record lookup batch is empty")]
     EmptyBatch,
-    /// Batch lookup exceeds its explicit query limit.
-    #[error("file-record lookup batch exceeds its admitted query bound")]
-    TooManyQueries,
     /// Root is not a file-table page.
     #[error("file-record lookup root is not a file-table page")]
     WrongRootKind,

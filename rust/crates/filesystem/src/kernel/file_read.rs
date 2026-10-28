@@ -21,7 +21,7 @@ pub struct FileRangeRequest {
     /// Exact logical range returned.
     pub range: ByteRange,
     /// Maximum sparse spans admitted in the result plan.
-    pub maximum_spans: u32,
+    pub maximum_spans: Option<u32>,
     /// Canonical page and allocation limits.
     pub limits: DecodeLimits,
     /// Exact implementation-work ceiling.

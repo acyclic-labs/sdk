@@ -2,10 +2,11 @@ use super::*;
 
 pub(super) fn order_host_checkout_union(
     mut observed: Vec<(NamespacePath, Option<HostStat>)>,
-    checkout_paths: Vec<(NamespacePath, ())>,
+    mut checkout_paths: Vec<(NamespacePath, ())>,
     maximum: Option<usize>,
     meter: &NativeMaterializationWork,
 ) -> Result<(Vec<Option<HostStat>>, Vec<NamespacePath>), CaptureError> {
+    capture_order_entries(&mut checkout_paths, maximum, meter)?;
     let checkout_bytes = vector_bytes(&checkout_paths);
     let observed_bytes = vector_bytes(&observed);
     // Count only checkout paths missing from the host, using one monotone scan.
@@ -157,7 +158,6 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
     limits: crate::model::VolumeLimits,
     root: NamespacePath,
     policy: &CapturePolicy,
-    maximum: Option<usize>,
     paths: &mut Vec<(NamespacePath, ())>,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
@@ -192,30 +192,7 @@ pub(super) async fn collect_checkout_subtree_paths<A: AsyncAuthorityStore, O: As
         }
         Ok(())
     })
-    .await?;
-    capture_order_entries(paths, maximum, meter)
-}
-
-pub(super) fn append_scanned_path(
-    paths: &mut Vec<(NamespacePath, ())>,
-    path: NamespacePath,
-    maximum: Option<usize>,
-    meter: &NativeMaterializationWork,
-) -> Result<(), CaptureError> {
-    let Err(index) = capture_position(paths, &path, meter)? else {
-        return capture_drop_path(path, meter);
-    };
-    if maximum.is_some_and(|maximum| paths.len() >= maximum) {
-        return Err(CaptureError::InvalidOptions);
-    }
-    capture_charge(
-        meter,
-        WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        },
-    )?;
-    capture_insert_at(paths, index, path, (), meter)
+    .await
 }
 
 pub(super) fn validate_path_count(

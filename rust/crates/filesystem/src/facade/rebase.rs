@@ -767,8 +767,8 @@ pub(super) fn probe_limits(config: VolumeConfig) -> ProbeLimits {
     ProbeLimits {
         decode: DecodeLimits::for_volume(config),
         maximum_cached_generations: 2,
-        maximum_cached_records: config.limits.maximum_checkout_dependencies,
-        maximum_extent_spans: config.limits.maximum_directory_page_entries,
+        maximum_cached_records: ProbeLimits::default().maximum_cached_records,
+        maximum_extent_spans: None,
         maximum_content_payload_bytes: config.limits.maximum_read_bytes,
         maximum_directory_entries: config.limits.maximum_directory_page_entries,
     }

@@ -19,10 +19,11 @@ pub(super) async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     volume: &Volume<A, O>,
     metadata: FileMetadata,
     name: &AttributeName,
-    maximum_bytes: u64,
+    maximum_bytes: impl Into<Option<u64>>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<OwnedSourceChunk>, FsError> {
+    let maximum_bytes = maximum_bytes.into();
     let MetadataField::Value(root) = metadata.named_attributes else {
         return Ok(None);
     };
@@ -50,7 +51,7 @@ pub(super) async fn read_attribute<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let Some((value, length)) = value else {
             return Ok(None);
         };
-        if length > maximum_bytes.min(volume.config.limits.maximum_read_bytes) {
+        if maximum_bytes.is_some_and(|maximum| length > maximum) {
             return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
         }
         let read = read_blob_range_with_accounting(
@@ -206,7 +207,6 @@ pub(super) async fn change_attribute<
             &volume.fs.inner.objects,
             root,
             std::slice::from_ref(&mutation),
-            1,
             limits,
             accounting,
             cancellation,

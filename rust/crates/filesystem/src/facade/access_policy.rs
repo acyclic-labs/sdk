@@ -1,5 +1,5 @@
 use super::*;
-use crate::access::{MAXIMUM_POLICY_RECORD_BYTES, POLICY_METADATA_KEY};
+use crate::access::POLICY_METADATA_KEY;
 use crate::kernel::{AttributeClass, OwnedSourceChunk};
 
 mod binding;
@@ -34,9 +34,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<FileMetadata, FsError> {
-        if bytes.len() as u64 > MAXIMUM_POLICY_RECORD_BYTES.min(config.limits.maximum_read_bytes) {
-            return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-        }
         let volume = Volume {
             fs: self.clone(),
             id,
@@ -48,7 +45,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             FileMetadata::default(),
             &name.value,
             Some((bytes, NamedAttributeWriteMode::Create)),
-            MAXIMUM_POLICY_RECORD_BYTES.min(config.limits.maximum_read_bytes),
+            usize_to_u64(bytes.len()),
             accounting,
             cancellation,
         )
@@ -98,7 +95,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             &self.volume,
             metadata,
             &name.value,
-            MAXIMUM_POLICY_RECORD_BYTES,
+            None,
             accounting,
             cancellation,
         )
@@ -147,7 +144,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     &self.volume,
                     metadata,
                     &name.value,
-                    MAXIMUM_POLICY_RECORD_BYTES,
+                    None,
                     &mut accounting,
                     cancellation,
                 )
@@ -191,11 +188,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             if self.mode.mutations == MutationMode::None {
                 return Err(FsError::MutationNotAllowed);
             }
-            if bytes.len() as u64
-                > MAXIMUM_POLICY_RECORD_BYTES.min(self.volume.config.limits.maximum_read_bytes)
-            {
-                return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
-            }
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
                 self.validate_native_work(original)?;
@@ -214,7 +206,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                     metadata,
                     &name.value,
                     Some((bytes, mode)),
-                    MAXIMUM_POLICY_RECORD_BYTES.min(self.volume.config.limits.maximum_read_bytes),
+                    usize_to_u64(bytes.len()),
                     &mut accounting,
                     cancellation,
                 )

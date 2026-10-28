@@ -54,7 +54,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> PinnedRead
                 FileRangeRequest {
                     record,
                     range,
-                    maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
+                    maximum_spans: None,
                     limits: DecodeLimits::for_volume(self.volume.config),
                     budget: accounting.remaining()?,
                 },
@@ -413,7 +413,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
                 FileRangeRequest {
                     record,
                     range,
-                    maximum_spans: self.volume.config.limits.maximum_directory_page_entries,
+                    maximum_spans: None,
                     limits: DecodeLimits::for_volume(self.volume.config),
                     budget: accounting.remaining()?,
                 },
@@ -518,7 +518,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> DetachedFi
             FileRangeRequest {
                 record: self.record,
                 range,
-                maximum_spans: self.volume.config.limits.maximum_mutations_per_batch,
+                maximum_spans: None,
                 limits: DecodeLimits::for_volume(self.volume.config),
                 budget: accounting.remaining()?,
             },

@@ -42,33 +42,17 @@ fn admission_rejects_every_invalid_request_before_work() -> Result<(), Box<dyn s
     let limits = DecodeLimits::default();
     let mutation = remove(1)?;
 
-    for (candidate_root, mutations, maximum, candidate_limits, expected) in [
+    for (candidate_root, mutations, candidate_limits, expected) in [
         (
             root(ObjectKind::Blob, 1),
             vec![mutation.clone()],
-            1,
             limits,
             "wrong-kind",
         ),
-        (root(ObjectKind::TreePage, 1), vec![], 1, limits, "empty"),
+        (root(ObjectKind::TreePage, 1), vec![], limits, "empty"),
         (
             root(ObjectKind::TreePage, 1),
             vec![mutation.clone()],
-            0,
-            limits,
-            "too-many",
-        ),
-        (
-            root(ObjectKind::TreePage, 1),
-            vec![mutation.clone(), mutation.clone()],
-            1,
-            limits,
-            "too-many",
-        ),
-        (
-            root(ObjectKind::TreePage, 1),
-            vec![mutation.clone()],
-            1,
             DecodeLimits {
                 maximum_page_items: 1,
                 ..limits
@@ -76,24 +60,19 @@ fn admission_rejects_every_invalid_request_before_work() -> Result<(), Box<dyn s
             "invalid-limits",
         ),
     ] {
-        let failure = validate::<TreeFormat, TreeMutation>(
-            candidate_root,
-            &mutations,
-            maximum,
-            candidate_limits,
-        )
-        .err()
-        .ok_or("invalid persistent-tree request was admitted")?;
+        let failure =
+            validate::<TreeFormat, TreeMutation>(candidate_root, &mutations, candidate_limits)
+                .err()
+                .ok_or("invalid persistent-tree request was admitted")?;
         match expected {
             "wrong-kind" => assert!(matches!(failure, Error::WrongRootKind)),
             "empty" => assert!(matches!(failure, Error::Empty)),
-            "too-many" => assert!(matches!(failure, Error::TooManyMutations)),
             "invalid-limits" => assert!(matches!(failure, Error::InvalidLimits)),
             _ => unreachable!(),
         }
     }
 
-    validate::<TreeFormat, TreeMutation>(root(ObjectKind::TreePage, 1), &[mutation], 1, limits)?;
+    validate::<TreeFormat, TreeMutation>(root(ObjectKind::TreePage, 1), &[mutation], limits)?;
     Ok(())
 }
 

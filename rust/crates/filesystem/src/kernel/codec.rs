@@ -57,8 +57,6 @@ pub struct DecodeLimits {
     pub maximum_page_bytes: u32,
     /// Maximum authenticated page levels followed by one operation.
     pub maximum_page_height: u16,
-    /// Maximum distinct authenticated pages retained for cycle/alias checks.
-    pub maximum_visited_pages: u32,
 }
 
 impl Default for DecodeLimits {
@@ -69,7 +67,6 @@ impl Default for DecodeLimits {
             maximum_page_items: 1_024,
             maximum_page_bytes: 256 * 1024,
             maximum_page_height: 64,
-            maximum_visited_pages: 4_096,
         }
     }
 }
@@ -85,9 +82,18 @@ impl DecodeLimits {
             maximum_page_bytes: u32::try_from(config.limits.maximum_object_bytes)
                 .unwrap_or(u32::MAX),
             maximum_page_height: config.limits.maximum_page_height,
-            maximum_visited_pages: u32::try_from(config.limits.maximum_objects_per_generation)
-                .unwrap_or(u32::MAX),
         }
+    }
+
+    /// A depth-first stack holds at most one page's fanout per active level.
+    /// This structural bound is independent of the total tree size.
+    pub(crate) fn maximum_pending_frontier(self) -> Result<usize, crate::WorkError> {
+        usize::from(self.maximum_page_height)
+            .checked_mul(
+                usize::try_from(self.maximum_page_items).map_err(|_| crate::WorkError::Overflow)?,
+            )
+            .and_then(|count| count.checked_add(1))
+            .ok_or(crate::WorkError::Overflow)
     }
 
     pub(crate) fn maximum_page_object_bytes(self) -> u64 {
@@ -99,7 +105,6 @@ impl DecodeLimits {
         self.maximum_page_items >= minimum_items
             && self.maximum_page_bytes != 0
             && self.maximum_page_height != 0
-            && self.maximum_visited_pages != 0
     }
 }
 
@@ -232,6 +237,10 @@ pub(crate) struct Decoder<'a> {
 }
 
 impl<'a> Decoder<'a> {
+    pub(crate) fn remaining_bytes(&self) -> usize {
+        self.bytes.len() - self.cursor
+    }
+
     pub(crate) fn new<E: From<CanonicalDecodeError>>(
         bytes: &'a [u8],
         domain: &[u8],

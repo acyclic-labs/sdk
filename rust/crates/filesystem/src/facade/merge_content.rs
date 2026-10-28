@@ -64,7 +64,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     offset: 0,
                     length: logical_bytes,
                 },
-                maximum_spans: workspace.config.limits.maximum_directory_page_entries,
+                maximum_spans: None,
                 limits: DecodeLimits::for_volume(workspace.config),
                 budget: WorkBudget::UNBOUNDED,
             },

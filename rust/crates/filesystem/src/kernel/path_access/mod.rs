@@ -89,9 +89,6 @@ pub enum PathLookupError {
     /// A shared path batch must contain at least one query.
     #[error("path lookup batch is empty")]
     EmptyBatch,
-    /// A shared path batch exceeds the volume's explicit query bound.
-    #[error("path lookup batch exceeds the volume limit")]
-    TooManyPaths,
     /// The path was not admitted under the supplied volume bounds.
     #[error("namespace path exceeds the volume's admitted bounds")]
     PathBounds,

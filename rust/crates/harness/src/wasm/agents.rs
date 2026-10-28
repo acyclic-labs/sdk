@@ -51,7 +51,6 @@ type BrowserAgents = AgentHost<dyn StreamProvider>;
 type BrowserHandler = AgentHandler<dyn StreamProvider, ExecutorDriver<Arc<BrowserTurns>>>;
 
 /// Settled turns of history in each turn's model context, as in the local host.
-const HISTORY_TURNS: u32 = 64;
 /// Backstop on one delivery, which awaits a whole turn, as in the local host.
 const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
 

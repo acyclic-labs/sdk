@@ -133,7 +133,7 @@ impl WasmAgentServer {
                     max_steps: u32::try_from(options.limits.model_steps).map_err(|_| {
                         js_error(Error::Invalid("model step limit exceeds u32".into()))
                     })?,
-                    history_turns: HISTORY_TURNS,
+                    history_turns: None,
                 },
                 actors: ActorLimits::new(
                     options.handler_timeout_ms.unwrap_or(TURN_BACKSTOP_MS),
@@ -327,12 +327,16 @@ impl WasmAgentServer {
         agent: String,
         file: JsValue,
     ) -> std::result::Result<Vec<u8>, JsValue> {
+        let file: FileRef = from_js(file)?;
         self.bound
             .read_file(
                 &AgentPath::try_from(agent).map_err(agent_error)?,
-                &from_js(file)?,
+                &file,
+                0,
+                file.descriptor().byte_length(),
             )
             .await
+            .map(|(bytes, _)| bytes)
             .map_err(agent_error)
     }
 

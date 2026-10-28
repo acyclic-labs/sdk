@@ -417,7 +417,6 @@ async fn rebind_replacement<S: AsyncObjectStore>(
                 store,
                 entries,
                 &mutations.value,
-                state.remaining_changes.max(1),
                 limits,
                 accounting,
                 cancellation,

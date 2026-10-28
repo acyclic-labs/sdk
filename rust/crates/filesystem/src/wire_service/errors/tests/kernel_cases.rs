@@ -32,14 +32,14 @@ kernel_cases! { namespace: NamespacePathError, namespace_code {
 }}
 kernel_cases! { path: PathLookupError, path_code {
     InvalidArgument => [E::Config(crate::model::VolumeConfigError::ZeroLimit), E::EmptyBatch, E::PathBounds, E::NotDirectory, E::NamespacePath(NamespacePathError::TooDeep)];
-    ResourceExhausted => [E::TooManyPaths, E::AllocationFailed, E::Work(WorkError::Overflow)];
+    ResourceExhausted => [E::AllocationFailed, E::Work(WorkError::Overflow)];
     FailedPrecondition => [E::UnsupportedNameEncoding];
     DataLoss => [E::MissingRootRecord, E::KindMismatch];
     NotFound => [E::FileTable(FileRecordReadError::Storage(ObjectStoreError::Missing)), E::Tree(TreeReadError::Storage(ObjectStoreError::Missing)), E::Dependency(AuthenticatedProbeError::Storage(ObjectStoreError::Missing))];
 }}
 kernel_cases! { mutation: GenerationMutationError, mutation_code {
     InvalidArgument => [E::Config(crate::model::VolumeConfigError::ZeroLimit), E::InvalidInitialLinkCount, E::DirectoryCycle, E::NotDirectory, E::IsDirectory, E::Plan(MutationPlanError::Empty)];
-    ResourceExhausted => [E::TooManyPaths, E::AllocationFailed, E::Work(WorkError::Overflow)];
+    ResourceExhausted => [E::AllocationFailed, E::Work(WorkError::Overflow)];
     FailedPrecondition => [E::UnsupportedSymbolicLink, E::UnsupportedFileKind, E::UnsupportedSparseMutation, E::UnsupportedHardLink, E::FileIdentityConflict, E::DirectoryNotEmpty];
     NotFound => [E::MissingParent, E::MissingSource, E::Path(PathLookupError::Tree(TreeReadError::Storage(ObjectStoreError::Missing))), E::FileRecord(FileRecordReadError::Storage(ObjectStoreError::Missing)), E::Tree(TreeMutationError::Missing), E::FileTable(FileTableMutationError::Missing), E::Regular(RegularMutationError::Storage(ObjectStoreError::Missing)), E::Directory(DirectoryReadError::Storage(ObjectStoreError::Missing))];
     AlreadyExists => [E::AlreadyExists, E::FileIdentityAlreadyExists];
@@ -75,14 +75,14 @@ kernel_cases! { closure: ClosureError {
 kernel_cases! { file_record: FileRecordReadError {
     Cancelled => [E::Cancelled];
     InvalidArgument => [E::EmptyBatch, E::InvalidHeightLimit];
-    ResourceExhausted => [E::TooManyQueries, E::AllocationFailed, E::Work(WorkError::Overflow)];
+    ResourceExhausted => [E::AllocationFailed, E::Work(WorkError::Overflow)];
     DataLoss => [E::WrongRootKind, E::Cycle, E::HeightExceeded, E::InvalidRouting, E::ChildBoundsMismatch, E::Decode(CanonicalDecodeError::Truncated)];
     NotFound => [E::Storage(ObjectStoreError::Missing)];
 }}
 kernel_cases! { tree_read: TreeReadError {
     Cancelled => [E::Cancelled];
     InvalidArgument => [E::EmptyBatch, E::InvalidHeightLimit];
-    ResourceExhausted => [E::TooManyQueries, E::AllocationFailed, E::PageTooLarge {observed: 2, maximum: 1}, E::Work(WorkError::Overflow)];
+    ResourceExhausted => [E::AllocationFailed, E::PageTooLarge {observed: 2, maximum: 1}, E::Work(WorkError::Overflow)];
     DataLoss => [E::WrongRootKind, E::Cycle, E::HeightExceeded, E::InvalidRouting, E::ChildBoundsMismatch, E::Decode(CanonicalDecodeError::Truncated)];
     NotFound => [E::Storage(ObjectStoreError::Missing)];
 }}
@@ -108,13 +108,13 @@ kernel_cases! { blob_read: BlobReadError {
 kernel_cases! { attribute_lookup: AttributeLookupError {
     Cancelled => [E::Cancelled];
     InvalidArgument => [E::EmptyBatch, E::InvalidLimits];
-    ResourceExhausted => [E::TooManyQueries, E::AllocationFailed, E::Work(WorkError::Overflow)];
+    ResourceExhausted => [E::AllocationFailed, E::Work(WorkError::Overflow)];
     DataLoss => [E::WrongRootKind, E::HeightExceeded, E::CycleOrAlias, E::ChildBoundsMismatch, E::InvalidRouting, E::Decode(CanonicalDecodeError::Truncated)];
     NotFound => [E::Storage(ObjectStoreError::Missing)];
 }}
 kernel_cases! { attribute_mutation: AttributeMutationError {
     InvalidArgument => [E::Empty, E::InvalidLimits, E::InvalidEntry, E::NameMismatch];
-    ResourceExhausted => [E::TooManyMutations, E::PageItemTooLarge, E::AllocationFailed, E::Work(WorkError::Overflow)];
+    ResourceExhausted => [E::PageItemTooLarge, E::AllocationFailed, E::Work(WorkError::Overflow)];
     DataLoss => [E::WrongRootKind, E::HeightExceeded, E::CycleOrAlias, E::ChildBoundsMismatch, E::Decode(CanonicalDecodeError::Truncated)];
     Internal => [E::MutationContract];
     AlreadyExists => [E::AlreadyExists];
@@ -123,7 +123,7 @@ kernel_cases! { attribute_mutation: AttributeMutationError {
 }}
 kernel_cases! { file_table_mutation: FileTableMutationError {
     InvalidArgument => [E::Empty, E::InvalidLimits, E::InvalidRecord, E::IdentityMismatch];
-    ResourceExhausted => [E::TooManyMutations, E::PageItemTooLarge, E::AllocationFailed, E::Work(WorkError::Overflow)];
+    ResourceExhausted => [E::PageItemTooLarge, E::AllocationFailed, E::Work(WorkError::Overflow)];
     DataLoss => [E::WrongRootKind, E::HeightExceeded, E::CycleOrAlias, E::ChildBoundsMismatch, E::Decode(CanonicalDecodeError::Truncated)];
     Internal => [E::MutationContract];
     AlreadyExists => [E::AlreadyExists];
@@ -132,7 +132,7 @@ kernel_cases! { file_table_mutation: FileTableMutationError {
 }}
 kernel_cases! { tree_mutation: TreeMutationError {
     InvalidArgument => [E::Empty, E::InvalidLimits];
-    ResourceExhausted => [E::TooManyMutations, E::PageItemTooLarge, E::AllocationFailed, E::Work(WorkError::Overflow)];
+    ResourceExhausted => [E::PageItemTooLarge, E::AllocationFailed, E::Work(WorkError::Overflow)];
     DataLoss => [E::WrongRootKind, E::HeightExceeded, E::CycleOrAlias, E::ChildBoundsMismatch, E::Decode(CanonicalDecodeError::Truncated)];
     Internal => [E::MutationContract];
     AlreadyExists => [E::AlreadyExists];
@@ -150,7 +150,7 @@ kernel_cases! { extent_read: ExtentReadError {
 }}
 kernel_cases! { extent_mutation: ExtentMutationError {
     InvalidArgument => [E::Empty, E::InvalidLimits, E::EmptyRange, E::RangeOverflow, E::OutsideFile, E::WrongContentKind];
-    ResourceExhausted => [E::TooManyMutations, E::PageItemTooLarge, E::AllocationFailed, E::Work(WorkError::Overflow)];
+    ResourceExhausted => [E::PageItemTooLarge, E::AllocationFailed, E::Work(WorkError::Overflow)];
     DataLoss => [E::WrongRootKind, E::HeightExceeded, E::CycleOrAlias, E::ChildBoundsMismatch, E::Decode(CanonicalDecodeError::Truncated)];
     Internal => [E::PatchInvariant];
     NotFound => [E::Storage(ObjectStoreError::Missing)];
@@ -163,8 +163,8 @@ kernel_cases! { extent_clone: ExtentCloneError {
 }}
 kernel_cases! { probe: AuthenticatedProbeError {
     Cancelled => [E::Cancelled];
-    InvalidArgument => [E::InvalidLimits, E::ZeroBatchLimit, E::RecordIdentityMismatch, E::InvalidDependency(DependencyError::ZeroLimit)];
-    ResourceExhausted => [E::TooManyRegions {maximum: 1}, E::AllocationFailed, E::EncodedAllocationFailed(allocation()), E::ContentRangeTooLarge, E::DirectoryPageTooLarge, E::Work(WorkError::Overflow)];
+    InvalidArgument => [E::InvalidLimits, E::RecordIdentityMismatch];
+    ResourceExhausted => [E::AllocationFailed, E::EncodedAllocationFailed(allocation()), E::ContentRangeTooLarge, E::DirectoryPageTooLarge, E::Work(WorkError::Overflow)];
     Internal => [E::CachePoisoned];
     DataLoss => [E::Decode(CanonicalDecodeError::Truncated)];
     PermissionDenied => [E::Context(Box::new(FsError::InvalidAccessPolicy))];

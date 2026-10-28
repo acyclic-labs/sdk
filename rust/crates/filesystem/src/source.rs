@@ -577,7 +577,7 @@ async fn rebase_source_checkout<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                 .volume
                 .config()
                 .limits
-                .maximum_checkout_dependencies,
+                .maximum_directory_page_entries,
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
         )

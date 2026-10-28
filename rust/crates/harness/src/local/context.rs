@@ -53,7 +53,7 @@ impl LocalHarness {
         let (reference, _) = publisher
             .observe_staged_once(
                 manifest_operation(operation),
-                self.limits.file_bytes,
+                Some(self.limits.file_bytes),
                 crate::conversation::ContentAccess::default(),
             )?
             .await?;
