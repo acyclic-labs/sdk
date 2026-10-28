@@ -85,6 +85,13 @@ impl RevisionCut {
         }
     }
 
+    /// Whether this cut holds `revision`'s authority at or above its index.
+    #[must_use]
+    pub fn covers(&self, revision: &Revision) -> bool {
+        self.get(&revision.scope)
+            .is_some_and(|held| held.same_authority(revision) && held.index >= revision.index)
+    }
+
     /// Removes one scope's floor, after its authority refused the incarnation.
     pub fn forget(&mut self, scope: &RevisionScope) {
         self.0.retain(|entry| &entry.scope != scope);
@@ -154,6 +161,31 @@ impl RevisionTracker {
             cut.observe(revision.clone());
         }
         cut
+    }
+
+    /// Raises the wire cut `at_least` with every observed participant that
+    /// `served` does not already cover. A node that already served a revision
+    /// has applied it, so a follow on its session sends nothing extra and
+    /// allocates nothing; a resume on another node carries the whole floor.
+    pub(crate) fn raise_uncovered(
+        &self,
+        at_least: &mut Vec<crate::wire::Revision>,
+        served: &RevisionCut,
+    ) {
+        for revision in self.cut().iter() {
+            if served.covers(revision) {
+                continue;
+            }
+            let wire = crate::wire_codec::revision_to_wire(revision);
+            match at_least.iter_mut().find(|entry| entry.scope == wire.scope) {
+                // An explicit minimum of another incarnation stays the caller's.
+                Some(entry) if entry.incarnation == wire.incarnation => {
+                    entry.index = entry.index.max(wire.index);
+                }
+                Some(_) => {}
+                None => at_least.push(wire),
+            }
+        }
     }
 
     /// Drops every floor after an authority refused one as foreign: the

@@ -214,6 +214,9 @@ struct Link {
     revision: u64,
     applied_revision: u64,
     released: wire::SessionWindow,
+    /// Revisions this node has served on an open; it has applied them, so
+    /// later opens on this session need not carry them.
+    served: crate::RevisionCut,
 }
 struct Pool {
     credentials: BTreeMap<u32, Bytes>,
@@ -399,15 +402,14 @@ impl Client {
         acknowledge: bool,
     ) -> Result<RecordStream, StreamError> {
         crate::memory::validate_limit(request.limit)?;
-        let at_least = self.revisions.floor(&request.at_least);
+        // The pool adds the tracked floor on every physical open.
         let follow = wire::SessionFollow {
             resource: crate::wire_codec::session::stream_resource(request.path.as_str()),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: Bytes::new(),
             until: request.from.saturating_add(u64::from(request.limit)),
-            at_least: crate::wire_codec::cut_to_wire(&at_least),
+            at_least: crate::wire_codec::cut_to_wire(&request.at_least),
         };
-        let revisions = Arc::clone(&self.revisions);
         let mut records = super::runtime::boxed(
             self.follow_data_with_ack(
                 follow,
@@ -415,13 +417,10 @@ impl Client {
                 acknowledge,
                 crate::FollowFilter::default(),
             )
-            .await
-            .inspect_err(|error| self.revisions.refused(error))?
-            .map(move |data| {
-                match data.inspect_err(|error| revisions.refused(error))?.item {
-                    Some(Item::Record(record)) => wire_codec::record(record),
-                    _ => Err(StreamError::Unavailable),
-                }
+            .await?
+            .map(|data| match data?.item {
+                Some(Item::Record(record)) => wire_codec::record(record),
+                _ => Err(StreamError::Unavailable),
             }),
         );
         // The open resolves the stream as every provider read does: an absent
@@ -439,41 +438,51 @@ impl Client {
         request: crate::FollowRequest,
         acknowledge: bool,
     ) -> Result<crate::FollowStream, StreamError> {
-        let crate::FollowRequest {
-            path,
-            from,
-            preceding,
-            filter,
-            progress,
-            at_least,
-        } = request;
-        let at_least = self.revisions.floor(&at_least);
-        let kind = Kind::Follow(wire::SessionFollow {
-            resource: crate::wire_codec::session::stream_resource(path.as_str()),
-            delivery: wire::SessionDelivery::All as i32,
-            preceding_commit_id: preceding
-                .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
-            until: 0,
-            // Retained in the subscription, so every resume carries the same floor.
-            at_least: crate::wire_codec::cut_to_wire(&at_least),
-        });
+        Ok(super::runtime::boxed(
+            self.follow_updates(request, acknowledge).await?,
+        ))
+    }
+    /// Follows only records, boxed once and carrying no state beyond the
+    /// subscription: the typed form of [`Self::follow`] without progress.
+    pub async fn follow_records(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<RecordStream, StreamError> {
+        let filter = Some(request.filter.transport_filter()?);
+        let from = request.from;
+        Ok(super::runtime::boxed(
+            self.open_subscription(follow_kind(request), cursor(from), true, false, filter, 0)
+                .await?
+                .map(|item| match item? {
+                    Received::Data(data) => match data.item {
+                        Some(Item::Record(record)) => wire_codec::record(record),
+                        _ => Err(StreamError::Unavailable),
+                    },
+                    _ => Err(StreamError::Unavailable),
+                }),
+        ))
+    }
+    async fn follow_updates(
+        &self,
+        request: crate::FollowRequest,
+        acknowledge: bool,
+    ) -> Result<
+        impl futures::Stream<Item = Result<crate::FollowUpdate, StreamError>> + 'static + use<>,
+        StreamError,
+    > {
+        let filter = Some(request.filter.transport_filter()?);
+        let (from, progress) = (request.from, request.progress);
         let source = self
             .open_subscription(
-                kind,
+                follow_kind(request),
                 cursor(from),
                 acknowledge,
                 progress,
-                Some(filter.transport_filter()?),
+                filter,
                 0,
             )
-            .await
-            .inspect_err(|error| self.revisions.refused(error))?;
-        let revisions = Arc::clone(&self.revisions);
-        Ok(super::runtime::boxed(source.filter_map(move |item| {
-            // A refusal after open or on resume clears the unprovable floor too.
-            if let Err(error) = &item {
-                revisions.refused(error);
-            }
+            .await?;
+        Ok(source.filter_map(move |item| {
             future::ready(match item {
                 Ok(Received::Data(data))
                 | Ok(Received::Frame(wire::SessionFrame {
@@ -503,7 +512,7 @@ impl Client {
                 Ok(_) => Some(Err(StreamError::Unavailable)),
                 Err(error) => Some(Err(error)),
             })
-        })))
+        }))
     }
     /// Follows ALL records or LATEST values on the shared per-node session,
     /// retaining the exact data cursor and accepted/durable watermarks.
@@ -595,12 +604,10 @@ impl Client {
         match &mut kind {
             Kind::Follow(follow) => {
                 wire_codec::session::validate_follow(follow, &resume)?;
-                let explicit = wire_codec::cut_from_wire(std::mem::take(&mut follow.at_least))?;
-                follow.at_least = wire_codec::cut_to_wire(&self.revisions.floor(&explicit));
+                wire_codec::cut_from_wire(follow.at_least.clone())?;
             }
             _ => return Err(StreamError::Unsupported),
         }
-        let revisions = Arc::clone(&self.revisions);
         Ok(super::runtime::boxed(
             self.open_subscription(
                 kind,
@@ -610,13 +617,10 @@ impl Client {
                 subscription.filter,
                 subscription.credential,
             )
-            .await
-            .inspect_err(|error| self.revisions.refused(error))?
-            .map(move |item| {
-                match item.inspect_err(|error| revisions.refused(error))? {
-                    Received::Frame(frame) => Ok(frame),
-                    _ => Err(StreamError::Unavailable),
-                }
+            .await?
+            .map(|item| match item? {
+                Received::Frame(frame) => Ok(frame),
+                _ => Err(StreamError::Unavailable),
             }),
         ))
     }
@@ -762,4 +766,19 @@ impl Drop for Cursor {
         self.client.active.fetch_sub(1, Ordering::AcqRel);
         let _ = self.client.removed.send(self.id);
     }
+}
+
+/// One follow's subscription kind. It carries only the caller's explicit
+/// minimum; the pool adds the tracked floor on every physical open, so a
+/// resume never lowers it.
+fn follow_kind(request: crate::FollowRequest) -> Kind {
+    Kind::Follow(wire::SessionFollow {
+        resource: crate::wire_codec::session::stream_resource(request.path.as_str()),
+        delivery: wire::SessionDelivery::All as i32,
+        preceding_commit_id: request
+            .preceding
+            .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
+        until: 0,
+        at_least: crate::wire_codec::cut_to_wire(&request.at_least),
+    })
 }

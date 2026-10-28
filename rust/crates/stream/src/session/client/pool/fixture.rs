@@ -62,6 +62,7 @@ pub(in crate::session::client) fn fixture(
                 revision: 0,
                 applied_revision: 0,
                 released: wire::SessionWindow::default(),
+                served: crate::RevisionCut::default(),
             },
         );
     }

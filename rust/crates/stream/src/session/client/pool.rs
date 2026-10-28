@@ -399,8 +399,11 @@ impl Pool {
                 {
                     // Every open, including a resume on another replica, raises the floor.
                     Ok(applied) => {
-                        if let Some(applied) = &applied {
-                            self.revisions.observe(applied);
+                        if let Some(applied) = applied {
+                            self.revisions.observe(&applied);
+                            if let Some(link) = self.links.get_mut(node) {
+                                link.served.observe(applied);
+                            }
                         }
                         Self::opened(route, id, &opened)?
                     }
@@ -419,6 +422,10 @@ impl Pool {
             }
             Some(Body::Data(data)) => self.data(node, id, input.generation, data, length, epoch),
             Some(Body::Closed(closed)) => {
+                // Every route's refusal, at open or on a resume, clears the
+                // unprovable floor here, once, without per-stream state.
+                self.revisions
+                    .refused(&StreamError::from_session_close(&closed.code));
                 let error = Self::closed(route, id, &closed);
                 if route.progress.ended() {
                     // A finite channel's last skipped-prefix cut precedes its end.

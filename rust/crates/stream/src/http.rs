@@ -214,7 +214,8 @@ impl HttpStream {
                 });
             return Err(code.map_or(StreamError::Unavailable, contract_error));
         }
-        http_validation::validate(route, &value).map_err(|_| StreamError::Unavailable)?;
+        // A well-formed body that breaks the response contract is the peer's fault.
+        http_validation::validate(route, &value).map_err(|_| StreamError::InvalidResponse)?;
         Ok(value)
     }
     fn commit_response(value: &Value) -> Result<CommitOutcome, StreamError> {

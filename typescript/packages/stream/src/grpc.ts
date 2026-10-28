@@ -115,7 +115,7 @@ function streamGrpc(options: StreamGrpcOptions) {
 
 /** Existing Stream provider API over native HTTP/2 gRPC in Node and Bun. */
 export class GrpcStreamProvider implements StreamProvider {
-  readonly #client: ReturnType<typeof createStreamGrpcClient>;
+  readonly #client: ReturnType<typeof streamGrpc>["client"];
   readonly #acknowledgeDeliveries: boolean;
   readonly #sessions: StreamSessions;
   constructor(options: StreamGrpcOptions) {

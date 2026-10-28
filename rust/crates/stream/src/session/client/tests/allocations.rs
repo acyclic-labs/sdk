@@ -1,5 +1,4 @@
 use super::*;
-use futures::TryFutureExt as _;
 use std::{future::Future, hint::black_box, task::Poll};
 
 // Measure only the poll that completes registration. The real public follow
@@ -77,8 +76,7 @@ async fn paired() -> Result<(u64, u64), Box<dyn std::error::Error + Send + Sync>
     client.register_credential(0, crate::session::testing::credential())?;
     // Keep one interest alive so both arms share one warm physical Session.
     let anchor = client
-        .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
-        .map_ok(crate::records_only)
+        .follow_records(crate::FollowRequest::new(StreamPath::new("events")?, 1))
         .await?;
     acyclic_test_support::measure(|| {});
     let mut before = (0, 0);
@@ -94,12 +92,8 @@ async fn paired() -> Result<(u64, u64), Box<dyn std::error::Error + Send + Sync>
             let allocation = if legacy {
                 completion_allocations(reviewed_follow(&client, path)).await?
             } else {
-                completion_allocations(
-                    client
-                        .follow(crate::FollowRequest::new(path, 1))
-                        .map_ok(crate::records_only),
-                )
-                .await?
+                completion_allocations(client.follow_records(crate::FollowRequest::new(path, 1)))
+                    .await?
             };
             let total = if legacy { &mut before } else { &mut after };
             total.0 += allocation.count_total;
@@ -204,12 +198,10 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
     // Separate clients keep 10k live interests in each arm, with identical
     // registration/cache state and one warm physical Session per client.
     let before_anchor = before_client
-        .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
-        .map_ok(crate::records_only)
+        .follow_records(crate::FollowRequest::new(StreamPath::new("events")?, 1))
         .await?;
     let after_anchor = after_client
-        .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
-        .map_ok(crate::records_only)
+        .follow_records(crate::FollowRequest::new(StreamPath::new("events")?, 1))
         .await?;
     let path_copy = acyclic_test_support::measure(|| {
         drop(black_box(StreamPath::new("events").unwrap()));
@@ -235,8 +227,7 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
                         drop(black_box(StreamPath::new(path.as_str())?));
                     }
                     after_client
-                        .follow(crate::FollowRequest::new(path, 1))
-                        .map_ok(crate::records_only)
+                        .follow_records(crate::FollowRequest::new(path, 1))
                         .await
                 };
                 all_poll_allocations(public, &mut after).await?
