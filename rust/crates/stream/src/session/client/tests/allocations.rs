@@ -72,6 +72,7 @@ async fn paired() -> Result<(u64, u64), Box<dyn std::error::Error + Send + Sync>
         None,
         None,
         None,
+        Default::default(),
     );
     client.register_credential(0, crate::session::testing::credential())?;
     // Keep one interest alive so both arms share one warm physical Session.
@@ -193,6 +194,7 @@ async fn paired_openings(follows: u64, broken: bool) -> TestResult {
             None,
             None,
             None,
+            Default::default(),
         )
     };
     let before_client = client();

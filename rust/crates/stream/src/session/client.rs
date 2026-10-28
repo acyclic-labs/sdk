@@ -270,6 +270,17 @@ impl Client {
         connect: std::sync::Arc<transport::Connect>,
         executor: std::sync::Arc<dyn crate::runtime::Executor>,
     ) -> Self {
+        Self::tracking(channel, connect, executor, Arc::default())
+    }
+
+    /// Like [`Self::with_transport`], raising `revisions`, which outlives this
+    /// pool: a credential change opens a new pool but keeps read-your-writes.
+    pub(crate) fn tracking(
+        channel: Endpoint,
+        connect: std::sync::Arc<transport::Connect>,
+        executor: std::sync::Arc<dyn crate::runtime::Executor>,
+        revisions: Arc<crate::RevisionTracker>,
+    ) -> Self {
         let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
         let connections = super::Connections::new();
         // Drop produces at most one removal per admitted channel; it must never block.
@@ -279,7 +290,6 @@ impl Client {
         let admissions = Arc::new(Admissions::new());
         let attempt_epoch = Arc::new(AtomicU64::new(0));
         let abandoned = Arc::new(gate::Gate::new());
-        let revisions = Arc::new(crate::RevisionTracker::default());
         let mut pool = Pool {
             credentials: BTreeMap::new(),
             connections: connections.clone(),

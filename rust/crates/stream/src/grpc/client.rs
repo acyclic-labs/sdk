@@ -12,9 +12,10 @@ impl Client {
     pub fn session_client(&self) -> Result<crate::session::Client, StreamError> {
         self.session()
     }
-    /// The session pool's revision tracker, shared by every route of this client.
+    /// The revision tracker every route and session pool of this client
+    /// shares, across credential changes.
     pub(crate) fn revisions(&self) -> Result<Arc<crate::RevisionTracker>, StreamError> {
-        Ok(Arc::clone(self.session()?.revisions()))
+        Ok(Arc::clone(&self.revisions))
     }
     fn session(&self) -> Result<crate::session::Client, StreamError> {
         self.sessions.get_or_try_init(|| {
@@ -24,6 +25,7 @@ impl Client {
                 self.credential.clone(),
                 self.session_ca.clone(),
                 self.session_verifier.clone(),
+                Arc::clone(&self.revisions),
             )
         })
     }
@@ -176,7 +178,7 @@ impl StreamProvider for Client {
             .await?;
         let outcome = decode_response(response, append_outcome_from_wire)?;
         if let AppendOutcome::Committed(receipt) = &outcome {
-            self.session()?.revisions().observe(&receipt.revision);
+            self.revisions.observe(&receipt.revision);
         }
         Ok(outcome)
     }
@@ -199,7 +201,7 @@ impl StreamProvider for Client {
             })
             .await?;
         let receipt = decode_response(response, crate::wire_codec::fork_receipt_from_wire)?;
-        self.session()?.revisions().observe(&receipt.revision);
+        self.revisions.observe(&receipt.revision);
         Ok(receipt)
     }
 
@@ -236,7 +238,7 @@ impl StreamProvider for Client {
             .await?;
         let outcome = decode_response(response, commit_outcome_from_wire)?;
         if let CommitOutcome::Committed(receipt) = &outcome {
-            self.session()?.revisions().observe(&receipt.revision);
+            self.revisions.observe(&receipt.revision);
         }
         Ok(outcome)
     }

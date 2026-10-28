@@ -183,7 +183,12 @@ impl BrowserStream {
         changed: &mut publication::Changes,
     ) -> Result<(u64, u64), StreamError> {
         if !cache.valid {
+            // The rebuilt cache replays the same journal into the same
+            // indexes, so it keeps the authority: issued tokens and parked
+            // reads stay valid, and later writes wake them.
+            let revisions = Arc::clone(&cache.provider.revisions);
             cache.provider = memory(self.inner.limits.memory, Arc::clone(&self.inner.clock));
+            cache.provider.revisions = revisions;
             cache.cursor = 0;
         }
         // Keep invalid throughout every await: cancellation cannot retain a

@@ -86,6 +86,7 @@ impl Client {
         credential: Option<grpc::CredentialProvider>,
         ca: Option<std::sync::Arc<[u8]>>,
         verifier: Option<std::sync::Arc<dyn rustls::client::danger::ServerCertVerifier>>,
+        revisions: std::sync::Arc<crate::RevisionTracker>,
     ) -> Self {
         let connect: Connect = std::sync::Arc::new(move |node| {
             let ca = ca.clone();
@@ -98,7 +99,7 @@ impl Client {
                 .map_err(|_| StreamError::Unavailable)
             })
         });
-        Self::with_connector(channel, authorization, credential, connect)
+        Self::connector(channel, authorization, credential, connect, revisions)
     }
 
     pub(super) fn with_connector(
@@ -107,6 +108,22 @@ impl Client {
         credential: Option<grpc::CredentialProvider>,
         connect: Connect,
     ) -> Self {
+        Self::connector(
+            channel,
+            authorization,
+            credential,
+            connect,
+            Default::default(),
+        )
+    }
+
+    fn connector(
+        channel: TransportChannel,
+        authorization: Option<MetadataValue<Ascii>>,
+        credential: Option<grpc::CredentialProvider>,
+        connect: Connect,
+        revisions: std::sync::Arc<crate::RevisionTracker>,
+    ) -> Self {
         let home = endpoint(channel, authorization.clone(), credential.clone());
         let connect: std::sync::Arc<transport::Connect> = std::sync::Arc::new(move |node| {
             let connect = connect.clone();
@@ -114,10 +131,11 @@ impl Client {
             let credential = credential.clone();
             Box::pin(async move { Ok(endpoint(connect(node).await?, authorization, credential)) })
         });
-        Self::with_transport(
+        Self::tracking(
             home,
             connect,
             std::sync::Arc::new(crate::runtime::PlatformExecutor),
+            revisions,
         )
     }
 }
