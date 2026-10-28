@@ -81,7 +81,7 @@ impl crate::Account<LocalMedium> {
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> std::io::Result<T> + Send + 'static,
 ) -> std::io::Result<T> {
-    acyclic_native_runtime::spawn_blocking(work).await?
+    acyclic_native_runtime::spawn_persistence(work).await?
 }
 
 fn native(durability: LocalDurability) -> acyclic_native_runtime::Durability {
@@ -133,7 +133,7 @@ impl LocalMedium {
         }
         let root = root.as_ref().to_path_buf();
         let durability = limits.durability;
-        let (root, lock) = tokio::task::spawn_blocking(move || {
+        let (root, lock) = acyclic_native_runtime::spawn_persistence(move || {
             std::fs::create_dir_all(root.join("tmp"))?;
             let format = root.join("FORMAT");
             match std::fs::read(&format) {
@@ -403,5 +403,73 @@ impl std::fmt::Debug for LocalMedium {
             .debug_struct("LocalMedium")
             .field("root", &self.root)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod isolation_tests {
+    use super::*;
+    use futures::FutureExt as _;
+
+    #[test]
+    fn local_storage_progresses_with_an_occupied_input_worker() {
+        let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
+        let (started, starting) = std::sync::mpsc::channel();
+        let (release, held) = std::sync::mpsc::channel::<()>();
+        let input = runtime.spawn_blocking(move || {
+            started.send(()).unwrap();
+            held.recv()
+        });
+        starting.recv().unwrap();
+        runtime.block_on(async {
+            // The old route cannot start until the input producer closes.
+            let mut old_route = Box::pin(tokio::task::spawn_blocking(|| ()));
+            assert!(old_route.as_mut().now_or_never().is_none());
+            let root = tempfile::tempdir().unwrap();
+            let store = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
+                .await
+                .unwrap();
+            assert!(
+                store
+                    .create("values/a", OwnedBytes::from(b"before".to_vec()))
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                store
+                    .read("values/a", None)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .as_ref(),
+                b"before"
+            );
+            assert!(
+                store
+                    .replace("values/a", b"before", OwnedBytes::from(b"after".to_vec()))
+                    .await
+                    .unwrap()
+            );
+            assert_eq!(
+                store
+                    .read("values/a", None)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .as_ref(),
+                b"after"
+            );
+            assert!(
+                !store
+                    .replace("values/a", b"before", OwnedBytes::from(b"wrong".to_vec()))
+                    .await
+                    .unwrap()
+            );
+            assert!(store.remove_if("values/a", b"after").await.unwrap());
+            // Dropping the sole input producer terminates the blocked read.
+            drop(release);
+            assert!(input.await.unwrap().is_err());
+            old_route.await.unwrap();
+        });
     }
 }

@@ -400,12 +400,7 @@ impl StockExecution<'_> {
         {
             let mut stream = stream;
             loop {
-                let next = crate::obs::waiting(
-                    "provider-event",
-                    format_args!("{operation_id}:{step}"),
-                    stream.next(),
-                )
-                .await;
+                let next = crate::obs::waiting("provider-event", operation_id, stream.next()).await;
                 let Some(event) = next else {
                     break;
                 };
@@ -425,7 +420,7 @@ impl StockExecution<'_> {
                 admission.observe(event, self.stock.limits, io)?;
                 crate::obs::waiting(
                     "journal-commit",
-                    format_args!("{operation_id}:{step}:{index}"),
+                    operation_id,
                     super::model_observation::append(
                         journal,
                         operation_id,

@@ -10,15 +10,38 @@ pub use crate::testing::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 #[cfg(not(feature = "test-support"))]
 pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 
-/// Runtime for a single coordination owner. Native I/O has its own shared,
-/// fixed pools; incidental blocking persistence must not add threads as the
-/// number of admitted tasks grows. Awaited work never holds this sole worker
-/// across an asynchronous continuation.
+/// Runtime for a single coordination owner. Durable storage uses its own shared,
+/// fixed service through [`spawn_persistence`]. Interactive blocking reads may
+/// occupy the incidental Tokio worker without starving storage producers.
 pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_current_thread()
         .max_blocking_threads(1)
         .enable_all()
         .build()
+}
+
+/// Submits durable storage work to the shared, bounded persistence service.
+///
+/// Submission is eager: a replay reader may await records produced by the
+/// closure before it awaits this result. Once admitted, the service retains
+/// the closure through physical completion if the caller disappears. Closures
+/// must not wait for work submitted to this same service.
+pub fn spawn_persistence<F, T>(
+    work: F,
+) -> impl std::future::Future<Output = std::io::Result<T>> + Send
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    let completion = crate::task_completion(
+        move || Ok(work()),
+        None,
+        None,
+        None,
+        &crate::workers::PERSISTENCE_WORKERS,
+    );
+    let task = spawn(async move { completion?.await });
+    async move { task.await? }
 }
 
 /// The caller's task submission context, retained across a native worker turn.
@@ -216,6 +239,32 @@ mod tests {
         });
         releaser.join().unwrap();
         assert!(matches!(finished, Ok(Ok(()))), "{finished:?}");
+    }
+
+    #[test]
+    fn persistence_retains_accepted_work_after_caller_drop() {
+        let runtime = super::coordination_runtime().unwrap();
+        runtime.block_on(async {
+            let (started, starting) = tokio::sync::oneshot::channel();
+            let (release, held) = std::sync::mpsc::channel::<()>();
+            let (finished, mut finishing) = tokio::sync::oneshot::channel();
+            let submitted = super::spawn_persistence(move || {
+                let _ = started.send(());
+                let error = held.recv().unwrap_err();
+                let result = std::io::Error::new(std::io::ErrorKind::Interrupted, error);
+                let _ = finished.send(result.kind());
+            });
+            // Submission is driven by its owner, even without polling this
+            // result; caller cancellation cannot abandon accepted work.
+            drop(submitted);
+            starting.await.unwrap();
+            assert!(matches!(
+                finishing.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ));
+            drop(release);
+            assert_eq!(finishing.await.unwrap(), std::io::ErrorKind::Interrupted);
+        });
     }
 
     #[test]

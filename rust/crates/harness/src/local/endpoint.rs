@@ -21,7 +21,6 @@ pub(super) const CREDENTIAL: u32 = 0;
 pub(super) struct Failures {
     pub(super) sender: broadcast::Sender<AgentFailure>,
     pub(super) actor: ActorReference,
-    pub(super) stopped: tokio::sync::watch::Receiver<Option<String>>,
     pub(super) _host: Arc<LocalHarness>,
 }
 
@@ -168,7 +167,6 @@ impl LocalHarness {
         let failures = Failures {
             sender: hosted.failures().clone(),
             actor: hosted.agents().actor(server.root()).map_err(storage)?,
-            stopped: hosted.stopped(),
             _host: Arc::clone(self),
         };
         Connection::bind(session, observation.credential, Some(failures)).await

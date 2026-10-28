@@ -39,7 +39,6 @@ const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
 pub(super) struct Hosted {
     server: Arc<LocalServer>,
     failures: tokio::sync::broadcast::Sender<AgentFailure>,
-    stopped: tokio::sync::watch::Receiver<Option<String>>,
     run: tokio::task::JoinHandle<()>,
 }
 
@@ -61,10 +60,6 @@ impl Hosted {
 
     pub(super) const fn failures(&self) -> &tokio::sync::broadcast::Sender<AgentFailure> {
         &self.failures
-    }
-
-    pub(super) fn stopped(&self) -> tokio::sync::watch::Receiver<Option<String>> {
-        self.stopped.clone()
     }
 }
 
@@ -368,9 +363,6 @@ impl LocalHarness {
             Err(error) => return Err(storage(error)),
         };
         let (failures, _) = tokio::sync::broadcast::channel(64);
-        // Only the runtime task owns the sender. Its destruction also wakes
-        // observers when the task is aborted or panics before returning an error.
-        let (stopped_sender, stopped) = tokio::sync::watch::channel(None);
         let report = failures.clone();
         let runner = Arc::clone(&server);
         let run = tokio::spawn(async move {
@@ -384,12 +376,10 @@ impl LocalHarness {
                 })
                 .await;
             tracing::error!(%error, "agent runtime stopped");
-            let _ = stopped_sender.send(Some(error.to_string()));
         });
         Ok(Hosted {
             server,
             failures,
-            stopped,
             run,
         })
     }

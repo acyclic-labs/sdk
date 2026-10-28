@@ -76,6 +76,11 @@ pub(crate) static BLOCKING_WORKERS: LazyLock<io::Result<NativeWorkers>> = LazyLo
     })
 });
 
+// Persistence never waits for a capture callback or interactive input. Keeping
+// it separate prevents a blocked host callback from occupying its producer.
+pub(crate) static PERSISTENCE_WORKERS: LazyLock<io::Result<NativeWorkers>> =
+    LazyLock::new(|| start_workers("acyclic-persistence", |parallelism| parallelism.clamp(2, 4)));
+
 pub(crate) static IO_SERVICES_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Initializes the existing native and host I/O services before measured requests are admitted.
