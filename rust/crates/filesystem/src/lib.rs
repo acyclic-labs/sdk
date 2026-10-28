@@ -101,9 +101,6 @@ mod heap_future;
 pub mod hosted;
 #[doc(hidden)]
 pub mod hosted_contract;
-#[cfg(feature = "tooling")]
-#[doc(hidden)]
-pub mod tooling_contracts;
 mod identity;
 pub mod kernel;
 pub mod lazy_workspace;
@@ -120,6 +117,9 @@ pub mod model;
 pub mod mount;
 pub mod multi_root;
 mod obs;
+#[cfg(feature = "tooling")]
+#[doc(hidden)]
+pub mod tooling_contracts;
 pub use acyclic_fs_base::numeric::exact_u32_from_f64;
 #[cfg(kani)]
 mod kani_proofs;

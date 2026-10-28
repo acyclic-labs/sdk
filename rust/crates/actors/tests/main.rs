@@ -38,4 +38,6 @@ mod guest_loom;
 mod timer_loom;
 
 #[cfg(all(loom, not(feature = "model-checking")))]
-compile_error!("STEP_FAILED actors-model-routing: enable model-checking; recovery: RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-actors --features model-checking --test main");
+compile_error!(
+    "STEP_FAILED actors-model-routing: enable model-checking; recovery: RUSTC_WORKSPACE_WRAPPER=./scripts/loom-rustc.sh cargo test --locked -p acyclic-actors --features model-checking --test main"
+);

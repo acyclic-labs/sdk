@@ -40,7 +40,13 @@ fn registration(broken: u8) {
             ready || count.0.load(super::Ordering::SeqCst) > 0,
             "a parked follower must be woken"
         );
-        assert!(gate.poll_changed(false, &mut Context::from_waker(&futures::task::noop_waker())).is_ready());
+        assert!(
+            gate.poll_changed(
+                false,
+                &mut Context::from_waker(&futures::task::noop_waker())
+            )
+            .is_ready()
+        );
     });
 }
 

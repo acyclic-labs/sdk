@@ -34,7 +34,10 @@ where
     R: Send + 'static,
     F: Fn(T) -> R + Send + Sync + 'static,
 {
-    assert!((1..=MAX_WORKERS).contains(&workers), "invalid owner worker budget");
+    assert!(
+        (1..=MAX_WORKERS).contains(&workers),
+        "invalid owner worker budget"
+    );
     let workers = workers.min(inputs.len());
     let inputs = Arc::new(Mutex::new(inputs.into_iter().enumerate()));
     let operation = Arc::new(operation);
@@ -47,7 +50,8 @@ where
             loop {
                 let input = inputs.lock().expect("owner queue poisoned").next();
                 let Some((index, input)) = input else { break };
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(input)));
+                let result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(input)));
                 completed.push((index, result));
             }
             completed
@@ -61,16 +65,18 @@ where
     }
     let mut completed = join_all(jobs).into_iter().flatten().collect::<Vec<_>>();
     completed.sort_unstable_by_key(|(index, _)| *index);
-    completed.into_iter().map(|(_, result)| {
-        result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-    }).collect()
+    completed
+        .into_iter()
+        .map(|(_, result)| result.unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+        .collect()
 }
 
 fn join_all<R>(jobs: Vec<thread::JoinHandle<R>>) -> Vec<R> {
     let joined = jobs.into_iter().map(|job| job.join()).collect::<Vec<_>>();
-    joined.into_iter().map(|result| {
-        result.unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-    }).collect()
+    joined
+        .into_iter()
+        .map(|result| result.unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+        .collect()
 }
 
 #[cfg(all(test, not(loom)))]
@@ -94,7 +100,10 @@ mod tests {
             index * 2
         });
         assert_eq!(result, (0..100).map(|index| index * 2).collect::<Vec<_>>());
-        assert!(workers.lock().unwrap().len() <= 2, "owner thread budget exceeded");
+        assert!(
+            workers.lock().unwrap().len() <= 2,
+            "owner thread budget exceeded"
+        );
         assert!(peak.load(Ordering::SeqCst) <= 2);
         assert_eq!(active.load(Ordering::SeqCst), 0);
     }
@@ -108,7 +117,8 @@ mod tests {
                 completed.fetch_add(1, Ordering::SeqCst);
                 assert_ne!(index, 0, "first owner failed");
             })
-        }).is_err());
+        })
+        .is_err());
         assert_eq!(count.load(Ordering::SeqCst), 20);
     }
 }

@@ -117,20 +117,6 @@ mod public_conformance;
 #[path = "../src/sync.rs"]
 mod sync;
 
-#[cfg(all(not(loom), feature = "memory", feature = "distributed"))]
-mod transaction_create_batch;
-#[cfg(not(loom))]
-mod shared_storage_contract;
-#[cfg(all(not(loom), windows, feature = "local", feature = "native-mount"))]
-mod windows_ntfs_perf;
-#[cfg(all(not(loom), feature = "memory", feature = "native-mount"))]
-mod materialization_bootstrap;
-#[cfg(not(loom))]
-mod mount_qualification;
-#[cfg(all(not(loom), not(target_arch = "wasm32")))]
-mod package_install;
-#[cfg(all(not(loom), feature = "memory", feature = "distributed"))]
-mod fs_concurrency_bench;
 #[cfg(all(
     not(loom),
     target_arch = "wasm32",
@@ -138,6 +124,12 @@ mod fs_concurrency_bench;
     feature = "browser"
 ))]
 mod browser_commit;
+#[cfg(all(not(loom), feature = "memory", feature = "distributed"))]
+mod fs_concurrency_bench;
+#[cfg(all(not(loom), feature = "memory", feature = "native-mount"))]
+mod materialization_bootstrap;
+#[cfg(not(loom))]
+mod mount_qualification;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native-mount"))]
 mod native_binding_model;
 #[cfg(all(
@@ -154,6 +146,8 @@ mod native_stage_loom;
     feature = "model-checking"
 ))]
 mod native_view_table_loom;
+#[cfg(all(not(loom), not(target_arch = "wasm32")))]
+mod package_install;
 #[cfg(all(
     loom,
     feature = "memory",
@@ -161,3 +155,9 @@ mod native_view_table_loom;
     feature = "model-checking"
 ))]
 mod session_fs_model;
+#[cfg(not(loom))]
+mod shared_storage_contract;
+#[cfg(all(not(loom), feature = "memory", feature = "distributed"))]
+mod transaction_create_batch;
+#[cfg(all(not(loom), windows, feature = "local", feature = "native-mount"))]
+mod windows_ntfs_perf;

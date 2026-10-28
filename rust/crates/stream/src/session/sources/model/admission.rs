@@ -11,10 +11,16 @@ fn channel(latest: bool, pending: usize, credited: bool) -> Channel {
         revalidate: None,
         progress: None,
         pending: (0..pending)
-            .map(|_| Pending { frame: Default::default(), key: None })
+            .map(|_| Pending {
+                frame: Default::default(),
+                key: None,
+            })
             .collect(),
         indexed: None,
-        credit: wire::SessionWindow { frames: u32::from(credited), bytes: u64::from(credited) },
+        credit: wire::SessionWindow {
+            frames: u32::from(credited),
+            bytes: u64::from(credited),
+        },
         sent: Default::default(),
         applied: Default::default(),
         ending: None,
@@ -64,9 +70,13 @@ pub fn verify_source_saturation(global_gate: bool) {
                 (1, &blocked, slow_records.clone()),
                 (2, &healthy, records.clone()),
             ] {
-                let identity = wire::SessionChannel { channel_id: id, generation: 1 };
+                let identity = wire::SessionChannel {
+                    channel_id: id,
+                    generation: 1,
+                };
                 sources.insert(identity, source(identity, records), channel.source_mode());
-                assert!(matches!(poll(&mut sources, (false, false, false), &mut cx),
+                assert!(matches!(
+                    poll(&mut sources, (false, false, false), &mut cx),
                     Poll::Ready(Ok(Some((_, Ok(Event::Opened(_))))))
                 ));
             }
@@ -74,11 +84,18 @@ pub fn verify_source_saturation(global_gate: bool) {
             // Two blocked records leave exactly the reserved third slot.
             let room = policy::room(3, 1000, 2, 200, 100, true);
             assert!(poll(&mut sources, room, &mut cx).is_pending());
-            healthy.credit = wire::SessionWindow { frames: 1, bytes: 1 };
+            healthy.credit = wire::SessionWindow {
+                frames: 1,
+                bytes: 1,
+            };
             sources.mode(2, healthy.source_mode());
             let writer = loom::thread::spawn(move || records.send(record()).unwrap());
             root.0.store(0, Ordering::SeqCst);
-            let room = if global_gate { (room.0, room.0, room.2) } else { room };
+            let room = if global_gate {
+                (room.0, room.0, room.2)
+            } else {
+                room
+            };
             let first = poll(&mut sources, room, &mut cx);
             writer.join().unwrap();
             let delivered = if first.is_pending() {
@@ -86,12 +103,19 @@ pub fn verify_source_saturation(global_gate: bool) {
                     assert!(root.0.load(Ordering::SeqCst) > 0);
                 }
                 poll(&mut sources, room, &mut cx)
-            } else { first };
-            assert!(matches!(delivered,
+            } else {
+                first
+            };
+            assert!(
+                matches!(delivered,
                 Poll::Ready(Ok(Some((identity, Ok(Event::Record(record))))))
                     if identity.channel_id == 2 && record.sequence == 0 && record.value.as_ref() == [7]),
-                "the reserved slot must enable the healthy channel");
-            assert_eq!(slow_records.try_next().unwrap().unwrap().value.as_ref(), [7]);
+                "the reserved slot must enable the healthy channel"
+            );
+            assert_eq!(
+                slow_records.try_next().unwrap().unwrap().value.as_ref(),
+                [7]
+            );
         });
     }
 }
@@ -99,16 +123,24 @@ pub fn verify_source_saturation(global_gate: bool) {
 /// Disabling an already parked provider must preserve its next unpublished record.
 pub fn verify_source_disabled(keep_polling: bool) {
     loom::model(move || {
-        let identity = wire::SessionChannel { channel_id: 1, generation: 1 };
+        let identity = wire::SessionChannel {
+            channel_id: 1,
+            generation: 1,
+        };
         let mut channel = channel(false, 0, true);
         let records = Arc::new(signal::Signal::new());
         let mut sources = Sources::new();
-        sources.insert(identity, source(identity, records.clone()), channel.source_mode());
+        sources.insert(
+            identity,
+            source(identity, records.clone()),
+            channel.source_mode(),
+        );
         let wake = futures::task::noop_waker();
         let mut cx = Context::from_waker(&wake);
-        assert!(matches!(poll(&mut sources, (true, true, true), &mut cx),
+        assert!(matches!(
+            poll(&mut sources, (true, true, true), &mut cx),
             Poll::Ready(Ok(Some((_, Ok(Event::Opened(_))))))
-                ));
+        ));
         assert!(poll(&mut sources, (true, true, true), &mut cx).is_pending());
         let published = records.clone();
         let writer = loom::thread::spawn(move || published.send(record()).unwrap());
@@ -117,8 +149,10 @@ pub fn verify_source_disabled(keep_polling: bool) {
             sources.mode(1, channel.source_mode());
         }
         writer.join().unwrap();
-        assert!(poll(&mut sources, (true, true, true), &mut cx).is_pending(),
-            "a disabled source must not consume a record");
+        assert!(
+            poll(&mut sources, (true, true, true), &mut cx).is_pending(),
+            "a disabled source must not consume a record"
+        );
         // Re-admit the same provider and consume its original queued record.
         channel.credit.frames = 1;
         sources.mode(1, channel.source_mode());
@@ -137,18 +171,27 @@ pub fn verify_reserved_capacity(frames: usize, largest: usize) {
             (channel(false, 0, true), room, true),
             (channel(false, 0, true), full, false),
         ] {
-            let identity = wire::SessionChannel { channel_id: 1, generation: 1 };
+            let identity = wire::SessionChannel {
+                channel_id: 1,
+                generation: 1,
+            };
             let mut sources = Sources::new();
             let records = Arc::new(signal::Signal::new());
             records.send(record()).unwrap();
             sources.insert(identity, source(identity, records), channel.source_mode());
             let wake = futures::task::noop_waker();
             let mut cx = Context::from_waker(&wake);
-            assert!(matches!(poll(&mut sources, room, &mut cx),
+            assert!(matches!(
+                poll(&mut sources, room, &mut cx),
                 Poll::Ready(Ok(Some((_, Ok(Event::Opened(_))))))
-                ));
-            assert_eq!(matches!(poll(&mut sources, room, &mut cx),
-                Poll::Ready(Ok(Some((_, Ok(Event::Record(_))))))), expected);
+            ));
+            assert_eq!(
+                matches!(
+                    poll(&mut sources, room, &mut cx),
+                    Poll::Ready(Ok(Some((_, Ok(Event::Record(_))))))
+                ),
+                expected
+            );
         }
     });
 }

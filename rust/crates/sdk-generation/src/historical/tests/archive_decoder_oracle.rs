@@ -17,7 +17,10 @@ pub(super) fn retained_archive_decoder(
     } else {
         Box::new(bytes)
     };
-    let mut reader = BufReader::new(ExpandedReader { reader, remaining: limits.expanded_bytes });
+    let mut reader = BufReader::new(ExpandedReader {
+        reader,
+        remaining: limits.expanded_bytes,
+    });
     if reader.fill_buf().map_err(|e| e.to_string())?.is_empty() {
         return Err("registry archive is empty".into());
     }
@@ -71,7 +74,6 @@ pub(super) fn retained_archive_decoder(
     Ok(result)
 }
 
-
 struct ExpandedReader<R> {
     reader: R,
     remaining: u64,
@@ -79,13 +81,17 @@ struct ExpandedReader<R> {
 
 impl<R: Read> Read for ExpandedReader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        if buffer.is_empty() { return Ok(0); }
+        if buffer.is_empty() {
+            return Ok(0);
+        }
         if self.remaining == 0 {
             let mut extra = [0];
             return match self.reader.read(&mut extra)? {
                 0 => Ok(0),
-                _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
-                    "registry archive expanded-byte limit exceeded")),
+                _ => Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "registry archive expanded-byte limit exceeded",
+                )),
             };
         }
         let length = self.remaining.min(buffer.len() as u64) as usize;

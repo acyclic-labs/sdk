@@ -1,5 +1,5 @@
-use super::*;
 use super::archives::StagedArchive;
+use super::*;
 
 pub(super) fn registry_response(path: &str) -> Result<Option<Vec<u8>>, String> {
     let url = format!("https://crates.io/api/v1/crates/{path}");
@@ -64,7 +64,9 @@ pub fn verify_archive(
         return Err("invalid registry archive checksum".into());
     }
     let members = StagedArchive::read(release, archive, ArchiveLimits::default())?;
-    let vcs = members.vcs()?.ok_or("clean Git binding requires publisher VCS facts")?;
+    let vcs = members
+        .vcs()?
+        .ok_or("clean Git binding requires publisher VCS facts")?;
     if vcs.dirty {
         return Err(
             "released archive records dirty source; clean Git provenance is not valid".into(),

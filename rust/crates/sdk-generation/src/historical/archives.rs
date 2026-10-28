@@ -56,7 +56,8 @@ pub fn archive_plan(
         let publisher_vcs = members.vcs()?;
         members.publish(source_root, &directory)?;
         for (member, digest) in &members.files {
-            plan.source_files.insert(format!("{directory}/{member}"), digest.clone());
+            plan.source_files
+                .insert(format!("{directory}/{member}"), digest.clone());
         }
         let manifest = source_root.join(&directory).join("Cargo.toml");
         let lock = manifest.with_file_name("Cargo.lock");
@@ -225,8 +226,12 @@ pub struct ArchiveLimits {
 
 impl Default for ArchiveLimits {
     fn default() -> Self {
-        Self { compressed_bytes: 64 * 1024 * 1024, expanded_bytes: 256 * 1024 * 1024,
-            member_bytes: 32 * 1024 * 1024, members: 65_536 }
+        Self {
+            compressed_bytes: 64 * 1024 * 1024,
+            expanded_bytes: 256 * 1024 * 1024,
+            member_bytes: 32 * 1024 * 1024,
+            members: 65_536,
+        }
     }
 }
 
@@ -237,13 +242,17 @@ struct ExpandedReader<R> {
 
 impl<R: Read> Read for ExpandedReader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        if buffer.is_empty() { return Ok(0); }
+        if buffer.is_empty() {
+            return Ok(0);
+        }
         if self.remaining == 0 {
             let mut extra = [0];
             return match self.reader.read(&mut extra)? {
                 0 => Ok(0),
-                _ => Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
-                    "registry archive expanded-byte limit exceeded")),
+                _ => Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "registry archive expanded-byte limit exceeded",
+                )),
             };
         }
         let length = self.remaining.min(buffer.len() as u64) as usize;
@@ -267,7 +276,8 @@ pub fn archive_members(
     if crate::sha256_bytes(&bytes) != expected {
         return Err("released registry archive checksum differs".into());
     }
-    let result = decode_archive_members_with_limits(&bytes, &release.package, &release.num, limits)?;
+    let result =
+        decode_archive_members_with_limits(&bytes, &release.package, &release.num, limits)?;
     if crate::sha256_bytes(&read_archive_snapshot(archive, limits)?) != expected {
         return Err("registry archive changed during import".into());
     }
@@ -280,7 +290,9 @@ fn read_archive_snapshot(archive: &Path, limits: ArchiveLimits) -> Result<Vec<u8
         return Err("registry archive compressed-byte limit exceeded".into());
     }
     let mut bytes = Vec::new();
-    file.take(limits.compressed_bytes + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    file.take(limits.compressed_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
     if bytes.len() as u64 > limits.compressed_bytes {
         return Err("registry archive compressed-byte limit exceeded".into());
     }
@@ -327,13 +339,19 @@ fn visit_archive_members<R: Read>(
     validate_name(package)?;
     validate_version(version)?;
     let mut input = BufReader::new(bytes);
-    let compressed = input.fill_buf().map_err(|e| e.to_string())?.starts_with(&[0x1f, 0x8b]);
+    let compressed = input
+        .fill_buf()
+        .map_err(|e| e.to_string())?
+        .starts_with(&[0x1f, 0x8b]);
     let reader: Box<dyn Read + '_> = if compressed {
         Box::new(flate2::read::MultiGzDecoder::new(input))
     } else {
         Box::new(input)
     };
-    let mut reader = BufReader::new(ExpandedReader { reader, remaining: limits.expanded_bytes });
+    let mut reader = BufReader::new(ExpandedReader {
+        reader,
+        remaining: limits.expanded_bytes,
+    });
     if reader.fill_buf().map_err(|e| e.to_string())?.is_empty() {
         return Err("registry archive is empty".into());
     }

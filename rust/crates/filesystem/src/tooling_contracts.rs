@@ -8,7 +8,10 @@ pub fn exports() -> Result<std::collections::BTreeMap<&'static str, String>, ser
     Ok(std::collections::BTreeMap::from([
         (
             "filesystem-descriptor-digest",
-            format!("{}\n", blake3::hash(acyclic_fs_wire::FILE_DESCRIPTOR_SET).to_hex()),
+            format!(
+                "{}\n",
+                blake3::hash(acyclic_fs_wire::FILE_DESCRIPTOR_SET).to_hex()
+            ),
         ),
         (
             "filesystem-typescript-defaults",

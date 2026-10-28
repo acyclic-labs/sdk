@@ -7,8 +7,8 @@ mod error {
     use thiserror::Error;
     include!("../src/lib/error.rs");
 }
-pub use error::StreamError;
 use acyclic_stream::wire;
+pub use error::StreamError;
 #[path = "../src/session/sync.rs"]
 mod sync;
 use sync::{Arc, AtomicU64, Mutex, Ordering};
@@ -119,7 +119,11 @@ fn anchored_cursor(broken: bool, progress_update: bool) {
         let position = moving.join().unwrap().unwrap();
         assert_eq!(
             position,
-            if consumed { (1, Some([2; 32])) } else { (0, Some([1; 32])) },
+            if consumed {
+                (1, Some([2; 32]))
+            } else {
+                (0, Some([1; 32]))
+            },
             "resume must atomically retain the anchored cursor"
         );
         assert!(!cursor.consume_record(1, position.0, [3; 32]).unwrap());

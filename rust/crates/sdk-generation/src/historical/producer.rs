@@ -1,5 +1,5 @@
-use super::*;
 use super::archives::StagedArchive;
+use super::*;
 
 /// Reconstruct the separately retained resolution without interpreting arbitrary
 /// Cargo overrides. Patches are restricted to checksum-verified dependency archives.
