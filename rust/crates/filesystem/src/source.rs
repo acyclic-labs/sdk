@@ -38,8 +38,6 @@ pub struct SourceOptions {
     pub maximum_paths: Option<u32>,
     /// Maximum sparse data spans admitted per regular file.
     pub maximum_extent_spans: u32,
-    /// Maximum pending native hints before continuity is invalidated.
-    pub maximum_queued_changes: u32,
     /// Canonical portable prefixes omitted from capture and deletion inference.
     pub excluded_paths: Vec<PortablePath>,
 }
@@ -50,7 +48,6 @@ impl Default for SourceOptions {
             mode: SourceMode::Tracking,
             maximum_paths: None,
             maximum_extent_spans: 65_536,
-            maximum_queued_changes: 65_536,
             excluded_paths: Vec::new(),
         }
     }
@@ -133,7 +130,6 @@ struct SourceSession<A: 'static, O: 'static> {
     capture: CaptureOptions,
     capture_policy: CapturePolicy,
     mode: SourceMode,
-    maximum_queued_changes: u32,
     state: SourceState,
     authority_head: Head,
 }
@@ -664,10 +660,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         path: impl AsRef<Path>,
         options: SourceOptions,
     ) -> Result<Workspace<A, O>, SourceError> {
-        if options.maximum_paths == Some(0)
-            || options.maximum_extent_spans == 0
-            || options.maximum_queued_changes == 0
-        {
+        if options.maximum_paths == Some(0) || options.maximum_extent_spans == 0 {
             return Err(SourceError::InvalidOptions);
         }
         let workspace = self.open_source_workspace(name.as_ref()).await?;
@@ -676,7 +669,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             workspace.volume.config().profile,
             NativeWatchOptions {
                 limits: workspace.volume.config().limits,
-                maximum_queued_changes: options.maximum_queued_changes,
                 recursive: true,
             },
         )
@@ -738,7 +730,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 capture,
                 capture_policy,
                 mode: options.mode,
-                maximum_queued_changes: options.maximum_queued_changes,
                 state: SourceState::NeedsRescan(WatchInvalidationReason::InitialSnapshotRequired),
                 authority_head,
             })),
@@ -798,7 +789,6 @@ async fn attach_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             || latest.mode != durable_mode(options.mode)
             || latest.maximum_paths != options.maximum_paths
             || latest.maximum_extent_spans != options.maximum_extent_spans
-            || latest.maximum_queued_changes != options.maximum_queued_changes
             || latest.capture_policy != capture_policy
         {
             return Err(SourceError::BindingMismatch);
@@ -813,7 +803,6 @@ async fn attach_source_authority<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             mode: durable_mode(options.mode),
             maximum_paths: options.maximum_paths,
             maximum_extent_spans: options.maximum_extent_spans,
-            maximum_queued_changes: options.maximum_queued_changes,
             capture_policy,
             state: DurableSourceState::NeedsRescan(SourceInvalidation::InitialSnapshotRequired),
             generation_id,
@@ -1073,7 +1062,6 @@ fn validate_source_fact_binding<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         || fact.mode != durable_mode(session.mode)
         || fact.maximum_paths != session.capture.maximum_paths
         || fact.maximum_extent_spans != session.capture.maximum_extent_spans
-        || fact.maximum_queued_changes != session.maximum_queued_changes
         || fact.capture_policy != session.capture_policy.fingerprint()
     {
         return Err(SourceError::BindingMismatch);
@@ -1254,7 +1242,6 @@ fn source_fact<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         mode: durable_mode(session.mode),
         maximum_paths: session.capture.maximum_paths,
         maximum_extent_spans: session.capture.maximum_extent_spans,
-        maximum_queued_changes: session.maximum_queued_changes,
         capture_policy: session.capture_policy.fingerprint(),
         state: durable_state(state),
         generation_id,
