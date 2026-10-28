@@ -1356,3 +1356,22 @@ The Objects gRPC call macro now binds Option<Duration> once. Some uses the exist
 
 
 Check170 canonical descriptor generation PASS on actual signedc077200c2a source job1793217559446-577630-dce03596 (final relay1793217529349-577630-ee070826,20:00:17 UTC,rc0,88.2s). All7 real artifacts copied back at20:01:15 UTC. Stream descriptor is sha256:9b30beeff26e10245f8eb9988b657441147238c2682b7b7323d5696832de155e; Objects is sha256:b188950797893f9d63c517abed1b5479eef9dc0e8c4cacbffafc33c26751143f. Only those2 byte sequences changed; the manifest now hashes actual produced bytes. No packaged Actors copy changed. The latest global baseline and native compile remain pending; the descriptor P1 remains open until baseline verification.
+
+
+## S3 multipart retention policy and additional inventory
+
+| Constant / policy | File:line (current source) | Category | Action |
+|---|---|---|---|
+| `S3MultipartRetentionLimits.maximum_uploads` | `rust/crates/filesystem/src/s3_http.rs:77` | 1, optional caller policy | Deleted the one-million-entry default. None scans every registry page; Some retains explicit positive caller admission. Page-sized reads continue from their authenticated sequence to the captured tail. |
+| `S3MultipartRetentionLimits.maximum_objects` | `rust/crates/filesystem/src/s3_http.rs:79` | 1, optional caller policy | Deleted the ten-million-object default. None retains the complete distinct root closure; Some preserves explicit finite policy. Canonical root authentication, deduplication and supplied WorkBudget remain. |
+| `S3MultipartRetentionLimits.maximum_object_bytes` | `rust/crates/filesystem/src/s3_http.rs:81` | 1, optional caller policy | Deleted the default cumulative one-TiB refusal. None authenticates complete root closures under the original supplied budget. The existing explicit one-byte negative is preserved as Some(1). |
+| `FilesystemS3Limits.maximum_request_bytes` / `maximum_multipart_part_bytes` | `rust/crates/filesystem/src/s3_http.rs:51,65` | 1 | Pending inspection of request staging and continuation; remove default whole logical request refusals through shared streaming. |
+| `FilesystemS3Limits.response_chunk_bytes` / `maximum_list_keys` | `rust/crates/filesystem/src/s3_http.rs:53,55` | 2 | Keep actual response chunks and continuation pages; verify every caller continues instead of refusing aggregate work. |
+| `FilesystemS3Limits.maximum_list_entries_examined` | `rust/crates/filesystem/src/s3_http.rs:57` | 1 / 2 | Pending: listing uses this as a scan bound, while ListBuckets also refuses aggregate names. Convert scan exhaustion to authenticated continuation and delete aggregate count refusal. |
+| `FilesystemS3Limits.maximum_key_bytes` | `rust/crates/filesystem/src/s3_http.rs:59` | 1 | Pending deletion of logical key/cursor width refusals across common validation and durable multipart records. |
+| `FilesystemS3Limits.maximum_multipart_parts` / `maximum_multipart_records` | `rust/crates/filesystem/src/s3_http.rs:61,63` | 1 | Pending removal of default part/history ceilings; retain ordered distinct part identities and exact replay, with history streaming rather than whole-value refusal. |
+| `FilesystemS3Limits.maximum_multipart_cas_retries` | `rust/crates/filesystem/src/s3_http.rs:69` | 1 | Pending removal of the attempt ceiling; retry the same operation under caller cancellation/deadline with contention backpressure. |
+
+The S3 retention policy change has static formatting/diff verification only; its optional s3-http feature requires bb2 compilation. Existing explicit finite upload and byte negatives are unchanged except for Some presence. No new Objects producer, replacement ledger, native funding change or runtime proof is claimed.
+
+Check171 on signed a338a45c6e06ab3099696ad4721c62d90a5c03c4 has passed the global compatibility/descriptor baseline, native workspace all-target compilation (1m43s) and the storage-backends conformance endpoint compile (1m09s), actual job1793217791601-578801-44b70a74. Its runtime and WASM phases are still running. The descriptor P1 PRRT_kwDOUMoiI86xR76S was resolved after the real baseline result, reply https://github.com/acyclic-labs/sdk/pull/1744#discussion_r4405538162. No full runtime or latest S3 source qualification is inferred.
