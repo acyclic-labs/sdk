@@ -246,7 +246,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
         max_steps: Some(2),
     };
     let narrow = Limits {
-        model_steps: Some(1),
+        model_steps: std::num::NonZeroUsize::new(1),
         ..Limits::default()
     };
     assert!(matches!(
@@ -265,7 +265,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
             .all(|request| request.max_output_tokens.is_none())
     );
     let changed = Limits {
-        model_steps: Some(3),
+        model_steps: std::num::NonZeroUsize::new(3),
         ..Limits::default()
     };
     assert!(matches!(
@@ -834,7 +834,7 @@ async fn optional_count_policies_preserve_unbounded_execution_and_finite_authori
     let scope = RuntimeScope::new(Capabilities::default(), limits)?;
     for finite in [
         Limits {
-            model_steps: Some(1),
+            model_steps: std::num::NonZeroUsize::new(1),
             ..limits
         },
         Limits {
@@ -886,7 +886,7 @@ async fn optional_count_policies_preserve_unbounded_execution_and_finite_authori
                 executor
                     .clone()
                     .with_limits(Limits {
-                        model_steps: Some(1),
+                        model_steps: std::num::NonZeroUsize::new(1),
                         ..limits
                     })
                     .execute(input.clone(), &journal)
