@@ -461,7 +461,7 @@ pub async fn step<T: TurnDriver + ?Sized>(
     // The one point every state passes before it is checkpointed: one that
     // would not fit fails the agent visibly, shedding everything a step can
     // grow, so no step ever produces a record its stream refuses.
-    if checkpoint::encode(&state, cursor)?.len() > MAX_CHECKPOINT_BYTES - TAIL_SLACK {
+    if checkpoint::encode(&state)?.len() > MAX_CHECKPOINT_BYTES - TAIL_SLACK {
         shed(&mut state, &mut outs, OVERSIZED_STATE);
     }
     let alarm = match kernel::alarm(

@@ -178,18 +178,19 @@ impl<P: StreamProvider + ?Sized + 'static> Agents<P> {
             .await
             .map_err(|error| Error::Actor(Box::new(error)))?;
         let state = snapshot.state().ok_or(Error::NoSuchAgent)?;
-        let (observed, cursor) = if let Some(checkpoint) = state.checkpoint() {
+        let inbox = agent.inbox()?;
+        let cursor = state
+            .subscriptions()
+            .get(INBOX)
+            .filter(|subscription| subscription.path == inbox)
+            .ok_or(Error::Record("agent inbox subscription differs"))?
+            .cursor;
+        let observed = if let Some(checkpoint) = state.checkpoint() {
             checkpoint_state(checkpoint)?
         } else {
             // A new child's inherited inbox starts with its ancestors' records.
             // Its own adoption is at the cursor installed by the spawn commit.
-            let inbox = agent.inbox()?;
-            let from = state
-                .subscriptions()
-                .get(INBOX)
-                .filter(|subscription| subscription.path == inbox)
-                .ok_or(Error::Record("agent inbox subscription differs"))?
-                .cursor;
+            let from = cursor;
             let records = self.read_back(agent, from, 1, u64::MAX).await?;
             let [(sequence, InboxRecord::ForkAdopted(adopted))] = records.as_slice() else {
                 return Err(Error::Record("agent has no adoption record"));
@@ -201,7 +202,7 @@ impl<P: StreamProvider + ?Sized + 'static> Agents<P> {
             {
                 return Err(Error::Record("agent adoption cursor differs"));
             }
-            (AgentState::adopted(agent.clone(), adopted), from)
+            AgentState::adopted(agent.clone(), adopted)
         };
         if &observed.path != agent || observed.parent != agent.parent() {
             return Err(Error::Record("agent state binding differs"));
@@ -254,24 +255,39 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
                 decode(&checkpoint.bytes)
             })
             .transpose()?;
+        let cut = delivery
+            .subscriptions
+            .get(INBOX)
+            .ok_or(Error::Record("agent inbox subscription missing"))?;
         let (mut wake, cursor, trigger) = match (&delivery.trigger, delivery.record) {
-            (Trigger::Record { sequence, .. }, Some(record)) => (
-                Wake::Inbox {
-                    sequence: *sequence,
-                    record: InboxRecord::decode(&record.value)?,
+            (
+                Trigger::Record {
+                    subscription,
+                    sequence,
                 },
-                sequence + 1,
-                format!("record:{sequence}"),
-            ),
-            (Trigger::Alarm { generation, .. }, None) => (
-                Wake::Alarm,
-                saved.as_ref().map_or(0, |(_, cursor)| *cursor),
-                format!("alarm:{generation}"),
-            ),
+                Some(record),
+            ) if subscription == INBOX
+                && *sequence == cut.cursor
+                && record.sequence == *sequence =>
+            {
+                (
+                    Wake::Inbox {
+                        sequence: *sequence,
+                        record: InboxRecord::decode(&record.value)?,
+                    },
+                    sequence
+                        .checked_add(1)
+                        .ok_or(Error::Record("agent inbox cursor overflow"))?,
+                    format!("record:{sequence}"),
+                )
+            }
+            (Trigger::Alarm { generation, .. }, None) => {
+                (Wake::Alarm, cut.cursor, format!("alarm:{generation}"))
+            }
             _ => return Err(Error::Record("delivery does not match its trigger")),
         };
         let path = match (&saved, &wake) {
-            (Some((state, _)), _) => state.path.clone(),
+            (Some(state), _) => state.path.clone(),
             (
                 None,
                 Wake::Inbox {
@@ -284,6 +300,9 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             },
             (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
         };
+        if cut.path != path.inbox()? {
+            return Err(Error::Record("agent inbox subscription differs"));
+        }
         // A spawned child names the brief its private volume was created with.
         if let (
             None,
@@ -299,7 +318,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             let brief = volumes.brief(&path, &adopted.volumes).await?;
             adopted.brief = brief;
         }
-        let mut state = saved.map(|(state, _)| state);
+        let mut state = saved;
         if let Some(state) = state.as_mut() {
             // Overflowed input precedes this delivery; read it back first.
             let end = match &wake {
@@ -332,7 +351,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
         }
         Ok(Transition {
             participant,
-            checkpoint: checkpoint::checkpoint(&step.state, cursor)?,
+            checkpoint: checkpoint::checkpoint(&step.state)?,
             alarm: match step.alarm {
                 Alarm::Clear => AlarmChange::Clear,
                 Alarm::At(deadline_unix_ms) => AlarmChange::Set { deadline_unix_ms },

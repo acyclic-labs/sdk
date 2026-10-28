@@ -41,3 +41,22 @@ forwarding against the generated guest declarations also passed. Workerd runs
 the unchanged Stream and host suites plus packaged-guest restart checks.
 Exact source pins and backend qualification receipts are recorded in
 [#1709](https://github.com/acyclic-labs/sdk/pull/1709).
+
+G50 adds committed subscription cuts to every `Delivery`, including alarms
+without a record. Native handlers and the strict guest wire receive the same
+bounded projection of the state already admitted for that attempt, with no
+additional storage observation. The read-only view retains the original state
+commit anchor. Cut order is canonical; duplicate ids, invalid paths and missing
+anchors are refused. The cuts grant no storage access and cannot change
+subscriptions or bypass pause and placement admission.
+
+The harness now uses Actors' inbox cut for alarm resume and state observations,
+and stores only artifact state in its checkpoint. Protobuf tag 1 is retired;
+the one existing decoder naturally ignores that field in earlier checkpoints.
+The artifact state encoding and codec version remain the same. Both old and
+new checkpoints take their authoritative inbox cut from Actors' state.
+G50 adds wire refusal and record/alarm reopen controls. Its validation is a
+bb2 compile-only check; the earlier execution receipts above apply to #1709,
+not this ABI change. Active-work bounds, fair interrupt polling, wake indexing
+and acknowledged control freshness remain separate v3 work. No throughput or
+zero-control claim follows from carrying a loaded cut.

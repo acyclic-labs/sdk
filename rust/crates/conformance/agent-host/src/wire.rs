@@ -107,6 +107,17 @@ fn strict(manifest: &Manifest) -> Result {
             now_unix_ms: 9,
         },
         record: None,
+        subscriptions: guest::SubscriptionCuts::new(
+            acyclic_stream::CommitId::from_bytes([17; 32]),
+            [(
+                "inbox".into(),
+                guest::Subscription {
+                    path: acyclic_stream::StreamPath::new("conformance/inbox")?,
+                    cursor: 17,
+                },
+            )]
+            .into(),
+        ),
     };
     let encoded = wire::encode_delivery(&delivery, None);
     if wire::decode_delivery(&encoded)? != (delivery, None) {

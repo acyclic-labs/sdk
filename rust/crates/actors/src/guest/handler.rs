@@ -2,9 +2,12 @@
 use super::{Checkpoint, CodecIdentity, GuestError, GuestFuture};
 use crate::{addressing::ActorReference, domain};
 use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, Record, StreamError,
+    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest, Record, StreamError,
+    StreamPath,
 };
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Immutable deployment metadata; resource selection is explicit, never inherited.
 pub struct Manifest {
@@ -64,6 +67,45 @@ pub enum Trigger {
     },
 }
 
+/// One instance-bound input: the actor's own stream and its next sequence.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Subscription {
+    /// Source stream, bound when the actor's state is created.
+    pub path: StreamPath,
+    /// Next unconsumed sequence.
+    pub cursor: u64,
+}
+
+/// Read-only subscription projection bound to its original committed state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubscriptionCuts {
+    anchor: CommitId,
+    entries: BTreeMap<String, Subscription>,
+}
+
+impl SubscriptionCuts {
+    /// Construct a host's projection of one admitted, size-bounded state.
+    /// This metadata conveys no provider authority or freshness guarantee.
+    pub fn new(anchor: CommitId, entries: BTreeMap<String, Subscription>) -> Self {
+        Self { anchor, entries }
+    }
+
+    /// Original state publication; the checkpoint, epoch and cuts share it.
+    pub const fn anchor(&self) -> CommitId {
+        self.anchor
+    }
+
+    /// One declared subscription, including an unconsumed zero cursor.
+    pub fn get(&self, id: &str) -> Option<&Subscription> {
+        self.entries.get(id)
+    }
+
+    /// All admitted subscriptions in canonical id order, borrowed for this view.
+    pub fn iter(&self) -> impl ExactSizeIterator<Item = (&String, &Subscription)> {
+        self.entries.iter()
+    }
+}
+
 /// Invocation-scoped host input; it contains no deployment credentials.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Delivery {
@@ -77,6 +119,11 @@ pub struct Delivery {
     pub now_unix_ms: u64,
     /// The consumed record for `Trigger::Record`; `None` for alarms.
     pub record: Option<Record>,
+    /// Committed cuts from the same admitted state as the checkpoint and epoch.
+    /// Present for record and alarm deliveries, including zero cursors. This is
+    /// a read-only projection of the already loaded, size-bounded actor state.
+    /// It cannot change subscriptions or advance their cursors.
+    pub subscriptions: SubscriptionCuts,
 }
 
 /// Change to the actor's sole durable alarm, committed with its checkpoint.

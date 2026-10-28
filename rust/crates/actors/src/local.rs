@@ -4,6 +4,7 @@ pub mod ready;
 mod record;
 pub use record::{STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD};
 mod runtime;
+pub use crate::guest::Subscription;
 pub use runtime::{Clock, Runtime, SystemClock};
 
 use crate::addressing::ActorReference;
@@ -77,15 +78,6 @@ impl Alarm {
         self.deadline_unix_ms
             .filter(|_| self.delivered_generation != Some(self.generation))
     }
-}
-
-/// One instance-bound input: the actor's own stream and its next sequence.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Subscription {
-    /// Source stream, bound when the actor's state is created.
-    pub path: StreamPath,
-    /// Next unconsumed sequence.
-    pub cursor: u64,
 }
 
 /// One committed state/cursor/alarm tuple. Fields cannot be forged by callers.
