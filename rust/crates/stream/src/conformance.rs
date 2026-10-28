@@ -922,31 +922,54 @@ pub async fn verify_page_tail_bytes(
             return Err(StreamError::Unavailable);
         }
     }
-    let page = match provider
-        .children_page(ChildrenPageRequest {
-            parent: Some(path("conformance/page-bytes")?),
-            after: None,
-            hierarchy_version: None,
-            limit: u32::try_from(count).map_err(|_| StreamError::LimitExceeded)?,
-            tail_stream: Some(path("status")?),
-        })
-        .await
-    {
-        Err(StreamError::LimitExceeded) => return Ok(()),
-        result => result?,
-    };
-    if page.children.is_empty()
-        || page.children.len() > count
-        || (page.children.len() < count && page.next_after.is_none())
-        || page.children.iter().any(|child| {
-            child
-                .tail_record
-                .as_ref()
-                .is_none_or(|record| record.value != value || record.headers != headers)
-        })
-        || prost::Message::encoded_len(&crate::wire_codec::children_page_to_wire(page))
+    let mut after = None;
+    let mut hierarchy_version = None;
+    let mut seen = 0;
+    loop {
+        let page = provider
+            .children_page(ChildrenPageRequest {
+                parent: Some(path("conformance/page-bytes")?),
+                after: after.clone(),
+                hierarchy_version,
+                limit: u32::try_from(count).map_err(|_| StreamError::LimitExceeded)?,
+                tail_stream: Some(path("status")?),
+            })
+            .await?;
+        if page.children.is_empty() || page.children.len() > count - seen {
+            return Err(StreamError::Unavailable);
+        }
+        for child in &page.children {
+            let expected = path(&format!("conformance/page-bytes/{seen:04}"))?;
+            if child.path != expected
+                || child
+                    .tail_record
+                    .as_ref()
+                    .is_none_or(|record| record.value != value || record.headers != headers)
+            {
+                return Err(StreamError::Unavailable);
+            }
+            seen += 1;
+        }
+        if page
+            .next_after
+            .as_ref()
+            .is_some_and(|next| page.children.last().is_none_or(|child| &child.path != next))
+            || hierarchy_version.is_some_and(|version| page.hierarchy_version != version)
+        {
+            return Err(StreamError::Unavailable);
+        }
+        hierarchy_version = Some(page.hierarchy_version);
+        after = page.next_after.clone();
+        if prost::Message::encoded_len(&crate::wire_codec::children_page_to_wire(page))
             > crate::MAX_COMMAND_BYTES
-    {
+        {
+            return Err(StreamError::Unavailable);
+        }
+        if after.is_none() {
+            break;
+        }
+    }
+    if seen != count {
         return Err(StreamError::Unavailable);
     }
     Ok(())
