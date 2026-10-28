@@ -61,7 +61,7 @@ try {
   result.dataset.waiting = "the turn dispatches the effect and loses its acknowledgment";
   const agent = await agents.create("tool-agent", "use the tool");
   await dispatchObserved;
-  agents.free();
+  await fixture.close(agents);
   result.dataset.waiting = "reopen reconciles the recorded effect and settles the turn";
   agents = await fixture.open();
   const entries = await until(agents, agent, "conversation", entries => entries.length === 1);
@@ -75,7 +75,7 @@ try {
   result.dataset.status = "failed";
   result.textContent = String(error.stack ?? error);
 } finally {
-  agents?.free();
+  await fixture?.close(agents);
   fixture?.free();
   cleanup?.();
 }
