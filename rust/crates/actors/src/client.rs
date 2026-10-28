@@ -25,15 +25,10 @@ impl BearerAuth {
     }
 }
 impl tonic::service::Interceptor for BearerAuth {
-    fn call(
-        &mut self,
-        request: tonic::Request<()>,
-    ) -> Result<tonic::Request<()>, tonic::Status> {
+    fn call(&mut self, request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
         #[cfg(not(target_arch = "wasm32"))]
-        let request = tonic::service::Interceptor::call(
-            &mut acyclic_auth::channel::LeaseCheck,
-            request,
-        )?;
+        let request =
+            tonic::service::Interceptor::call(&mut acyclic_auth::channel::LeaseCheck, request)?;
         let mut request = request;
         let authorization = request
             .extensions_mut()
@@ -263,7 +258,10 @@ impl Client {
         body: T,
         authorization: Option<BearerAuth>,
     ) -> Result<
-        (tonic::Request<T>, Option<acyclic_auth::credential::ResolvedCredential>),
+        (
+            tonic::Request<T>,
+            Option<acyclic_auth::credential::ResolvedCredential>,
+        ),
         Error,
     > {
         let mut lease = None;
