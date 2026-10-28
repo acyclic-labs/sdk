@@ -51,6 +51,96 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 }
 
 #[tokio::test]
+async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
+    use acyclic_actors::guest::{CancellationToken, Delivery, Handler, SubscriptionCuts, Trigger};
+    use acyclic_stream::{ReadRequest, StreamProvider};
+    use futures::TryStreamExt as _;
+
+    struct Observed(Arc<AtomicUsize>, Spawner);
+    impl TurnDriver for Observed {
+        fn step<'a>(
+            &'a self,
+            agent: &'a AgentState,
+            cursor: u64,
+            input: Option<Queued>,
+            cancellation: CancellationToken,
+        ) -> TurnFuture<'a> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            self.1.step(agent, cursor, input, cancellation)
+        }
+    }
+
+    let provider = Arc::new(MemoryStream::default());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler = Arc::new(AgentHandler::new(
+        store(&provider)?,
+        Observed(calls.clone(), Spawner(AtomicUsize::new(1))),
+        ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+    )?);
+    let host = AgentHost::hosting(
+        provider.clone(),
+        ActorReference::new(b"account", b"agents", b"owner")?,
+        handler.clone(),
+        Arc::new(SystemClock),
+        None,
+    )?;
+    let root = host.create(&intent("create"), adopted(id(1))).await?;
+    let failures = host.runtime().drain().await;
+    assert!(failures.is_empty(), "{failures:?}");
+    let actor = host.actor(&root)?;
+    let snapshot = store(&provider)?.load(&actor).await?;
+    let state = snapshot.state().ok_or("missing actor state")?;
+    let checkpoint = state.checkpoint().ok_or("missing agent checkpoint")?;
+    let input = InboxRecord::ApprovalRequested(ApprovalRequested {
+        child: root.child(&id(2))?,
+        id: intent("approval"),
+    });
+    let Delivered::Committed { inbox } = host.send(&root, &user(), &input).await? else {
+        return Err("input was not committed".into());
+    };
+    let record = provider
+        .read(ReadRequest {
+            path: root.inbox()?,
+            from: inbox,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?
+        .try_next()
+        .await?
+        .ok_or("missing committed input")?;
+    let anchor = provider
+        .head(snapshot.path().clone())
+        .await?
+        .last
+        .ok_or("missing state publication")?
+        .commit_id;
+    let delivery = Delivery {
+        actor,
+        epoch: state.epoch(),
+        trigger: Trigger::Record {
+            subscription: INBOX.into(),
+            sequence: inbox,
+        },
+        now_unix_ms: 0,
+        record: Some(record),
+        subscriptions: SubscriptionCuts::new(anchor, state.subscriptions().clone()),
+    };
+    let mut foreign = delivery.clone();
+    foreign.actor = ActorReference::new(b"account", b"agents", id(9).as_str().as_bytes())?;
+    assert!(matches!(
+        handler.on_record(foreign, Some(checkpoint), CancellationToken::new()).await,
+        Err(acyclic_actors::guest::GuestError::Handler(_))
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    handler
+        .on_record(delivery, Some(checkpoint), CancellationToken::new())
+        .await?;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_inbox_append_wakes_the_agent_and_its_spawn_creates_the_child_actor() -> Result {
     let provider = Arc::new(MemoryStream::default());
     let host = AgentHost::new(
