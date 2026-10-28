@@ -50,6 +50,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
   }
   private async send(route: string, input: Uint8Array, sizes?: OperationSizes): Promise<Uint8Array> {
     const request = encode_objects_v1_json(objects_v1_http_type(route, false), input, this.maximumRequest);
+    if (this.maximumRequest !== undefined && request.byteLength > this.maximumRequest) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
     if (sizes) sizes.requestBytes = request.byteLength;
     const deadline = deadlineSignal(this.timeoutMs, () => new ObjectsV1Error(wire.ErrorCode.DEADLINE_ELAPSED));
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
