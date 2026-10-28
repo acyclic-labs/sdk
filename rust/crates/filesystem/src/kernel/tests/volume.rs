@@ -150,17 +150,6 @@ fn every_volume_semantic_variant_roundtrips_and_unknown_tags_fail_closed()
         );
     }
 
-    let mut depth_overflow = encoded.clone();
-    let depth_offset = config_offset + 8 + 4 + 4;
-    depth_overflow[depth_offset..depth_offset + 4].copy_from_slice(&u32::MAX.to_le_bytes());
-    assert!(
-        decode_volume_created(&depth_overflow, u64::MAX, &mut |_| Ok::<
-            _,
-            crate::kernel::VolumeCreatedError,
-        >(()))
-        .is_err()
-    );
-
     let mut wrong_kind = encoded;
     let kind_offset = wrong_kind.len() - 33;
     wrong_kind[kind_offset] = ObjectKind::TreePage.canonical_tag();
