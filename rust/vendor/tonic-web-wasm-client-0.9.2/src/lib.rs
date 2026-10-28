@@ -26,3 +26,6 @@ pub use self::{client::Client, error::Error, response_body::ResponseBody};
 
 #[cfg(test)]
 mod split_trailer_tests;
+
+#[cfg(all(test, target_arch = "wasm32"))]
+mod timeout_tests;
