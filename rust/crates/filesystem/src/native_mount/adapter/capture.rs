@@ -27,7 +27,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         if paths.is_empty() {
             return Ok(());
         }
-        let work = capture_meter(crate::performance::BOUNDARY_BUDGET, &self.cancellation)?;
+        let work = self.operation_work()?;
         invoke(&self.runtime, &work, || {
             self.capture_host(source_root, paths, identity, scope, None, &work)
         })
