@@ -10,6 +10,17 @@ import {environment,scratchDirectory} from '../../../scripts/graphcoder-e2e/scra
 import {stagePlugin} from './package.mjs';
 import {startWorkspaceOwner} from './workspace-owner.mjs';
 
+export function assertCodexChildRoundTrip(requests,childMarker='NATIVE_PLUGIN_CHILD_DONE') {
+ const generations=requests.filter(row=>row.path==='responses');
+ assert.ok(generations.every(row=>row.status===200),'unexpected native generation refusal');
+ assert.deepEqual(generations.map(row=>row.step).sort(),[0,1,2,3],'native parent/child generation coverage');
+ const consumed=generations.find(row=>row.step===2).body.input.find(item=>
+  item.type==='function_call_output'&&item.call_id==='native_wait');
+ assert.ok(consumed,'parent did not consume the plugin wait result');
+ assert.ok(JSON.stringify(consumed).includes(childMarker),'native child answer missing from parent tool result');
+ assert.ok(JSON.stringify(consumed).includes('Succeeded'),'native child did not settle successfully');
+}
+
 export async function nativeModel({host,binary,graphcoder,mock,native,output,packageSource}) {
  assert.ok(['codex','pi'].includes(host),'step=admit native host; recovery=select codex or pi');
  output=resolve(output);await mkdir(output);
@@ -77,16 +88,7 @@ export async function nativeModel({host,binary,graphcoder,mock,native,output,pac
    const tools=generation.body.tools;
    if(host==='codex') assert.ok(JSON.stringify(tools).includes('acyclic'),'installed Acyclic MCP tools not advertised');
    else for(const name of ['spawn','send','wait','archive','cancel','resume']) assert.ok(tools.some(t=>(t.name??t.function?.name)===name&&JSON.stringify(t).includes('separate native Pi process in an admitted workspace view')),'missing installed Pi coordination tool '+name);
-   if(host==='codex') {
-    const generations=requests.filter(row=>row.path==='responses');
-    assert.ok(generations.every(row=>row.status===200),'unexpected native generation refusal');
-    assert.deepEqual(generations.map(row=>row.step).sort(),[0,1,2,3],'native parent/child generation coverage');
-    const consumed=generations.find(row=>row.step===2).body.input.find(item=>
-     item.type==='function_call_output'&&item.call_id==='native_wait');
-    assert.ok(consumed,'parent did not consume the plugin wait result');
-    assert.ok(JSON.stringify(consumed).includes(childMarker),'native child answer missing from parent tool result');
-    assert.ok(JSON.stringify(consumed).includes('Succeeded'),'native child did not settle successfully');
-   }
+   if(host==='codex') assertCodexChildRoundTrip(requests,childMarker);
    result={host,plugin_installed:true,native_model_answer:true,plugin_child_round_trip:host==='codex',advertised_tools:tools.map(t=>t.name??t.function?.name)};
   }});
   assert.equal(receipt.expired,false,'installed native host deadline');result={...result,status:'pass',seconds:receipt.seconds};
