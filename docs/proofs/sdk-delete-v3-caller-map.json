@@ -1,0 +1,174 @@
+{
+  "source": "4a4718271d5bde3fafe0af6b23d7888b9b18d9bb",
+  "audit": "2026-10-28 v3 PLATFORM-4 / HAR-25 / G12 / G13 / G17",
+  "status": "INVENTORIED; MIGRATION_PENDING; NO_EXECUTION_QUALIFICATION",
+  "scope": "All tracked SDK files at HEAD, including named historical captures; excludes untracked/generated output, external Cloud/deployed/exported consumers and planned work of other owners.",
+  "search": {
+    "g17-timers": {
+      "pattern": "TimerRecord|timerRecord|timer_record|timers::|timers\\.js|TIMER_STREAM_PREFIX|MAX_TIMER_RECORD_BYTES",
+      "raw_sha256": "189d8236a2bf34c88a3e25e41e26bc75fb6c1bcc89a594c319323ea0c61dfefc",
+      "matched_files": 17
+    },
+    "har25-roots": {
+      "pattern": "SERVICE_READY_ARGUMENT|ServiceReadiness|ServiceReadySignal|ServiceStartOutcome|spawn_service_process|take_service_ready_signal|TaskGroup|completion_stream|first_success|ordered_reduce|CommandRequest|command_request|unsettled.resume|executor::json::baseline",
+      "raw_sha256": "244e862fb2b13cf510de43482df2a45bd4ec47ab3e1b3368104100001c56146d",
+      "matched_files": 37
+    },
+    "g12-machines-elastic": {
+      "pattern": "ElasticCpu|ElasticMemory|elastic_cpu_ns|elasticCpuNs|elastic-cpu|elastic-memory|CAPABILITY_ELASTIC_",
+      "raw_sha256": "908e5b8b997bce201bdc88814279ddaae5020e19a164634f791e1c41e3296cd9",
+      "matched_files": 13
+    },
+    "g12-descriptor-json": {
+      "pattern": "DynamicMessage::deserialize|DynamicMessage::decode|pub fn encode_binary|pub fn decode_binary",
+      "raw_sha256": "284c4a764ce117c9e5b16d2508222080c84fc97deaa8bfb7fec9327428da8c53",
+      "matched_files": 12
+    },
+    "g17-complete-vocabulary": {
+      "pattern": "TimerRecord|timerRecord|timer_record|timers|setAlarm|set_alarm|harness/v2/timers|TIMER_STREAM_PREFIX|MAX_TIMER_RECORD_BYTES",
+      "raw_sha256": "cd5259d0d097a1a26a13c05d9be08965ee72246e11636614c51bda9144c21756",
+      "matched_files": 61
+    },
+    "har25-protocol-callers": {
+      "pattern": "PatchLimits|TextFileLimits|patch::|text_files::|unsettled_resume|unsettled.*resume|SERVICE_READY_ARGUMENT|ServiceReadiness|ServiceReadySignal|ServiceStartOutcome|spawn_service_process|take_service_ready_signal",
+      "raw_sha256": "d7870fad346a920aa0bc4305b2648a0f7bd696205a577fe79ef5fbab12982684",
+      "matched_files": 68
+    },
+    "g17-root-imports": {
+      "pattern": "use acyclic_actors|from [\"\\x27]@acyclic-labs/actors|pub mod timers|use .*timers",
+      "raw_sha256": "6f4d34187e0d7eb0b4d4a2edfcab8d5d7c2f92ec4707a50c90a89b5cb43f7039",
+      "matched_files": 95
+    }
+  },
+  "timer_consumers": {
+    "exports_and_authoring": [
+      {
+        "path": "rust/crates/actors/src/lib.rs",
+        "blob": "5f933c318fe674453590943747313b0511ad0206"
+      },
+      {
+        "path": "rust/crates/actors/src/timers.rs",
+        "blob": "842e4adf77fb3cec812093d9858e1ef31429d022"
+      },
+      {
+        "path": "rust/crates/actors-wasm/src/lib.rs",
+        "blob": "5b10e3daa737f01797cec2bd4de55dd220542601"
+      },
+      {
+        "path": "rust/crates/actors/examples/actors-http-routes.rs",
+        "blob": "f7f20f519fdd1686914c45bbd614e6e3c0f36d61"
+      },
+      {
+        "path": "typescript/packages/actors/src/index.ts",
+        "blob": "16ad3b3197512d71e13af3ccdf69c2741f616a92"
+      },
+      {
+        "path": "typescript/packages/actors/src/client.ts",
+        "blob": "6e8f0022e3c057ec1253b3935ab770c36b2bb179"
+      }
+    ],
+    "harness_compatibility": [
+      {
+        "path": "rust/crates/harness-core/src/executor/json/layout/std_layouts.rs",
+        "blob": "e1f06db06c6b6057f71c9f53e7f60cdcb6bd06c7"
+      },
+      {
+        "path": "rust/crates/harness-core/src/contract_errors.rs",
+        "blob": "6ad3315a3b2a798591a118570d77cd940377fe50"
+      }
+    ],
+    "independent_timer_oracles": [
+      {
+        "path": "rust/crates/actors/tests/timer_contract.rs",
+        "blob": "c58daf16891df2c9fbab13039be3e3f7a9f18418"
+      },
+      {
+        "path": "rust/crates/actors/tests/timer_loom.rs",
+        "blob": "f11fc19ffb6bd63c7ac82fe00c29d3f44db4d10f"
+      },
+      {
+        "path": "rust/crates/actors/tests/timer-negative-control.py",
+        "blob": "b12d1b5eb1f32a1522a6e1cad682dfc67b8e157b"
+      },
+      {
+        "path": "rust/crates/actors/tests/support/timer_oracle.rs",
+        "blob": "ed6289f9fbd3f0192cf01e5629601db2fa1242f2"
+      },
+      {
+        "path": "rust/crates/actors/fuzz/fuzz_targets/timer_record.rs",
+        "blob": "2bf274bdf755b4bfa32994453f9d8bae4da72f09"
+      },
+      {
+        "path": "rust/crates/actors/fuzz/negative-control.py",
+        "blob": "b63e2432d49484c9dc39f9e623fd59f88eaaddad"
+      },
+      {
+        "path": "typescript/packages/actors/test/timers.test.mjs",
+        "blob": "e3d24a56074947e6f243bf1398891d2496715347"
+      },
+      {
+        "path": "typescript/packages/actors/test/timer-types.ts",
+        "blob": "19af65750424482d48b500c991e33593fb382d3f"
+      }
+    ]
+  },
+  "preserved_timer_capabilities": [
+    "Canonical task and operation UUIDs, positive absolute deadline, exact bounded source bytes and parser/fuzzer independent admission checks.",
+    "Stable timer-fire key/body and exact original receipt after accepted append, lost acknowledgement, reopen and concurrent append; unkeyed retry negative remains.",
+    "Public Rust schedule/set_alarm and Wasm/TypeScript timerRecord/schedule/setAlarm authoring exports stay until their owning actor transition mapping is concrete."
+  ],
+  "alarm_migration": {
+    "target": "acyclic_actors::guest::Transition.alarm / AlarmChange",
+    "authority": "One durable alarm generation per actor, committed with checkpoint; Keep/Set/Clear and consumed-generation fence.",
+    "remaining": "Bind each legacy task/operation timer to its actor/checkpoint and map authoring callbacks; multiple logical timers cannot be silently collapsed into one actor alarm.",
+    "owners": {
+      "codec_and_authoring": "sdk-delete",
+      "handler_runtime_and_G14_G18": "be-host",
+      "harness_composition": "del-core / harness-engine"
+    }
+  },
+  "har25_dispositions": [
+    {
+      "root": "harness-core/src/live",
+      "status": "Existing del-core1717 ownership; no duplicate deletion or credit here."
+    },
+    {
+      "root": "native-runtime/src/service and windows/service",
+      "status": "Existing del-coreH22 candidate; exported readiness/process helpers and namespace readiness tests retained pending exact caller/migration closure."
+    },
+    {
+      "root": "harness-core/src/command_request.rs",
+      "status": "LIVE typed request/FileMention consumers in harness client, TUI, fuzz support and parity tests. No retirement."
+    },
+    {
+      "root": "harness-core/src/tool/patch.rs and tool/text_files.rs",
+      "status": "LIVE bounded edit execution/authorization/registry consumers and refusal tests. No retirement."
+    },
+    {
+      "root": "harness-core/src/executor/json/baseline and unsettled-resume injection",
+      "status": "Independent deterministic oracle and ambiguous-outcome recovery negative retained; test-only is not dead-code evidence."
+    }
+  ],
+  "json_dispositions": {
+    "core": "Extract existing DynamicMessage conversion; caller owns descriptor, pool, limits, product errors and semantic/result binding.",
+    "machines_wire": "Hosted DTOs currently use $bigint/$bytes and route-specific domain binding; canonical Protobuf JSON uses descriptor uint64/base64/message shapes. No silent format replacement without the actual server consumer join.",
+    "elastic": "ElasticCpu/ElasticMemory and elastic_cpu_ns remain in canonical Machines6002a7 contract/proto/grpc/simulator/usage. Atomic canonical retirement must precede deleting only JSON spellings."
+  },
+  "retry_dispositions": {
+    "terminal": "Typed authority/credential/filter refusal is not retryable; preserve1713 and zero retry count.",
+    "unknown": "Retain exact key/body and original admitted operation; inspect/reconcile Unknown rather than minting a key or resubmitting an unqueryable external side effect.",
+    "deadline": "One whole-operation deadline covers credential resolution, connect, dispatch, body/stream, reconciliation and backoff; never restart it per attempt.",
+    "owners": {
+      "non_stream_core": "sdk-delete",
+      "stream_G06_G11_and_client_core": "Streams critical-path",
+      "machines_operation_settlement_and_watch": "be-machines"
+    }
+  },
+  "acceptance_plan_unexecuted": [
+    "Compare identical original/candidate wire bytes, exact typed errors, complete next/preceding/watermark cuts and original provider/transport call trace; measure allocations/copied bytes separately from logical dispatch.",
+    "Retain same-key accepted-plus-lost-ack/reopen/retry histories and the original duplicate-publication/unkeyed negative; do not report simulator snapshots as physical crash durability.",
+    "Verify each nonretryable authority/credential/filter refusal produces zero retries under the actual transport.",
+    "Preserve exported-consumer startup/readiness/process-output tests, alarm generation/replacement/clear and external pause/claim invocation oracle.",
+    "Compile-only gate is the current admission policy. Runtime, performance, mutation and external/deployed consumer results remain unqualified until separately authorized and source-bound."
+  ]
+}

@@ -195,17 +195,7 @@ fn unknown_generate_option_is_rejected_before_writes() {
 fn unknown_drift_option_is_rejected_before_reads() {
     runtime::time_control();
     let fixture = fixture(false);
-    let result = invoke(Command::new(runtime::binary("sdk-generation")).args([
-        "drift",
-        "--root",
-        fixture.root.to_str().unwrap(),
-        "--output",
-        fixture.output.to_str().unwrap(),
-        "--rustdoc-dir",
-        fixture.rustdoc.to_str().unwrap(),
-        "--unknown",
-        "accepted",
-    ]));
+    let result = invoke(drift_command(&fixture).args(["--unknown", "accepted"]));
     assert!(!result.status.success());
     let message = output_message(&result);
     assert!(message.contains("unknown option `--unknown`"), "{message}");
@@ -502,6 +492,13 @@ fn long_feature_identities_use_portable_receipt_paths_and_pass_drift() {
             .strip_prefix("rustdoc/")
             .unwrap();
         let path = fixture.rustdoc.join(relative);
+        assert_eq!(
+            path.file_name().unwrap().to_string_lossy(),
+            format!(
+                "profile-{:x}.json",
+                Sha256::digest(receipt["profile"].as_str().unwrap().as_bytes())
+            )
+        );
         assert!(path.file_name().unwrap().to_string_lossy().len() < 255);
         assert!(path.is_file(), "the executed receipt must be retained");
         assert!(path.with_extension("source.sha256").is_file());

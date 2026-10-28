@@ -2,6 +2,16 @@ use super::*;
 use rustdoc_types::FORMAT_VERSION;
 use std::{fs, path::PathBuf, process::Command};
 
+fn local_item_names(path: impl AsRef<std::path::Path>) -> Result<BTreeSet<String>, ProfileError> {
+    let (_, receipt) = super::receipts::read_public_receipt(path.as_ref())?;
+    Ok(receipt
+        .index
+        .values()
+        .filter(|item| item.crate_id == 0)
+        .filter_map(|item| item.name.clone())
+        .collect())
+}
+
 fn metadata() -> Metadata {
     let json = serde_json::json!({
         "packages": [{

@@ -1,19 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
+import { copyFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
 import { readBoundedGzip, sha256, tarEntries } from "../../../../../scripts/archive-utils.mjs";
+import { canonical, readGenerationReceipt, qualificationOutput, runCli } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
-const within = (root, path) => {
-  const child = relative(root, path);
-  return child === "" || (!isAbsolute(child) && child !== ".." && !child.startsWith(`..${sep}`));
-};
-const canonical = name => typeof name === "string" && name !== "." && name !== "" && !posix.isAbsolute(name)
-  && !name.includes("\\") && !name.includes(":") && !name.split("/").includes("..")
-  && posix.normalize(name) === name;
 
 export function validatePayload(entries, receipt, platform = process.platform) {
   const names = new Set();
@@ -50,40 +43,9 @@ export function qualify(args, command = spawnSync) {
   const authority = realpathSync(args.authority);
   const receiptPath = realpathSync(args.receipt);
   const go = realpathSync(args.go);
-  const work = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
-  try { lstatSync(work); throw new Error("qualification output must be absent"); }
-  catch (error) { if (error.code !== "ENOENT") throw error; }
-  for (const source of [archive, authority, receiptPath, dirname(directory), go]) {
-    if (within(work, source) || within(source, work)) throw new Error("qualification output overlaps an input");
-  }
-  const receiptBytes = readFileSync(receiptPath);
-  const receipt = JSON.parse(receiptBytes.toString());
-  if (receipt.schema !== "acyclic.sdk.go-producer-receipt.v1" || receipt.authority !== "rust" || receipt.target !== "go") {
-    throw new Error("unsupported generation receipt");
-  }
-  const manifestBytes = readFileSync(join(authority, "rust-authority.json"));
-  if (sha256(manifestBytes) !== receipt.authority_manifest_sha256) throw new Error("Rust authority manifest digest mismatch");
-  const manifest = JSON.parse(manifestBytes.toString());
-  if (manifest.schema !== "acyclic.sdk.rust-authority.v1" || manifest.authority !== "rust"
-    || manifest.source_revision !== receipt.source_revision) throw new Error("Rust source authority mismatch");
-  const inputs = new Map();
-  const descriptors = new Map();
-  const sources = new Set();
-  for (const family of manifest.families) {
-    if (sources.has(family.source)) throw new Error("duplicate authority family");
-    sources.add(family.source);
-    for (const field of ["source", ...(family.descriptor ? ["descriptor"] : [])]) {
-      const name = family[field];
-      if (!canonical(name)) throw new Error("unsafe authority path");
-      const path = realpathSync(join(authority, name));
-      if (!within(authority, path)) throw new Error("authority input escapes its root");
-      const bytes = readFileSync(path);
-      if (sha256(bytes) !== family[`${field}_sha256`]) throw new Error("Rust authority input digest mismatch");
-      inputs.set(name, bytes);
-    }
-    if (family.descriptor) descriptors.set(family.source, family.descriptor);
-  }
-  if (targets.some(name => !descriptors.has(name))) throw new Error("tested family lacks an attested descriptor");
+  const work = qualificationOutput(args.output, [archive, authority, receiptPath, dirname(directory), go]);
+  const { receiptBytes, receipt, approved } = readGenerationReceipt(receiptPath, authority, "go", targets);
+  const { bytes: manifestBytes, manifest, inputs, descriptors } = approved;
   const entries = verifyArchive(archive, args.sha256, receipt);
   const env = { ...process.env, GOMAXPROCS: "1", GOTOOLCHAIN: "local", GOPROXY: "off", GOSUMDB: "off",
     GOWORK: "off", GOENV: "off", GOFLAGS: "" };
@@ -133,6 +95,7 @@ export function qualify(args, command = spawnSync) {
     authority_manifest_sha256: sha256(manifestBytes), go_version: version.stdout.trim(),
     go_executable_sha256: sha256(readFileSync(go)), node_version: process.version,
     qualifier_sha256: sha256(readFileSync(fileURLToPath(import.meta.url))),
+    authority_reader_sha256: sha256(readFileSync(join(directory, "../../../shared/authority.mjs"))),
     control_sha256: Object.fromEntries(controlNames.map(name => [name, sha256(readFileSync(join(controls, name)))])),
     log_sha256: Object.fromEntries(["module", "positive", "negative"].map(name => [`${name}.log`, sha256(readFileSync(join(work, `${name}.log`)))])),
     descriptor_equality: "all API fields; source comments and Buf image tag 8042 excluded",
@@ -143,9 +106,4 @@ export function qualify(args, command = spawnSync) {
   return result;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["package", "sha256", "receipt", "authority", "go", "output"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options });
-  if (Object.keys(options).some(name => !values[name])) throw new Error("--package, --sha256, --receipt, --authority, --go and --output are required");
-  console.log(JSON.stringify(qualify(values), null, 2));
-}
+runCli(import.meta.url, qualify, ["package", "sha256", "receipt", "authority", "go", "output"]);

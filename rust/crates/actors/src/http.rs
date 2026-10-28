@@ -2,7 +2,7 @@
 use crate::{FILE_DESCRIPTOR_SET, HTTP_ROUTES, wire};
 pub use acyclic_auth::credential::CredentialProvider;
 use prost::Message;
-use prost_reflect::{DescriptorPool, DynamicMessage};
+use prost_reflect::DescriptorPool;
 use reqwest::{
     Client as Transport, Url,
     header::{AUTHORIZATION, HeaderValue},
@@ -106,9 +106,8 @@ fn encode(
     let descriptor = descriptors
         .get_message_by_name(name)
         .ok_or(Error::MalformedResponse)?;
-    let message = DynamicMessage::decode(descriptor, request.encode_to_vec().as_slice())
-        .map_err(|_| Error::InvalidArgument)?;
-    serde_json::to_vec(&message).map_err(|_| Error::InvalidArgument)
+    acyclic_protobuf_json::encode(descriptor, request.encode_to_vec().as_slice())
+        .map_err(|_| Error::InvalidArgument)
 }
 
 /// Decodes a complete response through its canonical JSON descriptor.
@@ -120,11 +119,11 @@ fn decode<O: Message + Default>(
     let descriptor = descriptors
         .get_message_by_name(name)
         .ok_or(Error::MalformedResponse)?;
-    let mut json = serde_json::Deserializer::from_slice(bytes);
-    let message =
-        DynamicMessage::deserialize(descriptor, &mut json).map_err(|_| Error::MalformedResponse)?;
-    json.end().map_err(|_| Error::MalformedResponse)?;
-    message.transcode_to().map_err(|_| Error::MalformedResponse)
+    // The original response_body boundary has already enforced self.maximum.
+    acyclic_protobuf_json::decode(descriptor, bytes, bytes.len())
+        .map_err(|_| Error::MalformedResponse)?
+        .transcode_to()
+        .map_err(|_| Error::MalformedResponse)
 }
 
 /// Collects a response within `maximum`, returning `None` when it exceeds the bound.

@@ -5,6 +5,7 @@
   "acyclic-native-runtime",
   "acyclic-contract-derive",
   "acyclic-auth",
+  "acyclic-protobuf-json",
   "acyclic-inference",
   "acyclic-machines",
   "acyclic-tonic-web-wasm-client",

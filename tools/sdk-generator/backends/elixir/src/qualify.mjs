@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { qualificationOutput, sourceInventory, sha256, runCli } from "../../../shared/authority.mjs";
+import { qualificationOutput, inventory, sha256, runCli } from "../../../shared/authority.mjs";
 import { pins as producerPins, readPackage, targets } from "./package.mjs";
 import { verifyRuntime } from "./runtime.mjs";
 import { readDependencies, readTools, verifyInstalledDependencies, verifyLock } from "./provenance.mjs";
@@ -83,10 +83,10 @@ export function qualify(args, { command = spawnSync, toolchain = pinned,
   onProgress("Verify post-execution source and runtime provenance");
   const installedDependencies = verifyInstalledDependencies(join(output, "consumer/deps"), dependencies);
   verifyLock(readFileSync(join(output, "consumer/mix.lock")), dependencies, toolchain);
-  if (JSON.stringify(sourceInventory(join(output, "sdk"))) !== JSON.stringify([...admitted.payload.keys()].sort())) throw new Error("installed SDK file inventory differs");
+  if (JSON.stringify(inventory(join(output, "sdk"))) !== JSON.stringify([...admitted.payload.keys()].sort())) throw new Error("installed SDK file inventory differs");
   for (const [name, bytes] of admitted.payload) if (!readFileSync(join(output, "sdk", name)).equals(bytes)) throw new Error("installed SDK payload changed");
   for (const name of ["mix.exs", "Consumer.exs", "Provenance.exs"]) if (!readFileSync(join(output, "consumer", name)).equals(sourceBytes.get(name === "mix.exs" ? "../templates/qualification/mix.exs" : "../tests/fixtures/consumer/" + name))) throw new Error("consumer source changed");
-  const installedHex = sourceInventory(join(home, ".mix/archives")).map(name => ".mix/archives/" + name);
+  const installedHex = inventory(join(home, ".mix/archives")).map(name => ".mix/archives/" + name);
   if (JSON.stringify(installedHex) !== JSON.stringify([...tools.keys()].filter(name => name.startsWith(".mix/archives/")).sort())) throw new Error("installed Hex code inventory changed");
   for (const [name, bytes] of tools) if (name !== ".hex/cache.ets" && !readFileSync(join(home, name)).equals(bytes)) throw new Error("installed qualification tool changed");
   for (const [name, bytes] of sourceBytes) if (!read(name).equals(bytes)) throw new Error("qualifier source changed");
@@ -101,7 +101,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned,
     runtime_inventory_sha256: sha256(indexBytes), tool_inventory_sha256: sha256(toolIndexBytes),
     qualifier_source_sha256: Object.fromEntries([...sourceBytes].map(([name, bytes]) => [name, sha256(bytes)])),
     lock_sha256: sha256(lock), installed_dependencies: installedDependencies, payload_sha256: admitted.receipt.output_sha256,
-    compiled_sdk_sha256: Object.fromEntries(sourceInventory(join(output, "build/lib/acyclic_sdk_transport/ebin")).map(name => [name, sha256(readFileSync(join(output, "build/lib/acyclic_sdk_transport/ebin", name)))])),
+    compiled_sdk_sha256: Object.fromEntries(inventory(join(output, "build/lib/acyclic_sdk_transport/ebin")).map(name => [name, sha256(readFileSync(join(output, "build/lib/acyclic_sdk_transport/ebin", name)))])),
     log_sha256: Object.fromEntries(logs.map(name => [name, sha256(readFileSync(join(output, name)))])),
     populated_rpc_message_pairs: methodCount, runtime_type_rejections: 2, compiled_sdk_provenance: true,
     native_rpc_calls_executed: false, rust_backed_rpc_qualified: false, embedded_runtime_qualified: false };

@@ -20,13 +20,7 @@ pub fn render_typescript(
 }
 
 fn render_stream_typescript(execution: &ScenarioExecution) -> Result<TypeScriptSnippet, Error> {
-    let value: serde_json::Value =
-        serde_json::from_str(execution.stdout.trim()).map_err(|error| {
-            Error::Invalid(format!(
-                "scenario {} did not emit JSON: {error}",
-                execution.scenario.id
-            ))
-        })?;
+    let value = scenario_output(execution)?;
     let request = value
         .get("request")
         .ok_or_else(|| Error::Invalid("Stream scenario output has no request".into()))?;
@@ -89,13 +83,7 @@ fn render_stream_typescript(execution: &ScenarioExecution) -> Result<TypeScriptS
 }
 
 fn render_actors_typescript(execution: &ScenarioExecution) -> Result<TypeScriptSnippet, Error> {
-    let value: serde_json::Value =
-        serde_json::from_str(execution.stdout.trim()).map_err(|error| {
-            Error::Invalid(format!(
-                "scenario {} did not emit JSON: {error}",
-                execution.scenario.id
-            ))
-        })?;
+    let value = scenario_output(execution)?;
     let request = value
         .get("request")
         .ok_or_else(|| Error::Invalid("Actors scenario output has no request".into()))?;
@@ -173,13 +161,7 @@ fn render_actors_typescript(execution: &ScenarioExecution) -> Result<TypeScriptS
 }
 
 fn render_machines_typescript(execution: &ScenarioExecution) -> Result<TypeScriptSnippet, Error> {
-    let value: serde_json::Value =
-        serde_json::from_str(execution.stdout.trim()).map_err(|error| {
-            Error::Invalid(format!(
-                "scenario {} did not emit JSON: {error}",
-                execution.scenario.id
-            ))
-        })?;
+    let value = scenario_output(execution)?;
     let request = value
         .get("request")
         .ok_or_else(|| Error::Invalid("Machines scenario output has no request".into()))?;
@@ -256,13 +238,7 @@ fn render_machines_typescript(execution: &ScenarioExecution) -> Result<TypeScrip
 }
 
 fn render_objects_typescript(execution: &ScenarioExecution) -> Result<TypeScriptSnippet, Error> {
-    let value: serde_json::Value =
-        serde_json::from_str(execution.stdout.trim()).map_err(|error| {
-            Error::Invalid(format!(
-                "scenario {} did not emit JSON: {error}",
-                execution.scenario.id
-            ))
-        })?;
+    let value = scenario_output(execution)?;
     let bucket = string_field(&value, "bucket")?;
     let key = string_field(&value, "key")?;
     let body = string_field(&value, "body")?;
@@ -282,13 +258,7 @@ fn render_objects_typescript(execution: &ScenarioExecution) -> Result<TypeScript
 }
 
 fn render_inference_typescript(execution: &ScenarioExecution) -> Result<TypeScriptSnippet, Error> {
-    let value: serde_json::Value =
-        serde_json::from_str(execution.stdout.trim()).map_err(|error| {
-            Error::Invalid(format!(
-                "scenario {} did not emit JSON: {error}",
-                execution.scenario.id
-            ))
-        })?;
+    let value = scenario_output(execution)?;
     let message = number_field(&value, "maximum_message_bytes")?;
     let http = number_field(&value, "maximum_http_json_bytes")?;
     let source = format!(
@@ -302,6 +272,15 @@ fn render_inference_typescript(execution: &ScenarioExecution) -> Result<TypeScri
         source_sha256: execution.source_sha256.clone(),
         rust_output_sha256: execution.stdout_sha256.clone(),
         source,
+    })
+}
+
+fn scenario_output(execution: &ScenarioExecution) -> Result<serde_json::Value, Error> {
+    serde_json::from_str(execution.stdout.trim()).map_err(|error| {
+        Error::Invalid(format!(
+            "scenario {} did not emit JSON: {error}",
+            execution.scenario.id
+        ))
     })
 }
 

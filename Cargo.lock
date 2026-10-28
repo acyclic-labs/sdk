@@ -24,6 +24,7 @@ dependencies = [
  "acyclic-host-platform",
  "acyclic-native-runtime",
  "acyclic-proto-build",
+ "acyclic-protobuf-json",
  "acyclic-stream",
  "acyclic-test-support",
  "acyclic-tonic-web-wasm-client",
@@ -737,6 +738,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-proto-build",
+ "acyclic-protobuf-json",
  "proptest",
  "prost",
  "prost-reflect",
@@ -1010,6 +1012,16 @@ dependencies = [
  "protoc-bin-vendored",
  "tempfile",
  "tonic-prost-build",
+]
+
+[[package]]
+name = "acyclic-protobuf-json"
+version = "0.2.0"
+dependencies = [
+ "proptest",
+ "prost",
+ "prost-reflect",
+ "serde_json",
 ]
 
 [[package]]

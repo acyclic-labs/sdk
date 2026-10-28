@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { canonical, inventory, loadAuthority, qualificationOutput, readInput, sha256, within, runCli } from "../../../shared/authority.mjs";
+import { canonical, inventory, readGenerationReceipt, qualificationOutput, readInput, sha256, within, runCli } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const pinned = JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json"))).qualification;
@@ -25,14 +25,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   const nuget = realpathSync(args.nuget);
   const cache = realpathSync(args.cache);
   const output = qualificationOutput(args.output, [packageRoot, authority, dotnetHome, nuget, cache, dirname(directory)]);
-  const receiptBytes = readFileSync(join(packageRoot, "generation-receipt.json"));
-  const receipt = JSON.parse(receiptBytes);
-  if (receipt.schema !== "acyclic.sdk.dotnet-producer-receipt.v1" || receipt.authority !== "rust"
-    || receipt.target !== "dotnet" || !Array.isArray(receipt.outputs)) throw new Error("unsupported generation receipt");
-  const approved = loadAuthority(authority);
-  if (sha256(approved.bytes) !== receipt.authority_manifest_sha256
-    || approved.manifest.source_revision !== receipt.source_revision) throw new Error("generation authority differs");
-  if (targets.some(name => !approved.descriptors.has(name))) throw new Error("tested family lacks an attested descriptor");
+  const { receiptBytes, receipt, approved } = readGenerationReceipt(join(packageRoot, "generation-receipt.json"), authority, "dotnet", targets);
   const payload = new Map();
   for (const name of receipt.outputs) {
     if (!canonical(name) || payload.has(name)) throw new Error("unsafe or duplicate package output");

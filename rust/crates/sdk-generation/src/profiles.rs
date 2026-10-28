@@ -205,7 +205,7 @@ pub(super) fn execute_historical_profiles(
             cargo.to_owned(),
         );
         let metadata = metadata.clone();
-        rustc_host()?;
+        sdk_docs::rustdoc_profiles::rustdoc_host().map_err(profile_error)?;
         crate::parallel::map(
             jobs,
             sdk_docs::rustdoc_worker(move |release| {
@@ -270,7 +270,7 @@ fn compile_historical_profiles(
     (plan, releases): (&historical::Plan, &[sdk_docs::historical::ReleasedPackage]),
 ) -> Result<Vec<ExecutedProfile>, CliError> {
     use sdk_docs::rustdoc_profiles::{execute_profile, CargoExecutionContext, RustdocTarget};
-    let host = rustc_host()?;
+    let host = sdk_docs::rustdoc_profiles::rustdoc_host().map_err(profile_error)?;
     let available = BTreeSet::from([host.clone()]);
     let mut executed = Vec::new();
     fs::create_dir_all(rustdoc_dir).map_err(io_error)?;
@@ -420,12 +420,13 @@ fn compile_default_profiles(
     metadata: &Metadata,
     cargo_path: &Path,
 ) -> Result<Vec<ExecutedProfile>, CliError> {
-    let host = rustc_host()?;
+    let host = sdk_docs::rustdoc_profiles::rustdoc_host().map_err(profile_error)?;
     fs::create_dir_all(rustdoc_dir).map_err(io_error)?;
     // Share Cargo's validated compiler/dependency cache across current owners.
     let target_dir = output.join(".profile-build");
     let wasm_target = "wasm32-unknown-unknown";
-    let installed_targets = rustup_targets()?;
+    let installed_targets =
+        sdk_docs::rustdoc_profiles::rustdoc_targets(&[wasm_target]).map_err(profile_error)?;
     let (host_output, browser_output) =
         sdk_docs::rustdoc_profiles::rustdoc_platform_cfgs().map_err(profile_error)?;
     let browser_cfg = browser_output
@@ -627,9 +628,10 @@ fn local_feature_configuration(
 // Feature identities stay complete in receipt metadata, while physical path
 // components have a fixed size on every supported filesystem.
 pub(super) fn profile_receipt_filename(profile: &ProfileSpec, prefix: &str) -> String {
-    format!(
-        "{prefix}profile-{:x}.json",
-        Sha256::digest(profile.id().0.as_bytes())
+    format_digest(
+        &[prefix, "profile-"],
+        ring::digest::digest(&ring::digest::SHA256, profile.id().0.as_bytes()).as_ref(),
+        ".json",
     )
 }
 

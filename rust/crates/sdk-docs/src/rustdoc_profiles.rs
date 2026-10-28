@@ -22,8 +22,8 @@ pub use execution::{
     CargoExecutionContext, LockSelection, RustdocTarget,
 };
 pub use receipts::{
-    extract_owned_api, local_item_names, observe_binary_rustdoc, observe_rustdoc,
-    validate_rustdoc_version, OwnedApiItem, RustdocObservation,
+    extract_owned_api, observe_binary_rustdoc, observe_rustdoc, validate_rustdoc_version,
+    OwnedApiItem, RustdocObservation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

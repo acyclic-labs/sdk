@@ -84,12 +84,6 @@ function qualifiedCompanionManifest(manifest) {
   return { ...manifest, files: [...manifest.files, "native-targets.json", "generation-manifest.json", "producer-receipt.json"], private: false };
 }
 
-/** Preserve the existing Stream helper API; actual assembly uses the qualified projection below. */
-async function writeCompanionManifest(directory, manifest) {
-  manifest.private = false;
-  await writeFile(join(directory, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-}
-
 function qualifiedParentManifest(manifest, targets, companions) {
   return { ...manifest, napi: { ...manifest.napi, targets }, optionalDependencies: Object.fromEntries(companions.map(companion => [companion.name, companion.version])) };
 }
@@ -394,5 +388,5 @@ async function main() {
 }
 
 
-return { assertNativeSet, assertCommonBindings, sourceNativeInventory, verifyNativeAssembly, assertNativeReceipt, writeCompanionManifest, main };
+return { assertNativeSet, assertCommonBindings, sourceNativeInventory, verifyNativeAssembly, assertNativeReceipt, qualifiedCompanionManifest, main };
 }

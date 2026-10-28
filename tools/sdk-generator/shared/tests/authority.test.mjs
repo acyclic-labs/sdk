@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { copyGeneratedFiles, equalEntries, generationOutput, inventory, qualificationOutput, sourceInventory, stageDescriptorSets, verifyInstalledPayload, verifyPackageOutputs } from "../authority.mjs";
+import { copyGeneratedFiles, equalEntries, generationOutput, inventory, qualificationOutput, stageDescriptorSets, verifyInstalledPayload, verifyPackageOutputs } from "../authority.mjs";
 
 test("CLI executes only as the main module and preserves required string arguments", t => {
   const root = mkdtempSync(join(tmpdir(), "sdk generator cli "));
@@ -115,14 +115,14 @@ test("source inventory rejects symlinked roots as well as links inside the tree"
   const source = join(root, "source"), alias = join(root, "alias");
   mkdirSync(join(source, "nested"), { recursive: true });
   writeFileSync(join(source, "nested", "unit.cc"), "source");
-  assert.deepEqual(sourceInventory(source), ["nested/unit.cc"]);
-  assert.deepEqual(sourceInventory(source, "nested"), ["nested/unit.cc"]);
-  assert.throws(() => sourceInventory(source, "nested/unit.cc"), /directory kind differs/);
+  assert.deepEqual(inventory(source), ["nested/unit.cc"]);
+  assert.deepEqual(inventory(source, "nested"), ["nested/unit.cc"]);
+  assert.throws(() => inventory(source, "nested/unit.cc"), /directory kind differs/);
   const kind = process.platform === "win32" ? "junction" : "dir";
   symlinkSync(source, alias, kind);
-  assert.throws(() => sourceInventory(alias), /directory kind differs/);
+  assert.throws(() => inventory(alias), /directory kind differs/);
   symlinkSync(join(source, "nested"), join(source, "linked"), kind);
-  assert.throws(() => sourceInventory(source), /contains a link/);
+  assert.throws(() => inventory(source), /contains a link/);
 });
 
 test("installed payload verification rejects missing, extra and changed files", t => {

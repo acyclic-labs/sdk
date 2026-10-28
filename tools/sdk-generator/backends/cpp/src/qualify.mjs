@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { qualificationOutput, sourceInventory, sha256, within, runCli } from "../../../shared/authority.mjs";
+import { qualificationOutput, inventory, sha256, within, runCli } from "../../../shared/authority.mjs";
 import { readPackage, targets } from "./package.mjs";
 import { verifyCompiledSources, verifyHost, verifyPrefixes, verifyRuntime } from "./provenance.mjs";
 
@@ -75,7 +75,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned, onProgr
   verifyCompiledSources(sdkBuild, [...admitted.payload.keys()].filter(name => name.startsWith("src/")).map(name => join(sdk, name)));
   verifyCompiledSources(build, ["rpc_consumer.cc", "PositiveTypes.cc", ...Object.keys(negatives).map(name => name + ".cc")].map(name => join(consumer, name)));
   verifyPrefixes(sdkBuild, runtimeRoot); verifyPrefixes(build, runtimeRoot, installed);
-  if (JSON.stringify(sourceInventory(sdk)) !== JSON.stringify([...admitted.payload.keys()].sort()) || JSON.stringify(sourceInventory(consumer)) !== JSON.stringify(controls.toSorted())) throw new Error("compiled source file inventory differs");
+  if (JSON.stringify(inventory(sdk)) !== JSON.stringify([...admitted.payload.keys()].sort()) || JSON.stringify(inventory(consumer)) !== JSON.stringify(controls.toSorted())) throw new Error("compiled source file inventory differs");
   for (const [name, bytes] of admitted.payload) {
     if (!readFileSync(join(sdk, name)).equals(bytes)) throw new Error("SDK source changed");
     const destination = name.startsWith("include/") ? join(installed, name) : ["LICENSE", "NOTICE"].includes(name) || name.startsWith("authority/") ? join(installed, "share/acyclic-sdk-transport", name) : undefined;

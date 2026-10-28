@@ -3,8 +3,8 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
-import { tarEntries } from "../../../../../scripts/archive-utils.mjs";
-import { canonical, inventory, loadAuthority, qualificationOutput, readInput, sha256, verifyInstalledPayload, runCli } from "../../../shared/authority.mjs";
+import { tarPayload } from "../../../../../scripts/archive-utils.mjs";
+import { canonical, inventory, readGenerationReceipt, qualificationOutput, readInput, sha256, verifyInstalledPayload, runCli } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const read = name => readFileSync(join(directory, name));
@@ -24,17 +24,7 @@ const packageName = "acyclic_sdk_transport-0.2.0-alpha.1.tar.gz";
 
 function archivePayload(bytes) {
   if (bytes.length > 32 * 1024 * 1024) throw new Error("archive exceeds size bound");
-  const entries = tarEntries(gunzipSync(bytes, { maxOutputLength: 256 * 1024 * 1024 }));
-  const seen = new Set(), payload = new Map();
-  for (const entry of entries) {
-    const name = entry.type === "5" ? entry.path.replace(/\/$/, "") : entry.path;
-    const key = process.platform === "win32" ? name.toLowerCase() : name;
-    if (!canonical(name) || seen.has(key) || !["0", "5"].includes(entry.type)) throw new Error("unsafe or duplicate archive member");
-    seen.add(key);
-    if (entry.type === "0") payload.set(name, entry.body);
-  }
-  if (payload.size === 0) throw new Error("empty archive payload");
-  return payload;
+  return tarPayload(gunzipSync(bytes, { maxOutputLength: 256 * 1024 * 1024 }), canonical);
 }
 
 // This adapter enumerates maintained reflection variables and message factories;
@@ -75,12 +65,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   const packageRoot = realpathSync(args.package), authorityRoot = realpathSync(args.authority);
   const runtime = realpathSync(args["dart-home"]), archiver = realpathSync(args.archiver), cache = realpathSync(args.cache);
   const output = qualificationOutput(args.output, [packageRoot, authorityRoot, runtime, archiver, cache, dirname(directory)]);
-  const receiptBytes = readFileSync(join(packageRoot, "generation-receipt.json")), receipt = JSON.parse(receiptBytes);
-  if (receipt.schema !== "acyclic.sdk.dart-producer-receipt.v1" || receipt.target !== "dart" || receipt.authority !== "rust"
-    || !Array.isArray(receipt.outputs)) throw new Error("unsupported generation receipt");
-  const approved = loadAuthority(authorityRoot);
-  if (sha256(approved.bytes) !== receipt.authority_manifest_sha256 || approved.manifest.source_revision !== receipt.source_revision) throw new Error("generation authority differs");
-  if (targets.some(name => !approved.descriptors.has(name))) throw new Error("tested family lacks an attested descriptor");
+  const { receiptBytes, receipt, approved } = readGenerationReceipt(join(packageRoot, "generation-receipt.json"), authorityRoot, "dart", targets);
   const payload = new Map(), metadata = ["pubspec.yaml", "LICENSE", "NOTICE", "authority/rust-authority.json"];
   for (const name of receipt.outputs) {
     if (!canonical(name) || payload.has(name) || (!metadata.includes(name) && !/^lib\/.+\.dart$/.test(name))) throw new Error("unsafe, duplicate or unexpected package output");

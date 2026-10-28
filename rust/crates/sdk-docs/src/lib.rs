@@ -208,7 +208,9 @@ pub struct Family {
 #[derive(Clone, Debug, Deserialize, JsonSchema, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct DocsData {
+    #[schemars(extend("const" = DATA_SCHEMA_VERSION))]
     pub schema: String,
+    #[schemars(extend("const" = DATA_SCHEMA_VERSION))]
     pub schema_version: String,
     pub version: String,
     pub channel: Channel,

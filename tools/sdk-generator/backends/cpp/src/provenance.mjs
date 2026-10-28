@@ -1,11 +1,11 @@
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { canonical, sourceInventory, sha256, within } from "../../../shared/authority.mjs";
+import { canonical, inventory, sha256, within } from "../../../shared/authority.mjs";
 
 function verifyFiles(root, expected) {
   if (!expected || Object.keys(expected).some(name => !canonical(name) || !/^[a-f0-9]{64}$/.test(expected[name]))) throw new Error("unsafe inventory member");
   if (new Set(Object.keys(expected).map(name => name.toLowerCase())).size !== Object.keys(expected).length) throw new Error("inventory has case aliases");
-  if (JSON.stringify(sourceInventory(root)) !== JSON.stringify(Object.keys(expected).sort())) throw new Error("file inventory differs");
+  if (JSON.stringify(inventory(root)) !== JSON.stringify(Object.keys(expected).sort())) throw new Error("file inventory differs");
   for (const [name, digest] of Object.entries(expected)) {
     if (!within(root, realpathSync(join(root, name))) || sha256(readFileSync(join(root, name))) !== digest) throw new Error("inventory file differs: " + name);
   }
