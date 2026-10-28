@@ -45,16 +45,16 @@ function qualifyGate(run) {
 }
 
 export function qualifyMcpLoom(features = ["--features", "hooks,mcp-stdio,mcp-http"], run = spawnSync) {
-  return qualifyLoom("acyclic-harness-core", "mcp-loom", [...features, "--features", "model-checking"], run, {
-    env: loomEnvironment(), targetCfg: [],
+  return qualifyLoom("acyclic-harness-core", "main", [...features, "--features", "model-checking"], run, {
+    env: loomEnvironment(), targetCfg: [], suites: [["mcp_loom::", 6]],
   });
 }
 
 export function qualifySkillMaterializerLoom(run = spawnSync) {
-  return qualifyLoom("acyclic-harness-core", "skill-materializer-loom",
+  return qualifyLoom("acyclic-harness-core", "main",
     ["--features", "filesystem-local,native-execution,test-support"], run, {
       targetCfg: ["--", "--cfg", "loom"], timeout: 9500,
-      filters: ["journal_owner_serializes_first_publications", "former_independent_publishers_can_conflict"],
+      filters: ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::former_independent_publishers_can_conflict"],
     });
 }
 

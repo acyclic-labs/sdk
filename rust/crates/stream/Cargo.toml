@@ -1,4 +1,5 @@
 [package]
+autotests = false
 include = ["Cargo.toml", "build.rs", "README.md", "src/**", "proto/**", "build/**", "vendor/**", "examples/**", "tests/**", "benches/**", "conformance/**", "fixtures/**", "fuzz/corpus/**"]
 name = "acyclic-stream"
 version = "0.2.0"
@@ -123,47 +124,7 @@ workspace = true
 name = "provider-conformance"
 required-features = ["conformance"]
 
-[[test]]
-name = "browser_follow_model"
-path = "tests/browser_follow_model.rs"
-required-features = ["local", "model-checking"]
 
 [[test]]
-name = "client_pool_loom"
-path = "tests/client_pool_loom.rs"
-required-features = ["grpc", "model-checking"]
-
-[[test]]
-name = "client_session_loom"
-path = "tests/client_session_loom.rs"
-required-features = ["local", "model-checking"]
-
-[[test]]
-name = "local_follow_loom"
-path = "tests/local_follow_loom.rs"
-required-features = ["local", "model-checking"]
-
-[[test]]
-name = "local_replay_model"
-path = "tests/local_replay_model.rs"
-required-features = ["local", "model-checking"]
-
-[[test]]
-name = "wave1_loom"
-path = "tests/wave1_loom.rs"
-required-features = ["local", "model-checking"]
-
-[[test]]
-name = "wave1_recovery"
-path = "tests/wave1_recovery.rs"
-required-features = ["local", "conformance"]
-
-[[test]]
-name = "wave1_keys"
-path = "tests/wave1_keys.rs"
-required-features = ["conformance"]
-
-[[test]]
-name = "wave1_coverage"
-path = "tests/wave1_coverage.rs"
-required-features = ["conformance"]
+name = "main"
+path = "tests/main.rs"

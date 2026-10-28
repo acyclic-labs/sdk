@@ -11,6 +11,6 @@ step() {
 }
 step workspace cd "$(dirname "$0")/.."
 step actor-tests cargo test -p acyclic-actors --no-run --locked
-step agent-tests cargo test -p acyclic-harness-core --features filesystem --test agent-model --no-run --locked
+step agent-tests cargo test -p acyclic-harness-core --features filesystem --test main --no-run --locked
 step host-tests cargo test -p acyclic-agent-host-conformance --features local --no-run --locked
 step portable-host cargo check -p acyclic-cloudflare-conformance --target wasm32-unknown-unknown --locked

@@ -62,7 +62,7 @@ def run(label, command, cwd=ROOT, env=None, failure=None, passed=None):
 
 def build(cwd, label):
     log = run(label, ["cargo", "test", "--locked", "-p", "acyclic-harness-core",
-                     "--features", "filesystem", "--lib", "--test", "agent-model",
+                     "--features", "filesystem", "--lib", "--test", "main",
                      "--no-run", "--message-format=json"], cwd)
     artifacts = {}
     for line in log.read_text(errors="replace").splitlines():
@@ -74,7 +74,7 @@ def build(cwd, label):
             exe = Path(item["executable"])
             artifacts[item["target"]["name"]] = str(exe)
             report.setdefault("executables", []).append({"step": label, "path": str(exe), "sha256": sha(exe)})
-    for name in ["acyclic_harness_core", "agent-model"]:
+    for name in ["acyclic_harness_core", "main"]:
         if name not in artifacts:
             refuse(label, "missing Cargo executable " + name)
     return artifacts
@@ -131,7 +131,7 @@ try:
                      "every_record_a_step_writes_fits_its_limit_at_the_configured_maxima",
                      "waiting_host_status_requires_a_bounded_name"]:
             run(name, [binaries["acyclic_harness_core"], name, "--nocapture"], passed=1)
-        run("slot-schedules", [binaries["agent-model"], "slot_schedules::", "--nocapture"], passed=3)
+        run("slot-schedules", [binaries["main"], "agent_model::slot_schedules::", "--nocapture"], passed=3)
         run("affected-check", ["cargo", "check", "--locked", "--all-features", "-p", "acyclic-harness-core",
                                "-p", "acyclic-stream", "-p", "acyclic-contract-derive"])
         changed = variant("host-bound-control", "rust/crates/harness-core/src/agent/records.rs",
@@ -147,7 +147,7 @@ try:
                      "every_record_a_step_writes_fits_its_limit_at_the_configured_maxima",
                      "every_write_family_preserves_digest_admission_and_retry_evidence"]:
             run(name, [binaries["acyclic_harness_core"], name, "--nocapture"], passed=1)
-        run("slot-schedules", [binaries["agent-model"], "slot_schedules::", "--nocapture"], passed=3)
+        run("slot-schedules", [binaries["main"], "agent_model::slot_schedules::", "--nocapture"], passed=3)
         run("explicit-provider-docs", ["cargo", "test", "--locked", "-p", "acyclic-contract-derive",
                                       "--doc", "explicit_provider", "--", "--nocapture"], passed=3)
     elif args.mode in ("docs", "finish", "remaining"):
@@ -180,7 +180,7 @@ try:
     elif args.mode == "mutants":
         for label, path, before, after, target, oracle in [
             ("vacated-control", "rust/crates/harness-core/src/agent/slots.rs",
-             "reserved.saturating_add(1).min(MAX_OPEN_CHILDREN as u16)", "reserved", "agent-model",
+             "reserved.saturating_add(1).min(MAX_OPEN_CHILDREN as u16)", "reserved", "main",
              "a_child_finishing_during_pause_cannot_strand_a_recorded_replay"),
             ("digest-control", "rust/crates/harness-core/src/filesystem/attestation.rs",
              "digest: digest()?", "digest: [0; 32]", "acyclic_harness_core",

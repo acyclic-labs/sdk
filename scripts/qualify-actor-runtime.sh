@@ -12,5 +12,5 @@ step() {
 step workspace cd "$(dirname "$0")/.."
 step compile bash scripts/check-actor-runtime.sh
 step actors cargo test -p acyclic-actors --locked
-step agents cargo test -p acyclic-harness-core --features filesystem --test agent-model --locked
+step agents cargo test -p acyclic-harness-core --features filesystem --test main agent_model:: --locked
 step hosts bash scripts/qualify-host-serving.sh

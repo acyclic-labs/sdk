@@ -97,8 +97,8 @@ try:
     (OUT / 'oracle.rs').write_bytes(TEST.read_bytes())
     step = 'positive_compile_and_test'
     write_json('positive-compiled-source.json', snapshot())
-    executable = build('test', 'positive-compile', 'wave1_coverage')
-    result = run([str(executable), '--nocapture', '--test-threads=1'], 'positive', fast=True)
+    executable = build('test', 'positive-compile', 'main')
+    result = run([str(executable), 'wave1_coverage::', '--nocapture', '--test-threads=1'], 'positive', fast=True)
     need(b'3 passed; 0 failed; 0 ignored;' in result.stdout, 'positive: exactly three selected tests required')
     step = 'endpoint_compile_and_refusal'
     runner = build('build', 'runner-compile', 'wave1-conformance')
@@ -120,8 +120,8 @@ try:
     changes = [name for name in inputs if inputs[name] != mutated_inputs[name]]
     need(changes == [SOURCE.relative_to(ROOT).as_posix()], 'mutation changed other production/test inputs')
     write_json('mutant-compiled-source.json', mutated_inputs)
-    mutant = build('test', 'mutant-compile', 'wave1_coverage')
-    result = run([str(mutant), '--nocapture', '--test-threads=1'], 'mutant', expected=101, fast=True)
+    mutant = build('test', 'mutant-compile', 'main')
+    result = run([str(mutant), 'wave1_coverage::', '--nocapture', '--test-threads=1'], 'mutant', expected=101, fast=True)
     need(b'2 passed; 1 failed; 0 ignored;' in result.stdout and b'qualification_request_refuses_all_unexported_histories ... FAILED' in result.stdout and b'complete HST qualification must refuse unexported histories' in result.stdout + result.stderr, 'mutant must fail the unchanged HST refusal assertion, not setup')
     SOURCE.write_bytes(original)
     need(snapshot() == inputs, 'inputs were not restored exactly')

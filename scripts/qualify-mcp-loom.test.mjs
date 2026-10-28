@@ -6,7 +6,7 @@ import { loomEnvironment, qualificationMain, qualifySkillMaterializerLoom, quali
 import { harnessModelSuites, qualifyHarnessModelsLoom } from "./qualify-mcp-loom.mjs";
 import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
-const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
+const artifact = { reason: "compiler-artifact", target: { name: "main" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
 
 test("filesystem policy qualification requires real cache and authority models in the gate", () => {
@@ -86,10 +86,10 @@ test("skill materializer qualification requires the production owner model and i
     const run = (command, args, options) => {
       if (command === "cargo") {
         assert.deepEqual(args.slice(-3), ["--", "--cfg", "loom"]);
-        assert.ok(args.includes("skill-materializer-loom"));
-        return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "skill-materializer-loom" } }) };
+        assert.ok(args.includes("main"));
+        return { status: 0, stdout: JSON.stringify({ ...artifact, target: { name: "main" } }) };
       }
-      assert.equal(args[0], ["journal_owner_serializes_first_publications", "former_independent_publishers_can_conflict"][models]);
+      assert.equal(args[0], ["skill_materializer_loom::journal_owner_serializes_first_publications", "skill_materializer_loom::former_independent_publishers_can_conflict"][models]);
       assert.equal(args[1], "--exact");
       assert.equal(options.timeout, 9500);
       return { status: 0, stdout: summary(++models === missing ? 0 : 1, 0, 1) };
@@ -231,8 +231,8 @@ test("qualification opts into the crate cfg only for the model build and execute
     return { status: 0, stderr: "", stdout: calls.length === 1 ? JSON.stringify(artifact) : summary(6) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness-core", "--test", "mcp-loom", "--all-features", "--features", "model-checking", "--features", "model-checking"]],
-    ["model-binary", []],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness-core", "--test", "main", "--all-features", "--features", "model-checking", "--features", "model-checking"]],
+    ["model-binary", ["mcp_loom::"]],
   ]);
   const qualification = readFileSync("scripts/qualify-ci.sh", "utf8");
   assertGateStep(["--all-features"]);

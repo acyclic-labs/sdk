@@ -1,11 +1,6 @@
 //! Model the production journal owner, including its pre-fix negative control.
 #![cfg(loom)]
 
-#[path = "../src/sync/owned.rs"]
-pub(crate) mod owned;
-pub(crate) mod sync {
-    pub(crate) use super::owned;
-}
 #[path = "../src/context/skill_materializer.rs"]
 mod skill_materializer;
 
