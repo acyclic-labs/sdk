@@ -67,6 +67,7 @@ impl MemoryStream {
     /// journal in one order, or a store whose incarnation outlives a process,
     /// issue and honour the same tokens.
     #[cfg(any(
+        test,
         feature = "local",
         all(feature = "postgres", not(target_arch = "wasm32"))
     ))]
