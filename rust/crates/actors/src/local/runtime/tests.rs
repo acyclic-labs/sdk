@@ -442,6 +442,7 @@ async fn reopened_alarm_delivery_retains_the_committed_subscription_cut() -> Tes
             path: store.path(&address)?,
             from: 0,
             limit: 16,
+            at_least: Default::default(),
         })
         .await?;
     let mut states = BTreeMap::new();
@@ -501,6 +502,7 @@ async fn records<P: StreamProvider + ?Sized>(
             path,
             from: 0,
             limit: u32::try_from(tail)?.max(1),
+            at_least: Default::default(),
         })
         .await?;
     Ok(stream

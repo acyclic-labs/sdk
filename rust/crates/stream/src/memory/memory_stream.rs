@@ -3,6 +3,9 @@
 pub struct MemoryStream {
     // Lock order: LocalStream visibility -> state -> watch internals.
     state: Arc<RwLock<State>>,
+    /// The one applied-revision authority of this incarnation; advanced under
+    /// the state write guard after each publication.
+    pub(crate) revisions: Arc<crate::AppliedRevisions>,
     operation_claims: Arc<crate::OperationClaims>,
     limits: MemoryLimits,
     /// The trusted clock that deadlines are checked against.
@@ -41,6 +44,7 @@ impl MemoryStream {
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(State::default())),
+            revisions: Arc::new(crate::AppliedRevisions::in_process()),
             operation_claims: Arc::new(crate::OperationClaims::default()),
             limits,
             clock,
@@ -51,6 +55,24 @@ impl MemoryStream {
             retain_pending_read: false,
         }
     }
+    /// Rebinds to an externally owned authority: replicas replaying one shared
+    /// journal in one order, or a store whose incarnation outlives a process,
+    /// issue and honour the same tokens.
+    #[cfg(any(
+        feature = "local",
+        all(feature = "postgres", not(target_arch = "wasm32"))
+    ))]
+    #[must_use]
+    pub(crate) fn with_authority(mut self, scope: crate::RevisionScope, incarnation: u128) -> Self {
+        self.revisions = Arc::new(crate::AppliedRevisions::new(scope, incarnation, 0));
+        self
+    }
+
+    /// Publishes this state's applied revision while the write guard is held.
+    fn applied(&self, state: &State) {
+        self.revisions.advance(state.decision);
+    }
+
     pub(crate) async fn commit_inner(
         &self,
         mut request: CommitRequest,

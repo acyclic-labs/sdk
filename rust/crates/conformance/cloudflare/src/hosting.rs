@@ -214,6 +214,7 @@ pub async fn spawned(factory: js_sys::Function) -> Result<JsValue, JsValue> {
                 path: child.inbox()?,
                 from: 0,
                 limit: 64,
+                at_least: Default::default(),
             })
             .await?
             .try_collect()

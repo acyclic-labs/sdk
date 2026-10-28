@@ -22,7 +22,8 @@ mod error_code_tests {
                 "unavailable",
                 "hierarchy_changed",
                 "deadline_elapsed",
-                "unsupported"
+                "unsupported",
+                "revision_foreign"
             ]
         );
         for error in StreamError::ALL {

@@ -379,6 +379,7 @@ async fn deleting_workspace_preserves_committed_stream_history()
             path: records,
             from: 0,
             limit: u32::try_from(after)?,
+            at_least: Default::default(),
         })
         .await?
         .collect::<Vec<_>>()
@@ -547,6 +548,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
             path: source_lineage,
             from: 0,
             limit: u32::try_from(inherited)?,
+            at_least: Default::default(),
         })
         .await?;
     let mut child_records = streams
@@ -554,6 +556,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
             path: child_lineage,
             from: 0,
             limit: u32::try_from(inherited)?,
+            at_least: Default::default(),
         })
         .await?;
     while let Some(source_record) = source_records.next().await {

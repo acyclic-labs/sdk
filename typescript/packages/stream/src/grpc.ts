@@ -13,7 +13,7 @@ import { grpcErrorCode, projectMemoryResponse } from "../generated/wasm/acyclic_
 import { validateAppend } from "./client.js";
 import { encodeHttpRequest, checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
-import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
+import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation, Revision } from "./types.js";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
@@ -115,7 +115,7 @@ function streamGrpc(options: StreamGrpcOptions) {
 
 /** Existing Stream provider API over native HTTP/2 gRPC in Node and Bun. */
 export class GrpcStreamProvider implements StreamProvider {
-  readonly #client: ReturnType<typeof createStreamGrpcClient>;
+  readonly #client: ReturnType<typeof streamGrpc>["client"];
   readonly #acknowledgeDeliveries: boolean;
   readonly #sessions: StreamSessions;
   constructor(options: StreamGrpcOptions) {
@@ -125,7 +125,11 @@ export class GrpcStreamProvider implements StreamProvider {
     this.#acknowledgeDeliveries = options.acknowledgeDeliveries !== false;
   }
   async #call<T>(operation: string, call: () => Promise<T>): Promise<T> {
-    try { return await call(); } catch (error) { throw providerError(error, operation); }
+    try { return await call(); } catch (error) {
+      const failure = providerError(error, operation);
+      this.#sessions.refused(failure);
+      throw failure;
+    }
   }
   #project<T>(operation: string, bytes: Uint8Array): T {
     try { return projectMemoryResponse(operation, bytes) as T; }
@@ -135,7 +139,10 @@ export class GrpcStreamProvider implements StreamProvider {
     const request = fromBinary(wire.InspectIdempotencyRequestSchema, wireInspectIdempotencyRequest(key));
     const response = await this.#call("inspect_idempotency", () => this.#client.inspectIdempotency(request));
     if (response.observation !== undefined && !sameBytes(response.observation.idempotencyKey, key)) throw new StreamError("invalid_response", "idempotency response names another retry identity");
-    return this.#project("inspect_idempotency", toBinary(wire.InspectIdempotencyResponseSchema, response));
+    const observation: IdempotencyObservation | undefined = this.#project("inspect_idempotency", toBinary(wire.InspectIdempotencyResponseSchema, response));
+    // A recovered write floors later reads exactly like its lost reply would have.
+    this.#sessions.observe(observation?.revision);
+    return observation;
   }
   async head(path: string): Promise<import("./types.js").PathHead> {
     const request = { kind: "head" as const, path };
@@ -145,7 +152,11 @@ export class GrpcStreamProvider implements StreamProvider {
   }
   async tail(path: string): Promise<bigint> {
     await validateWireRequest({ kind: "tail", path });
-    return (await this.#call("tail", () => this.#client.tail(fromBinary(wire.TailRequestSchema, wireRequest({ kind: "tail", path }))))).tail;
+    const atLeast = this.#sessions.revisionFloor();
+    const request = wireRequest({ kind: "tail", path, atLeast });
+    const response = await this.#call("tail", () => this.#client.tail(fromBinary(wire.TailRequestSchema, request)));
+    this.#sessions.served(atLeast, response.applied);
+    return response.tail;
   }
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> {
     const records = values.map(value => value.slice());
@@ -153,20 +164,26 @@ export class GrpcStreamProvider implements StreamProvider {
     await validateAppend(path, records, authored);
     const request = fromBinary(wire.AppendRequestSchema, wireAppendRequest(path, records, authored));
     const response = await this.#call("append", () => this.#client.append(request));
-    return this.#project("append", toBinary(wire.AppendResponseSchema, response));
+    const result = this.#project<AppendResult>("append", toBinary(wire.AppendResponseSchema, response));
+    if (result.ok) this.#sessions.observe(result.revision);
+    return result;
   }
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> {
     const request = { kind: "fork" as const, source, destination, ...(options === undefined ? {} : { options: structuredClone(options) }) };
     await validateWireRequest(request);
     const response = await this.#call("fork", () => this.#client.fork(fromBinary(wire.ForkRequestSchema, wireRequest(request))));
-    return this.#project("fork", toBinary(wire.ForkReceiptSchema, response));
+    const receipt = this.#project<ForkReceipt>("fork", toBinary(wire.ForkReceiptSchema, response));
+    this.#sessions.observe(receipt.revision);
+    return receipt;
   }
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
     const request = { kind: "read" as const, path, from: options.from, limit: options.limit };
     await validateWireRequest(request);
     const controller = new AbortController();
     try {
-      yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)), { signal: controller.signal }), request.from, request.limit);
+      const atLeast = this.#sessions.revisionFloor();
+      const input = wireRequest({ ...request, atLeast });
+      yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, input), { signal: controller.signal }), request.from, request.limit, undefined, atLeast);
     } finally { controller.abort(); }
   }
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
@@ -182,10 +199,14 @@ export class GrpcStreamProvider implements StreamProvider {
     yield* this.#sessions.follow(path, authored);
   }
   async *#frames(operation: string, frames: AsyncIterable<wire.ReadResponse>, next: bigint,
-    remaining?: number, signal?: AbortSignal): AsyncIterable<EncodedRecord> {
+    remaining?: number, signal?: AbortSignal, atLeast?: readonly Revision[]): AsyncIterable<EncodedRecord> {
+    // The first frame carries the read's applied revision; it must prove the minimum sent.
+    let minimum = atLeast;
     try {
       for await (const response of frames) {
         if (signal?.aborted) return;
+        if (minimum !== undefined) { this.#sessions.served(minimum, response.applied); minimum = undefined; }
+        else this.#sessions.observe(response.applied);
         const values = readResponseRecords(response);
         if (remaining !== undefined && values.length > remaining) throw new StreamError("invalid_response", "read exceeds requested limit");
         const records = values.map((value, index) => checkedRecord(value, next + BigInt(index)));
@@ -196,8 +217,13 @@ export class GrpcStreamProvider implements StreamProvider {
           yield record;
         }
       }
+      // A reply that ends before its first frame proves no minimum.
+      if (minimum !== undefined && !signal?.aborted) this.#sessions.served(minimum, undefined);
     } catch (error) {
-      if (!signal?.aborted) throw providerError(error, operation);
+      if (signal?.aborted) return;
+      const failure = providerError(error, operation);
+      this.#sessions.refused(failure);
+      throw failure;
     }
   }
 
@@ -215,7 +241,9 @@ export class GrpcStreamProvider implements StreamProvider {
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
     const input = await normalizeWireCommitBytes(structuredClone(request), structuredClone(options));
     const response = await this.#call("commit", () => this.#client.commit(fromBinary(wire.CommitRequestSchema, input)));
-    return this.#project("commit", toBinary(wire.CommitResponseSchema, response));
+    const result = this.#project<CommitResult>("commit", toBinary(wire.CommitResponseSchema, response));
+    if (result.ok) this.#sessions.observe(result.revision);
+    return result;
   }
   async readCommit(id: CommitId): Promise<CommittedEnvelope> {
     const request = fromBinary(wire.ReadCommitRequestSchema, wireReadCommitRequest(id));
@@ -243,7 +271,7 @@ function providerError(error: unknown, operation: string): Error {
     case Code.ResourceExhausted: code = "capacity_exhausted"; break;
     case Code.Unimplemented: if (reason === "unsupported_capability") code = "unsupported"; break;
     case Code.FailedPrecondition:
-      if (reason === "hierarchy_changed" || reason === "idempotency_mismatch" || reason === "prefix_not_retained" || reason === "deadline_elapsed") code = reason;
+      if (reason === "hierarchy_changed" || reason === "idempotency_mismatch" || reason === "prefix_not_retained" || reason === "deadline_elapsed" || reason === "revision_foreign") code = reason;
       break;
   }
   if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";

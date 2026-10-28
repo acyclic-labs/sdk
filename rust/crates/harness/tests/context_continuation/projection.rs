@@ -249,6 +249,7 @@ pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_e
             path: path.clone(),
             from: 0,
             limit: 1,
+            at_least: Default::default(),
         })
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;

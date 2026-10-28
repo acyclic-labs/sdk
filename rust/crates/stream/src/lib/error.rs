@@ -46,11 +46,14 @@ pub enum StreamError {
     /// The provider cannot supply a required semantic capability.
     #[error("stream capability unsupported")]
     Unsupported,
+    /// A minimum revision names another authority scope or incarnation.
+    #[error("stream revision belongs to another authority or incarnation")]
+    RevisionForeign,
 }
 
 impl StreamError {
     /// Every failure, in canonical code order.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::InvalidResponse,
         Self::InvalidPath,
         Self::InvalidArgument,
@@ -66,6 +69,7 @@ impl StreamError {
         Self::HierarchyChanged,
         Self::DeadlineElapsed,
         Self::Unsupported,
+        Self::RevisionForeign,
     ];
 
     /// Stable `snake_case` code shared by the HTTP, gRPC, and WASM transports.
@@ -87,6 +91,7 @@ impl StreamError {
             Self::HierarchyChanged => "hierarchy_changed",
             Self::DeadlineElapsed => "deadline_elapsed",
             Self::Unsupported => "unsupported",
+            Self::RevisionForeign => "revision_foreign",
         }
     }
 

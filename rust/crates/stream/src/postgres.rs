@@ -87,6 +87,16 @@ impl PostgresStream {
             .await
             .map_err(unavailable)?;
         client.batch_execute(SCHEMA).await.map_err(unavailable)?;
+        // The first opener installs the generation; every later replica reads it.
+        let generation: Vec<u8> = client
+            .query_one(
+                "INSERT INTO acyclic_stream_generation(namespace, generation) VALUES ($1, $2)                  ON CONFLICT (namespace) DO UPDATE SET generation = acyclic_stream_generation.generation                  RETURNING generation",
+                &[&namespace, &uuid::Uuid::new_v4().as_bytes().as_slice()],
+            )
+            .await
+            .map_err(unavailable)?
+            .get(0);
+        let generation = <[u8; 16]>::try_from(generation.as_slice()).map_err(unavailable)?;
         let publish = client
             .prepare(
                 "SELECT revision, at_millis, accepted FROM acyclic_stream_publish($1,$2,$3,$4,$5)",
@@ -127,10 +137,21 @@ impl PostgresStream {
         let clock = Arc::new(Clock::default());
         // Both planning and recorded admission use the transaction's database
         // clock. A process wall-clock skew cannot override SQL admission.
+        // Every process replays the namespace journal in one order, so all
+        // replicas share its scope, its generation and revision indexes. The
+        // scope comes from the database's own generation row, never from
+        // connection settings: replicas that reach one database through
+        // different credentials, hosts or parameters share one scope.
+        let mut location = generation.to_vec();
+        location.extend_from_slice(namespace.as_bytes());
         let core = MemoryStream::new_with_commit_clock(
             MemoryLimits::default(),
             clock.clone(),
             clock.clone(),
+        )
+        .with_authority(
+            crate::AppliedRevisions::storage_scope("postgres", &location),
+            u128::from_be_bytes(generation),
         );
         let (failure, _) = watch::channel(false);
         let inner = Arc::new(Inner {
@@ -182,6 +203,8 @@ impl PostgresStream {
     fn fail(&self) {
         self.inner.failed.store(true, Ordering::Release);
         self.inner.failure.send_replace(true);
+        // Parked revision waits end too: this replica serves nothing more.
+        self.inner.core.revisions.close();
     }
 
     fn check(&self) -> Result<(), StreamError> {
@@ -461,6 +484,15 @@ impl StreamProvider for PostgresStream {
             Outcome::Commit(value) => Ok(value),
             _ => Err(StreamError::InvalidResponse),
         }
+    }
+    async fn wait_applied(
+        &self,
+        at_least: &crate::RevisionCut,
+    ) -> Result<crate::Revision, StreamError> {
+        // A token was issued after its publication reached the journal, so a
+        // refreshed replica covers it.
+        self.refresh().await?;
+        self.inner.core.wait_applied(at_least).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.refresh().await?;

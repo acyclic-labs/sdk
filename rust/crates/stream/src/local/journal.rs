@@ -6,7 +6,27 @@ impl Journal {
         span: &tracing::Span,
     ) -> Result<Self, LocalStreamError> {
         let claim = lock_root(root, limits)?;
-        let epoch = match read_snapshot(root, limits)? {
+        let snapshot = read_snapshot(root, limits)?;
+        let journal_bytes = match std::fs::metadata(root.join(JOURNAL_FILE)) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(error.into()),
+        };
+        // A store holding no snapshot and no whole journal header has issued
+        // no publication, so it starts a new incarnation.
+        let fresh = snapshot.is_none() && journal_bytes < HEADER_BYTES as u64;
+        // The scope names the directory itself, not the spelling used to open
+        // it, so a relative, absolute or linked path keeps saved revisions.
+        let scope = crate::AppliedRevisions::storage_scope(
+            "local",
+            std::fs::canonicalize(root)?.as_os_str().as_encoded_bytes(),
+        );
+        blocking_send(
+            recovered,
+            Recovered::Incarnation(scope, incarnation(root, fresh)?),
+        )
+        .map_err(|_| LocalStreamError::Executor)?;
+        let epoch = match snapshot {
             Some(snapshot) => {
                 blocking_send(
                     recovered,
@@ -48,6 +68,7 @@ impl Journal {
             syncing: false,
             root: root.to_path_buf(),
             torn_tail: None,
+            volatile: false,
             #[cfg(feature = "test-support")]
             flushed: 0,
         };
@@ -293,6 +314,10 @@ impl Journal {
         frame: &mut PreparedFrame,
         required: bool,
     ) -> Result<(), LocalStreamError> {
+        if !self.volatile && (!required || self.limits.durability == LocalDurability::Barrier) {
+            forget_incarnation(&self.root)?;
+            self.volatile = true;
+        }
         let offset = self.bytes;
         self.file.lease()?.write(|file| {
             Ok(frame.write(&mut acyclic_native_runtime::WriteAt::new(file, offset)))

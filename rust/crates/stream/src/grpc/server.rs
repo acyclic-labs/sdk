@@ -88,45 +88,9 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
     ) -> Result<Response<wire::TailResponse>, Status> {
         unary(serve_span!("tail"), async {
             check_command_size(&request)?;
-            let request = request.into_inner();
-            let path = path(request.path).map_err(|error| error_status(&error))?;
-            if request.accepted {
-                if let Some(through) = request.durable_through {
-                    let receipt = self
-                        .provider
-                        .durable_receipt(path.clone(), through)
-                        .await
-                        .map_err(|error| error_status(&error))?;
-                    let accepted = self
-                        .provider
-                        .watermarks(path)
-                        .await
-                        .map_err(|error| error_status(&error))?
-                        .accepted;
-                    return Ok(wire::TailResponse {
-                        tail: accepted,
-                        durable: Some(receipt.map_or(0, |receipt| receipt.through())),
-                    });
-                }
-                let watermarks = self
-                    .provider
-                    .watermarks(path)
-                    .await
-                    .map_err(|error| error_status(&error))?;
-                return Ok(wire::TailResponse {
-                    tail: watermarks.accepted,
-                    durable: Some(watermarks.durable),
-                });
-            }
-            let tail = self
-                .provider
-                .tail(path)
+            wire_codec::tail_response(&*self.provider, request.into_inner())
                 .await
-                .map_err(|error| error_status(&error))?;
-            Ok(wire::TailResponse {
-                tail,
-                durable: None,
-            })
+                .map_err(|error| error_status(&error))
         })
         .await
     }
@@ -169,17 +133,34 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         streaming(span.clone(), async {
             check_command_size(&request)?;
             let request = request.into_inner();
-            let request = ReadRequest {
-                path: path(request.path).map_err(|error| error_status(&error))?,
-                from: request.from,
-                limit: request.limit,
-            };
+            let request =
+                wire_codec::read_from_wire(request).map_err(|error| error_status(&error))?;
+            let waited = crate::revision::served(&*self.provider, &request.at_least)
+                .await
+                .map_err(|error| error_status(&error))?;
             let records = self
                 .provider
                 .read(request)
                 .await
                 .map_err(|error| error_status(&error))?;
-            let records = records.map(record_frame);
+            let mut applied = crate::revision::captured(&*self.provider, waited)
+                .await
+                .map_err(|error| error_status(&error))?
+                .as_ref()
+                .map(wire_codec::revision_to_wire);
+            let mut records = records.peekable();
+            if std::pin::Pin::new(&mut records).peek().await.is_none() {
+                // An empty read still reports the revision it was served at.
+                let mut frame = read_response_wire(Vec::new());
+                frame.applied = applied;
+                return Ok(observe_body(&span, stream::iter([Ok(frame)])).boxed());
+            }
+            let records = records.map(move |record| {
+                record_frame(record).map(|mut frame| {
+                    frame.applied = applied.take();
+                    frame
+                })
+            });
             Ok(observe_body(&span, records).boxed())
         })
         .await

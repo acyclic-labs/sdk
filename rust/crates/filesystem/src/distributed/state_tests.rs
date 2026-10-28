@@ -397,6 +397,7 @@ async fn local_retry_refusals_preserve_lost_ack_commit_and_collection_hold() -> 
     };
     let outcome = CommitOutcome::Committed(acyclic_stream::CommitReceipt::project(
         &envelope,
+        observed.revision.ok_or("missing revision")?,
         Vec::with_capacity(envelope.mutations.len()),
         Vec::with_capacity(envelope.mutations.len()),
         |_, _| Ok::<(), StreamError>(()),

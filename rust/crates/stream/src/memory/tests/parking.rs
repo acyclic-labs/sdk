@@ -28,6 +28,7 @@ async fn unpolled_streams_do_not_block_appends() {
                         preceding: Some(seed.commit_id),
                         filter: crate::FollowFilter::default(),
                         progress: false,
+                        at_least: Default::default(),
                     })
                     .map_ok(crate::records_only)
                     .await

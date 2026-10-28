@@ -470,6 +470,7 @@ impl DurableContextProvider {
                 path: self.path.clone(),
                 from,
                 limit: 1,
+                at_least: Default::default(),
             })
             .await
             .map_err(|error| context_stream_error(error, io))?;

@@ -105,6 +105,7 @@ async fn composed_merge(stale: bool, native: bool) -> TestResult {
                     .get()
                     + 1,
                 limit: 2,
+                at_least: Default::default(),
             })
             .await?
             .try_collect()

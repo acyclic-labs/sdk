@@ -258,6 +258,7 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
                 path: path.clone(),
                 from: sequence,
                 limit: 1,
+                at_least: Default::default(),
             })
             .await
             .map_err(Error::Stream)?;

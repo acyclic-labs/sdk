@@ -140,6 +140,7 @@ async fn checked_follow_confirms_the_provider_guard_and_refuses_only_a_bad_chann
             path: StreamPath::new("events")?,
             from: 0,
             limit: 1,
+            at_least: Default::default(),
         })
         .await?;
     let anchor = read.next().await.ok_or("missing anchor")??.commit_id;

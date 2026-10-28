@@ -48,6 +48,7 @@ fuzz_target!(|input: &[u8]| {
                 let opened = wire::SessionOpened {
                     resume: Some(resume),
                     preceding_commit_id: follow.preceding_commit_id,
+                    applied: None,
                 };
                 assert!(confirm_follow(Some(anchor), &opened).is_ok());
             }

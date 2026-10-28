@@ -227,6 +227,7 @@ impl<P: StreamProvider + ?Sized + 'static> Agents<P> {
             path: agent.inbox()?,
             from,
             limit,
+            at_least: Default::default(),
         };
         let mut records = self
             .store

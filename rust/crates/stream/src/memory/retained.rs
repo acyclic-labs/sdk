@@ -6,6 +6,8 @@ struct Retained {
     replay_height: u8,
     commit_branch: Option<CommitBranch>,
     digest: [u8; 32],
+    /// The publication's revision index.
+    index: u64,
     result: IdempotencyOutcome,
     envelope: Option<CommittedEnvelope>,
     _allocation: Allocation,

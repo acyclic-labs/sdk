@@ -175,6 +175,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
                 path: path.clone(),
                 from: 0,
                 limit: 1,
+                at_least: Default::default(),
             })
             .await?
             .next()
@@ -188,7 +189,8 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
                     from: 1,
                     preceding: Some(CommitId::from_bytes([42; 32])),
                     filter: crate::FollowFilter::default(),
-                    progress: false
+                    progress: false,
+                    at_least: Default::default(),
                 })
                 .map_ok(crate::records_only)
                 .await,
@@ -201,6 +203,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
                 preceding: Some(anchor),
                 filter: crate::FollowFilter::default(),
                 progress: false,
+                at_least: Default::default(),
             })
             .map_ok(crate::records_only)
             .await?;

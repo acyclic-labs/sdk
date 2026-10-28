@@ -15,7 +15,7 @@ pub(super) fn verify(release_only: bool) {
         let source = futures::stream::poll_fn(move |_| {
             if !opened {
                 opened = true;
-                return Poll::Ready(Some((identity, Ok(Event::Opened(None)))));
+                return Poll::Ready(Some((identity, Ok(Event::Opened(None, None)))));
             }
             // This relaxed observation identifies a coalesced publication. It
             // provides no acquire edge: visibility must come from Wake::recheck.
@@ -50,7 +50,7 @@ pub(super) fn verify(release_only: bool) {
         let mut cx = Context::from_waker(&waker);
         assert!(matches!(
             sources.poll((true, true, true), &mut cx),
-            Poll::Ready(Ok(Some((_, Ok(Event::Opened(_))))))
+            Poll::Ready(Ok(Some((_, Ok(Event::Opened(..))))))
         ));
         // Drain the original hint but leave queued==1, exactly the boundary
         // before recheck. The publisher's second wake can join that hint.

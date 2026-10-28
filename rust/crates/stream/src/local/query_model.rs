@@ -47,6 +47,8 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
         syncing: false,
         root: PathBuf::new(),
         torn_tail: None,
+        // The model journal has no root and no incarnation record to forget.
+        volatile: true,
         _ownership_anchor: None,
         #[cfg(feature = "test-support")]
         flushed: 0,
@@ -128,6 +130,7 @@ pub(crate) fn accepted_queries_and_publication_have_no_lost_wakeup_or_durability
                     preceding: Some(seed.commit_id),
                     filter: crate::FollowFilter::default(),
                     progress: false,
+                    at_least: Default::default(),
                 })
                 .map_ok(crate::records_only)
                 .await?;
@@ -184,6 +187,7 @@ pub(crate) fn poison_wakes_checked_followers(omit_publication: bool) {
                     preceding: Some(seed.commit_id),
                     filter: crate::FollowFilter::default(),
                     progress: false,
+                    at_least: Default::default(),
                 })
                 .map_ok(crate::records_only)
                 .await
@@ -228,6 +232,7 @@ pub(crate) fn persist_wakes_parked_followers(omit_wake: bool) {
                     preceding: Some(seed.commit_id),
                     filter: crate::FollowFilter::default(),
                     progress: false,
+                    at_least: Default::default(),
                 })
                 .map_ok(crate::records_only),
         )?;

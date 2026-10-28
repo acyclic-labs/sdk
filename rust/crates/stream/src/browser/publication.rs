@@ -118,6 +118,7 @@ impl Before {
                                 path: path.clone(),
                                 from: next,
                                 limit: crate::wire::StreamLimit::MaxItems as u32,
+                                at_least: Default::default(),
                             })
                             .await?;
                         let initial = next;

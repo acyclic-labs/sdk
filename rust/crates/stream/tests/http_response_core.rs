@@ -42,6 +42,11 @@ fn commit_encoder_emits_compact_receipt() -> Result<(), Box<dyn std::error::Erro
                     tail: 1,
                 }],
                 forks: vec![],
+                revision: Some(wire::Revision {
+                    scope: Bytes::from(vec![2; 16]),
+                    incarnation: Bytes::from(vec![3; 16]),
+                    index: 1,
+                }),
             },
         )),
     };

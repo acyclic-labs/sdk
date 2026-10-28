@@ -86,6 +86,9 @@ pub struct Client {
     admissions: Arc<Admissions>,
     attempt_epoch: Arc<AtomicU64>,
     abandoned: Arc<gate::Gate>,
+    /// Last observed revision per authority: raised by receipts and every
+    /// served open, forwarded as the floor of every read and follow.
+    revisions: Arc<crate::RevisionTracker>,
 }
 struct Delivery {
     before: Option<wire::SessionFrame>,
@@ -211,6 +214,9 @@ struct Link {
     revision: u64,
     applied_revision: u64,
     released: wire::SessionWindow,
+    /// Revisions this node has served on an open; it has applied them, so
+    /// later opens on this session need not carry them.
+    served: crate::RevisionCut,
 }
 struct Pool {
     credentials: BTreeMap<u32, Bytes>,
@@ -235,6 +241,7 @@ struct Pool {
     removed: Arc<signal::Signal<u64>>,
     released: ReleaseSender,
     release_sender: ReleaseSender,
+    revisions: Arc<crate::RevisionTracker>,
 }
 impl Route {
     fn live(&self) -> bool {
@@ -265,6 +272,17 @@ impl Client {
         channel: Endpoint,
         connect: std::sync::Arc<transport::Connect>,
         executor: std::sync::Arc<dyn crate::runtime::Executor>,
+    ) -> Self {
+        Self::tracking(channel, connect, executor, Arc::default())
+    }
+
+    /// Like [`Self::with_transport`], raising `revisions`, which outlives this
+    /// pool: a credential change opens a new pool but keeps read-your-writes.
+    pub(crate) fn tracking(
+        channel: Endpoint,
+        connect: std::sync::Arc<transport::Connect>,
+        executor: std::sync::Arc<dyn crate::runtime::Executor>,
+        revisions: Arc<crate::RevisionTracker>,
     ) -> Self {
         let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
         let connections = super::Connections::new();
@@ -298,6 +316,7 @@ impl Client {
             removed: Arc::clone(&removed),
             released: Arc::clone(&release_sender),
             release_sender,
+            revisions: Arc::clone(&revisions),
         };
         executor.spawn(Box::pin(async move {
             if let Err(error) = pool.run().await {
@@ -314,7 +333,14 @@ impl Client {
             admissions,
             attempt_epoch,
             abandoned,
+            revisions,
         }
+    }
+    /// This pool's revision tracker; transports record their receipts here so
+    /// every later session read and follow covers them.
+    #[must_use]
+    pub fn revisions(&self) -> &Arc<crate::RevisionTracker> {
+        &self.revisions
     }
     /// Registers or renews a bounded capability slot on every physical session.
     /// Empty bytes drop it. Registration is ordered before subsequent opens;
@@ -376,11 +402,13 @@ impl Client {
         acknowledge: bool,
     ) -> Result<RecordStream, StreamError> {
         crate::memory::validate_limit(request.limit)?;
+        // The pool adds the tracked floor on every physical open.
         let follow = wire::SessionFollow {
             resource: crate::wire_codec::session::stream_resource(request.path.as_str()),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: Bytes::new(),
             until: request.from.saturating_add(u64::from(request.limit)),
+            at_least: crate::wire_codec::cut_to_wire(&request.at_least),
         };
         let mut records = super::runtime::boxed(
             self.follow_data_with_ack(
@@ -410,31 +438,51 @@ impl Client {
         request: crate::FollowRequest,
         acknowledge: bool,
     ) -> Result<crate::FollowStream, StreamError> {
-        let crate::FollowRequest {
-            path,
-            from,
-            preceding,
-            filter,
-            progress,
-        } = request;
-        let kind = Kind::Follow(wire::SessionFollow {
-            resource: crate::wire_codec::session::stream_resource(path.as_str()),
-            delivery: wire::SessionDelivery::All as i32,
-            preceding_commit_id: preceding
-                .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
-            until: 0,
-        });
+        Ok(super::runtime::boxed(
+            self.follow_updates(request, acknowledge).await?,
+        ))
+    }
+    /// Follows only records, boxed once and carrying no state beyond the
+    /// subscription: the typed form of [`Self::follow`] without progress.
+    pub async fn follow_records(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<RecordStream, StreamError> {
+        let filter = Some(request.filter.transport_filter()?);
+        let from = request.from;
+        Ok(super::runtime::boxed(
+            self.open_subscription(follow_kind(request), cursor(from), true, false, filter, 0)
+                .await?
+                .map(|item| match item? {
+                    Received::Data(data) => match data.item {
+                        Some(Item::Record(record)) => wire_codec::record(record),
+                        _ => Err(StreamError::Unavailable),
+                    },
+                    _ => Err(StreamError::Unavailable),
+                }),
+        ))
+    }
+    async fn follow_updates(
+        &self,
+        request: crate::FollowRequest,
+        acknowledge: bool,
+    ) -> Result<
+        impl futures::Stream<Item = Result<crate::FollowUpdate, StreamError>> + 'static + use<>,
+        StreamError,
+    > {
+        let filter = Some(request.filter.transport_filter()?);
+        let (from, progress) = (request.from, request.progress);
         let source = self
             .open_subscription(
-                kind,
+                follow_kind(request),
                 cursor(from),
                 acknowledge,
                 progress,
-                Some(filter.transport_filter()?),
+                filter,
                 0,
             )
             .await?;
-        Ok(super::runtime::boxed(source.filter_map(move |item| {
+        Ok(source.filter_map(move |item| {
             future::ready(match item {
                 Ok(Received::Data(data))
                 | Ok(Received::Frame(wire::SessionFrame {
@@ -464,7 +512,7 @@ impl Client {
                 Ok(_) => Some(Err(StreamError::Unavailable)),
                 Err(error) => Some(Err(error)),
             })
-        })))
+        }))
     }
     /// Follows ALL records or LATEST values on the shared per-node session,
     /// retaining the exact data cursor and accepted/durable watermarks.
@@ -552,9 +600,12 @@ impl Client {
             return Err(StreamError::InvalidArgument);
         }
         let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
-        let kind = subscription.kind.ok_or(StreamError::InvalidArgument)?;
-        match &kind {
-            Kind::Follow(follow) => wire_codec::session::validate_follow(follow, &resume)?,
+        let mut kind = subscription.kind.ok_or(StreamError::InvalidArgument)?;
+        match &mut kind {
+            Kind::Follow(follow) => {
+                wire_codec::session::validate_follow(follow, &resume)?;
+                wire_codec::cut_from_wire(follow.at_least.clone())?;
+            }
             _ => return Err(StreamError::Unsupported),
         }
         Ok(super::runtime::boxed(
@@ -715,4 +766,19 @@ impl Drop for Cursor {
         self.client.active.fetch_sub(1, Ordering::AcqRel);
         let _ = self.client.removed.send(self.id);
     }
+}
+
+/// One follow's subscription kind. It carries only the caller's explicit
+/// minimum; the pool adds the tracked floor on every physical open, so a
+/// resume never lowers it.
+fn follow_kind(request: crate::FollowRequest) -> Kind {
+    Kind::Follow(wire::SessionFollow {
+        resource: crate::wire_codec::session::stream_resource(request.path.as_str()),
+        delivery: wire::SessionDelivery::All as i32,
+        preceding_commit_id: request
+            .preceding
+            .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
+        until: 0,
+        at_least: crate::wire_codec::cut_to_wire(&request.at_least),
+    })
 }

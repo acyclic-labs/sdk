@@ -30,6 +30,7 @@ async fn point_read(
             path: path.clone(),
             from: sequence,
             limit: 1,
+            at_least: Default::default(),
         })
         .await?
         .collect::<Vec<_>>()
@@ -48,6 +49,7 @@ async fn point_read(
                 path: path.clone(),
                 from: sequence,
                 limit: 1,
+                at_least: Default::default(),
             },
             meter.original(),
         )
@@ -118,6 +120,7 @@ async fn assert_records(
                 path: path.clone(),
                 from: from as u64,
                 limit: 3,
+                at_least: Default::default(),
             })
             .await?
             .collect::<Vec<_>>()
@@ -143,6 +146,7 @@ async fn assert_records(
                     path: path.clone(),
                     from: from as u64,
                     limit: 3,
+                    at_least: Default::default(),
                 },
                 meter.original(),
             )

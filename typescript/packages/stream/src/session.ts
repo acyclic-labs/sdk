@@ -3,7 +3,8 @@ import * as wire from "../generated/proto/stream/v1/session_pb.js";
 import { WasmSession, type WasmFollow } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, validateSequenceValue, streamResource } from "./contract.js";
 import { streamError } from "./wasm-error.js";
-import { commitId, type EncodedRecord, type FollowOptions } from "./types.js";
+import { RevisionSchema } from "../generated/proto/stream/v1/stream_pb.js";
+import { StreamError, commitId, type EncodedRecord, type FollowOptions, type Revision } from "./types.js";
 
 export interface SessionTransport {
   readonly incoming: AsyncIterable<wire.SessionFrame>;
@@ -41,6 +42,28 @@ export class StreamSessions {
         close() { transport.close(); },
       };
     }, acknowledge);
+  }
+
+  /** The pool's read-your-writes floor: one revision per observed authority, never a max. */
+  revisionFloor(): Revision[] {
+    return (this.#inner.revisionFloor() as Uint8Array[]).map(bytes => fromBinary(RevisionSchema, bytes));
+  }
+
+  /** Raises the floor with a revision a receipt or response served; lower revisions never lower it. */
+  observe(revision: Revision | undefined): void {
+    if (revision !== undefined) this.#inner.observeRevision(toBinary(RevisionSchema, create(RevisionSchema, revision)));
+  }
+
+  /** Accepts a direct read or tail reply served against `minimum`: its applied revision must prove it, then raises the floor. */
+  served(minimum: readonly Revision[], applied: Revision | undefined): void {
+    const encode = (revision: Revision) => toBinary(RevisionSchema, create(RevisionSchema, revision));
+    try { this.#inner.servedRevision(minimum.map(encode), applied === undefined ? undefined : encode(applied)); }
+    catch (error) { throw streamError(error, "session"); }
+  }
+
+  /** Drops the floor after an authority refused it as foreign. */
+  refused(error: unknown): void {
+    if (error instanceof StreamError && error.code === "revision_foreign") this.#inner.revisionRefused();
   }
 
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {

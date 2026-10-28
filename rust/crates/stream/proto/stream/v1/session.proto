@@ -97,6 +97,8 @@ message SessionFollow {
   // Once opened, a bounded read fails on connection loss or placement moves;
   // it must not resume by re-resolving its end against a different snapshot.
   uint64 until = 4;
+  // Minimum cut, one entry per authority; every resume carries the same floor.
+  repeated Revision at_least = 5;
 }
 message SessionCursor {
   uint64 next = 1; // exclusive, next record / actor frame offset
@@ -109,6 +111,8 @@ message SessionOpened {
   // Empty/mismatched confirmation means Unsupported for that logical channel;
   // an older peer must never silently downgrade a checked follow to unchecked.
   bytes preceding_commit_id = 2;
+  // The applied revision this open was served at; covers SessionFollow.at_least.
+  Revision applied = 3;
 }
 message SessionData {
   SessionCursor after = 1;

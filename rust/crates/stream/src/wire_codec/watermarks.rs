@@ -25,9 +25,9 @@ mod tests {
             accepted in any::<u64>(), durable in proptest::option::of(any::<u64>()),
             through in proptest::option::of(any::<u64>()),
         ) {
-            let request = wire::TailRequest { path: "agents/new".into(), accepted: accepted % 2 == 0, durable_through: through };
+            let request = wire::TailRequest { path: "agents/new".into(), accepted: accepted % 2 == 0, durable_through: through, at_least: Default::default() };
             prop_assert_eq!(wire::TailRequest::decode(request.encode_to_vec().as_slice()).unwrap(), request);
-            let wire = wire::TailResponse { tail: accepted, durable };
+            let wire = wire::TailResponse { tail: accepted, durable, applied: None };
             let decoded = wire::TailResponse::decode(wire.encode_to_vec().as_slice()).unwrap();
             prop_assert_eq!(&decoded, &wire);
             let expected = match durable {

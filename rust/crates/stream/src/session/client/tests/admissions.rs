@@ -17,6 +17,7 @@ fn ended_sibling(channel: &TransportChannel) -> (Pool, Cursor, Cursor) {
         admissions: Arc::clone(&pool.admissions),
         attempt_epoch: Arc::clone(&pool.attempt_epoch),
         abandoned: Arc::clone(&pool.abandoned),
+        revisions: Arc::clone(&pool.revisions),
     };
     let a = client
         .cursor(

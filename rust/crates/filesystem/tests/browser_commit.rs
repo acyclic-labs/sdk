@@ -125,6 +125,7 @@ async fn browser_disjoint_transactions_use_the_canonical_group_and_original_rece
             path,
             from: before,
             limit: 2,
+            at_least: Default::default(),
         })
         .await
         .map_err(js_error)?

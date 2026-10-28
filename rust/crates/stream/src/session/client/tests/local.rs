@@ -27,7 +27,8 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
                     from: 1,
                     preceding: Some(crate::CommitId::from_bytes([42; 32])),
                     filter: crate::FollowFilter::default(),
-                    progress: false
+                    progress: false,
+                    at_least: Default::default(),
                 })
                 .map_ok(crate::records_only)
                 .await,
@@ -40,6 +41,7 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
                 preceding: Some(first.commit_id),
                 filter: crate::FollowFilter::default(),
                 progress: false,
+                at_least: Default::default(),
             })
             .map_ok(crate::records_only)
             .await?;

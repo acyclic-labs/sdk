@@ -130,7 +130,12 @@ async fn observe(
         read_limit,
         ..Meter::default()
     });
-    let request = ReadRequest { path, from, limit };
+    let request = ReadRequest {
+        path,
+        from,
+        limit,
+        at_least: Default::default(),
+    };
     meter_trace::begin();
     let _order = reorder.then(meter_trace::reorder_recordings);
     let result = if old {

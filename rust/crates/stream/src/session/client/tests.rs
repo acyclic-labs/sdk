@@ -406,6 +406,7 @@ async fn cancelling_a_queued_open_does_not_leave_an_idle_subscription() -> TestR
         None,
         None,
         None,
+        Default::default(),
     );
     client.register_credential(0, crate::session::testing::credential())?;
     let mut cancelled = Box::pin(

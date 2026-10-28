@@ -167,6 +167,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     path,
                     from,
                     limit: 1,
+                    at_least: Default::default(),
                 },
                 work,
             )

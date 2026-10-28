@@ -16,6 +16,23 @@ enum StreamLimit {
   STREAM_LIMIT_MAX_PATH_BYTES = 65535;
 }
 
+// One committed publication of an authority (account/storage scope) in one
+// physical incarnation. An index is ordered only within its scope and
+// incarnation; a stream offset is never a revision.
+message Revision {
+  bytes scope = 1;
+  // Exactly 16 bytes: the big-endian incarnation, never reused across a reset.
+  bytes incarnation = 2;
+  uint64 index = 3;
+}
+
+// Waits until a provider has applied every revision of `at_least`; the reply
+// is its applied Revision. An injected provider port serves it as the
+// "wait_applied" operation, so a hosted session proves its minimum.
+message WaitAppliedRequest {
+  repeated Revision at_least = 1;
+}
+
 message Record {
   uint64 sequence = 1;
   bytes value = 2;
@@ -64,6 +81,8 @@ message AppendReceipt {
   uint64 end = 2;
   uint64 tail = 3;
   bytes commit_id = 4;
+  // The committed revision; replay returns the original index.
+  Revision revision = 5;
 }
 
 message TailConflict {
@@ -101,6 +120,9 @@ message TailRequest {
   bool accepted = 2;
   // Request an explicit irreversible-prefix barrier through this sequence.
   optional uint64 durable_through = 3;
+  // Minimum cut, one entry per authority. A replica that has not applied this
+  // authority's entry parks until it does; a foreign entry refuses.
+  repeated Revision at_least = 4;
 }
 message TailResponse {
   uint64 tail = 1;
@@ -109,6 +131,8 @@ message TailResponse {
   optional uint64 durable = 3;
   reserved 2;
   reserved "trim_point";
+  // The applied revision this observation was served at.
+  Revision applied = 4;
 }
 
 message ForkRequest {
@@ -126,12 +150,16 @@ message ForkReceipt {
   uint64 forked_at = 3;
   uint64 tail = 4;
   bytes commit_id = 5;
+  // The committed revision. Absent only inside a CommitReceipt, which carries it.
+  Revision revision = 6;
 }
 
 message ReadRequest {
   string path = 1;
   uint64 from = 2;
   uint32 limit = 3;
+  // Minimum cut, as in TailRequest.
+  repeated Revision at_least = 4;
 }
 
 message FollowRequest {
@@ -139,6 +167,8 @@ message FollowRequest {
   uint64 from = 2;
   SessionFilter filter = 3;
   bool progress = 4;
+  // Minimum cut, kept as the floor across every reconnect.
+  repeated Revision at_least = 5;
 }
 
 // Ranges are OR; named attribute clauses are AND. Empty end is unbounded.
@@ -191,6 +221,8 @@ message ReadResponse {
   uint64 decoded_length = 4;
   reserved 5;
   reserved "delivery_token";
+  // Present on the first frame: the applied revision the read was served at.
+  Revision applied = 6;
 }
 
 message Child {
@@ -357,6 +389,7 @@ message CommitReceipt {
   uint64 committed_at_micros = 2;
   repeated AppendRange appends = 3;
   repeated ForkReceipt forks = 4;
+  Revision revision = 5;
 }
 
 message ReadCommitRequest {
@@ -377,6 +410,8 @@ message IdempotencyObservation {
     ForkReceipt fork = 4;
     CommittedEnvelope commit = 7;
   }
+  // The authority's revision of this retained publication, when it issues revisions.
+  Revision revision = 8;
 }
 
 message InspectIdempotencyResponse {

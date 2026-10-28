@@ -154,6 +154,7 @@ pub(super) async fn read_one<P: crate::distributed::AuthorityProvider + ?Sized>(
             path,
             from,
             limit: 1,
+            at_least: Default::default(),
         })
         .await
         .map_err(map_stream_error)?;

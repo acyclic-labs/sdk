@@ -36,7 +36,8 @@ async fn checked_browser_follow_validates_then_retains_the_yielded_anchor_across
                 from: 1,
                 preceding: Some(CommitId::from_bytes([42; 32])),
                 filter: crate::FollowFilter::default(),
-                progress: false
+                progress: false,
+                at_least: Default::default(),
             })
             .map_ok(crate::records_only)
             .await,
@@ -49,6 +50,7 @@ async fn checked_browser_follow_validates_then_retains_the_yielded_anchor_across
             preceding: Some(seed.commit_id),
             filter: crate::FollowFilter::default(),
             progress: false,
+            at_least: Default::default(),
         })
         .map_ok(crate::records_only)
         .await
@@ -318,6 +320,7 @@ async fn filtered_publications_survive_cache_rebuild_without_waking_unrelated_fo
             preceding: None,
             filter: filter,
             progress: false,
+            at_least: Default::default(),
         })
         .map_ok(crate::records_only)
         .await
@@ -378,4 +381,33 @@ async fn browser_wave1_conformance() {
     crate::conformance::verify(&crate::conformance::Fixture::new(provider.clone()))
         .await
         .unwrap();
+}
+
+#[wasm_bindgen_test]
+async fn every_opener_of_one_database_proves_the_others_revisions() {
+    let database = name();
+    let writer = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("writer");
+    let reader = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("reader");
+    let Ok(AppendOutcome::Committed(receipt)) = append(&writer, "events").await else {
+        panic!("append");
+    };
+    let applied = reader
+        .wait_applied(&crate::RevisionCut::of(receipt.revision.clone()))
+        .await
+        .expect("shared identity");
+    assert!(applied.same_authority(&receipt.revision) && applied.index >= receipt.revision.index);
+    // Negative control: another database mints its own identity.
+    let other = BrowserStream::open(&name(), BrowserStreamLimits::default())
+        .await
+        .expect("other");
+    assert_eq!(
+        other
+            .wait_applied(&crate::RevisionCut::of(receipt.revision))
+            .await,
+        Err(StreamError::RevisionForeign)
+    );
 }

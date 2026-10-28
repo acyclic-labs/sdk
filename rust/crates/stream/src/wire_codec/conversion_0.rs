@@ -140,6 +140,10 @@ pub(crate) fn observation_from_wire(
         idempotency_key: IdempotencyKey::new(value.idempotency_key)?,
         request_digest,
         outcome,
+        revision: value
+            .revision
+            .map(|revision| issued_from_wire(Some(revision)))
+            .transpose()?,
     })
 }
 
@@ -160,6 +164,7 @@ pub fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObser
         idempotency_key: bytes::Bytes::copy_from_slice(value.idempotency_key.as_bytes()),
         request_digest: bytes::Bytes::copy_from_slice(&value.request_digest),
         outcome: Some(outcome),
+        revision: value.revision.as_ref().map(revision_to_wire),
     }
 }
 
@@ -205,6 +210,7 @@ pub(crate) fn append_receipt(value: &wire::AppendReceipt) -> Result<AppendReceip
         end: value.end,
         tail: value.tail,
         commit_id: commit_id(&value.commit_id)?,
+        revision: issued_from_wire(value.revision.clone())?,
     })
 }
 
@@ -268,6 +274,7 @@ pub fn read_from_wire(value: wire::ReadRequest) -> Result<crate::ReadRequest, St
         path: path(value.path)?,
         from: value.from,
         limit: value.limit,
+        at_least: cut_from_wire(value.at_least)?,
     })
 }
 
@@ -405,6 +412,7 @@ pub fn append_outcome_to_wire(value: crate::AppendOutcome) -> wire::AppendRespon
                 end: receipt.end,
                 tail: receipt.tail,
                 commit_id: bytes::Bytes::copy_from_slice(receipt.commit_id.as_bytes()),
+                revision: Some(revision_to_wire(&receipt.revision)),
             })
         }
         crate::AppendOutcome::TailConflict { actual_tail } => {
@@ -424,6 +432,7 @@ pub fn fork_receipt_to_wire(value: &crate::ForkReceipt) -> wire::ForkReceipt {
         forked_at: value.forked_at,
         tail: value.tail,
         commit_id: bytes::Bytes::copy_from_slice(value.commit_id.as_bytes()),
+        revision: Some(revision_to_wire(&value.revision)),
     }
 }
 

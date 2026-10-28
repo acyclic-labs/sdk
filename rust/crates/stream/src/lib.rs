@@ -166,10 +166,10 @@ pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
 pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
     ("head", "head"),
     ("idempotency/inspect", "observation"),
-    ("tail", "sequence"),
+    ("tail", "tail"),
     ("append", "append"),
     ("fork", "fork"),
-    ("read", "records"),
+    ("read", "read"),
     ("children/page", "children_page"),
     ("commit", "commit"),
     ("commits/read", "envelope"),
@@ -184,6 +184,9 @@ pub const TOKEN_OPERATIONS: &[&str] = &[
 #[path = "lib/path.rs"]
 mod path;
 pub use path::StreamPath;
+#[path = "lib/revision.rs"]
+pub mod revision;
+pub use revision::{AppliedRevisions, Revision, RevisionCut, RevisionScope, RevisionTracker};
 
 include!("lib/domain.rs");
 include!("lib/head.rs");

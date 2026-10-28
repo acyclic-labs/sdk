@@ -99,6 +99,7 @@ async fn entry<P: StreamProvider + ?Sized>(
             path: conversation.clone(),
             from: sequence,
             limit: 1,
+            at_least: Default::default(),
         })
         .await
         .map_err(Error::Stream)?;

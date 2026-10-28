@@ -163,6 +163,7 @@ async fn disjoint_proposals_with_different_bases_share_one_append_and_original_r
             ))?,
             from: base.sequence.get() + 1,
             limit: 2,
+            at_least: Default::default(),
         })
         .await?
         .try_collect()
@@ -266,6 +267,7 @@ async fn proposals_beyond_one_provider_transaction_remain_in_batches_without_cal
             ))?,
             from: base.sequence.get() + 1,
             limit: u32::try_from(count)?,
+            at_least: Default::default(),
         })
         .await?
         .try_collect()
@@ -334,6 +336,7 @@ async fn evidence_capacity_splits_disjoint_proposals_before_stream_admission() -
             ))?,
             from: base.sequence.get() + 1,
             limit: u32::try_from(count)?,
+            at_least: Default::default(),
         })
         .await?
         .try_collect()

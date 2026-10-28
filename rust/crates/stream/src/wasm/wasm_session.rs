@@ -36,6 +36,75 @@ impl WasmSession {
             .map_err(js_error)
     }
 
+    /// The pool's read-your-writes floor: one encoded `Revision` per authority
+    /// this client has observed. Every request that accepts a minimum carries it.
+    #[wasm_bindgen(js_name = revisionFloor)]
+    #[must_use]
+    pub fn revision_floor(&self) -> js_sys::Array {
+        self.client
+            .revisions()
+            .floor(&crate::RevisionCut::default())
+            .iter()
+            .map(|revision| {
+                js_sys::Uint8Array::from(
+                    crate::wire_codec::revision_to_wire(revision)
+                        .encode_to_vec()
+                        .as_slice(),
+                )
+            })
+            .collect()
+    }
+
+    /// Raises the floor with one encoded `Revision` a receipt or response served.
+    #[wasm_bindgen(js_name = observeRevision)]
+    pub fn observe_revision(&self, input: &[u8]) -> Result<(), JsValue> {
+        let revision = crate::wire_codec::issued_from_wire(Some(decode::<wire::Revision>(input)?))
+            .map_err(js_error)?;
+        self.client.revisions().observe(&revision);
+        Ok(())
+    }
+
+    /// Accepts a direct read or tail reply: `applied` (an encoded `Revision`,
+    /// absent when the reply carried none) must prove the encoded `minimum`
+    /// the request sent, and then raises the floor.
+    #[wasm_bindgen(js_name = servedRevision)]
+    pub fn served_revision(
+        &self,
+        minimum: js_sys::Array,
+        applied: Option<Box<[u8]>>,
+    ) -> Result<(), JsValue> {
+        let minimum = minimum
+            .iter()
+            .map(|entry| {
+                use wasm_bindgen::JsCast as _;
+                let bytes = entry
+                    .dyn_into::<js_sys::Uint8Array>()
+                    .map_err(|_| js_error(StreamError::InvalidArgument))?
+                    .to_vec();
+                Ok(decode::<wire::Revision>(&bytes)?)
+            })
+            .collect::<Result<Vec<_>, JsValue>>()?;
+        let minimum = crate::wire_codec::cut_from_wire(minimum).map_err(js_error)?;
+        let applied = applied
+            .map(|bytes| {
+                crate::wire_codec::issued_from_wire(Some(decode::<wire::Revision>(&bytes)?))
+                    .map_err(js_error)
+            })
+            .transpose()?;
+        self.client
+            .revisions()
+            .served(&minimum, applied.as_ref())
+            .map_err(js_error)
+    }
+
+    /// Drops the floor after an authority refused it as foreign.
+    #[wasm_bindgen(js_name = revisionRefused)]
+    pub fn revision_refused(&self) {
+        self.client
+            .revisions()
+            .refused(&StreamError::RevisionForeign);
+    }
+
     /// Opens a filtered subscription using its selected credential slot.
     /// Rust owns validation, credit, watermarks and recovery.
     pub fn subscribe(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {

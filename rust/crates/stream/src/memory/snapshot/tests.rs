@@ -96,6 +96,7 @@ async fn real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retr
                 path,
                 from: 0,
                 limit: 3,
+                at_least: Default::default(),
             })
             .await?
             .collect::<Vec<_>>()
@@ -216,6 +217,7 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
                 path,
                 from: 0,
                 limit: 3,
+                at_least: Default::default(),
             })
             .await?
             .collect::<Vec<_>>()
@@ -365,6 +367,7 @@ fn current_codec_rejects_duplicate_retry_identity_and_unknown_wire_fields()
         outcome: crate::IdempotencyOutcome::Append(crate::AppendOutcome::TailConflict {
             actual_tail: 0,
         }),
+        revision: None,
     })
     .encode_to_vec();
     let fixture = |count: usize, observation: &[u8]| {
@@ -617,6 +620,7 @@ async fn snapshots_preserve_committed_timestamps() -> Result<(), StreamError> {
             path: path.clone(),
             from: 0,
             limit: 1,
+            at_least: Default::default(),
         })
         .await?
         .next()
@@ -637,6 +641,7 @@ async fn snapshots_preserve_committed_timestamps() -> Result<(), StreamError> {
             path,
             from: 0,
             limit: 1,
+            at_least: Default::default(),
         })
         .await?
         .next()

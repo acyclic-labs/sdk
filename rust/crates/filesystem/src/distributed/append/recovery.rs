@@ -172,6 +172,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                         path: records.clone(),
                         from,
                         limit: count,
+                        at_least: Default::default(),
                     },
                     work,
                 )

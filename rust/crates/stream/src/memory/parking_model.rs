@@ -33,6 +33,7 @@ pub(crate) fn verify(retain_pending: bool, checked: bool) {
                             preceding: Some(seed.commit_id),
                             filter: crate::FollowFilter::default(),
                             progress: false,
+                            at_least: Default::default(),
                         })
                         .map_ok(crate::records_only),
                 )
@@ -106,6 +107,7 @@ pub(crate) fn shutdown(discard: bool, checked: bool, cancel: bool, poll_worker: 
                             preceding: Some(seed.commit_id),
                             filter: crate::FollowFilter::default(),
                             progress: false,
+                            at_least: Default::default(),
                         })
                         .map_ok(crate::records_only),
                 )

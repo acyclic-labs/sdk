@@ -138,6 +138,7 @@ fn observation() -> Result<IdempotencyObservation, StreamError> {
                 }],
             })],
         }),
+        revision: None,
     })
 }
 
@@ -229,5 +230,42 @@ async fn invalid_record_identity_sequence_time_and_positions_are_rejected()
             Err(StreamError::InvalidArgument)
         );
     }
+    Ok(())
+}
+
+/// The receipt revision is part of the v1 format from its start: a retained
+/// append receipt without one is not v1 and refuses as a typed error, never
+/// reopening with an invented revision.
+#[tokio::test]
+async fn a_retained_receipt_without_its_revision_is_refused()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = MemoryStream::default();
+    let idempotency_key = key(b"receipt")?;
+    provider
+        .append(AppendRequest {
+            path: StreamPath::new("a")?,
+            records: vec![Bytes::from_static(b"value").into()],
+            if_tail: None,
+            idempotency_key: idempotency_key.clone(),
+        })
+        .await?;
+    let value = provider
+        .inspect_idempotency(idempotency_key)
+        .await?
+        .ok_or("missing outcome")?;
+    let mut wire = wire_codec::observation_wire(value.clone());
+    // Negative control: the intact v1 record decodes.
+    assert_eq!(decode_observation(&wire.encode_to_vec(), BOUND)?, value);
+    let Some(wire::idempotency_observation::Outcome::Append(append)) = wire.outcome.as_mut() else {
+        return Err("expected an append outcome".into());
+    };
+    let Some(wire::append_response::Outcome::Committed(receipt)) = append.outcome.as_mut() else {
+        return Err("expected a committed receipt".into());
+    };
+    receipt.revision = None;
+    assert_eq!(
+        decode_observation(&wire.encode_to_vec(), BOUND),
+        Err(StreamError::InvalidArgument)
+    );
     Ok(())
 }

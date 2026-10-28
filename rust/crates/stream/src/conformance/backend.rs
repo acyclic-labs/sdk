@@ -207,6 +207,7 @@ async fn workload(
                 path: path.clone(),
                 from: sequence,
                 limit: 1,
+                at_least: Default::default(),
             })
             .await?
             .try_collect()

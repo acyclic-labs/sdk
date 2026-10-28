@@ -77,6 +77,7 @@ pub fn decode_read_response(
         codec,
         data: data.into(),
         decoded_length,
+        applied: None,
     };
     wire_codec::read_response_batch(response)
         .map(|batch| batch.to_vec())

@@ -19,6 +19,10 @@ struct Journal {
     syncing: bool,
     root: PathBuf,
     torn_tail: Option<u64>,
+    /// Whether this run has written a frame whose revision a crash can lose:
+    /// a deferred mutation, or any under barrier durability. The store's
+    /// incarnation record is removed first, so the next open rotates it.
+    volatile: bool,
     /// While a persistence cut is installed: the length of this epoch's
     /// journal known flushed. It lives beside `epoch`, and `restart` resets it.
     #[cfg(feature = "test-support")]

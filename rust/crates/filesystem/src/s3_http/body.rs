@@ -212,6 +212,7 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
                 path: path.clone(),
                 from,
                 limit,
+                at_least: Default::default(),
             })
             .await
             .map_err(|error| stream_read_error(&error))?;

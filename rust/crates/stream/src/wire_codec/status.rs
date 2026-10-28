@@ -16,6 +16,7 @@ pub(crate) fn status(error: &Status) -> StreamError {
         (Code::FailedPrecondition, "idempotency_mismatch") => StreamError::IdempotencyMismatch,
         (Code::FailedPrecondition, "prefix_not_retained") => StreamError::PrefixNotRetained,
         (Code::FailedPrecondition, "deadline_elapsed") => StreamError::DeadlineElapsed,
+        (Code::FailedPrecondition, "revision_foreign") => StreamError::RevisionForeign,
         // Whatever the server's message, an unimplemented operation is a refusal.
         (Code::Unimplemented, _) => StreamError::Unsupported,
         _ => StreamError::Unavailable,

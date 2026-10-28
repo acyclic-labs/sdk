@@ -134,6 +134,8 @@ pub struct AppendReceipt {
     pub tail: u64,
     /// Immutable envelope identity.
     pub commit_id: CommitId,
+    /// Committed authority revision; never a stream offset.
+    pub revision: Revision,
 }
 
 /// Tail-CAS append outcome.
@@ -174,6 +176,8 @@ pub struct ForkReceipt {
     pub tail: u64,
     /// Immutable envelope identity.
     pub commit_id: CommitId,
+    /// Committed authority revision; never a stream offset.
+    pub revision: Revision,
 }
 
 /// Forks a subtree at one pre-commit cut. `at_tail` selects the root stream
@@ -202,6 +206,8 @@ pub struct ReadRequest {
     pub from: u64,
     /// Nonzero record bound.
     pub limit: u32,
+    /// Minimum applied cut; a lagging provider parks, a foreign one refuses.
+    pub at_least: RevisionCut,
 }
 
 /// One atomic replay-to-live subscription, including its history fence.
@@ -217,6 +223,8 @@ pub struct FollowRequest {
     pub filter: crate::FollowFilter,
     /// Emit contiguous skipped-prefix progress. False retains indexed record-only wakes.
     pub progress: bool,
+    /// Minimum applied cut, kept as the floor across every reconnect.
+    pub at_least: RevisionCut,
 }
 
 impl FollowRequest {
@@ -229,6 +237,7 @@ impl FollowRequest {
             preceding: None,
             filter: crate::FollowFilter::default(),
             progress: false,
+            at_least: RevisionCut::default(),
         }
     }
 }
@@ -556,6 +565,9 @@ pub struct IdempotencyObservation {
     pub request_digest: [u8; 32],
     /// Original terminal result.
     pub outcome: IdempotencyOutcome,
+    /// The authority's revision of this publication in its current incarnation;
+    /// absent where no authority is bound, such as an encoded snapshot.
+    pub revision: Option<Revision>,
 }
 
 /// Backpressured finite read or long-lived follow.

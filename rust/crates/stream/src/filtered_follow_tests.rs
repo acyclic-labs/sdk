@@ -21,6 +21,7 @@ pub(crate) async fn qualify_progress(provider: &impl StreamProvider) -> TestResu
             preceding: Some(first),
             filter: filter()?,
             progress: true,
+            at_least: Default::default(),
         })
         .await?;
     assert!(futures::poll!(updates.next()).is_pending());
@@ -72,6 +73,7 @@ async fn qualify_resume(
             preceding: Some(preceding),
             filter: filter()?,
             progress: true,
+            at_least: Default::default(),
         })
         .await?;
     for source in [updates, &mut resumed] {
@@ -87,7 +89,8 @@ async fn qualify_resume(
                 from: next,
                 preceding: Some(CommitId::from_bytes([0x55; 32])),
                 filter: filter()?,
-                progress: true
+                progress: true,
+                at_least: Default::default(),
             })
             .await,
         Err(StreamError::PrefixNotRetained)
@@ -173,6 +176,7 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
                 filter()?
             },
             progress: false,
+            at_least: Default::default(),
         })
         .map_ok(crate::records_only)
         .await?;
@@ -209,6 +213,7 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
             preceding: Some(preceding),
             filter: filter()?,
             progress: false,
+            at_least: Default::default(),
         })
         .map_ok(crate::records_only)
         .await?;
@@ -218,6 +223,7 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
             path,
             from: 3,
             limit: 1,
+            at_least: Default::default(),
         })
         .await?;
     assert_eq!(read.next().await.ok_or("read ended")??, matched);

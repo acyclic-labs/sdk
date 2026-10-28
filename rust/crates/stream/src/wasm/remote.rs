@@ -89,6 +89,10 @@ impl StreamProvider for Remote {
         if observed.as_ref().is_some_and(|o| o.idempotency_key != key) {
             return Err(StreamError::Unavailable);
         }
+        // A recovered write floors later reads exactly like its lost reply would have.
+        if let Some(revision) = observed.as_ref().and_then(|o| o.revision.as_ref()) {
+            self.sessions.revisions().observe(revision);
+        }
         Ok(observed)
     }
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
@@ -107,26 +111,36 @@ impl StreamProvider for Remote {
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        Ok(self
+        let revisions = self.sessions.revisions();
+        let minimum = revisions.floor(&crate::RevisionCut::default());
+        let response = self
             .service()
             .tail(
                 self.request(wire::TailRequest {
                     path: path.to_string(),
                     accepted: false,
                     durable_through: None,
+                    at_least: wire_codec::cut_to_wire(&minimum),
                 })
                 .await?,
             )
             .await
-            .map_err(|e| wire_codec::status(&e))?
-            .into_inner()
-            .tail)
+            .map_err(|e| wire_codec::status(&e))
+            .inspect_err(|error| revisions.refused(error))?
+            .into_inner();
+        let applied = response
+            .applied
+            .map(|applied| wire_codec::issued_from_wire(Some(applied)))
+            .transpose()?;
+        revisions.served(&minimum, applied.as_ref())?;
+        Ok(response.tail)
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         let body = wire::TailRequest {
             path: path.to_string(),
             accepted: true,
             durable_through: None,
+            at_least: Default::default(),
         };
         let result = self
             .service()
@@ -148,6 +162,7 @@ impl StreamProvider for Remote {
                     path: path.to_string(),
                     accepted: true,
                     durable_through: Some(through),
+                    at_least: Default::default(),
                 })
                 .await?,
             )
@@ -175,7 +190,9 @@ impl StreamProvider for Remote {
             .await
             .map_err(|e| wire_codec::status(&e))?
             .into_inner();
-        wire_codec::append_outcome_from_wire(result)
+        let outcome = wire_codec::append_outcome_from_wire(result)?;
+        self.sessions.revisions().appended(&outcome);
+        Ok(outcome)
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let key = request.idempotency_key;
@@ -196,13 +213,9 @@ impl StreamProvider for Remote {
             .await
             .map_err(|e| wire_codec::status(&e))?
             .into_inner();
-        Ok(ForkReceipt {
-            source: wire_codec::path(result.source)?,
-            destination: wire_codec::path(result.destination)?,
-            forked_at: result.forked_at,
-            tail: result.tail,
-            commit_id: wire_codec::commit_id(&result.commit_id)?,
-        })
+        let receipt = wire_codec::fork_receipt_from_wire(result)?;
+        self.sessions.revisions().observe(&receipt.revision);
+        Ok(receipt)
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.sessions.read(request).await
@@ -228,7 +241,9 @@ impl StreamProvider for Remote {
             .await
             .map_err(|e| wire_codec::status(&e))?
             .into_inner();
-        wire_codec::commit_outcome_from_wire(response)
+        let outcome = wire_codec::commit_outcome_from_wire(response)?;
+        self.sessions.revisions().committed(&outcome);
+        Ok(outcome)
     }
     async fn read_commit(&self, commit: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let body = wire::ReadCommitRequest {

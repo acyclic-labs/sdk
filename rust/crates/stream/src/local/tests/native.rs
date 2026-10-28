@@ -93,6 +93,7 @@ async fn native_denial_precedes_read_capture() -> Result<(), Box<dyn std::error:
                 path: StreamPath::new("uncaptured")?,
                 from: 0,
                 limit: 1,
+                at_least: Default::default(),
             },
             meter.original(),
         )

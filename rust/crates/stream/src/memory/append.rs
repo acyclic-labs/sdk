@@ -68,6 +68,7 @@ impl MemoryStream {
             end: fact.end,
             tail: fact.tail,
             commit_id,
+            revision: self.revisions.at(decision),
         });
         let (mut facts, claim) = self.vector(1)?;
         self.absorb(&mut allocation, claim)?;

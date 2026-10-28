@@ -78,12 +78,35 @@ fn parse_append(value: &Value) -> Result<AppendOutcome, StreamError> {
             end: parse_u64(field(value, "end")?)?,
             tail: parse_u64(field(value, "tail")?)?,
             commit_id: parse_id(field(value, "commitId")?)?,
+            revision: parse_revision(field(value, "revision")?)?,
         }))
     } else {
         Ok(AppendOutcome::TailConflict {
             actual_tail: parse_u64(field(value, "actualTail")?)?,
         })
     }
+}
+/// Parses the hosted spelling of a peer-issued revision.
+fn parse_revision(value: &Value) -> Result<crate::Revision, StreamError> {
+    crate::wire_codec::issued_from_wire(Some(crate::wire::Revision {
+        scope: parse_bytes(field(value, "scope")?)?,
+        incarnation: parse_bytes(field(value, "incarnation")?)?,
+        index: parse_u64(field(value, "index")?)?,
+    }))
+}
+/// A fork nested in a commit receipt carries that commit's revision.
+fn parse_nested_fork(
+    value: &Value,
+    revision: &crate::Revision,
+) -> Result<ForkReceipt, StreamError> {
+    Ok(ForkReceipt {
+        source: parse_path(field(value, "source")?)?,
+        destination: parse_path(field(value, "destination")?)?,
+        forked_at: parse_u64(field(value, "forkedAt")?)?,
+        tail: parse_u64(field(value, "tail")?)?,
+        commit_id: parse_id(field(value, "commitId")?)?,
+        revision: revision.clone(),
+    })
 }
 fn parse_fork(value: &Value) -> Result<ForkReceipt, StreamError> {
     Ok(ForkReceipt {
@@ -92,6 +115,7 @@ fn parse_fork(value: &Value) -> Result<ForkReceipt, StreamError> {
         forked_at: parse_u64(field(value, "forkedAt")?)?,
         tail: parse_u64(field(value, "tail")?)?,
         commit_id: parse_id(field(value, "commitId")?)?,
+        revision: parse_revision(field(value, "revision")?)?,
     })
 }
 fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {

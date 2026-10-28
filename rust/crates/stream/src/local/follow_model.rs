@@ -55,6 +55,7 @@ pub(crate) fn registration(omit_wake: bool) {
                     preceding: Some(seed.commit_id),
                     filter: crate::FollowFilter::default(),
                     progress: false,
+                    at_least: Default::default(),
                 })
                 .map_ok(crate::records_only)
                 .await
@@ -192,6 +193,7 @@ pub(crate) fn failure_lock_order(hold_borrow: bool) {
                         preceding: Some(seed.commit_id),
                         filter: crate::FollowFilter::default(),
                         progress: false,
+                        at_least: Default::default(),
                     })
                     .map_ok(crate::records_only)
                     .await

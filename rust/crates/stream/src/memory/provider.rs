@@ -93,6 +93,7 @@ impl StreamProvider for MemoryStream {
                 idempotency_key,
                 request_digest: replay.digest,
                 outcome: replay.result.clone(),
+                revision: Some(self.revisions.at(replay.index)),
             }))
     }
 
@@ -119,6 +120,13 @@ impl StreamProvider for MemoryStream {
         self.append_inner(request).await.map(|(value, _)| value)
     }
 
+    async fn wait_applied(
+        &self,
+        at_least: &crate::RevisionCut,
+    ) -> Result<crate::Revision, StreamError> {
+        self.revisions.wait(at_least).await
+    }
+
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let mut state = self.state.write().await;
         self.plan_fork_locked(&mut state, request)?
@@ -126,6 +134,7 @@ impl StreamProvider for MemoryStream {
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         validate_limit(request.limit)?;
+        self.revisions.wait(&request.at_least).await?;
         let state = self.state.read().await;
         let path = state
             .paths
@@ -156,7 +165,9 @@ impl StreamProvider for MemoryStream {
             preceding,
             filter,
             progress,
+            at_least,
         } = request;
+        self.revisions.wait(&at_least).await?;
         if progress {
             self.progress_from(path, from, preceding, filter).await
         } else {
@@ -294,6 +305,9 @@ impl StreamProvider for MemoryStream {
             if let Err(error) = validate_limit(request.limit) {
                 return Ok(Err(error));
             }
+            if let Err(error) = self.revisions.wait(&request.at_least).await {
+                return Ok(Err(error));
+            }
             let state = self.state.read().await;
             let path = inspect(&meter, || state.paths.get(&request.path))?;
             let Some(path) = path else {
@@ -413,6 +427,7 @@ impl StreamProvider for MemoryStream {
                             idempotency_key: key,
                             request_digest: replay.digest,
                             outcome,
+                            revision: Some(self.revisions.at(replay.index)),
                         })
                     })
                 }
@@ -465,7 +480,7 @@ impl StreamProvider for MemoryStream {
                                 return Err(E::from(StreamError::IdempotencyMismatch));
                             };
                             return provider
-                                .receipt(value)
+                                .receipt(value, provider.revisions.at(replay.index))
                                 .map(|(receipt, claim)| (CommitOutcome::Committed(receipt), claim))
                                 .map_err(E::from);
                         }

@@ -114,6 +114,10 @@ impl HttpStream {
             session_verifier,
         })
     }
+    /// The session pool's revision tracker, shared by every route of this client.
+    fn revisions(&self) -> Result<Arc<crate::RevisionTracker>, StreamError> {
+        self.session_client()?.revisions()
+    }
     async fn authorization(&self) -> Result<HeaderValue, StreamError> {
         if let Some(provider) = &self.credential {
             let token = provider
@@ -210,11 +214,13 @@ impl HttpStream {
                 });
             return Err(code.map_or(StreamError::Unavailable, contract_error));
         }
-        http_validation::validate(route, &value).map_err(|_| StreamError::Unavailable)?;
+        // A well-formed body that breaks the response contract is the peer's fault.
+        http_validation::validate(route, &value).map_err(|_| StreamError::InvalidResponse)?;
         Ok(value)
     }
     fn commit_response(value: &Value) -> Result<CommitOutcome, StreamError> {
         if value["ok"] == true {
+            let revision = parse_revision(field(value, "revision")?)?;
             let receipt = crate::CommitReceipt {
                 commit_id: parse_id(field(value, "commitId")?)?,
                 committed_at_micros: parse_u64(field(value, "committedAtMicros")?)?,
@@ -234,8 +240,9 @@ impl HttpStream {
                     .as_array()
                     .ok_or(StreamError::Unavailable)?
                     .iter()
-                    .map(parse_fork)
+                    .map(|fork| parse_nested_fork(fork, &revision))
                     .collect::<Result<_, _>>()?,
+                revision,
             };
             receipt.validate().map_err(|_| StreamError::Unavailable)?;
             Ok(CommitOutcome::Committed(receipt))
@@ -310,10 +317,19 @@ impl StreamProvider for HttpStream {
             "commit" => IdempotencyOutcome::Commit(parse_envelope(&outcome["outcome"])?),
             _ => return Err(StreamError::Unavailable),
         };
+        let revision = match value.get("revision") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(revision) => Some(parse_revision(revision)?),
+        };
+        // A recovered write floors later reads exactly like its lost reply would have.
+        if let Some(revision) = &revision {
+            self.revisions()?.observe(revision);
+        }
         Ok(Some(IdempotencyObservation {
             idempotency_key: observed,
             request_digest,
             outcome,
+            revision,
         }))
     }
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
@@ -351,18 +367,24 @@ impl StreamProvider for HttpStream {
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        parse_u64(
-            &self
-                .request(
-                    "tail",
-                    wire::TailRequest {
-                        path: path.to_string(),
-                        ..Default::default()
-                    }
-                    .encode_to_vec(),
-                )
-                .await?,
-        )
+        let revisions = self.revisions()?;
+        let minimum = revisions.floor(&crate::RevisionCut::default());
+        let body = wire::TailRequest {
+            path: path.to_string(),
+            at_least: wire_codec::cut_to_wire(&minimum),
+            ..Default::default()
+        };
+        let value = self
+            .request("tail", body.encode_to_vec())
+            .await
+            .inspect_err(|error| revisions.refused(error))?;
+        let applied = value
+            .get("applied")
+            .filter(|value| !value.is_null())
+            .map(parse_revision)
+            .transpose()?;
+        revisions.served(&minimum, applied.as_ref())?;
+        parse_u64(field(&value, "tail")?)
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         self.session_client()?.watermarks(path).await
@@ -375,11 +397,15 @@ impl StreamProvider for HttpStream {
         self.session_client()?.durable_receipt(path, through).await
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        parse_append(
+        let outcome = parse_append(
             &self
                 .request_json("append", move || http_codec::encode_append(&request))
                 .await?,
-        )
+        )?;
+        if let AppendOutcome::Committed(receipt) = &outcome {
+            self.revisions()?.observe(&receipt.revision);
+        }
+        Ok(outcome)
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let source = request.source.clone();
@@ -395,10 +421,12 @@ impl StreamProvider for HttpStream {
         if result.source != source || result.destination != destination {
             return Err(StreamError::Unavailable);
         }
+        self.revisions()?.observe(&result.revision);
         Ok(result)
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        // Reads and pages share the follow session; no JSON round trips.
+        // Reads and pages share the follow session; no JSON round trips. The
+        // session forwards and raises this client's revision floor.
         self.session_client()?.read(request).await
     }
     async fn follow(
@@ -417,7 +445,11 @@ impl StreamProvider for HttpStream {
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         let wire = wire_codec::commit_to_wire(&request);
         let response = self.request("commit", wire.encode_to_vec()).await?;
-        Self::commit_response(&response)
+        let outcome = Self::commit_response(&response)?;
+        if let CommitOutcome::Committed(receipt) = &outcome {
+            self.revisions()?.observe(&receipt.revision);
+        }
+        Ok(outcome)
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let value = self

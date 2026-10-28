@@ -130,6 +130,7 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
                 preceding: anchored.then_some(receipt.commit_id),
                 filter: FollowFilter::default(),
                 progress,
+                at_least: Default::default(),
             })
             .await?;
         drop(provider);
@@ -182,6 +183,7 @@ async fn listener_failure(database: &str) -> Result<(), Box<dyn std::error::Erro
             preceding: None,
             filter: FollowFilter::default(),
             progress: true,
+            at_least: Default::default(),
         })
         .await?;
     let (client, connection) = tokio_postgres::connect(database, tokio_postgres::NoTls).await?;

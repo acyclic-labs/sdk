@@ -218,7 +218,7 @@ async fn request_path_typed_append_preserves_json_responses_and_validation_trace
     let subscriber = tracing_subscriber::registry().with(captured.clone());
     async {
         let server = Server::new(vec![
-            Reply::ok(json!({"ok":true,"start":"0","end":"1","tail":"1","commitId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="})),
+            Reply::ok(json!({"ok":true,"start":"0","end":"1","tail":"1","commitId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","revision":{"scope":"AQ==","incarnation":"AAAAAAAAAAAAAAAAAAAAAQ==","index":"1"}})),
             Reply::ok(json!({"ok":false,"code":"tail_conflict","actualTail":"1"})),
         ]).await;
         let mut request = AppendRequest {

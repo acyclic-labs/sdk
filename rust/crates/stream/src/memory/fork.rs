@@ -33,6 +33,7 @@ impl MemoryStream {
             forked_at,
             tail: forked_at,
             commit_id,
+            revision: self.revisions.at(decision),
         };
         let mut envelope = CommittedEnvelope {
             commit_id,

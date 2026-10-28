@@ -26,6 +26,10 @@ mod tests;
 
 const JOURNAL: &str = "journal";
 const METADATA: &str = "metadata";
+/// The database's revision incarnation: 16 big-endian bytes minted with the
+/// database itself, so every opener shares one identity and a deleted or
+/// cleared database mints a new one.
+const INCARNATION: &str = "incarnation";
 const METADATA_WORDS: usize = 10;
 
 /// Finite durable recovery/retention and canonical in-memory admission limits.
@@ -90,6 +94,10 @@ struct Inner {
     clock: Arc<ReplayClock>,
     limits: BrowserStreamLimits,
     publications: notifications::Publications,
+    // Durable authority: advanced only through journal frames IndexedDB has
+    // committed. The cache provider stages under the same identity, so a write
+    // whose transaction fails never publishes an index a rebuild cannot cover.
+    revisions: Arc<crate::AppliedRevisions>,
     #[cfg(test)]
     refreshes: std::cell::Cell<usize>,
     #[cfg(test)]
@@ -125,17 +133,46 @@ impl BrowserStream {
         if name.is_empty() || limits.words().contains(&0) || limits.commands > u64::from(u32::MAX) {
             return Err(StreamError::InvalidArgument);
         }
+        let minted = u128::from_be_bytes(uuid::Uuid::new_v4().into_bytes());
         let database = Database::open(name)
             .with_version(1_u32)
-            .with_on_upgrade_needed(|_, database| {
-                database.create_object_store(JOURNAL).build()?;
+            .with_on_upgrade_needed(move |_, database| {
+                // Runs once, in the transaction that creates the database.
+                let store = database.create_object_store(JOURNAL).build()?;
+                store
+                    .put(Uint8Array::from(minted.to_be_bytes().to_vec()))
+                    .with_key(INCARNATION)
+                    .primitive()?;
                 Ok(())
             })
             .await
             .map_err(backend)?;
+        let incarnation = {
+            let transaction = database.transaction([JOURNAL]).build().map_err(backend)?;
+            let recorded = transaction
+                .object_store(JOURNAL)
+                .map_err(backend)?
+                .get::<JsValue, _, _>(INCARNATION)
+                .primitive()
+                .map_err(backend)?
+                .await
+                .map_err(backend)?
+                .ok_or(StreamError::Unavailable)?;
+            u128::from_be_bytes(
+                bounded_buffer(recorded, 16, 16)?
+                    .try_into()
+                    .map_err(backend)?,
+            )
+        };
         let clock = Arc::new(ReplayClock::default());
-        let provider = memory(limits.memory, Arc::clone(&clock));
+        let revisions = Arc::new(crate::AppliedRevisions::new(
+            crate::AppliedRevisions::storage_scope("browser", name.as_bytes()),
+            incarnation,
+            0,
+        ));
+        let provider = staged(limits.memory, Arc::clone(&clock), &revisions);
         let inner = Rc::new(Inner {
+            revisions,
             operation_claims: crate::OperationClaims::default(),
             publications: notifications::Publications::new(name)?,
             database,
@@ -183,7 +220,14 @@ impl BrowserStream {
         changed: &mut publication::Changes,
     ) -> Result<(u64, u64), StreamError> {
         if !cache.valid {
-            cache.provider = memory(self.inner.limits.memory, Arc::clone(&self.inner.clock));
+            // The rebuilt cache replays the committed journal into the same
+            // indexes under the same identity, so issued tokens stay valid;
+            // a staged index the journal never committed is discarded.
+            cache.provider = staged(
+                self.inner.limits.memory,
+                Arc::clone(&self.inner.clock),
+                &self.inner.revisions,
+            );
             cache.cursor = 0;
         }
         // Keep invalid throughout every await: cancellation cannot retain a
@@ -249,6 +293,9 @@ impl BrowserStream {
             cache.cursor += 1;
         }
         cache.valid = true;
+        self.inner
+            .revisions
+            .advance(cache.provider.revisions.current().index);
         Ok((count, bytes))
     }
 
@@ -362,13 +409,22 @@ impl BrowserStream {
         cache.cursor = count + 1;
         cache.announced = cache.cursor;
         cache.valid = true;
+        self.inner
+            .revisions
+            .advance(cache.provider.revisions.current().index);
         dispatch.repair = false;
         Ok(outcome)
     }
 }
 
-fn memory(limits: MemoryLimits, clock: Arc<ReplayClock>) -> MemoryStream {
-    MemoryStream::new_with_commit_clock(limits, Arc::new(BrowserClock), clock)
+fn staged(
+    limits: MemoryLimits,
+    clock: Arc<ReplayClock>,
+    durable: &crate::AppliedRevisions,
+) -> MemoryStream {
+    let mut provider = MemoryStream::new_with_commit_clock(limits, Arc::new(BrowserClock), clock);
+    provider.revisions = Arc::new(durable.staging());
+    provider
 }
 enum Outcome {
     Append(AppendOutcome),
@@ -445,8 +501,20 @@ impl StreamProvider for BrowserStream {
         }
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+        if !request.at_least.is_empty() {
+            self.wait_applied(&request.at_least).await?;
+        }
         self.with_provider(async move |provider| provider.read(request).await)
             .await
+    }
+    async fn wait_applied(
+        &self,
+        at_least: &crate::RevisionCut,
+    ) -> Result<crate::Revision, StreamError> {
+        // Park on the durable authority outside the cache lock, so writes can
+        // advance it. Refresh first: another tab's commits reach it by replay.
+        self.with_provider(async |_| Ok(())).await?;
+        self.inner.revisions.wait(at_least).await
     }
 
     async fn children_page(
@@ -470,7 +538,11 @@ impl StreamProvider for BrowserStream {
             preceding,
             filter,
             progress,
+            at_least,
         } = request;
+        if !at_least.is_empty() {
+            self.wait_applied(&at_least).await?;
+        }
         if progress {
             self.progress_from(path, from, preceding, filter).await
         } else {

@@ -176,6 +176,7 @@ fn open(
             Body::Opened(wire::SessionOpened {
                 resume: Some(super::super::super::cursor(0)),
                 preceding_commit_id: Bytes::new(),
+                applied: None,
             }),
         ),
     )

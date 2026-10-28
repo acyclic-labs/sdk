@@ -223,34 +223,22 @@ impl WasmStream {
                 let head = self.provider.head(path).await.map_err(js_error)?;
                 wire_codec::head_to_wire(head).encode_to_vec()
             }
+            "wait_applied" => {
+                let request = decode::<wire::WaitAppliedRequest>(input)?;
+                let at_least = wire_codec::cut_from_wire(request.at_least).map_err(js_error)?;
+                let applied = self
+                    .provider
+                    .wait_applied(&at_least)
+                    .await
+                    .map_err(js_error)?;
+                wire_codec::revision_to_wire(&applied).encode_to_vec()
+            }
             "tail" => {
                 let request = decode::<wire::TailRequest>(input)?;
-                let path = wire_codec::path(request.path).map_err(js_error)?;
-                if request.accepted {
-                    let receipt = match request.durable_through {
-                        Some(through) => Some(
-                            self.provider
-                                .durable_receipt(path.clone(), through)
-                                .await
-                                .map_err(js_error)?,
-                        ),
-                        None => None,
-                    };
-                    let marks = self.provider.watermarks(path).await.map_err(js_error)?;
-                    wire::TailResponse {
-                        tail: marks.accepted,
-                        durable: Some(receipt.map_or(marks.durable, |receipt| {
-                            receipt.map_or(0, |receipt| receipt.through())
-                        })),
-                    }
+                wire_codec::tail_response(&*self.provider, request)
+                    .await
+                    .map_err(js_error)?
                     .encode_to_vec()
-                } else {
-                    wire::TailResponse {
-                        tail: self.provider.tail(path).await.map_err(js_error)?,
-                        durable: None,
-                    }
-                    .encode_to_vec()
-                }
             }
             "children_page" => {
                 let request = decode::<wire::ChildrenPageRequest>(input)?;
@@ -314,10 +302,12 @@ impl WasmStream {
     #[wasm_bindgen]
     pub async fn open_follow(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
         check_command_size(input)?;
-        let request = decode::<wire::FollowRequest>(input)?;
+        let mut request = decode::<wire::FollowRequest>(input)?;
         if request.progress {
             return Err(js_error(StreamError::InvalidArgument));
         }
+        let at_least =
+            wire_codec::cut_from_wire(std::mem::take(&mut request.at_least)).map_err(js_error)?;
         let (path, from, filter) = wire_codec::follow_from_wire(request).map_err(js_error)?;
         let stream = crate::records_only(
             self.provider
@@ -327,6 +317,7 @@ impl WasmStream {
                     preceding: None,
                     filter,
                     progress: false,
+                    at_least,
                 })
                 .await
                 .map_err(js_error)?,

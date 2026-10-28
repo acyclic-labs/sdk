@@ -194,6 +194,7 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
             path: path.clone(),
             from: 0,
             limit: 64,
+            at_least: Default::default(),
         })
         .await?
         .next()
@@ -224,6 +225,7 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
                 preceding: None,
                 filter,
                 progress: false,
+                at_least: Default::default(),
             })
             .await?,
     );
@@ -538,6 +540,7 @@ async fn local_change_records_survive_reopen_with_their_authority_commit() -> Te
             path: path.clone(),
             from: 0,
             limit: 64,
+            at_least: Default::default(),
         })
         .await?
         .collect::<Vec<_>>()
@@ -562,6 +565,7 @@ async fn local_change_records_survive_reopen_with_their_authority_commit() -> Te
             path,
             from: 0,
             limit: 64,
+            at_least: Default::default(),
         })
         .await?
         .collect::<Vec<_>>()

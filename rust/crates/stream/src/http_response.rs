@@ -72,6 +72,17 @@ fn record_json(value: &wire::Record) -> Value {
     })
 }
 
+/// The hosted spelling of the shared revision token; absent is null.
+pub(crate) fn revision_json(value: Option<&wire::Revision>) -> Value {
+    value.map_or(Value::Null, |value| {
+        json!({
+            "scope": STANDARD.encode(&value.scope),
+            "incarnation": STANDARD.encode(&value.incarnation),
+            "index": value.index.to_string(),
+        })
+    })
+}
+
 fn origin_json(value: &wire::ForkOrigin) -> Value {
     json!({
         "source": value.source,
@@ -87,6 +98,7 @@ fn append_value(value: wire::AppendResponse) -> Result<Value> {
             "start": value.start.to_string(),
             "end": value.end.to_string(),
             "tail": value.tail.to_string(),
+            "revision": revision_json(value.revision.as_ref()),
             "commitId": STANDARD.encode(value.commit_id),
         }),
         wire::append_response::Outcome::Conflict(value) => json!({
@@ -103,6 +115,7 @@ fn fork_value(value: wire::ForkReceipt) -> Value {
         "destination": value.destination,
         "forkedAt": value.forked_at.to_string(),
         "tail": value.tail.to_string(),
+        "revision": revision_json(value.revision.as_ref()),
         "commitId": STANDARD.encode(value.commit_id),
     })
 }
@@ -210,6 +223,7 @@ fn commit_value(value: wire::CommitResponse) -> Result<Value> {
                 "ok": true,
                 "commitId": STANDARD.encode(receipt.commit_id),
                 "committedAtMicros": receipt.committed_at_micros.to_string(),
+                "revision": revision_json(receipt.revision.as_ref()),
                 "appends": receipt.appends.into_iter().map(|range| json!({
                     "path": range.path, "start": range.start.to_string(), "tail": range.tail.to_string(),
                 })).collect::<Vec<_>>(),
@@ -246,5 +260,6 @@ fn observation_value(value: wire::InspectIdempotencyResponse) -> Result<Option<V
         "idempotencyKey": STANDARD.encode(value.idempotency_key),
         "requestDigest": STANDARD.encode(value.request_digest),
         "outcome": outcome,
+        "revision": revision_json(value.revision.as_ref()),
     })))
 }

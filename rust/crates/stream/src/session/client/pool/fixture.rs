@@ -29,6 +29,7 @@ pub(in crate::session::client) fn fixture(
         admissions: Arc::new(Admissions::new()),
         attempt_epoch: Arc::new(AtomicU64::new(0)),
         abandoned: Arc::new(gate::Gate::new()),
+        revisions: Arc::default(),
         dial_epoch: 0,
         commands,
         removed: Arc::new(signal::Signal::new()),
@@ -61,6 +62,7 @@ pub(in crate::session::client) fn fixture(
                 revision: 0,
                 applied_revision: 0,
                 released: wire::SessionWindow::default(),
+                served: crate::RevisionCut::default(),
             },
         );
     }
@@ -138,5 +140,6 @@ pub(in crate::session::client) fn client(pool: &Pool) -> Client {
         admissions: Arc::clone(&pool.admissions),
         attempt_epoch: Arc::clone(&pool.attempt_epoch),
         abandoned: Arc::clone(&pool.abandoned),
+        revisions: Arc::clone(&pool.revisions),
     }
 }

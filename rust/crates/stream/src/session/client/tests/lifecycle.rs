@@ -14,6 +14,7 @@ fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
             admissions: Arc::new(Admissions::new()),
             attempt_epoch: Arc::new(AtomicU64::new(0)),
             abandoned: Arc::new(gate::Gate::new()),
+            revisions: Arc::default(),
         },
         receiver,
     )
@@ -30,6 +31,7 @@ async fn registration_deadline_removes_only_the_stalled_interest() -> TestResult
                 preceding: Some(crate::CommitId::from_bytes([7; 32])),
                 filter: crate::FollowFilter::default(),
                 progress: false,
+                at_least: Default::default(),
             })
             .map_ok(crate::records_only),
     );
@@ -85,6 +87,7 @@ async fn registration_deadline_also_withdraws_blocked_queue_admission() -> TestR
                 preceding: Some(crate::CommitId::from_bytes([7; 32])),
                 filter: crate::FollowFilter::default(),
                 progress: false,
+                at_least: Default::default(),
             })
             .map_ok(crate::records_only),
     );
@@ -168,6 +171,7 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
                         preceding: Some(crate::CommitId::from_bytes([7; 32])),
                         filter: crate::FollowFilter::default(),
                         progress: false,
+                        at_least: Default::default(),
                     })
                     .map_ok(crate::records_only),
             );

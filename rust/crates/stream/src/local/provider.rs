@@ -143,6 +143,13 @@ impl StreamProvider for LocalStream {
         .await
     }
 
+    async fn wait_applied(
+        &self,
+        at_least: &crate::RevisionCut,
+    ) -> Result<crate::Revision, StreamError> {
+        self.inner.provider.revisions.wait(at_least).await
+    }
+
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.fork",
@@ -173,7 +180,18 @@ impl StreamProvider for LocalStream {
             span,
             finished: false,
         };
-        let result = observation.span.scope(self.read_visible(request)).await;
+        let result = observation
+            .span
+            .scope(async {
+                // Parks before any visibility guard, so no writer waits on a parked read.
+                self.inner
+                    .provider
+                    .revisions
+                    .wait(&request.at_least)
+                    .await?;
+                self.read_visible(request).await
+            })
+            .await;
         observation.finished = true;
         obs::finish(&observation.span, result)
     }
@@ -188,7 +206,10 @@ impl StreamProvider for LocalStream {
             preceding,
             filter,
             progress,
+            at_least,
         } = request;
+        // Parks before any visibility guard, so no writer waits on a parked read.
+        self.inner.provider.revisions.wait(&at_least).await?;
         if progress {
             self.progress_from(path, from, preceding, filter).await
         } else {
@@ -234,6 +255,9 @@ impl StreamProvider for LocalStream {
     ) -> crate::NativeProviderFuture<'_, crate::NativeRecordStream> {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::new(&original, async move {
+            if let Err(error) = self.inner.provider.revisions.wait(&request.at_least).await {
+                return Ok(Err(error));
+            }
             self.visible(self.inner.provider.native_read(request, meter))
                 .await
                 .unwrap_or_else(|error| Ok(Err(error)))

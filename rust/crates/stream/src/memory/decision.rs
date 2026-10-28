@@ -9,7 +9,11 @@ impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
     fn install(self, core: &MemoryStream, state: &mut State) -> Result<T, StreamError> {
         match self {
             Self::Returned(result) => Ok(result),
-            Self::Accepted { bytes, install } => core.publish(bytes, || install(state, false)),
+            Self::Accepted { bytes, install } => {
+                let result = core.publish(bytes, || install(state, false))?;
+                core.applied(state);
+                Ok(result)
+            }
         }
     }
 
@@ -29,7 +33,9 @@ impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
                 // Failure or cancellation drops the uninstalled plan. There is
                 // no visible mutation or notification before this succeeds.
                 persist.await?;
-                core.publish(bytes, || install(state, true))
+                let result = core.publish(bytes, || install(state, true))?;
+                core.applied(state);
+                Ok(result)
             }
         }
     }

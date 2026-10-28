@@ -16,6 +16,7 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
                         path: StreamPath::new("pending")?,
                         from: 0,
                         limit: 1,
+                        at_least: Default::default(),
                     })
                     .await
             })
@@ -463,6 +464,7 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
             path: StreamPath::new("compacted")?,
             from: 0,
             limit: 21,
+            at_least: Default::default(),
         })
         .await?
         .collect::<Vec<_>>()
@@ -488,6 +490,7 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
             path: StreamPath::new("compacted-fork")?,
             from: 0,
             limit: 21,
+            at_least: Default::default(),
         })
         .await?
         .collect::<Vec<_>>()

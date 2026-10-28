@@ -44,7 +44,13 @@ impl MemoryStream {
         digest: [u8; 32],
     ) -> Result<Option<AppendOutcome>, StreamError> {
         match self.replay_outcome(state, key, digest)? {
-            Some(IdempotencyOutcome::Append(result)) => Ok(Some(result.clone())),
+            Some(IdempotencyOutcome::Append(result)) => {
+                let mut result = result.clone();
+                if let AppendOutcome::Committed(receipt) = &mut result {
+                    receipt.revision = self.revisions.at(receipt.revision.index);
+                }
+                Ok(Some(result))
+            }
             Some(_) => Err(StreamError::IdempotencyMismatch),
             None => Ok(None),
         }
@@ -57,7 +63,10 @@ impl MemoryStream {
         digest: [u8; 32],
     ) -> Result<Option<ForkReceipt>, StreamError> {
         match self.replay_outcome(state, key, digest)? {
-            Some(IdempotencyOutcome::Fork(result)) => Ok(Some(result.clone())),
+            Some(IdempotencyOutcome::Fork(result)) => Ok(Some(ForkReceipt {
+                revision: self.revisions.at(result.revision.index),
+                ..result.clone()
+            })),
             Some(_) => Err(StreamError::IdempotencyMismatch),
             None => Ok(None),
         }
@@ -89,6 +98,7 @@ fn retain(
         replay_height: 1,
         commit_branch: None,
         digest,
+        index: state.decision,
         result,
         envelope,
         _allocation: allocation,

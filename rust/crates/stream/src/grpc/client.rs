@@ -12,6 +12,12 @@ impl Client {
     pub fn session_client(&self) -> Result<crate::session::Client, StreamError> {
         self.session()
     }
+    /// The revision tracker every route and session pool of this client
+    /// shares, across credential changes.
+    #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+    pub(crate) fn revisions(&self) -> Result<Arc<crate::RevisionTracker>, StreamError> {
+        Ok(Arc::clone(&self.revisions))
+    }
     fn session(&self) -> Result<crate::session::Client, StreamError> {
         self.sessions.get_or_try_init(|| {
             crate::session::Client::open(
@@ -20,6 +26,7 @@ impl Client {
                 self.credential.clone(),
                 self.session_ca.clone(),
                 self.session_verifier.clone(),
+                Arc::clone(&self.revisions),
             )
         })
     }
@@ -77,6 +84,10 @@ impl StreamProvider for Client {
             {
                 return Err(StreamError::Unavailable);
             }
+            // A recovered write floors later reads exactly like its lost reply would have.
+            if let Some(revision) = observation.as_ref().and_then(|o| o.revision.as_ref()) {
+                self.revisions.observe(revision);
+            }
             Ok(observation)
         })
     }
@@ -94,16 +105,28 @@ impl StreamProvider for Client {
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
+        let session = self.session()?;
+        let revisions = session.revisions();
+        let minimum = revisions.floor(&crate::RevisionCut::default());
         let body = wire::TailRequest {
             path: path.to_string(),
+            at_least: crate::wire_codec::cut_to_wire(&minimum),
             ..Default::default()
         };
         let response = self
             .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
                 Box::pin(async move { service.tail(request).await })
             })
-            .await?;
-        decode_response(response, |response| Ok(response.tail))
+            .await
+            .inspect_err(|error| revisions.refused(error))?;
+        decode_response(response, |response| {
+            let applied = response
+                .applied
+                .map(|applied| crate::wire_codec::issued_from_wire(Some(applied)))
+                .transpose()?;
+            revisions.served(&minimum, applied.as_ref())?;
+            Ok(response.tail)
+        })
     }
 
     async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
@@ -114,6 +137,7 @@ impl StreamProvider for Client {
                     path: path.to_string(),
                     accepted: true,
                     durable_through: None,
+                    at_least: Default::default(),
                 },
                 |mut service, request| Box::pin(async move { service.tail(request).await }),
             )
@@ -133,6 +157,7 @@ impl StreamProvider for Client {
                     path: path.to_string(),
                     accepted: true,
                     durable_through: Some(through),
+                    at_least: Default::default(),
                 },
                 |mut service, request| Box::pin(async move { service.tail(request).await }),
             )
@@ -157,7 +182,11 @@ impl StreamProvider for Client {
                 Box::pin(async move { service.append(request).await })
             })
             .await?;
-        decode_response(response, append_outcome_from_wire)
+        let outcome = decode_response(response, append_outcome_from_wire)?;
+        if let AppendOutcome::Committed(receipt) = &outcome {
+            self.revisions.observe(&receipt.revision);
+        }
+        Ok(outcome)
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
@@ -177,19 +206,14 @@ impl StreamProvider for Client {
                 Box::pin(async move { service.fork(request).await })
             })
             .await?;
-        decode_response(response, |receipt| {
-            Ok(ForkReceipt {
-                source: path(receipt.source)?,
-                destination: path(receipt.destination)?,
-                forked_at: receipt.forked_at,
-                tail: receipt.tail,
-                commit_id: commit_id(&receipt.commit_id)?,
-            })
-        })
+        let receipt = decode_response(response, crate::wire_codec::fork_receipt_from_wire)?;
+        self.revisions.observe(&receipt.revision);
+        Ok(receipt)
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         // A bounded follow on the shared session: no per-read RPC or deadline.
+        // The session forwards and raises this client's revision floor.
         self.session()?
             .read_with_ack(request, self.acknowledge_deliveries)
             .await
@@ -218,7 +242,11 @@ impl StreamProvider for Client {
                 Box::pin(async move { service.commit(request).await })
             })
             .await?;
-        decode_response(response, commit_outcome_from_wire)
+        let outcome = decode_response(response, commit_outcome_from_wire)?;
+        if let CommitOutcome::Committed(receipt) = &outcome {
+            self.revisions.observe(&receipt.revision);
+        }
+        Ok(outcome)
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {

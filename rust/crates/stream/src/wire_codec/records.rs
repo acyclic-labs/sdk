@@ -98,6 +98,7 @@ pub fn read_response_wire(records: Vec<wire::Record>) -> wire::ReadResponse {
         codec: wire::Codec::None as i32,
         decoded_length: data.len() as u64,
         data: data.into(),
+        applied: None,
     }
 }
 
@@ -153,5 +154,6 @@ pub(crate) fn zstd_read_response(records: Vec<wire::Record>) -> wire::ReadRespon
             ruzstd::encoding::CompressionLevel::Fastest,
         )
         .into(),
+        applied: None,
     }
 }

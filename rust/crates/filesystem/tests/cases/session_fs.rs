@@ -274,6 +274,7 @@ impl Connection {
                             delivery: delivery as i32,
                             preceding_commit_id: anchor,
                             until: 0,
+                            at_least: Default::default(),
                         },
                     )),
                 }],
