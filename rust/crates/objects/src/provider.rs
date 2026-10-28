@@ -4,20 +4,23 @@ use crate::{ByteRange, Digest, Error, Kind, Manifest, wire};
 use crate::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{ObjectsNativeRequest, ObjectsPutReceipt};
-use acyclic_stream::OwnedBytes;
+use acyclic_stream::{OwnedBytes, Revision};
 
 /// A digest and length compared with the stored envelope in the caller's own
 /// account, under the grant that admitted the call.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Verified {
     /// The stored digest.
     pub digest: Digest,
     /// Its logical length.
     pub length: u64,
+    /// A revision of the account covering this blob's commit, when the
+    /// provider issues revisions.
+    pub revision: Option<Revision>,
 }
 
 /// Outcome of a put.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Put {
     /// This call stored the blob.
     Created {
@@ -55,6 +58,39 @@ pub struct Head {
     pub length: u64,
     /// Outgoing references recorded outside the payload.
     pub references: Vec<Digest>,
+    /// The applied revision this read was served at, when the provider
+    /// issues revisions.
+    pub revision: Option<Revision>,
+}
+
+/// A delete's outcome and the account revision covering it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Deletion {
+    /// What the delete did.
+    pub outcome: Delete,
+    /// A revision covering the outcome, when the provider issues revisions.
+    pub revision: Option<Revision>,
+}
+
+impl PartialEq<Delete> for Deletion {
+    fn eq(&self, other: &Delete) -> bool {
+        self.outcome == *other
+    }
+}
+
+/// Whether a release dropped any batch, and the account revision covering it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Released {
+    /// The root held at least one batch.
+    pub existed: bool,
+    /// A revision covering the release, when the provider issues revisions.
+    pub revision: Option<Revision>,
+}
+
+impl PartialEq<bool> for Released {
+    fn eq(&self, other: &bool) -> bool {
+        self.existed == *other
+    }
 }
 
 /// Outcome of a delete. A referenced blob is never deleted.
@@ -75,6 +111,9 @@ pub struct Page {
     pub digests: Vec<Digest>,
     /// The cursor for the next page; `None` only at the end.
     pub next: Option<Digest>,
+    /// The applied revision this page was served at, when the provider
+    /// issues revisions.
+    pub revision: Option<Revision>,
 }
 
 /// A retained root's identity, typically one stream's retained records.
@@ -102,14 +141,16 @@ impl RootId {
 }
 
 /// An atomically appended reference batch.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Retained {
     /// Distinct references in the batch.
     pub references: u64,
+    /// The committed revision of the batch, when the provider issues revisions.
+    pub revision: Option<Revision>,
 }
 
 /// One completed mark/sweep pass.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Collection {
     /// The collection epoch this pass began.
     pub epoch: u64,
@@ -119,6 +160,8 @@ pub struct Collection {
     pub swept: u64,
     /// Stored bytes removed.
     pub swept_bytes: u64,
+    /// A revision covering the sweep, when the provider issues revisions.
+    pub revision: Option<Revision>,
 }
 
 /// The account's unique stored bytes; every digest counts once.
@@ -176,6 +219,19 @@ impl Object {
         &self.head
     }
 
+    /// The applied revision this read was served at.
+    #[must_use]
+    pub const fn revision(&self) -> Option<&Revision> {
+        self.head.revision.as_ref()
+    }
+
+    /// Records the applied revision this read was served at.
+    #[must_use]
+    pub fn served_at(mut self, revision: Option<Revision>) -> Self {
+        self.head.revision = revision;
+        self
+    }
+
     /// Logical offset of the first selected byte.
     #[must_use]
     pub const fn start(&self) -> u64 {
@@ -226,7 +282,7 @@ pub trait Blobs: Send + Sync {
     async fn head(&self, digest: Digest) -> Result<Head, Error>;
 
     /// Deletes an unreferenced blob; a referenced one is refused, never broken.
-    async fn delete(&self, digest: Digest) -> Result<Delete, Error>;
+    async fn delete(&self, digest: Digest) -> Result<Deletion, Error>;
 
     /// Lists digests strictly after `after` in ascending order. A blob present
     /// for the whole traversal appears exactly once.
@@ -237,7 +293,7 @@ pub trait Blobs: Send + Sync {
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error>;
 
     /// Drops every batch of `root`. Repeating it is a no-op.
-    async fn release(&self, root: &RootId) -> Result<bool, Error>;
+    async fn release(&self, root: &RootId) -> Result<Released, Error>;
 
     /// Marks from every retained root and every blob admitted since the
     /// previous cut, then sweeps the rest. An incomplete root scan sweeps nothing.
@@ -245,6 +301,22 @@ pub trait Blobs: Send + Sync {
 
     /// Unique stored bytes in this account.
     async fn usage(&self) -> Result<Usage, Error>;
+
+    /// The applied-revision authority this account's reads are served from,
+    /// when the provider issues revisions. Servers park a read's minimum on it.
+    async fn revisions(&self) -> Result<Option<&acyclic_stream::AppliedRevisions>, Error> {
+        Ok(None)
+    }
+
+    /// Drops the participants of `minimum` the provider proves are already
+    /// visible, such as writes another instance over the same storage
+    /// committed. Servers park a read only on what remains.
+    async fn admitted(
+        &self,
+        minimum: acyclic_stream::RevisionCut,
+    ) -> Result<acyclic_stream::RevisionCut, Error> {
+        Ok(minimum)
+    }
 
     /// Ordered, individually atomic puts.
     async fn put_batch(&self, requests: Vec<(OwnedBytes, Vec<Digest>)>) -> Vec<Result<Put, Error>> {
@@ -327,7 +399,7 @@ impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
         (**self).head(digest).await
     }
-    async fn delete(&self, digest: Digest) -> Result<Delete, Error> {
+    async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
         (**self).delete(digest).await
     }
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
@@ -336,7 +408,7 @@ impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
         (**self).retain(root, references).await
     }
-    async fn release(&self, root: &RootId) -> Result<bool, Error> {
+    async fn release(&self, root: &RootId) -> Result<Released, Error> {
         (**self).release(root).await
     }
     async fn collect(&self) -> Result<Collection, Error> {
@@ -344,6 +416,15 @@ impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
     }
     async fn usage(&self) -> Result<Usage, Error> {
         (**self).usage().await
+    }
+    async fn revisions(&self) -> Result<Option<&acyclic_stream::AppliedRevisions>, Error> {
+        (**self).revisions().await
+    }
+    async fn admitted(
+        &self,
+        minimum: acyclic_stream::RevisionCut,
+    ) -> Result<acyclic_stream::RevisionCut, Error> {
+        (**self).admitted(minimum).await
     }
     async fn put_batch(&self, requests: Vec<(OwnedBytes, Vec<Digest>)>) -> Vec<Result<Put, Error>> {
         (**self).put_batch(requests).await

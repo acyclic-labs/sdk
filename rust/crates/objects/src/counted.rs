@@ -1,8 +1,8 @@
 //! Request accounting over the exact public blob boundary. Native arguments
 //! and results keep their original work and custody owners.
 use crate::{
-    Blobs, ByteRange, Collection, Delete, Digest, Error, Head, Manifest, Object, Page, Put,
-    Retained, RootId, Usage,
+    Blobs, ByteRange, Collection, Digest, Error, Head, Manifest, Object, Page, Put, Retained,
+    RootId, Usage,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
@@ -34,7 +34,7 @@ impl<P: Blobs> Blobs for Counted<P> {
         self.record(RequestClass::Head);
         self.inner().head(digest).await
     }
-    async fn delete(&self, digest: Digest) -> Result<Delete, Error> {
+    async fn delete(&self, digest: Digest) -> Result<crate::Deletion, Error> {
         self.record(RequestClass::Data);
         self.inner().delete(digest).await
     }
@@ -46,7 +46,7 @@ impl<P: Blobs> Blobs for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().retain(root, references).await
     }
-    async fn release(&self, root: &RootId) -> Result<bool, Error> {
+    async fn release(&self, root: &RootId) -> Result<crate::Released, Error> {
         self.record(RequestClass::Data);
         self.inner().release(root).await
     }
@@ -57,6 +57,15 @@ impl<P: Blobs> Blobs for Counted<P> {
     async fn usage(&self) -> Result<Usage, Error> {
         self.record(RequestClass::Metadata);
         self.inner().usage().await
+    }
+    async fn revisions(&self) -> Result<Option<&acyclic_stream::AppliedRevisions>, Error> {
+        self.inner().revisions().await
+    }
+    async fn admitted(
+        &self,
+        minimum: acyclic_stream::RevisionCut,
+    ) -> Result<acyclic_stream::RevisionCut, Error> {
+        self.inner().admitted(minimum).await
     }
     async fn put_batch(&self, requests: Vec<(OwnedBytes, Vec<Digest>)>) -> Vec<Result<Put, Error>> {
         self.record(RequestClass::Data);

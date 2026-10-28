@@ -82,6 +82,7 @@ fn verified(value: &wire::Verified) -> Result<Verified, Error> {
     Ok(Verified {
         digest: digest(value.digest.as_ref())?,
         length: value.length,
+        revision: None,
     })
 }
 
@@ -131,6 +132,7 @@ pub(crate) fn head(value: &wire::BlobInfo) -> Result<Head, Error> {
         },
         length: value.length,
         references: digests(&value.references)?,
+        revision: None,
     })
 }
 
@@ -177,6 +179,7 @@ pub(crate) fn page(value: &wire::ListBlobsResponse) -> Result<Page, Error> {
             .as_ref()
             .map(|next| digest(Some(next)))
             .transpose()?,
+        revision: None,
     };
     if page.digests.windows(2).any(|pair| pair[0] >= pair[1])
         || page
@@ -200,6 +203,7 @@ pub(crate) fn wire_page(value: &Page) -> wire::ListBlobsResponse {
 pub(crate) fn retained(value: &wire::RetainResponse) -> Retained {
     Retained {
         references: value.references,
+        revision: None,
     }
 }
 
@@ -210,6 +214,7 @@ pub(crate) fn collection(value: &wire::CollectResponse) -> Collection {
         marked: value.marked,
         swept: value.swept,
         swept_bytes: value.swept_bytes,
+        revision: None,
     }
 }
 

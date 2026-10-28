@@ -95,7 +95,7 @@ impl<P: Blobs> Client<P> {
     /// # Errors
     /// Returns the Objects release failure.
     pub async fn unpublish(&self, digest: &[u8; 32]) -> Result<bool, Error> {
-        Ok(self.objects.release(&code_root(digest)?).await?)
+        Ok(self.objects.release(&code_root(digest)?).await?.existed)
     }
 
     /// Deploy a named module exporting default.fetch without an actor export.

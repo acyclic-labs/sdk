@@ -75,13 +75,13 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     let created = first.put(body.clone(), Vec::new()).await;
     expect!(
         "put-created-then-already-exists-verified",
-        matches!(created, Ok(Put::Created { verified }) if verified.digest == digest && verified.length == 4096),
+        matches!(&created, Ok(Put::Created { verified }) if verified.digest == digest && verified.length == 4096),
         created
     );
     let again = first.put(body.clone(), Vec::new()).await;
     expect!(
         "put-created-then-already-exists-verified",
-        matches!(again, Ok(Put::AlreadyExists { verified }) if verified.digest == digest && verified.length == 4096),
+        matches!(&again, Ok(Put::AlreadyExists { verified }) if verified.digest == digest && verified.length == 4096),
         again
     );
 
@@ -234,7 +234,10 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     );
 
     // delete-refuses-live-references
-    let referenced = first.delete(left_digest).await;
+    let referenced = first
+        .delete(left_digest)
+        .await
+        .map(|deletion| deletion.outcome);
     expect!(
         "delete-refuses-live-references",
         referenced == Ok(Delete::Referenced),
@@ -253,10 +256,10 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     let retained = first.retain(&root, vec![rooted, rooted]).await;
     expect!(
         "delete-refuses-live-references",
-        matches!(retained, Ok(retained) if retained.references == 1),
+        matches!(&retained, Ok(retained) if retained.references == 1),
         retained
     );
-    let refused = first.delete(rooted).await;
+    let refused = first.delete(rooted).await.map(|deletion| deletion.outcome);
     expect!(
         "delete-refuses-live-references",
         refused == Ok(Delete::Referenced),
@@ -319,25 +322,25 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         code(&swept) == Some(ErrorCode::NotFound),
         swept
     );
-    let released = first.release(&root).await;
+    let released = first.release(&root).await.map(|released| released.existed);
     expect!(
         "collection-keeps-retained-closures",
         released == Ok(true),
         released
     );
-    let released_again = first.release(&root).await;
+    let released_again = first.release(&root).await.map(|released| released.existed);
     expect!(
         "collection-keeps-retained-closures",
         released_again == Ok(false),
         released_again
     );
-    let deleted = first.delete(rooted).await;
+    let deleted = first.delete(rooted).await.map(|deletion| deletion.outcome);
     expect!(
         "collection-keeps-retained-closures",
         deleted == Ok(Delete::Deleted),
         deleted
     );
-    let absent = first.delete(rooted).await;
+    let absent = first.delete(rooted).await.map(|deletion| deletion.outcome);
     expect!(
         "collection-keeps-retained-closures",
         absent == Ok(Delete::Absent),
@@ -420,7 +423,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
         code(&foreign_root) == Some(ErrorCode::MissingReference),
         foreign_root
     );
-    let foreign_delete = second.delete(digest).await;
+    let foreign_delete = second.delete(digest).await.map(|deletion| deletion.outcome);
     expect!(
         "cross-account-isolation",
         foreign_delete == Ok(Delete::Absent),
@@ -429,7 +432,7 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     let independent = second.put(body.clone(), Vec::new()).await;
     expect!(
         "cross-account-isolation",
-        matches!(independent, Ok(Put::Created { verified }) if verified.digest == digest),
+        matches!(&independent, Ok(Put::Created { verified }) if verified.digest == digest),
         independent
     );
     let foreign_list = second.list(None, 1000).await;

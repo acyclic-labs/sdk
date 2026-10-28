@@ -57,7 +57,7 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
                     .map_err(native_error)?
                     .await
                     .map_err(native_error)?;
-                *receipt.put()
+                receipt.put().clone()
             }
             _ => {
                 work.charge(WorkCounters {
@@ -122,7 +122,11 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
                     .await
                     .map_err(native_error)?;
                 finish_writes(
-                    results.map(|value| value.map(|receipt| *receipt.put()).map_err(native_error)),
+                    results.map(|value| {
+                        value
+                            .map(|receipt| receipt.put().clone())
+                            .map_err(native_error)
+                    }),
                     writes,
                     parts,
                     work,

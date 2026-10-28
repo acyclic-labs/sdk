@@ -78,6 +78,135 @@ async fn a_full_bounded_account_can_still_delete() -> Result<(), Box<dyn std::er
     Ok(())
 }
 
+#[tokio::test]
+async fn releases_and_sweeps_commit_revisions() -> Result<(), Box<dyn std::error::Error>> {
+    let blobs = crate::MemoryObjects::memory();
+    let put = blobs.put(OwnedBytes::from(vec![3; 8]), Vec::new()).await?;
+    let digest = put.verified().ok_or("a put verifies")?.digest;
+    let root = RootId::new(b"root".to_vec())?;
+    let retained = blobs.retain(&root, vec![digest]).await?;
+    let retained = retained.revision.ok_or("a retain commits")?;
+    let released = blobs.release(&root).await?;
+    assert!(released.existed);
+    let released = released.revision.ok_or("a release commits")?;
+    assert!(released.index > retained.index);
+    // Negative control: releasing nothing commits nothing.
+    let again = blobs.release(&root).await?;
+    assert!(!again.existed);
+    assert_eq!(again.revision.as_ref(), Some(&released));
+
+    let mut passes = Vec::new();
+    for _ in 0..3 {
+        passes.push(blobs.collect().await?);
+    }
+    let sweep = passes
+        .iter()
+        .position(|pass| pass.swept > 0)
+        .filter(|sweep| *sweep < 2)
+        .ok_or("an unretained blob is swept")?;
+    let swept = passes[sweep].revision.clone().ok_or("a sweep commits")?;
+    assert!(swept.index > released.index);
+    // Negative control: a pass that sweeps nothing commits nothing.
+    assert_eq!(passes[2].swept, 0);
+    assert_eq!(passes[2].revision.as_ref(), Some(&swept));
+    Ok(())
+}
+
+#[tokio::test]
+async fn stores_sharing_a_medium_serve_each_others_revisions()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_stream::{RevisionCut, StreamError};
+    let medium = MemoryMedium::default();
+    let first = Store::new(medium.clone()).account(b"shared")?;
+    let second = Store::new(medium).account(b"shared")?;
+    let applied = first.revisions().await?.ok_or("stores issue revisions")?;
+    let put = second.put(OwnedBytes::from(vec![4; 8]), Vec::new()).await?;
+    let written = put
+        .verified()
+        .and_then(|verified| verified.revision.clone())
+        .ok_or("a put commits a revision")?;
+    // Negative control: the first store's own authority cannot wait for it.
+    assert!(matches!(
+        applied.wait(&RevisionCut::of(written.clone())).await,
+        Err(StreamError::RevisionForeign)
+    ));
+    assert!(
+        first
+            .admitted(RevisionCut::of(written.clone()))
+            .await?
+            .is_empty()
+    );
+    // A run no store claimed is never admitted.
+    let unclaimed = acyclic_stream::Revision {
+        scope: acyclic_stream::RevisionScope::new(
+            [&written.scope.as_bytes()[..32], &9_u64.to_be_bytes()].concat(),
+        ),
+        ..written.clone()
+    };
+    assert!(!first.admitted(RevisionCut::of(unclaimed)).await?.is_empty());
+    // This run's own unissued index still waits on its exact applied index.
+    let own = applied.at(applied.current().index + 1);
+    let kept = first.admitted(RevisionCut::of(own)).await?;
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), applied.wait(&kept))
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn a_reopened_store_serves_tokens_from_before_the_restart()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_stream::RevisionCut;
+    let root = tempfile::tempdir()?;
+    let open = async |root: &std::path::Path| -> Result<_, Box<dyn std::error::Error>> {
+        let store = Store::new(crate::LocalMedium::open(root, Default::default(), None).await?);
+        Ok(store.account(b"restart")?)
+    };
+    let committed = |put: Put| {
+        put.verified()
+            .and_then(|verified| verified.revision.clone())
+    };
+
+    let before = open(root.path()).await?;
+    let written = committed(before.put(OwnedBytes::from(vec![1; 8]), Vec::new()).await?)
+        .ok_or("a put commits a revision")?;
+    drop(before);
+
+    let reopened = open(root.path()).await?;
+    assert!(
+        reopened
+            .admitted(RevisionCut::of(written.clone()))
+            .await?
+            .is_empty()
+    );
+    // The restarted run keeps the incarnation under its own run's scope.
+    let later = committed(
+        reopened
+            .put(OwnedBytes::from(vec![2; 8]), Vec::new())
+            .await?,
+    )
+    .ok_or("a put commits a revision")?;
+    assert_eq!(later.incarnation, written.incarnation);
+    assert_ne!(later.scope, written.scope);
+    drop(reopened);
+
+    // Negative control: a wiped store is a new incarnation.
+    std::fs::remove_dir_all(root.path())?;
+    std::fs::create_dir(root.path())?;
+    let wiped = open(root.path()).await?;
+    assert_eq!(
+        wiped
+            .admitted(RevisionCut::of(written))
+            .await
+            .map_err(|error| error.code),
+        Err(ErrorCode::RevisionForeign)
+    );
+    Ok(())
+}
+
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn local_store_passes_the_shared_suite_and_reopens() -> Result<(), Box<dyn std::error::Error>>
@@ -167,6 +296,8 @@ async fn ambiguous_publication_is_unknown_and_retry_safe() -> Result<(), Box<dyn
     let store = Store::new(Faulty::default());
     let blobs = store.account(b"account")?;
     let body = OwnedBytes::from(vec![1; 64]);
+    // The fault lands on the publication, not on opening the revisions.
+    blobs.revisions().await?;
     store.medium().faults.store(1, Ordering::SeqCst);
     assert_eq!(blobs.put(body.clone(), Vec::new()).await?, Put::Unknown);
     store.medium().faults.store(0, Ordering::SeqCst);
@@ -529,7 +660,7 @@ async fn delete_reads_only_its_inbound_index() -> Result<(), Box<dyn std::error:
     assert_eq!(blobs.delete(child).await?, Delete::Referenced);
     assert_eq!(blobs.delete(parent).await?, Delete::Deleted);
     assert_eq!(blobs.delete(child).await?, Delete::Referenced);
-    assert!(blobs.release(&root).await?);
+    assert!(blobs.release(&root).await?.existed);
     assert_eq!(blobs.delete(child).await?, Delete::Deleted);
     Ok(())
 }
@@ -621,9 +752,9 @@ async fn release_then_retain() -> Result<Delete, Box<dyn std::error::Error>> {
         release.notify_one();
         retained
     });
-    assert!(released?);
+    assert!(released?.existed);
     retained?;
-    Ok(retaining.delete(child).await?)
+    Ok(retaining.delete(child).await?.outcome)
 }
 
 #[tokio::test]
@@ -720,7 +851,10 @@ async fn stalled_delete_then_reput(
     ));
     others.retain(&RootId::new(*b"root")?, vec![digest]).await?;
     release.notify_one();
-    let deleted = stalled.await?.map_err(|error| error.code);
+    let deleted = stalled
+        .await?
+        .map(|deletion| deletion.outcome)
+        .map_err(|error| error.code);
     let readable = others.get(digest, ByteRange::FULL, 32).await.is_ok();
     Ok((deleted, readable))
 }

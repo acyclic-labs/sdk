@@ -37,11 +37,13 @@
 //! child; it never refuses wrongly in the unsafe direction.
 use crate::blob::{Envelope, corrupt, decode_batch, encode_batch, invalid};
 use crate::{
-    ByteRange, Collection, Delete, Digest, Error, Head, Kind, Manifest, Medium, MediumError,
-    MemoryMedium, Object, Page, Put, Retained, RootId, Usage, Verified, wire::ErrorCode,
+    ByteRange, Collection, Delete, Deletion, Digest, Error, Head, Kind, Manifest, Medium,
+    MediumError, MemoryMedium, Object, Page, Put, Released, Retained, RootId, Usage, Verified,
+    wire::ErrorCode,
 };
-use acyclic_stream::OwnedBytes;
+use acyclic_stream::{AppliedRevisions, OwnedBytes, Revision};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 const PAGE: usize = 1000;
@@ -65,6 +67,78 @@ impl<M> Clone for Store<M> {
 #[derive(Default)]
 struct State {
     gate: tokio::sync::RwLock<()>,
+    /// This account's revisions, opened from the medium on first use.
+    revisions: tokio::sync::OnceCell<Issued>,
+}
+
+/// One run's revisions of an account: every mutation commits the next index
+/// once its effect is visible, so `current` covers it. Each open of a store
+/// claims the next run of the account's stored incarnation, and each run is
+/// its own authority: the account's scope bytes followed by the run, so
+/// several stores over one medium never share an index sequence.
+struct Issued {
+    applied: AppliedRevisions,
+    issued: AtomicU64,
+    account: acyclic_stream::RevisionScope,
+    run: u64,
+}
+
+impl Issued {
+    fn new(account: acyclic_stream::RevisionScope, incarnation: u128, run: u64) -> Self {
+        let scope = [account.as_bytes(), &run.to_be_bytes()].concat();
+        Self {
+            applied: AppliedRevisions::new(
+                acyclic_stream::RevisionScope::new(scope),
+                incarnation,
+                0,
+            ),
+            issued: AtomicU64::new(0),
+            account,
+            run,
+        }
+    }
+
+    /// The run of this account that `scope` names, if any.
+    fn run_of(&self, scope: &acyclic_stream::RevisionScope) -> Option<u64> {
+        let run = scope.as_bytes().strip_prefix(self.account.as_bytes())?;
+        Some(u64::from_be_bytes(run.try_into().ok()?))
+    }
+
+    /// Commits one visible mutation.
+    fn commit(&self) -> Revision {
+        let index = self.issued.fetch_add(1, Ordering::AcqRel) + 1;
+        self.applied.advance(index);
+        self.applied.at(index)
+    }
+
+    /// Stamps a durable put with the revision committing it.
+    fn committed(&self, put: Put) -> Put {
+        match put {
+            Put::Created { mut verified } => {
+                verified.revision = Some(self.commit());
+                Put::Created { verified }
+            }
+            Put::AlreadyExists { mut verified } => {
+                verified.revision = Some(self.applied.current());
+                Put::AlreadyExists { verified }
+            }
+            Put::Unknown => Put::Unknown,
+        }
+    }
+}
+
+/// An account's stored incarnation: 16 incarnation bytes, then the last
+/// claimed run, both big-endian.
+fn incarnation_record(incarnation: u128, run: u64) -> OwnedBytes {
+    [incarnation.to_be_bytes().as_slice(), &run.to_be_bytes()]
+        .concat()
+        .into()
+}
+
+fn decode_incarnation(record: &[u8]) -> Result<(u128, u64), Error> {
+    let (incarnation, run) = record.split_first_chunk::<16>().ok_or_else(corrupt)?;
+    let run: [u8; 8] = run.try_into().map_err(|_| corrupt())?;
+    Ok((u128::from_be_bytes(*incarnation), u64::from_be_bytes(run)))
 }
 
 impl<M: Medium> Store<M> {
@@ -208,6 +282,46 @@ impl<M: Medium> Account<M> {
             &hex[..2],
             hex::encode(version)
         )
+    }
+
+    /// This account's revisions, opening them on first use.
+    async fn issued(&self) -> Result<&Issued, Error> {
+        self.state
+            .revisions
+            .get_or_try_init(|| self.open_revisions())
+            .await
+    }
+
+    fn incarnation_key(&self) -> String {
+        format!("{}incarnation", self.prefix)
+    }
+
+    /// Reads back the incarnation this account was created with, creating it
+    /// for a new or wiped account, and claims the next run.
+    async fn open_revisions(&self) -> Result<Issued, Error> {
+        let key = self.incarnation_key();
+        let account = AppliedRevisions::storage_scope("objects", self.prefix.as_bytes());
+        loop {
+            let Some(record) = self.medium.read(&key, None).await.map_err(medium)? else {
+                let incarnation = u128::from_be_bytes(version()?);
+                let record = incarnation_record(incarnation, 1);
+                if self.medium.create(&key, record).await.map_err(medium)? {
+                    return Ok(Issued::new(account, incarnation, 1));
+                }
+                continue;
+            };
+            let (incarnation, run) = decode_incarnation(&record)?;
+            let run = run.checked_add(1).ok_or_else(corrupt)?;
+            let claimed = incarnation_record(incarnation, run);
+            if self
+                .medium
+                .replace(&key, &record, claimed)
+                .await
+                .map_err(medium)?
+            {
+                return Ok(Issued::new(account, incarnation, run));
+            }
+        }
     }
 
     fn envelope_key(&self, digest: &Digest) -> String {
@@ -517,6 +631,7 @@ impl<M: Medium> Account<M> {
         let verified = Verified {
             digest,
             length: envelope.length,
+            revision: None,
         };
         match self
             .medium
@@ -567,6 +682,7 @@ impl<M: Medium> Account<M> {
             verified: Verified {
                 digest,
                 length: existing.length,
+                revision: None,
             },
         })
     }
@@ -668,6 +784,7 @@ impl<M: Medium> Account<M> {
             kind: envelope.kind,
             length: envelope.length,
             references: envelope.references,
+            revision: None,
         }
     }
 
@@ -677,6 +794,8 @@ impl<M: Medium> Account<M> {
         range: ByteRange,
         maximum_bytes: u64,
     ) -> Result<Object, Error> {
+        // Everything committed by `served` is visible to the read after it.
+        let served = self.issued().await?.applied.current();
         let envelope = self
             .envelope(&digest)
             .await?
@@ -711,11 +830,10 @@ impl<M: Medium> Account<M> {
         if body.len() as u64 != selected.end - selected.start {
             return Err(corrupt());
         }
-        Ok(Object::new(
-            Self::head_of(digest, envelope),
-            selected.start,
-            body,
-        ))
+        Ok(
+            Object::new(Self::head_of(digest, envelope), selected.start, body)
+                .served_at(Some(served)),
+        )
     }
 
     pub(crate) async fn put_inner(
@@ -724,6 +842,7 @@ impl<M: Medium> Account<M> {
         references: Vec<Digest>,
     ) -> Result<Put, Error> {
         let references = canonical(references);
+        let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
         let digest = Digest::of(&body);
         let length = body.len() as u64;
@@ -741,6 +860,7 @@ impl<M: Medium> Account<M> {
             },
         )
         .await
+        .map(|put| issued.committed(put))
     }
 }
 
@@ -755,6 +875,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
             return Err(invalid());
         }
         let length = manifest.length()?;
+        let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
         for part in &manifest.parts {
             let envelope = self
@@ -782,6 +903,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
             },
         )
         .await
+        .map(|put| issued.committed(put))
     }
 
     async fn get(
@@ -794,22 +916,36 @@ impl<M: Medium> crate::Blobs for Account<M> {
     }
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
+        let served = self.issued().await?.applied.current();
         let envelope = self
             .envelope(&digest)
             .await?
             .ok_or(Error::from(ErrorCode::NotFound))?;
-        Ok(Self::head_of(digest, envelope))
+        let mut head = Self::head_of(digest, envelope);
+        head.revision = Some(served);
+        Ok(head)
     }
 
-    async fn delete(&self, digest: Digest) -> Result<Delete, Error> {
+    async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
+        let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
-        self.remove_blob(digest, None).await
+        let outcome = self.remove_blob(digest, None).await?;
+        let revision = if outcome == Delete::Deleted {
+            issued.commit()
+        } else {
+            issued.applied.current()
+        };
+        Ok(Deletion {
+            outcome,
+            revision: Some(revision),
+        })
     }
 
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
         if limit == 0 {
             return Err(invalid());
         }
+        let served = self.issued().await?.applied.current();
         let after = after.map(|digest| self.envelope_key(&digest));
         let limit = usize::try_from(limit).map_err(|_| invalid())?;
         let keys = self
@@ -824,7 +960,11 @@ impl<M: Medium> crate::Blobs for Account<M> {
         let next = (digests.len() == limit)
             .then(|| digests.last().copied())
             .flatten();
-        Ok(Page { digests, next })
+        Ok(Page {
+            digests,
+            next,
+            revision: Some(served),
+        })
     }
 
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
@@ -832,6 +972,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
         if references.is_empty() {
             return Err(invalid());
         }
+        let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
         let batch = encode_batch(&references);
         // Each retain owns its batch and keys, so a concurrent release of an
@@ -854,10 +995,12 @@ impl<M: Medium> crate::Blobs for Account<M> {
         }
         Ok(Retained {
             references: references.len() as u64,
+            revision: Some(issued.commit()),
         })
     }
 
-    async fn release(&self, root: &RootId) -> Result<bool, Error> {
+    async fn release(&self, root: &RootId) -> Result<Released, Error> {
+        let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
         let batches = self.list_all(&self.root_prefix(root)).await?;
         for (key, _) in &batches {
@@ -873,10 +1016,19 @@ impl<M: Medium> crate::Blobs for Account<M> {
             let tag = Self::batch_tag(root, key.rsplit('/').next().ok_or_else(corrupt)?);
             self.unreference(&references, &tag).await?;
         }
-        Ok(!batches.is_empty())
+        let revision = if batches.is_empty() {
+            issued.applied.current()
+        } else {
+            issued.commit()
+        };
+        Ok(Released {
+            existed: !batches.is_empty(),
+            revision: Some(revision),
+        })
     }
 
     async fn collect(&self) -> Result<Collection, Error> {
+        let issued = self.issued().await?;
         let _gate = self.state.gate.write().await;
         let fence = self.revision().await?;
         let epoch = fence + 1;
@@ -970,7 +1122,67 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 self.medium.remove(&key).await.map_err(medium)?;
             }
         }
+        collection.revision = Some(if collection.swept > 0 {
+            issued.commit()
+        } else {
+            issued.applied.current()
+        });
         Ok(collection)
+    }
+
+    async fn revisions(&self) -> Result<Option<&AppliedRevisions>, Error> {
+        Ok(Some(&self.issued().await?.applied))
+    }
+
+    /// Every run commits only after its write is visible on the medium, so a
+    /// minimum in another claimed run of this incarnation is already applied
+    /// here. This run's own minimum still waits on its exact applied index.
+    async fn admitted(
+        &self,
+        mut minimum: acyclic_stream::RevisionCut,
+    ) -> Result<acyclic_stream::RevisionCut, Error> {
+        let issued = self.issued().await?;
+        let incarnation = issued.applied.current().incarnation;
+        let runs: Vec<_> = minimum
+            .iter()
+            .filter_map(|wanted| {
+                let run = issued.run_of(&wanted.scope)?;
+                Some((wanted.scope.clone(), wanted.incarnation, run))
+            })
+            .collect();
+        let mut claimed = None;
+        for (scope, wanted, run) in runs {
+            if wanted != incarnation {
+                return Err(ErrorCode::RevisionForeign.into());
+            }
+            if run == issued.run {
+                continue;
+            }
+            if run > issued.run {
+                let claimed = match claimed {
+                    Some(claimed) => claimed,
+                    None => {
+                        let record = self
+                            .medium
+                            .read(&self.incarnation_key(), None)
+                            .await
+                            .map_err(medium)?
+                            .ok_or(Error::from(ErrorCode::RevisionForeign))?;
+                        let (stored, run) = decode_incarnation(&record)?;
+                        if stored != incarnation {
+                            return Err(ErrorCode::RevisionForeign.into());
+                        }
+                        *claimed.insert(run)
+                    }
+                };
+                // A run nobody claimed issued nothing; the wait refuses it.
+                if run > claimed {
+                    continue;
+                }
+            }
+            minimum.forget(&scope);
+        }
+        Ok(minimum)
     }
 
     async fn usage(&self) -> Result<Usage, Error> {
