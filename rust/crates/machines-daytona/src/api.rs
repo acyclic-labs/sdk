@@ -249,8 +249,11 @@ impl DaytonaApi {
         if config.api_key.is_empty() {
             return Err(ProviderError::Invalid("Daytona API key is empty".into()));
         }
-        let http = reqwest::Client::builder()
-            .timeout(config.request_timeout)
+        let mut http = reqwest::Client::builder();
+        if let Some(timeout) = config.request_timeout {
+            http = http.timeout(timeout);
+        }
+        let http = http
             .build()
             .map_err(|error| ProviderError::Invalid(format!("HTTP client: {error}")))?;
         Ok(Self {
