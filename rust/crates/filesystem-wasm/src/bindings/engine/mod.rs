@@ -171,18 +171,14 @@ impl BrowserFs {
                     fs.create_volume_with_id(
                         volume_id,
                         config,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
+                        acyclic_fs::WorkBudget::UNBOUNDED,
                         &cancellation,
                     )
                     .await
                 }
                 None => {
-                    fs.create_volume(
-                        config,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
-                    .await
+                    fs.create_volume(config, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+                        .await
                 }
             }
             .map_err(js_error)?;
@@ -201,11 +197,7 @@ impl BrowserFs {
         let (engine, acquisition_work) = {
             let fs = self.engine.as_ref().ok_or_else(closed_error)?;
             let receipt = fs
-                .open_volume(
-                    volume_id,
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
-                    &cancellation,
-                )
+                .open_volume(volume_id, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(js_error)?;
             (receipt.value, receipt.work)
@@ -231,7 +223,7 @@ impl BrowserFs {
             .export_object(
                 object_id,
                 maximum_bytes,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -258,7 +250,7 @@ impl BrowserFs {
             .import_object(
                 object_id,
                 bytes,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -289,7 +281,7 @@ impl BrowserFs {
                 TransferCursor::new(cursor),
                 maximum_objects,
                 maximum_object_bytes,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -335,7 +327,7 @@ impl BrowserFs {
                 TransferCursor::new(cursor),
                 &objects,
                 maximum_objects,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -363,7 +355,7 @@ impl BrowserFs {
                 .restore_volume(
                     &manifest,
                     operation_id,
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
                     &cancellation,
                 )
                 .await
