@@ -9,14 +9,14 @@ use crate::{
     AgentId, Capabilities, ConversationId, Error, IdempotencyKey, InteractionId, OperationId,
     Result,
     conversation::{
-        BoundedContentFuture, ContentHold, ContentPublisher, ContentResidencyVerifier, FileRef,
-        Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+        ContentPublisher, ContentResidencyVerifier, FileRef, Limits, VolumeClass, VolumeOperation,
+        VolumeOwner, VolumeRef,
     },
     core::{Action, AggregateKind, Authority, AuthorityRoot, Command, SchemaRegistry, Scope},
     executor::ExecutionJournal,
     interaction::{InteractionOutcome, InteractionResponse},
     resources::{GenerationRef, ProviderRef},
-    runtime::RuntimeScope,
+    runtime::{ContentBindings, RuntimeScope},
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
 };
 use acyclic_fs::{
@@ -39,11 +39,7 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     agent: AgentId,
     maximum_file_bytes: u64,
     filesystem: Fs<A, O>,
-) -> Result<(
-    Arc<FilesystemHost<A, O>>,
-    VolumeRef,
-    Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
-)> {
+) -> Result<(Arc<FilesystemHost<A, O>>, VolumeRef)> {
     if maximum_file_bytes == 0 {
         return Err(Error::Invalid(
             "memory Harness file limit must be positive".into(),
@@ -65,15 +61,6 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
         VolumeOwner::Agent(agent),
         &mut None,
     )?;
-    let memory_store = Arc::new(std::sync::Mutex::new(
-        crate::memory_store::MemoryStore::new(
-            volume.clone(),
-            maximum_file_bytes,
-            crate::conversation::MAX_PATH_BYTES as u64,
-            u64::MAX,
-            u64::MAX,
-        )?,
-    ));
     host.create_volume(&volume).await?;
     #[cfg(not(target_arch = "wasm32"))]
     let host = {
@@ -81,7 +68,7 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
         let workspace = host.open(&reference, None).await?;
         host.for_workspace(&volume, workspace)?
     };
-    Ok((host, volume, memory_store))
+    Ok((host, volume))
 }
 
 async fn bind_memory_conversation<P: StreamProvider>(
@@ -132,7 +119,7 @@ pub struct MemoryHarnessStorage<
 > {
     journal: Arc<FilesystemExecutionJournal<P, A, O>>,
     content_verifier: Arc<FilesystemContentVerifier<A, O>>,
-    publisher: Arc<MemoryContentPublisher<A, O>>,
+    publisher: Arc<FilesystemContentPublisher<A, O>>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     #[cfg(test)]
@@ -144,13 +131,10 @@ pub struct MemoryHarnessStorage<
     stream: Arc<P>,
     conversation: Authority,
     maximum_file_bytes: u64,
-    memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
 
 mod listing;
-mod publisher;
 use listing::LocalListFilesTool;
-use publisher::MemoryContentPublisher;
 
 impl MemoryHarnessStorage {
     /// Creates an agent-owned private volume and a bound conversation before any turn or interaction can publish a reference.
@@ -240,8 +224,7 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
         filesystem: Fs<A, O>,
         stream: Arc<P>,
     ) -> Result<Self> {
-        let (host, volume, memory_store) =
-            new_memory_content(agent, maximum_file_bytes, filesystem).await?;
+        let (host, volume) = new_memory_content(agent, maximum_file_bytes, filesystem).await?;
         let conversation = Authority {
             kind: AggregateKind::Conversation,
             id: ConversationId::new().to_string(),
@@ -287,17 +270,14 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
             .with_input_verifier(input.clone()),
         );
         bind_memory_conversation(&stream, &conversation, &verifier, &scope, agent).await?;
-        let publisher = Arc::new(MemoryContentPublisher {
-            files: FilesystemContentPublisher::new(
-                Arc::clone(&host),
-                &volume,
-                &verifier,
-                &scope,
-                maximum_file_bytes,
-                None,
-            )?,
-            memory_store: memory_store.clone(),
-        });
+        let publisher = FilesystemContentPublisher::new(
+            Arc::clone(&host),
+            &volume,
+            &verifier,
+            &scope,
+            maximum_file_bytes,
+            None,
+        )?;
         Ok(Self {
             journal,
             content_verifier: input,
@@ -313,7 +293,6 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
             stream,
             conversation,
             maximum_file_bytes,
-            memory_store,
         })
     }
 
@@ -327,6 +306,15 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
     #[must_use]
     pub const fn volume(&self) -> &VolumeRef {
         &self.volume
+    }
+
+    /// Composes the authenticated private volume with a caller-selected runtime.
+    #[must_use]
+    pub fn content_bindings(&self) -> ContentBindings {
+        ContentBindings {
+            reader: self.content_verifier.clone(),
+            writer: Some(self.publisher.clone()),
+        }
     }
 
     /// Borrows the authenticated reader for context and client adapters.
@@ -461,8 +449,7 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
         path: &str,
         expected_generation: Option<&GenerationRef>,
     ) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
-        let resolved = self
-            .delegated_reader(scope)?
+        self.delegated_reader(scope)?
             .read_private_path(
                 &self.volume,
                 granted_prefix,
@@ -472,19 +459,7 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
                 crate::conversation::ContentAccess::default(),
             )?
             .await
-            .map(|(file, bytes, _)| (file, bytes))?;
-        let core = self
-            .memory_store
-            .lock()
-            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?;
-        let shared = core.read_path(path, None);
-        match shared {
-            Ok(reference) if reference == resolved.0 => {
-                let bytes = core.read(&reference)?;
-                Ok((reference, bytes.into()))
-            }
-            _ => Ok(resolved),
-        }
+            .map(|(file, bytes, _)| (file, bytes))
     }
 
     fn delegated_reader(&self, scope: &Scope) -> Result<Arc<FilesystemContentVerifier<A, O>>> {

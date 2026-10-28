@@ -34,7 +34,8 @@ pub use commit::{
     Spawn, Submitted, archive, create_root, inbox_tail, intent_key, send, spawn, submit,
 };
 pub use driver::{
-    ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, approval_intent, model_input, turn_id,
+    ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnOutputs, approval_intent,
+    model_input, turn_id,
 };
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};

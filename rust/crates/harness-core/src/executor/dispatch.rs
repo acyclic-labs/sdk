@@ -344,6 +344,9 @@ impl StockExecution<'_> {
         let request_key = with_history_io(io, |work| {
             preparation_format(format_args!("{purpose_key}:{step}:request"), work)
         })?;
+        // A claim acquires the dispatch: its key names this attempt, so a
+        // racer at the same tail is refused instead of recognised as a retry
+        // and dispatching the model a second time. Settlements stay stable.
         let claim_key = with_history_io(io, |work| {
             preparation_format(
                 format_args!("{purpose_key}:{step}:claim:{}", OperationId::new()),

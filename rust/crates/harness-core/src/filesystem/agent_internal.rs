@@ -1,13 +1,15 @@
 //! Internal files of one agent on its private volume, in the internal
 //! interaction area: no content writer or tool write grant reaches it, so only
 //! the agent's host creates them. Approval files and the effects of agent tool
-//! calls both live here, each created exactly once.
+//! calls both live here, each created exactly once. Settled turn outputs live
+//! in the inherited conversation area, which an exact-version grant reaches.
 
 use super::{FilesystemHost, InternalContentClass};
 use crate::{
-    IdempotencyKey, Result,
+    IdempotencyKey, OperationId, Result,
+    agent::TurnOutputs,
     approvals::{ApprovalCreate, ApprovalFiles},
-    conversation::{ContentGrant, VolumeRef},
+    conversation::{ContentGrant, FileRef, VolumeRef},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, CancellationToken, WorkBudget};
 use acyclic_stream::BoxProviderFuture;
@@ -178,6 +180,40 @@ where
             }
             after = page.entries.last().map(|entry| entry.name.clone());
         }
+    }
+}
+
+impl<A, O> TurnOutputs for AgentInternalFiles<A, O>
+where
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    fn stage<'a>(
+        &'a self,
+        turn: OperationId,
+        bytes: &'a [u8],
+    ) -> BoxProviderFuture<'a, Result<FileRef>> {
+        Box::pin(async move {
+            // One identity per turn: a re-run turn replays the same output.
+            let path = format!(
+                "{}turns/{turn}.json",
+                InternalContentClass::Conversation.prefix()
+            );
+            self.host
+                .put_internal_content(
+                    &self.volume,
+                    &self.grant,
+                    &path,
+                    bytes,
+                    "application/json",
+                    "output.json",
+                    bytes.len() as u64,
+                    &IdempotencyKey(format!("turn-output:{turn}")),
+                    InternalContentClass::Conversation,
+                    None,
+                )
+                .await
+        })
     }
 }
 

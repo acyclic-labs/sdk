@@ -22,6 +22,16 @@ use std::{
 /// refuses, and `stage` names one fixed output file.
 struct Unused;
 
+impl acyclic_harness_core::agent::TurnOutputs for Unused {
+    fn stage<'a>(
+        &'a self,
+        _: OperationId,
+        _: &'a [u8],
+    ) -> BoxFuture<'a, acyclic_harness_core::Result<FileRef>> {
+        Box::pin(async { file("output.json") })
+    }
+}
+
 fn unused<T>() -> acyclic_harness_core::Result<T> {
     Err(CoreError::Unsupported("unused test journal".into()))
 }
@@ -183,6 +193,7 @@ impl TurnHost for Host {
             selected: None,
             approvals: None,
             effects: Some(self.0.clone()),
+            outputs: Arc::new(Unused),
             goal: self
                 .1
                 .clone()

@@ -18,9 +18,12 @@ use crate::{
     agent::{
         AgentPath, AgentRecord, AgentState, ConversationEntry, OpenTurn, TurnHost, VolumeBinding,
     },
-    conversation::{FileRef, ModelContextSelection, VolumeClass, VolumeOperation, VolumeOwner},
+    conversation::{
+        ContentResidencyVerifier, FileRef, ModelContextSelection, VolumeClass, VolumeOperation,
+        VolumeOwner,
+    },
     core::{AggregateKind, Authority, AuthorityRoot, AuthorityVerifier, SchemaRegistry, Scope},
-    executor::{ExecutionJournal, Executor, TurnOutput},
+    executor::{Executor, TurnOutput},
     model::{ModelContent, ModelContentPart, ModelMessage, ModelRole},
     projection::SelectedModelContext,
     runtime::ContentBindings,
@@ -700,10 +703,12 @@ fn prompt_id(prompt: &str) -> uuid::Uuid {
 
 /// The selection of the system `prompt`, `history` and the current `input`:
 /// one user and one assistant message per settled turn, assistant text read
-/// from its staged output. Without either there is no selection.
+/// from its staged output through `reader`, which holds each output's exact
+/// version grant. Without either there is no selection.
 async fn select(
     agent: &AgentState,
-    journal: &dyn ExecutionJournal,
+    reader: &dyn ContentResidencyVerifier,
+    maximum_bytes: u64,
     prompt: Option<&str>,
     history: Vec<ConversationEntry>,
     turn: OperationId,
@@ -723,7 +728,9 @@ async fn select(
     }
     for entry in history {
         let settled = crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?;
-        let bytes = journal.load(&entry.output, None)?.await?;
+        let bytes = reader
+            .read(&entry.output, maximum_bytes, None, None)?
+            .await?;
         let output: TurnOutput = serde_json::from_slice(&bytes)
             .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
         messages.push(ModelMessage {
@@ -768,26 +775,18 @@ where
         Box::pin(async move {
             // The admission is verified before the turn's first read.
             let admitted = self.admit(agent)?;
-            // An inherited turn staged its output on an ancestor's private
-            // volume, which this agent's grants do not reach; the model
-            // context holds this agent's own settled turns.
-            let own = agent
-                .volumes
-                .iter()
-                .find(|binding| binding.name == PRIVATE_VOLUME)
-                .map(|binding| &binding.volume);
-            let history: Vec<ConversationEntry> = self
-                .history(&admitted, agent)
-                .await?
-                .into_iter()
-                .filter(|entry| Some(entry.output.volume()) == own)
-                .collect();
-            // Every input the model context names, retained history included,
-            // stays readable by its exact version.
+            // The model context holds every settled turn of the agent's
+            // conversation, inherited ones included: a spawned child is a
+            // clone of its parent at the fork cut.
+            let history = self.history(&admitted, agent).await?;
+            // Every file the model context names stays readable by its exact
+            // version: the inputs, and each settled output, which an inherited
+            // turn staged on an ancestor's private volume.
             let mut external = input_files(input);
             for entry in &history {
                 let content = crate::agent::model_input(&entry.input).map_err(agent_error)?;
                 external.extend(input_files(&content));
+                external.push(entry.output.clone());
             }
             // A spawned agent runs under the approval policy it inherited,
             // staged on an ancestor's private volume: it reads that exact file.
@@ -821,13 +820,15 @@ where
                 approval: Arc::new(resolved.bind()?),
                 effects: effects.clone(),
             };
+            let outputs = Arc::clone(&files);
             let approvals = Arc::new(AgentApprovals::new(files, Arc::new(policy)));
             let journal = journal
                 .with_stop(stop)
                 .with_agent_approvals(Arc::clone(&approvals));
             let selected = select(
                 agent,
-                &journal,
+                &*authority.content.reader,
+                self.limits.maximum_bytes,
                 self.prompt.as_deref(),
                 history,
                 turn,
@@ -850,6 +851,7 @@ where
                 approvals: Some(approvals),
                 effects,
                 goal,
+                outputs,
             })
         })
     }

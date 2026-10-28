@@ -280,7 +280,7 @@ async fn project_message(
         "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
             attachments::native_image(limits.render_bytes, io)?
         }
-        kind if kind.starts_with("text/")
+        kind if FileProjectionPolicy::is_text(kind)
             && message.content.descriptor().byte_length() <= limits.render_bytes =>
         {
             FileProjectionPolicy::BoundedFull

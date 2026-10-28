@@ -15,6 +15,14 @@ pub enum FileProjectionPolicy {
     Native(Box<NativeMediaPolicy>),
 }
 impl FileProjectionPolicy {
+    /// Whether a file of `media_type` projects as bounded text
+    /// ([`Self::BoundedFull`]): any `text/*` type, and JSON, the format of the
+    /// harness's own records, a child agent's settled result among them.
+    #[must_use]
+    pub fn is_text(media_type: &str) -> bool {
+        media_type.starts_with("text/") || media_type == "application/json"
+    }
+
     pub(super) fn validate_file(
         &self,
         file: &FileRef,

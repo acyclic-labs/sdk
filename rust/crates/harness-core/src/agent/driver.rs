@@ -42,6 +42,19 @@ pub struct OpenTurn {
     /// The agent's goal file, checked once when the turn settles; `None` when
     /// the host runs no goals.
     pub goal: Option<Arc<dyn super::TurnGoal>>,
+    /// Where the turn's settled output is staged.
+    pub outputs: Arc<dyn TurnOutputs>,
+}
+
+/// Settled turn outputs: conversation content, which every fork of the agent
+/// inherits with its conversation and reads by exact version.
+pub trait TurnOutputs: acyclic_stream::ProviderPlatform {
+    /// Stages `turn`'s output `bytes` once and names the staged file.
+    fn stage<'a>(
+        &'a self,
+        turn: OperationId,
+        bytes: &'a [u8],
+    ) -> BoxFuture<'a, crate::Result<FileRef>>;
 }
 
 /// Host binding of agent turns to an executor and journal.
@@ -271,12 +284,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 ExecutionProgress::Ready(output) => {
                     let bytes = crate::contract::canonical_json_bytes(&output)
                         .map_err(|error| host_error(error.into()))?;
-                    let output = open
-                        .journal
-                        .stage(turn, "agent-turn-output", &bytes, "application/json", None)
-                        .map_err(host_error)?
-                        .await
-                        .map_err(host_error)?;
+                    let output = open.outputs.stage(turn, &bytes).await.map_err(host_error)?;
                     // An active goal continues the agent through its own inbox.
                     let goal = match &open.goal {
                         Some(goal) => super::goal::settle(agent, &input, turn, &**goal).await?,
