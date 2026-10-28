@@ -165,7 +165,7 @@ The browser adapter uses real `BrowserStream` and `IndexedDbObjectStore` provide
 ```sh
 bash scripts/run-browser-tests.sh cargo test --locked -p acyclic-fs \
   --no-default-features --features browser,memory,conformance \
-  --target wasm32-unknown-unknown --test browser_commit public_conformance
+  --target wasm32-unknown-unknown --test main browser_commit::conformance::browser_public_conformance_benchmark
 ```
 
 The runner uses installed Chrome/Chromedriver. Set `CHROME_BINARY_DIR` and

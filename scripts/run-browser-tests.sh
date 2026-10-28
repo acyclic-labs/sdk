@@ -17,7 +17,7 @@ cleanup() {
 command=("$@")
 trap cleanup EXIT
 if (( $# == 0 )); then
-    echo 'Expected a test command, for example: cargo test --locked -p acyclic-fs --no-default-features --features browser,memory,conformance --target wasm32-unknown-unknown --test browser_commit public_conformance' >&2
+    echo 'Expected a test command, for example: cargo test --locked -p acyclic-fs --no-default-features --features browser,memory,conformance --target wasm32-unknown-unknown --test main browser_commit::conformance::browser_public_conformance_benchmark' >&2
     exit 2
 fi
 step=temporary-directory

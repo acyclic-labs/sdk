@@ -185,9 +185,10 @@ test("fs Session qualification instruments real provider and Session locks and r
       if (command === "cargo") {
         assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
         assert.ok(args.includes("memory,session,acyclic-stream/local"));
-        assert.ok(args.includes("session_fs_model"));
-        return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: "session_fs_model" } }) };
+        assert.ok(args.includes("main"));
+        return { status: 0, stderr: "", stdout: JSON.stringify({ ...artifact, target: { name: "main" } }) };
       }
+      assert.match(args[0], /^session_fs_model::change_resume_exhausts_/);
       assert.equal(args[1], "--exact");
       assert.equal(options.timeout, 9500);
       models++;
@@ -285,16 +286,16 @@ test("qualification rejects failed builds and missing or ambiguous artifacts", (
 });
 
 
-test("filesystem qualification models the production mutex only in its dedicated target", () => {
+test("filesystem qualification selects every retained binding model in the unified target", () => {
   const calls = [];
   qualifyFsBindingLoom(["--all-features"], (command, args) => {
     calls.push([command, args]);
-    const fs = { ...artifact, target: { name: "native_binding_model" } };
-    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(fs) : summary(3) };
+    const fs = { ...artifact, target: { name: "main" } };
+    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(fs) : summary(5, 0, 4) };
   });
   assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-fs", "--test", "native_binding_model", "--all-features", "--features", "model-checking", "--", "--cfg", "loom"]],
-    ["model-binary", []],
+    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-fs", "--test", "main", "--all-features", "--features", "model-checking", "--", "--cfg", "loom"]],
+    ["model-binary", ["native_binding_model::"]],
   ]);
   assertGateStep(["--fs-binding", "--all-features"]);
 });

@@ -138,8 +138,8 @@ export function qualifyNativeProgressLoom(run = spawnSync) {
 }
 
 export function qualifyFsBindingLoom(features = [], run = spawnSync) {
-  return qualifyLoom("acyclic-fs", "native_binding_model", features, run, {
-    targetCfg: ["--", "--cfg", "loom"],
+  return qualifyLoom("acyclic-fs", "main", features, run, {
+    targetCfg: ["--", "--cfg", "loom"], suites: [["native_binding_model::", 5]],
   });
 }
 
@@ -154,13 +154,13 @@ export function qualifyFsPolicyLoom(run = spawnSync) {
 }
 
 export function qualifySessionFsLoom(run = spawnSync) {
-  return qualifyLoom("acyclic-fs", "session_fs_model", [
+  return qualifyLoom("acyclic-fs", "main", [
     "--no-default-features", "--features", "memory,session,acyclic-stream/local",
   ], run, {
     env: loomEnvironment(),
     targetCfg: [], timeout: 9500,
-    filters: ["change_resume_exhausts_append_registration_and_wakeup",
-      "change_resume_exhausts_independent_history_replacement"],
+    filters: ["session_fs_model::change_resume_exhausts_append_registration_and_wakeup",
+      "session_fs_model::change_resume_exhausts_independent_history_replacement"],
   });
 }
 

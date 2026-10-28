@@ -27,7 +27,7 @@ fn standalone_materialization_bootstraps_native_io() -> Result<(), Box<dyn std::
             std::process::Command::new(std::env::current_exe()?)
                 .args([
                     "--exact",
-                    "standalone_materialization_bootstraps_native_io",
+                    "materialization_bootstrap::standalone_materialization_bootstraps_native_io",
                     "--test-threads=1",
                 ])
                 .env(MODE, mode),

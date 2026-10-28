@@ -17,43 +17,6 @@ categories = ["filesystem", "data-structures"]
 name = "main"
 path = "tests/main.rs"
 
-[[test]]
-name = "transaction_create_batch"
-path = "tests/transaction_create_batch.rs"
-required-features = ["memory", "distributed"]
-
-[[test]]
-name = "shared_storage_contract"
-path = "tests/shared_storage_contract.rs"
-
-[[test]]
-name = "windows_ntfs_perf"
-path = "tests/windows_ntfs_perf.rs"
-required-features = ["local", "native-mount"]
-
-[[test]]
-name = "materialization_bootstrap"
-path = "tests/materialization_bootstrap.rs"
-required-features = ["memory", "native-mount"]
-
-[[test]]
-name = "mount-qualification"
-path = "tests/mount_qualification.rs"
-
-[[test]]
-name = "package-install"
-path = "tests/package_install.rs"
-
-[[test]]
-name = "fs_concurrency_bench"
-path = "tests/fs_concurrency_bench.rs"
-required-features = ["memory", "distributed"]
-
-[[test]]
-name = "browser_commit"
-path = "tests/browser_commit.rs"
-required-features = ["memory", "browser"]
-
 [[bench]]
 name = "lease_paths"
 harness = false
@@ -63,21 +26,6 @@ required-features = ["memory"]
 name = "lease_paths_alloc"
 harness = false
 required-features = ["memory"]
-
-[[test]]
-name = "native_binding_model"
-path = "tests/native_binding_model.rs"
-required-features = ["native-mount"]
-
-[[test]]
-name = "native_stage_loom"
-path = "tests/native_stage_loom.rs"
-required-features = ["native-mount", "model-checking"]
-
-[[test]]
-name = "native_view_table_loom"
-path = "tests/native_view_table_loom.rs"
-required-features = ["native-mount", "model-checking"]
 
 [[bench]]
 name = "filesystem"
@@ -279,8 +227,3 @@ required-features = ["memory"]
 name = "object_batches_alloc"
 harness = false
 required-features = ["memory"]
-
-[[test]]
-name = "session_fs_model"
-path = "tests/session_fs_model.rs"
-required-features = ["memory", "session", "model-checking"]
