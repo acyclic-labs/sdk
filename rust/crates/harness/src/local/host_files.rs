@@ -24,9 +24,8 @@ mod tests;
 
 /// Reserved inside the host's existing writable workspace; never a state path.
 pub const DIRECTORY: &str = ".acyclic-sdk/host-files";
-const MAXIMUM_BYTES: u64 = 65_536;
-/// Bound of one agent's status file: the replies of its in-flight requests.
-const STATUS_BYTES: u64 = 16 * MAXIMUM_BYTES;
+/// Unread reply credit per agent. A single larger reply always makes progress.
+const STATUS_BYTES: usize = 1 << 20;
 /// Status key of requests that name no agent yet.
 const WORKSPACE: &str = "workspace";
 
@@ -181,11 +180,6 @@ pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
         action,
     };
     let bytes = serde_json::to_vec(&request).map_err(storage)?;
-    if bytes.len() as u64 > MAXIMUM_BYTES {
-        return Err(Error::Invalid(
-            "native host request exceeds file bound".into(),
-        ));
-    }
     let mut replies = REPLIES
         .lock()
         .map_err(|_| Error::Conflict("native reply wait poisoned".into()))?;
@@ -268,7 +262,7 @@ fn reply(status: &Path, operation: OperationId) -> Result<Option<Value>> {
         let Some((_, path)) = latest(status)? else {
             return Ok(None);
         };
-        let bytes = match bounded_bytes(&path, STATUS_BYTES) {
+        let bytes = match regular_bytes(&path) {
             Ok(bytes) => bytes,
             // Superseded between listing and reading: its successor exists.
             Err(Error::NotFound(_)) => continue,
@@ -287,8 +281,11 @@ fn reply(status: &Path, operation: OperationId) -> Result<Option<Value>> {
 #[derive(Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Status {
-    /// Each encoded reply, held as its exact bytes so the status bound holds.
+    /// Each complete encoded reply, held as its exact bytes.
     replies: BTreeMap<OperationId, Box<serde_json::value::RawValue>>,
+    /// Writer-side credit; the serialized status contains only complete replies.
+    #[serde(skip)]
+    retained_bytes: usize,
 }
 
 fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
@@ -453,39 +450,39 @@ async fn serve_requests(
             pending.push(request);
         }
         // A withdrawn request's reply is read: drop it from its status before
-        // any capacity check, so the space it frees serves this same scan.
+        // dispatch, so retained replies track only live requests.
         for (operation, key) in published
             .answered
             .extract_if(.., |operation, _| !present.contains(operation))
         {
             if let Some((_, status)) = published.statuses.get_mut(&key) {
-                status.replies.remove(&operation);
+                if let Some(reply) = status.replies.remove(&operation) {
+                    status.retained_bytes -= reply.get().len();
+                }
             }
             changed_keys.insert(key);
         }
         for request in pending {
             let key = status_key(&request.action);
             let status = published.statuses.entry(key.clone()).or_default();
-            // The whole prospective entry: its key, separators and a reply
-            // at its bound, stored byte for byte.
-            let size = serde_json::to_vec(&status.1).map_err(storage)?.len() as u64;
-            let entry = serde_json::to_vec(&request.operation)
-                .map_err(storage)?
-                .len() as u64
-                + 2
-                + MAXIMUM_BYTES;
-            if size + entry > STATUS_BYTES {
-                // Full of unread replies: dispatch once a client withdraws.
+            // Credit delays the next request until unread replies are withdrawn.
+            // The request admitted with positive credit may produce any size reply.
+            if status.1.retained_bytes >= STATUS_BYTES {
                 continue;
             }
             let operation = request.operation;
             let outcome = owner.dispatch(request.operation, request.action).await;
-            let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
+            let bytes = crate::client::encode_command_result(0, &outcome)?;
             let reply = String::from_utf8(bytes)
                 .map_err(storage)
                 .and_then(|reply| {
                     serde_json::value::RawValue::from_string(reply).map_err(storage)
                 })?;
+            status.1.retained_bytes = status
+                .1
+                .retained_bytes
+                .checked_add(reply.get().len())
+                .ok_or_else(|| Error::Invalid("native reply storage arithmetic overflow".into()))?;
             status.1.replies.insert(operation, reply);
             published.answered.insert(operation, key.clone());
             changed_keys.insert(key);
@@ -531,9 +528,6 @@ fn publish_status(directory: &Path, key: &str, sequence: u64, status: &Status) -
             .ok_or_else(|| Error::Invalid("native status sequence exhausted".into()))?;
     }
     let bytes = serde_json::to_vec(status).map_err(storage)?;
-    if bytes.len() as u64 > STATUS_BYTES {
-        return Err(Error::Invalid("native status exceeds its bound".into()));
-    }
     let leaf = format!("{sequence}.json");
     root.publish_immutable(Path::new(&leaf), &bytes)
         .map_err(native_file_error)?;
@@ -554,36 +548,27 @@ fn remove_projection(path: &Path) -> Result<()> {
 }
 
 fn regular_bytes(path: &Path) -> Result<Vec<u8>> {
-    bounded_bytes(path, MAXIMUM_BYTES)
-}
-
-fn bounded_bytes(path: &Path, maximum: u64) -> Result<Vec<u8>> {
     let (parent, leaf) = projection_parent(path)?;
     let file = parent.open_file(&leaf, false).map_err(native_file_error)?;
     let metadata = file.metadata().map_err(storage)?;
-    if !metadata.is_file() || metadata.len() > maximum {
+    if !metadata.is_file() {
         return Err(Error::Invalid(
-            "native file projection must be a bounded regular file".into(),
+            "native file projection must be a regular file".into(),
         ));
     }
     let mut bytes = Vec::new();
-    file.take(maximum + 1)
+    file.take(metadata.len().saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(storage)?;
-    if bytes.len() as u64 > maximum {
+    if bytes.len() as u64 != metadata.len() {
         return Err(Error::Invalid(
-            "native file projection grew beyond its bound".into(),
+            "native file projection changed while reading".into(),
         ));
     }
     Ok(bytes)
 }
 
 fn immutable(path: &Path, bytes: &[u8]) -> Result<()> {
-    if bytes.len() as u64 > MAXIMUM_BYTES {
-        return Err(Error::Invalid(
-            "native file projection exceeds its bound".into(),
-        ));
-    }
     let (parent, leaf) = projection_parent(path)?;
     parent
         .publish_immutable(&leaf, bytes)

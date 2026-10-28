@@ -127,7 +127,8 @@ pub enum BrowserWorkspaceOperationClose {
 #[derive(Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct BrowserOperationReconcileOptions {
-    maximum_generations: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    maximum_generations: Option<u32>,
     maximum_changes: u32,
     maximum_conflicts: u32,
 }

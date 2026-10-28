@@ -211,7 +211,7 @@ impl<
         missing: fn() -> LazyWorkspaceError,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<LazyWorkspaceState, LazyWorkspaceError> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let state = self
                 .store
                 .load_lazy_workspace(self.workspace.id(), ctx)
@@ -242,15 +242,19 @@ impl<
             {
                 return Ok(next);
             }
+            ctx.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(LazyWorkspaceError::Concurrent)
     }
 
     pub(super) async fn recover_pending_remove(
         &self,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let state = self
                 .store
                 .load_lazy_workspace(self.workspace.id(), ctx)
@@ -298,8 +302,12 @@ impl<
             {
                 return Ok(());
             }
+            ctx.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(LazyWorkspaceError::Concurrent)
     }
 
     pub(crate) async fn source_lookup(

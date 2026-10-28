@@ -1,6 +1,5 @@
 //! Durable direct-parent workspace lineage.
 
-use crate::record_store::MAXIMUM_CAS_ATTEMPTS;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, ForkOptions, GenerationId,
     IdempotencyKey, WorkBudget, Workspace, WorkspaceError, WorkspaceId,
@@ -99,9 +98,9 @@ pub enum WorkspaceLineageError<E: std::error::Error + 'static> {
     /// An existing workspace is already bound to different lineage.
     #[error("workspace lineage conflicts with its durable registration")]
     ConflictingRegistration,
-    /// Optimistic registration contention exceeded the bounded retry policy.
-    #[error("workspace lineage registration remained contended")]
-    Contended,
+    /// The host scheduler could not resume a contended publication.
+    #[error(transparent)]
+    Scheduling(#[from] acyclic_stream::StreamError),
     /// Publication was requested by a workspace other than the direct parent.
     #[error("only the direct parent may receive workspace publication")]
     UnauthorizedJoin,
@@ -490,7 +489,7 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         if !ready.ready || !lineage_shape_is_valid(&ready) {
             return Err(WorkspaceLineageError::IncompatibleState);
         }
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let existing = self
                 .store
                 .load(ready.workspace_id)
@@ -516,8 +515,8 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
             {
                 return Ok(replacement);
             }
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(WorkspaceLineageError::Contended)
     }
 }
 

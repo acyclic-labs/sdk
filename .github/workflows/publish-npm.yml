@@ -108,6 +108,8 @@ jobs:
           cp scripts/publish-npm-packages.mjs "$stage/scripts/"
           cp scripts/plugin-qualification.mjs "$stage/scripts/"
           cp scripts/typescript-qualification.mjs "$stage/scripts/"
+          mkdir -p "$stage/scripts/buildbox"
+          cp scripts/buildbox/process-capture.mjs "$stage/scripts/buildbox/"
           cp scripts/assemble-{actors,stream}-native-package.mjs scripts/build-{actors,stream}-native.mjs \
             scripts/assemble-native-family.mjs scripts/build-native-family.mjs \
             scripts/native-family.mjs scripts/archive-utils.mjs "$stage/scripts/"

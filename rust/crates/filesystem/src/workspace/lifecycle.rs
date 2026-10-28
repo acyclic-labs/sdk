@@ -202,7 +202,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             target: target.clone(),
             history: JoinHistory::Merge,
             git_metadata: false,
-            maximum_generations: 4_096,
+            maximum_generations: None,
             maximum_changes: self.volume.config().limits.maximum_paths_per_batch,
             maximum_conflicts: 1_024,
         }
@@ -212,7 +212,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
     pub async fn live_rebase(
         &self,
         idempotency_key: IdempotencyKey,
-        maximum_generations: u32,
+        maximum_generations: impl Into<Option<u32>>,
         maximum_changes: u32,
         maximum_conflicts: u32,
     ) -> Result<WorkspaceRebase<A, O>, WorkspaceError> {
@@ -222,7 +222,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             .live_rebase_workspace(crate::facade::WorkspaceRebaseRequest {
                 target: &self.volume,
                 operation_id: idempotency_key.operation_id(),
-                maximum_generations,
+                maximum_generations: maximum_generations.into(),
                 maximum_changes,
                 maximum_conflicts,
             })

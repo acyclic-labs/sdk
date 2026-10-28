@@ -254,12 +254,8 @@ mod read {
         }
         let expected = presence(operation).ok_or(Malformed)?;
         let mut reader = Reader(metadata);
-        let maximum = config.limits.maximum_component_bytes;
         let name = |encoding: NameEncoding, bytes: &[u8]| {
-            if bytes.len() > maximum as usize {
-                return Err(Malformed);
-            }
-            LogicalName::new(encoding, bytes.to_vec(), maximum).map_err(|_| Malformed)
+            LogicalName::new(encoding, bytes.to_vec()).map_err(|_| Malformed)
         };
         let mut components = Vec::new();
         match reader.number()? {
@@ -269,7 +265,6 @@ mod read {
                 if config.case_sensitivity == CaseSensitivity::ProfileFolded
                     || key.is_empty()
                     || key.len() >= acyclic_stream::MAX_RECORD_KEY_BYTES
-                    || text.split('/').count() > config.limits.maximum_path_depth as usize
                 {
                     return Err(Malformed);
                 }
@@ -279,7 +274,7 @@ mod read {
             }
             depth => {
                 let depth = depth - 1;
-                if depth > config.limits.maximum_path_depth as usize || depth > reader.0.len() / 2 {
+                if depth > reader.0.len() / 2 {
                     return Err(Malformed);
                 }
                 for _ in 0..depth {

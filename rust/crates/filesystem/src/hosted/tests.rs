@@ -384,7 +384,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hosted_constructor_rejects_unbounded_ca_and_malformed_handshake()
+    async fn hosted_constructor_rejects_empty_ca_and_malformed_handshake()
     -> Result<(), HostedFsError> {
         let debug = format!(
             "{:?}",
@@ -392,12 +392,12 @@ mod tests {
         );
         assert!(!debug.contains("secret-token"));
         assert!(debug.contains("[REDACTED]"));
-        let oversized = HostedFsOptions::new("https://localhost", "token")
-            .with_ca_certificate(vec![b'x'; MAX_CA_CERTIFICATE_BYTES + 1]);
+        let empty_ca =
+            HostedFsOptions::new("https://localhost", "token").with_ca_certificate(Vec::new());
         assert!(matches!(
-            HostedFs::connect(oversized).await,
+            HostedFs::connect(empty_ca).await,
             Err(HostedFsError::InvalidOptions(
-                "CA certificate must contain 1 to 65536 bytes"
+                "CA certificate must not be empty"
             ))
         ));
 

@@ -197,7 +197,7 @@ async fn join_failure(error: StreamError, expected: Code) -> TestResult {
             target: forked.head,
             maximum_changes: 32,
             maximum_conflicts: 8,
-            maximum_generations: 32,
+            maximum_generations: Some(32),
             history: wire::JoinHistory::Merge as i32,
         }))
         .await?

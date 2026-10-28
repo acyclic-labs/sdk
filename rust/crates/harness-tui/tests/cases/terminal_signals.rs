@@ -121,11 +121,11 @@ fn lifecycle_child() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn oversized_paste_rejection_preserves_following_numbered_keys()
+fn malformed_paste_rejection_preserves_following_numbered_keys()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut process = Process::start("rejected-paste")?;
     let mut bytes = b"\x1b[200~".to_vec();
-    bytes.resize(bytes.len() + 17 * 1024, b'p');
+    bytes.push(0xff);
     bytes.extend_from_slice(b"\x1b[201~x\x1b[1~\x1b[4~\x1b[15;5~q");
     let mut offset = 0;
     process.until(|process| {

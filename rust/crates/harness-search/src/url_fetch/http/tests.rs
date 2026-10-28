@@ -200,73 +200,6 @@ pub(crate) async fn same_origin_redirect(
 }
 
 #[tokio::test]
-async fn fetch_relative_redirects_are_bounded() -> Result<()> {
-    for succeeds in [true, false] {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .map_err(|e| Error::Storage(e.to_string()))?;
-        let address = listener
-            .local_addr()
-            .map_err(|e| Error::Storage(e.to_string()))?;
-        let nonce = nonce();
-        let expected = nonce.clone();
-        let server = tokio::spawn(async move {
-            for hop in 0..=MAXIMUM_REDIRECTS {
-                let (mut socket, _) = listener
-                    .accept()
-                    .await
-                    .map_err(|e| Error::Storage(e.to_string()))?;
-                let sent = read_request(&mut socket).await?;
-                let path = if hop == 0 {
-                    "/start".to_owned()
-                } else {
-                    format!("/hop/{hop}")
-                };
-                assert!(sent.starts_with(&format!("GET {path} HTTP/1.1")));
-                let output = if succeeds && hop == MAXIMUM_REDIRECTS {
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{nonce}",
-                        nonce.len()
-                    )
-                } else {
-                    format!(
-                        "HTTP/1.1 302 Found\r\nLocation: /hop/{}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                        hop + 1
-                    )
-                };
-                socket
-                    .write_all(output.as_bytes())
-                    .await
-                    .map_err(|e| Error::Storage(e.to_string()))?;
-            }
-            assert!(
-                tokio::time::timeout(Duration::from_millis(30), listener.accept())
-                    .await
-                    .is_err()
-            );
-            Ok::<_, Error>(())
-        });
-        let result = HttpFetch::new()?
-            .fetch(&FetchRequest {
-                url: format!("http://{address}/start"),
-            })
-            .await;
-        if succeeds {
-            let response = result?;
-            assert_eq!(response.content, expected);
-            assert_eq!(
-                response.final_url,
-                format!("http://{address}/hop/{MAXIMUM_REDIRECTS}")
-            );
-        } else {
-            assert!(result.unwrap_err().to_string().contains("redirect limit"));
-        }
-        server.await.map_err(|e| Error::Storage(e.to_string()))??;
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn fetch_rejects_unsafe_urls_and_redirect_locations_without_echoing_them() -> Result<()> {
     let provider = HttpFetch::new()?;
     for url in [
@@ -309,20 +242,13 @@ async fn fetch_rejects_unsafe_urls_and_redirect_locations_without_echoing_them()
 }
 
 #[tokio::test]
-async fn fetch_enforces_the_one_mebibyte_cap_for_length_chunked_and_close_delimited_sources()
--> Result<()> {
+async fn fetch_preserves_complete_length_chunked_and_close_delimited_sources() -> Result<()> {
     let provider = HttpFetch::new()?;
     for framing in [Framing::Length, Framing::Chunked, Framing::Close] {
-        let (url, server) = serve(200, "", vec![b'x'; MAXIMUM_RESPONSE_BYTES + 1], framing).await?;
-        let error = provider.fetch(&FetchRequest { url }).await.unwrap_err();
-        assert!(error.to_string().contains("byte limit"));
-        joined(server).await?;
-    }
-    for length in [0, MAXIMUM_RESPONSE_BYTES] {
-        let (url, server) = serve(200, "", vec![b'x'; length], Framing::Length).await?;
+        let content = vec![b'x'; 1_048_577];
+        let (url, server) = serve(200, "", content.clone(), framing).await?;
         let response = provider.fetch(&FetchRequest { url }).await?;
-        assert_eq!(response.content.len(), length);
-        assert!(response.content.as_bytes().iter().all(|byte| *byte == b'x'));
+        assert_eq!(response.content.as_bytes(), content);
         joined(server).await?;
     }
     Ok(())

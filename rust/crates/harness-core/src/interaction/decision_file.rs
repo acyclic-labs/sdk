@@ -71,7 +71,6 @@ impl ApprovalDecisionFile {
     pub fn validate(&self) -> Result<()> {
         if self.expected_version == 0
             || self.principal.is_empty()
-            || self.principal.len() > 255
             || self.request_sha256.len() != 64
             || !self
                 .request_sha256

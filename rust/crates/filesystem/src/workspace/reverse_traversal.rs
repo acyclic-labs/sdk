@@ -344,7 +344,6 @@ pub(crate) async fn collect_namespace<O: AsyncObjectStore>(
             view.objects,
             view.root.file_table,
             ids,
-            u32::try_from(ids.len()).map_err(|_| crate::WorkError::Overflow)?,
             crate::kernel::DecodeLimits::for_volume(view.config),
             accounting,
             cancellation,

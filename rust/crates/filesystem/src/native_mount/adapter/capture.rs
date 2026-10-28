@@ -51,7 +51,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         if paths.is_empty() {
             return Ok(());
         }
-        let inputs = self.capture_inputs(source_root, paths, identity, scope, work)?;
+        let inputs = self.capture_inputs(source_root, paths, identity, work)?;
         let paths = &inputs.0;
         let options = &inputs.1;
         let baseline = baseline.as_ref();
