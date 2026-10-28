@@ -84,7 +84,7 @@ pub(super) async fn run_hook(
         owner_check,
         wakes,
     };
-    let timeout = Duration::from_millis(hook.timeout_ms);
+    let timeout = hook.timeout_ms.map(Duration::from_millis);
     let input = request.2.clone();
     // Spawning may block; the running hook then holds no worker.
     let (tree, handler) = run_blocking_io(
@@ -246,7 +246,7 @@ mod tests {
                 command: "echo literal-source".into(),
                 shell: None,
             },
-            timeout_ms: 1_000,
+            timeout_ms: Some(1_000),
             failure: HookFailure::Report,
         };
         let command = hook_command(
@@ -300,7 +300,7 @@ mod tests {
                         matcher: String::new(),
                         hooks: vec![HookSpec {
                             run: HookRun::Executable { executable: name.clone(), argv: vec![] },
-                            timeout_ms: 1_000,
+                            timeout_ms: Some(1_000),
                             failure: HookFailure::Report,
                         }],
                     }])?,
