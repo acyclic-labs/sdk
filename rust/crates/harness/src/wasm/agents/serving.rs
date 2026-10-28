@@ -397,6 +397,15 @@ impl WasmAgentServer {
             .await
     }
 
+    pub async fn follow(
+        &self,
+        agent: String,
+        stream: String,
+        from: u64,
+    ) -> std::result::Result<acyclic_stream::WasmFollow, JsValue> {
+        self.observation.follow(agent, stream, from).await
+    }
+
     #[wasm_bindgen(js_name = readFile)]
     pub async fn read_file(
         &self,
