@@ -776,6 +776,9 @@ impl Reader {
         } else {
             self.policy.requests
         };
+        if self.inflight.len() >= limit {
+            return ops;
+        }
         let prefetch =
             self.policy.prefetch && self.since.is_none() && now >= self.prefetch_paused_until;
         let mut prefetching = self

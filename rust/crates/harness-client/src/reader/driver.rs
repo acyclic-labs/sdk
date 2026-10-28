@@ -68,11 +68,18 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         for op in reader.poll(now) {
             self.start(op);
         }
+        let mut completed = false;
         while let Poll::Ready(Some(done)) = self.ops.poll_next_unpin(cx) {
             if let Some((id, outcome)) = done {
                 self.aborts.remove(&id);
                 reader.complete(id, outcome, now);
+                completed = true;
             }
+        }
+        // Freed request credit serves the remaining plan even before a UI
+        // frame. Transport failures still wait for the reader's deadline.
+        if completed && reader.ready(now) && !reader.demand.is_empty() {
+            cx.waker().wake_by_ref();
         }
         self.reconcile(reader, now);
         while let Poll::Ready(Some(done)) = self.opening.poll_next_unpin(cx) {
@@ -300,6 +307,72 @@ async fn read<P: StreamProvider + ?Sized>(
 mod tests {
     use super::*;
     use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
+
+    #[test]
+    fn freed_credit_completes_the_plan_without_another_ui_frame() {
+        use super::super::{Priority, ReaderPolicy, Want};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::task::{Wake, Waker};
+
+        struct Ready(AtomicBool);
+        impl Wake for Ready {
+            fn wake(self: Arc<Self>) {
+                self.wake_by_ref();
+            }
+            fn wake_by_ref(self: &Arc<Self>) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        futures::executor::block_on(async {
+            let provider = Arc::new(MemoryStream::default());
+            let path = StreamPath::new("reader/credit").unwrap();
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: [b"first".as_slice(), b"second", b"third"]
+                        .into_iter()
+                        .map(|value| value.to_vec().into())
+                        .collect(),
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::new(b"credit".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            let head = provider.head(path.clone()).await.unwrap();
+            let mut reader = Reader::new(ReaderPolicy {
+                requests: 2,
+                prefetch_requests: 1,
+                read_limit: 1,
+                ..ReaderPolicy::default()
+            })
+            .unwrap();
+            reader.cache_mut().observe_origin(&path, head.origin);
+            reader.cache_mut().observe_tail(&path, head.tail);
+            reader.plan((0..head.tail).map(|from| {
+                (
+                    Want::Range {
+                        stream: path.clone(),
+                        from,
+                        to: from + 1,
+                    },
+                    Priority::Visible,
+                )
+            }));
+            let mut driver = Driver::new(provider);
+            let ready = Arc::new(Ready(AtomicBool::new(true)));
+            let waker = Waker::from(Arc::clone(&ready));
+            let mut cx = Context::from_waker(&waker);
+            // Drive only actual wakes to quiescence, without another plan.
+            while ready.0.swap(false, Ordering::SeqCst) {
+                driver.step(&mut reader, 0, &mut cx);
+                assert!(reader.issued() <= head.tail, "completed read was reissued");
+            }
+            assert_eq!(reader.issued(), head.tail);
+            assert!(reader.cache().has_range(&path, 0, head.tail));
+            assert!(reader.poll(0).is_empty());
+        });
+    }
 
     /// Uses the actual provider's subtree fork: its root is forked at zero,
     /// but its conversation inherits two records at that same publication.
