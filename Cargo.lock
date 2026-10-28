@@ -122,6 +122,7 @@ dependencies = [
  "acyclic-differential",
  "acyclic-proto-build",
  "acyclic-test-support",
+ "arc-swap",
  "ed25519-dalek 3.0.0",
  "futures",
  "proptest",
