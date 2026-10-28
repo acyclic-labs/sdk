@@ -38,22 +38,12 @@ impl<'a, A: AsyncAuthorityStore, O: AsyncObjectStore> ReadObservation<'a, A, O> 
         scope: &Scope,
         ceiling: Option<&crate::Capabilities>,
     ) -> Result<()> {
-        let workspace = self.generation.workspace();
-        let label = crate::core::filesystem_scope_label(
-            scope.capabilities(),
-            &mut Some(&mut self.io.history_io()),
-        )?;
-        let compiled = access_view(
-            &workspace,
-            scope,
-            Some(self.generation.id()),
-            capability_payload(label, VolumeOperation::Read, self.io)?,
-            ceiling,
-            self.io,
-        )
-        .await?;
-        require(&compiled.0, Action::Read, self.reference.path(), self.io)?;
-        self.data_access = Some((workspace, compiled));
+        self.data_access =
+            selected_data_access(&self.workspace, &self.generation, scope, ceiling, self.io)
+                .await?;
+        if let Some((_, compiled)) = &self.data_access {
+            require(&compiled.0, Action::Read, self.reference.path(), self.io)?;
+        }
         Ok(())
     }
 

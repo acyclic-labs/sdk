@@ -13,6 +13,37 @@ pub(in crate::filesystem) use read_commit::require_current;
 pub(in crate::filesystem) type CompiledAccess<'a> =
     (PathTrie, [Option<DecodeReservation<'a>>; 4], GenerationId);
 
+// An inherited generation belongs to a different policy owner. Its ancestry
+// authorizes selection, while both owners still authorize disclosure.
+pub(in crate::filesystem) async fn selected_data_access<
+    'a,
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+>(
+    root: &Workspace<A, O>,
+    generation: &Generation<A, O>,
+    scope: &Scope,
+    ceiling: Option<&crate::Capabilities>,
+    io: &'a PreparationIo,
+) -> Result<Option<(Workspace<A, O>, CompiledAccess<'a>)>> {
+    if generation.workspace_id() == root.id() {
+        return Ok(None);
+    }
+    let workspace = generation.workspace();
+    let label =
+        crate::core::filesystem_scope_label(scope.capabilities(), &mut Some(&mut io.history_io()))?;
+    let view = access_view(
+        &workspace,
+        scope,
+        Some(generation.id()),
+        capability_payload(label, VolumeOperation::Read, io)?,
+        ceiling,
+        io,
+    )
+    .await?;
+    Ok(Some((workspace, view)))
+}
+
 pub(crate) fn capability_payload<'a>(
     label: Option<&'a str>,
     operation: VolumeOperation,

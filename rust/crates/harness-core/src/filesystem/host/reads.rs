@@ -162,6 +162,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
+        let data_access = super::super::access::selected_data_access(
+            &workspace,
+            &generation,
+            grant.policy_scope(),
+            ceiling,
+            io,
+        )
+        .await?;
+        if let Some((_, view)) = &data_access {
+            super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
+            super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
+        }
         bounded_io::retain(&generation, Some(io)).await?;
         let requested = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)
@@ -182,7 +194,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant.require_file_read(&reference.0, Some(io))?;
         if publication.is_some() {
             Self::read_selected_range(
-                &workspace,
+                &generation.workspace(),
                 &generation,
                 &reference.0,
                 acyclic_fs::ByteRange {
@@ -198,6 +210,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             hold.into_retained()?;
         }
         super::super::access::require_current(&workspace, &view.0, io).await?;
+        if let Some((workspace, view)) = &data_access {
+            super::super::access::require_current(workspace, &view.0, io).await?;
+        }
         grant.recheck(Some(io))?;
         Ok((reference.0, bytes.0, publication))
     }
@@ -334,6 +349,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
         .await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
+        let data_access = super::super::access::selected_data_access(
+            &workspace,
+            &pinned,
+            grant.policy_scope(),
+            ceiling,
+            io,
+        )
+        .await?;
+        if let Some((_, view)) = &data_access {
+            super::super::access::require(&view.0, acyclic_fs::access::Action::Read, path, io)?;
+        }
         bounded_io::retain(&pinned, Some(io)).await?;
         let path = crate::executor::with_history_io(Some(io), |work| {
             crate::executor::preparation_format(format_args!("/{path}"), work)
@@ -362,6 +388,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         drop(reference);
         drop(reference_hold);
         super::super::access::require_current(&workspace, &view.0, io).await?;
+        if let Some((workspace, view)) = &data_access {
+            super::super::access::require_current(workspace, &view.0, io).await?;
+        }
         grant.recheck(Some(io))?;
         Ok(chunk.bytes)
     }
