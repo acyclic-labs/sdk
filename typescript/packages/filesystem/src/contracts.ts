@@ -234,9 +234,6 @@ export interface SpeculationOptions {
     readonly maximumActiveOperations: number;
     readonly maximumActiveBytes: bigint;
     readonly maximumActiveCostUnits: bigint;
-    readonly maximumResidencyFacts: number;
-    readonly maximumDestinations: number;
-    readonly maximumAcceptedTiers: number;
     readonly outcomeWindow: number;
     readonly minimumUsefulnessSamples: number;
     readonly minimumUsefulnessBasisPoints: number;
