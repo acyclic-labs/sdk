@@ -251,6 +251,8 @@ impl RecordCache {
                 .or_else(|| self.meta.iter().next())
                 .map(|(path, _)| path.clone());
             if let Some(victim) = victim {
+                // Cached bytes must not outlive the anchor that identifies them.
+                self.forget(&victim);
                 self.meta.remove(&victim);
             }
         }
@@ -663,6 +665,24 @@ impl<'a> Input<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_eviction_cannot_leave_old_bytes_under_a_new_anchor() {
+        let stream = StreamPath::new("test/source").unwrap();
+        let other = StreamPath::new("test/other").unwrap();
+        let mut cache = RecordCache::new(16 * 1024, 1);
+        cache.note_commit(&stream, 0, CommitId::from_bytes([1; 32]));
+        cache.insert_record(&stream, 0, Bytes::from_static(b"old"), None);
+        cache.observe_tail(&other, 0);
+        assert!(cache.record(&stream, 0).is_none());
+        cache.note_commit(&stream, 0, CommitId::from_bytes([2; 32]));
+        cache.insert_record(&stream, 0, Bytes::from_static(b"new"), None);
+        assert_eq!(cache.record(&stream, 0).unwrap().as_ref(), b"new");
+        assert_eq!(
+            cache.anchor(&stream, 0),
+            Some(CommitId::from_bytes([2; 32]))
+        );
+    }
 
     #[test]
     fn restore_is_bounded_and_replaces_the_previous_snapshot_atomically() {

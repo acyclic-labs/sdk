@@ -548,9 +548,7 @@ impl Reader {
             .map(|(id, _)| *id)
             .collect();
         for id in overdue {
-            if let Some(flight) = self.inflight.remove(&id) {
-                self.keys.remove(&flight.key);
-                self.cancelled.push(id);
+            if self.cancel(id) {
                 self.fail(Failure::Unavailable, now);
             }
         }
@@ -583,10 +581,7 @@ impl Reader {
             .map(|(id, _)| *id)
             .collect();
         for id in stale {
-            if let Some(flight) = self.inflight.remove(&id) {
-                self.keys.remove(&flight.key);
-                self.cancelled.push(id);
-            }
+            self.cancel(id);
         }
         self.demand = demand;
     }
@@ -891,6 +886,19 @@ impl Reader {
             .is_some_and(|old| old.next != next);
         if moved {
             self.cache.drop_listings_after(parent, index);
+            let later = |key: &OpKey| matches!(key, OpKey::Children(path, at) if path == parent && *at > index);
+            let cancelled: Vec<_> = self
+                .inflight
+                .iter()
+                .filter(|(_, flight)| later(&flight.key))
+                .map(|(id, _)| *id)
+                .collect();
+            for id in cancelled {
+                self.cancel(id);
+            }
+            // The asynchronous driver can poll again before the next UI frame
+            // replans demand. Do not reissue those same obsolete boundaries.
+            self.demand.retain(|(key, _, _)| !later(key));
             if let Some(anchors) = self.anchors.get_mut(parent) {
                 anchors.at.retain(|at, _| *at <= index);
             }
@@ -1082,11 +1090,17 @@ impl Reader {
             .map(|(id, _)| *id)
             .collect();
         for id in cancelled {
-            if let Some(flight) = self.inflight.remove(&id) {
-                self.keys.remove(&flight.key);
-                self.cancelled.push(id);
-            }
+            self.cancel(id);
         }
+    }
+
+    fn cancel(&mut self, id: u64) -> bool {
+        let Some(flight) = self.inflight.remove(&id) else {
+            return false;
+        };
+        self.keys.remove(&flight.key);
+        self.cancelled.push(id);
+        true
     }
 
     /// Whether connections may be attempted now (outside a backoff).
@@ -1131,6 +1145,57 @@ impl Reader {
 #[cfg(test)]
 mod reader_tests {
     use super::*;
+
+    #[test]
+    fn moved_page_boundary_cancels_old_replies_and_unsent_demand() {
+        let parent = StreamPath::new("test/children").unwrap();
+        let old = StreamPath::new("test/children/c").unwrap();
+        let new = StreamPath::new("test/children/b").unwrap();
+        let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+        reader.cache.insert_listing(
+            &parent,
+            0,
+            Listing {
+                after: None,
+                children: Vec::new(),
+                next: Some(old.clone()),
+                fresh: true,
+                witnessed: None,
+            },
+            None,
+        );
+        let key = OpKey::Children(parent.clone(), 1);
+        let paging = Paging {
+            after: Some(old.clone()),
+            tail: None,
+            witnessed: None,
+        };
+        reader.inflight.insert(
+            7,
+            InFlight {
+                key: key.clone(),
+                priority: Priority::Visible,
+                deadline: 100,
+                issued: 0,
+                paging: paging.clone(),
+            },
+        );
+        reader.keys.insert(key.clone(), 7);
+        reader.demand.push((key, Priority::Visible, paging));
+        reader.listed(&parent, 0, &Paging::default(), Vec::new(), Some(new), None);
+        assert_eq!(reader.take_cancelled(), vec![7]);
+        assert!(reader.poll(0).is_empty());
+        reader.complete(
+            7,
+            Outcome::Children {
+                children: Vec::new(),
+                next: Some(old),
+                version: CommitId::from_bytes([1; 32]),
+            },
+            1,
+        );
+        assert!(reader.cache.listing(&parent, 1).is_none());
+    }
 
     #[test]
     fn denial_discards_aliases_cancels_reads_and_requires_explicit_retry() {
