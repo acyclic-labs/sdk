@@ -15,17 +15,19 @@ impl WasmSession {
         connect: js_sys::Function,
         acknowledge: bool,
         revision_scope: Option<Box<[u8]>>,
+        registration_timeout: Option<u32>,
     ) -> Self {
         Self {
             client: session_io::client(
                 connect,
                 revision_scope.map(|scope| crate::RevisionScope::new(scope.into_vec())),
-            ),
+            )
+            .with_registration_timeout(registration_timeout),
             acknowledge,
         }
     }
 
-    /// Adds, replaces or drops a bounded credential slot on every pooled session.
+    /// Adds, replaces or drops a credential slot on every pooled session.
     #[wasm_bindgen(js_name = registerCredential)]
     pub fn register_credential(
         &self,
