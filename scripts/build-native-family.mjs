@@ -384,7 +384,7 @@ function linkerInputs(target, environment = process.env, { attestApple = process
   };
 }
 
-function darwinRustObjcopyIdentity(target, commands = { output: commandOutput, optional: optionalCommandIdentity, identity: executableIdentity }) {
+function darwinRustObjcopyIdentity(target, commands = { output: trimmedCommandOutput, optional: optionalCommandIdentity, identity: executableIdentity }) {
   if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return null;
   const args = ["--print", "target-libdir", "--target", target];
   const libdir = commands.output("rustc", args);

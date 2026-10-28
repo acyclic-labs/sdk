@@ -28,11 +28,11 @@ export function verifyDependencies(root, bytes, pin = qualificationPins) {
 }
 
 // Injected commands support offline lifecycle controls; CLI qualification is native.
-export function qualify(args, { command = spawnSync, onProgress = () => {}, toolchain = pins,
+export async function qualify(args, { command = spawnSync, onProgress = () => {}, toolchain = pins,
   runtimePin = toolchain.runtime["linux-x64"], dependencyPin = qualificationPins,
   toolIndexBytes = read("../toolchains/generator-files.json"), dependencyIndexBytes = read("../toolchains/dependency-files.json") } = {}) {
   if (command === spawnSync && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("installed Erlang qualification requires Linux x86_64");
-  const admitted = readPackage(args);
+  const admitted = await readPackage(args);
   if (targets.length !== admitted.approved.manifest.families.length || targets.some(name => !admitted.approved.descriptors.has(name))) throw new Error("installed controls require Actors v1 and Stream v1 exports");
   const inputs = Object.fromEntries(["package", "receipt", "authority", "runtime-root", "runtime-inventory", "tool-home", "dependencies"].map(name => [name, realpathSync(args[name])]));
   const output = join(realpathSync(dirname(resolve(args.output))), basename(resolve(args.output)));
@@ -44,15 +44,15 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   const runtimeBytes = readFileSync(inputs["runtime-inventory"]);
   const toolBytes = toolIndexBytes, dependencyBytes = dependencyIndexBytes;
   const sourceBytes = new Map(sourceNames.map(name => [name, read(name)]));
-  const guard = () => {
+  const guard = async () => {
     if (!readFileSync(inputs["runtime-inventory"]).equals(runtimeBytes) || !readFileSync(inputs.receipt).equals(admitted.receiptBytes)) throw new Error("qualification input bytes changed");
     verifyRuntime(inputs["runtime-root"], runtimeBytes, runtimePin);
     verifyTools(inputs["tool-home"], toolBytes, toolchain);
     verifyDependencies(inputs.dependencies, dependencyBytes, dependencyPin);
     for (const [name, bytes] of sourceBytes) if (!read(name).equals(bytes)) throw new Error("qualifier source changed");
-    readPackage(args);
+    await readPackage(args);
   };
-  onProgress("Admit package, full OTP runtime, generator tools and locked native dependencies"); guard();
+  onProgress("Admit package, full OTP runtime, generator tools and locked native dependencies"); await guard();
   mkdirSync(output);
   const put = (name, bytes) => { const target = join(output, name); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, bytes, { flag: "wx" }); return target; };
   const sdk = join(output, "libs/acyclic_sdk_transport-0.1.0"), libs = join(output, "libs"), consumer = join(output, "consumer");
@@ -104,7 +104,7 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   }
   if (native.split("PASS installed SDK and loaded-module provenance").length !== 3) throw new Error("loaded-module provenance controls incomplete");
   onProgress("Verify post-execution package, dependency, compiler and consumer bytes");
-  guard(); privateDependencyGuard();
+  await guard(); privateDependencyGuard();
   for (const [name, bytes] of admitted.payload) if (!readFileSync(join(sdk, name)).equals(bytes)) throw new Error("installed package payload changed");
   for (const [name, digest] of Object.entries(compiled)) if (sha256(readFileSync(join(sdk, "ebin", name))) !== digest) throw new Error("compiled SDK changed");
   if (JSON.stringify(inventory(sdk)) !== JSON.stringify([...admitted.payload.keys(), ...Object.keys(compiled).map(name => "ebin/" + name)].sort())) throw new Error("installed SDK tree differs");
@@ -113,7 +113,7 @@ export function qualify(args, { command = spawnSync, onProgress = () => {}, tool
   const consumerFiles = [...controls, ...expectedConsumerBeams.map(name => "ebin/" + name), "actors_pb_route_fixture.erl", "stream_pb_route_fixture.erl"].sort();
   if (JSON.stringify(inventory(consumer)) !== JSON.stringify(consumerFiles)) throw new Error("consumer tree differs");
   const receipt = { schema: "acyclic.sdk.erlang-installed-qualification.v1", authority: "rust", target: "erlang",
-    source_revision: admitted.receipt.source_revision, authority_manifest_sha256: sha256(admitted.approved.bytes), archive_sha256: sha256(admitted.archiveBytes),
+    source_revision: admitted.receipt.source_revision, authority_manifest_sha256: sha256(admitted.approved.bytes), archive_sha256: admitted.archiveDigest,
     generation_receipt_sha256: sha256(admitted.receiptBytes), runtime_inventory_sha256: sha256(runtimeBytes),
     generator_inventory_sha256: sha256(toolBytes), dependency_inventory_sha256: sha256(dependencyBytes),
     qualifier_source_sha256: Object.fromEntries([...sourceBytes].map(([name, bytes]) => [name, sha256(bytes)])),
