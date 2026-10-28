@@ -24,6 +24,8 @@ struct MultipartSnapshot {
     key: String,
     tail: u64,
     minimum_part_bytes: u64,
+    maximum_parts: Option<u32>,
+    maximum_part_bytes: Option<u64>,
     parts: BTreeMap<u32, MultipartPart>,
     operations: BTreeMap<[u8; 16], (u32, String)>,
     terminal: Option<MultipartTerminal>,

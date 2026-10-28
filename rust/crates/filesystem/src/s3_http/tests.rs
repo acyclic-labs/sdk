@@ -442,7 +442,7 @@ async fn get_streams_bounded_chunks_from_one_immutable_generation() -> S3Result 
     let adapter = adapter_with_limits(
         true,
         FilesystemS3Limits {
-            maximum_request_bytes: 16,
+            maximum_request_bytes: Some(16),
             response_chunk_bytes: 2,
             ..FilesystemS3Limits::default()
         },
@@ -880,7 +880,7 @@ async fn multipart_history_replays_every_page_and_keeps_exact_retry_identities()
         let records = (start..(start + 128).min(updates + 1))
             .map(|index| {
                 if index == 0 {
-                    encode_multipart_created("large/object", 2, 8, 1).map(Into::into)
+                    encode_multipart_created("large/object", Some(2), Some(8), 1).map(Into::into)
                 } else {
                     Ok(encode_multipart_part(
                         1,
@@ -959,7 +959,7 @@ async fn create_retry_returns_the_existing_upload_validation_error() -> S3Result
         ..CreateMultipartUploadInput::default()
     };
     S3::create_multipart_upload(&adapter, request(input())).await?;
-    adapter.limits.maximum_multipart_parts = 1;
+    adapter.limits.maximum_multipart_parts = Some(1);
     let error = S3::create_multipart_upload(&adapter, request(input()))
         .await
         .expect_err("the persisted upload exceeds the explicit replacement policy");

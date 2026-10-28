@@ -124,7 +124,7 @@ async fn observe(
     limit: u32,
     read_limit: u64,
     reorder: bool,
-) -> (Trace, [u64; 8], u64, Vec<meter_trace::Event>) {
+) -> (Trace, [u64; 8], u64, Vec<meter_trace::Event>, u64) {
     let path = StreamPath::new("native/differential").unwrap();
     let meter = Arc::new(Meter {
         read_limit,
@@ -138,11 +138,18 @@ async fn observe(
     };
     meter_trace::begin();
     let _order = reorder.then(meter_trace::reorder_recordings);
-    let result = if old {
-        baseline_native_read(provider, request, meter.original()).await
+    let future = if old {
+        baseline_native_read(provider, request, meter.original())
     } else {
-        provider.native_read(request, meter.original()).await
+        provider.native_read(request, meter.original())
     };
+    let opening_frame = match &future {
+        crate::NativeProviderFuture::Ready(_) => 0,
+        crate::NativeProviderFuture::Funded { future, .. } => {
+            std::mem::size_of_val(future.as_ref().get_ref()) as u64
+        }
+    };
+    let result = future.await;
     let mut trace = Vec::new();
     let mut opened_bytes = 0;
     match result {
@@ -178,7 +185,13 @@ async fn observe(
         &meter.read_operations,
     ]
     .map(|counter| counter.load(Ordering::SeqCst));
-    (trace, work, opened_bytes, meter_trace::finish())
+    (
+        trace,
+        work,
+        opened_bytes,
+        meter_trace::finish(),
+        opening_frame,
+    )
 }
 
 proptest! {
@@ -189,19 +202,19 @@ proptest! {
         // measurement. The executor's first ThreadNotify allocation is not read work.
         let baseline_provider = futures::executor::block_on(seed(batches));
         let candidate_provider = futures::executor::block_on(seed(batches));
-        let before_bytes = std::cell::Cell::new(0);
-        let after_bytes = std::cell::Cell::new(0);
+        let before_bytes = std::cell::Cell::new((0, 0));
+        let after_bytes = std::cell::Cell::new((0, 0));
         let (_, [before, after]) = acyclic_test_support::differential(
-            || { let (trace, work, held, events) = futures::executor::block_on(observe(&baseline_provider, true, from, limit, read_limit, false)); before_bytes.set(held); (trace, work, normalize_baseline_events(events, held)) },
-            || { let (trace, work, held, events) = futures::executor::block_on(observe(&candidate_provider, false, from, limit, read_limit, false)); after_bytes.set(held); (trace, work, events) },
+            || { let (trace, work, held, events, opening) = futures::executor::block_on(observe(&baseline_provider, true, from, limit, read_limit, false)); before_bytes.set((held, opening)); (trace, work, normalize_baseline_events(events, held, opening)) },
+            || { let (trace, work, held, events, opening) = futures::executor::block_on(observe(&candidate_provider, false, from, limit, read_limit, false)); after_bytes.set((held, opening)); (trace, work, normalize_opening_frame(events, opening)) },
         );
         funding_bound(before_bytes.get(), after_bytes.get(), before, after)?;
     }
 }
 
 fn funding_bound(
-    before_held: u64,
-    after_held: u64,
+    (before_held, before_opening): (u64, u64),
+    (after_held, after_opening): (u64, u64),
     before: acyclic_test_support::AllocationInfo,
     after: acyclic_test_support::AllocationInfo,
 ) -> proptest::test_runner::TestCaseResult {
@@ -215,8 +228,8 @@ fn funding_bound(
     prop_assert_eq!(before.count_total, after.count_total);
     prop_assert_eq!(i128::from(before_held) + added, i128::from(after_held));
     prop_assert_eq!(
-        i128::from(before.bytes_total) + added,
-        i128::from(after.bytes_total)
+        i128::from(before.bytes_total) - i128::from(before_opening) + added,
+        i128::from(after.bytes_total) - i128::from(after_opening)
     );
     Ok(())
 }
@@ -226,34 +239,35 @@ fn unfunded_native_cursor_storage_fails_the_same_funding_bound() {
     for old_candidate in [false, true] {
         let baseline_provider = futures::executor::block_on(seed(1));
         let candidate_provider = futures::executor::block_on(seed(1));
-        let before_held = std::cell::Cell::new(0);
-        let after_held = std::cell::Cell::new(0);
-        let (_, [before, after]) = acyclic_test_support::differential(
-            || {
-                let (trace, work, held, events) =
-                    futures::executor::block_on(observe(&baseline_provider, true, 0, 1, 3, false));
-                before_held.set(held);
-                (trace, work, normalize_baseline_events(events, held))
-            },
-            || {
-                let (trace, work, held, events) = futures::executor::block_on(observe(
-                    &candidate_provider,
-                    old_candidate,
-                    0,
-                    1,
-                    3,
-                    false,
-                ));
-                after_held.set(held);
-                // This control changes only frame size, not the observer protocol.
-                let events = if old_candidate {
-                    normalize_baseline_events(events, held)
-                } else {
-                    events
-                };
-                (trace, work, events)
-            },
-        );
+        let before_held = std::cell::Cell::new((0, 0));
+        let after_held = std::cell::Cell::new((0, 0));
+        let (_, [before, after]) =
+            acyclic_test_support::differential(
+                || {
+                    let (trace, work, held, events, opening) = futures::executor::block_on(
+                        observe(&baseline_provider, true, 0, 1, 3, false),
+                    );
+                    before_held.set((held, opening));
+                    (
+                        trace,
+                        work,
+                        normalize_baseline_events(events, held, opening),
+                    )
+                },
+                || {
+                    let (trace, work, held, events, opening) = futures::executor::block_on(
+                        observe(&candidate_provider, old_candidate, 0, 1, 3, false),
+                    );
+                    after_held.set((held, opening));
+                    // This control changes only frame size, not the observer protocol.
+                    let events = if old_candidate {
+                        normalize_baseline_events(events, held, opening)
+                    } else {
+                        normalize_opening_frame(events, opening)
+                    };
+                    (trace, work, events)
+                },
+            );
         assert_eq!(
             funding_bound(before_held.get(), after_held.get(), before, after).is_ok(),
             !old_candidate
@@ -272,6 +286,7 @@ fn native_cursor_frame_delta() -> i128 {
 fn normalize_baseline_events(
     mut events: Vec<meter_trace::Event>,
     held: u64,
+    opening: u64,
 ) -> Vec<meter_trace::Event> {
     if held != 0 {
         let added = native_cursor_frame_delta();
@@ -287,6 +302,28 @@ fn normalize_baseline_events(
         assert_eq!(refund.1, held);
         refund.1 = u64::try_from(i128::from(refund.1) + added).unwrap();
     }
+    normalize_opening_frame(events, opening)
+}
+
+// Opening futures have different concrete compiler-generated frames. Verify
+// their real allocation/refund against that exact physical size before removing
+// only those sizes from the observer comparison; allocation events remain.
+fn normalize_opening_frame(
+    mut events: Vec<meter_trace::Event>,
+    opening: u64,
+) -> Vec<meter_trace::Event> {
+    if opening != 0 {
+        assert_eq!(
+            events.first().map(|event| (event.0, event.1)),
+            Some(("allocate", opening))
+        );
+        events[0].1 = 0;
+        let release = events
+            .iter_mut()
+            .find(|event| event.0 == "release" && event.1 == opening)
+            .unwrap();
+        release.1 = 0;
+    }
     events
 }
 
@@ -298,15 +335,16 @@ fn reordered_recording_fails_observer_equality_with_unchanged_bytes_and_totals()
     let after = futures::executor::block_on(observe(&broken, false, 0, 2, 6, true));
     assert_eq!(before.0, after.0);
     assert_eq!(before.1, after.1);
-    let expected_events = normalize_baseline_events(before.3, before.2);
-    assert_eq!(expected_events.len(), after.3.len());
-    assert!(std::panic::catch_unwind(|| assert_eq!(expected_events, after.3)).is_err());
+    let expected_events = normalize_baseline_events(before.3, before.2, before.4);
+    let after_events = normalize_opening_frame(after.3, after.4);
+    assert_eq!(expected_events.len(), after_events.len());
+    assert!(std::panic::catch_unwind(|| assert_eq!(expected_events, after_events)).is_err());
     let expected = expected_events
         .iter()
         .position(|event| event.0 == "record_examination" && event.2 != 0)
         .unwrap();
     assert_eq!(
-        after.3.get(expected).map(|event| event.0),
+        after_events.get(expected).map(|event| event.0),
         Some("record_reserved_bytes")
     );
 }
