@@ -80,3 +80,24 @@ executed. Scale qualification remains 100k dormant/simultaneously ready actors,
 restart churn and last-subscription cancellation. Wake indexing and acknowledged
 control freshness remain open; the real per-handler pause/placement observation
 and original invocation oracles are unchanged.
+
+An event-owned platform can now open `acyclic_actors::hosting::Host` with its
+original `Store`, exact actor, arbitrary `Handler`, clock and runtime limits.
+It creates no background task and runs no guest work at open. `wake_paths()`
+projects the actor's state and subscription routing paths; `pause()` persists
+the original fence while a delivery is running. The platform registers routing
+before the final input recheck, retains event/recovery custody through `wake()`
+and persists its returned alarm before completing the native event. Reopen
+uses the same root/provider and takes a fresh placement through the same runtime.
+
+The browser wasm artifact exports `WasmActorHost.open(stream, root, actorBytes,
+manifestBytes, onRecord, active, work)`. It accepts any strict Actors wire
+Handler, independently of the harness AgentGuest/AgentHost composition. Its
+`pause`, `wakePaths` and `wake` calls delegate to the shared host. The existing
+guest callback bridge provides cooperative interruption and abort-on-timeout.
+The platform remains responsible for authenticating the exact actor, routing
+committed changes and native alarms, and keeping the event/recovery alarm alive.
+This factory supplies a production binding for the unchanged hosted Actors
+Package suite; compilation of the binding or a native strict-wire control is
+not a hosted DO conformance result. Workerd qualification remains with the
+conformance owner and has not been run for this milestone.

@@ -357,22 +357,10 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
     /// Event-owned delivery, returning the committed native alarm and releasing
     /// idle follow cursors. An unsettled publication keeps its runtime slot.
     pub async fn drain_event(&self, agent: &AgentPath) -> Result<Option<u64>, Error> {
-        self.drain(agent).await?;
-        let actor = self.actor(agent)?;
-        let snapshot = self
-            .runtime
-            .store()
-            .load(&actor)
+        self.runtime
+            .drain_event(&self.actor(agent)?)
             .await
-            .map_err(actor_error)?;
-        let alarm = snapshot
-            .state()
-            .filter(|state| !state.paused())
-            .and_then(|state| state.alarm().pending());
-        if !self.runtime.release(&actor) {
-            return Err(Error::Record("actor still owns an unsettled publication"));
-        }
-        Ok(alarm)
+            .map_err(actor_error)
     }
 
     /// One inbox commit, independent of the observed inbox tail. A retained

@@ -19,6 +19,8 @@ pub mod contract;
 pub mod conformance;
 /// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
 pub mod guest;
+/// Event-owned hosting of an arbitrary Handler over injected storage.
+pub mod hosting;
 /// Provider-backed actor storage and the single-node `local::Runtime`.
 pub mod local;
 /// Namespace-bound IDs, references and ordered stubs with implicit activation.

@@ -217,6 +217,110 @@ struct CapturesCuts {
     deliveries: std::sync::Mutex<Vec<Delivery>>,
 }
 
+#[tokio::test]
+async fn generic_event_host_runs_the_original_package_over_strict_wire() -> TestResult {
+    use crate::{guest::wire, hosting::Host};
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "generic-event", &[b"emit", b"set 100"]).await?;
+    let package = Arc::new(CapturesCuts {
+        package: Package::new()?,
+        deliveries: std::sync::Mutex::new(Vec::new()),
+    });
+    let remote = || -> Result<Arc<dyn Handler>, crate::guest::GuestError> {
+        let manifest = wire::decode_manifest(&wire::encode_manifest(package.manifest()))?;
+        let package = Arc::clone(&package);
+        Ok(Arc::new(wire::Remote::new(
+            manifest,
+            move |bytes, cancellation| {
+                let package = Arc::clone(&package);
+                Box::pin(async move {
+                    let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
+                    let transition = package
+                        .on_record(delivery, checkpoint.as_ref(), cancellation)
+                        .await?;
+                    wire::encode_transition(&transition)
+                }) as GuestFuture<'static, Vec<u8>>
+            },
+        )))
+    };
+    let clock = Arc::new(Manual(AtomicU64::new(1)));
+    let open = || -> Result<Host<MemoryStream>, Box<dyn std::error::Error>> {
+        Ok(Host::new(
+            Store::new(Arc::clone(&provider), root()?),
+            address.clone(),
+            remote()?,
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            RuntimeLimits::new(1, 1)?,
+        ))
+    };
+    let host = open()?;
+    assert_eq!(host.actor(), &address);
+    assert_eq!(host.store().root(), store.root());
+    assert!(Arc::ptr_eq(host.store().provider(), &provider));
+    assert_eq!(host.clock().now_unix_ms(), 1);
+    assert!(
+        package
+            .deliveries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty(),
+        "opening does not invoke the package"
+    );
+    assert_eq!(
+        host.wake_paths().await?,
+        vec![
+            StreamPath::new("agents/generic-event")?,
+            store.path(&address)?
+        ]
+    );
+    host.pause(true).await?;
+    assert_eq!(host.wake().await?, None);
+    assert!(
+        package
+            .deliveries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty(),
+        "a durable pause fences actual package entry"
+    );
+    host.pause(false).await?;
+    assert_eq!(host.wake().await?, Some(101));
+    let first = store.load(&address).await?;
+    assert_eq!(
+        first.state().and_then(|state| state.cursor("inbox")),
+        Some(2)
+    );
+    drop(host);
+    clock.0.store(101, Ordering::SeqCst);
+    let reopened = open()?;
+    assert_eq!(reopened.wake().await?, None);
+    assert_eq!(
+        reopened.wake().await?,
+        None,
+        "repeated wake must not repeat the alarm"
+    );
+    let second = store.load(&address).await?;
+    assert!(second.state().map(State::epoch) > first.state().map(State::epoch));
+    assert_eq!(
+        records(&*provider, "out/generic-event").await?,
+        vec![Bytes::from_static(b"r0"), Bytes::from_static(b"a1")]
+    );
+    let deliveries = package
+        .deliveries
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(deliveries.len(), 3);
+    let alarm = deliveries.last().ok_or("missing alarm delivery")?;
+    assert!(matches!(alarm.trigger, Trigger::Alarm { .. }));
+    assert_eq!(alarm.record, None);
+    assert_eq!(
+        alarm.subscriptions.get("inbox").map(|cut| cut.cursor),
+        Some(2)
+    );
+    Ok(())
+}
+
 impl Handler for CapturesCuts {
     fn manifest(&self) -> &Manifest {
         self.package.manifest()

@@ -36,6 +36,7 @@ use std::sync::Arc;
 use tsify::Tsify;
 use wasm_bindgen::prelude::*;
 
+mod actor_host;
 mod guest;
 mod host;
 mod providers;

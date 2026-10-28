@@ -368,6 +368,24 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         Ok(())
     }
 
+    /// Event-owned delivery followed by the committed alarm/hibernation handoff.
+    /// The owner serializes its delivery events, retains their lifetime and
+    /// persists the returned deadline before completing the native event.
+    /// A failed/unknown publication retains its slot and participant custody.
+    pub async fn drain_event(&self, actor: &ActorReference) -> Result<Option<u64>, Error> {
+        self.track(actor.clone())?;
+        self.drain_actor(actor).await?;
+        let snapshot = self.store.load(actor).await?;
+        let alarm = snapshot
+            .state()
+            .filter(|state| !state.paused())
+            .and_then(|state| state.alarm().pending());
+        if !self.release(actor) {
+            return Err(Error::Invalid("actor still owns an unsettled delivery"));
+        }
+        Ok(alarm)
+    }
+
     /// Host forever: follow the root's activation log to discover actors
     /// created by any commit, deliver concurrently across actors, and fire
     /// alarms from one timer. Per-actor failures go to `report`; the input
