@@ -116,7 +116,6 @@ class Plan:
     cached_tokens: int = 0
     naive_tokens: int = 0
     beyond_train_len: bool = False
-    truncated: bool = False
     over_option_cap: list[str] = field(default_factory=list)
 
     @property
