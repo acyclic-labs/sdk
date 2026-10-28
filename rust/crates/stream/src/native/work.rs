@@ -78,6 +78,14 @@ impl Work {
         Ok(())
     }
 
+    /// Releases an unspent write reservation without publishing.
+    pub(crate) fn release_write(&self) {
+        self.write
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
     pub(crate) fn publish<T>(
         &self,
         bytes: usize,

@@ -251,6 +251,13 @@ impl StreamProvider for TcpDropProbe {
         Err(StreamError::Unsupported)
     }
 
+    async fn head(
+        &self,
+        _path: StreamPath,
+    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
+        Err(StreamError::Unsupported)
+    }
+
 
     async fn append(
         &self,
@@ -395,6 +402,7 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             filter: None,
             path: "accounts/events".to_owned(),
             from: 0,
+            progress: false,
         };
         let follow = Arc::new(
             open_follow(

@@ -25,24 +25,33 @@ fn envelope() -> wire::CommittedEnvelope {
                 },
             )),
         }],
+        committed_at_micros: 9007199254740993,
     }
 }
 
 #[test]
-fn commit_encoder_preserves_atomic_envelope_and_compact_compatibility()
--> Result<(), Box<dyn std::error::Error>> {
+fn commit_encoder_emits_compact_receipt() -> Result<(), Box<dyn std::error::Error>> {
     let response = wire::CommitResponse {
-        outcome: Some(wire::commit_response::Outcome::Committed(envelope())),
+        outcome: Some(wire::commit_response::Outcome::Committed(wire::CommitReceipt {
+            commit_id: Bytes::from(vec![1; 32]),
+            committed_at_micros: 9007199254740993,
+            appends: vec![wire::AppendRange {
+                path: "events".into(),
+                start: 0,
+                tail: 1,
+            }],
+            forks: vec![],
+        })),
     };
     let protobuf = response.encode_to_vec();
     let encoded = http_response::encode("commit", &protobuf, 4096)?;
     let json: serde_json::Value = serde_json::from_slice(&encoded)?;
-    assert_eq!(json.pointer("/tails/events"), Some(&serde_json::json!("1")));
-    assert_eq!(json.get("commitId"), json.pointer("/envelope/commitId"));
+    assert_eq!(json.pointer("/appends/0/tail"), Some(&serde_json::json!("1")));
     assert_eq!(
-        json.pointer("/envelope/mutations/0/records/0/committedAtMicros"),
+        json.get("committedAtMicros"),
         Some(&serde_json::json!("9007199254740993"))
     );
+    assert!(json.get("envelope").is_none());
     assert_eq!(
         http_response::encode("commit", &protobuf, encoded.len() - 1),
         Err("limit_exceeded")

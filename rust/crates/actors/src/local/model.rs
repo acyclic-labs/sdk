@@ -14,6 +14,7 @@ use acyclic_stream::{
     ForkRequest, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
 };
 use bytes::Bytes;
+use futures::TryStreamExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod composition;

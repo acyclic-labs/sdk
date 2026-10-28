@@ -214,16 +214,9 @@ pub(super) async fn commit(
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = decode::<wire::CommitRequest>(&request, "commit")?;
-    let deadline = request.deadline_unix_millis;
     let request = wire_codec::commit_from_wire(request).map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
-        async {
-            match deadline {
-                Some(deadline) => client.commit_before(request, deadline).await,
-                None => client.commit(request).await,
-            }
-            .map_err(|error| stream_error(&error))
-        },
+        async { client.commit(request).await.map_err(|error| stream_error(&error)) },
         cancellation_state(cancellation),
     )
     .await?;

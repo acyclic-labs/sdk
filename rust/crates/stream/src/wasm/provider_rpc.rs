@@ -270,7 +270,7 @@ impl StreamProvider for InjectedStream {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         crate::memory::validate_limit(request.limit)?;
         let from = request.from;
-        Ok(Box::pin(crate::records_only(
+        Ok(crate::records_only(
             self.cursor(
                 "read",
                 wire::ReadRequest {
@@ -282,7 +282,7 @@ impl StreamProvider for InjectedStream {
                 from,
             )
             .await?,
-        )))
+        ))
     }
     async fn children_page(
         &self,

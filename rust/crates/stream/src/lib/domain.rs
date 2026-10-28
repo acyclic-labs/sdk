@@ -555,14 +555,14 @@ pub enum FollowUpdate {
 /// Ordered records and skipped-prefix observations from one atomic follow.
 pub type FollowStream = BoxProviderStream<'static, Result<FollowUpdate, StreamError>>;
 
-/// Projects records from an existing follow without allocating or subscribing again.
-pub fn records_only(
-    updates: FollowStream,
-) -> impl futures::Stream<Item = Result<Record, StreamError>> + Unpin + ProviderTask {
+/// Projects records from an existing follow without subscribing again.
+pub fn records_only(updates: FollowStream) -> RecordStream {
     use futures::StreamExt as _;
-    updates.filter_map(|update| futures::future::ready(match update {
-        Ok(FollowUpdate::Record(record)) => Some(Ok(record)),
-        Ok(FollowUpdate::Progress { .. }) => None,
-        Err(error) => Some(Err(error)),
+    Box::pin(updates.filter_map(|update| {
+        futures::future::ready(match update {
+            Ok(FollowUpdate::Record(record)) => Some(Ok(record)),
+            Ok(FollowUpdate::Progress { .. }) => None,
+            Err(error) => Some(Err(error)),
+        })
     }))
 }

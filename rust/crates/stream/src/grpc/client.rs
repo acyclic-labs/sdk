@@ -86,7 +86,7 @@ impl StreamProvider for Client {
         let response = self.unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
             Box::pin(async move { service.head(request).await })
         }).await?;
-        decode_response(response, wire_codec::head_from_wire)
+        decode_response(response, crate::wire_codec::head_from_wire)
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {

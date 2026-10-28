@@ -331,10 +331,7 @@ impl PreparedCommit {
             })
         })();
         let _ = work.record(self.probes.record(16));
-        work.write
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
+        work.release_write();
         result
     }
 }

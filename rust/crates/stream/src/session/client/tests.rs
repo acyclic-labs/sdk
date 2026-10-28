@@ -1,6 +1,6 @@
 use super::*;
 use crate::grpc;
-use crate::{AppendRequest, MemoryStream, OwnedBytes};
+use crate::{AppendRequest, MemoryStream, OwnedBytes, RecordStream};
 use futures::TryFutureExt as _;
 use std::{
     sync::atomic::{AtomicUsize, Ordering},

@@ -67,7 +67,7 @@ fn baseline_native_read<'a>(
                     .value
                     .len();
                 meter.check()?;
-                let mut bytes = NativeByteReservation::new(
+                let mut bytes = acyclic_native_runtime::NativeByteReservation::new(
                     Arc::clone(&meter),
                     NativeOperationKind::Read,
                     length,

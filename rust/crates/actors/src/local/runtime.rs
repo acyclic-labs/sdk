@@ -842,7 +842,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .await
         {
             Ok(follow) => {
-                inner.follows.insert(id.to_owned(), Box::pin(acyclic_stream::records_only(follow)));
+                inner.follows.insert(id.to_owned(), acyclic_stream::records_only(follow));
                 Ok(true)
             }
             Err(StreamError::NotFound) => Ok(false),

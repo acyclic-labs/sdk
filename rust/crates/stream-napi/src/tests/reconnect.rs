@@ -295,6 +295,7 @@ impl Fixture {
                     filter: None,
                     path: path.into(),
                     from: 0,
+                    progress: false,
                 }
                 .encode_to_vec(),
             ),
