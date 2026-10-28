@@ -511,7 +511,10 @@ async fn dropping_buffered_follows_returns_aggregate_capacity() -> TestResult {
 async fn concurrent_first_follows_honor_the_explicit_registration_deadline() -> TestResult {
     let fixture =
         Fixture::configured(Arc::new(MemoryStream::default()), "silent", true, true).await?;
-    let client = fixture.client()?.with_registration_timeout(Some(100));
+    let client = fixture
+        .client()?
+        .session_client()?
+        .with_registration_timeout(Some(100));
     let one = StreamPath::new("one")?;
     let two = StreamPath::new("two")?;
     let (first, second) = tokio::time::timeout(Duration::from_secs(5), async {
