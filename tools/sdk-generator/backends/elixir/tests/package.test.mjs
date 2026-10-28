@@ -33,4 +33,3 @@ test("unsafe, duplicate, extra and incomplete receipt inventories reject", async
     f => { f.receipt.outputs = f.receipt.outputs.filter(name => !name.endsWith("actors.proto.bin")); },
   ]) { const f = fixture(t); mutate(f); f.saveReceipt(); await assert.rejects(async () => await readPackage(f.args)); }
 });
-

@@ -11,12 +11,12 @@ fn final_capture_packet_retires_before_returning_its_counter() {
     capture.claim(9);
     let packet = Arc::clone(&capture);
     let late = Arc::downgrade(&capture);
-    let barrier = capture.released.release_barrier();
-    std::thread::scope(|threads| {
+    let controls = std::thread::scope(|threads| {
         let (started, observed) = std::sync::mpsc::sync_channel(0);
+        let (finished, retired) = std::sync::mpsc::sync_channel(0);
         let retire = threads.spawn(move || {
             started.send(()).unwrap();
-            capture.retire()
+            finished.send(capture.retire()).unwrap();
         });
         observed.recv().unwrap();
         // A source may still upgrade its original weak custody while an
@@ -25,22 +25,28 @@ fn final_capture_packet_retires_before_returning_its_counter() {
         late_packet.claim(3);
         packet.release(2);
         drop(packet);
-        assert!(!barrier.is_released());
+        assert!(matches!(
+            retired.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
         cancellation.cancel();
         // A temporary Weak upgrade in demand accounting can release the final
         // owner while the original leaf is still locked.
-        original.with_original_leaf(|_| drop(late_packet));
-        assert_eq!(retire.join().unwrap(), 10);
+        let (bytes, controls) = original.with_original_leaf(|_| {
+            drop(late_packet);
+            retired.recv().unwrap()
+        });
+        assert_eq!(bytes, 10);
+        retire.join().unwrap();
+        controls
     });
     assert!(late.upgrade().is_none());
-    assert!(barrier.is_released());
-    assert_eq!(barrier.state().retained.load(Ordering::Acquire), 0);
     // Both control guards remain funded until the observer is outside the leaf.
     assert_eq!(
         original.live_allocation_bytes(),
         baseline + CaptureTransientCustody::allocation_bytes(),
     );
-    drop(barrier);
+    drop(controls);
     assert_eq!(original.live_allocation_bytes(), baseline);
 }
 
@@ -68,7 +74,9 @@ fn capture_retirement_admits_all_control_storage_before_allocation() {
             let physical_bytes = u64::try_from(actual.bytes_current).unwrap();
             assert_eq!(physical_bytes, CaptureTransientCustody::allocation_bytes());
             assert_eq!(original.live_allocation_bytes() - baseline, physical_bytes);
-            assert_eq!(capture.retire(), 0);
+            let (bytes, controls) = capture.retire();
+            assert_eq!(bytes, 0);
+            drop(controls);
         } else {
             assert!(output.is_err());
             assert_eq!(actual.count_current, 0);
