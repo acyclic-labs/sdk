@@ -654,14 +654,7 @@ impl WasmAgents {
         from: u64,
         limit: u32,
     ) -> std::result::Result<JsValue, JsValue> {
-        let agent = AgentPath::try_from(agent).map_err(agent_error)?;
-        let path = match stream.as_str() {
-            "inbox" => agent.inbox(),
-            "conversation" => agent.conversation(),
-            "status" => agent.status(),
-            _ => return Err(js_error(Error::Invalid("unknown agent stream".into()))),
-        }
-        .map_err(agent_error)?;
+        let path = agent_stream_path(agent, &stream)?;
         let records = match self
             .agents
             .provider()
@@ -694,6 +687,27 @@ impl WasmAgents {
         to_js(&records)
     }
 
+    /// Atomic replay-to-live observation through the shared Streams cursor.
+    /// Closing the cursor wakes a pending read and releases its subscription.
+    pub async fn follow(
+        &self,
+        agent: String,
+        #[wasm_bindgen(unchecked_param_type = "\"inbox\" | \"conversation\" | \"status\"")]
+        stream: String,
+        from: u64,
+    ) -> std::result::Result<acyclic_stream::WasmFollow, JsValue> {
+        let path = agent_stream_path(agent, &stream)?;
+        let records = self
+            .agents
+            .provider()
+            .follow(acyclic_stream::FollowRequest::new(path, from))
+            .await
+            .map_err(stream_error)?;
+        Ok(acyclic_stream::WasmFollow::from_records(
+            acyclic_stream::records_only(records),
+        ))
+    }
+
     /// The verified bytes of `file` on one of `agent`'s volumes, such as a
     /// turn's staged output.
     #[wasm_bindgen(js_name = readFile)]
@@ -724,6 +738,17 @@ impl WasmAgents {
                 .as_slice(),
         ))
     }
+}
+
+fn agent_stream_path(agent: String, stream: &str) -> std::result::Result<StreamPath, JsValue> {
+    let agent = AgentPath::try_from(agent).map_err(agent_error)?;
+    match stream {
+        "inbox" => agent.inbox(),
+        "conversation" => agent.conversation(),
+        "status" => agent.status(),
+        _ => return Err(js_error(Error::Invalid("unknown agent stream".into()))),
+    }
+    .map_err(agent_error)
 }
 
 impl WasmAgents {
