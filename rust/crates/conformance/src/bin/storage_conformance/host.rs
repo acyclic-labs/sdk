@@ -1,6 +1,9 @@
 //! Backend provisioning only: all host vectors and assertions stay in the suite.
 use acyclic_agent_host_conformance::{Backend, Objects, Result, Storage};
-use acyclic_objects::{Store, s3::S3Medium};
+use acyclic_objects::{
+    Store,
+    s3::{Capabilities as S3Capabilities, S3Medium},
+};
 use acyclic_stream::{
     BoxProviderFuture, LocalStream, LocalStreamLimits, StreamProvider, postgres::PostgresStream,
 };
@@ -78,7 +81,11 @@ impl Storage for Domain {
             let Some(store) = &self.providers.objects else {
                 return Ok(Objects::memory());
             };
-            let medium = S3Medium::new(store.clone(), &format!("agent-host/{}", self.namespace));
+            let medium = S3Medium::new(
+                store.clone(),
+                &format!("agent-host/{}", self.namespace),
+                S3Capabilities::REQUIRED,
+            )?;
             Ok(Objects {
                 provider: Arc::new(Store::new(medium).account(b"host")?),
                 capabilities: acyclic_fs::EmbeddedCapabilities { durable: true },
@@ -99,6 +106,7 @@ pub async fn verify(
                 body_gets: 0.into(),
                 metadata_bytes: 0.into(),
                 envelope_creates: 0.into(),
+                multipart_parts: 0.into(),
             })
         } else {
             store

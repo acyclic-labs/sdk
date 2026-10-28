@@ -900,6 +900,7 @@ dependencies = [
  "pin-project-lite",
  "prost",
  "prost-reflect",
+ "quick-xml 0.41.0",
  "reqwest 0.12.28",
  "reqwest 0.13.5",
  "rustls",

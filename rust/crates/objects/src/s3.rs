@@ -6,11 +6,12 @@
 use crate::{Medium, MediumError};
 use acyclic_stream::OwnedBytes;
 use futures::TryStreamExt as _;
+use object_store::multipart::MultipartStore;
 use object_store::signer::{SignedUrlOptions, Signer};
 use object_store::{
     GetOptions, GetRange, ObjectStore, ObjectStoreExt as _, PutMode, UpdateVersion, path::Path,
 };
-use reqwest_s3::header::{HeaderValue, IF_MATCH};
+use reqwest_s3::header::{HeaderValue, IF_MATCH, IF_NONE_MATCH};
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -20,8 +21,36 @@ pub use reqwest_s3::{Method, Url};
 
 /// A bucket that also presigns requests: `object_store` has no conditional
 /// delete, so [`S3Medium`] signs an `If-Match` DELETE itself.
-pub trait Bucket: ObjectStore + Signer {}
-impl<T: ObjectStore + Signer> Bucket for T {}
+pub trait Bucket: ObjectStore + Signer + MultipartStore {}
+impl<T: ObjectStore + Signer + MultipartStore> Bucket for T {}
+
+/// Deployment capabilities, independent of vendor names. Required flags fail closed.
+#[derive(Clone, Copy)]
+pub struct Capabilities {
+    /// Atomic If-None-Match creation and If-Match replacement.
+    pub conditional_writes: bool,
+    /// Atomic If-Match deletion, including a signed DELETE request.
+    pub conditional_delete: bool,
+    /// Committed changes are immediately visible to independent clients.
+    pub read_after_write: bool,
+    /// GET honors half-open byte selections through HTTP ranges.
+    pub range_reads: bool,
+    /// Listing returns keys in ascending byte order.
+    pub lexical_listing: bool,
+    /// Use conditional multipart completion for bodies larger than 5 MiB.
+    pub multipart: bool,
+}
+impl Capabilities {
+    /// Assert only after qualifying these operations on the target endpoint.
+    pub const REQUIRED: Self = Self {
+        conditional_writes: true,
+        conditional_delete: true,
+        read_after_write: true,
+        range_reads: true,
+        lexical_listing: true,
+        multipart: true,
+    };
+}
 
 /// An S3-compatible bucket prefix holding every account's blobs.
 #[derive(Clone)]
@@ -29,22 +58,38 @@ pub struct S3Medium {
     store: Arc<dyn Bucket>,
     prefix: String,
     http: Arc<OnceLock<reqwest_s3::Client>>,
+    multipart: bool,
 }
 
 impl S3Medium {
     /// Uses `store` exclusively below `prefix`.
-    #[must_use]
-    pub fn new(store: Arc<dyn Bucket>, prefix: &str) -> Self {
+    pub fn new(
+        store: Arc<dyn Bucket>,
+        prefix: &str,
+        capabilities: Capabilities,
+    ) -> Result<Self, MediumError> {
+        if !(capabilities.conditional_writes
+            && capabilities.conditional_delete
+            && capabilities.read_after_write
+            && capabilities.range_reads
+            && capabilities.lexical_listing)
+        {
+            return Err(MediumError::Failed(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "STEP s3-capabilities refused: conditional writes/delete, read-after-write, ranges and lexical listing required; recovery: qualify the endpoint and pass its supported capabilities",
+            )));
+        }
         let prefix = prefix.trim_matches('/');
-        Self {
+        Ok(Self {
             store,
             http: Arc::default(),
+            multipart: capabilities.multipart,
             prefix: if prefix.is_empty() {
                 String::new()
             } else {
                 format!("{prefix}/")
             },
-        }
+        })
     }
 
     fn path(&self, key: &str) -> Path {
@@ -75,15 +120,99 @@ impl S3Medium {
         let client = reqwest_s3::Client::builder().build().map_err(failed)?;
         Ok(self.http.get_or_init(|| client))
     }
+
+    async fn multipart_create(&self, path: &Path, bytes: OwnedBytes) -> Result<bool, MediumError> {
+        let id = self.store.create_multipart(path).await.map_err(failed)?;
+        let result = async {
+            let mut xml = String::from("<CompleteMultipartUpload>");
+            let part_size = bytes.len().div_ceil(10_000).max(5 * 1024 * 1024);
+            for (index, part) in bytes.chunks(part_size).enumerate() {
+                let part = self
+                    .store
+                    .put_part(path, &id, index, bytes::Bytes::copy_from_slice(part).into())
+                    .await
+                    .map_err(ambiguous)?;
+                xml.push_str(&format!(
+                    "<Part><PartNumber>{}</PartNumber><ETag>{}</ETag></Part>",
+                    index + 1,
+                    quick_xml::escape::escape(&part.content_id)
+                ));
+            }
+            xml.push_str("</CompleteMultipartUpload>");
+            let condition = HeaderValue::from_static("*");
+            let options = SignedUrlOptions::new()
+                .with_query([("uploadId", id.as_str())])
+                .with_signed_header(IF_NONE_MATCH, condition.clone());
+            let url = self
+                .store
+                .signed_url_opts(Method::POST, path, Duration::from_secs(300), &options)
+                .await
+                .map_err(failed)?;
+            let response = self
+                .http()?
+                .post(url)
+                .header(IF_NONE_MATCH, condition)
+                .body(xml)
+                .send()
+                .await
+                .map_err(|error| ambiguous(error.without_url()))?;
+            match response.status().as_u16() {
+                412 => return Ok(false),
+                200 => {}
+                status => {
+                    return Err(ambiguous(format!(
+                        "conditional multipart completion answered {status}"
+                    )));
+                }
+            }
+            // S3 can return an Error XML document with HTTP 200. Parse to EOF.
+            let body = response.bytes().await.map_err(ambiguous)?;
+            let mut reader = quick_xml::Reader::from_reader(body.as_ref());
+            let mut complete = false;
+            loop {
+                match reader.read_event().map_err(ambiguous)? {
+                    quick_xml::events::Event::Start(tag)
+                        if tag.local_name().as_ref() == b"Error" =>
+                    {
+                        return Err(ambiguous("multipart completion returned an error document"));
+                    }
+                    quick_xml::events::Event::End(tag)
+                        if tag.local_name().as_ref() == b"CompleteMultipartUploadResult" =>
+                    {
+                        complete = true
+                    }
+                    quick_xml::events::Event::Eof => break,
+                    _ => {}
+                }
+            }
+            if complete {
+                Ok(true)
+            } else {
+                Err(ambiguous("invalid multipart completion document"))
+            }
+        }
+        .await;
+        if !matches!(result, Ok(true)) {
+            // Abort only this upload ID; never delete the destination after an uncertain completion.
+            let _ = self.store.abort_multipart(path, &id).await;
+        }
+        result
+    }
 }
 
 fn failed(error: impl std::fmt::Display) -> MediumError {
     MediumError::Failed(std::io::Error::other(error.to_string()))
 }
+fn ambiguous(error: impl std::fmt::Display) -> MediumError {
+    MediumError::Ambiguous(std::io::Error::other(error.to_string()))
+}
 
 #[async_trait::async_trait]
 impl Medium for S3Medium {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
+        if self.multipart && bytes.len() > 5 * 1024 * 1024 {
+            return self.multipart_create(&self.path(key), bytes).await;
+        }
         let payload = object_store::PutPayload::from(bytes::Bytes::copy_from_slice(&bytes));
         match self
             .store
@@ -181,20 +310,17 @@ impl Medium for S3Medium {
             )
             .await
             .map_err(failed)?;
-        let ambiguous = |error: &dyn std::fmt::Display| {
-            MediumError::Ambiguous(std::io::Error::other(error.to_string()))
-        };
         let response = self
             .http()?
             .delete(url)
             .header(IF_MATCH, e_tag)
             .send()
             .await
-            .map_err(|error| ambiguous(&error))?;
+            .map_err(|error| ambiguous(error.without_url()))?;
         match response.status().as_u16() {
             200 | 204 => Ok(true),
             404 | 412 => Ok(false),
-            status => Err(ambiguous(&format!("conditional delete answered {status}"))),
+            status => Err(ambiguous(format!("conditional delete answered {status}"))),
         }
     }
 
@@ -219,29 +345,15 @@ impl Medium for S3Medium {
                 .to_owned();
             (key, meta.size)
         });
-        // Keep the `limit` least matches, stopping once a lexical listing
-        // (required above) has them; names at or before an offset the
-        // endpoint ignored are skipped. A listing seen out of order is read
-        // to its end, still holding at most `limit` names.
-        let mut kept = std::collections::BTreeMap::new();
-        let mut previous: Option<String> = None;
-        let mut ordered = true;
-        while let Some((key, size)) = listing.try_next().await.map_err(failed)? {
-            ordered &= previous
-                .as_deref()
-                .is_none_or(|previous| previous < key.as_str());
-            previous = Some(key.clone());
-            if !key.starts_with(prefix) || after.is_some_and(|after| key.as_str() <= after) {
-                continue;
-            }
-            kept.insert(key, size);
-            if kept.len() > limit {
-                kept.pop_last();
-            }
-            if ordered && kept.len() == limit {
+        let mut kept = Vec::new();
+        while kept.len() < limit {
+            let Some((key, size)) = listing.try_next().await.map_err(failed)? else {
                 break;
+            };
+            if key.starts_with(prefix) && after.is_none_or(|after| key.as_str() > after) {
+                kept.push((key, size));
             }
         }
-        Ok(kept.into_iter().collect())
+        Ok(kept)
     }
 }
