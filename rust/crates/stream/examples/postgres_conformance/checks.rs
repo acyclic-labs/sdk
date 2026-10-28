@@ -35,9 +35,14 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
         path: path.clone(),
         records: vec![OwnedBytes::from_static(b"second").into()],
         if_tail: Some(1),
-        idempotency_key: crate::IdempotencyKey::unique(),
+        idempotency_key: acyclic_stream::IdempotencyKey::new(&b"checks-1"[..])?,
     };
-    let (left, right) = tokio::join!(provider.append(request.clone()), peer.append(request));
+    // Two distinct writers race the same tail: distinct retry identities.
+    let rival = AppendRequest {
+        idempotency_key: acyclic_stream::IdempotencyKey::new(&b"checks-rival"[..])?,
+        ..request.clone()
+    };
+    let (left, right) = tokio::join!(provider.append(request), peer.append(rival));
     assert!(matches!(
         (left?, right?),
         (
@@ -62,7 +67,7 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
             path: path.clone(),
             records: vec![OwnedBytes::from_static(b"notification-only").into()],
             if_tail: Some(2),
-            idempotency_key: crate::IdempotencyKey::unique(),
+            idempotency_key: acyclic_stream::IdempotencyKey::new(&b"checks-2"[..])?,
         })
         .await?;
     assert_eq!(
@@ -112,7 +117,7 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
                 path: path.clone(),
                 records: vec![OwnedBytes::from_static(b"anchor").into()],
                 if_tail: Some(0),
-                idempotency_key: crate::IdempotencyKey::unique(),
+                idempotency_key: acyclic_stream::IdempotencyKey::new(&b"checks-3"[..])?,
             })
             .await?
         else {
@@ -137,7 +142,9 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
                     path: path.clone(),
                     records: vec![OwnedBytes::from_static(b"still-following").into()],
                     if_tail: Some(sequence),
-                    idempotency_key: crate::IdempotencyKey::unique(),
+                    idempotency_key: acyclic_stream::IdempotencyKey::new(
+                        format!("checks-4-{sequence}").into_bytes(),
+                    )?,
                 })
                 .await?;
             let update = tokio::time::timeout(Duration::from_secs(1), subscription.next())
@@ -161,7 +168,7 @@ async fn listener_failure(database: &str) -> Result<(), Box<dyn std::error::Erro
             path: path.clone(),
             records: vec![OwnedBytes::new().into()],
             if_tail: Some(0),
-            idempotency_key: crate::IdempotencyKey::unique(),
+            idempotency_key: acyclic_stream::IdempotencyKey::new(&b"checks-5"[..])?,
         })
         .await?;
     let mut records = provider

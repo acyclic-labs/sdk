@@ -320,7 +320,7 @@ describe("website Stream contract", () => {
         { fork: { source: jobs, destination: "runs/42/attempt-2", atTail: 1n } },
       ],
     }, { idempotencyKey: key("assignment-1") });
-    expect(result).toMatchObject({ ok: true, tails: { "runs/42/jobs": 2n, "runs/42/workers": 2n }, forks: [{ path: "runs/42/attempt-2", tail: 1n }] });
+    expect(result).toMatchObject({ ok: true, appends: [{ path: "runs/42/jobs", tail: 2n }, { path: "runs/42/workers", tail: 2n }], forks: [{ path: "runs/42/attempt-2", tail: 1n }] });
     if (!result.ok) throw new Error("commit unexpectedly conflicted");
     expect((await client.readCommit(result.commitId)).mutations).toHaveLength(3);
     await expect(jobs.read({ from: -1n, limit: 1 }).next()).rejects.toBeInstanceOf(RangeError);
@@ -348,7 +348,7 @@ describe("website Stream contract", () => {
       conditions: [{ path: "projection/events", ifTail: 1n }],
       mutations: [{ append: { path: "projection/events", values: [new Uint8Array([4])] } }],
     }, { idempotencyKey: commitKey });
-    expect(committed).toMatchObject({ ok: true, tails: { "projection/events": 2n }, forks: [] });
+    expect(committed).toMatchObject({ ok: true, appends: [{ path: "projection/events", start: 1n, tail: 2n }], forks: [] });
     const commitConflict = await provider.commit({
       conditions: [{ path: "projection/events", ifTail: 0n }],
       mutations: [{ append: { path: "projection/events", values: [new Uint8Array([5])] } }],
@@ -428,7 +428,7 @@ describe("website Stream contract", () => {
       } },
     }));
     expect(bytes.byteLength).toBeGreaterThan(StreamLimit.MAX_COMMAND_BYTES);
-    expect(projectMemoryResponse("commit", bytes)).toMatchObject({ ok: true, tails: { events: 1024n }, forks: [] });
+    expect(projectMemoryResponse("commit", bytes)).toMatchObject({ ok: true, appends: [{ path: "events", start: 0n, tail: 1024n }], forks: [] });
   });
 
   test("binds commit identities to request content", async () => {
@@ -537,15 +537,13 @@ describe("website Stream contract", () => {
     };
     const local = await new MemoryStreamProvider().commit(request, { idempotencyKey: key("prototype-local") });
     if (!local.ok) throw new Error("local commit unexpectedly conflicted");
-    expect(Object.hasOwn(local.tails, "__proto__")).toBe(true);
-    expect(local.tails["__proto__"]).toBe(1n);
+    expect(local.appends).toEqual([{ path: "__proto__", start: 0n, tail: 1n }]);
 
     const remote = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () =>
-      new Response(`{"ok":true,"commitId":"${encodedCommitId}","tails":{"__proto__":"1"},"forks":[]}`) });
+      new Response(`{"ok":true,"commitId":"${encodedCommitId}","committedAtMicros":"1","appends":[{"path":"__proto__","start":"0","tail":"1"}],"forks":[]}`) });
     const hosted = await remote.commit(request, { idempotencyKey: key("prototype-hosted") });
     if (!hosted.ok) throw new Error("hosted commit unexpectedly conflicted");
-    expect(Object.hasOwn(hosted.tails, "__proto__")).toBe(true);
-    expect(hosted.tails["__proto__"]).toBe(1n);
+    expect(hosted.appends).toEqual([{ path: "__proto__", start: 0n, tail: 1n }]);
   });
 
   test("hosted append sends the bytes and key validated at call time", async () => {

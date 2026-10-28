@@ -25,6 +25,8 @@ pub(crate) struct PreparedCommit {
     provider: MemoryStream,
     conditions: [CommitCondition; 2],
     key: IdempotencyKey,
+    /// The request's publication deadline; an accepted retry precedes it.
+    deadline: Option<u64>,
     plan: CommitPlan,
     namespace: NamespaceReserve,
     conflicts: (Vec<CommitConflict>, Allocation),
@@ -85,6 +87,7 @@ impl MemoryStream {
         drop(request.mutations);
         drop(input);
         let key = request.idempotency_key;
+        let deadline = request.deadline_unix_millis;
         let recovery = self.prepare_recovery(
             key.clone(),
             conditions.clone(),
@@ -107,6 +110,7 @@ impl MemoryStream {
                 provider: self.clone(),
                 conditions,
                 key,
+                deadline,
                 plan,
                 namespace,
                 conflicts: conflict,
@@ -287,6 +291,12 @@ impl PreparedCommit {
                 )?;
                 let _ = work.record(record_codec(&mut self.codec, copied_bytes(&result.0), 0));
                 return Ok(result);
+            }
+            if self
+                .deadline
+                .is_some_and(|deadline| self.provider.clock.now_unix_millis() >= deadline)
+            {
+                return Err(StreamError::DeadlineElapsed);
             }
             if self
                 .capacity

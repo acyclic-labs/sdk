@@ -29,7 +29,7 @@ async fn refusals_and_retries_never_enter_the_durable_boundary() -> Result<(), S
     ));
     assert_eq!(publications.load(Ordering::SeqCst), 0);
     assert!(
-        core.inspect_idempotency(bad.idempotency_key.ok_or(StreamError::InvalidArgument)?)
+        core.inspect_idempotency(bad.idempotency_key.clone())
             .await?
             .is_none()
     );
@@ -90,7 +90,7 @@ async fn refusals_and_retries_never_enter_the_durable_boundary() -> Result<(), S
 async fn failed_or_cancelled_durability_never_installs_or_notifies() -> Result<(), StreamError> {
     let core = MemoryStream::default();
     let mut initial = request(0)?;
-    initial.idempotency_key = None;
+    initial.idempotency_key = IdempotencyKey::new(b"durable-initial".to_vec())?;
     core.append(initial).await?;
     let append = request(1)?;
     let mut follow = core
@@ -118,14 +118,9 @@ async fn failed_or_cancelled_durability_never_installs_or_notifies() -> Result<(
         assert!(futures::poll!(read.as_mut()).is_pending());
     }
     assert!(
-        core.inspect_idempotency(
-            append
-                .idempotency_key
-                .clone()
-                .ok_or(StreamError::InvalidArgument)?
-        )
-        .await?
-        .is_none()
+        core.inspect_idempotency(append.idempotency_key.clone())
+            .await?
+            .is_none()
     );
     assert_eq!(core.tail(append.path.clone()).await?, 1);
     let outcome = core

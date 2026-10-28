@@ -144,7 +144,7 @@ if (process.argv.includes("--client")) {
   assert.deepEqual((await provider.childrenPage({ parent: prefix, limit: 8 })).children.map(item => item.path), [`${prefix}/events`, `${prefix}/fork`]);
   const committed = await provider.commit({ conditions: [{ path, ifTail: 2n }, { path: `${prefix}/other`, ifAbsent: true }], mutations: [{ append: { path, values: [body("three")] } }, { append: { path: `${prefix}/other`, values: [body("other")] } }] }, { idempotencyKey: key(`${prefix}-commit`) });
   assert.equal(committed.ok, true);
-  assert.equal(committed.tails[path], 3n);
+  assert.equal(committed.appends.find(append => append.path === path).tail, 3n);
   assert.equal((await provider.readCommit(committed.commitId)).mutations.length, 2);
   assert.equal((await provider.inspectIdempotency(key(`${prefix}-commit`))).outcome.type, "commit");
   const conflict = await provider.commit({ conditions: [{ path, ifTail: 0n }], mutations: [{ append: { path, values: [body("rejected")] } }] }, { idempotencyKey: key(`${prefix}-conflict`) });

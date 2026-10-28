@@ -69,11 +69,8 @@ pub(super) async fn verify(database: &str) -> Result<(), Box<dyn std::error::Err
     for key in [
         append.idempotency_key.clone(),
         fork.idempotency_key.clone(),
-        Some(commit.idempotency_key.clone()),
-    ]
-    .into_iter()
-    .flatten()
-    {
+        commit.idempotency_key.clone(),
+    ] {
         assert!(provider.inspect_idempotency(key).await?.is_none());
     }
     assert_eq!(retained(&client, &namespace).await?, (0, 0));

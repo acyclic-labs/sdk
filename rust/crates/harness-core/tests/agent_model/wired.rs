@@ -346,6 +346,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
     for path in [parent.conversation()?, child.conversation()?] {
         stream
             .commit(CommitRequest {
+                deadline_unix_millis: None,
                 conditions: vec![CommitCondition::Absent { path: path.clone() }],
                 mutations: vec![CommitMutation::Append {
                     path: path.clone(),

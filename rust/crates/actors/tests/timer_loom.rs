@@ -112,16 +112,16 @@ macro_rules! delegate {
             $(async fn $name(&self, $arg: $input) -> std::result::Result<$output, acyclic_stream::StreamError> {
                 self.0.$name($arg).await
             })*
-            async fn follow(&self, path: StreamPath, from: u64)
-                -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError>
+            async fn follow(&self, request: acyclic_stream::FollowRequest)
+                -> std::result::Result<acyclic_stream::FollowStream, acyclic_stream::StreamError>
             {
-                self.0.follow(path, from).await
+                self.0.follow(request).await
             }
             async fn append(&self, mut request: AppendRequest)
                 -> std::result::Result<acyclic_stream::AppendOutcome, acyclic_stream::StreamError>
             {
-                // Deliberately drop the production fire's stable retry key.
-                request.idempotency_key = None;
+                // Deliberately replace the production fire's stable retry key.
+                request.idempotency_key = acyclic_stream::IdempotencyKey::unique();
                 self.0.append(request).await
             }
         }
