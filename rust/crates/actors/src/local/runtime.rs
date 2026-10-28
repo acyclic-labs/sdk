@@ -618,6 +618,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     trigger: trigger.clone(),
                     now_unix_ms: now,
                     record: record.clone(),
+                    subscriptions: crate::guest::SubscriptionCuts::new(
+                        snapshot
+                            .anchor
+                            .ok_or(Error::Invalid("actor state has no committed anchor"))?,
+                        state.subscriptions().clone(),
+                    ),
                 },
                 state.checkpoint(),
                 cancellation.clone(),

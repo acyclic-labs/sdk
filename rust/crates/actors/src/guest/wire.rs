@@ -10,10 +10,11 @@
 
 use super::{
     AlarmChange, CancellationToken, Checkpoint, CodecIdentity, Delivery, Effect, GuestError,
-    GuestFuture, Handler, Interrupt, Manifest, Participant, Transition, Trigger,
+    GuestFuture, Handler, Interrupt, Manifest, Participant, Subscription, SubscriptionCuts,
+    Transition, Trigger,
 };
 use crate::{addressing::ActorReference, domain};
-use acyclic_stream::{CommitRequest, IdempotencyKey, wire, wire_codec};
+use acyclic_stream::{CommitId, CommitRequest, IdempotencyKey, StreamPath, wire, wire_codec};
 use bytes::Bytes;
 use prost::Message as _;
 
@@ -35,6 +36,20 @@ struct DeliveryWire {
     /// The actor's last committed checkpoint, absent before its first transition.
     #[prost(message, optional, tag = "7")]
     checkpoint: Option<CheckpointWire>,
+    #[prost(message, repeated, tag = "8")]
+    subscriptions: Vec<SubscriptionWire>,
+    #[prost(bytes = "bytes", tag = "9")]
+    state_commit: Bytes,
+}
+
+#[derive(Clone, PartialEq, prost::Message)]
+struct SubscriptionWire {
+    #[prost(string, tag = "1")]
+    id: String,
+    #[prost(string, tag = "2")]
+    path: String,
+    #[prost(uint64, tag = "3")]
+    cursor: u64,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -237,6 +252,16 @@ pub fn encode_delivery(delivery: &Delivery, committed: Option<&Checkpoint>) -> V
         }),
         record: delivery.record.clone().map(wire_codec::record_wire),
         checkpoint: committed.map(checkpoint_wire),
+        state_commit: Bytes::copy_from_slice(delivery.subscriptions.anchor().as_bytes()),
+        subscriptions: delivery
+            .subscriptions
+            .iter()
+            .map(|(id, cut)| SubscriptionWire {
+                id: id.clone(),
+                path: cut.path.as_str().into(),
+                cursor: cut.cursor,
+            })
+            .collect(),
     }
     .encode_to_vec()
 }
@@ -244,6 +269,26 @@ pub fn encode_delivery(delivery: &Delivery, committed: Option<&Checkpoint>) -> V
 /// Decode one canonical delivery and committed checkpoint inside a guest.
 pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), GuestError> {
     let wire: DeliveryWire = canonical(bytes, "delivery")?;
+    if wire
+        .subscriptions
+        .windows(2)
+        .any(|pair| pair[0].id >= pair[1].id)
+    {
+        return Err(invalid("subscription order"));
+    }
+    let subscriptions = wire
+        .subscriptions
+        .into_iter()
+        .map(|cut| {
+            Ok((
+                cut.id,
+                Subscription {
+                    path: StreamPath::new(cut.path).map_err(|_| invalid("subscription path"))?,
+                    cursor: cut.cursor,
+                },
+            ))
+        })
+        .collect::<Result<_, GuestError>>()?;
     let trigger = match wire.trigger.ok_or_else(|| invalid("trigger"))? {
         TriggerWire::Record(RecordTrigger {
             subscription,
@@ -265,6 +310,15 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), G
         epoch: wire.epoch,
         trigger,
         now_unix_ms: wire.now_unix_ms,
+        subscriptions: SubscriptionCuts::new(
+            CommitId::from_bytes(
+                wire.state_commit
+                    .as_ref()
+                    .try_into()
+                    .map_err(|_| invalid("state commit"))?,
+            ),
+            subscriptions,
+        ),
         record: wire
             .record
             .map(wire_codec::record)
@@ -442,12 +496,79 @@ mod tests {
             },
             now_unix_ms: 9,
             record: None,
+            subscriptions: SubscriptionCuts::new(
+                CommitId::from_bytes([17; 32]),
+                [
+                    (
+                        "empty".into(),
+                        Subscription {
+                            path: StreamPath::new("inputs/empty")?,
+                            cursor: 0,
+                        },
+                    ),
+                    (
+                        "inbox".into(),
+                        Subscription {
+                            path: StreamPath::new("inputs/inbox")?,
+                            cursor: 42,
+                        },
+                    ),
+                ]
+                .into(),
+            ),
         };
         let committed = transition()?.checkpoint;
         let mut bytes = encode_delivery(&delivery, Some(&committed));
         assert_eq!(decode_delivery(&bytes)?, (delivery, Some(committed)));
-        bytes.extend_from_slice(&[0x40, 0x01]);
+        bytes.extend_from_slice(&[0x78, 0x01]);
         assert!(decode_delivery(&bytes).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_refuses_ambiguous_subscription_cuts() -> Result<(), Box<dyn std::error::Error>> {
+        let delivery = Delivery {
+            actor: ActorReference::new(b"account", b"namespace", b"actor")?,
+            epoch: 2,
+            trigger: Trigger::Alarm {
+                generation: 4,
+                now_unix_ms: 9,
+            },
+            now_unix_ms: 9,
+            record: None,
+            subscriptions: SubscriptionCuts::new(
+                CommitId::from_bytes([17; 32]),
+                [
+                    (
+                        "a".into(),
+                        Subscription {
+                            path: StreamPath::new("inputs/a")?,
+                            cursor: 0,
+                        },
+                    ),
+                    (
+                        "b".into(),
+                        Subscription {
+                            path: StreamPath::new("inputs/b")?,
+                            cursor: 42,
+                        },
+                    ),
+                ]
+                .into(),
+            ),
+        };
+        let bytes = encode_delivery(&delivery, None);
+        let mut wire = DeliveryWire::decode(bytes.as_slice())?;
+        wire.state_commit.clear();
+        assert!(decode_delivery(&wire.encode_to_vec()).is_err());
+        wire.state_commit = Bytes::from_static(&[17; 32]);
+        wire.subscriptions.swap(0, 1);
+        assert!(decode_delivery(&wire.encode_to_vec()).is_err());
+        wire.subscriptions[1] = wire.subscriptions[0].clone();
+        assert!(decode_delivery(&wire.encode_to_vec()).is_err());
+        wire.subscriptions.truncate(1);
+        wire.subscriptions[0].path = String::new();
+        assert!(decode_delivery(&wire.encode_to_vec()).is_err());
         Ok(())
     }
 

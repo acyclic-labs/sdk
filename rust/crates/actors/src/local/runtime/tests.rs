@@ -212,6 +212,108 @@ impl Clock for Manual {
     }
 }
 
+struct CapturesCuts {
+    package: Package,
+    deliveries: std::sync::Mutex<Vec<Delivery>>,
+}
+
+impl Handler for CapturesCuts {
+    fn manifest(&self) -> &Manifest {
+        self.package.manifest()
+    }
+
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        self.deliveries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(delivery.clone());
+        self.package.on_record(delivery, checkpoint, cancellation)
+    }
+}
+
+/// Alarm resume must carry Actors' saved input cut even without a record.
+/// Resetting to zero would replay the two consumed commands after reopen.
+#[tokio::test]
+async fn reopened_alarm_delivery_retains_the_committed_subscription_cut() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "delivery-cut", &[b"emit", b"set 100"]).await?;
+    let inbox = StreamPath::new("agents/delivery-cut")?;
+    let handler = Arc::new(CapturesCuts {
+        package: Package::new()?,
+        deliveries: std::sync::Mutex::new(Vec::new()),
+    });
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        handler.clone(),
+        Arc::new(Manual(AtomicU64::new(1))),
+    );
+    runtime.track(address.clone())?;
+    assert!(runtime.drain().await.is_empty());
+    drop(runtime);
+    let reopened = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        handler.clone(),
+        Arc::new(Manual(AtomicU64::new(101))),
+    );
+    reopened.track(address.clone())?;
+    assert!(reopened.drain().await.is_empty());
+    let snapshot = store.load(&address).await?;
+    assert_eq!(
+        snapshot.state().and_then(|state| state.cursor("inbox")),
+        Some(2)
+    );
+    assert_eq!(
+        records(&*provider, "out/delivery-cut").await?,
+        vec![Bytes::from_static(b"r0"), Bytes::from_static(b"a1")]
+    );
+    let mut history = provider
+        .read(acyclic_stream::ReadRequest {
+            path: store.path(&address)?,
+            from: 0,
+            limit: 16,
+        })
+        .await?;
+    let mut states = BTreeMap::new();
+    while let Some(record) = history.next().await {
+        let record = record?;
+        states.insert(record.commit_id, State::decode(&record.value)?);
+    }
+    let deliveries = handler
+        .deliveries
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(deliveries.len(), 3);
+    for (delivery, expected) in deliveries.iter().zip([0, 1, 2]) {
+        let admitted = states
+            .get(&delivery.subscriptions.anchor())
+            .ok_or("delivery anchor is not an original committed state")?;
+        assert_eq!(admitted.epoch(), delivery.epoch);
+        assert_eq!(
+            admitted.subscriptions().get("inbox"),
+            delivery.subscriptions.get("inbox")
+        );
+        assert_eq!(
+            delivery.subscriptions.get("inbox"),
+            Some(&Subscription {
+                path: inbox.clone(),
+                cursor: expected,
+            })
+        );
+    }
+    assert!(matches!(
+        deliveries[2].trigger,
+        Trigger::Alarm { generation: 1, .. }
+    ));
+    assert!(deliveries[2].record.is_none());
+    Ok(())
+}
+
 fn ledger(outbox: &str) -> Result<Checkpoint, Box<dyn std::error::Error>> {
     Ok(Checkpoint {
         codec: conformance::codec(),

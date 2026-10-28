@@ -38,7 +38,7 @@ pub(crate) fn codec() -> CodecIdentity {
 }
 
 /// The agent state a committed checkpoint carries.
-pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<(AgentState, u64), Error> {
+pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<AgentState, Error> {
     if checkpoint.codec != codec() {
         return Err(Error::Record("agent checkpoint codec differs"));
     }
@@ -47,9 +47,7 @@ pub(crate) fn checkpoint_state(checkpoint: &Checkpoint) -> Result<(AgentState, u
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct Encoded {
-    /// Inbox cursor of the last consumed record.
-    #[prost(uint64, tag = "1")]
-    cursor: u64,
+    // Tag 1 retired: Actors owns the committed inbox cursor.
     /// The state as JSON, without the fields below.
     #[prost(bytes = "vec", tag = "2")]
     state: Vec<u8>,
@@ -67,10 +65,9 @@ struct Encoded {
     turn_inbox: Option<u64>,
 }
 
-/// `state`, after consuming the inbox records before `cursor`, as checkpoint
-/// bytes, refused above [`MAX_CHECKPOINT_BYTES`].
-pub(crate) fn checkpoint(state: &AgentState, cursor: u64) -> Result<Checkpoint, Error> {
-    let bytes = encode(state, cursor)?;
+/// Artifact state as checkpoint bytes, refused above [`MAX_CHECKPOINT_BYTES`].
+pub(crate) fn checkpoint(state: &AgentState) -> Result<Checkpoint, Error> {
+    let bytes = encode(state)?;
     if bytes.len() > MAX_CHECKPOINT_BYTES {
         return Err(Error::Record(
             "agent checkpoint exceeds MAX_CHECKPOINT_BYTES",
@@ -82,8 +79,8 @@ pub(crate) fn checkpoint(state: &AgentState, cursor: u64) -> Result<Checkpoint, 
     })
 }
 
-/// `state`, after consuming the inbox records before `cursor`, as checkpoint bytes.
-pub(crate) fn encode(state: &AgentState, cursor: u64) -> Result<Vec<u8>, Error> {
+/// Artifact state as checkpoint bytes. Subscription cuts belong to Actors.
+pub(crate) fn encode(state: &AgentState) -> Result<Vec<u8>, Error> {
     let mut rest = state.clone();
     let open_children = std::mem::take(&mut rest.open_children);
     let archive_pending = std::mem::take(&mut rest.archive_pending);
@@ -106,7 +103,6 @@ pub(crate) fn encode(state: &AgentState, cursor: u64) -> Result<Vec<u8>, Error> 
         return Err(Error::Record("a child to archive is not open"));
     }
     Ok(Encoded {
-        cursor,
         state: serde_json::to_vec(&rest)
             .map_err(|_| Error::Record("agent checkpoint does not encode"))?,
         open_children: ids,
@@ -117,8 +113,8 @@ pub(crate) fn encode(state: &AgentState, cursor: u64) -> Result<Vec<u8>, Error> 
     .encode_to_vec())
 }
 
-/// The state and cursor checkpoint `bytes` hold.
-pub(crate) fn decode(bytes: &[u8]) -> Result<(AgentState, u64), Error> {
+/// The artifact state checkpoint `bytes` holds.
+pub(crate) fn decode(bytes: &[u8]) -> Result<AgentState, Error> {
     let malformed = || Error::Record("agent checkpoint is malformed");
     let encoded = Encoded::decode(bytes).map_err(|_| malformed())?;
     let mut state: AgentState = serde_json::from_slice(&encoded.state).map_err(|_| malformed())?;
@@ -152,7 +148,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<(AgentState, u64), Error> {
         (None, None) => None,
         _ => return Err(malformed()),
     };
-    Ok((state, encoded.cursor))
+    Ok(state)
 }
 
 #[cfg(test)]
@@ -421,13 +417,18 @@ mod tests {
                     turn: None,
                     reserved_children: u16::MAX,
                 };
-                let bytes = encode(&state, u64::MAX).expect("encodes");
+                let bytes = encode(&state).expect("encodes");
                 assert!(
                     bytes.len() + TAIL_SLACK <= MAX_CHECKPOINT_BYTES,
                     "{} > {MAX_CHECKPOINT_BYTES}",
                     bytes.len() + TAIL_SLACK
                 );
-                assert_eq!(decode(&bytes).expect("decodes"), (state, u64::MAX));
+                assert_eq!(decode(&bytes).expect("decodes"), state);
+                // Retired tag 1 cannot override Actors' committed cut. Keep
+                // the same artifact decoder for checkpoints carrying it.
+                let mut with_retired_cursor = bytes;
+                with_retired_cursor.extend_from_slice(&[0x08, 0x01]);
+                assert_eq!(decode(&with_retired_cursor).expect("retired cursor"), state);
             }
         }
         // Wrapped in the actor state record with its one inbox subscription.
