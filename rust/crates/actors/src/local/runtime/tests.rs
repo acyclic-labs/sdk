@@ -808,6 +808,62 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
     Ok(())
 }
 
+#[tokio::test]
+async fn event_batch_yield_retains_placement_until_completion_or_abort() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "event-lease", &[b"emit"]).await?;
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_limits(RuntimeLimits::new(1, 1)?);
+    runtime.track(address.clone())?;
+    {
+        let delivery = runtime.drain_actor(&address);
+        futures::pin_mut!(delivery);
+        assert!(
+            delivery
+                .as_mut()
+                .poll(&mut Context::from_waker(futures::task::noop_waker_ref()))
+                .is_pending()
+        );
+        assert_eq!(
+            runtime.admission.available_permits(),
+            1,
+            "the next actor may enter during the yield"
+        );
+        assert!(
+            !runtime.release(&address),
+            "the unfinished event still owns placement"
+        );
+        assert_eq!(
+            store
+                .load(&address)
+                .await?
+                .state()
+                .and_then(|state| state.cursor("inbox")),
+            Some(0)
+        );
+    }
+    assert!(
+        runtime.release(&address),
+        "aborting the event releases its placement guard"
+    );
+    runtime.track(address.clone())?;
+    runtime.drain_actor(&address).await?;
+    assert_eq!(
+        records(&*provider, "out/event-lease").await?,
+        vec![Bytes::from_static(b"r0")]
+    );
+    assert!(
+        runtime.release(&address),
+        "a completed event releases its placement guard"
+    );
+    Ok(())
+}
+
 /// A paused actor's overdue alarm leaves the due index (no wake loop) but
 /// stays committed and fires once on resume.
 #[tokio::test]

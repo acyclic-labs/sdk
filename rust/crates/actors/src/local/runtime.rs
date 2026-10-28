@@ -27,7 +27,7 @@ use std::{
     hash::BuildHasher,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
 };
@@ -69,6 +69,16 @@ struct Slot {
     waker: Waker,
     inner: tokio::sync::Mutex<Inner>,
     refresh: AtomicBool,
+    event_deliveries: AtomicUsize,
+}
+
+/// An event retains its placement through cooperative batch boundaries.
+/// Admission and the actor lock can pass to another actor meanwhile.
+struct EventDelivery(Arc<Slot>);
+impl Drop for EventDelivery {
+    fn drop(&mut self) {
+        self.0.event_deliveries.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// Invalidate cancelled delivery or control publication without taking its lock.
@@ -213,6 +223,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 waker,
                 inner: tokio::sync::Mutex::new(Inner::default()),
                 refresh: AtomicBool::new(false),
+                event_deliveries: AtomicUsize::new(0),
             }),
         );
         Ok(())
@@ -229,6 +240,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let Some(slot) = actors.get(actor) else {
             return true;
         };
+        if slot.event_deliveries.load(Ordering::Acquire) != 0 {
+            return false;
+        }
         let Ok(mut inner) = slot.inner.try_lock() else {
             return false;
         };
@@ -329,10 +343,24 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// wake before returning from their event. Only declared interrupts retain
     /// a follow while their handler is running; no idle follow is retained.
     pub async fn drain_actor(&self, actor: &ActorReference) -> Result<(), Error> {
-        let slot = self
-            .slot(actor)
-            .ok_or(Error::Invalid("actor is not tracked"))?;
-        while !self.deliver(actor, &slot, Inputs::Event).await? {
+        let delivery = {
+            // Pin the event under the same table lock as hibernation, before
+            // waiting for admission. Cancellation drops this guard as well.
+            let actors = self
+                .shard(actor)
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let slot = actors
+                .get(actor)
+                .ok_or(Error::Invalid("actor is not tracked"))?;
+            slot.event_deliveries
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                    count.checked_add(1)
+                })
+                .map_err(|_| Error::Invalid("event delivery count overflow"))?;
+            EventDelivery(Arc::clone(slot))
+        };
+        while !self.deliver(actor, &delivery.0, Inputs::Event).await? {
             // Drop both the actor lock and admission before queueing another
             // batch. Finite event delivery still drains its committed input.
             limits::yield_now().await;
