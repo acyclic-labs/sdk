@@ -73,6 +73,8 @@ export async function nativeModel({host,binary,graphcoder,mock,native,output,pac
     const policy=['--config','model_provider="mock"','--config','model_providers.mock.name="Local deterministic fixture"',
     '--config',`model_providers.mock.base_url="http://127.0.0.1:${port}/native/v1"`,'--config','model_providers.mock.wire_api="responses"',
     '--config','model_providers.mock.requires_openai_auth=false','--model','tiny',
+    ...['spawn','wait'].flatMap(name=>['--config',
+     `plugins."acyclic@acyclic".mcp_servers."acyclic-sessions".tools.${name}.approval_mode="approve"`]),
     '--ask-for-approval','never','--sandbox','workspace-write','--add-dir',workspace];
     env.ACYCLIC_HOST_ARGS=JSON.stringify(policy);
     args=[...policy,'exec','--json','NATIVE_PLUGIN_MODEL'];
