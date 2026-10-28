@@ -225,34 +225,10 @@ impl WasmStream {
             }
             "tail" => {
                 let request = decode::<wire::TailRequest>(input)?;
-                let path = wire_codec::path(request.path).map_err(js_error)?;
-                if request.accepted {
-                    let receipt = match request.durable_through {
-                        Some(through) => Some(
-                            self.provider
-                                .durable_receipt(path.clone(), through)
-                                .await
-                                .map_err(js_error)?,
-                        ),
-                        None => None,
-                    };
-                    let marks = self.provider.watermarks(path).await.map_err(js_error)?;
-                    wire::TailResponse {
-                        tail: marks.accepted,
-                        durable: Some(receipt.map_or(marks.durable, |receipt| {
-                            receipt.map_or(0, |receipt| receipt.through())
-                        })),
-                        applied: None,
-                    }
+                wire_codec::tail_response(&*self.provider, request)
+                    .await
+                    .map_err(js_error)?
                     .encode_to_vec()
-                } else {
-                    wire::TailResponse {
-                        tail: self.provider.tail(path).await.map_err(js_error)?,
-                        durable: None,
-                        applied: None,
-                    }
-                    .encode_to_vec()
-                }
             }
             "children_page" => {
                 let request = decode::<wire::ChildrenPageRequest>(input)?;

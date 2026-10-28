@@ -50,6 +50,8 @@ impl LocalInner {
         }
         // Wake every caller waiting for a flush, so it sees the poison.
         self.synced.send_modify(|_| {});
+        // Parked revision waits end too: this incarnation serves nothing more.
+        self.provider.revisions.close();
         StreamError::Unavailable
     }
 

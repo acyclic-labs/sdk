@@ -132,6 +132,20 @@ impl RevisionTracker {
         }
     }
 
+    /// Records an append's committed revision.
+    pub fn appended(&self, outcome: &crate::AppendOutcome) {
+        if let crate::AppendOutcome::Committed(receipt) = outcome {
+            self.observe(&receipt.revision);
+        }
+    }
+
+    /// Records a commit's committed revision.
+    pub fn committed(&self, outcome: &crate::CommitOutcome) {
+        if let crate::CommitOutcome::Committed(receipt) = outcome {
+            self.observe(&receipt.revision);
+        }
+    }
+
     /// The floor to forward: every observed participant, raised by `explicit`.
     #[must_use]
     pub fn floor(&self, explicit: &RevisionCut) -> RevisionCut {

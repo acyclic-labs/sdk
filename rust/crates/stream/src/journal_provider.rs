@@ -468,14 +468,20 @@ impl StreamProvider for JournalStream {
         }
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+        if !request.at_least.is_empty() {
+            self.wait_applied(&request.at_least).await?;
+        }
         self.query(async move |p| p.read(request).await).await
     }
     async fn wait_applied(
         &self,
         at_least: &crate::RevisionCut,
     ) -> Result<crate::Revision, StreamError> {
-        self.query(async move |p| p.wait_applied(at_least).await)
-            .await
+        // Park outside the cache lock so writes and refreshes can advance it.
+        let revisions = self
+            .query(async |p| Ok(std::sync::Arc::clone(&p.revisions)))
+            .await?;
+        revisions.wait(at_least).await
     }
     async fn children_page(
         &self,
@@ -491,6 +497,9 @@ impl StreamProvider for JournalStream {
         &self,
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
+        if !request.at_least.is_empty() {
+            self.wait_applied(&request.at_least).await?;
+        }
         Ok(self.retain(self.query(async move |p| p.follow(request).await).await?))
     }
 }

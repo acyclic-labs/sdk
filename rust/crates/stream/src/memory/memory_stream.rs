@@ -64,19 +64,12 @@ impl MemoryStream {
         self
     }
 
-    /// Rebinds to a scope whose replicas all replay one shared journal in one
-    /// order, so every replica issues and honours the same incarnation.
-    #[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+    /// Rebinds to an externally owned authority: replicas replaying one shared
+    /// journal in one order, or a store whose incarnation outlives a process,
+    /// issue and honour the same tokens.
     #[must_use]
-    pub(crate) fn in_shared_scope(mut self, scope: crate::RevisionScope) -> Self {
-        let digest = <sha2::Sha256 as sha2::Digest>::digest(scope.as_bytes());
-        let mut incarnation = [0; 16];
-        incarnation.copy_from_slice(&digest[..16]);
-        self.revisions = Arc::new(crate::AppliedRevisions::new(
-            scope,
-            u128::from_be_bytes(incarnation),
-            0,
-        ));
+    pub(crate) fn with_authority(mut self, scope: crate::RevisionScope, incarnation: u128) -> Self {
+        self.revisions = Arc::new(crate::AppliedRevisions::new(scope, incarnation, 0));
         self
     }
 

@@ -10,6 +10,14 @@ CREATE TABLE IF NOT EXISTS acyclic_stream_journal (
 );
 CREATE INDEX IF NOT EXISTS acyclic_stream_journal_namespace_revision
     ON acyclic_stream_journal(namespace, revision);
+-- One revision incarnation per namespace journal, shared by every replica.
+-- Deleting the row (or recreating the database) issues a new incarnation, so
+-- tokens from an earlier journal refuse instead of matching reused indexes.
+-- A restore from backup must delete it too.
+CREATE TABLE IF NOT EXISTS acyclic_stream_generation (
+    namespace text PRIMARY KEY,
+    generation bytea NOT NULL CHECK (octet_length(generation) = 16)
+);
 
 -- Physical append-if-revision only. The canonical Stream core decides paths,
 -- conditions and retry identity; SQL never decodes a command. VOLATILE keeps

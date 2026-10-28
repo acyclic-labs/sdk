@@ -31,8 +31,6 @@ pub struct HttpStream {
     sessions: Arc<crate::query_sync::SyncMutex<Option<crate::grpc::Client>>>,
     session_endpoint: tonic::transport::Endpoint,
     session_verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
-    /// Last observed revision per authority, forwarded as every read's floor.
-    revisions: Arc<crate::RevisionTracker>,
 }
 impl HttpStream {
     /// Creates an HTTPS client; loopback HTTP is permitted for local test servers.
@@ -114,14 +112,11 @@ impl HttpStream {
             operation_claims: Arc::new(crate::OperationClaims::default()),
             session_endpoint,
             session_verifier,
-            revisions: Arc::default(),
         })
     }
-    /// Sends one read-shaped route and drops refused floors from the tracker.
-    async fn floored(&self, route: &'static str, body: Vec<u8>) -> Result<Value, StreamError> {
-        self.request(route, body)
-            .await
-            .inspect_err(|error| self.revisions.refused(error))
+    /// The session pool's revision tracker, shared by every route of this client.
+    fn revisions(&self) -> Result<Arc<crate::RevisionTracker>, StreamError> {
+        self.session_client()?.revisions()
     }
     async fn authorization(&self) -> Result<HeaderValue, StreamError> {
         if let Some(provider) = &self.credential {
@@ -367,20 +362,17 @@ impl StreamProvider for HttpStream {
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
+        let revisions = self.revisions()?;
+        let body = wire::TailRequest {
+            path: path.to_string(),
+            at_least: wire_codec::cut_to_wire(&revisions.floor(&crate::RevisionCut::default())),
+            ..Default::default()
+        };
         parse_u64(
             &self
-                .floored(
-                    "tail",
-                    wire::TailRequest {
-                        path: path.to_string(),
-                        at_least: wire_codec::cut_to_wire(
-                            &self.revisions.floor(&crate::RevisionCut::default()),
-                        ),
-                        ..Default::default()
-                    }
-                    .encode_to_vec(),
-                )
-                .await?,
+                .request("tail", body.encode_to_vec())
+                .await
+                .inspect_err(|error| revisions.refused(error))?,
         )
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
@@ -400,7 +392,7 @@ impl StreamProvider for HttpStream {
                 .await?,
         )?;
         if let AppendOutcome::Committed(receipt) = &outcome {
-            self.revisions.observe(&receipt.revision);
+            self.revisions()?.observe(&receipt.revision);
         }
         Ok(outcome)
     }
@@ -418,26 +410,19 @@ impl StreamProvider for HttpStream {
         if result.source != source || result.destination != destination {
             return Err(StreamError::Unavailable);
         }
-        self.revisions.observe(&result.revision);
+        self.revisions()?.observe(&result.revision);
         Ok(result)
     }
-    async fn read(&self, mut request: ReadRequest) -> Result<RecordStream, StreamError> {
-        request.at_least = self.revisions.floor(&request.at_least);
-        // Reads and pages share the follow session; no JSON round trips.
-        self.session_client()?
-            .read(request)
-            .await
-            .inspect_err(|error| self.revisions.refused(error))
+    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+        // Reads and pages share the follow session; no JSON round trips. The
+        // session forwards and raises this client's revision floor.
+        self.session_client()?.read(request).await
     }
     async fn follow(
         &self,
-        mut request: crate::FollowRequest,
+        request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        request.at_least = self.revisions.floor(&request.at_least);
-        self.session_client()?
-            .follow(request)
-            .await
-            .inspect_err(|error| self.revisions.refused(error))
+        self.session_client()?.follow(request).await
     }
 
     async fn children_page(
@@ -451,7 +436,7 @@ impl StreamProvider for HttpStream {
         let response = self.request("commit", wire.encode_to_vec()).await?;
         let outcome = Self::commit_response(&response)?;
         if let CommitOutcome::Committed(receipt) = &outcome {
-            self.revisions.observe(&receipt.revision);
+            self.revisions()?.observe(&receipt.revision);
         }
         Ok(outcome)
     }

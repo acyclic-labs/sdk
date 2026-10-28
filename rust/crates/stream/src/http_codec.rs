@@ -231,8 +231,18 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
         }
         "tail" => {
             let request = wire::TailRequest::decode(input).map_err(|_| "invalid_argument")?;
+            wire_codec::cut_from_wire(request.at_least.clone()).map_err(|error| error.code())?;
             let path = wire_codec::path(request.path).map_err(|_| "invalid_path")?;
-            Ok(json!({ "path": path.to_string() }))
+            let mut value = json!({ "path": path.to_string() });
+            // The minimum cut, one entry per authority; the host serves at or above it.
+            if !request.at_least.is_empty() {
+                value["atLeast"] = request
+                    .at_least
+                    .iter()
+                    .map(|revision| crate::http_response::revision_json(Some(revision)))
+                    .collect();
+            }
+            Ok(value)
         }
         "append" => request_json_append(input),
         "fork" => request_json_fork(input),

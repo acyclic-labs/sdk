@@ -32,6 +32,7 @@ pub use head::{fork_origin_from_wire, fork_origin_to_wire, head_from_wire, head_
 pub use receipt::{fork_receipt_from_wire, receipt_from_wire, receipt_to_wire};
 pub use revision::{
     cut_from_wire, cut_to_wire, issued_from_wire, revision_from_wire, revision_to_wire,
+    tail_response,
 };
 
 #[cfg(any(feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]

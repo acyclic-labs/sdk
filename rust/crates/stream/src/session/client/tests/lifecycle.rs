@@ -14,6 +14,7 @@ fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
             admissions: Arc::new(Admissions::new()),
             attempt_epoch: Arc::new(AtomicU64::new(0)),
             abandoned: Arc::new(gate::Gate::new()),
+            revisions: Arc::default(),
         },
         receiver,
     )

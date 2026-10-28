@@ -107,21 +107,28 @@ impl StreamProvider for Remote {
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        Ok(self
+        let revisions = self.sessions.revisions();
+        let response = self
             .service()
             .tail(
                 self.request(wire::TailRequest {
                     path: path.to_string(),
                     accepted: false,
                     durable_through: None,
-                    at_least: Default::default(),
+                    at_least: wire_codec::cut_to_wire(
+                        &revisions.floor(&crate::RevisionCut::default()),
+                    ),
                 })
                 .await?,
             )
             .await
-            .map_err(|e| wire_codec::status(&e))?
-            .into_inner()
-            .tail)
+            .map_err(|e| wire_codec::status(&e))
+            .inspect_err(|error| revisions.refused(error))?
+            .into_inner();
+        if let Some(applied) = response.applied {
+            revisions.observe(&wire_codec::issued_from_wire(Some(applied))?);
+        }
+        Ok(response.tail)
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         let body = wire::TailRequest {
@@ -178,7 +185,9 @@ impl StreamProvider for Remote {
             .await
             .map_err(|e| wire_codec::status(&e))?
             .into_inner();
-        wire_codec::append_outcome_from_wire(result)
+        let outcome = wire_codec::append_outcome_from_wire(result)?;
+        self.sessions.revisions().appended(&outcome);
+        Ok(outcome)
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let key = request.idempotency_key;
@@ -199,7 +208,9 @@ impl StreamProvider for Remote {
             .await
             .map_err(|e| wire_codec::status(&e))?
             .into_inner();
-        wire_codec::fork_receipt_from_wire(result)
+        let receipt = wire_codec::fork_receipt_from_wire(result)?;
+        self.sessions.revisions().observe(&receipt.revision);
+        Ok(receipt)
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.sessions.read(request).await
@@ -225,7 +236,9 @@ impl StreamProvider for Remote {
             .await
             .map_err(|e| wire_codec::status(&e))?
             .into_inner();
-        wire_codec::commit_outcome_from_wire(response)
+        let outcome = wire_codec::commit_outcome_from_wire(response)?;
+        self.sessions.revisions().committed(&outcome);
+        Ok(outcome)
     }
     async fn read_commit(&self, commit: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let body = wire::ReadCommitRequest {

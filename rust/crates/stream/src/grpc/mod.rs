@@ -76,8 +76,6 @@ pub struct Client {
     sessions: Arc<crate::session::Cache>,
     session_ca: Option<Arc<[u8]>>,
     session_verifier: Option<Arc<dyn rustls::client::danger::ServerCertVerifier>>,
-    /// Last observed revision per authority, forwarded as every read's floor.
-    revisions: Arc<crate::RevisionTracker>,
 }
 
 /// Thin server adapter from the canonical wire service to one provider.
@@ -216,7 +214,6 @@ impl Client {
             sessions: Arc::new(crate::session::Cache::new()),
             session_ca: None,
             session_verifier: None,
-            revisions: Arc::default(),
         }
     }
 
@@ -233,7 +230,6 @@ impl Client {
             sessions: Arc::new(crate::session::Cache::new()),
             session_ca: None,
             session_verifier: None,
-            revisions: Arc::default(),
         }
     }
 

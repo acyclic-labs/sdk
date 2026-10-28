@@ -86,6 +86,9 @@ pub struct Client {
     admissions: Arc<Admissions>,
     attempt_epoch: Arc<AtomicU64>,
     abandoned: Arc<gate::Gate>,
+    /// Last observed revision per authority: raised by receipts and every
+    /// served open, forwarded as the floor of every read and follow.
+    revisions: Arc<crate::RevisionTracker>,
 }
 struct Delivery {
     before: Option<wire::SessionFrame>,
@@ -235,6 +238,7 @@ struct Pool {
     removed: Arc<signal::Signal<u64>>,
     released: ReleaseSender,
     release_sender: ReleaseSender,
+    revisions: Arc<crate::RevisionTracker>,
 }
 impl Route {
     fn live(&self) -> bool {
@@ -275,6 +279,7 @@ impl Client {
         let admissions = Arc::new(Admissions::new());
         let attempt_epoch = Arc::new(AtomicU64::new(0));
         let abandoned = Arc::new(gate::Gate::new());
+        let revisions = Arc::new(crate::RevisionTracker::default());
         let mut pool = Pool {
             credentials: BTreeMap::new(),
             connections: connections.clone(),
@@ -298,6 +303,7 @@ impl Client {
             removed: Arc::clone(&removed),
             released: Arc::clone(&release_sender),
             release_sender,
+            revisions: Arc::clone(&revisions),
         };
         executor.spawn(Box::pin(async move {
             if let Err(error) = pool.run().await {
@@ -314,7 +320,14 @@ impl Client {
             admissions,
             attempt_epoch,
             abandoned,
+            revisions,
         }
+    }
+    /// This pool's revision tracker; transports record their receipts here so
+    /// every later session read and follow covers them.
+    #[must_use]
+    pub fn revisions(&self) -> &Arc<crate::RevisionTracker> {
+        &self.revisions
     }
     /// Registers or renews a bounded capability slot on every physical session.
     /// Empty bytes drop it. Registration is ordered before subsequent opens;
@@ -376,13 +389,15 @@ impl Client {
         acknowledge: bool,
     ) -> Result<RecordStream, StreamError> {
         crate::memory::validate_limit(request.limit)?;
+        let at_least = self.revisions.floor(&request.at_least);
         let follow = wire::SessionFollow {
             resource: crate::wire_codec::session::stream_resource(request.path.as_str()),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: Bytes::new(),
             until: request.from.saturating_add(u64::from(request.limit)),
-            at_least: crate::wire_codec::cut_to_wire(&request.at_least),
+            at_least: crate::wire_codec::cut_to_wire(&at_least),
         };
+        let revisions = Arc::clone(&self.revisions);
         let mut records = super::runtime::boxed(
             self.follow_data_with_ack(
                 follow,
@@ -390,10 +405,13 @@ impl Client {
                 acknowledge,
                 crate::FollowFilter::default(),
             )
-            .await?
-            .map(|data| match data?.item {
-                Some(Item::Record(record)) => wire_codec::record(record),
-                _ => Err(StreamError::Unavailable),
+            .await
+            .inspect_err(|error| self.revisions.refused(error))?
+            .map(move |data| {
+                match data.inspect_err(|error| revisions.refused(error))?.item {
+                    Some(Item::Record(record)) => wire_codec::record(record),
+                    _ => Err(StreamError::Unavailable),
+                }
             }),
         );
         // The open resolves the stream as every provider read does: an absent
@@ -419,6 +437,7 @@ impl Client {
             progress,
             at_least,
         } = request;
+        let at_least = self.revisions.floor(&at_least);
         let kind = Kind::Follow(wire::SessionFollow {
             resource: crate::wire_codec::session::stream_resource(path.as_str()),
             delivery: wire::SessionDelivery::All as i32,
@@ -437,8 +456,14 @@ impl Client {
                 Some(filter.transport_filter()?),
                 0,
             )
-            .await?;
+            .await
+            .inspect_err(|error| self.revisions.refused(error))?;
+        let revisions = Arc::clone(&self.revisions);
         Ok(super::runtime::boxed(source.filter_map(move |item| {
+            // A refusal after open or on resume clears the unprovable floor too.
+            if let Err(error) = &item {
+                revisions.refused(error);
+            }
             future::ready(match item {
                 Ok(Received::Data(data))
                 | Ok(Received::Frame(wire::SessionFrame {

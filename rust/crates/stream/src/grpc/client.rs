@@ -12,6 +12,10 @@ impl Client {
     pub fn session_client(&self) -> Result<crate::session::Client, StreamError> {
         self.session()
     }
+    /// The session pool's revision tracker, shared by every route of this client.
+    pub(crate) fn revisions(&self) -> Result<Arc<crate::RevisionTracker>, StreamError> {
+        Ok(Arc::clone(self.session()?.revisions()))
+    }
     fn session(&self) -> Result<crate::session::Client, StreamError> {
         self.sessions.get_or_try_init(|| {
             crate::session::Client::open(
@@ -94,10 +98,12 @@ impl StreamProvider for Client {
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
+        let session = self.session()?;
+        let revisions = session.revisions();
         let body = wire::TailRequest {
             path: path.to_string(),
             at_least: crate::wire_codec::cut_to_wire(
-                &self.revisions.floor(&crate::RevisionCut::default()),
+                &revisions.floor(&crate::RevisionCut::default()),
             ),
             ..Default::default()
         };
@@ -106,11 +112,10 @@ impl StreamProvider for Client {
                 Box::pin(async move { service.tail(request).await })
             })
             .await
-            .inspect_err(|error| self.revisions.refused(error))?;
+            .inspect_err(|error| revisions.refused(error))?;
         decode_response(response, |response| {
             if let Some(applied) = response.applied {
-                self.revisions
-                    .observe(&crate::wire_codec::issued_from_wire(Some(applied))?);
+                revisions.observe(&crate::wire_codec::issued_from_wire(Some(applied))?);
             }
             Ok(response.tail)
         })
@@ -171,7 +176,7 @@ impl StreamProvider for Client {
             .await?;
         let outcome = decode_response(response, append_outcome_from_wire)?;
         if let AppendOutcome::Committed(receipt) = &outcome {
-            self.revisions.observe(&receipt.revision);
+            self.session()?.revisions().observe(&receipt.revision);
         }
         Ok(outcome)
     }
@@ -193,37 +198,26 @@ impl StreamProvider for Client {
                 Box::pin(async move { service.fork(request).await })
             })
             .await?;
-        decode_response(response, |receipt| {
-            Ok(ForkReceipt {
-                source: path(receipt.source)?,
-                destination: path(receipt.destination)?,
-                forked_at: receipt.forked_at,
-                tail: receipt.tail,
-                commit_id: commit_id(&receipt.commit_id)?,
-                revision: crate::wire_codec::issued_from_wire(receipt.revision)?,
-            })
-        })
-        .inspect(|receipt| self.revisions.observe(&receipt.revision))
+        let receipt = decode_response(response, crate::wire_codec::fork_receipt_from_wire)?;
+        self.session()?.revisions().observe(&receipt.revision);
+        Ok(receipt)
     }
 
-    async fn read(&self, mut request: ReadRequest) -> Result<RecordStream, StreamError> {
-        request.at_least = self.revisions.floor(&request.at_least);
+    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         // A bounded follow on the shared session: no per-read RPC or deadline.
+        // The session forwards and raises this client's revision floor.
         self.session()?
             .read_with_ack(request, self.acknowledge_deliveries)
             .await
-            .inspect_err(|error| self.revisions.refused(error))
     }
 
     async fn follow(
         &self,
-        mut request: crate::FollowRequest,
+        request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        request.at_least = self.revisions.floor(&request.at_least);
         self.session()?
             .follow_with_ack(request, self.acknowledge_deliveries)
             .await
-            .inspect_err(|error| self.revisions.refused(error))
     }
 
     async fn children_page(
@@ -242,7 +236,7 @@ impl StreamProvider for Client {
             .await?;
         let outcome = decode_response(response, commit_outcome_from_wire)?;
         if let CommitOutcome::Committed(receipt) = &outcome {
-            self.revisions.observe(&receipt.revision);
+            self.session()?.revisions().observe(&receipt.revision);
         }
         Ok(outcome)
     }

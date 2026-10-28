@@ -445,6 +445,9 @@ impl StreamProvider for BrowserStream {
         }
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+        if !request.at_least.is_empty() {
+            self.wait_applied(&request.at_least).await?;
+        }
         self.with_provider(async move |provider| provider.read(request).await)
             .await
     }
@@ -452,8 +455,11 @@ impl StreamProvider for BrowserStream {
         &self,
         at_least: &crate::RevisionCut,
     ) -> Result<crate::Revision, StreamError> {
-        self.with_provider(async move |provider| provider.wait_applied(at_least).await)
-            .await
+        // Park outside the cache lock so writes can advance the authority.
+        let revisions = self
+            .with_provider(async |provider| Ok(Arc::clone(&provider.revisions)))
+            .await?;
+        revisions.wait(at_least).await
     }
 
     async fn children_page(

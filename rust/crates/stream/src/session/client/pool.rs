@@ -391,7 +391,22 @@ impl Pool {
         }
         match input.body {
             Some(Body::Opened(opened)) => {
-                if let Some(error) = Self::opened(route, id, &opened)? {
+                let refused = match opened
+                    .applied
+                    .clone()
+                    .map(wire_codec::revision_from_wire)
+                    .transpose()
+                {
+                    // Every open, including a resume on another replica, raises the floor.
+                    Ok(applied) => {
+                        if let Some(applied) = &applied {
+                            self.revisions.observe(applied);
+                        }
+                        Self::opened(route, id, &opened)?
+                    }
+                    Err(error) => Some(error),
+                };
+                if let Some(error) = refused {
                     let records = route.records.clone();
                     self.remove(id)?;
                     self.executor.spawn(Box::pin(async move {

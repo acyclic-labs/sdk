@@ -87,6 +87,16 @@ impl PostgresStream {
             .await
             .map_err(unavailable)?;
         client.batch_execute(SCHEMA).await.map_err(unavailable)?;
+        // The first opener installs the generation; every later replica reads it.
+        let generation: Vec<u8> = client
+            .query_one(
+                "INSERT INTO acyclic_stream_generation(namespace, generation) VALUES ($1, $2)                  ON CONFLICT (namespace) DO UPDATE SET generation = acyclic_stream_generation.generation                  RETURNING generation",
+                &[&namespace, &uuid::Uuid::new_v4().as_bytes().as_slice()],
+            )
+            .await
+            .map_err(unavailable)?
+            .get(0);
+        let generation = <[u8; 16]>::try_from(generation.as_slice()).map_err(unavailable)?;
         let publish = client
             .prepare(
                 "SELECT revision, at_millis, accepted FROM acyclic_stream_publish($1,$2,$3,$4,$5)",
@@ -128,7 +138,7 @@ impl PostgresStream {
         // Both planning and recorded admission use the transaction's database
         // clock. A process wall-clock skew cannot override SQL admission.
         // Every process replays the namespace journal in one order, so all
-        // replicas share its scope, incarnation and revision indexes.
+        // replicas share its scope, its generation and revision indexes.
         let mut location = database.as_bytes().to_vec();
         location.push(0);
         location.extend_from_slice(namespace.as_bytes());
@@ -137,9 +147,10 @@ impl PostgresStream {
             clock.clone(),
             clock.clone(),
         )
-        .in_shared_scope(crate::AppliedRevisions::storage_scope(
-            "postgres", &location,
-        ));
+        .with_authority(
+            crate::AppliedRevisions::storage_scope("postgres", &location),
+            u128::from_be_bytes(generation),
+        );
         let (failure, _) = watch::channel(false);
         let inner = Arc::new(Inner {
             core,
@@ -190,6 +201,8 @@ impl PostgresStream {
     fn fail(&self) {
         self.inner.failed.store(true, Ordering::Release);
         self.inner.failure.send_replace(true);
+        // Parked revision waits end too: this replica serves nothing more.
+        self.inner.core.revisions.close();
     }
 
     fn check(&self) -> Result<(), StreamError> {

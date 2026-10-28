@@ -73,7 +73,7 @@ fn record_json(value: &wire::Record) -> Value {
 }
 
 /// The hosted spelling of the shared revision token; absent is null.
-fn revision_json(value: Option<&wire::Revision>) -> Value {
+pub(crate) fn revision_json(value: Option<&wire::Revision>) -> Value {
     value.map_or(Value::Null, |value| {
         json!({
             "scope": STANDARD.encode(&value.scope),
