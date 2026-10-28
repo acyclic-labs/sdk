@@ -210,7 +210,7 @@ async fn asked(
             executors: Arc::new(Approving(Arc::clone(&calls))),
             limits: TurnLimits {
                 maximum_bytes: 64 * 1024,
-                max_steps: 4,
+                max_steps: Some(4),
                 history_turns: Some(8),
             },
             actors: vectors::limits()?,

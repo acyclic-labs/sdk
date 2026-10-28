@@ -338,7 +338,7 @@ pub struct TurnLimits {
     /// Journal bytes per turn.
     pub maximum_bytes: u64,
     /// Model and tool steps per turn.
-    pub max_steps: u32,
+    pub max_steps: Option<u32>,
     /// Optional caller-selected tail of settled turns; None selects the complete history.
     pub history_turns: Option<u64>,
 }
