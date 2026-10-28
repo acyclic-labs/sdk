@@ -665,7 +665,12 @@ impl WasmAgents {
         let records = match self
             .agents
             .provider()
-            .read(ReadRequest { path, from, limit })
+            .read(ReadRequest {
+                path,
+                from,
+                limit,
+                at_least: Default::default(),
+            })
             .await
         {
             Ok(records) => records

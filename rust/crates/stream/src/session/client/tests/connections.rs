@@ -245,6 +245,7 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
             path: StreamPath::new("events")?,
             from: 0,
             limit: 6,
+            at_least: Default::default(),
         })
         .await?;
     let fixture = Fixture::with_options(
@@ -293,6 +294,7 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
             path: StreamPath::new("events")?,
             from: 6,
             limit: 1,
+            at_least: Default::default(),
         })
         .await?;
     let tail = next(&mut tail).await?;

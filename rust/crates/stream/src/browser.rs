@@ -448,6 +448,13 @@ impl StreamProvider for BrowserStream {
         self.with_provider(async move |provider| provider.read(request).await)
             .await
     }
+    async fn wait_applied(
+        &self,
+        at_least: &crate::RevisionCut,
+    ) -> Result<crate::Revision, StreamError> {
+        self.with_provider(async move |provider| provider.wait_applied(at_least).await)
+            .await
+    }
 
     async fn children_page(
         &self,
@@ -470,7 +477,11 @@ impl StreamProvider for BrowserStream {
             preceding,
             filter,
             progress,
+            at_least,
         } = request;
+        if !at_least.is_empty() {
+            self.wait_applied(&at_least).await?;
+        }
         if progress {
             self.progress_from(path, from, preceding, filter).await
         } else {

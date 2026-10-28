@@ -21,6 +21,8 @@ pub struct CommitReceipt {
     pub appends: Vec<AppendRange>,
     /// Captured fork cuts, in request order.
     pub forks: Vec<ForkReceipt>,
+    /// Committed authority revision, shared by every nested fork receipt.
+    pub revision: Revision,
 }
 
 impl CommitReceipt {
@@ -30,6 +32,7 @@ impl CommitReceipt {
     /// retain the caller's original cause and allocation custody.
     pub fn project<E: From<StreamError>>(
         envelope: &CommittedEnvelope,
+        revision: Revision,
         mut appends: Vec<AppendRange>,
         mut forks: Vec<ForkReceipt>,
         mut visit: impl FnMut(usize, bool) -> Result<(), E>,
@@ -64,6 +67,7 @@ impl CommitReceipt {
                         forked_at: fork.forked_at,
                         tail: fork.tail,
                         commit_id: envelope.commit_id,
+                        revision: revision.clone(),
                     });
                     visit(bytes, true)?;
                 }
@@ -74,6 +78,7 @@ impl CommitReceipt {
             committed_at_micros: envelope.committed_at_micros,
             appends,
             forks,
+            revision,
         })
     }
 
@@ -139,6 +144,7 @@ impl CommitReceipt {
                     || f.forked_at > f.tail
                     || f.tail - f.forked_at > MAX_ITEMS as u64
                     || f.commit_id != self.commit_id
+                    || f.revision != self.revision
             })
         {
             return Err(StreamError::InvalidArgument);

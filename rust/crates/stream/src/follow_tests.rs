@@ -44,6 +44,7 @@ async fn checked_registration_never_waits_for_a_missing_or_reused_anchor()
                 preceding: Some(expected),
                 filter: crate::FollowFilter::default(),
                 progress: false,
+                at_least: Default::default(),
             })
             .map_ok(crate::records_only)
             .now_or_never()
@@ -57,6 +58,7 @@ async fn checked_registration_never_waits_for_a_missing_or_reused_anchor()
             preceding: Some(id),
             filter: crate::FollowFilter::default(),
             progress: false,
+            at_least: Default::default(),
         })
         .map_ok(crate::records_only)
         .await?;
@@ -104,6 +106,7 @@ async fn checked_delivery_rejects_history_loss_after_registration_or_while_waiti
                 path: path.clone(),
                 from: 1,
                 limit: 1,
+                at_least: Default::default(),
             })
             .await?;
         let second = rows.next().await.ok_or("missing second")??.commit_id;
@@ -115,6 +118,7 @@ async fn checked_delivery_rejects_history_loss_after_registration_or_while_waiti
                 preceding: Some(if from == 1 { first } else { second }),
                 filter: crate::FollowFilter::default(),
                 progress: false,
+                at_least: Default::default(),
             })
             .map_ok(crate::records_only)
             .await?;

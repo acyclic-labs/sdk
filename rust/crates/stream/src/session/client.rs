@@ -381,6 +381,7 @@ impl Client {
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: Bytes::new(),
             until: request.from.saturating_add(u64::from(request.limit)),
+            at_least: crate::wire_codec::cut_to_wire(&request.at_least),
         };
         let mut records = super::runtime::boxed(
             self.follow_data_with_ack(
@@ -416,6 +417,7 @@ impl Client {
             preceding,
             filter,
             progress,
+            at_least,
         } = request;
         let kind = Kind::Follow(wire::SessionFollow {
             resource: crate::wire_codec::session::stream_resource(path.as_str()),
@@ -423,6 +425,8 @@ impl Client {
             preceding_commit_id: preceding
                 .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
             until: 0,
+            // Retained in the subscription, so every resume carries the same floor.
+            at_least: crate::wire_codec::cut_to_wire(&at_least),
         });
         let source = self
             .open_subscription(

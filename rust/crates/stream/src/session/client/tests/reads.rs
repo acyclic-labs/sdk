@@ -15,6 +15,7 @@ fn read(path: &str, from: u64, limit: u32) -> Result<crate::ReadRequest, StreamE
         path: StreamPath::new(path)?,
         from,
         limit,
+        at_least: Default::default(),
     })
 }
 async fn sequences(
@@ -32,6 +33,7 @@ fn bounded(path: &str, until: u64) -> wire::SessionFollow {
         delivery: wire::SessionDelivery::All as i32,
         preceding_commit_id: Bytes::new(),
         until,
+        at_least: Default::default(),
     }
 }
 fn page(parent: &str, limit: u32) -> Result<crate::ChildrenPageRequest, StreamError> {

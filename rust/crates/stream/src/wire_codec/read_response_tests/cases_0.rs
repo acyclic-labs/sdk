@@ -36,6 +36,7 @@ fn empty_zstd_data_is_refused_and_an_empty_plain_frame_is_accepted() {
         codec: wire::Codec::Zstd as i32,
         data: Default::default(),
         decoded_length: 0,
+        applied: None,
     };
     assert!(read_response_records(empty).is_err());
     assert_eq!(
@@ -74,6 +75,7 @@ fn oversized_declared_length_is_refused_before_decompressing() {
                 codec: codec as i32,
                 data: vec![0xff; 16].into(),
                 decoded_length: length,
+                applied: None,
             };
             assert!(read_response_records(frame).is_err());
         }

@@ -26,6 +26,7 @@ proptest! {
             let expected = (count - from).min(maximum as usize);
             let mut records = provider.read(ReadRequest {
                 path: path.clone(), from: from as u64, limit: maximum,
+                at_least: Default::default(),
             }).await.unwrap();
             assert_eq!(records.size_hint().1, Some(expected));
             provider.append(append(later)).await.unwrap();

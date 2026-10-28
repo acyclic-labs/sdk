@@ -215,6 +215,7 @@ async fn independent_git_patches_share_one_append_and_recover_each_operation() {
             path: records_path.clone(),
             from: 1,
             limit: 1024,
+            at_least: Default::default(),
         })
         .await
         .expect("before records")
@@ -251,6 +252,7 @@ async fn independent_git_patches_share_one_append_and_recover_each_operation() {
             path: records_path,
             from: before.len() as u64 + 1,
             limit: 2,
+            at_least: Default::default(),
         })
         .await
         .expect("batch records")

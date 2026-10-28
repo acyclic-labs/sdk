@@ -27,8 +27,12 @@ pub use watermarks::watermarks_from_wire;
 
 mod head;
 mod receipt;
+mod revision;
 pub use head::{fork_origin_from_wire, fork_origin_to_wire, head_from_wire, head_to_wire};
 pub use receipt::{fork_receipt_from_wire, receipt_from_wire, receipt_to_wire};
+pub use revision::{
+    cut_from_wire, cut_to_wire, issued_from_wire, revision_from_wire, revision_to_wire,
+};
 
 #[cfg(any(feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]
 mod status;

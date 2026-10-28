@@ -600,7 +600,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 | StreamError::Capacity
                 | StreamError::AccessDenied
                 | StreamError::DeadlineElapsed
-                | StreamError::Unsupported,
+                | StreamError::Unsupported
+                | StreamError::RevisionForeign,
             ) => {}
         }
         let retained = match &outcome {

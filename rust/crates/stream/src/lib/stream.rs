@@ -102,6 +102,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
                 path: self.path.clone(),
                 from,
                 limit,
+                at_least: Default::default(),
             })
             .await
     }
@@ -133,6 +134,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
                     preceding: None,
                     filter,
                     progress: false,
+                    at_least: Default::default(),
                 })
                 .await?,
         ))

@@ -70,6 +70,7 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> OperationWindowStore
                 path,
                 from: tail - 1,
                 limit: 1,
+                at_least: Default::default(),
             })
             .await?;
         let record = records.next().await.transpose()?.ok_or_else(|| {

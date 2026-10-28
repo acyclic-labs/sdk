@@ -239,7 +239,7 @@ pub(super) fn source(
             move |(open, mut records)| async move {
                 if let Some(open) = open {
                     records = Some(open.await?);
-                    return Ok(Some((Event::Opened(preceding), (None, records))));
+                    return Ok(Some((Event::Opened(preceding, None), (None, records))));
                 }
                 let update = records
                     .as_mut()

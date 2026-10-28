@@ -145,6 +145,7 @@ pub(crate) async fn read_records<P: StreamProvider + ?Sized>(
         path: path.clone(),
         from,
         limit: count,
+        at_least: Default::default(),
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {

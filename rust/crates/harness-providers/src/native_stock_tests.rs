@@ -278,6 +278,7 @@ async fn records(stream: &MemoryStream, path: StreamPath) -> Result<Vec<Vec<u8>>
             path,
             from: 0,
             limit: 64,
+            at_least: Default::default(),
         })
         .await
     {

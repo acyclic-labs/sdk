@@ -45,6 +45,7 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: value.commit_id,
             until: 0,
+            at_least: Default::default(),
         })),
         channel: None,
     };

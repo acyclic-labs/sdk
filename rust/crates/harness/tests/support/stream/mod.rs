@@ -91,6 +91,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                                 path,
                                 from: head.tail - 1,
                                 limit: 1,
+                                at_least: Default::default(),
                             })
                             .await?,
                     )

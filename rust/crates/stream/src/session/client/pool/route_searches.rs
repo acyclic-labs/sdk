@@ -108,6 +108,7 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
                 Bytes::new()
             },
             until: 0,
+            at_least: Default::default(),
         }),
         records,
     );
@@ -171,6 +172,7 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
             } else {
                 Bytes::new()
             },
+            applied: None,
         })
     };
     if kind == 7 {

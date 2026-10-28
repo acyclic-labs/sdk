@@ -208,6 +208,7 @@ impl StreamProvider for InjectedStream {
                     path: path.to_string(),
                     accepted: true,
                     durable_through: None,
+                    at_least: Default::default(),
                 },
             )
             .await?,
@@ -225,6 +226,7 @@ impl StreamProvider for InjectedStream {
                     path: path.to_string(),
                     accepted: true,
                     durable_through: Some(through),
+                    at_least: Default::default(),
                 },
             )
             .await?,
@@ -257,13 +259,7 @@ impl StreamProvider for InjectedStream {
             exclude: request.exclude.into_iter().map(|p| p.to_string()).collect(),
         };
         let result: wire::ForkReceipt = self.call("fork", input).await?;
-        Ok(ForkReceipt {
-            source: wire_codec::path(result.source)?,
-            destination: wire_codec::path(result.destination)?,
-            forked_at: result.forked_at,
-            tail: result.tail,
-            commit_id: wire_codec::commit_id(&result.commit_id)?,
-        })
+        wire_codec::fork_receipt_from_wire(result)
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         let input = wire_codec::commit_to_wire(&request);
@@ -279,6 +275,7 @@ impl StreamProvider for InjectedStream {
                     path: request.path.to_string(),
                     from,
                     limit: request.limit,
+                    at_least: wire_codec::cut_to_wire(&request.at_least),
                 },
                 None,
                 from,
@@ -341,6 +338,7 @@ impl StreamProvider for InjectedStream {
                 from: request.from,
                 filter: Some(request.filter.transport_filter()?),
                 progress: request.progress,
+                at_least: wire_codec::cut_to_wire(&request.at_least),
             },
             request.preceding,
             request.from,
@@ -371,8 +369,10 @@ impl super::WasmStream {
                     .boxed_local()
             }
             "follow" => {
-                let input = super::decode::<wire::FollowRequest>(input)?;
+                let mut input = super::decode::<wire::FollowRequest>(input)?;
                 let progress = input.progress;
+                let at_least = wire_codec::cut_from_wire(std::mem::take(&mut input.at_least))
+                    .map_err(super::js_error)?;
                 let (path, from, filter) =
                     wire_codec::follow_from_wire(input).map_err(super::js_error)?;
                 let anchor = if preceding.is_empty() {
@@ -387,6 +387,7 @@ impl super::WasmStream {
                         preceding: anchor,
                         filter,
                         progress,
+                        at_least,
                     })
                     .await
                     .map_err(super::js_error)?

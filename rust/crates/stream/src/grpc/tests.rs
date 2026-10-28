@@ -108,6 +108,7 @@ impl StreamProvider for EndingFollow {
                         from: request.from,
                         limit: u32::try_from(crate::MAX_ITEMS)
                             .map_err(|_| StreamError::LimitExceeded)?,
+                        at_least: Default::default(),
                     })
                     .await
                     .map(|records| {
@@ -157,6 +158,7 @@ async fn grpc_transport_passes_the_public_suite() -> TestResult {
             path,
             from: 2,
             limit: 17,
+            at_least: Default::default(),
         })
         .await?
         .collect::<Vec<_>>()

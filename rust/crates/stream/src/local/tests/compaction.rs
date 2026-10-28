@@ -19,6 +19,7 @@ async fn assert_snapshot_restores(
             path: StreamPath::new("agents/a")?,
             from: 0,
             limit: 2,
+            at_least: Default::default(),
         })
         .await?
         .collect::<Vec<_>>()
@@ -82,7 +83,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
         // One poll at a known held device cut establishes progress without a
         // timer or guessed number of idle polls. Drain/release before failing.
         let record = futures::poll!(records.next());
-        let opened = futures::poll!(provider.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only));
+        let opened = futures::poll!(provider.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false, at_least: Default::default() }).map_ok(crate::records_only));
         let ready = [record.is_ready(), opened.is_ready()].into_iter().filter(|ready| *ready).count();
         eprintln!("accepted_compaction_probes ready_before_device_release={ready}/2");
         if ready != 2 {
@@ -103,13 +104,13 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
                 assert_eq!(resumed.next().await.ok_or("resume ended")??, record);
                 let marks = provider.watermarks(path.clone()).await?;
                 assert_eq!(marks, crate::StreamWatermarks { accepted: 2, durable: 1 });
-                let mut head = provider.read(ReadRequest { path: path.clone(), from: 1, limit: 1 }).await?;
+                let mut head = provider.read(ReadRequest { path: path.clone(), from: 1, limit: 1, at_least: Default::default() }).await?;
                 assert_eq!(head.next().await.ok_or("head ended")??, record);
                 #[cfg(feature = "grpc")]
                 {
                     let relay = crate::grpc::tests::client(provider.clone())?;
                     assert_eq!(relay.watermarks(path.clone()).await?, marks);
-                    let mut followed = relay.follow(crate::FollowRequest { path: path, from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only).await?;
+                    let mut followed = relay.follow(crate::FollowRequest { path: path, from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false, at_least: Default::default() }).map_ok(crate::records_only).await?;
                     assert_eq!(followed.next().await.ok_or("relay ended")??, record);
                 }
                 Ok::<_, Box<dyn std::error::Error + Send + Sync>>(started.elapsed())

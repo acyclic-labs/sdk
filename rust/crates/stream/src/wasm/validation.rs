@@ -253,6 +253,22 @@ mod http {
         Ok(result.into())
     }
 
+    fn revision_js(value: &Value) -> Result<JsValue> {
+        let item = object(value)?;
+        if bytes(field(item, "incarnation")?)?.len() != 16 {
+            return Err("invalid revision incarnation");
+        }
+        let result = Object::new();
+        set(&result, "scope", &bytes_js(field(item, "scope")?)?)?;
+        set(
+            &result,
+            "incarnation",
+            &bytes_js(field(item, "incarnation")?)?,
+        )?;
+        set(&result, "index", &bigint_js(field(item, "index")?)?)?;
+        Ok(result.into())
+    }
+
     fn record_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
         id(field(item, "commitId")?)?;
@@ -329,6 +345,7 @@ mod http {
             set(&result, "end", &bigint_js(field(item, "end")?)?)?;
             set(&result, "tail", &bigint_js(field(item, "tail")?)?)?;
             set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
+            set(&result, "revision", &revision_js(field(item, "revision")?)?)?;
             return Ok(result.into());
         }
         if string(field(item, "code")?)? != "tail_conflict" {
@@ -363,6 +380,10 @@ mod http {
         set(&result, "forkedAt", &bigint_js(field(item, "forkedAt")?)?)?;
         set(&result, "tail", &bigint_js(field(item, "tail")?)?)?;
         set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
+        // A fork nested in a commit carries the commit's revision instead.
+        if let Some(revision) = item.get("revision").filter(|value| !value.is_null()) {
+            set(&result, "revision", &revision_js(revision)?)?;
+        }
         Ok(result.into())
     }
 
@@ -416,6 +437,7 @@ mod http {
         if ok {
             id(field(item, "commitId")?)?;
             set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
+            set(&result, "revision", &revision_js(field(item, "revision")?)?)?;
             set(
                 &result,
                 "committedAtMicros",

@@ -67,6 +67,7 @@ fn guard(
             let opened = wire::SessionOpened {
                 resume: Some(resume.clone()),
                 preceding_commit_id: echo.clone().into(),
+                applied: None,
             };
             let mut result = confirm_follow(Some(CommitId::from_bytes(anchor)), &opened);
             if fault == Fault::AcceptAnyConfirmation && echo.len() == 32 {

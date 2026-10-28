@@ -17,12 +17,13 @@ pub fn verify_source_wakes(omit_signal: bool) {
         };
         let published = Arc::new(gate::Gate::new());
         let waiting = published.clone();
-        let source = futures::stream::once(async move { (identity, Ok(Event::Opened(None))) })
-            .chain(futures::stream::once(async move {
-                waiting.changed(false).await.unwrap();
-                (identity, Ok(Event::Opened(None)))
-            }))
-            .boxed();
+        let source =
+            futures::stream::once(async move { (identity, Ok(Event::Opened(None, None))) })
+                .chain(futures::stream::once(async move {
+                    waiting.changed(false).await.unwrap();
+                    (identity, Ok(Event::Opened(None, None)))
+                }))
+                .boxed();
         let mut sources = Sources::new();
         sources.insert(identity, source, Some(ALL));
         Arc::get_mut(&mut sources.entries.get_mut(&1).unwrap().wake)
@@ -89,7 +90,7 @@ pub fn verify_source_recheck(fault: u8) {
                 cx.waker().wake_by_ref();
                 Poll::Pending
             } else {
-                Poll::Ready(Some((identity, Ok(Event::Opened(None)))))
+                Poll::Ready(Some((identity, Ok(Event::Opened(None, None)))))
             }
         })
         .boxed();

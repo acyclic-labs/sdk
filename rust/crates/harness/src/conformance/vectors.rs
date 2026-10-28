@@ -63,6 +63,7 @@ pub(crate) async fn values(
             path,
             from: 0,
             limit: 128,
+            at_least: Default::default(),
         })
         .await
     {

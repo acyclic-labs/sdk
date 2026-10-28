@@ -78,6 +78,7 @@ pub(super) fn observe_envelope(
 
 pub(super) fn receipt(
     envelope: &acyclic_stream::CommittedEnvelope,
+    revision: acyclic_stream::Revision,
     quota: &mut CodecQuota<'_, '_>,
 ) -> Result<acyclic_stream::CommitReceipt> {
     let append_count = envelope
@@ -89,7 +90,7 @@ pub(super) fn receipt(
     let mut forks = Vec::new();
     quota.reserve(append_count, &mut appends)?;
     quota.reserve(envelope.mutations.len() - append_count, &mut forks)?;
-    acyclic_stream::CommitReceipt::project(envelope, appends, forks, |bytes, copied| {
+    acyclic_stream::CommitReceipt::project(envelope, revision, appends, forks, |bytes, copied| {
         if !copied && let Some(io) = quota.work().as_deref_mut() {
             io.copy_bytes(bytes as u64)?;
         }

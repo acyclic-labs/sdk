@@ -200,6 +200,7 @@ pub async fn follow_records<P: StreamProvider + ?Sized>(
                 preceding,
                 filter: crate::FollowFilter::default(),
                 progress: false,
+                at_least: super::cut_from_wire(follow.at_least.clone())?,
             })
             .await?,
     ))

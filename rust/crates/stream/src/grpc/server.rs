@@ -90,6 +90,13 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             check_command_size(&request)?;
             let request = request.into_inner();
             let path = path(request.path).map_err(|error| error_status(&error))?;
+            let at_least = wire_codec::cut_from_wire(request.at_least)
+                .map_err(|error| error_status(&error))?;
+            let applied = crate::revision::served(&*self.provider, &at_least)
+                .await
+                .map_err(|error| error_status(&error))?
+                .as_ref()
+                .map(wire_codec::revision_to_wire);
             if request.accepted {
                 if let Some(through) = request.durable_through {
                     let receipt = self
@@ -106,6 +113,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     return Ok(wire::TailResponse {
                         tail: accepted,
                         durable: Some(receipt.map_or(0, |receipt| receipt.through())),
+                        applied,
                     });
                 }
                 let watermarks = self
@@ -116,6 +124,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                 return Ok(wire::TailResponse {
                     tail: watermarks.accepted,
                     durable: Some(watermarks.durable),
+                    applied,
                 });
             }
             let tail = self
@@ -126,6 +135,7 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             Ok(wire::TailResponse {
                 tail,
                 durable: None,
+                applied,
             })
         })
         .await
@@ -169,17 +179,24 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         streaming(span.clone(), async {
             check_command_size(&request)?;
             let request = request.into_inner();
-            let request = ReadRequest {
-                path: path(request.path).map_err(|error| error_status(&error))?,
-                from: request.from,
-                limit: request.limit,
-            };
+            let request =
+                wire_codec::read_from_wire(request).map_err(|error| error_status(&error))?;
+            let mut applied = crate::revision::served(&*self.provider, &request.at_least)
+                .await
+                .map_err(|error| error_status(&error))?
+                .as_ref()
+                .map(wire_codec::revision_to_wire);
             let records = self
                 .provider
                 .read(request)
                 .await
                 .map_err(|error| error_status(&error))?;
-            let records = records.map(record_frame);
+            let records = records.map(move |record| {
+                record_frame(record).map(|mut frame| {
+                    frame.applied = applied.take();
+                    frame
+                })
+            });
             Ok(observe_body(&span, records).boxed())
         })
         .await

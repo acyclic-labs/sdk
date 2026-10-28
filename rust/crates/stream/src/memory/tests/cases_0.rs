@@ -43,6 +43,7 @@ async fn committed_record_times_never_regress_with_the_clock() -> Result<(), Str
             path,
             from: 0,
             limit: 3,
+            at_least: Default::default(),
         })
         .await?
         .collect::<Vec<_>>()
@@ -313,6 +314,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
                 path: path.clone(),
                 from: expected_tail - 1,
                 limit: 1,
+                at_least: Default::default(),
             })
             .await?
             .next()
@@ -345,6 +347,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
                 path,
                 from: 1,
                 limit: 1,
+                at_least: Default::default(),
             })
             .await?
             .next()
@@ -457,6 +460,7 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
                 path: destination.clone(),
                 from: 0,
                 limit: 64,
+                at_least: Default::default(),
             })
             .await?
             .collect::<Vec<_>>()
@@ -480,6 +484,7 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
                 path: destination,
                 from,
                 limit: 4,
+                at_least: Default::default(),
             })
             .await?
             .collect::<Vec<_>>()
@@ -639,6 +644,7 @@ proptest::proptest! {
                         path: log.clone(),
                         from: read.len() as u64,
                         limit,
+                        at_least: Default::default(),
                     })
                     .await?
                     .collect::<Vec<_>>()

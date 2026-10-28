@@ -195,6 +195,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
                         preceding: Some(record.commit_id),
                         filter: crate::FollowFilter::default(),
                         progress: false,
+                        at_least: Default::default(),
                     })
                     .map_ok(crate::records_only),
             )
@@ -207,6 +208,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
                     preceding: Some(record.commit_id),
                     filter: crate::FollowFilter::default(),
                     progress: false,
+                    at_least: Default::default(),
                 })
                 .map_ok(crate::records_only)
                 .await;
@@ -223,6 +225,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
                     path: path.clone(),
                     from: n,
                     limit: 1,
+                    at_least: Default::default(),
                 })
                 .await?;
             assert_eq!(head.next().await.ok_or("missing accepted head")??, record);

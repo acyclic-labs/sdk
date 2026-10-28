@@ -241,7 +241,14 @@ async fn read<P: StreamProvider + ?Sized>(
     from: u64,
     limit: u32,
 ) -> Result<Outcome, StreamError> {
-    let mut records = provider.read(ReadRequest { path, from, limit }).await?;
+    let mut records = provider
+        .read(ReadRequest {
+            path,
+            from,
+            limit,
+            at_least: Default::default(),
+        })
+        .await?;
     let mut out = Vec::new();
     while let Some(record) = records.next().await {
         let record = record?;

@@ -66,7 +66,7 @@ pub(super) fn reply(
 ) -> Source {
     // Opening acknowledges admission, not completion. Dispatch itself starts
     // only when the shared scheduler admits the next source poll under credit.
-    let opened = stream::once(future::ready(Ok(Event::Opened(None))));
+    let opened = stream::once(future::ready(Ok(Event::Opened(None, None))));
     // One result allocation is retained while chunks are exposed. Fragmentation
     // allocates no payload copies and the common session queue enforces credit.
     let result = stream::once(async move {

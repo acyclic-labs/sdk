@@ -3,6 +3,9 @@
 pub struct MemoryStream {
     // Lock order: LocalStream visibility -> state -> watch internals.
     state: Arc<RwLock<State>>,
+    /// The one applied-revision authority of this incarnation; advanced under
+    /// the state write guard after each publication.
+    pub(crate) revisions: Arc<crate::AppliedRevisions>,
     operation_claims: Arc<crate::OperationClaims>,
     limits: MemoryLimits,
     /// The trusted clock that deadlines are checked against.
@@ -41,6 +44,7 @@ impl MemoryStream {
     ) -> Self {
         Self {
             state: Arc::new(RwLock::new(State::default())),
+            revisions: Arc::new(crate::AppliedRevisions::in_process()),
             operation_claims: Arc::new(crate::OperationClaims::default()),
             limits,
             clock,
@@ -51,6 +55,36 @@ impl MemoryStream {
             retain_pending_read: false,
         }
     }
+    /// Rebinds this fresh provider's revisions to a stable storage scope with
+    /// a new incarnation, so a reopened store never honours an older token.
+    #[must_use]
+    pub(crate) fn in_scope(mut self, scope: crate::RevisionScope) -> Self {
+        let incarnation = u128::from_be_bytes(uuid::Uuid::new_v4().into_bytes());
+        self.revisions = Arc::new(crate::AppliedRevisions::new(scope, incarnation, 0));
+        self
+    }
+
+    /// Rebinds to a scope whose replicas all replay one shared journal in one
+    /// order, so every replica issues and honours the same incarnation.
+    #[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+    #[must_use]
+    pub(crate) fn in_shared_scope(mut self, scope: crate::RevisionScope) -> Self {
+        let digest = <sha2::Sha256 as sha2::Digest>::digest(scope.as_bytes());
+        let mut incarnation = [0; 16];
+        incarnation.copy_from_slice(&digest[..16]);
+        self.revisions = Arc::new(crate::AppliedRevisions::new(
+            scope,
+            u128::from_be_bytes(incarnation),
+            0,
+        ));
+        self
+    }
+
+    /// Publishes this state's applied revision while the write guard is held.
+    fn applied(&self, state: &State) {
+        self.revisions.advance(state.decision);
+    }
+
     pub(crate) async fn commit_inner(
         &self,
         mut request: CommitRequest,

@@ -161,6 +161,7 @@ async fn public_checkouts_batch_disjoint_edits_and_recover_each_original_operati
             ))?,
             from: base.sequence.get() + 1,
             limit: 4,
+            at_least: Default::default(),
         })
         .await?
         .try_collect()

@@ -12,6 +12,7 @@ pub(super) async fn anchor(
             path: StreamPath::new(path)?,
             from: sequence,
             limit: 1,
+            at_least: Default::default(),
         })
         .await?
         .next()
@@ -39,7 +40,8 @@ async fn checked_registration_fails_before_returning_a_cursor_and_keeps_siblings
                 from: 1,
                 preceding: Some(CommitId::from_bytes([42; 32])),
                 filter: crate::FollowFilter::default(),
-                progress: false
+                progress: false,
+                at_least: Default::default(),
             })
             .map_ok(crate::records_only)
             .await,
@@ -52,6 +54,7 @@ async fn checked_registration_fails_before_returning_a_cursor_and_keeps_siblings
             preceding: Some(anchor(&provider, "events", 0).await?),
             filter: crate::FollowFilter::default(),
             progress: false,
+            at_least: Default::default(),
         })
         .map_ok(crate::records_only)
         .await?;
@@ -82,7 +85,8 @@ async fn unconfirmed_history_is_rejected_without_granting_credit_or_closing_sibl
                 from: 1,
                 preceding: Some(anchor(&provider, "events", 0).await?),
                 filter: crate::FollowFilter::default(),
-                progress: false
+                progress: false,
+                at_least: Default::default(),
             })
             .map_ok(crate::records_only)
             .await,
@@ -122,6 +126,7 @@ async fn checked_move_and_reconnect_use_the_yielded_commit_instead_of_buffered_r
             preceding: Some(anchor(&provider, "events", 0).await?),
             filter: crate::FollowFilter::default(),
             progress: false,
+            at_least: Default::default(),
         })
         .map_ok(crate::records_only)
         .await?;
@@ -190,6 +195,7 @@ async fn checked_delivery_reports_history_replacement_after_registration() -> Te
             preceding: Some(anchor(&provider, "events", 0).await?),
             filter: crate::FollowFilter::default(),
             progress: false,
+            at_least: Default::default(),
         })
         .map_ok(crate::records_only)
         .await?;

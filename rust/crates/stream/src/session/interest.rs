@@ -149,6 +149,10 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     )
                 } else {
                     let path = wire_codec::session::stream_path(&follow.resource)?;
+                    let at_least = match wire_codec::cut_from_wire(follow.at_least.clone()) {
+                        Ok(at_least) => at_least,
+                        Err(error) => return Ok(Admission::Failed(identity, error)),
+                    };
                     let (authorization, filter) = match self.authority.bind(
                         &self.slots,
                         subscription.credential,
@@ -170,6 +174,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                             until,
                             end: None,
                             filter,
+                            at_least,
                             records: None,
                             opened: false,
                             ended: 0,
@@ -327,6 +332,8 @@ struct Follow<P: ?Sized> {
     until: Option<u64>,
     end: Option<u64>,
     filter: crate::FollowFilter,
+    /// The subscription's floor; every reopen keeps it.
+    at_least: crate::RevisionCut,
     records: Option<crate::FollowStream>,
     opened: bool,
     ended: u8,
@@ -356,6 +363,13 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
     async fn event(&mut self) -> Result<Event, StreamError> {
         loop {
             if self.records.is_none() {
+                // The first open waits for the floor before a bounded read pins
+                // its tail, so the pinned range covers the caller's own writes.
+                let applied = if self.opened {
+                    None
+                } else {
+                    crate::revision::served(&*self.provider, &self.at_least).await?
+                };
                 if let (Some(until), None) = (self.until, self.end) {
                     // Pin the range like a read: an absent stream or a start
                     // beyond the tail fails, and appends after open never count.
@@ -373,12 +387,16 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
                             preceding: self.preceding,
                             filter: self.filter.clone(),
                             progress: true,
+                            at_least: self.at_least.clone(),
                         })
                         .await?,
                 );
                 if !self.opened {
                     self.opened = true;
-                    return Ok(Event::Opened(self.preceding));
+                    return Ok(Event::Opened(
+                        self.preceding,
+                        applied.as_ref().map(wire_codec::revision_to_wire),
+                    ));
                 }
             }
             if self.end.is_some_and(|end| self.next >= end) {

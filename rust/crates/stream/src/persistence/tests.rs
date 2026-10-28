@@ -138,6 +138,7 @@ fn observation() -> Result<IdempotencyObservation, StreamError> {
                 }],
             })],
         }),
+        revision: None,
     })
 }
 

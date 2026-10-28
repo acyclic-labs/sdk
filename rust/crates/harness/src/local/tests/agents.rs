@@ -28,6 +28,7 @@ async fn records(stream: &impl StreamProvider, path: StreamPath) -> Result<Vec<V
             path,
             from: 0,
             limit: 16,
+            at_least: Default::default(),
         })
         .await
     {

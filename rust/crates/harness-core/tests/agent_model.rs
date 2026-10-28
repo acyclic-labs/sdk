@@ -72,6 +72,7 @@ async fn values(provider: &MemoryStream, path: StreamPath) -> Result<Vec<Vec<u8>
             path,
             from: 0,
             limit: u32::try_from(tail)?,
+            at_least: Default::default(),
         })
         .await?
         .try_collect()

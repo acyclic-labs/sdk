@@ -267,6 +267,7 @@ impl<'a, P: StreamProvider + ?Sized> History<'a, P> {
                     path: self.path.clone(),
                     from: 0,
                     limit: 8,
+                    at_least: Default::default(),
                 })
                 .await,
         )?;

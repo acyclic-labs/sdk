@@ -36,7 +36,8 @@ async fn checked_browser_follow_validates_then_retains_the_yielded_anchor_across
                 from: 1,
                 preceding: Some(CommitId::from_bytes([42; 32])),
                 filter: crate::FollowFilter::default(),
-                progress: false
+                progress: false,
+                at_least: Default::default(),
             })
             .map_ok(crate::records_only)
             .await,
@@ -49,6 +50,7 @@ async fn checked_browser_follow_validates_then_retains_the_yielded_anchor_across
             preceding: Some(seed.commit_id),
             filter: crate::FollowFilter::default(),
             progress: false,
+            at_least: Default::default(),
         })
         .map_ok(crate::records_only)
         .await
@@ -318,6 +320,7 @@ async fn filtered_publications_survive_cache_rebuild_without_waking_unrelated_fo
             preceding: None,
             filter: filter,
             progress: false,
+            at_least: Default::default(),
         })
         .map_ok(crate::records_only)
         .await

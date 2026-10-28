@@ -119,6 +119,7 @@ fn request_validation_uses_wire_decoding_and_domain_limits() {
         path: "events".to_owned(),
         from: 0,
         limit: 10,
+        at_least: Default::default(),
     };
     assert_eq!(validate_request("read", &valid.encode_to_vec()), "");
 

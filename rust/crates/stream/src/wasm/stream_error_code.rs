@@ -16,4 +16,5 @@ pub enum StreamErrorCode {
     HierarchyChanged,
     DeadlineElapsed,
     Unsupported,
+    RevisionForeign,
 }

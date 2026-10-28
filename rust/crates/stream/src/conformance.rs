@@ -116,6 +116,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             path: child.clone(),
             from: 0,
             limit: 8,
+            at_least: Default::default(),
         })
         .await?
         .try_collect::<Vec<_>>()
@@ -222,6 +223,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             path: child.clone(),
             from: 0,
             limit: 8,
+            at_least: Default::default(),
         })
         .await?
         .try_collect::<Vec<_>>()
@@ -320,6 +322,7 @@ async fn verify_read_open_failures(
                 path,
                 from,
                 limit: 1,
+                at_least: Default::default(),
             })
             .await
             .err()
@@ -434,6 +437,7 @@ async fn verify_fork_with_records(
             path: destination.clone(),
             from: 0,
             limit: 8,
+            at_least: Default::default(),
         })
         .await?
         .map_ok(|record| record.value)
@@ -649,6 +653,7 @@ async fn verify_subtree_records(
             path: inherited.clone(),
             from: 0,
             limit: 8,
+            at_least: Default::default(),
         })
         .await?
         .try_collect()
@@ -669,6 +674,7 @@ async fn verify_subtree_records(
                 path: path(name)?,
                 from: 1,
                 limit: 1,
+                at_least: Default::default(),
             })
             .await?
             .try_collect()
@@ -686,6 +692,7 @@ async fn verify_subtree_records(
             path: destination.clone(),
             from: 0,
             limit: 8,
+            at_least: Default::default(),
         })
         .await?
         .try_collect()
@@ -695,6 +702,7 @@ async fn verify_subtree_records(
             path: marker,
             from: 0,
             limit: 8,
+            at_least: Default::default(),
         })
         .await?
         .try_collect()
@@ -730,6 +738,7 @@ async fn verify_subtree_private_writes(
             path: child,
             from: 1,
             limit: 8,
+            at_least: Default::default(),
         })
         .await?
         .try_collect()

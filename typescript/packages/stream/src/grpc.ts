@@ -243,7 +243,7 @@ function providerError(error: unknown, operation: string): Error {
     case Code.ResourceExhausted: code = "capacity_exhausted"; break;
     case Code.Unimplemented: if (reason === "unsupported_capability") code = "unsupported"; break;
     case Code.FailedPrecondition:
-      if (reason === "hierarchy_changed" || reason === "idempotency_mismatch" || reason === "prefix_not_retained" || reason === "deadline_elapsed") code = reason;
+      if (reason === "hierarchy_changed" || reason === "idempotency_mismatch" || reason === "prefix_not_retained" || reason === "deadline_elapsed" || reason === "revision_foreign") code = reason;
       break;
   }
   if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";

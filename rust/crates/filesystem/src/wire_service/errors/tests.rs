@@ -146,6 +146,7 @@ fn every_stream_category_survives_the_authority_wrapper() {
         (E::Unavailable, Code::Unavailable),
         (E::DeadlineElapsed, Code::DeadlineExceeded),
         (E::Unsupported, Code::Unimplemented),
+        (E::RevisionForeign, Code::FailedPrecondition),
     ];
     assert_eq!(cases.len(), E::ALL.len());
     for (error, expected) in cases {

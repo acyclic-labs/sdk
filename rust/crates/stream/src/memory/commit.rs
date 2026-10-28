@@ -9,13 +9,20 @@ struct CommitPlan {
 }
 
 impl CommitPlan {
-    fn bind(&mut self, commit_id: CommitId, time: u64) -> Result<(), StreamError> {
+    fn bind(
+        &mut self,
+        commit_id: CommitId,
+        time: u64,
+        revision: &crate::Revision,
+    ) -> Result<(), StreamError> {
         bind_envelope(&mut self.envelope, commit_id, time);
         if let CommitOutcome::Committed(receipt) = &mut self.result {
             receipt.commit_id = commit_id;
             receipt.committed_at_micros = time;
+            receipt.revision.clone_from(revision);
             for fork in &mut receipt.forks {
                 fork.commit_id = commit_id;
+                fork.revision.clone_from(revision);
             }
         }
         bind_histories(&mut self.histories, commit_id, time)
@@ -311,7 +318,8 @@ impl MemoryStream {
             committed_at_micros: time,
             mutations: facts,
         };
-        let (receipt, output_claim) = self.receipt(&envelope)?;
+        // Bound to the publication's revision when it installs.
+        let (receipt, output_claim) = self.receipt(&envelope, self.revisions.at(0))?;
         let result = CommitOutcome::Committed(receipt);
         let resident = facts_claim;
         self.absorb(&mut scratch, paths_claim)?;
@@ -357,9 +365,9 @@ impl MemoryStream {
             let IdempotencyOutcome::Commit(result) = &replay.result else {
                 return Err(StreamError::IdempotencyMismatch);
             };
-            return self.receipt(result).map(|(receipt, claim)| {
-                Decision::Returned((CommitOutcome::Committed(receipt), claim))
-            });
+            return self.receipt(result, self.revisions.at(replay.index)).map(
+                |(receipt, claim)| Decision::Returned((CommitOutcome::Committed(receipt), claim)),
+            );
         }
         let deadline = deadline
             .into_iter()
@@ -431,7 +439,7 @@ impl MemoryStream {
                     state.last_committed_at_micros,
                     self.commit_clock.now_unix_millis(),
                 );
-                plan.bind(commit_id, time)?;
+                plan.bind(commit_id, time, &self.revisions.at(decision))?;
                 plan.publish(
                     state,
                     &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),

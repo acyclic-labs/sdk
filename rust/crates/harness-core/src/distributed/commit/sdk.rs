@@ -18,7 +18,7 @@ pub(in crate::distributed) async fn inspect_idempotency<P: StreamProvider + ?Siz
     operation: OperationId,
     quota: &mut CodecQuota<'_, '_>,
     phase: Option<&mut CommitPhase>,
-) -> Result<IdempotencyOutcome> {
+) -> Result<(IdempotencyOutcome, Option<acyclic_stream::Revision>)> {
     let observation = async {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(original) = quota
@@ -82,5 +82,5 @@ pub(in crate::distributed) async fn inspect_idempotency<P: StreamProvider + ?Siz
     if let Some(io) = quota.work().as_deref_mut() {
         io.check_cancellation()?;
     }
-    Ok(observation.outcome)
+    Ok((observation.outcome, observation.revision))
 }

@@ -470,6 +470,13 @@ impl StreamProvider for JournalStream {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.query(async move |p| p.read(request).await).await
     }
+    async fn wait_applied(
+        &self,
+        at_least: &crate::RevisionCut,
+    ) -> Result<crate::Revision, StreamError> {
+        self.query(async move |p| p.wait_applied(at_least).await)
+            .await
+    }
     async fn children_page(
         &self,
         request: ChildrenPageRequest,

@@ -401,6 +401,7 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             path: "accounts/events".to_owned(),
             from: 0,
             progress: false,
+            at_least: Default::default(),
         };
         let follow = Arc::new(
             open_follow(

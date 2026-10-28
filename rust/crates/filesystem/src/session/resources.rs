@@ -151,6 +151,7 @@ where
                         preceding: request.preceding,
                         filter,
                         progress: true,
+                        at_least: Default::default(),
                     })
                     .await?;
                 opened.validate()?;

@@ -36,7 +36,9 @@ impl MemoryStream {
             std::mem::forget(previous);
             return Ok(());
         }
-        *self.state.write().await = decoded;
+        let mut state = self.state.write().await;
+        *state = decoded;
+        self.applied(&state);
         Ok(())
     }
 }
@@ -121,6 +123,8 @@ fn encode(state: &State) -> Vec<u8> {
                     .unwrap_or_else(|_| unreachable!("retained keys were admitted")),
                 request_digest: replay.digest,
                 outcome: replay.result.clone(),
+                // A snapshot outlives this incarnation; replay rebinds its revisions.
+                revision: None,
             });
             put_bytes(&mut out, &observation.encode_to_vec());
         }
@@ -177,6 +181,7 @@ fn decode(encoded: &[u8]) -> Option<State> {
         return None;
     }
     let inventory = std::mem::take(&mut state.retained);
+    state.decision = 0;
     let builder = MemoryStream::default();
     for envelope in inventory.iter().filter_map(Retained::envelope) {
         if envelope.committed_at_micros < state.last_committed_at_micros
@@ -301,6 +306,10 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
                 )
             }
         };
+        // Each envelope-bearing entry is the next publication in decision order.
+        if envelope.is_some() || matches!(result, crate::IdempotencyOutcome::Commit(_)) {
+            state.decision = state.decision.checked_add(1)?;
+        }
         retain(
             state,
             &mut || {},

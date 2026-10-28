@@ -25,6 +25,7 @@ fn read_request() -> Result<ReadRequest, StreamError> {
         path: path("native/read")?,
         from: 0,
         limit: 3,
+        at_least: Default::default(),
     })
 }
 
@@ -93,6 +94,7 @@ async fn tail_read_fits_its_budget_without_hydrating_older_batches() -> MemoryRe
                 path: path("native/read")?,
                 from: 999,
                 limit: 1,
+                at_least: Default::default(),
             },
             meter.original(),
         )

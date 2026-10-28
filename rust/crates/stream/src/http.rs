@@ -31,6 +31,8 @@ pub struct HttpStream {
     sessions: Arc<crate::query_sync::SyncMutex<Option<crate::grpc::Client>>>,
     session_endpoint: tonic::transport::Endpoint,
     session_verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
+    /// Last observed revision per authority, forwarded as every read's floor.
+    revisions: Arc<crate::RevisionTracker>,
 }
 impl HttpStream {
     /// Creates an HTTPS client; loopback HTTP is permitted for local test servers.
@@ -112,7 +114,14 @@ impl HttpStream {
             operation_claims: Arc::new(crate::OperationClaims::default()),
             session_endpoint,
             session_verifier,
+            revisions: Arc::default(),
         })
+    }
+    /// Sends one read-shaped route and drops refused floors from the tracker.
+    async fn floored(&self, route: &'static str, body: Vec<u8>) -> Result<Value, StreamError> {
+        self.request(route, body)
+            .await
+            .inspect_err(|error| self.revisions.refused(error))
     }
     async fn authorization(&self) -> Result<HeaderValue, StreamError> {
         if let Some(provider) = &self.credential {
@@ -215,6 +224,7 @@ impl HttpStream {
     }
     fn commit_response(value: &Value) -> Result<CommitOutcome, StreamError> {
         if value["ok"] == true {
+            let revision = parse_revision(field(value, "revision")?)?;
             let receipt = crate::CommitReceipt {
                 commit_id: parse_id(field(value, "commitId")?)?,
                 committed_at_micros: parse_u64(field(value, "committedAtMicros")?)?,
@@ -234,8 +244,9 @@ impl HttpStream {
                     .as_array()
                     .ok_or(StreamError::Unavailable)?
                     .iter()
-                    .map(parse_fork)
+                    .map(|fork| parse_nested_fork(fork, &revision))
                     .collect::<Result<_, _>>()?,
+                revision,
             };
             receipt.validate().map_err(|_| StreamError::Unavailable)?;
             Ok(CommitOutcome::Committed(receipt))
@@ -310,10 +321,15 @@ impl StreamProvider for HttpStream {
             "commit" => IdempotencyOutcome::Commit(parse_envelope(&outcome["outcome"])?),
             _ => return Err(StreamError::Unavailable),
         };
+        let revision = match value.get("revision") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(revision) => Some(parse_revision(revision)?),
+        };
         Ok(Some(IdempotencyObservation {
             idempotency_key: observed,
             request_digest,
             outcome,
+            revision,
         }))
     }
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
@@ -353,10 +369,13 @@ impl StreamProvider for HttpStream {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         parse_u64(
             &self
-                .request(
+                .floored(
                     "tail",
                     wire::TailRequest {
                         path: path.to_string(),
+                        at_least: wire_codec::cut_to_wire(
+                            &self.revisions.floor(&crate::RevisionCut::default()),
+                        ),
                         ..Default::default()
                     }
                     .encode_to_vec(),
@@ -375,11 +394,15 @@ impl StreamProvider for HttpStream {
         self.session_client()?.durable_receipt(path, through).await
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        parse_append(
+        let outcome = parse_append(
             &self
                 .request_json("append", move || http_codec::encode_append(&request))
                 .await?,
-        )
+        )?;
+        if let AppendOutcome::Committed(receipt) = &outcome {
+            self.revisions.observe(&receipt.revision);
+        }
+        Ok(outcome)
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let source = request.source.clone();
@@ -395,17 +418,26 @@ impl StreamProvider for HttpStream {
         if result.source != source || result.destination != destination {
             return Err(StreamError::Unavailable);
         }
+        self.revisions.observe(&result.revision);
         Ok(result)
     }
-    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+    async fn read(&self, mut request: ReadRequest) -> Result<RecordStream, StreamError> {
+        request.at_least = self.revisions.floor(&request.at_least);
         // Reads and pages share the follow session; no JSON round trips.
-        self.session_client()?.read(request).await
+        self.session_client()?
+            .read(request)
+            .await
+            .inspect_err(|error| self.revisions.refused(error))
     }
     async fn follow(
         &self,
-        request: crate::FollowRequest,
+        mut request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.session_client()?.follow(request).await
+        request.at_least = self.revisions.floor(&request.at_least);
+        self.session_client()?
+            .follow(request)
+            .await
+            .inspect_err(|error| self.revisions.refused(error))
     }
 
     async fn children_page(
@@ -417,7 +449,11 @@ impl StreamProvider for HttpStream {
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         let wire = wire_codec::commit_to_wire(&request);
         let response = self.request("commit", wire.encode_to_vec()).await?;
-        Self::commit_response(&response)
+        let outcome = Self::commit_response(&response)?;
+        if let CommitOutcome::Committed(receipt) = &outcome {
+            self.revisions.observe(&receipt.revision);
+        }
+        Ok(outcome)
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let value = self

@@ -230,9 +230,10 @@ fn stream_code(error: &acyclic_stream::StreamError) -> Code {
         E::InvalidPath | E::InvalidArgument | E::LimitExceeded => Code::InvalidArgument,
         E::NotFound => Code::NotFound,
         E::AlreadyExists => Code::AlreadyExists,
-        E::PrefixNotRetained | E::HierarchyChanged | E::IdempotencyMismatch => {
-            Code::FailedPrecondition
-        }
+        E::PrefixNotRetained
+        | E::HierarchyChanged
+        | E::IdempotencyMismatch
+        | E::RevisionForeign => Code::FailedPrecondition,
         E::OutOfRange => Code::OutOfRange,
         E::Capacity => Code::ResourceExhausted,
         E::AccessDenied => Code::PermissionDenied,

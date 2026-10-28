@@ -190,6 +190,7 @@ async fn run(actions: &[bool], boundary: usize, moved: bool, broken: bool) -> Te
                     ledger.first().ok_or("empty ledger")?.as_bytes(),
                 ),
                 until: 0,
+                at_least: Default::default(),
             },
             1,
             crate::FollowFilter::default(),

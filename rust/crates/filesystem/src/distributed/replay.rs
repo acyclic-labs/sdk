@@ -89,6 +89,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     path,
                     from: after.get().saturating_add(1),
                     limit: limit.records,
+                    at_least: Default::default(),
                 },
                 work,
             )

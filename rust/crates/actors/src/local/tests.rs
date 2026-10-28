@@ -146,6 +146,7 @@ async fn atomic_history<P: StreamProvider + ?Sized>(
             path: output,
             from: 0,
             limit: 2,
+            at_least: Default::default(),
         })
         .await?;
     while let Some(effect) = records.try_next().await? {

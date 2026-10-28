@@ -336,6 +336,7 @@ async fn qualify(provider: &impl StreamProvider) {
             preceding: None,
             filter: filter(),
             progress: false,
+            at_least: Default::default(),
         })
         .map_ok(crate::records_only)
         .await
@@ -352,6 +353,7 @@ async fn qualify(provider: &impl StreamProvider) {
             preceding: Some(first.commit_id),
             filter: filter(),
             progress: false,
+            at_least: Default::default(),
         })
         .map_ok(crate::records_only)
         .await
@@ -382,6 +384,7 @@ async fn qualify(provider: &impl StreamProvider) {
             preceding: Some(first.commit_id),
             filter: filter(),
             progress: false,
+            at_least: Default::default(),
         })
         .map_ok(crate::records_only)
         .await

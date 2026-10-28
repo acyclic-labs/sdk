@@ -128,12 +128,16 @@ pub(crate) async fn commit<P: StreamProvider + ?Sized>(
             released?;
             let before = quota.retained();
             match inspect_idempotency(client, key, &binding, operation, &mut quota, phase).await? {
-                IdempotencyOutcome::Commit(envelope) => {
+                (IdempotencyOutcome::Commit(envelope), Some(revision)) => {
                     let facts_owned = quota.retained() - before;
-                    let receipt = observation::receipt(&envelope, &mut quota)?;
+                    let receipt = observation::receipt(&envelope, revision, &mut quota)?;
                     drop(envelope);
                     quota.relinquish(facts_owned)?;
                     acyclic_stream::CommitOutcome::Committed(receipt)
+                }
+                // A publication whose authority issued no revision stays unknown.
+                (IdempotencyOutcome::Commit(_), None) => {
+                    return Err(Error::Indeterminate(operation));
                 }
                 _ => {
                     return Err(guarded_boundary(

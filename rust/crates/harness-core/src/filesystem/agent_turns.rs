@@ -648,6 +648,7 @@ where
                 path,
                 from,
                 limit: u32::try_from(tail - from).unwrap_or(u32::MAX),
+                at_least: Default::default(),
             })
             .await
         {

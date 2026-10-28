@@ -832,6 +832,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     path: subscription.path.clone(),
                     from: subscription.cursor,
                     limit: 1,
+                    at_least: Default::default(),
                 })
                 .await;
             let mut records = match records {

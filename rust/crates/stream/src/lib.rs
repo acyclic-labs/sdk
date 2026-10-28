@@ -184,6 +184,9 @@ pub const TOKEN_OPERATIONS: &[&str] = &[
 #[path = "lib/path.rs"]
 mod path;
 pub use path::StreamPath;
+#[path = "lib/revision.rs"]
+pub mod revision;
+pub use revision::{AppliedRevisions, Revision, RevisionCut, RevisionScope, RevisionTracker};
 
 include!("lib/domain.rs");
 include!("lib/head.rs");

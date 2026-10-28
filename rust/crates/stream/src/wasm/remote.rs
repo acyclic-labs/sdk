@@ -114,6 +114,7 @@ impl StreamProvider for Remote {
                     path: path.to_string(),
                     accepted: false,
                     durable_through: None,
+                    at_least: Default::default(),
                 })
                 .await?,
             )
@@ -127,6 +128,7 @@ impl StreamProvider for Remote {
             path: path.to_string(),
             accepted: true,
             durable_through: None,
+            at_least: Default::default(),
         };
         let result = self
             .service()
@@ -148,6 +150,7 @@ impl StreamProvider for Remote {
                     path: path.to_string(),
                     accepted: true,
                     durable_through: Some(through),
+                    at_least: Default::default(),
                 })
                 .await?,
             )
@@ -196,13 +199,7 @@ impl StreamProvider for Remote {
             .await
             .map_err(|e| wire_codec::status(&e))?
             .into_inner();
-        Ok(ForkReceipt {
-            source: wire_codec::path(result.source)?,
-            destination: wire_codec::path(result.destination)?,
-            forked_at: result.forked_at,
-            tail: result.tail,
-            commit_id: wire_codec::commit_id(&result.commit_id)?,
-        })
+        wire_codec::fork_receipt_from_wire(result)
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.sessions.read(request).await

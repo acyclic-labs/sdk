@@ -65,6 +65,8 @@ impl LocalStream {
         ownership_anchor: Option<OwnershipAnchor>,
     ) -> Result<Self, LocalStreamError> {
         validate_limits(limits)?;
+        let scope =
+            crate::AppliedRevisions::storage_scope("local", root.as_os_str().as_encoded_bytes());
         let (recovered, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
         #[cfg(test)]
         let submitted_root = root.clone();
@@ -95,7 +97,8 @@ impl LocalStream {
             limits.memory,
             clock,
             Arc::clone(&commit_clock) as _,
-        );
+        )
+        .in_scope(scope);
         let mut replay_error = None;
         while let Some(recovered) = receiver.recv().await {
             let replayed = match recovered {

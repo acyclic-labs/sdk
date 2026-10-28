@@ -188,6 +188,7 @@ impl MemoryStream {
             },
         ))?;
         let state = Arc::clone(&self.state);
+        let revisions = Arc::clone(&self.revisions);
         let mut probes = self.reserve_replay_probes(self.maximum_replay_height() + 8)?;
         let recovery_meter = Arc::clone(&meter);
         let recovery = work.record(NativeProviderFuture::try_new(&meter, async move {
@@ -240,6 +241,7 @@ impl MemoryStream {
                         idempotency_key: recovery_key,
                         request_digest: stored.digest,
                         outcome: IdempotencyOutcome::Commit(value),
+                        revision: Some(revisions.at(stored.index)),
                     }),
                     claim,
                 ))
@@ -286,6 +288,7 @@ impl PreparedCommit {
                 }
                 let result = copy_outcome(
                     stored,
+                    self.provider.revisions.at(stored.index),
                     body.payload_bytes(),
                     (self.plan.result, self.plan.output_claim),
                 )?;
@@ -325,7 +328,8 @@ impl PreparedCommit {
                     );
                     let id = commit_identity(decision, digest);
                     bind_body(&mut self.plan, body)?;
-                    self.plan.bind(id, time)?;
+                    self.plan
+                        .bind(id, time, &self.provider.revisions.at(decision))?;
                     let _ = work.record(record_codec(
                         &mut self.codec,
                         2 * std::mem::size_of::<Record>() as u64,
@@ -349,6 +353,9 @@ impl PreparedCommit {
                 }
             })
         })();
+        if result.is_ok() {
+            self.provider.applied(&state);
+        }
         let _ = work.record(self.probes.record(16));
         work.release_write();
         result
@@ -451,6 +458,7 @@ fn digest(
 }
 fn copy_outcome(
     stored: &Retained,
+    revision: crate::Revision,
     maximum: usize,
     (mut output, output_claim): (CommitOutcome, Allocation),
 ) -> Result<(CommitOutcome, Allocation), StreamError> {
@@ -461,6 +469,7 @@ fn copy_outcome(
     };
     receipt.commit_id = envelope.commit_id;
     receipt.committed_at_micros = envelope.committed_at_micros;
+    receipt.revision = revision;
     Ok((output, output_claim))
 }
 

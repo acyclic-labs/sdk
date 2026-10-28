@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 fn source(identity: wire::SessionChannel) -> Source {
     futures::stream::iter(
-        [Ok(Event::Opened(None))]
+        [Ok(Event::Opened(None, None))]
             .into_iter()
             .chain((0..2).map(|sequence| {
                 Ok(Event::Record(crate::Record {
@@ -231,7 +231,7 @@ fn every_local_and_global_credit_combination_matches_the_admission_contract() {
                             sources.insert(identity, source(identity), channel.source_mode());
                             assert!(matches!(
                                 sources.poll(room, &mut cx),
-                                Poll::Ready(Ok(Some((_, Ok(Event::Opened(_))))))
+                                Poll::Ready(Ok(Some((_, Ok(Event::Opened(..))))))
                             ));
                             let polled = sources.poll(room, &mut cx);
                             assert_eq!(
@@ -259,7 +259,7 @@ fn replaced_generation_ignores_a_late_provider_wakeup() {
         generation: 2,
         ..old
     };
-    let stream = futures::stream::once(async move { (new, Ok(Event::Opened(None))) })
+    let stream = futures::stream::once(async move { (new, Ok(Event::Opened(None, None))) })
         .chain(futures::stream::pending())
         .boxed();
     sources.insert(new, stream, Some(ALL));
@@ -302,7 +302,7 @@ fn unchanged_admission_does_no_queue_edits_and_preserves_turn_order() {
         }
         for channel_id in 1..=10_000 {
             assert!(matches!(sources.poll((false, false, false), &mut cx),
-                Poll::Ready(Ok(Some((identity, Ok(Event::Opened(_)))))) if identity.channel_id == channel_id));
+                Poll::Ready(Ok(Some((identity, Ok(Event::Opened(..)))))) if identity.channel_id == channel_id));
         }
         sources.queue_edits = 0;
         let started = std::time::Instant::now();

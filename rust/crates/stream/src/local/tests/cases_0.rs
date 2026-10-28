@@ -406,6 +406,7 @@ async fn concurrent_commits_on_distinct_paths_replay_after_reopen()
                 path: StreamPath::new(&path)?,
                 from: 0,
                 limit: 100,
+                at_least: Default::default(),
             })
             .await?
             .collect::<Vec<_>>()
@@ -684,6 +685,7 @@ async fn journal_replay_preserves_monotonic_commit_times() -> Result<(), Box<dyn
             path,
             from: 0,
             limit: 3,
+            at_least: Default::default(),
         })
         .await?
         .collect::<Vec<_>>()
@@ -819,7 +821,8 @@ async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::
                 .read(ReadRequest {
                     path: StreamPath::new("missing")?,
                     from: 0,
-                    limit: 1
+                    limit: 1,
+                    at_least: Default::default(),
                 })
                 .await
                 .is_err()

@@ -96,14 +96,24 @@ impl StreamProvider for Client {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         let body = wire::TailRequest {
             path: path.to_string(),
+            at_least: crate::wire_codec::cut_to_wire(
+                &self.revisions.floor(&crate::RevisionCut::default()),
+            ),
             ..Default::default()
         };
         let response = self
             .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
                 Box::pin(async move { service.tail(request).await })
             })
-            .await?;
-        decode_response(response, |response| Ok(response.tail))
+            .await
+            .inspect_err(|error| self.revisions.refused(error))?;
+        decode_response(response, |response| {
+            if let Some(applied) = response.applied {
+                self.revisions
+                    .observe(&crate::wire_codec::issued_from_wire(Some(applied))?);
+            }
+            Ok(response.tail)
+        })
     }
 
     async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
@@ -114,6 +124,7 @@ impl StreamProvider for Client {
                     path: path.to_string(),
                     accepted: true,
                     durable_through: None,
+                    at_least: Default::default(),
                 },
                 |mut service, request| Box::pin(async move { service.tail(request).await }),
             )
@@ -133,6 +144,7 @@ impl StreamProvider for Client {
                     path: path.to_string(),
                     accepted: true,
                     durable_through: Some(through),
+                    at_least: Default::default(),
                 },
                 |mut service, request| Box::pin(async move { service.tail(request).await }),
             )
@@ -157,7 +169,11 @@ impl StreamProvider for Client {
                 Box::pin(async move { service.append(request).await })
             })
             .await?;
-        decode_response(response, append_outcome_from_wire)
+        let outcome = decode_response(response, append_outcome_from_wire)?;
+        if let AppendOutcome::Committed(receipt) = &outcome {
+            self.revisions.observe(&receipt.revision);
+        }
+        Ok(outcome)
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
@@ -184,24 +200,30 @@ impl StreamProvider for Client {
                 forked_at: receipt.forked_at,
                 tail: receipt.tail,
                 commit_id: commit_id(&receipt.commit_id)?,
+                revision: crate::wire_codec::issued_from_wire(receipt.revision)?,
             })
         })
+        .inspect(|receipt| self.revisions.observe(&receipt.revision))
     }
 
-    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+    async fn read(&self, mut request: ReadRequest) -> Result<RecordStream, StreamError> {
+        request.at_least = self.revisions.floor(&request.at_least);
         // A bounded follow on the shared session: no per-read RPC or deadline.
         self.session()?
             .read_with_ack(request, self.acknowledge_deliveries)
             .await
+            .inspect_err(|error| self.revisions.refused(error))
     }
 
     async fn follow(
         &self,
-        request: crate::FollowRequest,
+        mut request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
+        request.at_least = self.revisions.floor(&request.at_least);
         self.session()?
             .follow_with_ack(request, self.acknowledge_deliveries)
             .await
+            .inspect_err(|error| self.revisions.refused(error))
     }
 
     async fn children_page(
@@ -218,7 +240,11 @@ impl StreamProvider for Client {
                 Box::pin(async move { service.commit(request).await })
             })
             .await?;
-        decode_response(response, commit_outcome_from_wire)
+        let outcome = decode_response(response, commit_outcome_from_wire)?;
+        if let CommitOutcome::Committed(receipt) = &outcome {
+            self.revisions.observe(&receipt.revision);
+        }
+        Ok(outcome)
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {

@@ -78,6 +78,7 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
             path: path("completion/target")?,
             from: 1,
             limit: 1,
+            at_least: Default::default(),
         })
         .await?;
     assert_eq!(

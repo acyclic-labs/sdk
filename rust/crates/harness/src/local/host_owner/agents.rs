@@ -303,6 +303,7 @@ impl HostDriver {
                 path: agent.path.conversation().map_err(storage)?,
                 from: agent.conversation_tail - 1,
                 limit: 1,
+                at_least: Default::default(),
             })
             .await
         {

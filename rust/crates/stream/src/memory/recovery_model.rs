@@ -172,6 +172,7 @@ fn subscription_and_append(omit_wake: bool) {
                     preceding: Some(anchor),
                     filter: crate::FollowFilter::default(),
                     progress: false,
+                    at_least: Default::default(),
                 })
                 .map_ok(crate::records_only)
                 .await?;
@@ -213,6 +214,7 @@ fn subscription_and_recovery(retain_old: bool) {
                     preceding: Some(anchor),
                     filter: crate::FollowFilter::default(),
                     progress: false,
+                    at_least: Default::default(),
                 })
                 .map_ok(crate::records_only)
                 .await

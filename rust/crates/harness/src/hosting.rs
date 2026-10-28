@@ -501,6 +501,7 @@ where
                 path,
                 from: last,
                 limit: 1,
+                at_least: Default::default(),
             })
             .await
             .map_err(Error::Stream)?;

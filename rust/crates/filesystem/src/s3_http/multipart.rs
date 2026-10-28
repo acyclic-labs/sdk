@@ -135,6 +135,7 @@ async fn collect_registry_upload_paths<P: acyclic_stream::StreamProvider>(
                 path: registry.clone(),
                 from,
                 limit,
+                at_least: Default::default(),
             })
             .await
             .map_err(|error| stream_read_error(&error))?;

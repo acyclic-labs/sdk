@@ -127,11 +127,19 @@ impl PostgresStream {
         let clock = Arc::new(Clock::default());
         // Both planning and recorded admission use the transaction's database
         // clock. A process wall-clock skew cannot override SQL admission.
+        // Every process replays the namespace journal in one order, so all
+        // replicas share its scope, incarnation and revision indexes.
+        let mut location = database.as_bytes().to_vec();
+        location.push(0);
+        location.extend_from_slice(namespace.as_bytes());
         let core = MemoryStream::new_with_commit_clock(
             MemoryLimits::default(),
             clock.clone(),
             clock.clone(),
-        );
+        )
+        .in_shared_scope(crate::AppliedRevisions::storage_scope(
+            "postgres", &location,
+        ));
         let (failure, _) = watch::channel(false);
         let inner = Arc::new(Inner {
             core,
@@ -461,6 +469,15 @@ impl StreamProvider for PostgresStream {
             Outcome::Commit(value) => Ok(value),
             _ => Err(StreamError::InvalidResponse),
         }
+    }
+    async fn wait_applied(
+        &self,
+        at_least: &crate::RevisionCut,
+    ) -> Result<crate::Revision, StreamError> {
+        // A token was issued after its publication reached the journal, so a
+        // refreshed replica covers it.
+        self.refresh().await?;
+        self.inner.core.wait_applied(at_least).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.refresh().await?;

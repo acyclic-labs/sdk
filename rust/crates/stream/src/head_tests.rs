@@ -195,6 +195,7 @@ async fn head_conditions_and_conflicts_survive_local_recovery_and_wire_encoding(
             path,
             from: 0,
             limit: 2,
+            at_least: Default::default(),
         })
         .await?;
     assert_eq!(
