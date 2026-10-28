@@ -200,11 +200,11 @@ impl StockExecution<'_> {
         self.stock.limits.validate(&mut None)?;
         self.model_capacity()?;
         if input.max_steps == Some(0)
-            || self
-                .stock
-                .limits
-                .model_steps
-                .is_some_and(|maximum| input.max_steps.is_none_or(|steps| steps as usize > maximum))
+            || self.stock.limits.model_steps.is_some_and(|maximum| {
+                input
+                    .max_steps
+                    .is_none_or(|steps| steps as usize > maximum.get())
+            })
         {
             return Err(stock_boundary(
                 self.io,

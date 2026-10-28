@@ -373,16 +373,19 @@ fn optional_step_allowances_intersect_without_widening_finite_policy() -> Result
     ] {
         let result = restrict_context_limits(
             Limits {
-                model_steps: pinned,
+                model_steps: pinned.and_then(std::num::NonZeroUsize::new),
                 ..Limits::default()
             },
             Limits {
-                model_steps: admitted,
+                model_steps: admitted.and_then(std::num::NonZeroUsize::new),
                 ..Limits::default()
             },
             None,
         )?;
-        assert_eq!(result.model_steps, expected);
+        assert_eq!(
+            result.model_steps.map(std::num::NonZeroUsize::get),
+            expected
+        );
     }
     Ok(())
 }
