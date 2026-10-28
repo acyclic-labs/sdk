@@ -147,7 +147,7 @@ async fn count_endpoint_errors_are_sanitized_classified_and_bounded() -> Result<
         assert!(provider.count_tokens(&request).await.is_err());
     }
     let (mut provider, _) = provider(Adapter::Responses, 200);
-    Arc::make_mut(&mut provider.config).max_event_bytes = 8;
+    Arc::make_mut(&mut provider.config).max_event_bytes = Some(8);
     provider.transport = crate::deadline::Bounded::new(
         Arc::new(CountResponse {
             status: 200,
