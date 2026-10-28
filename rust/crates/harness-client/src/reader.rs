@@ -38,8 +38,9 @@ pub struct ReaderPolicy {
     pub requests: usize,
     /// Of those, prefetch reads; visible reads always keep a slot.
     pub prefetch_requests: usize,
-    /// Live follows on the one multiplexed session.
-    pub follows: usize,
+    /// Optional caller-selected live follow capacity on the multiplexed session.
+    /// `None` follows every displayed stream.
+    pub follows: Option<usize>,
     /// Records per read.
     pub read_limit: u32,
     /// Children per listing page.
@@ -67,7 +68,7 @@ impl Default for ReaderPolicy {
             streams: 4096,
             requests: 48,
             prefetch_requests: 32,
-            follows: 64,
+            follows: None,
             read_limit: 64,
             listing_limit: 64,
             lag: 16,
@@ -93,20 +94,17 @@ impl ReaderPolicy {
         }
     }
 
-    /// Refuse budgets above the client hard ceilings or with no capacity.
+    /// Validate progress credit and retry timing.
     ///
     /// # Errors
-    /// `StreamError::LimitExceeded` names any out-of-range budget.
+    /// `StreamError::LimitExceeded` reports credit that cannot make progress.
     pub fn validate(&self) -> Result<(), StreamError> {
-        let ok = (64 * 1024..=256 << 20).contains(&self.cache_bytes)
-            && (16..=65_536).contains(&self.streams)
-            && (2..=64).contains(&self.requests)
+        let ok = self.requests > 0
             && self.prefetch_requests < self.requests
-            && (1..=254).contains(&self.follows)
-            && (1..=acyclic_stream::MAX_ITEMS as u32).contains(&self.read_limit)
-            && (1..=acyclic_stream::MAX_ITEMS as u32).contains(&self.listing_limit)
+            && self.read_limit > 0
+            && self.listing_limit > 0
             && self.lag >= 1
-            && (1..=65_536).contains(&self.deliveries)
+            && self.deliveries > 0
             && self.timeout_ms > 0
             && self.backoff_min_ms > 0
             && self.backoff_min_ms <= self.backoff_max_ms
@@ -359,8 +357,6 @@ struct Anchors {
 
 const MAX_ANCHORED_PARENTS: usize = 64;
 const MAX_ANCHORS: usize = 256;
-const MAX_REFUSED: usize = 64;
-const MAX_DEMAND: usize = 4096;
 
 /// Footprint of one client, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -482,7 +478,6 @@ impl Reader {
 
     /// Adapt to memory pressure: shrink (or regrow) the one cache budget.
     pub fn set_cache_budget(&mut self, bytes: usize) {
-        let bytes = bytes.clamp(64 * 1024, 256 << 20);
         self.policy.cache_bytes = bytes;
         self.cache.set_budget(bytes);
     }
@@ -577,14 +572,11 @@ impl Reader {
                 self.display(want);
             }
         }
-        self.cache
-            .retain_passed(|cache, key| wants.iter().any(|(want, _)| covers(cache, want, key)));
+        let coverage = Coverage::new(&self.cache, &wants);
+        self.cache.retain_passed(|_, key| coverage.contains(key));
         let mut demand = Vec::new();
         let mut seen = BTreeSet::new();
         for (want, priority) in wants {
-            if demand.len() >= MAX_DEMAND {
-                break;
-            }
             let Some((key, paging)) = self.resolve(&want) else {
                 continue;
             };
@@ -647,13 +639,9 @@ impl Reader {
                 let to = self.cache.tail(stream).map_or(*to, |tail| (*to).min(tail));
                 let missing = self.cache.first_missing(stream, *from, to)?;
                 // A forked prefix is the source's records: read it there.
-                let mut path = stream.clone();
-                for _ in 0..64 {
-                    match self.cache.fork(&path) {
-                        Some((source, at)) if missing < *at => path = source.clone(),
-                        _ => break,
-                    }
-                }
+                let Key::Record(path, _) = self.cache.resolve(stream, missing) else {
+                    unreachable!("record lookup always resolves a record key");
+                };
                 Some((OpKey::Read(path, missing), Paging::default()))
             }
             Want::Last { stream, count } => match self.cache.tail(stream) {
@@ -703,27 +691,23 @@ impl Reader {
 
     /// The highest page at or before `index` whose start is known.
     fn reachable(&self, parent: &StreamPath, index: u32) -> Option<(u32, Option<StreamPath>)> {
-        let anchors = self.anchors.get(parent);
-        let floor = anchors
+        let anchored = self
+            .anchors
+            .get(parent)
             .and_then(|anchors| anchors.at.range(..=index).next_back())
-            .map_or(0, |(at, _)| *at);
-        let mut page = index;
-        loop {
-            if page == 0 {
-                return Some((0, None));
+            .map(|(page, after)| (*page, Some(after.clone())));
+        let previous = self
+            .cache
+            .listings(parent)
+            .filter(|(page, _)| *page < index)
+            .max_by_key(|(page, _)| *page);
+        if let Some((page, listing)) = previous {
+            let page = page.checked_add(1)?;
+            if anchored.as_ref().is_none_or(|(anchor, _)| page >= *anchor) {
+                return listing.next.clone().map(|after| (page, Some(after)));
             }
-            if let Some(after) = anchors.and_then(|anchors| anchors.at.get(&page)) {
-                return Some((page, Some(after.clone())));
-            }
-            if let Some(previous) = self.cache.listing(parent, page - 1) {
-                return previous.next.clone().map(|next| (page, Some(next)));
-            }
-            if page <= floor {
-                break;
-            }
-            page -= 1;
         }
-        Some((0, None))
+        anchored.or(Some((0, None)))
     }
 
     /// Reads to start now, highest priority first, within every budget.
@@ -771,7 +755,7 @@ impl Reader {
                     id,
                     stream: stream.clone(),
                     from: *from,
-                    limit: self.policy.read_limit,
+                    limit: self.policy.read_limit.min(acyclic_stream::MAX_ITEMS as u32),
                 },
                 OpKey::Tail(stream) => Op::Tail {
                     id,
@@ -782,7 +766,10 @@ impl Reader {
                     parent: parent.clone(),
                     index: *index,
                     after: paging.after.clone(),
-                    limit: self.policy.listing_limit,
+                    limit: self
+                        .policy
+                        .listing_limit
+                        .min(acyclic_stream::MAX_ITEMS as u32),
                     tail: paging.tail.clone(),
                     version: paging.after.as_ref().and(self.hierarchy),
                 },
@@ -847,7 +834,8 @@ impl Reader {
                 return;
             }
             (OpKey::Read(stream, from), Outcome::Records(records)) => {
-                let valid = records.len() <= self.policy.read_limit as usize
+                let valid = records.len()
+                    <= self.policy.read_limit.min(acyclic_stream::MAX_ITEMS as u32) as usize
                     && records
                         .iter()
                         .enumerate()
@@ -875,7 +863,11 @@ impl Reader {
                     version,
                 },
             ) => {
-                let valid = children.len() <= self.policy.listing_limit as usize
+                let valid = children.len()
+                    <= self
+                        .policy
+                        .listing_limit
+                        .min(acyclic_stream::MAX_ITEMS as u32) as usize
                     && children
                         .windows(2)
                         .all(|pair| pair[0].path.as_str() < pair[1].path.as_str());
@@ -1006,11 +998,6 @@ impl Reader {
     }
 
     fn refuse(&mut self, key: OpKey) {
-        if self.refused.len() >= MAX_REFUSED
-            && let Some(first) = self.refused.iter().next().cloned()
-        {
-            self.refused.remove(&first);
-        }
         self.refused.insert(key);
     }
 
@@ -1041,7 +1028,11 @@ impl Reader {
             if self.issues.get(&stream) == Some(&ReadIssue::AccessDenied) {
                 continue;
             }
-            if next.len() >= self.policy.follows {
+            if self
+                .policy
+                .follows
+                .is_some_and(|maximum| next.len() >= maximum)
+            {
                 break;
             }
             let Some(tail) = self.cache.tail(&stream) else {
@@ -1097,7 +1088,7 @@ impl Reader {
         self.invalidate(stream);
     }
 
-    /// Read failures and cursor discontinuities, bounded independently of history.
+    /// Unacknowledged read failures and cursor discontinuities.
     pub fn issues(&self) -> impl Iterator<Item = (&StreamPath, ReadIssue)> {
         self.issues.iter().map(|(path, issue)| (path, *issue))
     }
@@ -1110,12 +1101,6 @@ impl Reader {
     }
 
     fn report_issue(&mut self, stream: &StreamPath, issue: ReadIssue) {
-        if self.issues.len() == MAX_REFUSED
-            && !self.issues.contains_key(stream)
-            && let Some(first) = self.issues.keys().next().cloned()
-        {
-            self.issues.remove(&first);
-        }
         self.issues.insert(stream.clone(), issue);
     }
 
@@ -1229,25 +1214,175 @@ fn projected(cache: &RecordCache, want: &Want) -> Vec<(StreamPath, u64)> {
         .collect()
 }
 
-/// Whether `want` reads the value cached or passed through under `key`.
-fn covers(cache: &RecordCache, want: &Want, key: &Key) -> bool {
-    match (want, key) {
-        (Want::Listing { parent, index, .. }, Key::Listing(path, at)) => {
-            parent == path && index == at
+/// An interval index of this frame's needs. Each retained value is checked
+/// against its source once, rather than against every displayed row.
+#[derive(Default)]
+struct Coverage {
+    records: BTreeMap<StreamPath, Vec<(u64, u64)>>,
+    listings: BTreeSet<(StreamPath, u32)>,
+}
+
+impl Coverage {
+    fn new(cache: &RecordCache, wants: &[(Want, Priority)]) -> Self {
+        let mut coverage = Self::default();
+        let mut seen = BTreeSet::new();
+        for (want, _) in wants {
+            if !seen.insert(want) {
+                continue;
+            }
+            if let Some((stream, from, to)) = window(cache, want) {
+                cache.ranges(stream, from, to, |path, from, to| {
+                    if from < to {
+                        coverage
+                            .records
+                            .entry(path.clone())
+                            .or_default()
+                            .push((from, to));
+                    }
+                });
+            }
+            if let Want::Listing { parent, index, .. } = want {
+                coverage.listings.insert((parent.clone(), *index));
+                for (stream, last) in projected(cache, want) {
+                    if let Key::Record(path, sequence) = cache.resolve(&stream, last) {
+                        coverage
+                            .records
+                            .entry(path)
+                            .or_default()
+                            .push((sequence, sequence + 1));
+                    }
+                }
+            }
         }
-        (Want::Listing { .. }, Key::Record(..)) => projected(cache, want)
-            .iter()
-            .any(|(stream, last)| cache.resolve(stream, *last) == *key),
-        (_, Key::Record(_, sequence)) => window(cache, want).is_some_and(|(stream, from, to)| {
-            (from..to).contains(sequence) && cache.resolve(stream, *sequence) == *key
-        }),
-        _ => false,
+        for intervals in coverage.records.values_mut() {
+            intervals.sort_unstable();
+            let mut kept = 0;
+            for index in 0..intervals.len() {
+                let (from, to) = intervals[index];
+                if kept > 0 && from <= intervals[kept - 1].1 {
+                    intervals[kept - 1].1 = intervals[kept - 1].1.max(to);
+                } else {
+                    intervals[kept] = (from, to);
+                    kept += 1;
+                }
+            }
+            intervals.truncate(kept);
+        }
+        coverage
+    }
+
+    fn contains(&self, key: &Key) -> bool {
+        match key {
+            Key::Listing(parent, page) => self.listings.contains(&(parent.clone(), *page)),
+            Key::Record(stream, sequence) => self.records.get(stream).is_some_and(|intervals| {
+                let end = intervals.partition_point(|(from, _)| from <= sequence);
+                end > 0 && intervals[end - 1].1 > *sequence
+            }),
+        }
     }
 }
 
 #[cfg(test)]
 mod reader_tests {
     use super::*;
+
+    #[test]
+    fn all_requested_reads_and_follows_are_reachable_without_default_ceilings() {
+        let mut reader = Reader::new(ReaderPolicy {
+            requests: 5_000,
+            prefetch_requests: 0,
+            cache_bytes: 0,
+            streams: 0,
+            ..ReaderPolicy::default()
+        })
+        .unwrap();
+        let streams: Vec<_> = (0..5_000)
+            .map(|index| StreamPath::new(format!("test/{index}")).unwrap())
+            .collect();
+        reader.plan(streams.iter().map(|stream| {
+            (
+                Want::Last {
+                    stream: stream.clone(),
+                    count: 1,
+                },
+                Priority::Visible,
+            )
+        }));
+        let ops = reader.poll(0);
+        assert_eq!(ops.len(), streams.len());
+        for op in ops {
+            reader.complete(op.id(), Outcome::Tail(0), 0);
+        }
+        reader.set_follows(streams.clone());
+        let followed: BTreeSet<_> = reader.follows().map(|(stream, _)| stream.clone()).collect();
+        assert_eq!(followed, streams.into_iter().collect());
+    }
+
+    #[test]
+    fn coverage_splits_fork_ranges_and_preserves_distinct_listing_projections() {
+        let mut cache = RecordCache::new(1 << 20, 100);
+        let source = StreamPath::new("test/source").unwrap();
+        let child = StreamPath::new("test/child").unwrap();
+        let parent = StreamPath::new("test").unwrap();
+        cache.set_fork(&child, source.clone(), 3);
+        let first = StreamPath::new("test/child/a").unwrap();
+        let second = StreamPath::new("test/child/b").unwrap();
+        cache.observe_tail(&first, 2);
+        cache.observe_tail(&second, 5);
+        cache.insert_listing(
+            &parent,
+            0,
+            Listing {
+                after: None,
+                children: vec![child.clone()],
+                next: None,
+                fresh: true,
+                witnessed: None,
+            },
+            None,
+        );
+        let wants = vec![
+            (
+                Want::Range {
+                    stream: child.clone(),
+                    from: 1,
+                    to: 5,
+                },
+                Priority::Visible,
+            ),
+            (
+                Want::Listing {
+                    parent: parent.clone(),
+                    index: 0,
+                    tail: Some(StreamPath::new("a").unwrap()),
+                    witness: None,
+                },
+                Priority::Visible,
+            ),
+            (
+                Want::Listing {
+                    parent,
+                    index: 0,
+                    tail: Some(StreamPath::new("b").unwrap()),
+                    witness: None,
+                },
+                Priority::Visible,
+            ),
+        ];
+        let coverage = Coverage::new(&cache, &wants);
+        for sequence in 0..6 {
+            assert_eq!(
+                coverage.contains(&Key::Record(source.clone(), sequence)),
+                (1..3).contains(&sequence)
+            );
+            assert_eq!(
+                coverage.contains(&Key::Record(child.clone(), sequence)),
+                (3..5).contains(&sequence)
+            );
+        }
+        assert!(coverage.contains(&Key::Record(first, 1)));
+        assert!(coverage.contains(&Key::Record(second, 4)));
+    }
 
     #[test]
     fn moved_page_boundary_cancels_old_replies_and_unsent_demand() {
