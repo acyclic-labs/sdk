@@ -29,8 +29,7 @@ fn credential_header(token: &str) -> Result<MetadataValue<Ascii>, ConnectError> 
     if !acyclic_auth::credential::valid_credential(token) {
         return Err(ConnectError::InvalidConfiguration);
     }
-    let mut value: MetadataValue<Ascii> = format!("Bearer {token}")
-        .parse()
+    let mut value = MetadataValue::try_from(acyclic_auth::credential::bearer_bytes(token))
         .map_err(|_| ConnectError::InvalidConfiguration)?;
     value.set_sensitive(true);
     Ok(value)
