@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "purpose": "Account for twelve orphan harness-library qualification selectors after merged native-client and old-loop retirement.",
+  "current_case_inventory": {
+    "source": "312bc92b9d701a06be23d26d566441198eed9169",
+    "job": "1793167027720-90794-fc8482d0",
+    "harness_cases": 128,
+    "execution": "actual test executable --list only; no test bodies"
+  },
+  "captures": [
+    {
+      "retirement": "7f8ecbba041c9b82226a284b026d1a66eb6bcae5",
+      "source_parent": "5e73624264cf53231c17bdda492e1810fdb9289f",
+      "archive": "D:\\lane-scratch\\del-tooling\\m3\\retired-selector-source\\native-client-parent-5e73624264.tar",
+      "archive_sha256": "72ea8aecdb55db910fd711b60209aec69cf84af11a5abe03f8f3c5e706a8850d",
+      "manifest": "D:\\lane-scratch\\del-tooling\\m3\\retired-selector-source\\native-client-source.json",
+      "manifest_sha256": "4e4eb458590f2c0e6ac8c0874e3c11343fd23f26e2a493bfab493fa0c43634b6",
+      "member_count": 1750,
+      "git_signature_local": "E",
+      "historical_execution": "not run in this milestone"
+    },
+    {
+      "retirement": "8078fa93ebcc59eb039019cfc9541c38dadd646c",
+      "source_parent": "3b37d404357dc422e3c42da42b6e619be79fa7e1",
+      "archive": "D:\\lane-scratch\\del-tooling\\m3\\retired-selector-source\\old-loop-parent-3b37d40435.tar",
+      "archive_sha256": "fdcbe7cbe3d968b815d75aedd788114fa1de103cb4ddcbead2ee016770d69354",
+      "manifest": "D:\\lane-scratch\\del-tooling\\m3\\retired-selector-source\\old-loop-source.json",
+      "manifest_sha256": "593222c0ae97a5ea729692ecd8e9cff034b3ccc34fec1ea4d3953217828c5abc",
+      "member_count": 1659,
+      "git_signature_local": "E",
+      "historical_execution": "not run in this milestone"
+    }
+  ],
+  "selectors": [
+    {
+      "selector": "tui::render::tests::diff_errors_are_visible_and_replaceable",
+      "actual_current_selected_count": 0,
+      "test_source_retirement_commit": "7f8ecbba041c9b82226a284b026d1a66eb6bcae5",
+      "source_parent": "5e73624264cf53231c17bdda492e1810fdb9289f",
+      "original_test_source": "rust/crates/harness/src/tui/render/tests.rs",
+      "original_test_blob": "ef004839ea623eb70c26a7fb7f30bf82e8cd893c",
+      "original_test_sha256": "1f58be9122b6d6f3816f94966dd7d79a81cb728cda23919aa23dc437d3845848",
+      "original_product_source": "rust/crates/harness/src/tui/render.rs",
+      "original_product_blob": "48e7950e9118951882c89bdf0a8aac003b10b214",
+      "static_exact_function": "diff_errors_are_visible_and_replaceable",
+      "disposition": "Remove only the orphan script token. Original test and negative-control bytes retained; no replacement behavior equivalence or execution claimed."
+    },
+    {
+      "selector": "tui::render::tests::compaction_completion_",
+      "actual_current_selected_count": 0,
+      "test_source_retirement_commit": "7f8ecbba041c9b82226a284b026d1a66eb6bcae5",
+      "source_parent": "5e73624264cf53231c17bdda492e1810fdb9289f",
+      "original_test_source": "rust/crates/harness/src/tui/render/tests.rs",
+      "original_test_blob": "ef004839ea623eb70c26a7fb7f30bf82e8cd893c",
+      "original_test_sha256": "1f58be9122b6d6f3816f94966dd7d79a81cb728cda23919aa23dc437d3845848",
+      "original_product_source": "rust/crates/harness/src/tui/render.rs",
+      "original_product_blob": "48e7950e9118951882c89bdf0a8aac003b10b214",
+      "static_exact_function": "compaction_completion_is_rendered_only_after_its_outcome_and_on_replay",
+      "disposition": "Remove only the orphan script token. Original test and negative-control bytes retained; no replacement behavior equivalence or execution claimed."
+    },
+    {
+      "selector": "tui::render::tests::negative_control_error_only_",
+      "actual_current_selected_count": 0,
+      "test_source_retirement_commit": "7f8ecbba041c9b82226a284b026d1a66eb6bcae5",
+      "source_parent": "5e73624264cf53231c17bdda492e1810fdb9289f",
+      "original_test_source": "rust/crates/harness/src/tui/render/tests.rs",
+      "original_test_blob": "ef004839ea623eb70c26a7fb7f30bf82e8cd893c",
+      "original_test_sha256": "1f58be9122b6d6f3816f94966dd7d79a81cb728cda23919aa23dc437d3845848",
+      "original_product_source": "rust/crates/harness/src/tui/render.rs",
+      "original_product_blob": "48e7950e9118951882c89bdf0a8aac003b10b214",
+      "static_exact_function": "negative_control_error_only_feedback_cannot_acknowledge_compaction",
+      "disposition": "Remove only the orphan script token. Original test and negative-control bytes retained; no replacement behavior equivalence or execution claimed."
+    },
+    {
+      "selector": "client::input_files::shortcuts::",
+      "actual_current_selected_count": 0,
+      "test_source_retirement_commit": "7f8ecbba041c9b82226a284b026d1a66eb6bcae5",
+      "source_parent": "5e73624264cf53231c17bdda492e1810fdb9289f",
+      "original_test_source": "rust/crates/harness/src/client/input_files/shortcuts.rs",
+      "original_test_blob": "518993aa93e79194227d55e623d18628f5fba7b4",
+      "original_test_sha256": "708f61a7ce3625948b614d8b49c349a91dcc90d399803f113aa01e82305af2f0",
+      "original_product_source": "rust/crates/harness/src/client/input_files.rs",
+      "original_product_blob": "b55cce03f69a7c9bd84ad23581bec00358de60e9",
+      "static_exact_function": null,
+      "disposition": "Remove only the orphan script token. Original test and negative-control bytes retained; no replacement behavior equivalence or execution claimed."
+    },
+    {
+      "selector": "client::commands::session::consumption::tests::",
+      "actual_current_selected_count": 0,
+      "test_source_retirement_commit": "8078fa93ebcc59eb039019cfc9541c38dadd646c",
+      "source_parent": "3b37d404357dc422e3c42da42b6e619be79fa7e1",
+      "original_test_source": "rust/crates/harness/src/client/commands/session_consume/tests.rs",
+      "original_test_blob": "26b36129c7cb52bba9e2055621afc15c5f102ccb",
+      "original_test_sha256": "08ba4c6c311f9e80a146219d06044b1541adf63341e49a2c60b64a9e4e5b5c35",
+      "original_product_source": "rust/crates/harness/src/client/commands/session_consume.rs",
+      "original_product_blob": "e51fb3170b3aa3e790124593d5e7dc366e313bd9",
+      "static_exact_function": null,
+      "disposition": "Remove only the orphan script token. Original test and negative-control bytes retained; no replacement behavior equivalence or execution claimed."
+    },
+    {
+      "selector": "local::compact::rewind::tests::",
+      "actual_current_selected_count": 0,
+      "test_source_retirement_commit": "8078fa93ebcc59eb039019cfc9541c38dadd646c",
+      "source_parent": "3b37d404357dc422e3c42da42b6e619be79fa7e1",
+      "original_test_source": "rust/crates/harness/src/local/compact/rewind.rs",
+      "original_test_blob": "e7f15e04306d8a84f8cb5b73e6b27b2250ded886",
+      "original_test_sha256": "0f382467987721981439a3d359dbe69ed46820f8d0299fd13676152af23af678",
+      "original_product_source": "rust/crates/harness/src/local/compact.rs",
+      "original_product_blob": "44ea3e46726bf51a8a65238bc6bdf61f28c24942",
+      "static_exact_function": null,
+      "disposition": "Remove only the orphan script token. Original test and negative-control bytes retained; no replacement behavior equivalence or execution claimed."
+    },
+    {
+      "selector": "local::tests::compact::checkpoints_reject_stale_replay_pin_branches_and_continue_completed_tasks",
+      "actual_current_selected_count": 0,
+      "test_source_retirement_commit": "8078fa93ebcc59eb039019cfc9541c38dadd646c",
+      "source_parent": "3b37d404357dc422e3c42da42b6e619be79fa7e1",
+      "original_test_source": "rust/crates/harness/src/local/tests/compact.rs",
+      "original_test_blob": "d5a808b0412b2c3b5927ebabe1fd64a63337e0cb",
+      "original_test_sha256": "9646e1d1cc8a303b3236711653c75f6895680e8919bf8824b9887a0e0d92c24b",
+      "original_product_source": "rust/crates/harness/src/local/compact/checkpoints.rs",
+      "original_product_blob": "3e45b8404944b98ed9176047abf48611fcf0d7ec",
+      "static_exact_function": "checkpoints_reject_stale_replay_pin_branches_and_continue_completed_tasks",
+      "disposition": "Remove only the orphan script token. Original test and negative-control bytes retained; no replacement behavior equivalence or execution claimed."
+    },
+    {
+      "selector": "local::tests::headless::explicit_resume_retains_selection_and_clears_only_exit",
+      "actual_current_selected_count": 0,
+      "test_source_retirement_commit": "7f8ecbba041c9b82226a284b026d1a66eb6bcae5",
+      "source_parent": "5e73624264cf53231c17bdda492e1810fdb9289f",
+      "original_test_source": "rust/crates/harness/src/local/tests/headless.rs",
+      "original_test_blob": "b5e60c1298769c6d2cc7b6788f099db645bdd569",
+      "original_test_sha256": "82a98185459e871a527428297845697d1a78382a9a6253e159af91b784b8743e",
+      "original_product_source": "rust/crates/harness/src/client/local_headless.rs",
+      "original_product_blob": "5d4d49e49e0fa749786ad3f6acb189f647aa4a89",
+      "static_exact_function": "explicit_resume_retains_selection_and_clears_only_exit",
+      "disposition": "Remove only the orphan script token. Original test and negative-control bytes retained; no replacement behavior equivalence or execution claimed."
+    },
+    {
+      "selector": "local::tests::tool_hooks::ask_guard_waits_for_exact_file_decision_before_dispatch",
+      "actual_current_selected_count": 0,
+      "test_source_retirement_commit": "8078fa93ebcc59eb039019cfc9541c38dadd646c",
+      "source_parent": "3b37d404357dc422e3c42da42b6e619be79fa7e1",
+      "original_test_source": "rust/crates/harness/src/local/tests/tool_hooks.rs",
+      "original_test_blob": "7f5991772e920e9094fd9343a613c551c7aa1c48",
+      "original_test_sha256": "f729ef4f12eb6cbde1a172756bc87299c7ab8a40fc2497088fe24bc7c6a09265",
+      "original_product_source": "rust/crates/harness/src/local/approvals.rs",
+      "original_product_blob": "7487871d6670ee30c653181f30e32e055effc6d3",
+      "static_exact_function": "ask_guard_waits_for_exact_file_decision_before_dispatch",
+      "disposition": "Remove only the orphan script token. Original test and negative-control bytes retained; no replacement behavior equivalence or execution claimed."
+    },
+    {
+      "selector": "local::tests::tool_hooks::approval_decisions_cannot_substitute_another_intent",
+      "actual_current_selected_count": 0,
+      "test_source_retirement_commit": "8078fa93ebcc59eb039019cfc9541c38dadd646c",
+      "source_parent": "3b37d404357dc422e3c42da42b6e619be79fa7e1",
+      "original_test_source": "rust/crates/harness/src/local/tests/tool_hooks.rs",
+      "original_test_blob": "7f5991772e920e9094fd9343a613c551c7aa1c48",
+      "original_test_sha256": "f729ef4f12eb6cbde1a172756bc87299c7ab8a40fc2497088fe24bc7c6a09265",
+      "original_product_source": "rust/crates/harness/src/local/approvals.rs",
+      "original_product_blob": "7487871d6670ee30c653181f30e32e055effc6d3",
+      "static_exact_function": "approval_decisions_cannot_substitute_another_intent",
+      "disposition": "Remove only the orphan script token. Original test and negative-control bytes retained; no replacement behavior equivalence or execution claimed."
+    },
+    {
+      "selector": "client::commands::session::approval::tests::",
+      "actual_current_selected_count": 0,
+      "test_source_retirement_commit": "8078fa93ebcc59eb039019cfc9541c38dadd646c",
+      "source_parent": "3b37d404357dc422e3c42da42b6e619be79fa7e1",
+      "original_test_source": "rust/crates/harness/src/client/commands/session_approval.rs",
+      "original_test_blob": "f7ebcb92ba0ffcffef2e4335b9f8c10730447bcd",
+      "original_test_sha256": "c28d6e0c9b51b5e68d7a4d740456e79eb3f7fff02220c62781a9a09ee775c6a3",
+      "original_product_source": "rust/crates/harness/src/client/commands/session.rs",
+      "original_product_blob": "775ddb805a93ffe596b2ab918de20d1a53adb0d7",
+      "static_exact_function": null,
+      "disposition": "Remove only the orphan script token. Original test and negative-control bytes retained; no replacement behavior equivalence or execution claimed."
+    },
+    {
+      "selector": "client::commands::session::archive::settings_tests::",
+      "actual_current_selected_count": 0,
+      "test_source_retirement_commit": "7f8ecbba041c9b82226a284b026d1a66eb6bcae5",
+      "source_parent": "5e73624264cf53231c17bdda492e1810fdb9289f",
+      "original_test_source": "rust/crates/harness/src/client/commands/session_settings_tests.rs",
+      "original_test_blob": "ba74e91ce02e6767b979e9aa8c5f759d8cc12374",
+      "original_test_sha256": "5ffa1d01b2218bcb572bf4e002df421c8c3f1a7a472c3b0938dbcc580cd476e8",
+      "original_product_source": "rust/crates/harness/src/client/commands/session_archive.rs",
+      "original_product_blob": "f7fe18a580e3c106fd3b86edad9e52eb9336e13b",
+      "static_exact_function": null,
+      "disposition": "Remove only the orphan script token. Original test and negative-control bytes retained; no replacement behavior equivalence or execution claimed."
+    }
+  ],
+  "scope_notes": [
+    "#1602 removes the renderer, shortcuts, headless test source and settings test module. Some session functions survived until #1644; that later change removes the entire old CommandSession/task-volume/local-loop composition.",
+    "No current AgentHost, filesystem, TUI or approval suite is declared equivalent to these retired tests.",
+    "All original selected source and properties/negative controls are retained byte-for-byte in Git-addressed source captures; use a separate checkout of each source_parent and its original targets/features for reconstruction. Captures are not executed proof or a substitute backend.",
+    "Every live selector still passes through the unchanged nonempty-prefix refusal, exact case selection and original process/time custody.",
+    "Only twelve stale script tokens retire here. No proof/test body deletion or performance credit is claimed."
+  ]
+}
