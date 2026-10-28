@@ -170,7 +170,7 @@ mod tests {
     async fn erased_provider_preserves_records_failures_and_request_budgets() {
         use crate::{
             AppendOutcome, AppendRequest, MemoryStream, ReadRequest, StreamError, StreamPath,
-            StreamProvider,
+            StreamProvider, StreamProviderExt as _,
         };
         use futures::TryStreamExt as _;
 
