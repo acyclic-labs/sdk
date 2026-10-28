@@ -299,7 +299,7 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
     let (tail, selected, _) = replay_execution(
         &journal,
         operation,
-        1,
+        Some(1),
         |event| matches!(event, ExecutionEvent::ModelStarted { step: 69, .. }),
         None,
     )
@@ -307,12 +307,14 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
     assert_eq!(tail, 70);
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].sequence, 70);
+    let (_, all, _) = replay_execution(&journal, operation, None, |_| true, None).await?;
+    assert_eq!(all.len(), 70);
     assert_eq!(journal.replay(operation, 0, 64, None)?.await?.len(), 64);
     assert_eq!(journal.replay(operation, 64, 64, None)?.await?.len(), 6);
     assert_eq!(journal.replay(operation, 0, 65, None)?.await?.len(), 65);
     assert!(journal.replay(operation, 0, 0, None)?.await.is_err());
     assert!(
-        replay_execution(&journal, operation, 1, |_| true, None)
+        replay_execution(&journal, operation, Some(1), |_| true, None)
             .await
             .is_err()
     );
@@ -323,7 +325,7 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
         original
     };
     assert!(matches!(
-        replay_execution(&journal, operation, 0, |_| false, None).await,
+        replay_execution(&journal, operation, Some(0), |_| false, None).await,
         Err(Error::Conflict(_))
     ));
     let mut cursor = ExecutionReplay::new(operation);
@@ -351,7 +353,7 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
         records[69].sequence += 1;
     }
     assert!(matches!(
-        replay_execution(&journal, operation, 0, |_| false, None).await,
+        replay_execution(&journal, operation, Some(0), |_| false, None).await,
         Err(Error::Conflict(_))
     ));
     Ok(())
@@ -382,8 +384,8 @@ async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
-    executor.limits.model_events_per_step = usize::MAX;
-    executor.limits.tool_calls_per_step = usize::MAX;
+    executor.limits.model_events_per_step = Some(usize::MAX);
+    executor.limits.tool_calls_per_step = Some(usize::MAX);
     let journal = Journal::default();
     let operation = OperationId::from_bytes([27; 16]);
     journal
@@ -407,7 +409,7 @@ async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
 #[test]
 fn independently_selected_event_budget_still_rejects_excess_observations() -> Result<()> {
     let limits = Limits {
-        model_events_per_step: 1,
+        model_events_per_step: Some(1),
         ..Limits::default()
     };
     limits.validate(&mut None)?;
@@ -827,20 +829,30 @@ async fn a_retried_settlement_is_one_record() -> Result<()> {
 }
 
 #[tokio::test]
-async fn optional_step_policy_preserves_unbounded_execution_and_finite_authority() -> Result<()> {
+async fn optional_count_policies_preserve_unbounded_execution_and_finite_authority() -> Result<()> {
     let limits = Limits::default();
-    assert_eq!(limits.model_steps, None);
     let scope = RuntimeScope::new(Capabilities::default(), limits)?;
-    let finite = Limits {
-        model_steps: Some(1),
-        ..limits
-    };
-    let narrowed = scope.narrow(Capabilities::default(), finite)?;
-    assert!(matches!(
-        narrowed.narrow(Capabilities::default(), limits),
-        Err(Error::Unauthorized(_))
-    ));
-    assert!(narrowed.narrow(Capabilities::default(), finite).is_ok());
+    for finite in [
+        Limits {
+            model_steps: Some(1),
+            ..limits
+        },
+        Limits {
+            model_events_per_step: Some(1),
+            ..limits
+        },
+        Limits {
+            tool_calls_per_step: Some(1),
+            ..limits
+        },
+    ] {
+        let narrowed = scope.narrow(Capabilities::default(), finite)?;
+        assert!(matches!(
+            narrowed.narrow(Capabilities::default(), limits),
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(narrowed.narrow(Capabilities::default(), finite).is_ok());
+    }
     for maximum in [None, Some(1)] {
         let model = Arc::new(scripted_model());
         let executor = uncompacted_executor(
