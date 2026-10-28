@@ -3,8 +3,8 @@
 The OSS Actors server accepts this concrete storage composition. Full endpoint
 observation and reopen remain unqualified and are listed under Live steps;
 missing filesystem resource follows fail closed. Historical emulator receipts
-below remain tied to their recorded source. The prepared-decision correction
-was transferred to Streams surface PR #1705 and is not included here.
+below remain tied to their recorded source. The canonical prepared-decision
+correction landed with Streams surface PR #1705.
 
 Enable `acyclic-stream/postgres` and call
 `postgres::PostgresStream::connect(connection_string, namespace)`. Each namespace
@@ -16,20 +16,24 @@ Unix socket or an authenticated TLS proxy;
 the initial adapter connection uses `NoTls`.
 
 Pass `Arc<PostgresStream>` to `StreamAuthorityStore::new`, combine with
-`LogicalObjectStore<S3Objects>`, and supply both to `Fs::new` with durable embedded
-capabilities. Filesystem does not inspect backend types.
+`LogicalObjectStore::new(Arc::new(Store::new(S3Medium::new(bucket, prefix, capabilities)?).account(account)?))`,
+and supply both to `Fs::new` with durable embedded capabilities. Enable
+`acyclic-objects/s3` for the S3 medium; its endpoint capabilities and qualification
+requirements are documented in [S3-compatible blob storage](s3.md).
+Filesystem does not inspect backend types.
 
 Postgres commits an ordered command journal under a transaction-scoped namespace
 advisory lock. Publication explicitly uses READ COMMITTED so catch-up obtains a
 fresh snapshot after lock acquisition, even when the database's default isolation
 is REPEATABLE READ. The canonical shared Stream core owns append-if-tail CAS, exact
-idempotency, hierarchical fork/commit, filters and bounded public paging. Commands
-include the database clock sample, so reopening preserves record times and retry
+idempotency, hierarchical fork/commit, filters and bounded public paging. Journal
+rows bind commands to the database clock sample, so reopening preserves record times and retry
 receipts. Publication survives caller cancellation; only committed commands enter
-the visible core. The current implementation journals before semantic application,
-so condition refusals can retain journal rows. The separate #1705 correction
-prepares the canonical decision before SQL publication and installs it after
-durability; its source-scoped receipts below do not qualify this source.
+the visible core. The shared `MemoryStream::apply_durable` prepares the canonical
+decision before invoking SQL publication and installs accepted state only after
+COMMIT. Refused conditions do not publish a journal row; successful same-key
+replays reuse their retained outcome. The historical runtime receipts below
+qualify their exact source, rather than every subsequent change to this path.
 SQL synchronous commit must remain enabled for durable acknowledgements.
 
 `acyclic_stream_publish(namespace, expected_revision, command_bytes, planned_millis, deadline)`
@@ -42,14 +46,29 @@ cursor writes nothing. SQL does not interpret Stream conditions or retry keys.
 Installation needs PL/pgSQL and permission to create/replace and execute this
 function as well as the table permissions above.
 
-The current wrapper still takes its existing transaction fence and performs
-bounded catch-up before that call, then commits before exposing the canonical
-result. This is the first PLATFORM-9 change, not the one-round-trip target or
-closure of G07. Moving catch-up/replanning/batching into the one shared replica
-belongs with the Streams owner. The existing DG071 correction must be retained
-when that owner consumes this primitive; no condition evaluator is moved to SQL.
-The separate BEGIN, lock, catch-up and COMMIT exchanges still exist. Delayed
-NOTIFY is a wake hint, not evidence that a read is fresh; reads still catch up.
+`acyclic_stream_read_fenced(namespace, after_revision, page_size)` acquires the
+transaction's namespace lock before obtaining a READ COMMITTED journal page and
+returns its database-clock sample. The canonical core replays each bounded page
+under that fence, then prepares the decision. An empty backlog now uses four
+sequential request/response stages: BEGIN, fenced page/clock, publication, COMMIT.
+Additional catch-up pages retain the fence and replace the planning clock sample;
+statement preparation and initial installation are outside this warm path.
+These are source-derived stages, not measured network messages or a throughput
+claim. The final publication function checks the actual database clock after
+insertion, so time spent replaying or planning cannot extend admission.
+
+An applied revision floor already covered by this replica needs no SQL query.
+`read_commit` similarly returns an already-retained immutable successful envelope
+without replaying unrelated progress; a missing envelope still refreshes before
+returning absence. These paths check replica health and introduce no receipt or
+negative cache. Mutable observations retain authoritative refresh. Delayed NOTIFY
+alone never establishes freshness or permits returning an uncovered revision.
+
+Portable catch-up/replanning/batching belongs with the shared Streams replica,
+whose owner retains G07's port. Extraction must preserve the DG071
+prepare/persist/install boundary, namespace generation and distinct physical
+journal cursor versus canonical revision index. No condition evaluator moves to
+SQL, and four stages do not constitute the one-round-trip target or G07 closure.
 
 Each opened provider owns two connections and three shared async tasks: one
 serialized query connection, one LISTEN connection, and one notification refresh
@@ -62,12 +81,11 @@ are dropped, even after the caller drops its last provider handle.
 
 Limits: command recovery uses bounded SQL pages; public pages retain the unchanged
 core bounds. Namespace writes serialize, and recovery replays retained history into
-one shared core per opened provider. Default core capacity is 100,000 paths (including implicit
-parents), one million records/commits/retry identities and 256 MiB of payloads.
-The local resource check opens 100,000 flat paths and 100,000 subscriptions with
-unchanged defaults. This measures idle control overhead, not an active-agent
-throughput qualification. Retained history remains bounded by the core limits;
-the SQL journal itself has no compaction yet.
+one shared core per opened provider, using `MemoryLimits::default()`.
+The historical resource check below opened 100,000 flat paths and 100,000
+subscriptions with its source's unchanged defaults. It measured idle control
+overhead, not active-agent throughput. Retained state remains subject to the
+configured core limits; the SQL journal itself has no compaction yet.
 
 ## Validation
 
@@ -100,8 +118,9 @@ Evidence: buildbox job `1793048750090-108901-0c54a923`, output log
 MinIO built from the pinned source release in the runner. The filesystem check
 uses the canonical public smoke export, which main explicitly distinguishes from
 full filesystem qualification; its full workload corpus has no executable runner.
-The conformance README labels the provider suites v2; its unchanged Stream export
-currently invokes the v1-protocol `acyclic_stream::conformance::verify`.
+At that checkpoint, the conformance README labeled the provider suites v2;
+its unchanged Stream export invoked the v1-protocol
+`acyclic_stream::conformance::verify`.
 
 On 2026-10-27 the same complete agent-host export passed over Postgres + memory
 Objects in 4.96 s and Postgres + MinIO in 6.16 s. The guest wire boundary, crash
@@ -115,9 +134,10 @@ That run also passed both local host baselines (6.38 s), the cross-session and
 listener-loss checks, and the idle 100,000-stream/subscription check in 17.65 s
 (700 ms path creation), with two provider connections, four total tasks including
 the observer, one OS thread and 321,380 KiB RSS. Browser and Cloudflare host
-fixtures compiled for wasm. The current storage draft's adapter inventory is
-508 Rust lines plus 62 SQL lines, pending the #1705 integration; the shared
-journal-orchestration extraction remains follow-up #1629.
+fixtures compiled for wasm. The current source adapter inventory is
+542 Rust lines plus 100 SQL lines. This exceeds the approximately 300-line budget;
+shared journal catch-up, dispatch and publication orchestration still need
+extraction under [follow-up #1629](https://github.com/acyclic-labs/sdk/issues/1629).
 
 The shared prepare/durability/install correction passed all 390 Stream library
 tests in 8.65 s, with no ignored or filtered tests. A real SQL observation of 48
@@ -140,7 +160,7 @@ default GraphCoder compile. Evidence: job `1793132738027-89535-de4d1919`, log
 routing and synchronous resource refusal now close only their channel. This
 preserves ordinary follows; it does not supply the missing remote policy watch.
 
-## Audit v3 measurement plan
+## Audit v3b measurement plan
 
 No new SQL runtime, throughput, latency or freshness qualification is claimed.
 The compile-only refresh does not execute PL/pgSQL. Before claiming PLATFORM-9
@@ -153,18 +173,41 @@ flush/response boundaries and SQL executions, not just outer provider calls.
 
 | Workload | Measurements and unchanged controls |
 | --- | --- |
-| 1, 2, 4, 8, 16, 32, 64 writers; distinct paths in one namespace | Test shared-provider clones and independent provider processes separately. Record completed throughput, end-to-end p50/p99, SQL/protocol messages and namespace advisory-lock wait/hold time. Repeat with injected RTT 0/1/5/20 ms. Keep total inflight work bounded and report the single-query-connection limit. |
+| 1, 2, 4, 8, 16, 32, 64 writers; distinct paths in one namespace | Test shared-provider clones and independent provider processes separately. Record completed throughput, end-to-end p50/p99, SQL/protocol messages, session-mutex wait/hold and namespace advisory-lock wait/hold. Repeat with measured RTT 0.02/0.5/5 ms. Keep total inflight work bounded and report the single-query-connection limit. |
+| Retained immutable envelope and already-applied revision; unrelated journal backlog | Count actual SQL queries and transferred command bytes: successful local hits require none. Keep the six-stage sequential wrapper and unconditional refresh as negative controls at the same source/workload. A missing envelope still performs an authoritative read; a foreign incarnation still refuses. |
 | Conflicting paths and multi-stream commits | Preserve exactly one CAS winner and all-or-nothing conditions. Replay the same key after response loss and independent reopen; no new key or duplicate accepted command. Stale journal cursor and deadline-after-lock-wait publish no row/notification. |
 | Cancellation before send, after send, after commit; process crash | Retain original command bytes and native work custody. Reconcile a sent Unknown using the original key; inspect actual journal rows and immutable receipts, not only returned errors. Retain existing refused-command/DG071 oracles when adopting the shared replica. |
 | Delayed/lost notifications and stale grants | A delayed notification never establishes freshness. Keep the authoritative read/decision boundary and stale-grant AlreadyExists/privacy oracles in the canonical immutable Objects core. No polling or private grant cache. |
 
 Replay the sequential adapter as the negative control without changing workloads
-or budgets; report whether the stage/lock measurements detect it. Any later frame
-batching or refresh elision needs an ordered-observation proof and the same
-conflict, deadline, notification-loss and crash oracles. G20 transport/context is
-be-edge-owned; G24/G25 replication/blob contracts are Streams-owned; G30 uses the
-existing guest Placement. This adapter adds no framing, reconnect loop, private
-blob engine, or backend-specific filesystem branch.
+or budgets; report whether the stage/lock measurements detect it. PLATFORM-25's
+ordered native journal batching remains separate acceptance work: compare
+batch widths 1/16/256 and 1/32 writers, counting jobs, syscalls, copies, queue time,
+CPU and p99 on each supported OS. Batch 1 must restore the dispatch slope.
+Preserve original offset/byte/work ownership, grouped fsync, torn-tail recovery,
+short writes, dropped physical completion and cancelled observers. Shared native
+backend pipelining belongs in native-runtime, with the portable replica owner
+retaining the journal's visibility boundary. No such native batching or runtime
+qualification is claimed by this Postgres source change.
+
+The native batching prerequisite groups contiguous Linux `NativeFile` write
+buffers into one owned vectored operation, bounded by 16 buffers and 1 MiB.
+Payloads retain their original backing storage. Each contiguous run completes
+before the next run, and a short completion is an ordered byte prefix completed
+by the existing positional write-all path. An uncertain operation keeps the
+entire buffer group in the existing retired-proactor custody. An unavailable
+ring retains the existing positional backend. Windows batches with multiple
+members use the existing IOCP driver even when inline blocking is permitted;
+Apple already uses its shared vectored path. These are source changes, without a
+new OS/runtime or performance qualification claim. LocalStream still writes one
+frame under its publication guard: the ordered journal queue and its original
+work/cut integration remain separate from this native prerequisite.
+
+Any further frame batching or mutable-read elision needs an ordered-observation
+proof and the same conflict, deadline, notification-loss and crash oracles. G20
+transport/context is Auth-owned; G24/G25 blob/closure belongs to Objects; G30 uses
+the existing guest Placement. This adapter adds no framing, reconnect loop,
+private blob engine, or backend-specific filesystem branch.
 
 ## Live steps
 

@@ -149,7 +149,7 @@ impl NativeJob {
                         return finish.finish(Err(error));
                     }
                     #[cfg(windows)]
-                    if overlapped && inline_blocking_allowed() {
+                    if overlapped && inline_blocking_allowed() && writes.len() <= 1 {
                         return finish.finish(windows::write_batch_in_place(&file, &writes));
                     }
                     #[cfg(target_os = "linux")]

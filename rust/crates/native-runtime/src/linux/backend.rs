@@ -166,35 +166,70 @@ impl Owner {
         file: &Arc<NativeFilePayload>,
         writes: Vec<OwnedWrite>,
     ) -> io::Result<()> {
-        for write in chunk_owned_writes(writes) {
-            let write = write?;
-            if self.select()? == Selected::Positional {
-                file.write_all_at(&write.bytes, write.offset)?;
-                continue;
+        let mut writes = chunk_owned_writes(writes).peekable();
+        while let Some(first) = writes.next() {
+            let first = first?;
+            let mut buffers = std::array::from_fn(|_| Bytes::new());
+            let mut length = first.bytes.len();
+            let mut entries = 1;
+            *buffers.first_mut().ok_or(io::ErrorKind::InvalidInput)? = first.bytes;
+            while entries < IO_ENTRIES {
+                let Some(Ok(next)) = writes.peek() else { break };
+                if next.offset != first.offset + length as u64
+                    || length + next.bytes.len() > MAX_IO_BYTES
+                {
+                    break;
+                }
+                let Some(next) = writes.next() else { break };
+                let next = next?;
+                length += next.bytes.len();
+                *buffers
+                    .get_mut(entries)
+                    .ok_or(io::ErrorKind::InvalidInput)? = next.bytes;
+                entries += 1;
             }
+            self.write_contiguous(file, first.offset, buffers, length)?;
+        }
+        Ok(())
+    }
+
+    // One vectored operation owns every buffer through its terminal. Unlike
+    // independent submissions, a short write is one ordered prefix, preserving
+    // append-only journal recovery. Gaps and bounded runs finish in input order.
+    fn write_contiguous(
+        &mut self,
+        file: &Arc<NativeFilePayload>,
+        mut offset: u64,
+        buffers: [Bytes; IO_ENTRIES],
+        length: usize,
+    ) -> io::Result<()> {
+        let (mut skip, buffers) = if self.select()? == Selected::Positional {
+            (0, buffers)
+        } else {
             let result = self.finish(
-                WriteAt::new(
-                    SharedFd::new(Arc::clone(file)),
-                    write.offset,
-                    write.bytes.clone(),
-                ),
+                WriteVectoredAt::new(SharedFd::new(Arc::clone(file)), offset, buffers),
                 RetiredKey::Write,
             )?;
-            let count = match result.into_parts().0 {
-                Ok(count) => count,
-                Err(error) => {
-                    self.backend = Backend::Unprobed;
-                    return Err(error);
-                }
-            };
+            let (result, operation) = result.into_parts();
+            let count = result.inspect_err(|_| self.backend = Backend::Unprobed)?;
             if count == 0 {
                 return Err(io::ErrorKind::WriteZero.into());
             }
-            let Some(rest) = write.bytes.get(count..) else {
-                return Err(io::Error::other("overlong native write"));
-            };
+            if count > length {
+                return Err(io::Error::other("overlong native vectored write"));
+            }
+            (count, operation.into_inner())
+        };
+        // The operation returned its original buffers after completion. Finish
+        // a short prefix with the existing positional write-all mechanism.
+        for bytes in buffers {
+            let covered = skip.min(bytes.len());
+            offset += covered as u64;
+            skip -= covered;
+            let rest = bytes.get(covered..).ok_or(io::ErrorKind::InvalidData)?;
             if !rest.is_empty() {
-                file.write_all_at(rest, write.offset + count as u64)?;
+                file.write_all_at(rest, offset)?;
+                offset += rest.len() as u64;
             }
         }
         Ok(())
