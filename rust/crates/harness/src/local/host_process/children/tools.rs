@@ -4,7 +4,7 @@
 //! until its child is idle. Between passes the server sleeps on its client
 //! and every child's readiness together: no thread, timer or poll per child.
 use super::*;
-use crate::mcp::stdio::{ToolCall, ToolProvider, ToolServer, Wake};
+use crate::mcp::stdio::{Settled, ToolCall, ToolProvider, ToolServer, Wake};
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::future::Future as _;
@@ -13,6 +13,8 @@ use std::task::Poll;
 
 /// Waits parked at once, bounded like the host's request concurrency.
 const WAITS: usize = 16;
+/// Bound of one request line.
+const FRAME_BYTES: u32 = 65_536;
 
 /// The tools of one native host's parent, opening its children on first use.
 struct Coordination {
@@ -31,6 +33,7 @@ pub fn serve(host: &str) -> Result<()> {
         name: "acyclic-sessions",
         version: env!("CARGO_PKG_VERSION"),
         parked: WAITS,
+        frame_bytes: FRAME_BYTES,
     }
     .serve(&mut coordination, std::io::stdin(), std::io::stdout());
     let stopped = coordination
@@ -94,7 +97,7 @@ impl ToolProvider for Coordination {
     fn progress(
         &mut self,
         parked: &BTreeSet<String>,
-        settled: &mut Vec<(String, Value)>,
+        settled: &mut Vec<(String, Settled)>,
     ) -> Result<Option<Wake>> {
         let Some(children) = self.children.as_mut() else {
             return Ok(None);
@@ -104,7 +107,7 @@ impl ToolProvider for Coordination {
         // exited, or a cancel or archive stopped it.
         for reference in parked {
             if let Some(answer) = children.wait(reference)? {
-                settled.push((reference.clone(), answer));
+                settled.push((reference.clone(), Ok(answer)));
             }
         }
         // Only this owner's own processes can settle a wait, so with none

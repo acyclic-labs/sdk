@@ -5,11 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Customer identity commands and MCP transport for the Acyclic CLI"
+description = "Customer identity commands and MCP tools for the Acyclic CLI"
 
 [dependencies]
+acyclic-harness-core = { path = "../../rust/crates/harness-core", version = "=0.2.0", features = ["mcp-stdio"] }
 acyclic-native-runtime = { path = "../../rust/crates/native-runtime", version = "=0.2.0" }
 base64 = "0.23.1"
+futures.workspace = true
 reqwest.workspace = true
 ring = "0.17.14"
 serde.workspace = true

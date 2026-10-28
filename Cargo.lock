@@ -980,9 +980,11 @@ dependencies = [
 name = "acyclic-plugin-identity"
 version = "0.2.0"
 dependencies = [
+ "acyclic-harness-core",
  "acyclic-native-runtime",
  "axum",
  "base64 0.23.1",
+ "futures",
  "libc",
  "reqwest 0.12.28",
  "ring",
