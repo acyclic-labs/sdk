@@ -130,6 +130,7 @@ def main():
     if args.inside:
         inside(args.inside)
         return
+    from native_fixture import wait_for_file
     assert all([args.host, args.binary, args.graphcoder, args.native, args.package, args.scratch])
     assert not args.pi_sandbox_codex or args.host == 'pi'
     started = time.monotonic()
@@ -157,11 +158,8 @@ def main():
                                      stdout=owner_log, stderr=owner_log)
             try:
                 descriptor = workspace / '.acyclic-sdk/host-files/owner.json'
-                deadline = time.monotonic() + 2
-                while not descriptor.exists():
-                    assert owner.poll() is None, 'workspace owner exited'
-                    assert time.monotonic() < deadline, 'workspace owner not ready'
-                    time.sleep(0.01)
+                wait_for_file(descriptor, timeout=2)
+                assert owner.poll() is None, 'workspace owner exited'
 
                 def action(value):
                     return json.loads(checked([args.binary, '__workspace'], cwd=workspace, env=env,

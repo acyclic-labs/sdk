@@ -467,7 +467,7 @@ pub(crate) fn file_identity(file: &File) -> io::Result<crate::FileIdentity> {
 }
 
 /// Opens one prepared, terminated path without an additional path allocation.
-pub(super) fn open_read_terminated(path: &[u16]) -> io::Result<File> {
+pub(crate) fn open_read_terminated(path: &[u16]) -> io::Result<File> {
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING,
     };
