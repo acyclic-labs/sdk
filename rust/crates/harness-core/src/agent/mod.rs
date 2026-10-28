@@ -12,7 +12,9 @@ mod commit;
 pub(crate) use commit::sender_text;
 mod driver;
 mod effects;
-pub use effects::{TurnEffect, TurnEffects, outs as effect_outs};
+pub use effects::{
+    TurnEffect, TurnEffects, call_key, is_call_of, operation_key, outs as effect_outs,
+};
 mod goal;
 pub use goal::{GOAL_INTENT, TurnGoal};
 mod handler;
@@ -24,6 +26,8 @@ mod lower;
 mod machine;
 mod records;
 mod reply;
+mod settled;
+pub use settled::{Settled, TurnChildren, settled};
 mod slots;
 mod volumes;
 pub use volumes::SpawnVolumes;
@@ -35,7 +39,7 @@ pub use commit::{
 };
 pub use driver::{
     COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnOutcome,
-    TurnOutputs, approval_intent, expand_attachments, model_input, turn_id,
+    TurnOutputs, approval_intent, expand_attachments, model_input, turn_id, turn_segment,
 };
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};

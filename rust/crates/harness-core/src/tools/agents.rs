@@ -1,13 +1,20 @@
-//! The agent tools of the native agent model: `spawn`, `send` and `archive`.
+//! The agent tools of the native agent model: `spawn`, `send`, `archive` and
+//! `wait`.
 //!
-//! A call records exactly one effect through the turn's [`TurnEffects`] and
-//! returns at once; the effect reaches the stream only in the step commit that
-//! settles the turn, together with its conversation record. Spawning names a
-//! child the parent may message or archive from its next turn on.
+//! `spawn`, `send` and `archive` each record exactly one effect through the
+//! turn's [`TurnEffects`] and return at once. The effect commits in the step
+//! that settles the turn, or earlier: before any later call of the same turn
+//! dispatches, the turn commits what its earlier calls recorded (see
+//! [`TurnEffects::holds`]), so a child spawned by one call runs, and is
+//! reachable by name, from the next call on. `wait` records nothing: it
+//! follows the named children's status until they settle (see
+//! [`crate::agent::settled`]) and returns each one's last answer.
 
 use crate::{
     Error, Result,
-    agent::{AgentPath, AgentState, IntentId, MAX_OPEN_CHILDREN, TurnEffect, TurnEffects},
+    agent::{
+        AgentPath, AgentState, IntentId, MAX_OPEN_CHILDREN, TurnChildren, TurnEffect, TurnEffects,
+    },
     conversation::{ContentAccess, ContentPublisher},
     runtime::ToolContext,
     tool::{
@@ -24,7 +31,7 @@ use std::{collections::BTreeSet, sync::Arc};
 /// Revision of the agent tools, selected for the model over other revisions.
 pub const REVISION: &str = "agent-1";
 /// Names of the agent tools; every agent turn is granted them.
-pub const AGENT_TOOLS: [&str; 3] = ["spawn", "send", "archive"];
+pub const AGENT_TOOLS: [&str; 4] = ["spawn", "send", "archive", "wait"];
 
 /// Spawn one child agent.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -40,7 +47,8 @@ pub struct SpawnAgentInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SendAgentInput {
-    /// Recipient agent path, as returned by spawn.
+    /// Recipient: a child's name or agent path, as spawn returned them, or
+    /// the parent's agent path.
     pub agent: String,
     /// Message text.
     pub message: String,
@@ -50,8 +58,29 @@ pub struct SendAgentInput {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ArchiveAgentInput {
-    /// Child agent path, as returned by spawn.
+    /// Child name or agent path, as spawn returned them.
     pub agent: String,
+}
+
+/// Wait for children to settle.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WaitAgentInput {
+    /// Child names or agent paths, as spawn returned them.
+    pub agents: Vec<String>,
+    /// `all` (the default) waits for every child, `any` for the first.
+    pub mode: Option<WaitMode>,
+}
+
+/// Which children a wait returns on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitMode {
+    /// Every named child settled.
+    #[default]
+    All,
+    /// The first named child settled.
+    Any,
 }
 
 /// What one turn's agent tools act for.
@@ -60,6 +89,8 @@ struct Turn {
     parent: Option<AgentPath>,
     children: BTreeSet<AgentPath>,
     effects: Arc<dyn TurnEffects>,
+    /// What `wait` observes; `None` when the host observes no children.
+    observer: Option<Arc<dyn TurnChildren>>,
     writer: Arc<dyn ContentPublisher>,
     maximum_bytes: u64,
     /// Open children allowed at once, this turn's spawns included.
@@ -86,11 +117,20 @@ fn decode<T: for<'de> Deserialize<'de>>(arguments: Value) -> std::result::Result
 /// lower after earlier ones.
 fn call_key(invocation: &ToolInvocation, context: Option<&ToolContext>) -> String {
     let step = context.map_or(0, |context| context.model_turn.1);
-    format!("{step:010}-{}", hex(&invocation.operation_id.into_bytes()))
+    crate::agent::call_key(step, invocation.operation_id)
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+/// Prefix of every tool spawn's intent; the rest is the child's name.
+const SPAWN: &str = "spawn:";
+
+/// The child `parent`'s `spawn` tool names `name`: the one derivation every
+/// host resolving a child by its spawn name (`wait`, `agents/<name>`) shares.
+///
+/// # Errors
+/// When `name` is not a valid spawn name or the child would exceed the depth.
+pub fn spawned_child(parent: &AgentPath, name: &str) -> Result<AgentPath> {
+    let intent = IntentId::try_from(format!("{SPAWN}{name}")).map_err(agent)?;
+    TurnEffect::child(parent, &intent).map_err(agent)
 }
 
 impl AgentTool {
@@ -100,8 +140,11 @@ impl AgentTool {
         context: Option<ToolContext>,
     ) -> Result<ToolResult> {
         let turn = &*self.turn;
+        if self.name == "wait" {
+            return self.wait(invocation.arguments).await;
+        }
         let key = call_key(&invocation, context.as_ref());
-        let operation = hex(&invocation.operation_id.into_bytes());
+        let operation = crate::agent::operation_key(invocation.operation_id);
         let _spawning = match self.name {
             "spawn" => Some(turn.spawning.lock().await),
             _ => None,
@@ -116,7 +159,7 @@ impl AgentTool {
                     return Ok(rejected("task is empty or too large"));
                 }
                 let Ok(intent) = IntentId::try_from(format!(
-                    "spawn:{}",
+                    "{SPAWN}{}",
                     input.name.as_deref().unwrap_or(&operation)
                 )) else {
                     return Ok(rejected(
@@ -145,7 +188,7 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
-                let Some(to) = self.recipient(input.agent, true) else {
+                let Some(to) = self.recipient(&input.agent, true) else {
                     return Ok(rejected("send reaches only the parent or an open child"));
                 };
                 if input.message.len() as u64 > turn.maximum_bytes {
@@ -174,7 +217,7 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
-                let Some(target) = self.recipient(input.agent, false) else {
+                let Some(target) = self.recipient(&input.agent, false) else {
                     return Ok(rejected("archive reaches only an open child"));
                 };
                 TurnEffect::Archive {
@@ -190,10 +233,11 @@ impl AgentTool {
             Err(error) => return Err(error),
         };
         let value = match recorded {
-            TurnEffect::Spawn { intent, .. } => {
-                json!({"agent": TurnEffect::child(&turn.agent, &intent).map_err(agent)?.as_str()})
-            }
-            TurnEffect::Send { to, .. } => json!({"sent": to.as_str()}),
+            TurnEffect::Spawn { intent, .. } => json!({
+                "agent": TurnEffect::child(&turn.agent, &intent).map_err(agent)?.as_str(),
+                "name": intent.as_str().strip_prefix(SPAWN).unwrap_or(intent.as_str()),
+            }),
+            TurnEffect::Send { to, .. } => json!({"sent": to.as_str(), "status": "queued"}),
             TurnEffect::Archive { target, .. } => json!({"archived": target.as_str()}),
         };
         Ok(ToolResult { value })
@@ -215,11 +259,91 @@ impl AgentTool {
     }
 
     /// `agent` when this turn may reach it: an open child, or the parent too.
-    fn recipient(&self, agent: String, parent: bool) -> Option<AgentPath> {
-        let agent = AgentPath::try_from(agent).ok()?;
+    fn recipient(&self, agent: &str, parent: bool) -> Option<AgentPath> {
         let turn = &*self.turn;
-        (turn.children.contains(&agent) || (parent && turn.parent.as_ref() == Some(&agent)))
-            .then_some(agent)
+        if parent && let Some(to) = turn.parent.as_ref().filter(|path| path.as_str() == agent) {
+            return Some(to.clone());
+        }
+        self.child(agent)
+            .filter(|child| turn.children.contains(child))
+    }
+
+    /// The child `reference` names: a spawn name, or the agent path of one of
+    /// this agent's children, open or settled.
+    fn child(&self, reference: &str) -> Option<AgentPath> {
+        let turn = &*self.turn;
+        if let Ok(path) = AgentPath::try_from(reference.to_owned()) {
+            return (path.parent().as_ref() == Some(&turn.agent)).then_some(path);
+        }
+        spawned_child(&turn.agent, reference).ok()
+    }
+
+    /// Waits for the named children; see [`WaitAgentInput`].
+    async fn wait(&self, arguments: Value) -> Result<ToolResult> {
+        let input: WaitAgentInput = match decode(arguments) {
+            Ok(input) => input,
+            Err(rejected) => return Ok(rejected),
+        };
+        let Some(observer) = &self.turn.observer else {
+            return Ok(rejected("this host observes no children"));
+        };
+        let mut children: Vec<(String, AgentPath)> = Vec::with_capacity(input.agents.len());
+        for reference in input.agents {
+            let Some(child) = self.child(&reference) else {
+                return Ok(rejected(format!(
+                    "{reference} names no child of this agent"
+                )));
+            };
+            if !children.iter().any(|(_, known)| *known == child) {
+                children.push((reference, child));
+            }
+        }
+        if children.is_empty() {
+            return Ok(rejected("wait names no child"));
+        }
+        let mut pending: Vec<_> = children
+            .iter()
+            .enumerate()
+            .map(|(index, (_, child))| {
+                let observer = Arc::clone(observer);
+                let child = child.clone();
+                Box::pin(async move { (index, observer.settle(&child).await) })
+            })
+            .collect();
+        let mut settled = Vec::with_capacity(children.len());
+        let mut done = vec![false; children.len()];
+        while !pending.is_empty() {
+            let ((index, outcome), _, rest) = futures::future::select_all(pending).await;
+            pending = rest;
+            let (name, child) = &children[index];
+            let (phase, answer) = match outcome {
+                Ok(outcome) => outcome,
+                Err(Error::NotFound(_)) => {
+                    return Ok(rejected(format!("{name} names no child of this agent")));
+                }
+                Err(error) => return Err(error),
+            };
+            done[index] = true;
+            settled.push(json!({
+                "name": name,
+                "agent": child.as_str(),
+                "phase": serde_json::to_value(&phase)
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+                "answer": answer,
+            }));
+            if input.mode.unwrap_or_default() == WaitMode::Any {
+                break;
+            }
+        }
+        let running: Vec<&str> = children
+            .iter()
+            .zip(&done)
+            .filter(|(_, done)| !**done)
+            .map(|((name, _), _)| name.as_str())
+            .collect();
+        Ok(ToolResult {
+            value: json!({"settled": settled, "running": running}),
+        })
     }
 }
 
@@ -282,21 +406,28 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "spawn",
             definition::<SpawnAgentInput>(
                 "spawn",
-                "Spawn a child agent on a fork of your volumes and conversation; returns its agent path",
+                "Spawn a named child agent on a fork of your volumes and conversation; returns its name and agent path. It starts before your next tool call runs and stays open to your messages until you archive it",
             )?,
         ),
         (
             "send",
             definition::<SendAgentInput>(
                 "send",
-                "Send a message to your parent or an open child, delivered when this turn ends",
+                "Send a message to your parent or an open child (by name or path); it is queued for the recipient before your next tool call runs",
             )?,
         ),
         (
             "archive",
             definition::<ArchiveAgentInput>(
                 "archive",
-                "Archive an open child and its descendants when this turn ends",
+                "Archive an open child (by name or path) and its descendants; wait on it to see it archived",
+            )?,
+        ),
+        (
+            "wait",
+            definition::<WaitAgentInput>(
+                "wait",
+                "Wait until the named children settle: each has handled everything sent to it and is idle or done. Returns each settled child's phase and last answer; mode all (default) waits for every child, any for the first",
             )?,
         ),
     ] {
@@ -308,7 +439,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
 }
 
 /// Registers `agent`'s tools for one turn into `registry`, bound to the turn's
-/// `effects` and its private `writer`, and selects them for the model over any
+/// `effects`, the `observer` its `wait` follows, and its private `writer`, and selects them for the model over any
 /// other revision of the same names. Only the agent tools `names` selects are
 /// bound, so a host omits or swaps each one like any standard tool.
 /// `max_children`, capped at [`MAX_OPEN_CHILDREN`], bounds the agent's open
@@ -316,7 +447,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
 pub fn bind_agent_tools(
     registry: &mut ToolRegistry,
     agent: &AgentState,
-    effects: Arc<dyn TurnEffects>,
+    (effects, observer): (Arc<dyn TurnEffects>, Option<Arc<dyn TurnChildren>>),
     writer: Arc<dyn ContentPublisher>,
     maximum_bytes: u64,
     (names, max_children): (&[String], Option<u32>),
@@ -326,6 +457,7 @@ pub fn bind_agent_tools(
         parent: agent.parent.clone(),
         children: agent.open_children.clone(),
         effects,
+        observer,
         writer,
         maximum_bytes,
         max_children,

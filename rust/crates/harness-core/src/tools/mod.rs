@@ -2,7 +2,8 @@
 mod agents;
 pub use agents::{
     AGENT_TOOLS, ArchiveAgentInput, REVISION as AGENT_TOOLS_REVISION, SendAgentInput,
-    SpawnAgentInput, bind_agent_tools, definitions as agent_tool_definitions,
+    SpawnAgentInput, WaitAgentInput, WaitMode, bind_agent_tools,
+    definitions as agent_tool_definitions, spawned_child,
 };
 pub mod shell;
 pub use shell::ShellInput;

@@ -1,7 +1,9 @@
 //! A turn's input: what it runs, the inbox sequence that carried it, and
 //! which input a waiting turn takes ahead of the window.
 
-use super::{AgentPath, ChildDone, ContextAction, InboxRecord, IntentId, Phase, Sender};
+use super::{
+    AgentOutcome, AgentPath, ChildDone, ContextAction, InboxRecord, IntentId, Phase, Sender,
+};
 use crate::conversation::FileRef;
 use serde::{Deserialize, Serialize};
 
@@ -118,6 +120,13 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
             body: message.body,
             attachments: message.attachments,
         }),
+        // An archived child settles an archive its parent (or an ancestor's
+        // cascade) asked for; it reports nothing the parent did not already
+        // decide, so it starts no turn. A `wait` observes it on the child's status.
+        InboxRecord::ChildDone(ChildDone {
+            outcome: AgentOutcome::Archived,
+            ..
+        }) => None,
         InboxRecord::ChildDone(done) => Some(TurnInput::ChildDone { done }),
         InboxRecord::Approval(approval) => Some(TurnInput::Approval { id: approval.id }),
         InboxRecord::ApprovalRequested(request) => Some(TurnInput::ApprovalRequested {

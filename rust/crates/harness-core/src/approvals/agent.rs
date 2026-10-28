@@ -16,7 +16,10 @@ use crate::{
     conversation::Limits,
     interaction::{ApprovalDecisionFile, Interaction, InteractionOutcome},
 };
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// Requests are immutable, so every decision binds their first and only version.
 const VERSION: u64 = 1;
@@ -92,6 +95,10 @@ pub struct AgentApprovals {
     policy: Arc<AgentApprovalPolicy>,
     /// The request the turn waits on, and whether its stage is the parent's.
     pending: Mutex<Option<(String, bool)>>,
+    /// The turn's agent effects, committed before any later call dispatches.
+    effects: Option<Arc<dyn crate::agent::TurnEffects>>,
+    /// Whether the call the turn last stopped at waits on those effects.
+    yielded: AtomicBool,
 }
 
 impl AgentApprovals {
@@ -102,7 +109,48 @@ impl AgentApprovals {
             files,
             policy,
             pending: Mutex::new(None),
+            effects: None,
+            yielded: AtomicBool::new(false),
         }
+    }
+
+    /// Holds each call of the turn until `effects` recorded by its earlier
+    /// calls commit (see [`Self::dispatch`]).
+    #[must_use]
+    pub fn yielding(mut self, effects: Arc<dyn crate::agent::TurnEffects>) -> Self {
+        self.effects = Some(effects);
+        self
+    }
+
+    /// Whether the turn stopped at a call waiting on its own recorded effects,
+    /// not on an approval: its driver commits them and continues the turn.
+    #[must_use]
+    pub fn yielded(&self) -> bool {
+        self.yielded.load(Ordering::Acquire)
+    }
+
+    /// The outcome call `id` dispatches on: none yet while an earlier call of
+    /// the turn holds agent effects that have not committed, so the call
+    /// reaches every child, message and archive they make; else
+    /// [`Self::outcome`].
+    pub async fn dispatch(&self, id: InteractionId) -> Result<Option<InteractionOutcome>> {
+        if let Some(effects) = &self.effects {
+            let bytes = self.policy.request(&*self.files, &request_id(id)).await?;
+            let Ok(Interaction::Approval { operation_id, .. }) =
+                serde_json::from_slice::<Interaction>(&bytes)
+            else {
+                return Err(Error::Conflict(
+                    "approval request is not an approval".into(),
+                ));
+            };
+            let held = effects.holds(operation_id).await?;
+            self.yielded.store(held, Ordering::Release);
+            if held {
+                self.wait(None)?;
+                return Ok(None);
+            }
+        }
+        self.outcome(id).await
     }
 
     /// The request the turn now waits on, and whether the parent decides it.

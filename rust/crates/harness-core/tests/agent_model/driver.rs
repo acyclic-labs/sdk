@@ -143,6 +143,10 @@ impl TurnEffects for Script {
                 .map_err(|error| CoreError::Storage(error.to_string()))
         })
     }
+
+    fn holds(&self, _: OperationId) -> BoxFuture<'_, acyclic_harness_core::Result<bool>> {
+        Box::pin(async { Ok(false) })
+    }
 }
 
 impl Executor for Script {

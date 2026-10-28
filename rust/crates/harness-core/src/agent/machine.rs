@@ -397,9 +397,8 @@ pub async fn step<T: TurnDriver + ?Sized>(
     );
     // The last published phase: the creating commit published `Idle`, and
     // admitting a record (a cancel) can itself change the phase.
-    let previous = state
-        .as_ref()
-        .map_or(Phase::Idle, |state| state.phase.clone());
+    let previous = state.as_ref().map_or(Phase::Idle, published);
+    let inbox_wake = !alarm_wake;
     let mut state = match (state, wake) {
         (
             None,
@@ -479,11 +478,12 @@ pub async fn step<T: TurnDriver + ?Sized>(
         .count() as u64;
     // A settled Idle -> Idle turn still advances observation: publish its
     // consumed inbox cursor atomically with every conversation append, so a
-    // client can associate that output with its delivered input.
-    let status = (state.phase != previous || appended > 0).then(|| StatusRecord {
-        phase: state.phase.clone(),
-        cursor,
-    });
+    // client can associate that output with its delivered input. Every inbox
+    // record an idle agent consumes publishes its cursor too, so `Idle` at a
+    // cursor proves every record before it settled (see [`super::settled`]).
+    let phase = published(&state);
+    let status = (phase != previous || appended > 0 || (inbox_wake && phase == Phase::Idle))
+        .then_some(StatusRecord { phase, cursor });
     state.conversation_tail += appended;
     state.status_tail += u64::from(status.is_some());
     Ok(Step {
@@ -492,6 +492,16 @@ pub async fn step<T: TurnDriver + ?Sized>(
         status,
         alarm,
     })
+}
+
+/// The phase a status publishes: an idle agent still holding input runs it
+/// next, so it publishes `Running`; `Idle` always means nothing is pending.
+fn published(state: &AgentState) -> Phase {
+    if state.phase == Phase::Idle && (!state.queued.is_empty() || state.overflow.is_some()) {
+        Phase::Running
+    } else {
+        state.phase.clone()
+    }
 }
 
 fn control(state: &AgentState) -> Control {

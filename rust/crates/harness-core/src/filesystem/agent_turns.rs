@@ -56,6 +56,8 @@ pub struct TurnAuthority {
     pub effects: Option<Arc<dyn crate::agent::TurnEffects>>,
     /// The same finalized journal returned in `OpenTurn`, retained by tools.
     pub journal: Arc<dyn crate::executor::ExecutionJournal>,
+    /// What the turn's `wait` observes of the agent's children.
+    pub children: Option<Arc<dyn crate::agent::TurnChildren>>,
 }
 
 /// The conversation authority of one agent over its bound volumes.
@@ -909,13 +911,24 @@ where
             // under the grant above at the manifest's pinned length.
             let input =
                 &crate::agent::expand_attachments(input.clone(), &*bindings.content.reader).await?;
-            let effects = Some(Arc::new(FilesystemTurnEffects::new(
+            let segment = crate::agent::turn_segment(agent).map_err(agent_error)?;
+            let effects = Arc::new(FilesystemTurnEffects::new(
                 Arc::clone(&files),
                 Arc::clone(&self.stream),
                 agent.path.clone(),
-                turn,
+                (turn, segment),
                 self.limits.maximum_bytes,
-            )) as Arc<dyn crate::agent::TurnEffects>);
+            )) as Arc<dyn crate::agent::TurnEffects>;
+            let children = Arc::new(FilesystemTurnChildren {
+                stream: Arc::clone(&self.stream),
+                host: Arc::clone(&self.host),
+                issuer: self.issuer.clone(),
+                admission: self.admission.clone(),
+                agent: agent.path.clone(),
+                volumes: agent.volumes.clone(),
+                maximum_bytes: self.limits.maximum_bytes,
+                stop: stop.clone(),
+            }) as Arc<dyn crate::agent::TurnChildren>;
             let goal = match self.goals {
                 Some(policy) => FilesystemTurnGoal::bind(
                     &self.host,
@@ -930,7 +943,11 @@ where
             };
             let (policy, resolved) = self.approvals(agent, &bindings.content).await?;
             let outputs = Arc::clone(&files);
-            let approvals = Arc::new(AgentApprovals::new(files, Arc::new(policy)));
+            // Each call dispatches only once the effects of the turn's earlier
+            // calls committed, so it reaches what they created.
+            let approvals = Arc::new(
+                AgentApprovals::new(files, Arc::new(policy)).yielding(Arc::clone(&effects)),
+            );
             let journal = journal
                 .with_stop(stop)
                 .with_agent_approvals(Arc::clone(&approvals));
@@ -948,8 +965,9 @@ where
                 grants: bindings.grants,
                 content: bindings.content,
                 approval: Arc::new(resolved.bind()?),
-                effects: effects.clone(),
+                effects: Some(Arc::clone(&effects)),
                 journal: Arc::clone(&journal),
+                children: Some(children),
             };
             Ok(OpenTurn {
                 executor: self
@@ -962,11 +980,79 @@ where
                 selected,
                 checkpoint,
                 approvals: Some(approvals),
-                effects,
+                effects: Some(effects),
                 goal,
                 outputs,
                 input: Some(input.clone()),
             })
+        })
+    }
+}
+
+/// What one agent turn's `wait` observes: each child's status and, once it
+/// settled, its last answer, read under a grant of exactly that output.
+struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
+    stream: Arc<P>,
+    host: Arc<FilesystemHost<A, O>>,
+    issuer: AuthorityRoot,
+    admission: TurnAdmission,
+    agent: AgentPath,
+    volumes: Vec<VolumeBinding>,
+    maximum_bytes: u64,
+    /// The turn's stop: a cancelled or archived turn stops waiting.
+    stop: acyclic_actors::guest::CancellationToken,
+}
+
+impl<P, A, O> crate::agent::TurnChildren for FilesystemTurnChildren<P, A, O>
+where
+    P: StreamProvider + ?Sized + 'static,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+{
+    fn settle<'a>(
+        &'a self,
+        child: &'a AgentPath,
+    ) -> BoxFuture<'a, Result<(crate::agent::Phase, Option<String>)>> {
+        Box::pin(async move {
+            let settled = {
+                let settled = std::pin::pin!(crate::agent::settled(&*self.stream, child));
+                let stopped = std::pin::pin!(self.stop.cancelled());
+                match futures::future::select(stopped, settled).await {
+                    futures::future::Either::Left(((), _)) => return Err(Error::Cancelled),
+                    futures::future::Either::Right((settled, _)) => settled,
+                }
+            };
+            let settled = match settled {
+                Ok(settled) => settled,
+                Err(crate::agent::Error::NoSuchAgent) => {
+                    return Err(Error::NotFound(child.as_str().to_owned()));
+                }
+                Err(error) => return Err(agent_error(error)),
+            };
+            let Some(entry) = settled.entry else {
+                return Ok((settled.phase, None));
+            };
+            let external = [entry.output];
+            let authority = agent_authority(
+                &self.issuer,
+                &self.admission,
+                &self.agent,
+                &self.volumes,
+                &external,
+            )?;
+            let reader = FilesystemContentVerifier::new(
+                Arc::clone(&self.host),
+                &authority.verifier,
+                &authority.scope,
+                self.maximum_bytes,
+                None,
+            )?;
+            let bytes = reader
+                .read(&external[0], self.maximum_bytes, None, None)?
+                .await?;
+            let output: TurnOutput = serde_json::from_slice(&bytes)
+                .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
+            Ok((settled.phase, Some(output.text)))
         })
     }
 }

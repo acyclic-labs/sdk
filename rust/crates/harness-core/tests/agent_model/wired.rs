@@ -148,12 +148,10 @@ async fn a_child_turn_runs_the_stock_executor_and_replays_without_redispatch() -
         acyclic_actors::guest::CancellationToken::new(),
     )
     .await?;
-    let Phase::Done {
-        outcome: AgentOutcome::Succeeded { result: Some(_) },
-    } = &first.state.phase
-    else {
+    // A child settles its turn and stays open to its parent's messages.
+    if first.state.phase != Phase::Idle {
         return Err(format!("unexpected phase {:?}", first.state.phase).into());
-    };
+    }
     let entries: Vec<_> = first
         .outs
         .iter()
@@ -484,13 +482,16 @@ async fn admitted_root_after_its_child(
             acyclic_actors::guest::CancellationToken::new(),
         )
         .await?;
-        let Phase::Done {
-            outcome: AgentOutcome::Succeeded {
-                result: Some(result),
-            },
-        } = settled.state.phase.clone()
-        else {
+        if settled.state.phase != Phase::Idle {
             return Err(format!("child did not settle: {:?}", settled.state.phase).into());
+        }
+        let Some(result) = settled.outs.iter().find_map(|out| match out {
+            Out::Conversation(bytes) => ConversationEntry::decode(bytes)
+                .ok()
+                .map(|entry| Box::new(entry.output)),
+            _ => None,
+        }) else {
+            return Err("child settled no conversation entry".into());
         };
         let done = Wake::Inbox {
             sequence: 1,
@@ -658,12 +659,7 @@ async fn an_admitted_turn_runs_within_its_admission_and_a_read_only_one_cannot_w
     };
     let (admitted, calls) = run(&[VolumeOperation::Read, VolumeOperation::Write]).await?;
     assert!(
-        matches!(
-            admitted?,
-            Phase::Done {
-                outcome: AgentOutcome::Succeeded { .. }
-            }
-        ),
+        matches!(admitted?, Phase::Idle),
         "a read-write admission runs the turn"
     );
     assert_eq!(calls, 1);
@@ -898,6 +894,10 @@ impl TurnEffects for Recorded {
         let recorded = self.0.lock().expect("effects").values().cloned().collect();
         Box::pin(async move { Ok(recorded) })
     }
+
+    fn holds(&self, _: OperationId) -> BoxProviderFuture<'_, acyclic_harness_core::Result<bool>> {
+        Box::pin(async { Ok(false) })
+    }
 }
 
 /// A writer that names the agent's private volume; spawn stages nothing.
@@ -924,7 +924,7 @@ async fn spawn_refuses_a_child_beyond_the_open_children_limit() -> Result {
             acyclic_harness_core::tools::bind_agent_tools(
                 &mut tools,
                 &state,
-                effects.clone(),
+                (effects.clone() as Arc<dyn TurnEffects>, None),
                 Arc::new(Writer(volume)),
                 1024,
                 (&acyclic_harness_core::tools::default_names(), limit),
