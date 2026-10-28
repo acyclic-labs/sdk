@@ -1,6 +1,7 @@
 use super::{
     FetchProvider, FetchRequest, FetchResponse, MAXIMUM_URL_BYTES, rejection, validate_url_text,
 };
+use crate::http::transport_error;
 use crate::tool::edit::{allocation, charge, reserve_string};
 use crate::{Error, NativeCustody, NativeWork, Result};
 use acyclic_stream::BoxProviderFuture;
@@ -268,18 +269,6 @@ async fn await_io<F: Future>(future: F, work: NativeWork<'_>) -> Result<F::Outpu
     }
     let _ = work;
     Ok(future.await)
-}
-
-fn transport_error(work: NativeWork<'_>, reason: &'static str) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.is_some() {
-        return Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Storage,
-            reason,
-        };
-    }
-    let _ = work;
-    Error::Storage(reason.into())
 }
 
 impl FetchProvider for HttpFetch {

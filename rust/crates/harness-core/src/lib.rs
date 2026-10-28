@@ -33,34 +33,6 @@ pub mod heap_layout {
 }
 pub use heap_layout::HeapLayout;
 
-#[cfg(any(
-    test,
-    feature = "test-support",
-    all(
-        not(target_arch = "wasm32"),
-        any(
-            feature = "filesystem-local",
-            feature = "hooks",
-            feature = "mcp-stdio",
-            feature = "mcp-http",
-            feature = "search-http"
-        )
-    )
-))]
-#[doc(hidden)]
-pub mod native_environment;
-#[doc(hidden)]
-pub mod sync;
-#[cfg(all(
-    test,
-    debug_assertions,
-    feature = "filesystem",
-    not(target_arch = "wasm32")
-))]
-mod accounting_trace {
-    include!("memory_store/retention_scan_trace.rs");
-    include!("memory_store/retention_scan_capture.rs");
-}
 pub mod agent;
 #[doc(hidden)]
 pub mod command_request;
@@ -83,19 +55,30 @@ pub mod hooks;
 pub mod identity;
 pub mod interaction;
 mod json_literal;
-pub mod live;
 #[cfg(feature = "machines")]
 pub mod machines;
 pub mod mcp;
-#[cfg(any(
-    test,
-    feature = "filesystem",
-    all(feature = "wasm", target_arch = "wasm32")
-))]
+#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod memory_store;
 pub mod merge;
 pub mod model;
+#[cfg(any(
+    test,
+    feature = "test-support",
+    all(
+        not(target_arch = "wasm32"),
+        any(
+            feature = "filesystem-local",
+            feature = "hooks",
+            feature = "mcp-stdio",
+            feature = "mcp-http",
+            feature = "search-http"
+        )
+    )
+))]
+#[doc(hidden)]
+pub mod native_environment;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod native_future;
 #[cfg(all(
@@ -117,6 +100,8 @@ pub mod runtime;
 pub mod secrets;
 pub mod source_authorization;
 pub mod store;
+#[doc(hidden)]
+pub mod sync;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod tool;
@@ -177,7 +162,6 @@ pub use extension::{
     ExtensionIdentity, ExtensionLease, ExtensionRegistry, ExtensionRuntime, NativeExtension,
 };
 pub use json_literal::deserialize as deserialize_json_value;
-pub use live::{TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;
 mod process_error;

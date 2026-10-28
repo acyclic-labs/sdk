@@ -11,7 +11,6 @@ export const gateQualifications = [
   { args: ["--timer"] }, { args: ["--guest"] },
   { args: ["--fs-binding", "--all-features"] },
   { args: ["--fs-policy"] },
-  { args: ["--memory-accounting"], rustflags: "-Dwarnings" },
   { args: ["--session-fs"] }, { args: ["--ownership"] },
   { args: ["--skill-materializer"] },
   { args: ["--harness-models", "--all-features"] },
@@ -152,16 +151,6 @@ export function qualifyFsPolicyLoom(run = spawnSync) {
   });
 }
 
-export function qualifyMemoryAccountingLoom(run = spawnSync) {
-  return qualifyLoom("acyclic-harness-core", "memory-accounting-model", [
-    "--features", "filesystem,acyclic-fs/model-checking",
-    "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "memory-accounting-loom"),
-  ], run, {
-    env: loomEnvironment(),
-    targetCfg: ["--", "--cfg", "loom"],
-  });
-}
-
 export function qualifySessionFsLoom(run = spawnSync) {
   return qualifyLoom("acyclic-fs", "session_fs_model", [
     "--no-default-features", "--features", "memory,session,acyclic-stream/local",
@@ -251,7 +240,7 @@ function qualifyLoom(crate, target, features, run, options = {}) {
 // Every model flag is named here; anything else is a cargo feature selection or an error.
 const fixedModels = {
   "--native-progress": qualifyNativeProgressLoom, "--timer": qualifyTimerLoom,
-  "--guest": qualifyGuestLoom, "--memory-accounting": qualifyMemoryAccountingLoom,
+  "--guest": qualifyGuestLoom,
   "--session-fs": qualifySessionFsLoom, "--ownership": qualifyOwnershipLoom,
   "--native-registry": qualifyNativeRegistryLoom,
   "--skill-materializer": qualifySkillMaterializerLoom,

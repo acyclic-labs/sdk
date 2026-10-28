@@ -330,18 +330,6 @@ pub(in crate::fork) fn validate_child_result_generation(
     }
 }
 
-/// Provider-neutral owner boundary for an idempotent multi-resource fork
-pub trait ForkPreparer: acyclic_stream::ProviderPlatform {
-    /// Exact immutable parent projection this preparer was constructed from.
-    fn parent_snapshot(&self) -> (&Authority, u64);
-
-    /// Captures or returns the existing report for the exact request identity.
-    fn prepare<'a>(&'a self, request: ForkRequest) -> BoxFuture<'a, Result<ForkReport>>;
-
-    /// Observes an uncertain preparation for the exact original request.
-    fn reconcile<'a>(&'a self, request: ForkRequest) -> BoxFuture<'a, Result<Option<ForkReport>>>;
-}
-
 /// Provider-owned capture of one selected revision during parent-controlled
 pub trait ForkCaptureProvider: acyclic_stream::ProviderPlatform {
     /// Exact provider identity whose resource revisions this adapter owns.

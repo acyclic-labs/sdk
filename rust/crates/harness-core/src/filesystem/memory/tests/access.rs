@@ -16,6 +16,8 @@ proptest! {
                 AgentId::new(), 4096, fs.clone(), Arc::new(MemoryStream::default()),
             ).await?;
             let file = storage.stage(OperationId::new(), "secrets/key", b"cached", "text/plain", "key").await?;
+            assert_eq!(storage.read(&file).await?.as_ref(), b"cached");
+            let final_version = revisions.len() as u64 + 2;
             for (index, denied) in revisions.into_iter().enumerate() {
                 policy(&fs, &storage, index as u64 + 2, denied.then_some(FsAction::Read), "secrets/**").await?;
                 let read = storage.read(&file).await;
@@ -24,6 +26,10 @@ proptest! {
                 let publication = storage.content_verifier.verify_publication(&file, 4096, None)?.await;
                 assert_eq!(publication.is_ok(), !denied, "local publication must recheck the current policy: {publication:?}");
             }
+            // Restoring disclosure must recover the same pinned bytes, proving
+            // that a denial did not succeed through eviction or data loss.
+            policy(&fs, &storage, final_version, None, "secrets/**").await?;
+            assert_eq!(storage.read(&file).await?.as_ref(), b"cached");
             Ok::<_, Box<dyn std::error::Error>>(())
         }).map_err(|error| TestCaseError::fail(error.to_string()))?;
     }

@@ -63,54 +63,6 @@ pub(super) fn fork_command_key_with_work(
 }
 
 impl<P: StreamProvider + ?Sized> StreamAggregate<P> {
-    /// Prepares the selected resources at the captured parent revision.
-    pub async fn prepare_fork(
-        &self,
-        provider: &dyn ForkPreparer,
-        request: ForkRequest,
-    ) -> Result<ForkReport> {
-        request.validate(&mut None)?;
-        if request.parent != *self.reducer.authority()
-            || request.parent_revision != self.reducer.revision()
-        {
-            return Err(Error::Conflict(
-                "fork preparation is not at the parent revision".into(),
-            ));
-        }
-        let report = provider.prepare(request.clone()).await?;
-        report.validate(&mut None)?;
-        if report.request != request {
-            return Err(Error::Conflict(
-                "fork provider returned a different request".into(),
-            ));
-        }
-        Ok(report)
-    }
-
-    /// Reconciles the original preparation identity after an unknown reply.
-    pub async fn reconcile_fork(
-        &self,
-        provider: &dyn ForkPreparer,
-        request: ForkRequest,
-    ) -> Result<Option<ForkReport>> {
-        request.validate(&mut None)?;
-        if request.parent != *self.reducer.authority() {
-            return Err(Error::Unauthorized(
-                "fork request belongs to another parent".into(),
-            ));
-        }
-        let report = provider.reconcile(request.clone()).await?;
-        if let Some(report) = &report {
-            report.validate(&mut None)?;
-            if report.request != request {
-                return Err(Error::Conflict(
-                    "reconciled fork belongs to a different request".into(),
-                ));
-            }
-        }
-        Ok(report)
-    }
-
     /// Publishes a captured fork through the parent append.
     pub async fn publish_fork_report(
         &mut self,
@@ -133,7 +85,7 @@ impl<P: StreamProvider + ?Sized> StreamAggregate<P> {
         self.publish_fork_seed(seed, scope, &mut custody).await
     }
 
-    // Both public report routes validate and consume the report exactly once.
+    // The public report route validates and consumes the report exactly once.
     // Borrow its quota through publication so every early return drops the
     // owned seed before the caller releases its allocation claims.
     async fn publish_fork_seed(
@@ -166,39 +118,6 @@ impl<P: StreamProvider + ?Sized> StreamAggregate<P> {
             action: Action::PublishFork { seed },
         };
         self.execute(command, custody.work()).await
-    }
-
-    /// Admits a prepared child through the parent, then binds its fresh conversation to the published seed.
-    pub async fn spawn_from_report(
-        &mut self,
-        parent: &mut Self,
-        report: ForkReport,
-        parent_scope: Scope,
-        child_scope: Scope,
-    ) -> Result<ForkSeed> {
-        if report.request.child != *self.reducer.authority()
-            || report.request.parent != *parent.reducer.authority()
-        {
-            return Err(Error::Unauthorized(
-                "fork report does not match parent and child aggregates".into(),
-            ));
-        }
-        let seed = report.into_seed(&mut None)?;
-        if child_scope.agent() != Some(seed.child_agent)
-            || (self.reducer.revision() != 0 && parent.reducer.fork(&seed.child) != Some(&seed))
-        {
-            return Err(Error::Conflict(
-                "child binding is not fresh or previously published by this parent".into(),
-            ));
-        }
-        let mut publication_work = None;
-        let mut custody = crate::wire_codec::CodecQuota::new(&mut publication_work, 0)?;
-        parent
-            .publish_fork_seed(seed.clone(), parent_scope, &mut custody)
-            .await?;
-        self.bind_published_child(parent, &seed, child_scope, &mut None)
-            .await?;
-        Ok(seed)
     }
 
     /// Binds a child to its exact published parent seed.

@@ -1,66 +1,10 @@
 use super::*;
 use crate::{
     store::guarded_boundary as boundary,
-    wire::ErrorCode::{Conflict, Invalid, Storage, Unauthorized},
+    wire::ErrorCode::{Conflict, Invalid, Unauthorized},
 };
 
 impl<P: StreamProvider + ?Sized> HistoryReader<P> {
-    /// Hydrates a bounded logical prefix for fork grant capture.
-    pub async fn fork_history(
-        &self,
-        parent: &crate::core::Reducer,
-        through_sequence: u64,
-        limits: HistoryReadLimits,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<crate::fork::PreparedForkHistory> {
-        self.verifier.verify_audience(parent.authority(), work)?;
-        let source = parent
-            .conversation()
-            .ok_or_else(|| boundary(work, Invalid, "fork archive parent is unbound"))?;
-        if through_sequence > source.logical_revision() {
-            return Err(boundary(
-                work,
-                Invalid,
-                "fork archive exceeds the logical parent cut",
-            ));
-        }
-        let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
-        let cursor = HistoryCursor {
-            authority: crate::core::copy_authority(parent.authority(), &mut quota)?,
-            after_revision: 0,
-            through_revision: parent.revision(),
-        };
-        let messages = self
-            .conversation_range(&cursor, 0, through_sequence, limits, quota.work())
-            .await?;
-        let (mut conversation, _) = crate::conversation::ConversationState::from_wire(
-            crate::conversation::ConversationStateWire {
-                agent: None,
-                messages,
-                archived_prefix: None,
-            },
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            quota.work(),
-        )?;
-        conversation.agent = source.agent;
-        if through_sequence >= source.resident_after_sequence()
-            && conversation.history_prefix_digest(through_sequence, quota.work())?
-                != source.history_prefix_digest(through_sequence, quota.work())?
-        {
-            return Err(boundary(
-                quota.work(),
-                Storage,
-                "fork archive differs from the authenticated parent prefix",
-            ));
-        }
-        quota.transfer();
-        Ok(crate::fork::PreparedForkHistory::from_archive(
-            cursor.authority,
-            parent.revision(),
-            conversation,
-        ))
-    }
-
     /// Captures an admitted Summary fork through cold authenticated indexes.
     pub async fn summary_fork_stage(
         &self,

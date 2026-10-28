@@ -152,7 +152,6 @@ pub(super) fn validate_io_range(offset: u64, length: usize) -> io::Result<()> {
 
 const OWNER_THREADS: usize = 4;
 const OWNER_MAILBOX: usize = 16;
-const OWNER_POLL_SLICE: Duration = Duration::from_millis(100);
 const OWNER_IO_DEADLINE: Duration = Duration::from_secs(30);
 // Each owner retains at most one retired request and its original buffer.
 

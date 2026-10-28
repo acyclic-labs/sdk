@@ -60,7 +60,7 @@ fn provider_version_rejects_changed_file_contract() -> Result<()> {
     )?;
     assert!(
         store
-            .retain_reference(&changed_display, b"one", false, None)
+            .retain_reference(&changed_display, b"one", false)
             .is_err()
     );
     Ok(())

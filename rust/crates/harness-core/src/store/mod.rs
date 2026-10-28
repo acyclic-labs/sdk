@@ -39,7 +39,7 @@ use crate::{
         Action, ApplyResult, Authority, AuthorityVerifier, Command, EffectStatus, EventPayload,
         EventReference, Reducer, SchemaRegistry, Scope, Snapshot,
     },
-    fork::{CompositeForkVerifier, ForkPreparer, ForkReport, ForkRequest, ForkSeed},
+    fork::{CompositeForkVerifier, ForkReport, ForkSeed},
     interaction::InteractionOutcome,
     merge::ProjectMergeVerifier,
 };

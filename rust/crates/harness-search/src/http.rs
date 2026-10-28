@@ -222,7 +222,7 @@ async fn await_io<F: std::future::Future>(
     Ok(future.await)
 }
 
-fn transport_error(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
+pub(crate) fn transport_error(work: crate::NativeWork<'_>, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
         return Error::NativeBoundary {
