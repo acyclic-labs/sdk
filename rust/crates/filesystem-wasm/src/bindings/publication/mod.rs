@@ -72,7 +72,7 @@ impl BrowserCheckout {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .checkpoint(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+            .checkpoint(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(js_error)?;
         encode_checkpoint_result(&receipt)
@@ -83,7 +83,7 @@ impl BrowserCheckout {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .refresh_head(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+            .refresh_head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(js_error)?;
         encode_checkpoint_result(&receipt)
@@ -94,7 +94,7 @@ impl BrowserCheckout {
         let cancellation = CancellationToken::default();
         let receipt = self
             .engine
-            .refresh_live(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+            .refresh_live(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .await
             .map_err(js_error)?;
         encode_checkpoint_result(&receipt)
@@ -117,7 +117,7 @@ impl BrowserCheckout {
                 None,
                 None,
                 permit,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
                 |_| async {
                     acyclic_fs::FsResult::Ok(acyclic_fs::OperationReceipt {
@@ -152,7 +152,7 @@ impl BrowserCheckout {
                 operation_id,
                 maximum_attempts,
                 maximum_conflicts,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -178,7 +178,7 @@ impl BrowserCheckout {
                 operation_id,
                 maximum_attempts,
                 maximum_conflicts,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -198,7 +198,7 @@ impl BrowserCheckout {
             .engine
             .rebase_head(
                 maximum_conflicts,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
