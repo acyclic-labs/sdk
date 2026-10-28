@@ -116,7 +116,7 @@ pub async fn capture_with_custody<T: Send + 'static>(
             match start(&invocation, &mut handler) {
                 Ok(Ok((tree, input))) => {
                     let schedule = acyclic_native_runtime::CaptureSchedule::new(
-                        Duration::from_millis(u64::from(invocation.timeout_ms)),
+                        invocation.timeout_ms.map(Duration::from_millis),
                     );
                     // Transfer physical custody before returning from the
                     // worker. Losing the waiter cannot drop an unsubmitted tree.
@@ -203,7 +203,7 @@ fn start<T>(
         if let Some(output) = acyclic_native_runtime::testing::capture_process(
             acyclic_native_runtime::testing::ProcessCapture {
                 command: &command,
-                timeout: Duration::from_millis(u64::from(invocation.timeout_ms)),
+                timeout: invocation.timeout_ms.map(Duration::from_millis),
                 maximum: invocation.maximum_output_bytes,
                 input,
             },
