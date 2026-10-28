@@ -71,8 +71,8 @@ async fn check_selection(native: bool) -> Result<()> {
                     operation,
                     step,
                     include_started: true,
-                    maximum_step_records: 1,
-                    maximum: 2,
+                    maximum_step_records: Some(1),
+                    maximum: Some(2),
                     select: &|_| true,
                 },
                 Some(&io),
@@ -110,7 +110,7 @@ async fn check_selection(native: bool) -> Result<()> {
     let (_, records, hold) = crate::executor::replay_execution(
         &journal,
         operation,
-        2,
+        Some(2),
         |event| event.step().is_none() || event.step() == Some(999),
         Some(&io),
     )
@@ -327,8 +327,8 @@ async fn indexed_selection_includes_only_fully_validated_raw_tail() -> Result<()
                 operation,
                 step: 0,
                 include_started: true,
-                maximum_step_records: 1,
-                maximum: 2,
+                maximum_step_records: Some(1),
+                maximum: Some(2),
                 select: &|_| true,
             },
             None,
@@ -383,8 +383,8 @@ async fn indexed_selection_includes_only_fully_validated_raw_tail() -> Result<()
                         operation,
                         step: 0,
                         include_started: true,
-                        maximum_step_records: 2,
-                        maximum: 3,
+                        maximum_step_records: Some(2),
+                        maximum: Some(3),
                         select: &|_| true,
                     },
                     None
@@ -434,8 +434,8 @@ async fn refused_selections_release_partial_output_on_both_ledgers() -> Result<(
                 operation,
                 step: 0,
                 include_started: true,
-                maximum_step_records: 1,
-                maximum: 1,
+                maximum_step_records: Some(1),
+                maximum: Some(1),
                 select: &|_| true,
             };
             let result = if protected {

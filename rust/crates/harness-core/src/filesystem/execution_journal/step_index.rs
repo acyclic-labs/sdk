@@ -82,7 +82,7 @@ impl Pending {
     fn collect(
         &self,
         step: Option<u32>,
-        maximum: usize,
+        maximum: Option<usize>,
         entries: &mut Funded<Entry>,
         io: Option<&PreparationIo>,
     ) -> Result<()> {
@@ -99,7 +99,7 @@ impl Pending {
             crate::model::charge_items(io, 1)?;
             let value = self.entries.get(position).ok_or_else(|| invalid(io))?;
             if value.entry.step != step
-                || entries.values.len() - before >= maximum
+                || maximum.is_some_and(|maximum| entries.values.len() - before >= maximum)
                 || value.previous.is_some_and(|previous| previous >= position)
             {
                 return Err(invalid(io));
@@ -341,7 +341,7 @@ where
                 continue;
             }
             let maximum = if step.is_none() {
-                1
+                Some(1)
             } else {
                 query.maximum_step_records
             };
@@ -359,8 +359,12 @@ where
             // selected for this step instead of adding unrelated prior steps
             // to a possibly saturated usize allowance (notably on wasm32).
             let remaining = maximum
-                .checked_sub(entries.values.len() - before)
-                .ok_or_else(|| invalid(io))?;
+                .map(|maximum| {
+                    maximum
+                        .checked_sub(entries.values.len() - before)
+                        .ok_or_else(|| invalid(io))
+                })
+                .transpose()?;
             summary
                 .pending_steps
                 .collect(step, remaining, &mut entries, io)?;
@@ -401,7 +405,10 @@ where
             return Err(invalid(io));
         }
         if (query.select)(&record.event) {
-            if selected.len() >= query.maximum {
+            if query
+                .maximum
+                .is_some_and(|maximum| selected.len() >= maximum)
+            {
                 return Err(invalid(io));
             }
             if selected.len() == selected.capacity() {
@@ -430,7 +437,7 @@ async fn collect_step<P: StreamProvider + ?Sized>(
     root: Option<NodeRef>,
     tail: u64,
     step: Option<u32>,
-    maximum: usize,
+    maximum: Option<usize>,
     entries: &mut Funded<Entry>,
 ) -> Result<()> {
     let io = reader.io;
@@ -442,7 +449,7 @@ async fn collect_step<P: StreamProvider + ?Sized>(
     let mut count = 0;
     while let Some(node) = read {
         count += 1;
-        if count > maximum {
+        if maximum.is_some_and(|maximum| count > maximum) {
             return Err(invalid(io));
         }
         let Node::Leaf { key: found, value } = node.node(io)? else {
