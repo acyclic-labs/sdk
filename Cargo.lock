@@ -1179,6 +1179,7 @@ dependencies = [
 name = "acyclic-stream-models"
 version = "0.0.0"
 dependencies = [
+ "acyclic-stream",
  "futures",
  "loom",
  "proptest",

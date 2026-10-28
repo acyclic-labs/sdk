@@ -22,7 +22,10 @@ pub use authority::testing;
 pub use authority::{Authority, AuthorityState, TrustSnapshot};
 mod sources;
 #[cfg(loom)]
-pub use sources::model::{verify_source_recheck, verify_source_wakes};
+pub use sources::model::{
+    verify_reserved_capacity, verify_source_disabled, verify_source_recheck,
+    verify_source_saturation, verify_source_wakes,
+};
 
 mod calls;
 mod pages;

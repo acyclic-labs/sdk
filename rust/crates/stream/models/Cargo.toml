@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+acyclic-stream = { path = "..", default-features = false, features = ["session", "model-checking"] }
 thiserror = "2.0"
 futures = "0.3.31"
 loom = { version = "0.7.2", features = ["futures"] }
