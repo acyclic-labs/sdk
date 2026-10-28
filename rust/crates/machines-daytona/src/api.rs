@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use acyclic_machines::core::http::{
-    credential_endpoint, credential_headers, endpoint_url, http_transport_builder, send_body,
+    Http, bearer_headers, credential_endpoint, decode_json, send_body,
 };
 use acyclic_machines::{
     ProviderError,
@@ -206,9 +206,7 @@ pub struct ExecuteResponse {
 /// Authenticated client bound to one Daytona API base URL.
 #[derive(Clone)]
 pub struct DaytonaApi {
-    http: reqwest::Client,
-    base: String,
-    headers: reqwest::header::HeaderMap,
+    http: Http,
     organization_id: Option<String>,
     toolbox_proxy_hosts: Vec<String>,
 }
@@ -217,7 +215,7 @@ impl std::fmt::Debug for DaytonaApi {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("DaytonaApi")
-            .field("base", &self.base)
+            .field("base", &self.base_url())
             .field("organization_id", &self.organization_id)
             .finish_non_exhaustive()
     }
@@ -227,27 +225,19 @@ impl DaytonaApi {
     /// Builds a client from the provider configuration.
     ///
     /// # Errors
-    /// Returns [`ProviderError::Invalid`] when the API key is empty or the HTTP client cannot
-    /// be built.
+    /// Returns [`ProviderError::Invalid`] for invalid credentials or endpoint and
+    /// [`ProviderError::Unavailable`] if client construction fails.
     pub fn new(config: &DaytonaConfig) -> Result<Self, ProviderError> {
-        if config.api_key.is_empty() {
-            return Err(ProviderError::Invalid("Daytona API key is empty".into()));
-        }
-        let endpoint = endpoint_url(&config.api_url)?;
-        let authorization = format!("Bearer {}", config.api_key);
-        let mut values = vec![("authorization", authorization.as_str())];
-        if let Some(organization) = config.organization_id.as_deref() {
-            values.push((ORGANIZATION_HEADER, organization));
-        }
-        let headers = credential_headers(values)?;
-        let http = http_transport_builder()
-            .timeout(config.request_timeout)
-            .build()
-            .map_err(|error| ProviderError::Invalid(format!("HTTP client: {error}")))?;
+        let headers = bearer_headers(
+            &config.api_key,
+            config
+                .organization_id
+                .as_deref()
+                .map(|value| (ORGANIZATION_HEADER, value)),
+        )?;
+        let http = Http::new(&config.api_url, headers, Some(config.request_timeout))?;
         Ok(Self {
             http,
-            base: endpoint.as_str().trim_end_matches('/').to_owned(),
-            headers,
             organization_id: config.organization_id.clone(),
             toolbox_proxy_hosts: config.toolbox_proxy_hosts.clone(),
         })
@@ -256,15 +246,7 @@ impl DaytonaApi {
     /// Base URL the client was bound to, without a trailing slash.
     #[must_use]
     pub fn base_url(&self) -> &str {
-        &self.base
-    }
-
-    fn authorized(&self, builder: RequestBuilder) -> RequestBuilder {
-        builder.headers(self.headers.clone())
-    }
-
-    fn request(&self, method: Method, path: &str) -> RequestBuilder {
-        self.authorized(self.http.request(method, format!("{}{path}", self.base)))
+        self.http.endpoint.as_str().trim_end_matches('/')
     }
 
     /// Sends one Daytona call, `op` naming it in its `acyclic.machines.daytona.call` span,
@@ -289,17 +271,7 @@ impl DaytonaApi {
         op: &'static str,
         builder: RequestBuilder,
     ) -> Result<T, ProviderError> {
-        self.send(op, builder, |body| {
-            serde_json::from_slice(&body).map_err(|error| {
-                tracing::warn!(
-                    op,
-                    body_len = body.len(),
-                    "Daytona response did not match the expected shape"
-                );
-                ProviderError::Rejected(format!("Daytona response shape: {error}"))
-            })
-        })
-        .await
+        self.send(op, builder, |body| decode_json(&body)).await
     }
 
     async fn empty(&self, op: &'static str, builder: RequestBuilder) -> Result<(), ProviderError> {
@@ -313,7 +285,7 @@ impl DaytonaApi {
     pub async fn create(&self, request: &CreateSandboxRequest) -> Result<Sandbox, ProviderError> {
         self.json(
             "create",
-            self.request(Method::POST, "/sandbox").json(request),
+            self.http.request(Method::POST, &["sandbox"])?.json(request),
         )
         .await
     }
@@ -326,7 +298,7 @@ impl DaytonaApi {
     pub async fn get(&self, id_or_name: &str) -> Result<Sandbox, ProviderError> {
         self.json(
             "get",
-            self.request(Method::GET, &format!("/sandbox/{id_or_name}")),
+            self.http.request(Method::GET, &["sandbox", id_or_name])?,
         )
         .await
     }
@@ -355,7 +327,10 @@ impl DaytonaApi {
                 query.push(("cursor", cursor));
             }
             let page: SandboxPage = self
-                .json("list", self.request(Method::GET, "/sandbox").query(&query))
+                .json(
+                    "list",
+                    self.http.request(Method::GET, &["sandbox"])?.query(&query),
+                )
                 .await?;
             Ok(NativePage {
                 items: page.items,
@@ -373,7 +348,7 @@ impl DaytonaApi {
     pub async fn start(&self, id: &str) -> Result<(), ProviderError> {
         self.empty(
             "start",
-            self.request(Method::POST, &format!("/sandbox/{id}/start")),
+            self.http.request(Method::POST, &["sandbox", id, "start"])?,
         )
         .await
     }
@@ -386,7 +361,7 @@ impl DaytonaApi {
     pub async fn pause(&self, id: &str) -> Result<(), ProviderError> {
         self.empty(
             "pause",
-            self.request(Method::POST, &format!("/sandbox/{id}/pause")),
+            self.http.request(Method::POST, &["sandbox", id, "pause"])?,
         )
         .await
     }
@@ -405,7 +380,8 @@ impl DaytonaApi {
     ) -> Result<Sandbox, ProviderError> {
         self.json(
             "snapshot",
-            self.request(Method::POST, &format!("/sandbox/{id}/snapshot"))
+            self.http
+                .request(Method::POST, &["sandbox", id, "snapshot"])?
                 .json(request),
         )
         .await
@@ -419,7 +395,7 @@ impl DaytonaApi {
     pub async fn get_snapshot(&self, id_or_name: &str) -> Result<Snapshot, ProviderError> {
         self.json(
             "get_snapshot",
-            self.request(Method::GET, &format!("/snapshots/{id_or_name}")),
+            self.http.request(Method::GET, &["snapshots", id_or_name])?,
         )
         .await
     }
@@ -431,7 +407,7 @@ impl DaytonaApi {
     pub async fn delete_snapshot(&self, id: &str) -> Result<(), ProviderError> {
         self.empty(
             "delete_snapshot",
-            self.request(Method::DELETE, &format!("/snapshots/{id}")),
+            self.http.request(Method::DELETE, &["snapshots", id])?,
         )
         .await
     }
@@ -446,7 +422,8 @@ impl DaytonaApi {
     pub async fn fork(&self, id: &str, request: &ForkRequest) -> Result<Sandbox, ProviderError> {
         self.json(
             "fork",
-            self.request(Method::POST, &format!("/sandbox/{id}/fork"))
+            self.http
+                .request(Method::POST, &["sandbox", id, "fork"])?
                 .json(request),
         )
         .await
@@ -459,7 +436,7 @@ impl DaytonaApi {
     pub async fn forks(&self, id: &str) -> Result<Vec<Sandbox>, ProviderError> {
         self.json(
             "forks",
-            self.request(Method::GET, &format!("/sandbox/{id}/forks")),
+            self.http.request(Method::GET, &["sandbox", id, "forks"])?,
         )
         .await
     }
@@ -475,7 +452,8 @@ impl DaytonaApi {
     ) -> Result<(), ProviderError> {
         self.empty(
             "replace_labels",
-            self.request(Method::PUT, &format!("/sandbox/{id}/labels"))
+            self.http
+                .request(Method::PUT, &["sandbox", id, "labels"])?
                 .json(&LabelsBody { labels }),
         )
         .await
@@ -488,7 +466,7 @@ impl DaytonaApi {
     pub async fn delete(&self, id: &str) -> Result<(), ProviderError> {
         self.empty(
             "delete",
-            self.request(Method::DELETE, &format!("/sandbox/{id}")),
+            self.http.request(Method::DELETE, &["sandbox", id])?,
         )
         .await
     }
@@ -501,7 +479,10 @@ impl DaytonaApi {
     pub async fn set_autopause(&self, id: &str, minutes: u32) -> Result<(), ProviderError> {
         self.empty(
             "set_autopause",
-            self.request(Method::POST, &format!("/sandbox/{id}/autopause/{minutes}")),
+            self.http.request(
+                Method::POST,
+                &["sandbox", id, "autopause", &minutes.to_string()],
+            )?,
         )
         .await
     }
@@ -522,27 +503,26 @@ impl DaytonaApi {
         sandbox_id: &str,
         request: &ExecuteRequest,
     ) -> Result<ExecuteResponse, ProviderError> {
-        let url = self.toolbox_url(sandbox_id, "process/execute").await?;
+        let toolbox = self.toolbox(sandbox_id).await?;
         self.json(
             "execute",
-            self.authorized(self.http.post(url)).json(request),
+            toolbox
+                .request(Method::POST, &["process", "execute"])?
+                .json(request),
         )
         .await
     }
 
-    /// URL of one toolbox route of `sandbox_id`, from the sandbox record this client reads
+    /// Scoped toolbox client of `sandbox_id`, from the sandbox record this client reads
     /// back itself and only when its proxy passes [`Self::check_toolbox_proxy`].
-    async fn toolbox_url(&self, sandbox_id: &str, route: &str) -> Result<String, ProviderError> {
+    async fn toolbox(&self, sandbox_id: &str) -> Result<Http, ProviderError> {
         let sandbox = self.get(sandbox_id).await?;
         let proxy = sandbox.toolbox_proxy_url.as_deref().ok_or_else(|| {
             ProviderError::Rejected(format!("sandbox {} has no toolbox proxy URL", sandbox.id))
         })?;
-        let proxy = self.check_toolbox_proxy(proxy)?;
-        Ok(format!(
-            "{}/{}/{route}",
-            proxy.as_str().trim_end_matches('/'),
-            sandbox.id
-        ))
+        self.http
+            .scoped(proxy, &self.toolbox_proxy_hosts)?
+            .child(&[&sandbox.id])
     }
 
     /// Accepts a toolbox proxy URL only when it may receive this client's API key: `https`
@@ -554,7 +534,7 @@ impl DaytonaApi {
     /// # Errors
     /// Returns [`ProviderError::Rejected`] for any other URL.
     pub fn check_toolbox_proxy(&self, proxy: &str) -> Result<reqwest::Url, ProviderError> {
-        credential_endpoint(&self.base, proxy, &self.toolbox_proxy_hosts)
+        credential_endpoint(self.base_url(), proxy, &self.toolbox_proxy_hosts)
     }
 }
 
@@ -643,6 +623,23 @@ mod tests {
             "https://toolbox.eu.example/toolbox",
         ] {
             assert!(api.check_toolbox_proxy(accepted).is_ok(), "{accepted}");
+            let scoped = api.http.scoped(accepted, &api.toolbox_proxy_hosts).unwrap();
+            let request = scoped
+                .child(&["sandbox/id?"])
+                .unwrap()
+                .request(Method::GET, &["processes"])
+                .unwrap()
+                .build()
+                .unwrap();
+            assert_eq!(
+                request.url().host_str(),
+                reqwest::Url::parse(accepted).unwrap().host_str()
+            );
+            assert!(request.url().query().is_none());
+            assert!(request.url().path().contains("sandbox%2Fid%3F"));
+            let authorization = request.headers().get("authorization").unwrap();
+            assert_eq!(authorization, "Bearer k");
+            assert!(authorization.is_sensitive());
         }
         for rejected in [
             "https://attacker.example/toolbox",
@@ -660,6 +657,10 @@ mod tests {
                 ),
                 "{rejected}"
             );
+            assert!(matches!(
+                api.http.scoped(rejected, &api.toolbox_proxy_hosts),
+                Err(ProviderError::Rejected(_))
+            ));
         }
         let local = client("http://127.0.0.1:9000/api", &[]);
         assert!(local.check_toolbox_proxy("http://127.0.0.1:9000/t").is_ok());

@@ -58,8 +58,8 @@ impl DaytonaApi {
         cwd: Option<String>,
         timeout: u32,
     ) -> Result<ExecStream, ProviderError> {
-        let url = self.toolbox_url(sandbox, "processes").await?;
-        let response = acyclic_machines::core::http::dispatch(self.authorized(self.http.post(&url))
+        let process_http = self.toolbox(sandbox).await?.child(&["processes"])?;
+        let response = acyclic_machines::core::http::dispatch(process_http.request(Method::POST, &[])?
             .timeout(Duration::from_secs(15))
             .json(&serde_json::json!({"kind": "exec", "argv": argv, "cwd": cwd, "timeoutMs": timeout, "keepLogs": "on_exit_ttl"}))
             ).await?;
@@ -84,17 +84,10 @@ impl DaytonaApi {
         {
             return Err(ProviderError::Unavailable);
         }
-        let mut process_url = reqwest::Url::parse(&url).map_err(|_| ProviderError::Unavailable)?;
-        process_url
-            .path_segments_mut()
-            .map_err(|()| ProviderError::Unavailable)?
-            .push(&process.id);
-        let mut logs = process_url.clone();
-        logs.path_segments_mut()
-            .map_err(|()| ProviderError::Unavailable)?
-            .push("logs");
+        let process_http = process_http.child(&[&process.id])?;
         let response = acyclic_machines::core::http::dispatch(
-            self.authorized(self.http.get(logs))
+            process_http
+                .request(Method::GET, &["logs"])?
                 .query(&[("follow", "true"), ("encoding", "base64")])
                 .timeout(Duration::from_millis(u64::from(timeout)) + Duration::from_secs(10)),
         )
@@ -112,7 +105,7 @@ impl DaytonaApi {
             (events, None::<Terminal>, false),
             move |(mut events, mut terminal, done)| {
                 let api = api.clone();
-                let process_url = process_url.clone();
+                let process_http = process_http.clone();
                 async move {
                     if done {
                         return Ok(None);
@@ -165,7 +158,8 @@ impl DaytonaApi {
                                 };
                                 api.empty(
                                     "delete_process",
-                                    api.authorized(api.http.delete(process_url))
+                                    process_http
+                                        .request(Method::DELETE, &[])?
                                         .timeout(Duration::from_secs(10)),
                                 )
                                 .await?;

@@ -87,6 +87,20 @@ pub fn credential_headers<'a>(
         .collect()
 }
 
+pub fn bearer_headers<'a>(
+    token: &str,
+    extra: impl IntoIterator<Item = (&'static str, &'a str)>,
+) -> Result<HeaderMap, ProviderError> {
+    if token.is_empty() {
+        return Err(ProviderError::Invalid(
+            "provider bearer credential admission failed; recovery: supply a nonempty token".into(),
+        ));
+    }
+    let mut headers = credential_headers(extra)?;
+    headers.insert("authorization", secret(&format!("Bearer {token}"))?);
+    Ok(headers)
+}
+
 pub fn endpoint_url(endpoint: &str) -> Result<Url, ProviderError> {
     let endpoint = Url::parse(endpoint).map_err(|_| ProviderError::Invalid(
             "provider endpoint parsing failed; recovery: configure an absolute HTTPS URL or loopback HTTP URL".into()))?;
@@ -143,11 +157,17 @@ pub fn credential_endpoint(
 }
 
 impl Http {
-    pub fn new(endpoint: &str, headers: HeaderMap) -> Result<Self, ProviderError> {
+    pub fn new(
+        endpoint: &str,
+        headers: HeaderMap,
+        timeout: Option<Duration>,
+    ) -> Result<Self, ProviderError> {
         let endpoint = endpoint_url(endpoint)?;
-        let client = http_transport_builder()
-            .build()
-            .map_err(|_| ProviderError::Unavailable)?;
+        let mut builder = http_transport_builder();
+        if let Some(timeout) = timeout {
+            builder = builder.timeout(timeout);
+        }
+        let client = builder.build().map_err(|_| ProviderError::Unavailable)?;
         Ok(Self {
             endpoint,
             client,
@@ -155,15 +175,35 @@ impl Http {
         })
     }
 
+    /// Reuse the admitted client and credentials only for a provider-reported
+    /// endpoint allowed by the original parent and explicit host enrollment.
+    pub fn scoped(&self, endpoint: &str, enrolled_hosts: &[String]) -> Result<Self, ProviderError> {
+        Ok(Self {
+            endpoint: credential_endpoint(self.endpoint.as_str(), endpoint, enrolled_hosts)?,
+            client: self.client.clone(),
+            headers: self.headers.clone(),
+        })
+    }
+
+    fn url(&self, path: &[&str]) -> Result<Url, ProviderError> {
+        let mut url = self.endpoint.clone();
+        url.path_segments_mut().map_err(|()| ProviderError::Invalid(
+            "provider URL path admission failed; recovery: configure a hierarchical HTTP URL".into()))?
+            .pop_if_empty().extend(path);
+        Ok(url)
+    }
+
+    pub fn child(mut self, path: &[&str]) -> Result<Self, ProviderError> {
+        self.endpoint = self.url(path)?;
+        Ok(self)
+    }
+
     pub fn request(
         &self,
         method: Method,
         path: &[&str],
     ) -> Result<reqwest::RequestBuilder, ProviderError> {
-        let mut url = self.endpoint.clone();
-        url.path_segments_mut().map_err(|()| ProviderError::Invalid(
-            "provider URL path admission failed; recovery: configure a hierarchical HTTP URL".into()))?
-            .pop_if_empty().extend(path);
+        let url = self.url(path)?;
         Ok(self
             .client
             .request(method, url)
@@ -174,11 +214,12 @@ impl Http {
     pub async fn json<T: serde::de::DeserializeOwned>(
         request: reqwest::RequestBuilder,
     ) -> Result<T, ProviderError> {
-        Self::checked(dispatch(request).await)
+        let body = Self::checked(dispatch(request).await)
             .await?
-            .json()
+            .bytes()
             .await
-            .map_err(|_| ProviderError::Unavailable)
+            .map_err(transport_error)?;
+        decode_json(&body)
     }
 
     pub async fn bytes(request: reqwest::RequestBuilder) -> Result<Vec<u8>, ProviderError> {
@@ -234,4 +275,14 @@ impl Http {
             },
         }
     }
+}
+
+/// A successful status with an unreadable body does not prove native refusal.
+/// Preserve the original mutation's unknown outcome instead of releasing its key.
+pub fn decode_json<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, ProviderError> {
+    serde_json::from_slice(body).map_err(|error| {
+        tracing::warn!(body_len = body.len(), line = error.line(), column = error.column(),
+            "provider response decoding failed; recovery: recover the original operation key before any fresh dispatch");
+        ProviderError::Unavailable
+    })
 }

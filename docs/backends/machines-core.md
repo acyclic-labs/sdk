@@ -47,7 +47,10 @@ bounded ephemeral console history use the same owner extracted from #1690.
 An unsupported raw transport still refuses before guest IO. Daytona binds its toolbox stream to that owner; framing, process-group cleanup,
 file commands and HTTP dispatch live in core. The HTTP transport validates
 endpoint and sensitive credentials once, refuses redirects and automatic retry,
-and retains native status decoding in the wire adapter. Provider captures remain
+and retains native status decoding in the wire adapter. Scoped toolbox clients
+reuse that admitted transport; relative route segments cannot replace its origin.
+A successful HTTP status with malformed JSON remains an unknown native outcome,
+so a create key cannot be released for redispatch after acceptance. Provider captures remain
 separate qualification work; internal owner vectors
 do not establish a live provider pass.
 

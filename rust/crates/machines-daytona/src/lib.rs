@@ -990,7 +990,7 @@ mod tests {
         ));
         assert!(matches!(
             provider.api.get("malformed").await,
-            Err(ProviderError::Rejected(_))
+            Err(ProviderError::Unavailable)
         ));
 
         let seen = seen.lock().unwrap();
@@ -1008,7 +1008,7 @@ mod tests {
             ("op", "delete"),
             ("http.status", "404"),
             ("error.kind", "not_found"),
-            ("error.kind", "rejected"),
+            ("error.kind", "unavailable"),
         ] {
             assert!(
                 seen.iter()
@@ -1101,6 +1101,46 @@ mod tests {
                 .iter()
                 .any(|r| r.is("DELETE", &format!("/sandbox/{CHILD}"))),
             "the sandbox the in-flight create made must not outlive the cancellation"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_status_with_invalid_json_never_releases_create_key() {
+        // Internal lost-observation oracle, not a captured provider response.
+        let mock = mock::Mock::start(|request| async move {
+            if request.path.starts_with("/snapshots/") {
+                (200, r#"{"id":"s","sandboxClass":"linux-vm"}"#.into())
+            } else {
+                (200, "{".into())
+            }
+        })
+        .await;
+        let provider = mocked(&mock, None);
+        let key = test_key(31);
+        assert_eq!(
+            provider.create(request(key)).await,
+            Err(ProviderError::Unavailable)
+        );
+        assert_eq!(
+            provider.create(request(key)).await,
+            Err(ProviderError::Indeterminate(key))
+        );
+        assert_eq!(
+            provider.recover(key).await,
+            Err(ProviderError::Indeterminate(key))
+        );
+        assert_eq!(
+            provider
+                .inspect_operation(ops::operation_id(key))
+                .await
+                .unwrap()
+                .phase,
+            acyclic_machines::OperationPhase::Indeterminate
+        );
+        assert_eq!(
+            mock.requests().len(),
+            2,
+            "one qualification and one create; no observation or redispatch can reconstruct the accepted result"
         );
     }
 
