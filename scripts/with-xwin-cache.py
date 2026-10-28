@@ -62,7 +62,7 @@ def populate(root, workers):
     compilers = root / "bin"
     compilers.mkdir()
     driver = compilers / "clang-cl"
-    shutil.copyfile(compiler, driver)
+    shutil.copyfile(compiler_path(), driver)
     driver.chmod(0o755)
 
 

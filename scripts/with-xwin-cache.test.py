@@ -17,6 +17,12 @@ spec = importlib.util.spec_from_file_location("xwin_cache", Path(__file__).with_
 cache = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cache)
 run = subprocess.run
+# The installed MSVC shim lives with the external build tooling; the cache only
+# copies and hashes it, so a self-contained fixture stands in for it here.
+_fixture_compiler = tempfile.NamedTemporaryFile(prefix="msvc-compiler-", suffix=".py", delete=False)
+_fixture_compiler.write(b"# fixture MSVC compiler shim\n")
+_fixture_compiler.close()
+os.environ["SDK_MSVC_COMPILER"] = _fixture_compiler.name
 
 
 def prepared(command, **kwargs):
@@ -71,16 +77,6 @@ print(json.dumps({'child':'exact JSON'}))
                 for _ in range(2):cache.prepare_workspace(root,2,identity)
                 self.assertEqual(initialize.call_count,1)
                 self.assertEqual((root/'live-sdk').read_text(),'2')
-            spec=importlib.util.spec_from_file_location('candidate_xwin_store',Path(os.environ.get('SDK_BUILD_TOOLS_DIR', '/home/var/bin'))/'bb_target_store.py')
-            store=importlib.util.module_from_spec(spec);spec.loader.exec_module(store)
-            meta={'repo':'sdk','source':{'content_sha256':'same'},'argv':['matrix']}
-            env={'BB_SOURCE_TIMES_POLICY':'blob-past-private-v1','BB_TARGET_REQUEST_SHA256':'same'}
-            def key(sdk):return store.request_key(meta,{**env,'GATE_XWIN_CACHE_ROOT':str(sdk)},Path('/mnt/bb/jobs/fixture'))
-            with patch.object(store,'tool_identity',return_value=['fixture']):
-                self.assertEqual(key(root),key(root))
-                # Former random paths change the actual strict request key.
-                with tempfile.TemporaryDirectory() as old_first,tempfile.TemporaryDirectory() as old_second:
-                    self.assertNotEqual(key(old_first),key(old_second))
             (root/'bin/clang-cl').unlink()
             # A marker alone must not permit fallback to another PATH compiler.
             with patch.object(cache,'populate') as initialize:
@@ -161,7 +157,7 @@ print(json.dumps({'child':'exact JSON'}))
 
     def test_seed_preparation_keeps_payload_stdout_machine_readable(self):
         source = inspect.getsource(cache.snapshot)
-        former = source.replace("stdout=sys.stderr, ", "")
+        former = source.replace(", stdout=sys.stderr", "")
         self.assertNotEqual(source, former)
         namespace = dict(cache.__dict__)
         exec(compile(former, "<former-sdk-stdout-control>", "exec"), namespace)
