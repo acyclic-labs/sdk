@@ -20,8 +20,10 @@ pub fn transcript(publication: &RevocationPublication) -> Vec<u8> {
         signature: Vec::new(),
     }
     .into();
-    let mut bytes = REVOCATION_DOMAIN.to_vec();
-    bytes.extend_from_slice(&wire.encode_to_vec());
+    let mut bytes = Vec::with_capacity(REVOCATION_DOMAIN.len() + wire.encoded_len());
+    bytes.extend_from_slice(REVOCATION_DOMAIN);
+    wire.encode(&mut bytes)
+        .expect("Vec accepts encoded message");
     bytes
 }
 
@@ -60,7 +62,7 @@ impl RevocationState {
         issuer: &BlockId,
         now: u64,
     ) -> Result<Self, VerifyError> {
-        authenticate(signed, issuer)?;
+        let transcript = authenticate(signed, issuer)?;
         let RevocationPublication::Checkpoint(checkpoint) = &signed.publication else {
             return Err(VerifyError::Malformed);
         };
@@ -75,7 +77,7 @@ impl RevocationState {
             blocks: BTreeMap::new(),
         };
         state.checkpoint(checkpoint, now)?;
-        state.digest = digest(signed);
+        state.digest = digest(&transcript, &signed.signature);
         Ok(state)
     }
 
@@ -88,7 +90,7 @@ impl RevocationState {
         issuer: &BlockId,
         now: u64,
     ) -> Result<RevocationEffect, VerifyError> {
-        authenticate(signed, issuer)?;
+        let transcript = authenticate(signed, issuer)?;
         let effect = match &signed.publication {
             RevocationPublication::Delta(delta) => self.delta(delta, now)?,
             RevocationPublication::Checkpoint(checkpoint) => {
@@ -96,7 +98,7 @@ impl RevocationState {
                 RevocationEffect::Checkpoint
             }
         };
-        self.digest = digest(signed);
+        self.digest = digest(&transcript, &signed.signature);
         Ok(effect)
     }
 
@@ -227,18 +229,17 @@ fn preserves<K: Ord>(old: &BTreeMap<K, u64>, new: &BTreeMap<K, u64>, retired: u6
         .all(|(id, expiry)| *expiry <= retired || new.get(id).is_some_and(|new| new >= expiry))
 }
 
-fn authenticate(signed: &SignedRevocation, issuer: &BlockId) -> Result<(), VerifyError> {
-    verify_signature(
-        &public_key(issuer)?,
-        &transcript(&signed.publication),
-        &signed.signature,
-    )
+fn authenticate(signed: &SignedRevocation, issuer: &BlockId) -> Result<Vec<u8>, VerifyError> {
+    let issuer = public_key(issuer)?;
+    let transcript = transcript(&signed.publication);
+    verify_signature(&issuer, &transcript, &signed.signature)?;
+    Ok(transcript)
 }
 
-fn digest(signed: &SignedRevocation) -> BlockId {
+fn digest(transcript: &[u8], signature: &[u8]) -> BlockId {
     Sha256::new()
-        .chain_update(transcript(&signed.publication))
-        .chain_update(&signed.signature)
+        .chain_update(transcript)
+        .chain_update(signature)
         .finalize()
         .into()
 }

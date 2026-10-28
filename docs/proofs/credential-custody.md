@@ -248,9 +248,10 @@ No retry, readiness probe, new timeout or credential re-resolution is added.
 
 The counts below compare the immediately preceding implementation with this
 change. They are static owner-operation counts, not measurements of allocator
-internals, TLS, HTTP/2 or operating-system scheduling. All listed operations add
-zero syscalls, durability barriers and remote round trips; transport's existing
-RPC and buffering costs remain separate.
+internals, TLS, HTTP/2 or operating-system scheduling. The shared core changes
+issue zero syscalls, durability barriers and remote round trips. Foreign-owner
+callback costs need their own qualification; transport's existing RPC and
+buffering costs remain separate.
 
 | Operation | Before | After | Required guarantee |
 | --- | --- | --- | --- |
@@ -264,6 +265,8 @@ RPC and buffering costs remain separate.
 | Credentialled native physical session | No local admission-failure event | 1 one-shot event and 1 retained lease clone, shared across its commands | End a pending response on outgoing refusal without waiting for a server reply |
 | Browser session frame | 2 owner checks, 1 buffer copy, 1 protobuf decode | 1 owner check, 1 copy, 1 decode for an admitted frame; 0 copies/decodes for a refused queued frame | Check at consumption before copying or decoding; retain only size-checked buffers |
 | Native session completion | 0 owner checks | 1 owner check | Do not admit successful completion under a changed/expired lease |
+| Physical native/browser source notification | No source registration in Rust sessions | 1 registration per trusted source/session, retained across resolve, connect and reads | Retire an idle session on invalidation without another frame; raw callbacks register nothing |
+| Accepted revocation publication transcript | 2 publication clones/conversions and encodings; 2 domain buffers plus 2 temporary encoded buffers, with possible buffer growth | 1 clone/conversion and encoding into 1 exactly sized transcript buffer, reused for frontier hashing | Verify and identify the exact same canonical bytes; publish the digest only after full validation |
 
 The deferred owner's type-erased completion future is one owner allocation,
 not a dispatch allocation; owners with immediate checks allocate neither.
@@ -271,6 +274,8 @@ The channel handle clone shares the existing connection and is required only
 for deferred admission. No caller/source registry or history traversal is added.
 Each state transition performs fixed work; notifying multiple live watches
 still costs one notification per observer as described below.
+Validation and encoding necessarily process opaque input bytes once; their
+cost is proportional to that input, independently of retained history.
 
 `credential_custodian` holds real cache-backed custody on a one-shot admission
 event. Its controls retain the producer (still pending), drop the producer
@@ -290,6 +295,19 @@ session control first observes a healthy command acknowledgement, then changes
 account, expiry, availability or explicit invalidation before another command.
 The old command must contribute zero received bytes on the server and must end
 the pending response locally; the unchanged control must reach the server.
+Native and Rust browser sessions share one event selection helper. They
+subscribe before resolution and retain that source event through connection
+and response waits. A ready invalidation or producer refusal wins over ready
+transport data. It ends the operation and drops its registration/transport;
+there is no monitor task, extra timer or event history. The unchanged loopback
+control first proves an idle read remains pending, then publishes invalidation
+and observes an immediate typed refusal without sending or receiving a frame.
+
+Revocation authentication retains its canonical transcript for frontier hashing
+after validation. It does not clone or encode the publication again. Existing
+forged-publication, malformed-entry and stale-checkpoint controls still require
+the accepted frontier to remain unchanged on refusal. Signature verification
+and hashing each occur once; no persistence or remote operation is added.
 
 JavaScript source watches also register before observing, matching the Rust
 contract. Reentrant invalidation completes the returned signal immediately;
