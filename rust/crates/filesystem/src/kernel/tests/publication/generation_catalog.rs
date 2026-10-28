@@ -99,10 +99,6 @@ mod probe {
             self.read_request();
             self.inner.tail(path).await
         }
-        async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-            self.read_request();
-            self.inner.bounds(path).await
-        }
         async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
             self.append_request();
             self.inner.append(request).await
@@ -150,14 +146,6 @@ mod probe {
         ) -> NativeProviderFuture<'_, u64> {
             self.read_request();
             self.inner.native_tail(path, meter)
-        }
-        fn native_bounds(
-            &self,
-            path: StreamPath,
-            meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-        ) -> NativeProviderFuture<'_, StreamBounds> {
-            self.read_request();
-            self.inner.native_bounds(path, meter)
         }
         fn native_read(
             &self,

@@ -2,7 +2,7 @@ use super::*;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, CommittedMutation, ForkReceipt,
     ForkRequest, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, MemoryStream,
-    ReadRequest, RecordStream, StreamBounds, StreamError, StreamProvider,
+    ReadRequest, RecordStream, StreamError, StreamProvider,
 };
 use futures::TryStreamExt;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
@@ -826,9 +826,6 @@ impl StreamProvider for ReleaseSpy {
     }
 
 
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.inner.bounds(path).await
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.inner.append(request).await
     }

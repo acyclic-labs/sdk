@@ -90,15 +90,6 @@ impl acyclic_stream::StreamProvider for CutStream {
         self.inner.tail(path).await
     }
 
-    async fn bounds(
-        &self,
-        path: acyclic_stream::StreamPath,
-    ) -> Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError> {
-        if self.fails_now() {
-            return Err(acyclic_stream::StreamError::Unavailable);
-        }
-        self.inner.bounds(path).await
-    }
 
     async fn append(
         &self,

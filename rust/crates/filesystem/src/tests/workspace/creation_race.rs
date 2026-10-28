@@ -100,13 +100,6 @@ impl acyclic_stream::StreamProvider for YieldStream {
         self.inner.tail(path).await
     }
 
-    async fn bounds(
-        &self,
-        path: acyclic_stream::StreamPath,
-    ) -> Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError> {
-        self.pause().await;
-        self.inner.bounds(path).await
-    }
 
     async fn append(
         &self,

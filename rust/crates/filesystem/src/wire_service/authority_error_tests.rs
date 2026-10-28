@@ -4,7 +4,7 @@ use super::*;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
     CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest,
-    IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamBounds, StreamError,
+    IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamError,
     StreamPath, StreamProvider,
 };
 use std::sync::Mutex;
@@ -73,9 +73,6 @@ impl StreamProvider for FaultStream {
         self.inner.inspect_idempotency(key).await
     }
 
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.inner.bounds(path).await
-    }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.inner.append(request).await

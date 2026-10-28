@@ -55,9 +55,6 @@ impl StreamProvider for PausingStream {
         self.inner.tail(path).await
     }
 
-    async fn bounds(&self, path: StreamPath) -> Result<acyclic_stream::StreamBounds, StreamError> {
-        self.inner.bounds(path).await
-    }
 
     async fn append(
         &self,

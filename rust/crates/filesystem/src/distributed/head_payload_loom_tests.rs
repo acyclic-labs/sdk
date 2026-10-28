@@ -3,7 +3,7 @@ use crate::sync::atomic::{AtomicBool, Ordering};
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, ForkReceipt,
     ForkRequest, IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
-    StreamBounds, StreamError, StreamProvider,
+    StreamError, StreamProvider,
 };
 use std::cell::Cell;
 use std::future::Future;
@@ -125,9 +125,6 @@ impl StreamProvider for ModelStream {
         &self,
         _: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        Err(StreamError::Unsupported)
-    }
-    async fn bounds(&self, _: StreamPath) -> Result<StreamBounds, StreamError> {
         Err(StreamError::Unsupported)
     }
     async fn append(&self, _: AppendRequest) -> Result<AppendOutcome, StreamError> {
