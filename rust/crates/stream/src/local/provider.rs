@@ -127,11 +127,23 @@ impl StreamProvider for LocalStream {
         span.scope(async {
             let operation = span.clone();
             self.exclusive(&span, move |stream| async move {
-                let command = Command::Append(request.clone());
-                let frame = stream.prepare(&command)?;
+                let replay = stream
+                    .inner
+                    .provider
+                    .has_replay(&request.idempotency_key)
+                    .await?;
+                let frame = if replay {
+                    None
+                } else {
+                    Some(stream.prepare(&Command::Append(request.clone()))?)
+                };
                 let outcome = stream.inner.provider.append(request).await?;
-                if matches!(outcome, AppendOutcome::Committed(_)) {
+                if let Some(frame) = frame
+                    && matches!(outcome, AppendOutcome::Committed(_))
+                {
                     stream.persist(frame).await?;
+                } else if replay {
+                    stream.require_accepted::<true>()?;
                 }
                 if let AppendOutcome::Committed(receipt) = &outcome {
                     operation.record("rev", receipt.tail);
@@ -158,9 +170,22 @@ impl StreamProvider for LocalStream {
         ));
         span.scope(async {
             self.exclusive(&span, |stream| async move {
-                let frame = stream.prepare(&Command::Fork(request.clone()))?;
+                let replay = stream
+                    .inner
+                    .provider
+                    .has_replay(&request.idempotency_key)
+                    .await?;
+                let frame = if replay {
+                    None
+                } else {
+                    Some(stream.prepare(&Command::Fork(request.clone()))?)
+                };
                 let outcome = stream.inner.provider.fork(request).await?;
-                stream.persist(frame).await?;
+                if let Some(frame) = frame {
+                    stream.persist(frame).await?;
+                } else {
+                    stream.require_accepted::<true>()?;
+                }
                 Ok(outcome)
             })
             .await

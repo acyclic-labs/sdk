@@ -81,3 +81,68 @@ async fn a_normal_replay_flushes_its_original_deferred_frame() {
     assert_eq!(journal.appended, 1);
     assert_eq!(journal.synced, 1);
 }
+
+#[tokio::test]
+async fn append_and_fork_retries_reuse_and_flush_their_original_frames()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let limits = LocalStreamLimits::default();
+    let stream = LocalStream::open(root.path(), limits).await?;
+    let append = super::keyed_append("retry-source", 0)?;
+    let appended = deferring_durability(stream.append(append.clone())).await?;
+    let journal_path = root.path().join(JOURNAL_FILE);
+    let append_bytes = std::fs::metadata(&journal_path)?.len();
+    assert_eq!(stream.inner.journal.lock().unwrap().synced, 0);
+    assert_eq!(stream.append(append.clone()).await?, appended);
+    assert_eq!(std::fs::metadata(&journal_path)?.len(), append_bytes);
+    assert_eq!(stream.inner.journal.lock().unwrap().synced, 1);
+
+    let fork = ForkRequest {
+        exclude: Vec::new(),
+        source: append.path.clone(),
+        destination: StreamPath::new("retry-fork")?,
+        at_tail: Some(1),
+        idempotency_key: IdempotencyKey::new("retry-fork")?,
+    };
+    let forked = deferring_durability(stream.fork(fork.clone())).await?;
+    let fork_bytes = std::fs::metadata(&journal_path)?.len();
+    assert_eq!(stream.inner.journal.lock().unwrap().synced, 1);
+    assert_eq!(stream.fork(fork.clone()).await?, forked);
+    assert_eq!(std::fs::metadata(&journal_path)?.len(), fork_bytes);
+    assert_eq!(stream.inner.journal.lock().unwrap().synced, 2);
+
+    let mut changed_append = append.clone();
+    changed_append
+        .records
+        .push(Bytes::from_static(b"changed").into());
+    assert!(matches!(
+        stream.append(changed_append).await,
+        Err(StreamError::IdempotencyMismatch)
+    ));
+    let mut changed_fork = fork.clone();
+    changed_fork.destination = StreamPath::new("different-fork")?;
+    assert!(matches!(
+        stream.fork(changed_fork).await,
+        Err(StreamError::IdempotencyMismatch)
+    ));
+    assert_eq!(std::fs::metadata(&journal_path)?.len(), fork_bytes);
+
+    drop(stream);
+    let reopened = LocalStream::open(root.path(), limits).await?;
+    let replayed_append = reopened.append(append).await?;
+    let replayed_fork = reopened.fork(fork.clone()).await?;
+    // A deferred run rotates its revision incarnation on reopen.
+    let mut appended = appended;
+    if let (AppendOutcome::Committed(original), AppendOutcome::Committed(replayed)) =
+        (&mut appended, &replayed_append)
+    {
+        original.revision.clone_from(&replayed.revision);
+    }
+    let mut forked = forked;
+    forked.revision.clone_from(&replayed_fork.revision);
+    assert_eq!(replayed_append, appended);
+    assert_eq!(replayed_fork, forked);
+    assert_eq!(reopened.tail(fork.destination).await?, 1);
+    assert_eq!(std::fs::metadata(&journal_path)?.len(), fork_bytes);
+    Ok(())
+}
