@@ -21,10 +21,14 @@ pub mod conformance;
 pub mod guest;
 /// Event-owned hosting of an arbitrary Handler over injected storage.
 pub mod hosting;
+/// Inbox invocation protocol shared by native and hosted actors.
+pub mod invocation;
 /// Provider-backed actor storage and the single-node `local::Runtime`.
 pub mod local;
 /// Namespace-bound IDs, references and ordered stubs with implicit activation.
 pub mod namespace;
+/// Reusable fenced reservations over the actor's original checkpoint/alarm.
+pub mod reservation;
 /// Shared durable timer records, derived from the harness timer stream format.
 pub mod timers;
 

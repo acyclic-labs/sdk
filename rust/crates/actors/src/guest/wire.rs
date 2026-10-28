@@ -40,6 +40,8 @@ struct DeliveryWire {
     subscriptions: Vec<SubscriptionWire>,
     #[prost(bytes = "bytes", tag = "9")]
     state_commit: Bytes,
+    #[prost(string, tag = "10")]
+    state_path: String,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
@@ -123,6 +125,8 @@ struct TransitionWire {
     effects: Option<wire::CommitRequest>,
     #[prost(message, optional, tag = "8")]
     participant: Option<ParticipantWire>,
+    #[prost(bytes = "bytes", optional, tag = "9")]
+    response: Option<Bytes>,
 }
 
 #[derive(Clone, PartialEq, prost::Oneof)]
@@ -253,6 +257,7 @@ pub fn encode_delivery(delivery: &Delivery, committed: Option<&Checkpoint>) -> V
         record: delivery.record.clone().map(wire_codec::record_wire),
         checkpoint: committed.map(checkpoint_wire),
         state_commit: Bytes::copy_from_slice(delivery.subscriptions.anchor().as_bytes()),
+        state_path: delivery.subscriptions.state_path().as_str().into(),
         subscriptions: delivery
             .subscriptions
             .iter()
@@ -311,6 +316,7 @@ pub fn decode_delivery(bytes: &[u8]) -> Result<(Delivery, Option<Checkpoint>), G
         trigger,
         now_unix_ms: wire.now_unix_ms,
         subscriptions: SubscriptionCuts::new(
+            StreamPath::new(wire.state_path).map_err(|_| invalid("state path"))?,
             CommitId::from_bytes(
                 wire.state_commit
                     .as_ref()
@@ -342,6 +348,7 @@ pub fn encode_transition(transition: &Transition) -> Result<Vec<u8>, GuestError>
         effects.mutations.push(effect.mutation.clone());
     }
     Ok(TransitionWire {
+        response: transition.response.clone(),
         checkpoint: Some(checkpoint_wire(&transition.checkpoint)),
         alarm: Some(match transition.alarm {
             AlarmChange::Keep => AlarmWire::Keep(true),
@@ -377,6 +384,7 @@ pub fn decode_transition(bytes: &[u8]) -> Result<Transition, GuestError> {
     }
     let mut conditions = Some(effects.conditions);
     Ok(Transition {
+        response: wire.response,
         checkpoint: checkpoint(wire.checkpoint.ok_or_else(|| invalid("checkpoint"))?),
         alarm,
         effects: effects
@@ -442,6 +450,7 @@ mod tests {
     fn transition() -> Result<Transition, Box<dyn std::error::Error>> {
         let path = StreamPath::new("agents/a/inbox")?;
         Ok(Transition {
+            response: Some(Bytes::new()),
             checkpoint: Checkpoint {
                 codec: CodecIdentity {
                     name: "codec".into(),
@@ -477,7 +486,7 @@ mod tests {
         assert_eq!(decode_transition(&bytes)?, transition);
         // An unknown field the host would otherwise ignore.
         let mut unknown = bytes.clone();
-        unknown.extend_from_slice(&[0x48, 0x01]);
+        unknown.extend_from_slice(&[0x50, 0x01]);
         assert!(decode_transition(&unknown).is_err());
         // A repeated message field decodes (merged), but is not canonical.
         let mut duplicated = bytes;
@@ -498,6 +507,7 @@ mod tests {
             now_unix_ms: 9,
             record: None,
             subscriptions: SubscriptionCuts::new(
+                StreamPath::new("actors/original-state")?,
                 CommitId::from_bytes([17; 32]),
                 [
                     (
@@ -538,6 +548,7 @@ mod tests {
             now_unix_ms: 9,
             record: None,
             subscriptions: SubscriptionCuts::new(
+                StreamPath::new("actors/original-state")?,
                 CommitId::from_bytes([17; 32]),
                 [
                     (
@@ -560,6 +571,9 @@ mod tests {
         };
         let bytes = encode_delivery(&delivery, None);
         let mut wire = DeliveryWire::decode(bytes.as_slice())?;
+        let original_path = std::mem::take(&mut wire.state_path);
+        assert!(decode_delivery(&wire.encode_to_vec()).is_err());
+        wire.state_path = original_path;
         wire.state_commit.clear();
         assert!(decode_delivery(&wire.encode_to_vec()).is_err());
         wire.state_commit = Bytes::from_static(&[17; 32]);

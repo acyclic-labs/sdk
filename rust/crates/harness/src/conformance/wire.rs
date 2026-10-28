@@ -108,6 +108,7 @@ fn strict(manifest: &Manifest) -> Result {
         },
         record: None,
         subscriptions: guest::SubscriptionCuts::new(
+            acyclic_stream::StreamPath::new("conformance/original-state")?,
             acyclic_stream::CommitId::from_bytes([17; 32]),
             [(
                 "inbox".into(),
@@ -129,6 +130,7 @@ fn strict(manifest: &Manifest) -> Result {
         return Err("delivery codec accepted an unknown field".into());
     }
     let transition = Transition {
+        response: None,
         checkpoint: Checkpoint {
             codec: manifest.codec.clone(),
             bytes: bytes::Bytes::from_static(b"state"),

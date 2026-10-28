@@ -86,6 +86,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     }
                 }
             }
+            // A provider can yield before our own lookahead is exhausted
+            // (including cooperative executor admission). Rotate complete
+            // scans too, so the same first input cannot take every budget.
+            if !ids.is_empty() {
+                next = (next + 1) % ids.len();
+            }
             Poll::Pending
         })
         .await
@@ -98,6 +104,7 @@ mod tests {
     use crate::guest::{Checkpoint, GuestFuture, Manifest, Transition};
     use acyclic_stream::{MemoryStream, StreamProvider};
     use bytes::Bytes;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct MultipleInputs {
         manifest: Manifest,
@@ -137,6 +144,7 @@ mod tests {
             Arc::new(SystemClock),
         );
         let mut inner = Inner::default();
+        let hot_records = Arc::new(AtomicUsize::new(0));
         for (id, value, count) in [
             ("a", b"ordinary".as_slice(), 512),
             ("inbox", b"cancel".as_slice(), 1),
@@ -152,28 +160,36 @@ mod tests {
                     )?,
                 })
                 .await?;
+            let observed = Arc::clone(&hot_records);
+            let hot = id == "a";
             inner.follows.insert(
                 id.into(),
                 acyclic_stream::records_only(
                     provider
                         .follow(acyclic_stream::FollowRequest::new(path, 0))
                         .await?,
-                ),
+                )
+                .inspect(move |record| {
+                    if hot && record.is_ok() {
+                        observed.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+                .boxed(),
             );
         }
         let cancellation = CancellationToken::new();
-        {
-            let interrupted = runtime.interrupt(&mut inner, cancellation.clone());
-            futures::pin_mut!(interrupted);
-            let mut context = Context::from_waker(futures::task::noop_waker_ref());
-            assert!(interrupted.as_mut().poll(&mut context).is_pending());
-            assert!(!cancellation.is_cancelled());
-            assert!(interrupted.as_mut().poll(&mut context).is_pending());
-            assert!(
-                cancellation.is_cancelled(),
-                "a later subscription must get the next poll's budget"
-            );
-        }
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            tokio::select! {
+                () = cancellation.cancelled() => Ok(()),
+                error = runtime.interrupt(&mut inner, cancellation.clone()) =>
+                    Err(format!("interrupt observation failed: {error}")),
+            }
+        })
+        .await??;
+        assert!(
+            hot_records.load(Ordering::SeqCst) <= 256,
+            "a later subscription must interrupt before the hot input gets another lookahead budget"
+        );
         assert!(
             inner.follows.is_empty(),
             "interruption releases provider I/O for cleanup"

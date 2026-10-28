@@ -54,8 +54,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 Vec::new(),
                 key(&snapshot, "dispatcher-open")?,
             )?;
-            match store.submit(request).await {
-                Ok(()) | Err(Error::Conflict) => {}
+            match store.submit_retained(request).await {
+                Ok(Some(committed)) => return Ok(committed),
+                Ok(None) => return Err(Error::Invalid("dispatcher receipt has no state")),
+                Err(Error::Conflict) => {}
                 Err(error) => return Err(error),
             }
         }
@@ -80,10 +82,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 return Ok(previous);
             }
             subscription.cursor = seen;
-            let publication =
-                store.prepare(&previous, &state, Vec::new(), key(&previous, "dispatch")?)?;
-            match store.submit(publication).await {
-                Ok(()) | Err(Error::Conflict) => {}
+            // Competing dispatchers can observe different activation suffixes
+            // from the same state cut. Bind the key to the proposed cursor so
+            // their CAS conflict is not misclassified as changed request bytes.
+            let publication = store.prepare(
+                &previous,
+                &state,
+                Vec::new(),
+                key(&previous, &format!("dispatch/{seen}"))?,
+            )?;
+            match store.submit_retained(publication).await {
+                Ok(Some(committed)) => return Ok(committed),
+                Ok(None) => return Err(Error::Invalid("dispatcher receipt has no state")),
+                Err(Error::Conflict) => {}
                 // Unknown retains the exact publication in the returned error.
                 // Reopen reads the decided cursor or reconstructs the identical
                 // request/key; it never spins while storage is unavailable.

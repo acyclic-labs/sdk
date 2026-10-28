@@ -79,6 +79,7 @@ pub struct Subscription {
 /// Read-only subscription projection bound to its original committed state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SubscriptionCuts {
+    state_path: StreamPath,
     anchor: CommitId,
     entries: BTreeMap<String, Subscription>,
 }
@@ -86,8 +87,22 @@ pub struct SubscriptionCuts {
 impl SubscriptionCuts {
     /// Construct a host's projection of one admitted, size-bounded state.
     /// This metadata conveys no provider authority or freshness guarantee.
-    pub fn new(anchor: CommitId, entries: BTreeMap<String, Subscription>) -> Self {
-        Self { anchor, entries }
+    pub fn new(
+        state_path: StreamPath,
+        anchor: CommitId,
+        entries: BTreeMap<String, Subscription>,
+    ) -> Self {
+        Self {
+            state_path,
+            anchor,
+            entries,
+        }
+    }
+
+    /// Original actor state path, including its injected Store root. Actor
+    /// references alone do not distinguish two independently rooted stores.
+    pub const fn state_path(&self) -> &StreamPath {
+        &self.state_path
     }
 
     /// Original state publication; the checkpoint, epoch and cuts share it.
@@ -156,6 +171,10 @@ pub struct Effect {
 /// It is plain data, so it crosses a guest boundary through [`super::wire`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Transition {
+    /// Response to a committed invocation. Required for marked invocation
+    /// inputs and forbidden for ordinary records or alarms. The host appends
+    /// it with the checkpoint and consumed cursor, never before publication.
+    pub response: Option<Bytes>,
     /// Artifact-owned state encoded with the declared codec.
     pub checkpoint: Checkpoint,
     /// Alarm mutation, including clear-generation fencing.
