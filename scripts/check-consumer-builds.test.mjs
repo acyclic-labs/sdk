@@ -39,6 +39,9 @@ test('shared gate rejects codegen-only failures and scopes PR consumers; old che
       readFileSync(new URL('./check-consumer-builds.mjs', import.meta.url)));
     writeFileSync(join(cwd, 'scripts/workspace-defaults.mjs'),
       readFileSync(new URL('./workspace-defaults.mjs', import.meta.url)));
+    // Exercise the actual scheduler helper through this isolated caller's import.
+    writeFileSync(join(cwd, 'scripts/check-feature-matrix.mjs'),
+      `export { selectionWorker, workerEnv } from ${JSON.stringify(new URL('./check-feature-matrix.mjs', import.meta.url).href)};\n`);
     writeFileSync(join(cwd, 'feature.mjs'), 'process.exit(Number(process.env.FEATURE_RC ?? 0));\n');
     const cargo = join(cwd, 'bin/cargo');
     writeFileSync(cargo, `#!/usr/bin/env node

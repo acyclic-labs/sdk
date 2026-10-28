@@ -13,7 +13,7 @@ readme = "README.md"
 
 [features]
 conformance = ["acyclic-stream/conformance"]
-model-checking = ["acyclic-stream/model-checking"]
+model-checking = ["dep:loom", "acyclic-stream/model-checking"]
 test-support = ["dep:acyclic-native-runtime", "acyclic-native-runtime/test-support"]
 
 [dependencies]
@@ -40,6 +40,7 @@ tonic-prost.workspace = true
 tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "=0.2.0", path = "../../vendor/tonic-web-wasm-client-0.9.2" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+loom = { version = "0.7.2", features = ["futures"], optional = true }
 tokio = { version = "1.48.0", default-features = false, features = ["time"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", optional = true }
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability" }
@@ -65,7 +66,6 @@ acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 async-trait.workspace = true
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["local", "conformance", "test-support"] }
 acyclic-test-support = { path = "../test-support" }
-loom = { version = "0.7.2", features = ["futures"] }
 proptest.workspace = true
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tokio.workspace = true
