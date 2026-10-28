@@ -280,7 +280,7 @@ fn parse_record<'a>(
     visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
 ) -> Result<&'a [u8], StreamError> {
     if compact(headers) {
-        parse(bytes, Some(headers.keys()), visit)
+        parse(bytes, Some(headers.keys()), None, visit)
     } else {
         parse_v1(bytes, visit)
     }
@@ -291,6 +291,7 @@ fn parse_record<'a>(
 fn parse<'a>(
     bytes: &'a [u8],
     expected: Option<&[OwnedBytes]>,
+    mut remaining_keys: Option<usize>,
     mut visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
 ) -> Result<&'a [u8], StreamError> {
     let mut reader = Reader(bytes);
@@ -311,6 +312,11 @@ fn parse<'a>(
         let total = common
             .checked_add(suffix.len())
             .ok_or(StreamError::InvalidArgument)?;
+        if let Some(remaining) = &mut remaining_keys {
+            *remaining = remaining
+                .checked_sub(total)
+                .ok_or(StreamError::LimitExceeded)?;
+        }
         let previous = match expected {
             Some(keys) if index != 0 => keys
                 .get(index - 1)
@@ -366,14 +372,19 @@ fn parse<'a>(
 /// Decodes a canonical change value into its entries with full keys.
 pub fn decode_changes(bytes: &[u8]) -> Result<wire::ChangeRecord, StreamError> {
     let mut entries = Vec::new();
-    let context = parse(bytes, None, |key, operation, metadata| {
-        entries.push(wire::ChangeEntry {
-            key: bytes::Bytes::copy_from_slice(key),
-            operation: operation.into(),
-            metadata: bytes::Bytes::copy_from_slice(metadata),
-        });
-        Ok(())
-    })?;
+    let context = parse(
+        bytes,
+        None,
+        Some(crate::MAX_RECORD_BYTES.saturating_sub(bytes.len())),
+        |key, operation, metadata| {
+            entries.push(wire::ChangeEntry {
+                key: bytes::Bytes::copy_from_slice(key),
+                operation: operation.into(),
+                metadata: bytes::Bytes::copy_from_slice(metadata),
+            });
+            Ok(())
+        },
+    )?;
     Ok(wire::ChangeRecord {
         context: bytes::Bytes::copy_from_slice(context),
         entries,
@@ -453,7 +464,15 @@ pub(crate) fn record_headers(
     }
     let mut ranges = Vec::new();
     let mut owned = Vec::new();
-    parse(value, None, |key, _, _| {
+    let overhead = attributes.iter().fold(value.len(), |bytes, attribute| {
+        bytes
+            .saturating_add(attribute.name.len())
+            .saturating_add(attribute.value.len())
+    });
+    let remaining = crate::MAX_RECORD_BYTES
+        .checked_sub(overhead)
+        .ok_or(StreamError::LimitExceeded)?;
+    parse(value, None, Some(remaining), |key, _, _| {
         let start = owned.len();
         owned.extend_from_slice(key);
         ranges.push(start..owned.len());

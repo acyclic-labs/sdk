@@ -641,6 +641,7 @@ impl Projector {
     ) -> Result<(), NativeMountError> {
         let target = lock_recover(&self.state).notified;
         let cancellation = work.cancellation_wait()?;
+        let mut cancellation = std::pin::pin!(cancellation);
         acyclic_native_runtime::wait_native_future(
             async {
                 loop {
@@ -665,11 +666,13 @@ impl Projector {
                                 .map_or(Ok(()), |failure| Err(NativeMountError::Driver(failure)));
                         }
                     }
-                    changed.await;
+                    // Cancellation must complete the task itself: the native
+                    // executor retains admitted work until its future settles.
+                    let _ = futures::future::select(changed, cancellation.as_mut()).await;
                 }
             },
             &work.runtime_meter(),
-            cancellation,
+            std::future::pending(),
         )
         .map_err(|error| NativeMountError::from(work.runtime_error(error)))?
     }
