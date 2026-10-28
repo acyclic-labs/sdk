@@ -122,9 +122,6 @@ impl<'a> Size<'a> {
         {
             return Err(StreamError::InvalidArgument);
         }
-        if self.count == crate::MAX_RECORD_KEYS {
-            return Err(StreamError::LimitExceeded);
-        }
         let common = self
             .previous
             .map_or(0, |previous| shared(previous, entry.key));
@@ -258,8 +255,7 @@ fn parse_v1<'a>(
         let operation = std::str::from_utf8(operation).map_err(|_| StreamError::InvalidArgument)?;
         let metadata = entry.field(26)?.unwrap_or_default();
         count += 1;
-        if count > crate::MAX_RECORD_KEYS
-            || previous.is_some_and(|previous| previous >= key)
+        if previous.is_some_and(|previous| previous >= key)
             || operation.chars().any(char::is_control)
             || !entry.0.is_empty()
         {
@@ -297,7 +293,7 @@ fn parse<'a>(
     let mut reader = Reader(bytes);
     let context = reader.bytes()?;
     let count = reader.number()?;
-    if count == 0 || count > crate::MAX_RECORD_KEYS {
+    if count == 0 {
         return Err(StreamError::InvalidArgument);
     }
     // Native validation already owns the admitted immutable full keys. Compare
