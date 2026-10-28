@@ -1192,3 +1192,8 @@ Canonical descriptor and Stream contract generation passed on `dabc96ee038356b37
 | Constant or policy | File:line | Category | Action |
 |---|---|---|---|
 | Imported hook60-second default deadline | `rust/crates/harness-core/src/hooks/imports.rs:12`; `hooks/spec.rs:128`; `hooks/native.rs:87` | 1 deleted; optional caller policy retained | Omitted JSON/TOML timeout becomes None in the normalized HookSpec and shared native CaptureSchedule. Explicit positive seconds convert with checked millisecond arithmetic; zero/overflow rejection and actual finite capture timeout controls remain. Canonical round-trip generator covers both absence and finite policies; original imported/typed atomic normalization controls remain. One hidden timer registration per default run becomes zero; no extra syscall, barrier, RPC or allocation. Qualification pending. |
+
+
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
+| `SettingsConfig.maximum_file_bytes`1MiB | `rust/crates/harness-core/src/native_settings.rs:24,69`; `native_settings/model.rs:12` | 1 deleted; optional caller policy retained | Default None. One shared file reader serves model selection and hook/MCP snapshots; explicitly selected finite positive policies retain zero/overflow and actual oversize refusal. Existing real-file regression now loads a >1MiB TOML document through both public consumers, verifies selected MCP/model identities, and preserves both selected-policy negatives and malformed UTF-8. One file open, one owned read buffer and one parser per consumer; no reread or extra serialization pass. Qualification pending. |
