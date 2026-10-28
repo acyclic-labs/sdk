@@ -29,7 +29,9 @@ export async function nativeModel({host,binary,graphcoder,mock,native,output,pac
  const workspace=join(root,'workspace');await mkdir(workspace);
  const scope=new Processes(),captures=[];const started=performance.now();let step='stage native package',result;
  const run=async(program,args,options={})=>{
-  const record={program,args,...await scope.runOwned(program,args,{cwd:workspace,env,scopeMountRoot:root,...options})};
+  // The long-lived workspace owner holds the one mount lease. Commands retain
+  // process-tree custody without attempting another lease over its live views.
+  const record={program,args,...await scope.runOwned(program,args,{cwd:workspace,env,...options})};
   captures.push(record);return record;
  };
  try {
