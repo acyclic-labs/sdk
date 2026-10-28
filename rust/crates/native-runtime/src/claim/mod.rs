@@ -183,8 +183,9 @@ impl std::fmt::Debug for StoreHandle {
 }
 
 impl StoreClaim {
-    /// The most backend reads one [`StoreClaim::check`] makes: the record,
-    /// then the probes of its owner.
+    /// The most logical observations one [`StoreClaim::check`] reports: the
+    /// record, then its owner probes. Physical reads are metered individually
+    /// by [`StoreClaim::check_metered`], including every record chunk.
     pub const CHECK_READ_OPERATIONS: u64 = 1 + process::PROBES;
 
     /// Claims the store whose claim file is `path`, creating the file if needed.
@@ -233,8 +234,9 @@ impl StoreClaim {
         self._claim.path()
     }
 
-    /// [`StoreClaim::is_claimed`], with the reads it made, for callers that
-    /// account their I/O. At most [`StoreClaim::CHECK_READ_OPERATIONS`].
+    /// [`StoreClaim::is_claimed`], with its logical record/probe observations.
+    /// At most [`StoreClaim::CHECK_READ_OPERATIONS`]. Native callers account
+    /// actual physical I/O with [`StoreClaim::check_metered`].
     pub fn check(file: &FileLock) -> io::Result<ClaimCheck> {
         Self::check_with(&Native::SYSTEM, file)
     }
