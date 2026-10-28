@@ -4,7 +4,7 @@ use super::*;
 
 impl HostWorkspaceOwner {
     pub(super) async fn hook(
-        &mut self,
+        &self,
         operation: OperationId,
         host: &str,
         event: &str,
@@ -23,8 +23,11 @@ impl HostWorkspaceOwner {
                 .get("session_id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| Error::Invalid("native session identity absent".into()))?;
-            self.native.open(host, session).await?
+            self.open(host, session).await?
         };
+        // Its boundary commits and capture are serial with the agent's other
+        // effects, never with unrelated agents.
+        let _lock = self.locks.hold(vec![agent.clone()]).await;
         // A managed boundary is an acknowledgement, not view admission or
         // capture. Only its physical process owner can retire and capture it.
         if agent.parent().is_some() && matches!(event, "Stop" | "SessionEnd") {
@@ -83,16 +86,13 @@ impl HostWorkspaceOwner {
         )
     }
 
-    pub(super) async fn locate(&mut self, cwd: &Path) -> Result<Value> {
+    pub(super) async fn locate(&self, cwd: &Path) -> Result<Value> {
         let cwd = std::fs::canonicalize(cwd).map_err(storage)?;
         // A native session enters only after its view has been attached. Cwd
         // discovery observes those held views; it never reconstructs the
         // agent tree or acquires unrelated views as a side effect of a read.
-        let mut selected = self
-            .views
-            .iter()
-            .filter(|(_, view)| cwd.starts_with(view.path()))
-            .collect::<Vec<_>>();
+        let mut selected = self.attached()?;
+        selected.retain(|(_, view)| cwd.starts_with(view.path()));
         selected.sort_by_key(|(_, view)| std::cmp::Reverse(view.path().components().count()));
         let Some((agent, first)) = selected.first() else {
             return Err(Error::NotFound(
@@ -113,7 +113,6 @@ impl HostWorkspaceOwner {
             ));
         }
         first.verify().await?;
-        let agent = (*agent).clone();
-        self.location(&agent)
+        self.location(agent)
     }
 }

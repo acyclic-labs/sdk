@@ -3,7 +3,7 @@ use super::*;
 use crate::agent::AgentPath;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 mod agents;
 mod events;
@@ -41,6 +41,12 @@ pub enum HostAction {
         reference: String,
         /// Session operation; never executes the host.
         action: SessionAction,
+        /// Also claim the session's next input under the physical fence of
+        /// this same exchange, returned as `next`: null when the fence is
+        /// held or nothing is claimable. A claim the fence proves unrun is
+        /// handed out again under its exact identity.
+        #[serde(default)]
+        next: bool,
     },
     /// Translate a native lifecycle event into workspace coordination only.
     Hook {
@@ -87,12 +93,22 @@ pub enum HostAction {
     },
 }
 
+/// One agent's view, attached once however many requests await it.
+type View = Arc<tokio::sync::OnceCell<Arc<host_workspace::HostWorkspace>>>;
+
 /// Disposable view handles over the native agent runtime; agents, lineage,
 /// files and history are its commits, so this holds no durable index.
+///
+/// Requests dispatch concurrently. Each one that changes an agent holds that
+/// agent's lock, taken in one global order, so effects on one agent stay
+/// serial while unrelated agents, reads and cancels never wait behind them.
 pub struct HostWorkspaceOwner {
     local: Arc<LocalHarness>,
     native: agents::NativeAgents,
-    views: BTreeMap<AgentPath, host_workspace::HostWorkspace>,
+    views: std::sync::Mutex<BTreeMap<AgentPath, View>>,
+    locks: AgentLocks,
+    /// Serializes root creation, whose agent is not named before it.
+    opening: tokio::sync::Mutex<()>,
     /// The native owner directory, whose `requests` files say which
     /// requests' clients have not yet read their reply.
     requests: Option<std::path::PathBuf>,
@@ -122,7 +138,9 @@ impl HostWorkspaceOwner {
         Ok(Self {
             native: agents::NativeAgents::new(&local)?,
             local,
-            views: BTreeMap::new(),
+            views: std::sync::Mutex::default(),
+            locks: AgentLocks::default(),
+            opening: tokio::sync::Mutex::new(()),
             requests: None,
             #[cfg(test)]
             retirement_observer: None,
@@ -153,7 +171,7 @@ impl HostWorkspaceOwner {
     /// Dispatches a workspace request. Calling this never executes a model, a
     /// native host, a shell command or another harness tool.
     pub fn dispatch(
-        &mut self,
+        &self,
         operation: OperationId,
         action: HostAction,
     ) -> acyclic_stream::BoxProviderFuture<'_, Result<Value>> {
@@ -163,11 +181,7 @@ impl HostWorkspaceOwner {
         Box::pin(self.dispatch_action(operation, action))
     }
 
-    async fn dispatch_action(
-        &mut self,
-        operation: OperationId,
-        action: HostAction,
-    ) -> Result<Value> {
+    async fn dispatch_action(&self, operation: OperationId, action: HostAction) -> Result<Value> {
         match action {
             #[cfg(feature = "test-support")]
             HostAction::ResourceProbe {
@@ -183,13 +197,23 @@ impl HostWorkspaceOwner {
                 parent,
                 reference,
                 action,
-            } => self.session(operation, &parent, &reference, action).await,
+                next,
+            } => {
+                let child = agents::child(&parent, &reference)?;
+                let mut changed = vec![child];
+                if matches!(action, SessionAction::Spawn { .. }) {
+                    changed.push(parent.clone());
+                }
+                let _locks = self.locks.hold(changed).await;
+                self.session(operation, &parent, &reference, action, next)
+                    .await
+            }
             HostAction::Hook { host, event, input } => {
                 self.hook(operation, &host, &event, input).await
             }
             HostAction::Locate { cwd } => self.locate(&cwd).await,
             HostAction::Open { host, session } => {
-                let agent = self.native.open(&host, &session).await?;
+                let agent = self.open(&host, &session).await?;
                 self.attach(&agent).await?;
                 self.location(&agent)
             }
@@ -197,7 +221,10 @@ impl HostWorkspaceOwner {
                 self.attach(&task).await?;
                 self.location(&task)
             }
-            HostAction::Capture { task } => self.capture_native(operation, &task).await,
+            HostAction::Capture { task } => {
+                let _lock = self.locks.hold(vec![task.clone()]).await;
+                self.capture_native(operation, &task).await
+            }
             HostAction::Fs { task, command } => self.native_fs(operation, &task, &command).await,
             HostAction::Agents { task } => {
                 self.attach(&task).await?;
@@ -215,9 +242,15 @@ impl HostWorkspaceOwner {
         }
     }
 
+    /// Creates or replays a root session; root creation is serial.
+    async fn open(&self, host: &str, session: &str) -> Result<AgentPath> {
+        let _opening = self.opening.lock().await;
+        self.native.open(host, session).await
+    }
+
     #[cfg(feature = "test-support")]
     async fn resource_probe(
-        &mut self,
+        &self,
         task: &AgentPath,
         agents: u64,
         previous: Option<[u64; 4]>,
@@ -248,21 +281,28 @@ impl HostWorkspaceOwner {
     }
 
     async fn native_fs(
-        &mut self,
+        &self,
         operation: OperationId,
         task: &AgentPath,
         command: &str,
     ) -> Result<Value> {
-        self.attach(task).await?;
         let parsed = crate::tools::parse_fs_command(command)?;
-        if let [name, reference] = parsed.arguments.as_slice()
-            && name == "merge"
-            && let Some(reference) = reference.strip_prefix("agents/")
-        {
-            let (state, session) = self
-                .native
-                .session(&agents::child(task, reference)?)
-                .await?;
+        let merged = match parsed.arguments.as_slice() {
+            [name, reference] if name == "merge" => reference
+                .strip_prefix("agents/")
+                .map(|reference| agents::child(task, reference))
+                .transpose()?,
+            _ => None,
+        };
+        // A merge reads its child's settled project: it holds both locks.
+        let changed = [Some(task.clone()), merged.clone()];
+        let _locks = self
+            .locks
+            .hold(changed.into_iter().flatten().collect())
+            .await;
+        self.attach(task).await?;
+        if let Some(child) = &merged {
+            let (state, session) = self.native.session(child).await?;
             if session.claimed().is_some() || session.pending(&state) > 0 {
                 return Err(Error::Conflict(
                     "native session is still running; wait for its captured result before merging"
@@ -286,64 +326,90 @@ impl HostWorkspaceOwner {
             .map_err(storage)
     }
 
-    fn view(&self, agent: &AgentPath) -> Result<&host_workspace::HostWorkspace> {
+    fn views(&self) -> Result<std::sync::MutexGuard<'_, BTreeMap<AgentPath, View>>> {
         self.views
+            .lock()
+            .map_err(|_| Error::Conflict("native view table poisoned".into()))
+    }
+
+    fn view(&self, agent: &AgentPath) -> Result<Arc<host_workspace::HostWorkspace>> {
+        self.views()?
             .get(agent)
+            .and_then(|view| view.get().cloned())
             .ok_or_else(|| Error::NotFound("native agent view".into()))
+    }
+
+    /// Every attached view, for cwd discovery.
+    fn attached(&self) -> Result<Vec<(AgentPath, Arc<host_workspace::HostWorkspace>)>> {
+        Ok(self
+            .views()?
+            .iter()
+            .filter_map(|(agent, view)| Some((agent.clone(), Arc::clone(view.get()?))))
+            .collect())
     }
 
     /// Attaches `agent`'s view, idempotently: a root views the checkout
     /// itself, a spawned child mounts its forked project under its parent.
+    /// Concurrent requests share the one attachment in flight.
     fn attach<'a>(
-        &'a mut self,
+        &'a self,
         agent: &'a AgentPath,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<()>> {
         Box::pin(async move {
-            if let Some(view) = self.views.get(agent) {
-                return view.verify().await;
-            }
-            let (mut state, mut session) = self.native.session(agent).await?;
-            if state.parent.is_some() && session.reference.is_none() {
-                // The spawn committed but the child never ran its brief.
-                self.native.resume(agent).await?;
-                (state, session) = self.native.session(agent).await?;
-            }
-            let workspace = if let Some(parent) = &state.parent {
-                self.attach(parent).await?;
-                let reference = session.reference.as_deref().ok_or_else(|| {
-                    Error::Invalid("native child has no recorded reference".into())
-                })?;
-                self.view(parent)?
-                    .open_child(
-                        agent,
-                        &state.volumes,
-                        self.native.view_scope(&state)?,
-                        reference,
-                    )
-                    .await?
-            } else {
-                let workspace = self
-                    .local
-                    .workspace()
-                    .ok_or_else(|| Error::Unsupported("native hosts require a checkout".into()))?;
-                let root = acyclic_fs::hold_root(&workspace.path)
-                    .map_err(storage)?
-                    .create_directories(Path::new(host_workspace::HOST_VIEW_ROOT))
-                    .map_err(storage)?;
-                host_workspace::HostWorkspace::attach(
-                    Arc::clone(workspace),
-                    agent.clone(),
-                    &self.local.signed,
-                    root,
-                )
-                .await?
-            };
-            self.views.insert(agent.clone(), workspace);
-            Ok(())
+            let cell = Arc::clone(self.views()?.entry(agent.clone()).or_default());
+            let mut opened = false;
+            let view = cell
+                .get_or_try_init(|| {
+                    opened = true;
+                    async { self.open_view(agent).await.map(Arc::new) }
+                })
+                .await?;
+            if opened { Ok(()) } else { view.verify().await }
         })
     }
 
-    async fn capture_native(&mut self, operation: OperationId, task: &AgentPath) -> Result<Value> {
+    async fn open_view(&self, agent: &AgentPath) -> Result<host_workspace::HostWorkspace> {
+        let (mut state, mut session) = self.native.session(agent).await?;
+        if state.parent.is_some() && session.reference.is_none() {
+            // The spawn committed but the child never ran its brief.
+            self.native.resume(agent).await?;
+            (state, session) = self.native.session(agent).await?;
+        }
+        let workspace = if let Some(parent) = &state.parent {
+            self.attach(parent).await?;
+            let reference = session
+                .reference
+                .as_deref()
+                .ok_or_else(|| Error::Invalid("native child has no recorded reference".into()))?;
+            self.view(parent)?
+                .open_child(
+                    agent,
+                    &state.volumes,
+                    self.native.view_scope(&state)?,
+                    reference,
+                )
+                .await?
+        } else {
+            let workspace = self
+                .local
+                .workspace()
+                .ok_or_else(|| Error::Unsupported("native hosts require a checkout".into()))?;
+            let root = acyclic_fs::hold_root(&workspace.path)
+                .map_err(storage)?
+                .create_directories(Path::new(host_workspace::HOST_VIEW_ROOT))
+                .map_err(storage)?;
+            host_workspace::HostWorkspace::attach(
+                Arc::clone(workspace),
+                agent.clone(),
+                &self.local.signed,
+                root,
+            )
+            .await?
+        };
+        Ok(workspace)
+    }
+
+    async fn capture_native(&self, operation: OperationId, task: &AgentPath) -> Result<Value> {
         self.attach(task).await?;
         let view = self.view(task)?;
         let _quiescence = if task.parent().is_some() {
@@ -369,6 +435,62 @@ impl HostWorkspaceOwner {
 
     fn location(&self, task: &AgentPath) -> Result<Value> {
         Ok(json!({"task":task,"cwd":self.view(task)?.path()}))
+    }
+}
+
+/// The lock table: one async lock per agent some request changes.
+type LockTable = Arc<std::sync::Mutex<BTreeMap<AgentPath, Arc<tokio::sync::Mutex<()>>>>>;
+
+/// One lock per agent a request changes, present only while a request holds
+/// or awaits it.
+#[derive(Default)]
+struct AgentLocks(LockTable);
+
+/// The locks one request holds; releasing them retires each unused one.
+struct Held {
+    locks: LockTable,
+    held: Vec<(AgentPath, tokio::sync::OwnedMutexGuard<()>)>,
+}
+
+impl AgentLocks {
+    /// Holds the lock of every agent in `agents`, in the one global agent
+    /// order, so no two requests each hold a lock the other awaits.
+    async fn hold(&self, agents: Vec<AgentPath>) -> Held {
+        let agents = agents.into_iter().collect::<BTreeSet<_>>();
+        let mut held = Held {
+            locks: Arc::clone(&self.0),
+            held: Vec::with_capacity(agents.len()),
+        };
+        for agent in agents {
+            let lock = Arc::clone(
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .entry(agent.clone())
+                    .or_default(),
+            );
+            held.held.push((agent, lock.lock_owned().await));
+        }
+        held
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        let mut locks = self
+            .locks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for (agent, guard) in self.held.drain(..) {
+            drop(guard);
+            // Only the table refers to it: nothing holds or awaits the lock.
+            if locks
+                .get(&agent)
+                .is_some_and(|lock| Arc::strong_count(lock) == 1)
+            {
+                locks.remove(&agent);
+            }
+        }
     }
 }
 
