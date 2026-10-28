@@ -85,6 +85,15 @@ mod journal;
 mod local;
 mod memory;
 mod operation_claim;
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
+mod replicated;
 pub use operation_claim::{OperationClaim, OperationClaims};
 mod follow_filter;
 mod follow_index;

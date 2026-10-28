@@ -17,6 +17,7 @@ impl MemoryStream {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn has_replay(&self, key: &IdempotencyKey) -> Result<bool, StreamError> {
         self.replay(&*self.state.read().await, key.as_bytes())
             .map(|entry| entry.is_some())

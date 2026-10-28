@@ -12,10 +12,6 @@ pub(crate) enum Command {
     Commit(CommitRequest),
 }
 
-#[cfg(any(
-    feature = "postgres",
-    all(feature = "wasm-journal", target_arch = "wasm32")
-))]
 pub(crate) enum Outcome {
     Append(crate::AppendOutcome),
     Fork(crate::ForkReceipt),
@@ -24,35 +20,24 @@ pub(crate) enum Outcome {
 
 pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<(), StreamError> {
     match command {
-        Command::Append(request) => provider.append(request).await.map(|_| ()),
+        Command::Append(request) => match provider.append(request).await? {
+            crate::AppendOutcome::Committed(_) => Ok(()),
+            crate::AppendOutcome::TailConflict { .. } => Err(StreamError::InvalidResponse),
+        },
         Command::Fork(request) => provider.fork(request).await.map(|_| ()),
         Command::Commit(mut request) => {
             // This command already passed its publication deadline. Recovery
             // installs that accepted decision rather than admitting a new one.
             request.deadline_unix_millis = None;
-            provider.commit(request).await.map(|_| ())
+            match provider.commit(request).await? {
+                crate::CommitOutcome::Committed(_) => Ok(()),
+                crate::CommitOutcome::Conflict(_) => Err(StreamError::InvalidResponse),
+            }
         }
     }
 }
 
 impl Command {
-    #[cfg(any(
-        all(feature = "postgres", not(target_arch = "wasm32")),
-        all(
-            any(feature = "wasm", feature = "wasm-journal"),
-            target_arch = "wasm32"
-        )
-    ))]
-    pub(crate) async fn has_replay(&self, provider: &MemoryStream) -> Result<bool, StreamError> {
-        let key = match self {
-            Self::Append(request) => &request.idempotency_key,
-            Self::Fork(request) => &request.idempotency_key,
-            Self::Commit(request) => &request.idempotency_key,
-        };
-        provider.has_replay(key).await
-    }
-
-    #[cfg(target_arch = "wasm32")]
     pub(crate) fn validated(mut self) -> Result<Self, StreamError> {
         match &mut self {
             Self::Append(request) => {

@@ -132,7 +132,12 @@ export function wireRequest(request: WireRequest): Uint8Array {
         request.paths.forEach(requirePathType);
         return toBinary(HeadsRequestSchema, create(HeadsRequestSchema, {
           paths: [...request.paths], limit: request.limit, atLeast: [...(request.atLeast ?? [])],
-          ...(request.children === undefined ? {} : { children: fromBinary(ChildrenPageRequestSchema, wireRequest({ kind: "children_page", ...request.children })) }),
+          ...(request.children === undefined ? {} : { children: fromBinary(ChildrenPageRequestSchema, wireRequest({ kind: "children_page", limit: request.children.limit,
+            ...(request.children.parent === undefined ? {} : { parent: request.children.parent }),
+            ...(request.children.tailStream === undefined ? {} : { tailStream: request.children.tailStream }),
+            ...(request.children.after === undefined ? {} : { after: request.children.after }),
+            ...(request.children.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.children.hierarchyVersion }),
+          })) }),
         }));
       }
       case "head":

@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS acyclic_stream_generation (
 );
 
 -- Physical transaction entry: acquire the publication fence before reading a
--- bounded page, then return one clock-only row (NULL revision/command). The
+-- bounded page, then return one head/clock row (NULL command). The
 -- caller keeps this transaction open for canonical planning and publication.
 CREATE OR REPLACE FUNCTION acyclic_stream_read_fenced(
     stream_namespace text,
@@ -41,8 +41,9 @@ BEGIN
         FROM acyclic_stream_journal AS j
         WHERE j.namespace = stream_namespace AND j.revision > after_revision
         ORDER BY j.revision LIMIT page_size;
-    RETURN QUERY SELECT NULL::bigint,
-        floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint, NULL::bytea;
+    RETURN QUERY SELECT COALESCE(max(j.revision), 0),
+        floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint, NULL::bytea
+        FROM acyclic_stream_journal AS j WHERE j.namespace = stream_namespace;
 END;
 $$;
 

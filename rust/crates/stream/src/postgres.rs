@@ -5,36 +5,32 @@
 //! processes; LISTEN/NOTIFY drives live replicas without timers or polling.
 
 use crate::{
-    journal::{Command, Outcome, decode_command, replay},
+    journal::{Command, Outcome},
+    replicated::{ReplicaClock, Replicated},
     *,
 };
 use futures::StreamExt;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{Mutex, watch};
-use tokio_postgres::{AsyncMessage, Client, GenericClient, NoTls, Statement};
+use tokio_postgres::{AsyncMessage, Client, NoTls, Statement};
 
-const PAGE: i64 = 64;
+const PAGE: usize = 64;
+mod port;
+use port::{PgJournal, Storage};
 const SCHEMA: &str = include_str!("postgres/schema.sql");
-
-#[derive(Default)]
-struct Clock(AtomicU64);
-impl UnixMillisClock for Clock {
-    fn now_unix_millis(&self) -> u64 {
-        self.0.load(Ordering::Acquire)
-    }
-}
 
 struct Session {
     client: Client,
-    cursor: i64,
+    cursor: u64,
     publish: Statement,
     read_fenced: Statement,
+    wakes: watch::Receiver<()>,
 }
 
 struct Inner {
     core: MemoryStream,
-    clock: Arc<Clock>,
     session: Mutex<Session>,
+    clock: Arc<ReplicaClock>,
     namespace: String,
     failed: AtomicBool,
     failure: watch::Sender<bool>,
@@ -113,7 +109,7 @@ impl PostgresStream {
         let (listener, mut notifications) = tokio_postgres::connect(database, NoTls)
             .await
             .map_err(unavailable)?;
-        let (wake, mut wakes) = tokio::sync::mpsc::channel(1);
+        let (wake, wakes) = watch::channel(());
         let notified_namespace = namespace.to_owned();
         let notification_driver = tokio::spawn(async move {
             while let Some(message) =
@@ -123,7 +119,7 @@ impl PostgresStream {
                     Ok(AsyncMessage::Notification(notification))
                         if notification.payload() == notified_namespace =>
                     {
-                        let _ = wake.try_send(());
+                        wake.send_replace(());
                     }
                     Ok(_) => {}
                     Err(_) => break,
@@ -141,7 +137,7 @@ impl PostgresStream {
             )
             .await
             .map_err(unavailable)?;
-        let clock = Arc::new(Clock::default());
+        let clock = Arc::new(ReplicaClock::default());
         // Both planning and recorded admission use the transaction's database
         // clock. A process wall-clock skew cannot override SQL admission.
         // Every process replays the namespace journal in one order, so all
@@ -162,15 +158,16 @@ impl PostgresStream {
         );
         let (failure, _) = watch::channel(false);
         let inner = Arc::new(Inner {
-            core,
-            clock,
-            namespace: namespace.to_owned(),
             session: Mutex::new(Session {
                 client,
                 cursor: 0,
                 publish,
                 read_fenced,
+                wakes,
             }),
+            clock,
+            namespace: namespace.to_owned(),
+            core,
             failed: AtomicBool::new(false),
             failure,
             tasks: std::sync::Mutex::new(vec![
@@ -185,18 +182,48 @@ impl PostgresStream {
         let refresh = tokio::spawn(async move {
             // Keep the LISTEN client alive, but never the provider owner.
             let _listener = listener;
-            while wakes.recv().await.is_some() {
+            loop {
+                // The registered event owns no provider or connection. Release
+                // the replica lock and its strong owner before parking.
+                let changed = {
+                    let Some(inner) = weak.upgrade() else {
+                        return;
+                    };
+                    let mut session = inner.session.lock().await;
+                    let Session {
+                        client,
+                        cursor,
+                        publish,
+                        read_fenced,
+                        wakes,
+                    } = &mut *session;
+                    let mut replica = Replicated::new(
+                        PgJournal {
+                            storage: Storage::Connection(client),
+                            publish,
+                            read_fenced,
+                            namespace: &inner.namespace,
+                            wakes,
+                            at_millis: 0,
+                        },
+                        inner.core.clone(),
+                        Arc::clone(&inner.clock),
+                        *cursor,
+                    );
+                    replica.changed()
+                };
+                let result = match changed {
+                    Ok(changed) => changed.await,
+                    Err(error) => Err(error),
+                };
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
                 let provider = Self { inner };
-                if provider.refresh().await.is_err() {
+                if result.is_err() || provider.refresh().await.is_err() {
                     provider.fail();
                     return;
                 }
-            }
-            if let Some(inner) = weak.upgrade() {
-                Self { inner }.fail();
             }
         });
         provider
@@ -223,101 +250,7 @@ impl PostgresStream {
         }
     }
 
-    async fn catch_up(
-        &self,
-        client: &impl GenericClient,
-        cursor: &mut i64,
-        fenced: Option<&Statement>,
-    ) -> Result<u64, StreamError> {
-        loop {
-            let parameters: &[&(dyn tokio_postgres::types::ToSql + Sync)] =
-                &[&self.inner.namespace, &*cursor, &PAGE];
-            let rows = match fenced {
-                Some(statement) => client.query(statement, parameters).await,
-                None => client.query(
-                    "SELECT revision, at_millis, command FROM acyclic_stream_journal WHERE namespace=$1 AND revision>$2 ORDER BY revision LIMIT $3",
-                    parameters,
-                ).await,
-            }.map_err(unavailable)?;
-            let mut count = 0;
-            let mut planned = None;
-            for row in rows {
-                let millis: i64 = row.get(1);
-                let millis = u64::try_from(millis).map_err(unavailable)?;
-                let Some(revision) = row.get::<_, Option<i64>>(0) else {
-                    // The fenced page ends with its database clock sample.
-                    planned = Some(millis);
-                    continue;
-                };
-                let bytes: Vec<u8> = row.get(2);
-                self.inner.clock.0.store(millis, Ordering::Release);
-                let command = decode_command(&bytes).map_err(unavailable)?;
-                // Only accepted decisions reach the journal. The canonical
-                // replay retains their original identity and ordered effects.
-                if matches!(
-                    replay(&self.inner.core, command).await,
-                    Err(StreamError::Unavailable | StreamError::InvalidResponse)
-                ) {
-                    self.fail();
-                    return Err(unavailable("committed command could not be replayed"));
-                }
-                *cursor = revision;
-                count += 1;
-            }
-            if count < PAGE {
-                return match fenced {
-                    Some(_) => planned.ok_or(StreamError::InvalidResponse),
-                    None => Ok(0),
-                };
-            }
-        }
-    }
-
     async fn refresh(&self) -> Result<(), StreamError> {
-        self.check()?;
-        let mut session = self.inner.session.lock().await;
-        let Session { client, cursor, .. } = &mut *session;
-        self.catch_up(client, cursor, None).await.map(|_| ())
-    }
-
-    async fn apply(&self, command: Command) -> Result<Outcome, StreamError> {
-        match command {
-            Command::Append(request) => self.inner.core.append(request).await.map(Outcome::Append),
-            Command::Fork(request) => self.inner.core.fork(request).await.map(Outcome::Fork),
-            Command::Commit(request) => self.inner.core.commit(request).await.map(Outcome::Commit),
-        }
-    }
-
-    async fn publish(
-        &self,
-        mut command: Command,
-        deadline: Option<u64>,
-    ) -> Result<Outcome, StreamError> {
-        // Validate before submitting any database work or retaining a command.
-        match &mut command {
-            Command::Append(request) => {
-                crate::request::append_digest(request)?;
-            }
-            Command::Fork(request) => {
-                crate::request::fork_digest(request)?;
-            }
-            Command::Commit(request) => {
-                crate::request::commit_digest(request)?;
-            }
-        }
-        let provider = self.clone();
-        // Publication owns its completion across caller cancellation. Only
-        // committed journal entries can ever reach the visible core.
-        tokio::spawn(async move { provider.publish_owned(command, deadline).await })
-            .await
-            .map_err(unavailable)?
-    }
-
-    async fn publish_owned(
-        &self,
-        command: Command,
-        deadline: Option<u64>,
-    ) -> Result<Outcome, StreamError> {
         self.check()?;
         let mut session = self.inner.session.lock().await;
         let Session {
@@ -325,97 +258,80 @@ impl PostgresStream {
             cursor,
             publish,
             read_fenced,
+            wakes,
         } = &mut *session;
-        // Acquire the namespace lock before taking the catch-up snapshot. A
-        // caller-configured repeatable-read default could otherwise preserve a
-        // snapshot from before a competing publisher released the lock.
-        let tx = client
-            .build_transaction()
-            .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
-            .start()
-            .await
-            .map_err(unavailable)?;
-        // One server call acquires the namespace lock, reads a bounded page
-        // after that wait and samples the planning clock. It keeps the fence
-        // through the same transaction's durable commit.
-        let at = self.catch_up(&tx, cursor, Some(read_fenced)).await?;
-        // The shared core gives an existing retry receipt precedence over an
-        // elapsed deadline, including cross-operation identity mismatches.
-        if command.has_replay(&self.inner.core).await? {
-            return self.apply(command).await;
-        }
-        // Replay restores this exact database-clock sample. The publication
-        // function also checks the actual clock after insertion, so replay CPU
-        // time cannot extend the acceptance deadline.
-        let millis = i64::try_from(at).map_err(unavailable)?;
-        if deadline.is_some_and(|deadline| at >= deadline) {
-            return Err(StreamError::DeadlineElapsed);
-        }
-        let bytes = command.encode_to_vec();
-        // The journal's protobuf oneof adds a field tag and length delimiter;
-        // the public request ceiling remains MAX_COMMAND_BYTES.
-        if bytes.len() > crate::wire_codec::requests::block_len(MAX_COMMAND_BYTES) {
-            return Err(StreamError::LimitExceeded);
-        }
-        self.inner.clock.0.store(at, Ordering::Release);
-        let sql_deadline = deadline.map(|value| i64::try_from(value).unwrap_or(i64::MAX));
-        let mut published = None;
-        // The canonical core decides before durability: a refused command is
-        // never journaled. Physical cursor CAS, insertion at the planned time,
-        // notification and the final acceptance deadline share one statement.
-        let result = self
-            .inner
-            .core
-            .apply_durable(command, deadline, async {
-                let row = tx
-                    .query_one(
-                        &*publish,
-                        &[
-                            &self.inner.namespace,
-                            &*cursor,
-                            &bytes,
-                            &millis,
-                            &sql_deadline,
-                        ],
-                    )
-                    .await
-                    .map_err(|error| {
-                        if error
-                            .as_db_error()
-                            .is_some_and(|error| error.code().code() == "PST01")
-                        {
-                            StreamError::DeadlineElapsed
-                        } else {
-                            unavailable(error)
-                        }
-                    })?;
-                if !row.get::<_, bool>(2) {
-                    // A cursor mismatch is impossible under this publication
-                    // fence; the shared replica owns refresh/replan.
-                    self.fail();
-                    return Err(unavailable(
-                        "journal changed while holding its namespace fence",
-                    ));
-                }
-                let revision: i64 = row.get(0);
-                tx.commit().await.map_err(unavailable)?;
-                published = Some(revision);
-                Ok(())
-            })
-            .await;
-        if (published.is_some() && result.is_err())
-            || matches!(
-                result,
-                Err(StreamError::Unavailable | StreamError::InvalidResponse)
-            )
-        {
+        let mut replica = Replicated::new(
+            PgJournal {
+                storage: Storage::Connection(client),
+                publish,
+                read_fenced,
+                namespace: &self.inner.namespace,
+                wakes,
+                at_millis: 0,
+            },
+            self.inner.core.clone(),
+            Arc::clone(&self.inner.clock),
+            *cursor,
+        );
+        let result = replica.refresh(PAGE).await;
+        *cursor = replica.cursor;
+        drop(replica);
+        if result.is_err() {
             self.fail();
-            return result;
-        }
-        if let Some(revision) = published {
-            *cursor = revision;
         }
         result
+    }
+
+    async fn publish(
+        &self,
+        command: Command,
+        deadline: Option<u64>,
+    ) -> Result<Outcome, StreamError> {
+        let command = command.validated()?;
+        let provider = self.clone();
+        // This one exact publication retains custody through caller cancellation.
+        tokio::spawn(async move {
+            provider.check()?;
+            let mut session = provider.inner.session.lock().await;
+            let Session {
+                client,
+                cursor,
+                publish,
+                read_fenced,
+                wakes,
+            } = &mut *session;
+            let transaction = client
+                .build_transaction()
+                .isolation_level(tokio_postgres::IsolationLevel::ReadCommitted)
+                .start()
+                .await
+                .map_err(unavailable)?;
+            let mut replica = Replicated::new(
+                PgJournal {
+                    storage: Storage::Fenced(Some(transaction)),
+                    publish,
+                    read_fenced,
+                    namespace: &provider.inner.namespace,
+                    wakes,
+                    at_millis: 0,
+                },
+                provider.inner.core.clone(),
+                Arc::clone(&provider.inner.clock),
+                *cursor,
+            );
+            let result = replica.execute(command, deadline, PAGE).await;
+            *cursor = replica.cursor;
+            drop(replica);
+            if matches!(
+                result,
+                Err(StreamError::Unavailable | StreamError::InvalidResponse)
+            ) {
+                provider.fail();
+            }
+            result
+        })
+        .await
+        .map_err(unavailable)?
     }
 
     fn guarded<T: Send + 'static>(
@@ -507,16 +423,9 @@ impl StreamProvider for PostgresStream {
         &self,
         at_least: &crate::RevisionCut,
     ) -> Result<crate::Revision, StreamError> {
-        self.check()?;
-        let revisions = &self.inner.core.revisions;
-        if revisions
-            .floor(at_least)?
-            .is_some_and(|floor| floor > revisions.current().index)
-        {
-            // A token was issued after its publication reached the journal.
-            // An already-applied floor needs no unrelated catch-up.
-            self.refresh().await?;
-        }
+        // A token was issued after its publication reached the journal, so a
+        // refreshed replica covers it.
+        self.refresh().await?;
         self.inner.core.wait_applied(at_least).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
@@ -524,13 +433,6 @@ impl StreamProvider for PostgresStream {
         self.inner.core.read(request).await
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        self.check()?;
-        match self.inner.core.read_commit(id).await {
-            Err(StreamError::NotFound) => {}
-            result => return result,
-        }
-        // Success is immutable; only a missing envelope needs a fresh journal
-        // observation. A miss is never cached as an authoritative absence.
         self.refresh().await?;
         self.inner.core.read_commit(id).await
     }

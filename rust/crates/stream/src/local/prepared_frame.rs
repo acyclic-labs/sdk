@@ -1,4 +1,5 @@
 struct PreparedFrame {
+    deadline: Option<u64>,
     encoded: Vec<u8>,
     work: Option<Arc<crate::native::Work>>,
     operation: Option<
@@ -72,6 +73,7 @@ impl PreparedFrame {
             })
             .transpose()?;
         Ok(Self {
+            deadline: None,
             encoded,
             work,
             operation,

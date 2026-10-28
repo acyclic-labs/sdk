@@ -117,8 +117,12 @@ impl LocalStream {
                             crate::memory::RestoreError::PreRevision => {
                                 LocalStreamError::UnsupportedPreRevisionStore
                             }
-                            crate::memory::RestoreError::State(StreamError::InvalidArgument) => LocalStreamError::Corrupt,
-                            crate::memory::RestoreError::State(error) => LocalStreamError::Replay(error),
+                            crate::memory::RestoreError::State(StreamError::InvalidArgument) => {
+                                LocalStreamError::Corrupt
+                            }
+                            crate::memory::RestoreError::State(error) => {
+                                LocalStreamError::Replay(error)
+                            }
                         })
                 }
                 Recovered::Command {
@@ -187,6 +191,52 @@ impl LocalStream {
         } else {
             Ok(())
         }
+    }
+
+    async fn execute(
+        &self,
+        command: Command,
+        deadline: Option<u64>,
+    ) -> Result<crate::journal::Outcome, StreamError> {
+        let cursor = self
+            .inner
+            .journal
+            .lock()
+            .map_err(|_| self.inner.poison())?
+            .bytes;
+        let clock = Arc::new(crate::replicated::ReplicaClock::default());
+        let provider = self
+            .inner
+            .provider
+            .with_commit_clock(Arc::clone(&clock) as _);
+        let mut replica = crate::replicated::Replicated::new(
+            port::LocalPort {
+                stream: self.clone(),
+            },
+            provider,
+            clock,
+            cursor,
+        );
+        let result = replica
+            .execute(command, deadline, REPLAY_PIPELINE_COMMANDS)
+            .await;
+        if matches!(
+            &result,
+            Ok(crate::journal::Outcome::Append(AppendOutcome::Committed(_))
+                | crate::journal::Outcome::Commit(CommitOutcome::Committed(_))
+                | crate::journal::Outcome::Fork(_))
+        ) {
+            // A retained success joins the original durability cut even when
+            // the canonical decision correctly elides another journal frame.
+            self.require_accepted::<true>()?;
+        }
+        if matches!(
+            result,
+            Err(StreamError::Unavailable | StreamError::InvalidResponse | StreamError::Unsupported)
+        ) {
+            self.inner.poison();
+        }
+        result
     }
 
     /// Encodes the command and pins its recorded commit timestamp.
@@ -281,16 +331,24 @@ impl LocalStream {
         }
         let required = !deferred(self);
         let journal = self.inner.journal.clone();
+        let clock = Arc::clone(&self.inner.commit_clock.source);
         let persist = spawn_blocking(move || {
-            journal
-                .lock()
-                .map_err(|_| LocalStreamError::Corrupt)?
-                .append(&mut frame, required)
+            let mut journal = journal.lock().map_err(|_| LocalStreamError::Corrupt)?;
+            if frame
+                .deadline
+                .is_some_and(|deadline| clock.now_unix_millis() >= deadline)
+            {
+                return Err(LocalStreamError::DeadlineElapsed);
+            }
+            journal.append(&mut frame, required)
         });
         let result = persist
             .await
             .map_err(|_| LocalStreamError::Executor)
             .and_then(|result| result);
+        if matches!(result, Err(LocalStreamError::DeadlineElapsed)) {
+            return Err(StreamError::DeadlineElapsed);
+        }
         if result.is_err() {
             return Err(self.inner.poison());
         }
