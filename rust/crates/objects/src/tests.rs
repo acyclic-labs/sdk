@@ -1393,3 +1393,29 @@ async fn default_batches_overlap_one_window_and_keep_request_order()
     assert_eq!(blobs.peak.swap(0, Ordering::SeqCst), 2);
     Ok(())
 }
+
+#[tokio::test]
+async fn a_collection_pages_through_more_blobs_than_one_listing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let blobs = crate::MemoryObjects::memory();
+    let count: u32 = 2 * 1000 + 1;
+    let mut kept = None;
+    for index in 0..count {
+        let put = blobs
+            .put(OwnedBytes::from(index.to_le_bytes().to_vec()), Vec::new())
+            .await?;
+        kept.get_or_insert(put.verified().ok_or("a fresh put verifies")?.digest);
+    }
+    let kept = kept.ok_or("one blob")?;
+    blobs
+        .retain(&RootId::new(b"kept".to_vec())?, vec![kept])
+        .await?;
+    // Admission protects one cut; the next sweeps every unrooted page.
+    let first = blobs.collect().await?.swept;
+    let second = blobs.collect().await?.swept;
+    assert_eq!(first + second, count as u64 - 1);
+    // Negative control: the rooted blob on the first page survives.
+    assert_eq!(blobs.usage().await?.blobs, 1);
+    assert_eq!(blobs.head(kept).await?.digest, kept);
+    Ok(())
+}

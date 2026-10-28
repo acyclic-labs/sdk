@@ -17,6 +17,9 @@ pub struct LogicalObjectStore<P: ?Sized> {
     provider: Arc<P>,
     maximum_object_bytes: u64,
     decoded: Arc<crate::cache::CachedObjectStore<()>>,
+    publication_root: Option<acyclic_objects::RootId>,
+    /// Stored blobs no publication retained yet, kept only under a root.
+    unretained: Arc<std::sync::Mutex<std::collections::HashSet<acyclic_objects::Digest>>>,
 }
 
 impl<P: ?Sized> LogicalObjectStore<P> {
@@ -26,7 +29,17 @@ impl<P: ?Sized> LogicalObjectStore<P> {
             provider,
             maximum_object_bytes: 5 * 1024 * 1024 * 1024,
             decoded: Arc::new(crate::cache::CachedObjectStore::with_default_options(())),
+            publication_root: None,
+            unretained: Arc::default(),
         }
+    }
+
+    /// Retains every published closure under `root` before its record is
+    /// written, so no number of collections removes a live generation.
+    #[must_use]
+    pub fn with_publication_root(mut self, root: acyclic_objects::RootId) -> Self {
+        self.publication_root = Some(root);
+        self
     }
 
     /// Applies the composition's existing positive per-object bound.
@@ -42,6 +55,22 @@ impl<P: ?Sized> LogicalObjectStore<P> {
         }
         self.maximum_object_bytes = maximum;
         Ok(self)
+    }
+
+    fn unretained(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashSet<acyclic_objects::Digest>> {
+        self.unretained
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Notes stored objects for the next publication that cannot enumerate
+    /// its closure.
+    fn published(&self, ids: impl IntoIterator<Item = ObjectId>) {
+        if self.publication_root.is_some() {
+            self.unretained().extend(ids.into_iter().map(blob));
+        }
     }
 
     /// Returns the exact public provider used by this stateless adapter.
@@ -151,12 +180,39 @@ impl<P: Blobs + ?Sized> AsyncObjectStore for LogicalObjectStore<P> {
     }
     async fn flush_before_publish(
         &self,
-        _scope: crate::PublicationScope<'_>,
+        scope: crate::PublicationScope<'_>,
         context: &mut AuthorityWork<'_>,
     ) -> Result<crate::PublicationHold, ObjectStoreError> {
         accounting(context)?
             .check()
             .map_err(crate::async_storage::object_error)?;
+        let Some(root) = &self.publication_root else {
+            return Ok(crate::PublicationHold::none());
+        };
+        // An enumerated closure is retained as listed; the root's earlier
+        // batches already cover objects a reused proof omits. A closure that
+        // cannot be enumerated retains every object stored since the last
+        // such retention, which covers everything this store admitted.
+        // Pending digests stay visible until their retention succeeds, so an
+        // overlapping publication retains them too rather than trusting one
+        // that may still fail.
+        let references: Vec<_> = match scope {
+            crate::PublicationScope::Closure { objects, .. } => {
+                objects.iter().copied().map(blob).collect()
+            }
+            crate::PublicationScope::Everything => self.unretained().iter().copied().collect(),
+        };
+        if references.is_empty() {
+            return Ok(crate::PublicationHold::none());
+        }
+        self.provider
+            .retain(root, references.clone())
+            .await
+            .map_err(ObjectStoreError::LogicalObjects)?;
+        let mut unretained = self.unretained();
+        for digest in &references {
+            unretained.remove(digest);
+        }
         Ok(crate::PublicationHold::none())
     }
     async fn read(
