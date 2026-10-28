@@ -7,6 +7,80 @@ use std::sync::atomic::Ordering;
 type MemoryResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[tokio::test]
+async fn native_commit_owns_admitted_and_retained_fork_exclusions() -> MemoryResult<()> {
+    let provider = MemoryStream::default();
+    let source = StreamPath::new("resident-source")?;
+    let destination = StreamPath::new("resident-fork")?;
+    provider
+        .append(AppendRequest {
+            path: source.clone(),
+            records: vec![OwnedBytes::from_static(b"seed").into()],
+            if_tail: Some(0),
+            idempotency_key: Some(IdempotencyKey::new("resident-seed")?),
+        })
+        .await?;
+    let mut exclude = Vec::with_capacity(7);
+    exclude.push(crate::RelativePath::new("private")?);
+    exclude.push(crate::RelativePath::new("secret")?);
+    let input_exclusions = exclude.capacity() * std::mem::size_of::<crate::RelativePath>();
+    let request = CommitRequest {
+        deadline_unix_millis: None,
+        conditions: vec![CommitCondition::Absent { path: destination.clone() }],
+        mutations: vec![CommitMutation::Fork {
+            source,
+            destination,
+            at_tail: 1,
+            records: Vec::new(),
+            exclude,
+        }],
+        idempotency_key: IdempotencyKey::new("resident-exclusions")?,
+    };
+    let input_bytes = input_exclusions
+        + request.conditions.capacity() * std::mem::size_of::<CommitCondition>()
+        + request.mutations.capacity() * std::mem::size_of::<CommitMutation>();
+    let input_meter = Arc::new(Meter::default());
+    {
+        let work = Work::new(input_meter.original())?;
+        let admitted = provider.with_context(work);
+        let claim = admitted.request_claim(&request)?.ok_or(StreamError::Unavailable)?;
+        assert_eq!(claim.bytes(), input_bytes as u64);
+    }
+    assert_eq!(input_meter.held.load(Ordering::SeqCst), 0);
+    let denied = Arc::new(Meter {
+        memory_limit: (acyclic_native_runtime::arc_allocation_bytes::<Work>()
+            + input_bytes - 1) as u64,
+        ..Meter::default()
+    });
+    {
+        let admitted = provider.with_context(Work::new(denied.original())?);
+        assert!(admitted.request_claim(&request).is_err(), "unfunded exclusions must refuse admission");
+    }
+    assert_eq!(denied.held.load(Ordering::SeqCst), 0);
+    let meter = Arc::new(Meter::default());
+    let output = provider.native_commit(request, None, meter.original()).await??;
+    let CommitOutcome::Committed(receipt) = output.value() else { panic!("committed fork") };
+    {
+        let state = provider.state.read().await;
+        let entry = state.retained.last().ok_or(StreamError::Unavailable)?;
+        let facts = entry.envelope().ok_or(StreamError::Unavailable)?;
+        assert!(receipt.matches_envelope(facts));
+        let [CommittedMutation::Fork(fork)] = facts.mutations.as_slice() else { panic!("one fork") };
+        assert_eq!(fork.exclude, [
+            crate::RelativePath::new("private")?, crate::RelativePath::new("secret")?,
+        ]);
+        let expected = (facts.mutations.capacity() * std::mem::size_of::<CommittedMutation>()
+            + fork.exclude.capacity() * std::mem::size_of::<crate::RelativePath>()
+            + fork.records.capacity() * std::mem::size_of::<Record>()) as u64;
+        assert_eq!(entry._allocation.as_ref().ok_or(StreamError::Unavailable)?.bytes(), expected);
+    }
+    drop(output);
+    assert!(meter.held.load(Ordering::SeqCst) > 0, "resident facts retain their custody");
+    drop(provider);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn retained_fork_inspection_owns_every_exclusion_buffer() -> MemoryResult<()> {
     let provider = MemoryStream::default();
     let source = StreamPath::new("inspection-source")?;

@@ -102,6 +102,7 @@ fn backend_identity_and_time_survive_working_set_replacement() {
 fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(), StreamError> {
     let source = StreamPath::new("source")?;
     let destination = StreamPath::new("destination")?;
+    let exclusions = vec![RelativePath::new("private")?];
     let bodies = vec![AppendRecord::from(vec![1]), AppendRecord::from(vec![2])];
     let mutations = vec![
         CommitMutation::Append {
@@ -109,7 +110,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
             records: bodies.clone(),
         },
         CommitMutation::Fork {
-            exclude: Vec::new(),
+            exclude: exclusions.clone(),
             source: source.clone(),
             destination: destination.clone(),
             at_tail: 1,
@@ -125,7 +126,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
             tail_reads.set(tail_reads.get() + 1);
             Ok(Some(4))
         },
-        |start, bodies| {
+        |start, bodies, exclude| {
             records(
                 start,
                 bodies,
@@ -133,6 +134,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
                 9_000,
                 Vec::with_capacity(bodies.len()),
             )
+            .map(|records| (records, exclude.to_vec()))
         },
         Vec::with_capacity(mutations.len()),
     )?;
@@ -150,7 +152,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
                 records(4, &bodies, identity, 9_000, Vec::with_capacity(2))?
             )?),
             CommittedMutation::Fork(CommittedFork {
-                exclude: Vec::new(),
+                exclude: exclusions,
                 source,
                 destination,
                 forked_at: 1,
@@ -163,7 +165,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
     let reset = facts(
         &mutations,
         |_| Ok(None),
-        |start, bodies| {
+        |start, bodies, exclude| {
             records(
                 start,
                 bodies,
@@ -171,6 +173,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
                 9_000,
                 Vec::with_capacity(bodies.len()),
             )
+            .map(|records| (records, exclude.to_vec()))
         },
         Vec::with_capacity(2),
     )?;
@@ -179,7 +182,7 @@ fn backend_facts_preserve_precommit_cuts_order_and_record_identity() -> Result<(
         facts(
             &mutations,
             |_| Ok(Some(4)),
-            |_, _| Err(StreamError::Unavailable),
+            |_, _, _| Err(StreamError::Unavailable),
             Vec::new()
         ),
         Err(StreamError::InvalidArgument),

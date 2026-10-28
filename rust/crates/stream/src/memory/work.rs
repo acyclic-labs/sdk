@@ -255,15 +255,19 @@ impl MemoryStream {
             + request
                 .mutations
                 .iter()
-                .map(|mutation| match mutation {
-                    CommitMutation::Append { records, .. }
-                    | CommitMutation::Fork { records, .. } => {
-                        records.capacity() * std::mem::size_of::<AppendRecord>()
-                            + records
-                                .iter()
-                                .map(|record| record.headers.owned_bytes())
-                                .sum::<usize>()
-                    }
+                .map(|mutation| {
+                    let (records, exclusions) = match mutation {
+                        CommitMutation::Append { records, .. } => (records, 0),
+                        CommitMutation::Fork { records, exclude, .. } => (
+                            records,
+                            exclude.capacity() * std::mem::size_of::<crate::RelativePath>(),
+                        ),
+                    };
+                    exclusions + records.capacity() * std::mem::size_of::<AppendRecord>()
+                        + records
+                            .iter()
+                            .map(|record| record.headers.owned_bytes())
+                            .sum::<usize>()
                 })
                 .sum::<usize>();
         self.adopt(bytes)

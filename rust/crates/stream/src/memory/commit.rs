@@ -114,10 +114,33 @@ impl MemoryStream {
         let facts = crate::preparation::facts(
             source,
             |path| Ok(state.paths.get(path).map(|path| path.tail)),
-            |start, bodies| {
+            |start, bodies, exclusions| {
                 let (records, claim) = self.records(bodies, start, commit_id, time)?;
                 self.absorb(&mut allocation, claim)?;
-                Ok(records)
+                let (mut exclude, claim) = if exclusions.is_empty() {
+                    (Vec::new(), Default::default())
+                } else {
+                    self.vector(exclusions.len())?
+                };
+                self.absorb(&mut allocation, claim)?;
+                for path in exclusions {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = &self.work {
+                        work.record(work.meter.admit_examination(
+                            1,
+                            std::mem::size_of::<crate::RelativePath>() as u64,
+                        ))?;
+                    }
+                    exclude.push(path.clone());
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = &self.work {
+                        work.record(work.meter.record_examination(
+                            1,
+                            std::mem::size_of::<crate::RelativePath>() as u64,
+                        ))?;
+                    }
+                }
+                Ok((records, exclude))
             },
             output,
         )?;
