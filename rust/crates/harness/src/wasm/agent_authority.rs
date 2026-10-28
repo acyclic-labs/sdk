@@ -1,33 +1,5 @@
 use super::*;
 
-#[derive(Deserialize)]
-struct SchemaDefinition {
-    name: String,
-    version: u32,
-    schema: serde_json::Value,
-    implementation_digest: [u8; 32],
-    fork_policy: ExtensionForkPolicy,
-}
-
-fn schema_registry(value: JsValue) -> Result<SchemaRegistry, JsValue> {
-    let definitions: Vec<SchemaDefinition> = from_js(value)?;
-    let mut registry = SchemaRegistry::new();
-    for definition in definitions {
-        registry
-            .register(
-                definition.name,
-                definition.version,
-                definition.schema,
-                definition.implementation_digest,
-                definition.fork_policy,
-                [],
-                None,
-            )
-            .map_err(js_error)?;
-    }
-    Ok(registry)
-}
-
 fn optional_agent(agent: Option<String>) -> Result<Option<AgentId>, JsValue> {
     agent
         .map(|agent| AgentId::parse(&agent))
@@ -35,28 +7,25 @@ fn optional_agent(agent: Option<String>) -> Result<Option<AgentId>, JsValue> {
         .map_err(js_error)
 }
 
-impl WasmReducer {
+impl WasmAgentAuthority {
     fn verifier(&self) -> Result<crate::core::AuthorityVerifier, JsValue> {
         self.issuer.verifier(&mut None).map_err(js_error)
     }
 }
 
 #[wasm_bindgen]
-impl WasmReducer {
-    /// Creates the authority root of `authority`. `schemas` stays validated so
-    /// hosts keep one registration contract.
+impl WasmAgentAuthority {
+    /// Owns the host-managed signing authority used by the agent runtime.
     #[wasm_bindgen(constructor)]
     pub fn new(
         authority: JsValue,
         issuer_id: String,
         issuer_key: Vec<u8>,
-        schemas: JsValue,
     ) -> Result<Self, JsValue> {
         let authority: Authority = from_js(authority)?;
-        schema_registry(schemas)?;
-        Ok(Self {
-            issuer: AuthorityRoot::new(issuer_id, key_bytes(issuer_key)?, authority),
-        })
+        let issuer = AuthorityRoot::new(issuer_id, key_bytes(issuer_key)?, authority);
+        issuer.verifier(&mut None).map_err(js_error)?;
+        Ok(Self { issuer })
     }
 
     #[wasm_bindgen(js_name = protocolIdentity)]

@@ -1,4 +1,4 @@
-import { type WasmAgentRegistry, type WasmBrowserAgentOptions, type WasmReducer,
+import { type WasmAgentRegistry, type WasmBrowserAgentOptions, type WasmAgentAuthority,
   type WasmJournalStreamLimits } from "../generated/wasm/acyclic_harness_wasm.js";
 import { EventAgentHost, type EventHostAccess } from "./event-host.js";
 import { EventStreamLedger, type StreamLedger } from "./event-ledger.js";
@@ -16,7 +16,7 @@ export interface CloudflareContext {
 
 /** Compose shared event hosting over the DO's SQLite and alarm primitives. */
 export function openCloudflareAgent(ctx: CloudflareContext, ledger: StreamLedger, name: string,
-  options: WasmBrowserAgentOptions, owner: WasmReducer, registry: WasmAgentRegistry, access: EventHostAccess): EventAgentHost {
+  options: WasmBrowserAgentOptions, owner: WasmAgentAuthority, registry: WasmAgentRegistry, access: EventHostAccess): EventAgentHost {
   return new EventAgentHost(new SqliteEventStorage(ctx.storage, "actor"), ledger, name, options, owner, registry, access);
 }
 

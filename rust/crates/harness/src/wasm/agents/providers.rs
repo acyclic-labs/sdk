@@ -6,8 +6,8 @@
 //! their StreamProvider and immutable object store through the same boundary.
 
 use super::{
-    Authorities, BrowserHandler, Error, HISTORY_TURNS, TURN_BACKSTOP_MS, WasmAgentRegistry,
-    WasmBrowserAgentOptions, WasmReducer, agent_error, from_js, js_error, stream_error,
+    Authorities, BrowserHandler, Error, HISTORY_TURNS, TURN_BACKSTOP_MS, WasmAgentAuthority,
+    WasmAgentRegistry, WasmBrowserAgentOptions, agent_error, from_js, js_error, stream_error,
 };
 use crate::{
     agent::{AgentHandler, ExecutorDriver, actor_store},
@@ -273,7 +273,7 @@ impl Providers {
     pub(super) fn handler(
         &self,
         options: &WasmBrowserAgentOptions,
-        owner: &WasmReducer,
+        owner: &WasmAgentAuthority,
         registry: &WasmAgentRegistry,
         admission: &TurnAdmission,
     ) -> Result<BrowserHandler, JsValue> {
@@ -328,7 +328,7 @@ impl Providers {
     pub(super) fn spawn_volumes(
         &self,
         options: &WasmBrowserAgentOptions,
-        owner: &WasmReducer,
+        owner: &WasmAgentAuthority,
         admission: &TurnAdmission,
     ) -> Arc<FilesystemSpawnVolumes<dyn StreamProvider, Objects>> {
         Arc::new(FilesystemSpawnVolumes::new(

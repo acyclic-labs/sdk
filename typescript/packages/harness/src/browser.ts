@@ -1,6 +1,6 @@
 /** Rust agent host backed by real browser providers. */
 export {
-  WasmReducer as BrowserAgentAuthority,
+  WasmAgentAuthority as BrowserAgentAuthority,
   WasmAgentRegistry as BrowserAgentRegistry,
   WasmAgents as BrowserAgents,
   WasmAgentProviders as BrowserAgentProviders,
