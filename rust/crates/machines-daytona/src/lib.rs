@@ -72,8 +72,8 @@ pub struct DaytonaConfig {
     pub poll_interval: Duration,
     /// Maximum time to wait for a sandbox or snapshot to settle before reporting indeterminate.
     pub ready_timeout: Duration,
-    /// Per-request HTTP timeout.
-    pub request_timeout: Duration,
+    /// Optional caller-selected per-request HTTP timeout.
+    pub request_timeout: Option<Duration>,
     /// Absolute directory a container disk fork (`Capability::DiskFork`) copies from the
     /// source into each child; everything outside it comes from the source's snapshot.
     pub workspace_dir: String,
@@ -95,7 +95,7 @@ impl DaytonaConfig {
             organization_id: None,
             poll_interval: Duration::from_millis(500),
             ready_timeout: Duration::from_secs(180),
-            request_timeout: Duration::from_secs(60),
+            request_timeout: None,
             workspace_dir: DEFAULT_WORKSPACE_DIR.to_owned(),
         }
     }
