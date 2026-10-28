@@ -29,7 +29,6 @@ fn inline_record(bytes: &[u8]) -> Result<FileRecord, Box<dyn std::error::Error>>
 fn limits() -> DecodeLimits {
     DecodeLimits {
         maximum_object_bytes: 1024,
-        maximum_name_bytes: 255,
         maximum_page_items: 16,
         maximum_page_bytes: 1024,
         maximum_page_height: 8,

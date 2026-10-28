@@ -206,9 +206,8 @@ impl<'a> ProofMeter<'a> {
     pub(super) fn clone_key<F: crate::kernel::persistent_btree::Format>(
         &self,
         key: &F::Key,
-        maximum: u32,
     ) -> Result<(F::Key, ProofGuard), crate::FsError> {
-        self.decode_steps(|observe| F::try_clone_key(key, maximum, &mut |step| observe(step)))
+        self.decode_steps(|observe| F::try_clone_key(key, &mut |step| observe(step)))
     }
 }
 

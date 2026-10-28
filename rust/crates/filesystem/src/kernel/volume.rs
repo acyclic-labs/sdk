@@ -14,7 +14,7 @@ use thiserror::Error;
 const DOMAIN: &[u8] = b"acyclic-fs-volume-created-v1\0";
 const VERSION: u16 = 1;
 
-pub(crate) const CONFIG_ENCODED_BYTES: usize = 36;
+pub(crate) const CONFIG_ENCODED_BYTES: usize = 32;
 /// Immutable creation fact at sequence one of a volume authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VolumeCreated {
@@ -172,7 +172,6 @@ pub(crate) fn encode_config(encoder: &mut Encoder, config: VolumeConfig) {
     encoder.u8(u8::from(config.symbolic_links));
     encoder.u8(u8::from(config.hard_links));
     encoder.u8(u8::from(config.sparse_files));
-    encoder.u32(config.limits.maximum_component_bytes);
     encoder.u64(config.limits.maximum_object_bytes);
     encoder.u32(config.limits.maximum_mutations_per_batch);
     encoder.u32(config.limits.maximum_paths_per_batch);
@@ -215,7 +214,6 @@ pub(crate) fn decode_config<E: From<CanonicalDecodeError>>(
     let symbolic_links = decode_bool(decoder.u8(observe)?)?;
     let hard_links = decode_bool(decoder.u8(observe)?)?;
     let sparse_files = decode_bool(decoder.u8(observe)?)?;
-    let maximum_component_bytes = decoder.u32(observe)?;
     Ok(VolumeConfig {
         profile,
         concurrency,
@@ -226,7 +224,6 @@ pub(crate) fn decode_config<E: From<CanonicalDecodeError>>(
         hard_links,
         sparse_files,
         limits: VolumeLimits {
-            maximum_component_bytes,
             maximum_object_bytes: decoder.u64(observe)?,
             maximum_mutations_per_batch: decoder.u32(observe)?,
             maximum_paths_per_batch: decoder.u32(observe)?,

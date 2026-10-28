@@ -6,7 +6,7 @@ use crate::performance::WorkError;
 use crate::storage::ObjectKind;
 
 fn name(byte: u8) -> Result<AttributeName, crate::kernel::AttributeError> {
-    AttributeName::new(AttributeClass::PosixXattr, vec![byte], 1)
+    AttributeName::new(AttributeClass::PosixXattr, vec![byte])
 }
 
 fn entry(byte: u8) -> Result<AttributeEntry, crate::kernel::AttributeError> {

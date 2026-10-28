@@ -234,7 +234,6 @@ pub(super) async fn path_queries_with_accounting<S: AsyncObjectStore>(
                             query_indices.value.push(item.path_index);
                             let (name, guard) = copy_name(
                                 &paths.get(item.path_index).components()[depth],
-                                limits.maximum_name_bytes,
                                 accounting,
                                 data_custody,
                             )?;

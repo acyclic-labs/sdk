@@ -55,14 +55,12 @@ fn walk_host_tree<E: From<CaptureError>>(
                     let name = crate::native_name::host_name_bytes_with_source_work(
                         &entry.0.name,
                         profile,
-                        limits.maximum_component_bytes,
                         work,
                     );
                     #[cfg(windows)]
                     let name = crate::native_name::host_wide_name_bytes_with_source_work(
                         &entry.0.name,
                         profile,
-                        limits.maximum_component_bytes,
                         work,
                     );
                     name.map(|(name, _allocation)| name)
@@ -73,8 +71,7 @@ fn walk_host_tree<E: From<CaptureError>>(
                 })?;
             let stat = entry.0.stat.take();
             drop(entry);
-            let name = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
-                .map_err(CaptureError::from)?;
+            let name = LogicalName::new(encoding, bytes).map_err(CaptureError::from)?;
             let child = append_path_measured(&parent, name, limits, meter)?;
             if capture_excludes(policy, &child, meter)? {
                 capture_drop_path(child, meter)?;

@@ -339,3 +339,13 @@ Check49 targeted capture helper/test typing passed; 54/55 regression tests passe
 | TypeScript consumer error 2000-character tail | `scripts/typescript-qualification.mjs:274` | 1 | Deleted loss of complete captured failure diagnostics in qualification evidence. |
 
 Check51 passed 55/58 script tests without skips (`1793170960039-120817-56d982df`); failures are current fixture-source drift: two boundary fixtures still read removed typescript/packages/harness/test/client.test.ts, and the evidence inventory reads removed harness-core/src/executor.rs after its directory split. These assertions are retained and reported to del-core; no complete test-suite pass claimed. All 27 edited JavaScript modules pass syntax checks.
+
+
+| Additional mechanism | File:line | Category | Action |
+|---|---|---|---|
+| `VolumeLimits.maximum_component_bytes` | `rust/crates/filesystem/src/model.rs` | 1 | Deleted byte policy, config word, native profile overrides, binding option and cap-only tests. All encodings share the canonical name implementation; original copy/allocation admission and malformed-name negatives remain. |
+| `DecodeLimits.maximum_name_bytes` | `rust/crates/filesystem/src/kernel/codec.rs` | 1 | Deleted whole-name limit and clone plumbing. Shared decoder checks length prefixes against actual remaining input before observing or copying; canonical u32 length overflow remains a representation error. |
+| Canonical name/path u32 lengths | `rust/crates/filesystem/src/kernel/types/name.rs`; `kernel/namespace_path/mod.rs` | 4 | Keep checked representation conversion. Product-cap errors replaced with explicit length-overflow errors; no encoding or path grammar validation relaxed. |
+| Binding whole-transaction `maximum_mutations_per_batch` checks | `rust/crates/filesystem-{napi,wasm}/src/bindings/authored/mod.rs`; `filesystem-napi/src/bindings/publication/mod.rs` | 1 | Deleted total operation-count and Vec-capacity refusals. Core funded batch continuation remains. Fork-selection misuse of the chunk size is still being replaced structurally. |
+
+Check52 found a duplicate retained encoding-test name; corrected to windows_name_encoding_rejects_before_backend_work. Check53 passed native FS/NAPI all-targets with S3/native mount/native watch and FS WASM all-targets (`10510d354d98`, remote `1793171497639-124347-91b0e470`). It includes component policy deletion and canonical/native negatives at compile time. Later binding count-check deletion and unused-field cleanup await the next check. No new runtime or milestone-completion claim.

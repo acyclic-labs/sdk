@@ -112,7 +112,7 @@ async fn generation_with_regular_extent(
     let entries = put_tree_page(
         store,
         &TreePage::Leaf(vec![TreeEntry {
-            name: LogicalName::new(NameEncoding::Utf8, b"file".to_vec(), 255)?,
+            name: LogicalName::new(NameEncoding::Utf8, b"file".to_vec())?,
             file_id: child_id,
             kind: FileKind::Regular,
         }]),
@@ -228,7 +228,6 @@ fn attribute_name(value: &str) -> Result<AttributeName, Box<dyn std::error::Erro
     Ok(AttributeName::new(
         AttributeClass::PosixXattr,
         value.as_bytes().to_vec(),
-        255,
     )?)
 }
 

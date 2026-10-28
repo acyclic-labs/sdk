@@ -4,10 +4,7 @@ use crate::kernel::{AttributeClass, OwnedSourceChunk};
 
 mod binding;
 
-fn policy_name(
-    maximum_bytes: u32,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<Owned<AttributeName>, FsError> {
+fn policy_name(accounting: &mut KernelAccounting<'_>) -> Result<Owned<AttributeName>, FsError> {
     let copied = WorkCounters {
         bytes_copied: POLICY_METADATA_KEY.len() as u64,
         ..WorkCounters::UNCHARGED
@@ -16,7 +13,7 @@ fn policy_name(
     let mut bytes = Owned::<Vec<u8>>::allocate(POLICY_METADATA_KEY.len(), accounting)?;
     bytes.value.extend_from_slice(POLICY_METADATA_KEY);
     accounting.record_completed(copied)?;
-    match AttributeName::new(AttributeClass::PosixXattr, bytes.value, maximum_bytes) {
+    match AttributeName::new(AttributeClass::PosixXattr, bytes.value) {
         Ok(name) => Ok(Owned::new(name, bytes.allocation, bytes.bytes)),
         Err(error) => {
             retire_allocation(bytes.allocation, bytes.bytes, accounting)?;
@@ -39,7 +36,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             id,
             config,
         };
-        let name = policy_name(config.limits.maximum_component_bytes, accounting)?;
+        let name = policy_name(accounting)?;
         let result = attributes::change_attribute(
             &volume,
             FileMetadata::default(),
@@ -86,10 +83,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         if let Some(view) = cache.get(self.volume.id, revision) {
             return Ok(view);
         }
-        let name = policy_name(
-            self.volume.config.limits.maximum_component_bytes,
-            accounting,
-        )?;
+        let name = policy_name(accounting)?;
         let bytes = attributes::read_attribute(
             &self.volume,
             metadata,
@@ -126,10 +120,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
     > {
         let mut accounting = work.accounting(cancellation);
         let result = async {
-            let name = policy_name(
-                self.volume.config.limits.maximum_component_bytes,
-                &mut accounting,
-            )?;
+            let name = policy_name(&mut accounting)?;
             let result = async {
                 let metadata = self
                     .read_metadata_with_accounting(
@@ -189,10 +180,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             if let Some(original) = accounting.native_work() {
                 self.validate_native_work(original)?;
             }
-            let name = policy_name(
-                self.volume.config.limits.maximum_component_bytes,
-                &mut accounting,
-            )?;
+            let name = policy_name(&mut accounting)?;
             let result = async {
                 let root = self.root.root_file_id;
                 let metadata = self

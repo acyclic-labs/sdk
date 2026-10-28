@@ -22,7 +22,7 @@ pub(super) fn clone_capture_name(
     let mut bytes = capture_vec(name.as_bytes().len(), meter)?;
     bytes.extend_from_slice(name.as_bytes());
     meter.clone().record(copied).map_err(capture_demand_error)?;
-    LogicalName::new(name.encoding(), bytes, u32::MAX).map_err(CaptureError::from)
+    LogicalName::new(name.encoding(), bytes).map_err(CaptureError::from)
 }
 
 pub(super) fn clone_capture_prefix(
@@ -165,7 +165,6 @@ pub(super) fn clone_capture_path(
     meter.clone().check().map_err(capture_demand_error)?;
     // A full prefix preserves the already validated path's exact bounds.
     let limits = crate::model::VolumeLimits {
-        maximum_component_bytes: path.encoded_bytes(),
         ..crate::model::VolumeLimits::default()
     };
     clone_capture_prefix(path, path.depth(), limits, meter)

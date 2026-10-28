@@ -164,7 +164,6 @@ async fn public_identity_reads_content_metadata_and_attributes_share_one_candida
     let attribute = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.identity".to_vec(),
-        128,
     )?;
     assert!(
         checkout

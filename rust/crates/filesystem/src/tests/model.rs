@@ -45,17 +45,6 @@ fn default_limits_are_valid() {
     );
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_component_limit_matches_host_encoding() {
-    let native = VolumeConfig::native(Lifecycle::Durable);
-    assert_eq!(native.validate(), Ok(native));
-    #[cfg(windows)]
-    assert_eq!(native.limits.maximum_component_bytes, 510);
-    #[cfg(not(windows))]
-    assert_eq!(native.limits.maximum_component_bytes, 255);
-}
-
 /// Pins the exact public strings (host bindings and TypeScript depend on
 /// them byte-for-byte) and checks that parsing inverts `as_str`.
 macro_rules! assert_names {

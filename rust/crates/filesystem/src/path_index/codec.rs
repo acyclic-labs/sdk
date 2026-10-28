@@ -220,7 +220,7 @@ pub(crate) fn decode(
                 let depth = decoder.u32(observe)?;
                 for _ in 0..depth {
                     NameEncoding::from_tag(decoder.u8(observe)?).map_err(|_| invalid())?;
-                    let source = decoder.bounded_slice(limits.maximum_component_bytes, observe)?;
+                    let source = decoder.slice(observe)?;
                     if source.is_empty() {
                         return Err(invalid());
                     }
@@ -240,9 +240,8 @@ pub(crate) fn decode(
                 for _ in 0..depth {
                     let encoding =
                         NameEncoding::from_tag(decoder.u8(observe)?).map_err(|_| invalid())?;
-                    let data = decoder.bounded_bytes(limits.maximum_component_bytes, observe)?;
-                    let name = LogicalName::new(encoding, data, limits.maximum_component_bytes)
-                        .map_err(|_| invalid())?;
+                    let data = decoder.bytes(observe)?;
+                    let name = LogicalName::new(encoding, data).map_err(|_| invalid())?;
                     observe(ReadAllocationStep::BeforeCopy(
                         size_of::<LogicalName>() as u64
                     ))?;

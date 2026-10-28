@@ -161,7 +161,7 @@ pub(super) async fn change_attribute<
             None
         };
         let (name, allocation) = decode_owned(accounting, |observe| {
-            name.try_clone(limits.maximum_name_bytes, &mut |step| observe(step))
+            name.try_clone(&mut |step| observe(step))
         })?;
         let mut name = Owned::new(name, allocation, 0);
         name.bytes = usize_to_u64(name.value.retained_bytes());

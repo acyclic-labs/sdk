@@ -19,7 +19,6 @@ fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
         NameEncoding::Utf8,
         value.as_bytes().to_vec(),
-        255,
     )?)
 }
 
@@ -646,7 +645,6 @@ mod model {
 
     const LIMITS: DecodeLimits = DecodeLimits {
         maximum_object_bytes: 64 * 1024,
-        maximum_name_bytes: 255,
         maximum_page_items: 4,
         maximum_page_bytes: 64 * 1024,
         maximum_page_height: 16,

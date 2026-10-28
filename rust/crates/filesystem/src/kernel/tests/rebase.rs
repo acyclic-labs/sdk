@@ -84,7 +84,7 @@ fn generation(byte: u8) -> GenerationId {
 }
 
 fn name(value: &[u8]) -> Result<LogicalName, Box<dyn std::error::Error>> {
-    Ok(LogicalName::new(NameEncoding::Utf8, value.to_vec(), 255)?)
+    Ok(LogicalName::new(NameEncoding::Utf8, value.to_vec())?)
 }
 
 #[test]
@@ -383,18 +383,13 @@ fn dependency_data_budget_denies_cow_before_copy_and_eq_ignores_caches()
         expected: DependencyState::Absent,
     };
     let mut proof = CheckoutDependencies::new(
-        [dependency(LogicalName::new(
-            NameEncoding::Utf8,
-            padded,
-            64,
-        )?)],
+        [dependency(LogicalName::new(NameEncoding::Utf8, padded)?)],
         [],
     )?;
     let exact = CheckoutDependencies::new(
         [dependency(LogicalName::new(
             NameEncoding::Utf8,
             b"key".to_vec(),
-            64,
         )?)],
         [],
     )?;
@@ -520,7 +515,7 @@ fn followed_ledger_is_a_charged_copy_of_the_live_ledger() -> Result<(), Box<dyn 
     let file = DependencyRegion::FileLength(FileId::from_bytes([81; 16]));
     let name = DependencyRegion::DirectoryName {
         directory_id: FileId::from_bytes([83; 16]),
-        name: LogicalName::new(NameEncoding::Utf8, b"report.txt".to_vec(), 64)?,
+        name: LogicalName::new(NameEncoding::Utf8, b"report.txt".to_vec())?,
     };
     let old = DependencyState::Present(Digest::from_bytes([84; 32]));
     let new = DependencyState::Present(Digest::from_bytes([85; 32]));

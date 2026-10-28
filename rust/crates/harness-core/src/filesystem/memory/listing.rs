@@ -358,7 +358,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
         let after = input
             .after
             .map(|name| {
-                LogicalName::new(NameEncoding::Utf8, name.into_bytes(), u32::MAX)
+                LogicalName::new(NameEncoding::Utf8, name.into_bytes())
                     .map_err(|error| Error::Invalid(error.to_string()))
             })
             .transpose()?;

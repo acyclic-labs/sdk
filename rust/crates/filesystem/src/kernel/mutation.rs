@@ -685,16 +685,13 @@ mod original_controls {
         accounting.record_completed(delta)?;
         let limits = VolumeLimits::default();
         components.values.push(
-            LogicalName::new(
-                NameEncoding::Utf8,
-                std::mem::take(&mut bytes.values),
-                limits.maximum_component_bytes,
-            )
-            .map_err(|error| {
-                crate::FsError::Path(super::super::PathLookupError::NamespacePath(
-                    super::super::NamespacePathError::Name(error),
-                ))
-            })?,
+            LogicalName::new(NameEncoding::Utf8, std::mem::take(&mut bytes.values)).map_err(
+                |error| {
+                    crate::FsError::Path(super::super::PathLookupError::NamespacePath(
+                        super::super::NamespacePathError::Name(error),
+                    ))
+                },
+            )?,
         );
         operations.values.push(Mutation::ValidateRegular {
             path: NamespacePath::new(std::mem::take(&mut components.values), limits).map_err(

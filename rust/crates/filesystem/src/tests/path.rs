@@ -83,7 +83,6 @@ fn ancestry_requires_component_boundaries() -> Result<(), PathError> {
 #[test]
 fn every_portable_path_boundary_and_accessor_is_explicit() -> Result<(), PathError> {
     let limits = VolumeLimits {
-        maximum_component_bytes: 3,
         ..VolumeLimits::default()
     };
     let root = PortablePath::parse(PortablePath::ROOT, limits)?;
@@ -102,7 +101,6 @@ fn every_portable_path_boundary_and_accessor_is_explicit() -> Result<(), PathErr
         ("/a/", PathError::TrailingSeparator),
         ("/./a", PathError::CurrentComponent),
         ("/a\0b", PathError::Nul),
-        ("/abcd", PathError::ComponentTooLong),
     ] {
         assert_eq!(PortablePath::parse(input, limits), Err(expected));
     }
@@ -112,7 +110,6 @@ fn every_portable_path_boundary_and_accessor_is_explicit() -> Result<(), PathErr
 #[test]
 fn borrowed_path_validation_is_the_same_canonical_parser() {
     let limits = VolumeLimits {
-        maximum_component_bytes: 3,
         ..VolumeLimits::default()
     };
     for value in [
@@ -142,7 +139,6 @@ mod properties {
 
     fn limits() -> VolumeLimits {
         VolumeLimits {
-            maximum_component_bytes: 4,
             ..VolumeLimits::default()
         }
     }
@@ -164,7 +160,6 @@ mod properties {
                             LogicalName::new(
                                 NameEncoding::Utf8,
                                 component.as_bytes().to_vec(),
-                                limits().maximum_component_bytes,
                             )
                         })
                         .collect::<Result<Vec<_>, _>>()

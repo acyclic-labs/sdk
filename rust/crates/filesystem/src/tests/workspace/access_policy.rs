@@ -328,7 +328,6 @@ async fn access_policy_storage_preserves_explicit_io_budgets() -> Result<(), Box
     let key = crate::kernel::AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         crate::access::POLICY_METADATA_KEY.to_vec(),
-        255,
     )?;
     let root = checkout.root().root_file_id;
     unbounded!(

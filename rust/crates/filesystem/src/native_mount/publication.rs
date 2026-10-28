@@ -321,11 +321,7 @@ mod tests {
             (&mut budgeted, b"stale"),
         ] {
             let path = NamespacePath::new(
-                vec![LogicalName::new(
-                    NameEncoding::Utf8,
-                    name.to_vec(),
-                    config.limits.maximum_component_bytes,
-                )?],
+                vec![LogicalName::new(NameEncoding::Utf8, name.to_vec())?],
                 config.limits,
             )?;
             checkout

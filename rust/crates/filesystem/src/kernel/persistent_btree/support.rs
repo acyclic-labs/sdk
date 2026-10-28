@@ -63,12 +63,10 @@ pub(crate) trait Format: Send + Sync + 'static {
     fn value_owned_bytes(value: &Self::Value) -> u64;
     fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
-        maximum_bytes: u32,
         steps: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E>;
     fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
-        maximum_bytes: u32,
         steps: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Value, E>;
     fn encode_with_accounting(

@@ -132,14 +132,6 @@ impl NativeCheckout {
         let maximum_attempts = maximum_attempts.into_inner();
         let maximum_conflicts = maximum_conflicts.into_inner();
 
-        let maximum =
-            usize::try_from(self.config.limits.maximum_mutations_per_batch).unwrap_or(usize::MAX);
-        if operations.len() > maximum || operations.capacity() > maximum {
-            return Err(Error::new(
-                Status::InvalidArg,
-                "transaction exceeds the configured mutation bound",
-            ));
-        }
         let authored = operations
             .into_iter()
             .map(|operation| native_authored_transaction(operation, self.config))

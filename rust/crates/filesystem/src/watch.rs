@@ -868,27 +868,21 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
             })?;
             let name = name?;
             let ((encoding, bytes), mut allocation) = match name {
-                HintName::Host(name) => crate::native_name::host_name_bytes_with_source_work(
-                    name,
-                    profile,
-                    limits.maximum_component_bytes,
-                    work,
-                ),
+                HintName::Host(name) => {
+                    crate::native_name::host_name_bytes_with_source_work(name, profile, work)
+                }
                 #[cfg(windows)]
-                HintName::Wide(name) => crate::native_name::host_wide_name_bytes_with_source_work(
-                    name,
-                    profile,
-                    limits.maximum_component_bytes,
-                    work,
-                ),
+                HintName::Wide(name) => {
+                    crate::native_name::host_wide_name_bytes_with_source_work(name, profile, work)
+                }
             }?;
             if allocation.is_none() {
                 claimed = claimed
                     .checked_add(bytes.capacity() as u64)
                     .ok_or(WorkError::Overflow)?;
             }
-            let name = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
-                .map_err(|_| DemandError::InvalidRequest)?;
+            let name =
+                LogicalName::new(encoding, bytes).map_err(|_| DemandError::InvalidRequest)?;
             // Keep the name before its guard on every custody-transfer error.
             let mut incoming = (name, allocation.take());
             if let (Some(owner), Some(allocation)) = (&mut owned.1, &mut incoming.1) {
@@ -4329,10 +4323,9 @@ fn relative_namespace_path(
         let Component::Normal(name) = component else {
             return Err(WatchInvalidationReason::UnrepresentablePath);
         };
-        let (encoding, bytes) =
-            crate::native_name::host_name_bytes(name, profile, limits.maximum_component_bytes)
-                .map_err(|_| WatchInvalidationReason::UnrepresentablePath)?;
-        let logical = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
+        let (encoding, bytes) = crate::native_name::host_name_bytes(name, profile)
+            .map_err(|_| WatchInvalidationReason::UnrepresentablePath)?;
+        let logical = LogicalName::new(encoding, bytes)
             .map_err(|_| WatchInvalidationReason::UnrepresentablePath)?;
         components.push(logical);
     }

@@ -441,7 +441,7 @@ pub(in crate::bindings) fn browser_workspace_name(value: JsValue) -> Result<Logi
     let value: BrowserWorkspaceName = serde_wasm_bindgen::from_value(value).map_err(js_error)?;
     let encoding = NameEncoding::from_public_str(&value.encoding)
         .ok_or_else(|| js_error("unknown name encoding"))?;
-    LogicalName::new(encoding, value.bytes, u32::MAX).map_err(js_error)
+    LogicalName::new(encoding, value.bytes).map_err(js_error)
 }
 
 pub(in crate::bindings) fn browser_workspace_metadata(

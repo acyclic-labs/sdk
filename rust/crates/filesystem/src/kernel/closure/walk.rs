@@ -377,15 +377,10 @@ impl<'a, S: crate::AsyncObjectStore> ProofContext<'a, S> {
                 validate_ordered_bounds(children.iter().map(|child| &child.first), lower, upper)?;
                 for (index, child) in children.iter().enumerate().rev() {
                     self.examine(1)?;
-                    let child_lower = self
-                        .meter
-                        .clone_key::<F>(&child.first, self.limits.decode.maximum_name_bytes)?;
+                    let child_lower = self.meter.clone_key::<F>(&child.first)?;
                     let upper_key = children.get(index + 1).map(|next| &next.first).or(upper);
                     let child_upper = upper_key
-                        .map(|key| {
-                            self.meter
-                                .clone_key::<F>(key, self.limits.decode.maximum_name_bytes)
-                        })
+                        .map(|key| self.meter.clone_key::<F>(key))
                         .transpose()?;
                     pending.push((child.page, Some(child_lower), child_upper))?;
                 }

@@ -602,13 +602,12 @@ pub(super) fn generation_namespace_from_host(
         let encoded = crate::native_name::host_name_bytes_with_native_work(
             component.as_os_str(),
             config.profile,
-            limits.maximum_component_bytes,
             receipt.custody.work(),
         );
         let ((encoding, bytes), custody) = encoded.map_err(MaterializeError::from)?;
         let bytes = receipt.accept_source(bytes, custody)?;
-        let logical = LogicalName::new(encoding, bytes, limits.maximum_component_bytes)
-            .map_err(|_| MaterializeError::InvalidPath)?;
+        let logical =
+            LogicalName::new(encoding, bytes).map_err(|_| MaterializeError::InvalidPath)?;
         names.push(logical);
     }
     let path = NamespacePath::new(names, limits).map_err(|_| MaterializeError::InvalidPath)?;

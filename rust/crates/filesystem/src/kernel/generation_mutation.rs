@@ -1855,12 +1855,8 @@ impl TransactionState {
         leaf.accounting
             .record_completed(delta)
             .map_err(accounting_error)?;
-        let name = LogicalName::new(
-            name.encoding(),
-            copied,
-            self.config.limits.maximum_component_bytes,
-        )
-        .map_err(|_| GenerationMutationError::InconsistentState)?;
+        let name = LogicalName::new(name.encoding(), copied)
+            .map_err(|_| GenerationMutationError::InconsistentState)?;
         Ok((name, bytes))
     }
 

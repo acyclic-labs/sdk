@@ -49,8 +49,6 @@ pub(crate) fn copy_bytes<E: From<CanonicalDecodeError>>(
 pub struct DecodeLimits {
     /// Maximum complete canonical object bytes.
     pub maximum_object_bytes: u64,
-    /// Maximum bytes in one logical name.
-    pub maximum_name_bytes: u32,
     /// Maximum entries or children in one page.
     pub maximum_page_items: u32,
     /// Maximum canonical bytes in one authenticated index/page object.
@@ -63,7 +61,6 @@ impl Default for DecodeLimits {
     fn default() -> Self {
         Self {
             maximum_object_bytes: 64 * 1024 * 1024,
-            maximum_name_bytes: 255,
             maximum_page_items: 1_024,
             maximum_page_bytes: 256 * 1024,
             maximum_page_height: 64,
@@ -77,7 +74,6 @@ impl DecodeLimits {
     pub fn for_volume(config: VolumeConfig) -> Self {
         Self {
             maximum_object_bytes: config.limits.maximum_object_bytes,
-            maximum_name_bytes: config.limits.maximum_component_bytes,
             maximum_page_items: config.limits.maximum_directory_page_entries,
             maximum_page_bytes: u32::try_from(config.limits.maximum_object_bytes)
                 .unwrap_or(u32::MAX),
@@ -405,10 +401,24 @@ impl<'a> Decoder<'a> {
         &mut self,
         observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Vec<u8>, E> {
+        let source = self.slice(observe)?;
+        copy_bytes(source, u64::from(!source.is_empty()), observe)
+    }
+
+    /// Borrows a length-prefixed field only when it fits the actual input.
+    pub(crate) fn slice<E: From<CanonicalDecodeError>>(
+        &mut self,
+        observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<&'a [u8], E> {
         let length = usize::try_from(self.u32(observe)?)
             .map_err(|_| CanonicalDecodeError::LengthOverflow)?;
-        let source = self.take(length)?;
-        copy_bytes(source, u64::from(!source.is_empty()), observe)
+        self.take(length).map_err(Into::into)
+    }
+
+    pub(crate) fn skip_bytes(&mut self) -> Result<usize, CanonicalDecodeError> {
+        Ok(self
+            .slice(&mut |_| Ok::<_, CanonicalDecodeError>(()))?
+            .len())
     }
 
     pub(crate) fn skip_bounded_bytes(

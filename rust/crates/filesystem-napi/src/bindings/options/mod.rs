@@ -3,7 +3,6 @@ use super::*;
 /// Exact hard limits enforced before externally controlled work.
 #[napi(object)]
 pub struct NativeVolumeLimits {
-    pub maximum_component_bytes: NapiU32,
     pub maximum_object_bytes: BigInt,
     pub maximum_mutations_per_batch: NapiU32,
     pub maximum_paths_per_batch: NapiU32,
@@ -59,7 +58,6 @@ pub(in crate::bindings) fn native_volume_config(
         hard_links: options.hard_links,
         sparse_files: options.sparse_files,
         limits: VolumeLimits {
-            maximum_component_bytes: limits.maximum_component_bytes.into_inner(),
             maximum_object_bytes: bigint_u64(&limits.maximum_object_bytes, "maximumObjectBytes")?,
             maximum_mutations_per_batch: limits.maximum_mutations_per_batch.into_inner(),
             maximum_paths_per_batch: limits.maximum_paths_per_batch.into_inner(),

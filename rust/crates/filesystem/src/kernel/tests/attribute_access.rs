@@ -9,11 +9,7 @@ use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
 fn name(byte: u8) -> Result<AttributeName, Box<dyn std::error::Error>> {
-    Ok(AttributeName::new(
-        AttributeClass::PosixXattr,
-        vec![byte],
-        8,
-    )?)
+    Ok(AttributeName::new(AttributeClass::PosixXattr, vec![byte])?)
 }
 
 fn entry(byte: u8) -> Result<AttributeEntry, Box<dyn std::error::Error>> {

@@ -139,7 +139,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         let cancellation = work.cancellation();
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
-        let name = inputs.mutation_attribute_name(name, self.config.profile, self.config.limits)?;
+        let name = inputs.mutation_attribute_name(name, self.config.profile)?;
         let observation = self
             .checkout
             .observe(
@@ -459,7 +459,6 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             runtime: self.runtime.clone(),
             cancellation: self.cancellation.clone(),
             profile: self.config.profile,
-            limits: self.config.limits,
         }))
     }
 

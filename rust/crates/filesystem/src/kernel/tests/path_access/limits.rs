@@ -94,14 +94,9 @@ async fn observation_dependency_storage_is_admitted_with_cache_residency()
     completed?;
     let _dependencies =
         reserve_slots::<Dependency>(path.depth().saturating_add(1), &mut accounting, None)?;
-    let failure = copy_name(
-        &path.components()[0],
-        config().limits.maximum_component_bytes,
-        &mut accounting,
-        None,
-    )
-    .err()
-    .ok_or("unadmitted dependency name unexpectedly succeeded")?;
+    let failure = copy_name(&path.components()[0], &mut accounting, None)
+        .err()
+        .ok_or("unadmitted dependency name unexpectedly succeeded")?;
     assert!(matches!(
         failure,
         crate::FsError::Work(WorkError::BudgetExceeded {
@@ -336,46 +331,11 @@ async fn single_path_cancellation_after_authenticated_progress_preserves_work()
 }
 
 #[tokio::test]
-async fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn windows_name_encoding_rejects_before_backend_work()
+-> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let (generation, path) = fixture(&store).await?;
-    let mut small_component = config();
-    small_component.limits.maximum_component_bytes = 3;
-    for candidate in [small_component] {
-        let examined = u64::try_from(
-            path.components()
-                .iter()
-                .position(|component| {
-                    component.as_bytes().len()
-                        > usize::try_from(candidate.limits.maximum_component_bytes)
-                            .unwrap_or(usize::MAX)
-                })
-                .ok_or("component-bound fixture no longer rejects a reached component")?
-                + 1,
-        )?;
-        let failure = lookup_path(
-            &store,
-            &generation,
-            &path,
-            candidate,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .err()
-        .ok_or("unsupported path semantics unexpectedly succeeded")?;
-        assert!(matches!(failure.error, PathLookupError::PathBounds));
-        assert_eq!(
-            *failure.work,
-            WorkCounters {
-                items_examined: examined,
-                ..WorkCounters::UNCHARGED
-            }
-        );
-    }
-
-    let windows_name = LogicalName::new(NameEncoding::WindowsUtf16Le, vec![b'a', 0], 255)?;
+    let (generation, _path) = fixture(&store).await?;
+    let windows_name = LogicalName::new(NameEncoding::WindowsUtf16Le, vec![b'a', 0])?;
     let windows_path = NamespacePath::new(vec![windows_name], config().limits)?;
     let failure = lookup_path(
         &store,

@@ -116,19 +116,17 @@ impl Format for AttributeFormat {
 
     fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
-        maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E> {
-        key.try_clone(maximum_bytes, steps)
+        key.try_clone(steps)
     }
 
     fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
-        maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Value, E> {
         Ok(AttributeEntry {
-            name: Self::try_clone_key(&value.name, maximum_bytes, steps)?,
+            name: Self::try_clone_key(&value.name, steps)?,
             value_bytes: value.value_bytes,
             value: value.value,
         })

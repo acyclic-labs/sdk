@@ -109,19 +109,17 @@ impl Format for TreeFormat {
 
     fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
-        maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E> {
-        key.try_clone(maximum_bytes, steps)
+        key.try_clone(steps)
     }
 
     fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
-        maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Value, E> {
         Ok(TreeEntry {
-            name: Self::try_clone_key(&value.name, maximum_bytes, steps)?,
+            name: Self::try_clone_key(&value.name, steps)?,
             file_id: value.file_id,
             kind: value.kind,
         })

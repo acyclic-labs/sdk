@@ -89,9 +89,6 @@ pub enum PathLookupError {
     /// A shared path batch must contain at least one query.
     #[error("path lookup batch is empty")]
     EmptyBatch,
-    /// The path was not admitted under the supplied volume bounds.
-    #[error("namespace path exceeds the volume's admitted bounds")]
-    PathBounds,
     /// A component encoding is not representable by this volume profile.
     #[error("namespace component encoding is unsupported by the volume profile")]
     UnsupportedNameEncoding,
@@ -172,18 +169,10 @@ fn validate_path(
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), crate::FsError> {
     config.validate()?;
-    let maximum_component_bytes =
-        usize::try_from(config.limits.maximum_component_bytes).unwrap_or(usize::MAX);
     for component in path.components() {
-        let (too_long, admitted_encoding) = examine_item(accounting, None, || {
-            (
-                component.as_bytes().len() > maximum_component_bytes,
-                component.encoding().is_admitted_in_profile(config.profile),
-            )
+        let admitted_encoding = examine_item(accounting, None, || {
+            component.encoding().is_admitted_in_profile(config.profile)
         })?;
-        if too_long {
-            return Err(PathLookupError::PathBounds.into());
-        }
         if !admitted_encoding {
             return Err(PathLookupError::UnsupportedNameEncoding.into());
         }

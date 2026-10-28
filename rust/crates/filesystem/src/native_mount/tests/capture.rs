@@ -244,11 +244,7 @@ async fn windows_created_and_modified_hint_captures_one_new_file()
         .flat_map(u16::to_le_bytes)
         .collect();
     let path = NamespacePath::new(
-        vec![LogicalName::new(
-            NameEncoding::WindowsUtf16Le,
-            name,
-            limits.maximum_component_bytes,
-        )?],
+        vec![LogicalName::new(NameEncoding::WindowsUtf16Le, name)?],
         limits,
     )?;
     let temporary = tempfile::tempdir()?;

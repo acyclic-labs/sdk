@@ -39,7 +39,6 @@ async fn identical_regular_payloads_use_native_clone_without_aliasing()
             vec![LogicalName::new(
                 NameEncoding::Utf8,
                 name.as_bytes().to_vec(),
-                limits.maximum_component_bytes,
             )?],
             limits,
         )?;

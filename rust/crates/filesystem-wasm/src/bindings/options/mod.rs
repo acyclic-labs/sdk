@@ -50,7 +50,6 @@ pub(in crate::bindings) enum Unicode {
     reason = "field names match the TypeScript volume-limit keys"
 )]
 pub struct BrowserVolumeLimits {
-    pub(in crate::bindings) maximum_component_bytes: u32,
     pub(in crate::bindings) maximum_object_bytes: u64,
     pub(in crate::bindings) maximum_mutations_per_batch: u32,
     pub(in crate::bindings) maximum_paths_per_batch: u32,
@@ -117,7 +116,6 @@ pub(in crate::bindings) fn browser_volume_config(
         hard_links: options.hard_links,
         sparse_files: options.sparse_files,
         limits: VolumeLimits {
-            maximum_component_bytes: limits.maximum_component_bytes,
             maximum_object_bytes: limits.maximum_object_bytes,
             maximum_mutations_per_batch: limits.maximum_mutations_per_batch,
             maximum_paths_per_batch: limits.maximum_paths_per_batch,

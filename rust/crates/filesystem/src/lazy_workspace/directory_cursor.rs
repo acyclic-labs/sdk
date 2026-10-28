@@ -39,7 +39,7 @@ impl LazyDirectoryCursor {
             cancellation: work.cancellation(),
         };
         let input = crate::kernel::decode_owned(&mut ctx, |mut observe| {
-            decode_fields(bytes, profile, limits, &mut observe)
+            decode_fields(bytes, profile, &mut observe)
         })?;
         let directory = NamespacePath::parse_in_profile(
             &input.0.1,
@@ -139,7 +139,6 @@ fn encode_fields(
 fn decode_fields(
     bytes: &[u8],
     profile: crate::FilesystemProfile,
-    limits: crate::VolumeLimits,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), crate::FsError>,
 ) -> Result<(LazySnapshotRef, String, LazyDirectoryPhase), crate::FsError> {
     let mut decoder = Decoder::new(bytes, DOMAIN, 1, bytes.len() as u64, observe)?;
@@ -184,12 +183,9 @@ fn decode_fields(
                 ))
                 .into());
             }
-            let name = LogicalName::new(
-                encoding,
-                decoder.bounded_bytes(limits.maximum_component_bytes, observe)?,
-                limits.maximum_component_bytes,
-            )
-            .map_err(|error| CanonicalDecodeError::Invariant(CanonicalInvariant::Name(error)))?;
+            let name = LogicalName::new(encoding, decoder.bytes(observe)?).map_err(|error| {
+                CanonicalDecodeError::Invariant(CanonicalInvariant::Name(error))
+            })?;
             LazyDirectoryPhase::Authored(Some(name))
         }
         tag => {

@@ -5,7 +5,7 @@ use crate::kernel::{FileKind, LogicalName, NameEncoding, TreeEntry};
 use crate::storage::ObjectKind;
 
 fn name(byte: u8) -> Result<LogicalName, crate::kernel::TreePageError> {
-    LogicalName::new(NameEncoding::PosixBytes, vec![byte], 1)
+    LogicalName::new(NameEncoding::PosixBytes, vec![byte])
 }
 
 fn entry(byte: u8) -> Result<TreeEntry, crate::kernel::TreePageError> {

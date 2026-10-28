@@ -27,7 +27,7 @@ impl PortablePath {
     }
 
     /// Validates the borrowed spelling without creating an owned path.
-    pub(crate) fn validate(value: &str, limits: VolumeLimits) -> Result<usize, PathError> {
+    pub(crate) fn validate(value: &str, _limits: VolumeLimits) -> Result<usize, PathError> {
         u32::try_from(value.len()).map_err(|_| PathError::PathTooLong)?;
         if value == Self::ROOT {
             return Ok(0);
@@ -53,11 +53,7 @@ impl PortablePath {
             if component.as_bytes().contains(&0) {
                 return Err(PathError::Nul);
             }
-            let component_bytes =
-                u32::try_from(component.len()).map_err(|_| PathError::ComponentTooLong)?;
-            if component_bytes > limits.maximum_component_bytes {
-                return Err(PathError::ComponentTooLong);
-            }
+            u32::try_from(component.len()).map_err(|_| PathError::ComponentLengthOverflow)?;
             depth += 1;
         }
         Ok(depth)
@@ -183,9 +179,9 @@ pub enum PathError {
     /// Encoded path cannot be represented by its canonical u32 length.
     #[error("portable path length cannot be encoded")]
     PathTooLong,
-    /// One encoded component exceeds its configured byte bound.
-    #[error("portable path component exceeds its byte bound")]
-    ComponentTooLong,
+    /// Encoded component cannot be represented by its canonical u32 length.
+    #[error("portable path component length cannot be encoded")]
+    ComponentLengthOverflow,
 }
 
 #[cfg(test)]

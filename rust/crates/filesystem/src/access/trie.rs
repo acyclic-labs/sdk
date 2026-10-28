@@ -133,9 +133,7 @@ impl<'a> PreparedPath<'a> {
     /// Unsupported profile/encoding pairs and non-Unicode names fail closed.
     pub fn child_name(self, name: &crate::kernel::LogicalName) -> Result<Self, InvalidPolicy> {
         use crate::kernel::NameEncoding;
-        if name.encoding() != super::names::encoding(self.trie.config)
-            || name.as_bytes().len() > self.trie.config.limits.maximum_component_bytes as usize
-        {
+        if name.encoding() != super::names::encoding(self.trie.config) {
             return Err(InvalidPolicy(
                 "name encoding does not match the access view profile",
             ));

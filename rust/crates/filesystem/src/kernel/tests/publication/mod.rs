@@ -182,7 +182,7 @@ fn regular(
 }
 fn entry(name: &[u8], file_id: FileId) -> TestResult<TreeEntry> {
     Ok(TreeEntry {
-        name: LogicalName::new(NameEncoding::Utf8, name.to_vec(), 255)?,
+        name: LogicalName::new(NameEncoding::Utf8, name.to_vec())?,
         file_id,
         kind: FileKind::Regular,
     })

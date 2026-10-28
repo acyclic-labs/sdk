@@ -551,7 +551,7 @@ pub(in crate::bindings) fn native_workspace_name(
 ) -> Result<LogicalName> {
     let encoding = NameEncoding::from_public_str(&value.encoding)
         .ok_or_else(|| Error::new(Status::InvalidArg, "unknown name encoding"))?;
-    LogicalName::new(encoding, value.bytes.to_vec(), u32::MAX).map_err(napi_error)
+    LogicalName::new(encoding, value.bytes.to_vec()).map_err(napi_error)
 }
 
 pub(in crate::bindings) fn native_workspace_name_value(name: &LogicalName) -> NativeWorkspaceName {

@@ -44,7 +44,7 @@ fn namespace_diff(count: usize, chain: bool) -> TestResult<crate::GenerationDiff
             } else {
                 0
             };
-            let name = LogicalName::new(NameEncoding::Utf8, index.to_string().into_bytes(), 255)?;
+            let name = LogicalName::new(NameEncoding::Utf8, index.to_string().into_bytes())?;
             diff.bindings.push(crate::DirectoryBindingChange {
                 directory_id: FileId::from_bytes((parent as u128).to_be_bytes()),
                 name: name.clone(),

@@ -26,12 +26,12 @@ kernel_cases! { directory: DirectoryReadError {
     NotFound => [E::Storage(ObjectStoreError::Missing)];
 }}
 kernel_cases! { namespace: NamespacePathError, namespace_code {
-    InvalidArgument => [E::PrefixOutOfRange, E::ComponentTooLong, E::PathTooLong, E::Name(TreePageError::EmptyName), E::Path(crate::path::PathError::NotAbsolute), E::NonUnicodeProjection];
+    InvalidArgument => [E::PrefixOutOfRange, E::ComponentLengthOverflow, E::PathTooLong, E::Name(TreePageError::EmptyName), E::Path(crate::path::PathError::NotAbsolute), E::NonUnicodeProjection];
     ResourceExhausted => [E::Work(WorkError::Overflow), E::AllocationFailed];
     Cancelled => [E::Cancelled];
 }}
 kernel_cases! { path: PathLookupError, path_code {
-    InvalidArgument => [E::Config(crate::model::VolumeConfigError::ZeroLimit), E::EmptyBatch, E::PathBounds, E::NotDirectory, E::NamespacePath(NamespacePathError::PrefixOutOfRange)];
+    InvalidArgument => [E::Config(crate::model::VolumeConfigError::ZeroLimit), E::EmptyBatch, E::NotDirectory, E::NamespacePath(NamespacePathError::PrefixOutOfRange)];
     ResourceExhausted => [E::AllocationFailed, E::Work(WorkError::Overflow)];
     FailedPrecondition => [E::UnsupportedNameEncoding];
     DataLoss => [E::MissingRootRecord, E::KindMismatch];

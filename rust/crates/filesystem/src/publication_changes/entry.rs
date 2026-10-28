@@ -254,12 +254,8 @@ mod read {
         }
         let expected = presence(operation).ok_or(Malformed)?;
         let mut reader = Reader(metadata);
-        let maximum = config.limits.maximum_component_bytes;
         let name = |encoding: NameEncoding, bytes: &[u8]| {
-            if bytes.len() > maximum as usize {
-                return Err(Malformed);
-            }
-            LogicalName::new(encoding, bytes.to_vec(), maximum).map_err(|_| Malformed)
+            LogicalName::new(encoding, bytes.to_vec()).map_err(|_| Malformed)
         };
         let mut components = Vec::new();
         match reader.number()? {

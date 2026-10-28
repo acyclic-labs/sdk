@@ -358,14 +358,9 @@ impl<S: crate::AsyncObjectStore> ProofContext<'_, S> {
                         {
                             continue;
                         }
-                        let lower = self
-                            .meter
-                            .clone_key::<F>(&child.first, self.limits.decode.maximum_name_bytes)?;
+                        let lower = self.meter.clone_key::<F>(&child.first)?;
                         let upper = upper_key
-                            .map(|key| {
-                                self.meter
-                                    .clone_key::<F>(key, self.limits.decode.maximum_name_bytes)
-                            })
+                            .map(|key| self.meter.clone_key::<F>(key))
                             .transpose()?;
                         let prior = if reused || before == Some(child.page) {
                             Some(child.page)

@@ -138,9 +138,9 @@ pub enum NamespacePathError {
     /// A requested prefix contains more components than this path.
     #[error("namespace prefix exceeds the path depth")]
     PrefixOutOfRange,
-    /// One exact encoded component exceeds the volume bound.
-    #[error("namespace path component exceeds its byte bound")]
-    ComponentTooLong,
+    /// Encoded component length cannot be represented as u32.
+    #[error("namespace path component length cannot be encoded")]
+    ComponentLengthOverflow,
     /// Canonical encoded path length cannot be represented as u32.
     #[error("namespace path length cannot be encoded")]
     PathTooLong,

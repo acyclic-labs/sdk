@@ -21,7 +21,7 @@ fn object(kind: ObjectKind, value: u8) -> ObjectId {
     }
 }
 fn name(value: u8) -> Proof<LogicalName> {
-    LogicalName::new(NameEncoding::Utf8, vec![b'a' + value % 26], 255).map_err(failure)
+    LogicalName::new(NameEncoding::Utf8, vec![b'a' + value % 26]).map_err(failure)
 }
 fn file(value: u8, content: u8) -> Proof<FileRecord> {
     Ok(FileRecord {

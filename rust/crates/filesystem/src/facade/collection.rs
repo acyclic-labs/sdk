@@ -20,7 +20,6 @@ pub struct LocalGarbageCollection {
 pub(super) fn widest_limits(left: DecodeLimits, right: DecodeLimits) -> DecodeLimits {
     DecodeLimits {
         maximum_object_bytes: left.maximum_object_bytes.max(right.maximum_object_bytes),
-        maximum_name_bytes: left.maximum_name_bytes.max(right.maximum_name_bytes),
         maximum_page_items: left.maximum_page_items.max(right.maximum_page_items),
         maximum_page_bytes: left.maximum_page_bytes.max(right.maximum_page_bytes),
         maximum_page_height: left.maximum_page_height.max(right.maximum_page_height),

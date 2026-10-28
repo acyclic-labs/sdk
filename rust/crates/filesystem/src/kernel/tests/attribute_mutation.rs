@@ -12,7 +12,6 @@ fn name(byte: u8, length: usize) -> Result<AttributeName, Box<dyn std::error::Er
     Ok(AttributeName::new(
         super::super::AttributeClass::PosixXattr,
         vec![byte; length],
-        u32::try_from(length)?,
     )?)
 }
 
@@ -211,7 +210,6 @@ async fn attribute_pages_split_on_bytes_before_item_count() -> Result<(), Box<dy
     let limits = DecodeLimits {
         maximum_page_bytes: 175,
         maximum_page_items: 8,
-        maximum_name_bytes: 40,
         ..DecodeLimits::default()
     };
     let receipt = apply_attribute_mutations(
@@ -270,7 +268,6 @@ async fn oversized_attribute_item_rejects_before_writes() -> Result<(), Box<dyn 
         vec![AttributeMutation::Insert(entry(1, 40, 1)?)],
         DecodeLimits {
             maximum_page_bytes: 99,
-            maximum_name_bytes: 40,
             ..DecodeLimits::default()
         },
         WorkBudget::UNBOUNDED,

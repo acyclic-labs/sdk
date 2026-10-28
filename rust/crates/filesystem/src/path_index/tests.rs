@@ -12,18 +12,8 @@ fn fixture() -> (
     let limits = VolumeLimits::default();
     let path = NamespacePath::new(
         vec![
-            LogicalName::new(
-                NameEncoding::PosixBytes,
-                vec![0xff, b'x'],
-                limits.maximum_component_bytes,
-            )
-            .unwrap(),
-            LogicalName::new(
-                NameEncoding::WindowsUtf16Le,
-                vec![0, 0xd8],
-                limits.maximum_component_bytes,
-            )
-            .unwrap(),
+            LogicalName::new(NameEncoding::PosixBytes, vec![0xff, b'x']).unwrap(),
+            LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0, 0xd8]).unwrap(),
         ],
         limits,
     )

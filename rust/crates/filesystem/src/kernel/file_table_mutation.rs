@@ -100,7 +100,6 @@ impl Format for FileTableFormat {
 
     fn try_clone_key<E: From<CanonicalDecodeError>>(
         key: &Self::Key,
-        _maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Key, E> {
         let copied_bytes = std::mem::size_of::<Self::Key>() as u64;
@@ -112,7 +111,6 @@ impl Format for FileTableFormat {
 
     fn try_clone_value<E: From<CanonicalDecodeError>>(
         value: &Self::Value,
-        _maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self::Value, E> {
         let copied_bytes = std::mem::size_of::<Self::Value>() as u64;

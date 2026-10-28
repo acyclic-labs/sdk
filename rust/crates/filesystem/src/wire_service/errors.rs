@@ -244,7 +244,7 @@ fn namespace_code(error: &crate::kernel::NamespacePathError) -> Code {
     use crate::kernel::NamespacePathError as E;
     match error {
         E::PrefixOutOfRange
-        | E::ComponentTooLong
+        | E::ComponentLengthOverflow
         | E::PathTooLong
         | E::Name(_)
         | E::Path(_)
@@ -257,7 +257,7 @@ fn namespace_code(error: &crate::kernel::NamespacePathError) -> Code {
 fn path_code(error: &crate::kernel::PathLookupError) -> Code {
     use crate::kernel::PathLookupError as E;
     match error {
-        E::Config(_) | E::EmptyBatch | E::PathBounds | E::NotDirectory => Code::InvalidArgument,
+        E::Config(_) | E::EmptyBatch | E::NotDirectory => Code::InvalidArgument,
         E::AllocationFailed | E::Work(_) => Code::ResourceExhausted,
         E::UnsupportedNameEncoding => Code::FailedPrecondition,
         E::MissingRootRecord | E::KindMismatch => Code::DataLoss,
