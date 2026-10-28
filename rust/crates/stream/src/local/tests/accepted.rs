@@ -1,4 +1,5 @@
 use super::*;
+use futures::TryFutureExt as _;
 
 #[test]
 fn a_flush_never_certifies_a_write_accepted_after_its_device_operation()
@@ -167,7 +168,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
                             path,
                             records: vec![(Bytes::from_static(b"delta")).into()],
                             if_tail: Some(n),
-                            idempotency_key: None,
+                            idempotency_key: crate::IdempotencyKey::unique(),
                         })
                         .await
                 }
@@ -177,7 +178,8 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
             })
             .await??;
             let mut follow = provider
-                .follow(path.clone(), n, crate::FollowFilter::default())
+                .follow(crate::FollowRequest::new(path.clone(), n))
+                .map_ok(crate::records_only)
                 .await?;
             let record = tokio::time::timeout(std::time::Duration::from_secs(1), follow.next())
                 .await?
@@ -186,22 +188,27 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
             assert_eq!(record.value.as_slice(), b"delta");
             let checked = tokio::time::timeout(
                 std::time::Duration::from_secs(1),
-                provider.follow_checked(
-                    path.clone(),
-                    n + 1,
-                    record.commit_id,
-                    crate::FollowFilter::default(),
-                ),
+                provider
+                    .follow(crate::FollowRequest {
+                        path: path.clone(),
+                        from: n + 1,
+                        preceding: Some(record.commit_id),
+                        filter: crate::FollowFilter::default(),
+                        progress: false,
+                    })
+                    .map_ok(crate::records_only),
             )
             .await??;
             drop(checked);
             let lost = provider
-                .follow_checked(
-                    path.clone(),
-                    n + 2,
-                    record.commit_id,
-                    crate::FollowFilter::default(),
-                )
+                .follow(crate::FollowRequest {
+                    path: path.clone(),
+                    from: n + 2,
+                    preceding: Some(record.commit_id),
+                    filter: crate::FollowFilter::default(),
+                    progress: false,
+                })
+                .map_ok(crate::records_only)
                 .await;
             assert!(matches!(lost, Err(StreamError::OutOfRange)));
             assert_eq!(

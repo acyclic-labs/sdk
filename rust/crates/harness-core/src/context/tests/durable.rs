@@ -224,7 +224,7 @@ async fn context_pages_reject_corrupt_identity_and_unproven_compaction() -> Resu
                 path: path.clone(),
                 records: vec![bytes.into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: acyclic_stream::IdempotencyKey::unique(),
             })
             .await
             .map_err(|error| crate::Error::Storage(error.to_string()))?;

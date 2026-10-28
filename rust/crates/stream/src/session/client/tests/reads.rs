@@ -205,12 +205,9 @@ async fn interrupted_read(moved: bool) -> TestResult {
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = fixture.client()?;
     let mut healthy = client
-        .follow(
-            StreamPath::new("healthy")?,
-            1,
-            crate::FollowFilter::default(),
-        )
-        .await?;
+        .follow(crate::FollowRequest::new(StreamPath::new("healthy")?, 1))
+        .await
+        .map(crate::records_only)?;
     let mut records = StreamProvider::read(&client, read("events", 0, 10)?).await?;
     assert_eq!(next(&mut records).await?.sequence, 0);
     assert_eq!(next(&mut records).await?.sequence, 1);
@@ -276,12 +273,9 @@ async fn cancelling_a_finite_read_releases_only_its_own_interest() -> TestResult
     append(&provider, "events", 10).await?;
     let client = local(&provider)?;
     let mut healthy = client
-        .follow(
-            StreamPath::new("events")?,
-            10,
-            crate::FollowFilter::default(),
-        )
-        .await?;
+        .follow(crate::FollowRequest::new(StreamPath::new("events")?, 10))
+        .await
+        .map(crate::records_only)?;
     let records = client.read(read("events", 0, 10)?).await?;
     assert_eq!(client.active.load(super::super::Ordering::Acquire), 2);
     drop(records);

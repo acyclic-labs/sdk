@@ -48,9 +48,9 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.record(RequestClass::Head);
         self.inner().tail(path).await
     }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
+    async fn head(&self, path: StreamPath) -> Result<PathHead, StreamError> {
         self.record(RequestClass::Head);
-        self.inner().bounds(path).await
+        self.inner().head(path).await
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         self.record(RequestClass::Head);
@@ -76,38 +76,9 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().read(request).await
     }
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
+    async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError> {
         self.record(RequestClass::Data);
-        self.inner().follow(path, from, filter).await
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.record(RequestClass::Data);
-        self.inner()
-            .follow_checked(path, from, preceding, filter)
-            .await
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<CommitId>,
-        filter: crate::FollowFilter,
-    ) -> Result<crate::FollowStream, StreamError> {
-        self.record(RequestClass::Data);
-        self.inner()
-            .follow_updates(path, from, preceding, filter)
-            .await
+        self.inner().follow(request).await
     }
     async fn children_page(
         &self,
@@ -119,16 +90,6 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.record(RequestClass::Data);
         self.inner().commit(request).await
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.record(RequestClass::Data);
-        self.inner()
-            .commit_before(request, deadline_unix_millis)
-            .await
     }
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.record(RequestClass::Data);
@@ -160,15 +121,6 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
     ) -> NativeProviderFuture<'_, u64> {
         self.record(RequestClass::Head);
         self.inner().native_tail(path, _meter)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_bounds(
-        &self,
-        path: StreamPath,
-        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, StreamBounds> {
-        self.record(RequestClass::Head);
-        self.inner().native_bounds(path, _meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn native_read(

@@ -359,32 +359,9 @@ impl Client {
     /// Opens a logical follow on the shared session, without a per-stream RPC.
     pub async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.follow_with_ack(path, from, true, filter).await
-    }
-    pub(crate) async fn follow_with_ack(
-        &self,
-        path: StreamPath,
-        from: u64,
-        acknowledge: bool,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.follow_records(path, from, None, acknowledge, filter)
-            .await
-    }
-    /// Atomically confirms the preceding history on a shared logical channel.
-    pub async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: crate::CommitId,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.follow_records(path, from, Some(preceding), true, filter)
-            .await
+        request: crate::FollowRequest,
+    ) -> Result<crate::FollowStream, StreamError> {
+        self.follow_with_ack(request, true).await
     }
     /// Reads `[from, min(from + limit, tail at open))` as one bounded follow
     /// on the shared session, with the semantics of [`crate::StreamProvider::read`].
@@ -428,49 +405,18 @@ impl Client {
             futures::stream::iter(first).chain(records),
         ))
     }
-    pub(crate) async fn follow_records(
+    pub(crate) async fn follow_with_ack(
         &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
+        request: crate::FollowRequest,
         acknowledge: bool,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        let follow = wire::SessionFollow {
-            resource: crate::wire_codec::session::stream_resource(path.as_str()),
-            delivery: wire::SessionDelivery::All as i32,
-            preceding_commit_id: preceding
-                .map_or_else(Bytes::new, |id| Bytes::copy_from_slice(id.as_bytes())),
-            until: 0,
-        };
-        Ok(super::runtime::boxed(
-            self.follow_data_with_ack(follow, from, acknowledge, filter)
-                .await?
-                .map(|data| match data?.item {
-                    Some(Item::Record(record)) => wire_codec::record(record),
-                    _ => Err(StreamError::Unavailable),
-                }),
-        ))
-    }
-    /// Follows projected records and ordered skipped-prefix cuts on the shared session.
-    pub async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
-        filter: crate::FollowFilter,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.follow_updates_with_ack(path, from, preceding, true, filter)
-            .await
-    }
-    pub(crate) async fn follow_updates_with_ack(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
-        acknowledge: bool,
-        filter: crate::FollowFilter,
-    ) -> Result<crate::FollowStream, StreamError> {
+        let crate::FollowRequest {
+            path,
+            from,
+            preceding,
+            filter,
+            progress,
+        } = request;
         let kind = Kind::Follow(wire::SessionFollow {
             resource: crate::wire_codec::session::stream_resource(path.as_str()),
             delivery: wire::SessionDelivery::All as i32,
@@ -483,14 +429,15 @@ impl Client {
                 kind,
                 cursor(from),
                 acknowledge,
-                true,
+                progress,
                 Some(filter.transport_filter()?),
                 0,
             )
             .await?;
-        Ok(super::runtime::boxed(source.filter_map(|item| {
+        Ok(super::runtime::boxed(source.filter_map(move |item| {
             future::ready(match item {
-                Ok(Received::Frame(wire::SessionFrame {
+                Ok(Received::Data(data))
+                | Ok(Received::Frame(wire::SessionFrame {
                     body: Some(Body::Data(data)),
                     ..
                 })) => Some(match data.item {
@@ -502,7 +449,7 @@ impl Client {
                 Ok(Received::Frame(wire::SessionFrame {
                     body: Some(Body::Watermark(mark)),
                     ..
-                })) => mark.after.map(|after| {
+                })) if progress => mark.after.map(|after| {
                     wire_codec::commit_id(&mark.preceding_commit_id).map(|preceding| {
                         crate::FollowUpdate::Progress {
                             next: after.next,
@@ -510,6 +457,10 @@ impl Client {
                         }
                     })
                 }),
+                Ok(Received::Frame(wire::SessionFrame {
+                    body: Some(Body::Watermark(_)),
+                    ..
+                })) => None,
                 Ok(_) => Some(Err(StreamError::Unavailable)),
                 Err(error) => Some(Err(error)),
             })

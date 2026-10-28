@@ -1,6 +1,6 @@
 struct PreparedFrame {
     encoded: Vec<u8>,
-    work: Option<Arc<crate::memory::Work>>,
+    work: Option<Arc<crate::native::Work>>,
     operation: Option<
         acyclic_native_runtime::NativeOperationReservation<
             Arc<dyn acyclic_native_runtime::NativeReadMeter>,
@@ -22,7 +22,7 @@ struct PreparedFrame {
 impl PreparedFrame {
     fn reserve(
         capacity: usize,
-        work: Option<Arc<crate::memory::Work>>,
+        work: Option<Arc<crate::native::Work>>,
     ) -> Result<Self, LocalStreamError> {
         let mut allocation = work
             .as_ref()
@@ -84,7 +84,7 @@ impl PreparedFrame {
     fn encode(
         command: &Command,
         time: u64,
-        work: Option<Arc<crate::memory::Work>>,
+        work: Option<Arc<crate::native::Work>>,
     ) -> Result<Self, LocalStreamError> {
         if command.encoded_len() > MAX_COMMAND_BYTES {
             return Err(LocalStreamError::InvalidLimits);

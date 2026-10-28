@@ -4,6 +4,7 @@ use proptest::prelude::*;
 pub(in crate::local) fn request(body: Vec<u8>) -> CommitRequest {
     let path = StreamPath::new("replay-work").unwrap();
     CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![crate::CommitCondition::Absent { path: path.clone() }],
         mutations: vec![crate::CommitMutation::Append {
             path,

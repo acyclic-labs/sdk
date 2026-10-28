@@ -26,7 +26,7 @@ fn provider(known: &[StreamPath]) -> MemoryStream {
             path: path.clone(),
             records: vec![(Bytes::from_static(b"x")).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
     }

@@ -25,10 +25,9 @@ impl MemoryStream {
     fn replay_outcome<'a>(
         &self,
         state: &'a State,
-        key: Option<&crate::IdempotencyKey>,
+        key: &crate::IdempotencyKey,
         digest: [u8; 32],
     ) -> Result<Option<&'a IdempotencyOutcome>, StreamError> {
-        let Some(key) = key else { return Ok(None) };
         let Some(replay) = self.replay(state, key.as_bytes())? else {
             return Ok(None);
         };
@@ -41,7 +40,7 @@ impl MemoryStream {
     fn replay_append(
         &self,
         state: &State,
-        key: Option<&crate::IdempotencyKey>,
+        key: &crate::IdempotencyKey,
         digest: [u8; 32],
     ) -> Result<Option<AppendOutcome>, StreamError> {
         match self.replay_outcome(state, key, digest)? {
@@ -54,7 +53,7 @@ impl MemoryStream {
     fn replay_fork(
         &self,
         state: &State,
-        key: Option<&crate::IdempotencyKey>,
+        key: &crate::IdempotencyKey,
         digest: [u8; 32],
     ) -> Result<Option<ForkReceipt>, StreamError> {
         match self.replay_outcome(state, key, digest)? {
@@ -65,14 +64,8 @@ impl MemoryStream {
     }
 }
 
-fn admit_replay(
-    state: &State,
-    key: Option<&crate::IdempotencyKey>,
-    limits: MemoryLimits,
-) -> Result<(), StreamError> {
-    if key.is_some()
-        && state.replay_count().saturating_add(reserved(state).0) >= limits.idempotency_results
-    {
+fn admit_replay(state: &State, limits: MemoryLimits) -> Result<(), StreamError> {
+    if state.replay_count().saturating_add(reserved(state).0) >= limits.idempotency_results {
         Err(StreamError::Capacity)
     } else {
         Ok(())
@@ -89,14 +82,6 @@ fn retain(
     result: IdempotencyOutcome,
     allocation: Allocation,
 ) {
-    let envelope = if matches!(
-        &result,
-        IdempotencyOutcome::Commit(CommitOutcome::Committed(_))
-    ) {
-        None
-    } else {
-        envelope
-    };
     let entry = Retained {
         replay: key.map(|key| key.0),
         replay_left: None,

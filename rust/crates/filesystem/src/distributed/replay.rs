@@ -213,6 +213,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let output = self
             .commit(
                 CommitRequest {
+                    deadline_unix_millis: None,
                     conditions,
                     mutations,
                     idempotency_key,

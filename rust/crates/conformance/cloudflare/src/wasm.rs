@@ -24,6 +24,7 @@ pub async fn qualify_journal_deadline(
                 records: vec![AppendRecord::from(b"accepted".as_slice())],
             }],
             idempotency_key: key.clone(),
+            deadline_unix_millis: None,
         };
         let provider = JournalStream::open(journal.clone(), JournalStreamLimits::default()).await?;
         if provider.tail(path.clone()).await != Err(StreamError::NotFound)
@@ -33,7 +34,10 @@ pub async fn qualify_journal_deadline(
         }
         if !retry {
             let result = provider
-                .commit_before(request, SystemUnixMillisClock.now_unix_millis() + 20)
+                .commit(CommitRequest {
+                    deadline_unix_millis: Some(SystemUnixMillisClock.now_unix_millis() + 20),
+                    ..request
+                })
                 .await;
             if result != Err(StreamError::DeadlineElapsed) {
                 return Err(StreamError::InvalidResponse);
@@ -48,17 +52,23 @@ pub async fn qualify_journal_deadline(
         } else {
             // The same key was not spent by the expired acceptance before restart.
             let outcome = provider
-                .commit_before(
-                    request.clone(),
-                    SystemUnixMillisClock.now_unix_millis() + 10_000,
-                )
+                .commit(CommitRequest {
+                    deadline_unix_millis: Some(SystemUnixMillisClock.now_unix_millis() + 10_000),
+                    ..request.clone()
+                })
                 .await?;
             if !matches!(outcome, CommitOutcome::Committed(_)) {
                 return Err(StreamError::InvalidResponse);
             }
             drop(provider);
             let reopened = JournalStream::open(journal, JournalStreamLimits::default()).await?;
-            if reopened.commit_before(request, 0).await? != outcome
+            if reopened
+                .commit(CommitRequest {
+                    deadline_unix_millis: Some(0),
+                    ..request
+                })
+                .await?
+                != outcome
                 || reopened.tail(path).await? != 1
             {
                 return Err(StreamError::InvalidResponse);
@@ -79,12 +89,13 @@ pub async fn qualify_journal_deadline(
 pub async fn append_wake_record(port: JsValue, path: String) -> std::result::Result<(), JsValue> {
     let provider = acyclic_stream::WasmStream::connect_provider(port)?.provider();
     let result = async {
+        let key = acyclic_stream::IdempotencyKey::new(format!("wake-record/{path}").into_bytes())?;
         provider
             .append(acyclic_stream::AppendRequest {
                 path: acyclic_stream::StreamPath::new(path)?,
                 records: vec![acyclic_stream::AppendRecord::from(b"wake".as_slice())],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: key,
             })
             .await?;
         Ok::<_, acyclic_stream::StreamError>(())

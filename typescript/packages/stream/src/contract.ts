@@ -1,10 +1,10 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
-  AppendRecordSchema, AbsentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
+  AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitMutationSchema, CommitRequestSchema,
   ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
-  ReadRequestSchema, FollowRequestSchema,
+  ReadRequestSchema, FollowRequestSchema, HeadRequestSchema,
   ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
   CreateTokenRequestSchema, RecordBatchSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
@@ -91,6 +91,7 @@ function validationError(error: unknown, operation: "append" | "commit" | "reque
 }
 
 type WireRequest =
+  | { readonly kind: "head"; readonly path: string }
   | { readonly kind: "tail"; readonly path: string }
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
   | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number }
@@ -124,6 +125,9 @@ export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array 
 
 export function wireRequest(request: WireRequest): Uint8Array {
   switch (request.kind) {
+      case "head":
+        requirePathType(request.path);
+        return toBinary(HeadRequestSchema, create(HeadRequestSchema, { path: request.path }));
       case "tail":
         requirePathType(request.path);
         return toBinary(TailRequestSchema, create(TailRequestSchema, { path: request.path }));
@@ -233,6 +237,12 @@ export async function normalizeWireCommitBytes(request: ProviderCommitRequest, o
       if ("ifTail" in condition) return create(CommitConditionSchema, {
         condition: { case: "tail", value: create(TailConditionSchema, { path: condition.path, expected: condition.ifTail }) },
       });
+      if ("ifPresent" in condition) {
+        if (condition.ifPresent !== true) throw new StreamError("invalid_argument", "presence condition must be true");
+        return create(CommitConditionSchema, {
+          condition: { case: "present", value: create(PresentConditionSchema, { path: condition.path }) },
+        });
+      }
       if (condition.ifAbsent !== true) throw new StreamError("invalid_argument", "absence condition must be true");
       return create(CommitConditionSchema, {
         condition: { case: "absent", value: create(AbsentConditionSchema, { path: condition.path }) },
@@ -275,6 +285,7 @@ export async function normalizeWireCommit(request: ProviderCommitRequest, option
         case "head": return { path: condition.condition.value.path, ifTail: condition.condition.value.expected, ifCommitId: commitId(condition.condition.value.commitId) };
         case "tail": return { path: condition.condition.value.path, ifTail: condition.condition.value.expected };
         case "absent": return { path: condition.condition.value.path, ifAbsent: true };
+        case "present": return { path: condition.condition.value.path, ifPresent: true };
         default: throw new StreamError("invalid_argument", "normalized condition is missing its kind");
       }
     }),

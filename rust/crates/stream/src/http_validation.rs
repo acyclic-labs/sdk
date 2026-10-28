@@ -112,6 +112,9 @@ fn validate_children_page(value: &Value) -> Result {
         if let Some(record) = child.get("tailRecord") {
             validate_record(record)?;
         }
+        if let Some(origin) = child.get("origin") {
+            validate_origin(origin)?;
+        }
         let path_value = field(child, "path")?;
         path(path_value)?;
         let current = string(path_value)?;
@@ -127,6 +130,13 @@ fn validate_children_page(value: &Value) -> Result {
         }
     }
     Ok(())
+}
+
+fn validate_origin(value: &Value) -> Result<u64> {
+    let origin = object(value)?;
+    path(field(origin, "source")?)?;
+    id(field(origin, "commitId")?)?;
+    u64_string(field(origin, "forkedAt")?)
 }
 
 fn validate_append_result(value: &Value) -> Result {
@@ -163,7 +173,12 @@ fn validate_fork_receipt(value: &Value) -> Result {
 fn validate_conflict(value: &Value) -> Result {
     let item = object(value)?;
     path(field(item, "path")?)?;
-    if item.get("expectedAbsent") == Some(&Value::Bool(true)) {
+    if item.get("expectedPresent") == Some(&Value::Bool(true)) {
+        if string(field(item, "actual")?)? != "missing" {
+            return Err("invalid presence conflict state");
+        }
+        Ok(())
+    } else if item.get("expectedAbsent") == Some(&Value::Bool(true)) {
         match string(field(item, "actual")?)? {
             "exists" => Ok(()),
             _ => Err("invalid conflict state"),
@@ -187,46 +202,30 @@ fn validate_conflict(value: &Value) -> Result {
 fn validate_commit_result(value: &Value) -> Result {
     let item = object(value)?;
     if boolean(field(item, "ok")?)? {
-        id(field(item, "commitId")?)?;
-        if let Some(envelope) = item.get("envelope") {
-            validate_envelope(envelope)?;
-            if envelope.get("commitId") != item.get("commitId") {
-                return Err("commit envelope identity differs");
-            }
-            let mut tails = Map::new();
-            let mut forks = Vec::new();
-            for mutation in array(field(object(envelope)?, "mutations")?)? {
-                let mutation = object(mutation)?;
-                match string(field(mutation, "type")?)? {
-                    "append" => {
-                        tails.insert(
-                            string(field(mutation, "path")?)?.to_owned(),
-                            field(mutation, "tail")?.clone(),
-                        );
-                    }
-                    "fork" => {
-                        let mut fork = Map::new();
-                        fork.insert("path".to_owned(), field(mutation, "destination")?.clone());
-                        fork.insert("tail".to_owned(), field(mutation, "tail")?.clone());
-                        forks.push(Value::Object(fork));
-                    }
-                    _ => return Err("invalid mutation type"),
-                }
-            }
-            if field(item, "tails")? != &Value::Object(tails)
-                || field(item, "forks")? != &Value::Array(forks)
-            {
-                return Err("commit envelope summary differs");
+        let commit = field(item, "commitId")?;
+        id(commit)?;
+        u64_string(field(item, "committedAtMicros")?)?;
+        let appends = array(field(item, "appends")?)?;
+        let forks = array(field(item, "forks")?)?;
+        if appends.len().saturating_add(forks.len()) == 0
+            || appends.len().saturating_add(forks.len()) > crate::MAX_ITEMS
+        {
+            return Err("invalid receipt size");
+        }
+        for range in appends {
+            let range = object(range)?;
+            path(field(range, "path")?)?;
+            let start = u64_string(field(range, "start")?)?;
+            let tail = u64_string(field(range, "tail")?)?;
+            if start >= tail || tail - start > crate::MAX_ITEMS as u64 {
+                return Err("invalid append range");
             }
         }
-        for (path_name, tail) in object(field(item, "tails")?)? {
-            crate::StreamPath::new(path_name).map_err(|_| "invalid path")?;
-            u64_string(tail)?;
-        }
-        for fork in array(field(item, "forks")?)? {
-            let fork = object(fork)?;
-            path(field(fork, "path")?)?;
-            u64_string(field(fork, "tail")?)?;
+        for fork in forks {
+            validate_fork_receipt(fork)?;
+            if fork.get("commitId") != Some(commit) {
+                return Err("fork receipt names another commit");
+            }
         }
         return Ok(());
     }
@@ -282,6 +281,7 @@ fn validate_mutation(value: &Value) -> Result {
 
 fn validate_envelope(value: &Value) -> Result {
     let item = object(value)?;
+    u64_string(field(item, "committedAtMicros")?)?;
     id(field(item, "commitId")?)?;
     for mutation in array(field(item, "mutations")?)? {
         validate_mutation(mutation)?;
@@ -299,7 +299,7 @@ fn validate_idempotency(value: &Value) -> Result {
     match string(field(outcome, "type")?)? {
         "append" => validate_append_result(field(outcome, "outcome")?),
         "fork" => validate_fork_receipt(field(outcome, "receipt")?),
-        "commit" => validate_commit_result(field(outcome, "outcome")?),
+        "commit" => validate_envelope(field(outcome, "outcome")?),
         _ => Err("invalid idempotency outcome type"),
     }
 }
@@ -315,6 +315,31 @@ pub fn validate(route: &str, value: &Value) -> Result {
             } else {
                 Err("expected empty acknowledgement response")
             }
+        }
+        Some("head") => {
+            let item = object(value)?;
+            let tail = u64_string(field(item, "tail")?)?;
+            if u64_string(field(item, "durable")?)? > tail {
+                return Err("durable prefix exceeds accepted head");
+            }
+            let last = field(item, "last")?;
+            if last.is_null() {
+                if tail != 0 {
+                    return Err("nonempty head is missing its last record");
+                }
+            } else {
+                validate_record(last)?;
+                if u64_string(field(object(last)?, "sequence")?)?.checked_add(1) != Some(tail) {
+                    return Err("last record does not match head");
+                }
+            }
+            let origin = field(item, "origin")?;
+            if !origin.is_null() {
+                if validate_origin(origin)? > tail {
+                    return Err("inherited cut exceeds head");
+                }
+            }
+            Ok(())
         }
         Some("sequence") => {
             u64_string(value)?;

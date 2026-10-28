@@ -93,6 +93,7 @@ async fn copy_cut(
     if atomic {
         client
             .commit(CommitRequest {
+                deadline_unix_millis: None,
                 conditions: vec![
                     CommitCondition::Absent {
                         path: canonical_path.clone(),

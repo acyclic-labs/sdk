@@ -8,6 +8,7 @@ use acyclic_stream::{
     StreamPath,
 };
 use bytes::Bytes;
+use futures::TryFutureExt as _;
 use futures::future::BoxFuture;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -522,6 +523,7 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
     PreparedPublish::settle(
         &provider
             .commit(CommitRequest {
+                deadline_unix_millis: None,
                 conditions: vec![CommitCondition::Absent {
                     path: StreamPath::new("agents/first")?,
                 }],
@@ -564,6 +566,7 @@ async fn instance_bound_subscriptions_created_in_a_foreign_commit() -> TestResul
     PreparedPublish::settle(
         &provider
             .commit(CommitRequest {
+                deadline_unix_millis: None,
                 conditions: vec![CommitCondition::Tail {
                     path: StreamPath::new("agents/first")?,
                     expected: 5,
@@ -617,7 +620,10 @@ async fn created<P: StreamProvider + ?Sized>(
     wake: StreamPath,
     path: StreamPath,
 ) -> TestResult {
-    let mut wakes = provider.follow(wake, 0, FollowFilter::default()).await?;
+    let mut wakes = provider
+        .follow(acyclic_stream::FollowRequest::new(wake, 0))
+        .map_ok(acyclic_stream::records_only)
+        .await?;
     loop {
         match provider.tail(path.clone()).await {
             Ok(_) => return Ok(()),
@@ -933,10 +939,7 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
     runtime.track(cold.clone())?;
     let work = runtime.ready.take().ok_or("missing initial hot work")?;
     assert_eq!(work.key(), &hot);
-    runtime
-        .execute(work, Inputs::Follow)
-        .await
-        .map_err(|(_, error)| error)?;
+    runtime.execute(work).await.map_err(|(_, error)| error)?;
     assert_eq!(
         store
             .load(&hot)
@@ -947,10 +950,7 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
     );
     let work = runtime.ready.take().ok_or("missing cold work")?;
     assert_eq!(work.key(), &cold, "a hot actor must rejoin at the back");
-    runtime
-        .execute(work, Inputs::Follow)
-        .await
-        .map_err(|(_, error)| error)?;
+    runtime.execute(work).await.map_err(|(_, error)| error)?;
     assert_eq!(
         records(&*provider, "out/cold").await?,
         vec![Bytes::from_static(b"r0")]
@@ -1140,13 +1140,12 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
     runtime.track(address.clone())?;
     assert!(runtime.drain().await.is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(runtime.observed_cursor(&address, "inbox", &inbox), Some(1));
     provider
         .append(AppendRequest {
             path: inbox.clone(),
             records: vec![Bytes::from_static(b"emit").into()],
             if_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
     let cut = store.load(&address).await?;
@@ -1171,7 +1170,6 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
     runtime.wake(&address);
     assert!(runtime.drain().await.is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(runtime.observed_cursor(&address, "inbox", &inbox), Some(2));
     assert_eq!(
         records(&*provider, "out/retained").await?,
         vec![Bytes::from_static(b"r0"), Bytes::from_static(b"r1")]
@@ -1183,7 +1181,7 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
             path: inbox,
             records: vec![Bytes::from_static(b"emit").into()],
             if_tail: Some(2),
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
     runtime.wake(&address);
@@ -1203,26 +1201,6 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
 }
 
 #[tokio::test]
-async fn retained_cursor_never_blocks_control_admission() -> TestResult {
-    let provider = Arc::new(MemoryStream::default());
-    let store = Store::new(Arc::clone(&provider), root()?);
-    let address = spawn_with(&store, "control", &[b"emit"]).await?;
-    let inbox = StreamPath::new("agents/control")?;
-    let runtime = Runtime::new(
-        Store::new(provider, root()?),
-        Arc::new(Package::new()?),
-        Arc::new(Manual(AtomicU64::new(1))),
-    );
-    runtime.track(address.clone())?;
-    assert!(runtime.drain().await.is_empty());
-    assert_eq!(runtime.observed_cursor(&address, "inbox", &inbox), Some(1));
-    let slot = runtime.slot(&address).ok_or("missing actor slot")?;
-    let _running_handler = slot.inner.lock().await;
-    assert_eq!(runtime.observed_cursor(&address, "inbox", &inbox), None);
-    Ok(())
-}
-
-#[tokio::test]
 async fn retained_cut_is_invalidated_when_delivery_is_cancelled() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = Store::new(Arc::clone(&provider), root()?);
@@ -1235,12 +1213,7 @@ async fn retained_cut_is_invalidated_when_delivery_is_cancelled() -> TestResult 
     runtime.track(address.clone())?;
     let slot = runtime.slot(&address).ok_or("missing actor slot")?;
     // Poll through claim and state observation, then cancel the stalled handler.
-    assert!(
-        runtime
-            .deliver(&address, &slot, Inputs::Event)
-            .now_or_never()
-            .is_none()
-    );
+    assert!(runtime.deliver(&address, &slot).now_or_never().is_none());
     drop(slot);
     let cut = store.load(&address).await?;
     assert_eq!(cut.state().ok_or("missing actor state")?.epoch(), 1);

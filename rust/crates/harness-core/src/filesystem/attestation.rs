@@ -24,10 +24,9 @@ use super::TurnAdmission;
 use acyclic_native_runtime::NativeReadMeter;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, BoxProviderFuture, ChildrenPage, ChildrenPageRequest, CommitId,
-    CommitOutcome, CommitRequest, CommittedEnvelope, DurableReceipt, FollowFilter, FollowStream,
-    ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, OperationClaims,
-    ProviderPlatform, ReadRequest, RecordStream, StreamBounds, StreamError, StreamPath,
-    StreamProvider, StreamWatermarks,
+    CommitOutcome, CommitRequest, CommittedEnvelope, DurableReceipt, FollowStream, ForkReceipt,
+    ForkRequest, IdempotencyKey, IdempotencyObservation, OperationClaims, ProviderPlatform,
+    ReadRequest, RecordStream, StreamError, StreamPath, StreamProvider, StreamWatermarks,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_stream::{NativeProviderFuture, NativeRecordStream, PreparedNativeCommit};
@@ -173,8 +172,8 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.inner.tail(path).await
     }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.inner.bounds(path).await
+    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+        self.inner.head(path).await
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         self.inner.watermarks(path).await
@@ -203,33 +202,9 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     }
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.inner.follow(path, from, filter).await
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.inner
-            .follow_checked(path, from, preceding, filter)
-            .await
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<CommitId>,
-        filter: FollowFilter,
+        request: acyclic_stream::FollowRequest,
     ) -> Result<FollowStream, StreamError> {
-        self.inner
-            .follow_updates(path, from, preceding, filter)
-            .await
+        self.inner.follow(request).await
     }
     async fn children_page(
         &self,
@@ -241,16 +216,6 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
         self.target(|| commit_digest(&request))
             .await?
             .commit(request)
-            .await
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.target(|| commit_digest(&request))
-            .await?
-            .commit_before(request, deadline_unix_millis)
             .await
     }
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
@@ -288,14 +253,6 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, u64> {
         self.inner.native_tail(path, meter)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_bounds(
-        &self,
-        path: StreamPath,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, StreamBounds> {
-        self.inner.native_bounds(path, meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn native_read(
@@ -444,11 +401,11 @@ mod tests {
         async fn tail(&self, path: super::StreamPath) -> Result<u64, super::StreamError> {
             self.inner.tail(path).await
         }
-        async fn bounds(
+        async fn head(
             &self,
             path: super::StreamPath,
-        ) -> Result<super::StreamBounds, super::StreamError> {
-            self.inner.bounds(path).await
+        ) -> Result<acyclic_stream::PathHead, super::StreamError> {
+            self.inner.head(path).await
         }
         async fn append(
             &self,
@@ -470,22 +427,13 @@ mod tests {
         }
         async fn follow(
             &self,
-            path: super::StreamPath,
-            from: u64,
-            filter: super::FollowFilter,
-        ) -> Result<super::RecordStream, super::StreamError> {
-            self.inner.follow(path, from, filter).await
+            request: acyclic_stream::FollowRequest,
+        ) -> Result<acyclic_stream::FollowStream, super::StreamError> {
+            self.inner.follow(request).await
         }
         async fn commit(
             &self,
             request: super::CommitRequest,
-        ) -> Result<super::CommitOutcome, super::StreamError> {
-            Err(self.write(super::commit_digest(&request)?))
-        }
-        async fn commit_before(
-            &self,
-            request: super::CommitRequest,
-            _: u64,
         ) -> Result<super::CommitOutcome, super::StreamError> {
             Err(self.write(super::commit_digest(&request)?))
         }
@@ -551,6 +499,7 @@ mod tests {
         );
         let path = StreamPath::new("attested/native")?;
         let request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![CommitCondition::Tail {
                 path: path.clone(),
                 expected: 0,
@@ -595,6 +544,7 @@ mod tests {
         );
         let path = StreamPath::new("attested/prepared")?;
         let request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![CommitCondition::Tail {
                 path: path.clone(),
                 expected: 0,

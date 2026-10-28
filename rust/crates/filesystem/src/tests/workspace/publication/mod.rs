@@ -71,6 +71,15 @@ impl acyclic_stream::StreamProvider for CutStream {
         self.inner.inspect_idempotency(key).await
     }
 
+    async fn head(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> Result<acyclic_stream::PathHead, acyclic_stream::StreamError> {
+        if self.fails_now() {
+            return Err(acyclic_stream::StreamError::Unavailable);
+        }
+        self.inner.head(path).await
+    }
     async fn tail(
         &self,
         path: acyclic_stream::StreamPath,
@@ -79,16 +88,6 @@ impl acyclic_stream::StreamProvider for CutStream {
             return Err(acyclic_stream::StreamError::Unavailable);
         }
         self.inner.tail(path).await
-    }
-
-    async fn bounds(
-        &self,
-        path: acyclic_stream::StreamPath,
-    ) -> Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError> {
-        if self.fails_now() {
-            return Err(acyclic_stream::StreamError::Unavailable);
-        }
-        self.inner.bounds(path).await
     }
 
     async fn append(
@@ -123,14 +122,12 @@ impl acyclic_stream::StreamProvider for CutStream {
 
     async fn follow(
         &self,
-        path: acyclic_stream::StreamPath,
-        from: u64,
-        filter: acyclic_stream::FollowFilter,
-    ) -> Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
+        request: acyclic_stream::FollowRequest,
+    ) -> Result<acyclic_stream::FollowStream, acyclic_stream::StreamError> {
         if self.fails_now() {
             return Err(acyclic_stream::StreamError::Unavailable);
         }
-        self.inner.follow(path, from, filter).await
+        self.inner.follow(request).await
     }
 
     async fn commit(

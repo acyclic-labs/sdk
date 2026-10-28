@@ -185,7 +185,10 @@ mod tests {
                     path: path.clone(),
                     records: vec![crate::OwnedBytes::from_static(b"value").into()],
                     if_tail: Some(0),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::new(crate::OwnedBytes::from_static(
+                        b"request-budget"
+                    ),)
+                    .unwrap(),
                 })
                 .await,
             control = 0,

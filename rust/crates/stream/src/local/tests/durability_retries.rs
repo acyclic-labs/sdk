@@ -2,6 +2,7 @@ use super::*;
 
 fn request(path: &StreamPath) -> Result<CommitRequest, StreamError> {
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![crate::CommitCondition::Tail {
             path: path.clone(),
             expected: 1,

@@ -320,7 +320,7 @@ async fn indexed_selection_includes_only_fully_validated_raw_tail() -> Result<()
             path: path.clone(),
             records: vec![record.into()],
             if_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
     let selection = journal
@@ -371,7 +371,7 @@ async fn indexed_selection_includes_only_fully_validated_raw_tail() -> Result<()
             path,
             records: vec![forged.into()],
             if_tail: Some(2),
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
     for cold in [false, true] {

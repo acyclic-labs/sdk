@@ -185,7 +185,7 @@ pub async fn fire<P: acyclic_stream::StreamProvider>(
                 path: inbox,
                 records: vec![timer.encode_validated()?.into()],
                 if_tail: None,
-                idempotency_key: Some(timer.fire_key_validated()?),
+                idempotency_key: timer.fire_key_validated()?,
             })
             .await?,
     ))

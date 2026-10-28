@@ -3,8 +3,7 @@ import { StreamSessions } from "./session.js";
 import { webSocketSession, type SessionWebSocketFactory } from "./session-websocket.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { validateAppend } from "./client.js";
-import { toBinary } from "@bufbuild/protobuf";
-import { AcknowledgeDeliveryRequestSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
+import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
@@ -17,11 +16,6 @@ export interface HttpStreamProviderOptions extends CredentialOptions { readonly 
 
 /** Authenticated JSON transport. Mutation retries are deliberately the caller's decision. */
 export class HttpStreamProvider implements StreamProvider {
-  /** Acknowledges an opaque hosted transport receipt. */
-  async acknowledgeDelivery(deliveryToken: Uint8Array): Promise<void> {
-    const input = toBinary(AcknowledgeDeliveryRequestSchema, { $typeName: "acyclic.stream.v1.AcknowledgeDeliveryRequest", deliveryToken: deliveryToken.slice() });
-    await this.#request("delivery/acknowledge", await encodeHttpRequest("delivery/acknowledge", input));
-  }
   readonly #sessions: StreamSessions;
   readonly #endpoint: string;
   readonly #credential: CredentialProvider;
@@ -117,6 +111,11 @@ export class HttpStreamProvider implements StreamProvider {
       expected += 1n;
     }
     return records;
+  }
+  async head(path: string): Promise<import("./types.js").PathHead> {
+    const request = { kind: "head" as const, path };
+    await validateWireRequest(request);
+    return this.#request("head", await encodeHttpRequest("head", wireRequest(request)));
   }
   async #tail(path: string, signal?: AbortSignal): Promise<Sequence> {
     await validateWireRequest({ kind: "tail", path });

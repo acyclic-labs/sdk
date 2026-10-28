@@ -1,4 +1,5 @@
 #![cfg(all(feature = "local", not(loom)))]
+use futures::TryFutureExt as _;
 
 use crate::*;
 use futures::{
@@ -29,7 +30,10 @@ async fn seed(provider: &impl StreamProvider) {
                 .map(|_| OwnedBytes::from_static(b"record").into())
                 .collect(),
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::new(OwnedBytes::from_static(
+                b"snapshot-ready-seed",
+            ))
+            .unwrap(),
         })
         .await
         .unwrap();
@@ -187,11 +191,9 @@ async fn prepare<P: StreamProvider>(
     let path = StreamPath::new("root").unwrap();
     // Compare exact errors as well as all record bytes/metadata and observer order.
     let errors = [old, candidate].map(|provider| {
-        provider.follow(
-            path.clone(),
-            COUNT as u64 + 1,
-            crate::FollowFilter::default(),
-        )
+        provider
+            .follow(crate::FollowRequest::new(path.clone(), COUNT as u64 + 1))
+            .map_ok(crate::records_only)
     });
     let [old_error, candidate_error] = errors;
     assert_eq!(old_error.await.err(), Some(StreamError::OutOfRange));
@@ -200,11 +202,11 @@ async fn prepare<P: StreamProvider>(
         ReadyPair::Records(
             records(baseline.clone()).await,
             candidate
-                .follow(
+                .follow(crate::FollowRequest::new(
                     StreamPath::new("root").unwrap(),
                     0,
-                    crate::FollowFilter::default(),
-                )
+                ))
+                .map_ok(crate::records_only)
                 .await
                 .unwrap(),
         )

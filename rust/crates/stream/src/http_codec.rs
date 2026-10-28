@@ -5,25 +5,15 @@ use prost::Message;
 use serde_json::{Value, json};
 type Result<T = ()> = std::result::Result<T, &'static str>;
 
-fn options(
-    name: &str,
-    sequence: Option<u64>,
-    key: Option<&crate::IdempotencyKey>,
-) -> Option<Value> {
-    if sequence.is_none() && key.is_none() {
-        return None;
-    }
-    let mut value = serde_json::Map::from_iter([]);
+fn options(name: &str, sequence: Option<u64>, key: &crate::IdempotencyKey) -> Value {
+    let mut value = serde_json::Map::from_iter([(
+        "idempotencyKey".into(),
+        json!(STANDARD.encode(key.as_bytes())),
+    )]);
     if let Some(sequence) = sequence {
         value.insert(name.into(), json!(sequence.to_string()));
     }
-    if let Some(key) = key {
-        value.insert(
-            "idempotencyKey".into(),
-            json!(STANDARD.encode(key.as_bytes())),
-        );
-    }
-    Some(Value::Object(value))
+    Value::Object(value)
 }
 
 fn valid_token_expiry(value: &str) -> bool {
@@ -68,9 +58,10 @@ fn append_json(request: &crate::AppendRequest) -> Result<Value> {
         ("path".into(), json!(request.path.to_string())),
         ("records".into(), json!(values)),
     ]);
-    if let Some(options) = options("ifTail", request.if_tail, request.idempotency_key.as_ref()) {
-        value.insert("options".into(), options);
-    }
+    value.insert(
+        "options".into(),
+        options("ifTail", request.if_tail, &request.idempotency_key),
+    );
     Ok(Value::Object(value))
 }
 
@@ -106,9 +97,10 @@ fn request_json_fork(input: &[u8]) -> Result<Value> {
             ),
         ),
     ]);
-    if let Some(options) = options("atTail", request.at_tail, request.idempotency_key.as_ref()) {
-        value.insert("options".into(), options);
-    }
+    value.insert(
+        "options".into(),
+        options("atTail", request.at_tail, &request.idempotency_key),
+    );
     Ok(Value::Object(value))
 }
 
@@ -129,6 +121,10 @@ fn request_json_commit(input: &[u8]) -> Result<Value> {
         .conditions
         .iter()
         .map(|condition| match condition {
+            crate::CommitCondition::Present { path } => json!({
+                "path": path.to_string(),
+                "ifPresent": true,
+            }),
             crate::CommitCondition::Head { .. } => {
                 unreachable!("head conditions require a negotiated hosted capability")
             }
@@ -221,20 +217,17 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
         return Err("limit_exceeded");
     }
     match route {
-        "delivery/acknowledge" => {
-            let request =
-                wire::AcknowledgeDeliveryRequest::decode(input).map_err(|_| "invalid_argument")?;
-            if request.delivery_token.len() != 32 {
-                return Err("invalid_argument");
-            }
-            Ok(json!({ "deliveryToken": STANDARD.encode(request.delivery_token) }))
-        }
         "idempotency/inspect" => {
             let request =
                 wire::InspectIdempotencyRequest::decode(input).map_err(|_| "invalid_argument")?;
             let key = crate::IdempotencyKey::new(request.idempotency_key)
                 .map_err(|_| "invalid_argument")?;
             Ok(json!({ "idempotencyKey": STANDARD.encode(key.as_bytes()) }))
+        }
+        "head" => {
+            let request = wire::HeadRequest::decode(input).map_err(|_| "invalid_argument")?;
+            let path = wire_codec::path(request.path).map_err(|_| "invalid_path")?;
+            Ok(json!({ "path": path.to_string() }))
         }
         "tail" => {
             let request = wire::TailRequest::decode(input).map_err(|_| "invalid_argument")?;
@@ -309,6 +302,7 @@ mod tests {
     fn commit_projection_preserves_deadline_without_losing_uint64_precision()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
         let request = crate::CommitRequest {
+            deadline_unix_millis: Some(9_007_199_254_740_993),
             conditions: vec![crate::CommitCondition::Absent {
                 path: crate::StreamPath::new("deadline/events")?,
             }],
@@ -319,7 +313,10 @@ mod tests {
             idempotency_key: crate::IdempotencyKey::new(bytes::Bytes::from_static(b"identity"))?,
         };
         let mut wire = wire_codec::commit_to_wire(&request);
-        wire.deadline_unix_millis = Some(9_007_199_254_740_993);
+        assert_eq!(
+            wire_codec::commit_from_wire(wire.clone())?.deadline_unix_millis,
+            request.deadline_unix_millis
+        );
         let projected: Value = serde_json::from_str(&encode("commit", &wire.encode_to_vec())?)?;
         assert_eq!(
             projected

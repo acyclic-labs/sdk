@@ -48,12 +48,11 @@ impl StreamProvider for PausingStream {
         self.inner.inspect_idempotency(key).await
     }
 
+    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+        self.inner.head(path).await
+    }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.inner.tail(path).await
-    }
-
-    async fn bounds(&self, path: StreamPath) -> Result<acyclic_stream::StreamBounds, StreamError> {
-        self.inner.bounds(path).await
     }
 
     async fn append(
@@ -79,11 +78,9 @@ impl StreamProvider for PausingStream {
 
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: acyclic_stream::FollowFilter,
-    ) -> Result<acyclic_stream::RecordStream, StreamError> {
-        self.inner.follow(path, from, filter).await
+        request: acyclic_stream::FollowRequest,
+    ) -> Result<acyclic_stream::FollowStream, StreamError> {
+        self.inner.follow(request).await
     }
 
     async fn children_page(
@@ -108,16 +105,6 @@ impl StreamProvider for PausingStream {
             self.resume.notified().await;
         }
         self.inner.commit(request).await
-    }
-
-    async fn commit_before(
-        &self,
-        request: acyclic_stream::CommitRequest,
-        deadline_unix_millis: u64,
-    ) -> Result<acyclic_stream::CommitOutcome, StreamError> {
-        self.inner
-            .commit_before(request, deadline_unix_millis)
-            .await
     }
 
     async fn read_commit(
@@ -779,7 +766,7 @@ async fn failed_atomic_generation_fork_leaves_no_destination_lineage()
             path: StreamPath::new(format!("{prefix}/records"))?,
             records: vec![OwnedBytes::from_static(b"conflict").into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
     let source_authority = AuthorityId::from_bytes(source.id().into_bytes());

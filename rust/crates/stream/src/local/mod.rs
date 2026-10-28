@@ -36,8 +36,8 @@ use crate::obs;
 use crate::{
     AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitOutcome, CommitRequest,
     CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
-    MAX_COMMAND_BYTES, MemoryLimits, MemoryStream, ReadRequest, RecordStream, StreamBounds,
-    StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
+    MAX_COMMAND_BYTES, MemoryLimits, MemoryStream, ReadRequest, RecordStream, StreamError,
+    StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
 };
 
 const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";

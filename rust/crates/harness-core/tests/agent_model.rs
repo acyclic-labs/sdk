@@ -138,10 +138,9 @@ fn records_are_canonical_total_and_bounded() -> Result {
 async fn send_is_one_conditional_commit_refused_after_archive() -> Result {
     let provider = MemoryStream::default();
     let agent = create(&provider, id(1)).await?;
-    let tail = inbox_tail(&provider, &agent).await?;
-    assert_eq!(tail, 1);
+    assert_eq!(inbox_tail(&provider, &agent).await?, 1);
 
-    let request = send(&agent, tail, &user(), &cancel("c1"))?;
+    let request = send(&agent, &user(), &cancel("c1"))?;
     let Submitted::Committed(first) = submit(&provider, request.clone()).await? else {
         panic!("send did not commit");
     };
@@ -151,18 +150,12 @@ async fn send_is_one_conditional_commit_refused_after_archive() -> Result {
     assert_eq!(first.commit_id, replay.commit_id);
     assert_eq!(inbox_tail(&provider, &agent).await?, 2);
 
-    let stale = send(&agent, 1, &user(), &cancel("c2"))?;
-    assert!(matches!(
-        submit(&provider, stale).await?,
-        Submitted::InboxMoved(paths) if paths == vec![agent.inbox()?]
-    ));
-
-    let closing = archive(&agent, 2, &user(), &intent("a1"))?;
+    let closing = archive(&agent, &user(), &intent("a1"))?;
     assert!(matches!(
         submit(&provider, closing).await?,
         Submitted::Committed(_)
     ));
-    let late = send(&agent, 3, &user(), &cancel("c3"))?;
+    let late = send(&agent, &user(), &cancel("c3"))?;
     assert!(matches!(
         submit(&provider, late.clone()).await?,
         Submitted::RecipientClosed(paths) if paths == vec![agent.closed()?]
@@ -186,21 +179,16 @@ async fn send_is_one_conditional_commit_refused_after_archive() -> Result {
 async fn send_cannot_create_an_agent() -> Result {
     let provider = MemoryStream::default();
     let absent = AgentPath::root(&id(9));
+    let request = send(&absent, &user(), &cancel("c1"))?;
     assert!(matches!(
-        inbox_tail(&provider, &absent).await,
-        Err(Error::NoSuchAgent)
+        submit(&provider, request.clone()).await?,
+        Submitted::NoSuchAgent(paths) if paths == vec![absent.inbox()?]
     ));
-    assert!(matches!(
-        send(&absent, 0, &user(), &cancel("c1")),
-        Err(Error::NoSuchAgent)
-    ));
-    // Negative control: `Tail{0}` matches absence, which is why it is refused.
-    let mut forced = send(&absent, 1, &user(), &cancel("c1"))?;
-    for condition in &mut forced.conditions {
-        if let CommitCondition::Tail { expected, .. } = condition {
-            *expected = 0;
-        }
-    }
+    // Negative control: without `Present` the same send creates the inbox.
+    let mut forced = request;
+    forced
+        .conditions
+        .retain(|condition| !matches!(condition, CommitCondition::Present { .. }));
     assert!(matches!(
         provider.commit(forced).await?,
         CommitOutcome::Committed(_)
@@ -220,6 +208,7 @@ async fn seeded() -> Result<Seeded> {
     let conversation = parent.conversation()?;
     let status = parent.status()?;
     let seeded = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Tail {
                 path: conversation.clone(),
@@ -808,14 +797,14 @@ async fn ten_thousand_dormant_agents_cost_nothing_per_send() -> Result {
     // no other agent's streams are read or written.
     let mut shapes = Vec::new();
     for agent in [&paths[0], &paths[paths.len() / 2], &paths[paths.len() - 1]] {
-        let tail = inbox_tail(&provider, agent).await?;
-        let request = send(agent, tail, &user(), &cancel("c1"))?;
+        let request = send(agent, &user(), &cancel("c1"))?;
         let touched: Vec<_> = request
             .conditions
             .iter()
             .map(|condition| match condition {
                 CommitCondition::Head { path, .. }
                 | CommitCondition::Tail { path, .. }
+                | CommitCondition::Present { path }
                 | CommitCondition::Absent { path } => path.clone(),
             })
             .collect();
@@ -824,13 +813,13 @@ async fn ten_thousand_dormant_agents_cost_nothing_per_send() -> Result {
                 .iter()
                 .all(|path| path.as_str().starts_with(agent.as_str()))
         );
-        let Submitted::Committed(envelope) = submit(&provider, request.clone()).await? else {
+        let Submitted::Committed(receipt) = submit(&provider, request.clone()).await? else {
             panic!("send to a dormant agent did not commit");
         };
         shapes.push((
             request.conditions.len(),
             request.mutations.len(),
-            envelope.mutations.len(),
+            receipt.appends.len() + receipt.forks.len(),
         ));
     }
     assert!(shapes.windows(2).all(|pair| pair[0] == pair[1]));

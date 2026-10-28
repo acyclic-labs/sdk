@@ -62,7 +62,7 @@ fn prepared_frames_withhold_and_refund_codec_allowance() -> Result<(), Box<dyn s
         },
         ..Meter::default()
     });
-    let work = crate::memory::Work::new(meter.original())?;
+    let work = crate::native::Work::new(meter.original())?;
     let frame = PreparedFrame::reserve(128, Some(Arc::clone(&work)))?;
     for request in [(1, 0, 0), (0, 1, 0), (0, 0, 1)] {
         assert!(
@@ -115,10 +115,7 @@ async fn native_append_lost_ack_reopens_exact_append_identity()
     let limits = LocalStreamLimits::default();
     let provider = LocalStream::open(directory.path(), limits).await?;
     let request = keyed_append("native-append-lost-ack", 0)?;
-    let key = request
-        .idempotency_key
-        .clone()
-        .ok_or("append fixture lacks a key")?;
+    let key = request.idempotency_key.clone();
     let meter = Arc::new(Meter::local());
     meter.cancel_on_write.store(true, Ordering::SeqCst);
     let error = provider
@@ -145,6 +142,7 @@ async fn native_append_lost_ack_reopens_exact_append_identity()
     assert_eq!(reopened.tail(request.path.clone()).await?, 1);
     // Reusing the same bytes/key through Commit is a different operation.
     let wrong_family = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![crate::CommitCondition::Tail {
             path: request.path.clone(),
             expected: 1,
@@ -180,14 +178,11 @@ async fn native_append_conflicts_leave_keys_free_and_journal_unchanged()
             path: path.clone(),
             records: vec![(OwnedBytes::from_static(b"seed")).into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let request = keyed_append(path.as_str(), 0)?;
-    let key = request
-        .idempotency_key
-        .clone()
-        .ok_or("append fixture lacks a key")?;
+    let key = request.idempotency_key.clone();
     let before = std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len();
     let meter = Arc::new(Meter::local());
     let expected = AppendOutcome::TailConflict { actual_tail: 1 };
@@ -197,15 +192,6 @@ async fn native_append_conflicts_leave_keys_free_and_journal_unchanged()
     assert_eq!(conflict.value(), &expected);
     drop(conflict);
     let after_keyed = std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len();
-    let mut unkeyed = request.clone();
-    unkeyed.idempotency_key = None;
-    let conflict = provider.native_append(unkeyed, meter.original()).await??;
-    assert_eq!(conflict.value(), &expected);
-    drop(conflict);
-    assert_eq!(
-        std::fs::metadata(directory.path().join(JOURNAL_FILE))?.len(),
-        after_keyed
-    );
     assert_eq!(after_keyed, before);
     assert!(provider.inspect_idempotency(key.clone()).await?.is_none());
     drop(provider);
@@ -364,7 +350,11 @@ async fn prepared_late_cancel_drains_original_frame_and_recovery_without_fresh_a
     let crate::IdempotencyOutcome::Commit(expected) = observed.outcome else {
         return Err("prepared operation changed canonical family".into());
     };
-    assert_eq!(reopened.commit(request).await?, expected);
+    let CommitOutcome::Committed(receipt) = reopened.commit(request).await? else {
+        return Err("replay changed canonical family".into());
+    };
+    assert!(receipt.matches_envelope(&expected));
+    assert_eq!(reopened.read_commit(receipt.commit_id).await?, expected);
     meter.assert_refunded();
     Ok(())
 }
@@ -390,7 +380,7 @@ fn prepared_partial_write_stops_at_exact_accepted_boundary()
         }
     }
     let meter = Arc::new(Meter::local());
-    let work = crate::memory::Work::new(meter.original())?;
+    let work = crate::native::Work::new(meter.original())?;
     let mut plan =
         PreparedFrame::encode(&Command::Commit(keyed_commit("partial", 0)?), 0, Some(work))?;
     let mut writer = Partial { bytes: Vec::new() };
@@ -517,7 +507,17 @@ async fn native_lost_ack_drains_flush_and_reopens_original_identity()
     let crate::IdempotencyOutcome::Commit(outcome) = &accepted.outcome else {
         return Err("reopened an unrelated operation family".into());
     };
-    assert_eq!(&reopened.commit_before(request, 0).await?, outcome);
+    let CommitOutcome::Committed(receipt) = reopened
+        .commit(CommitRequest {
+            deadline_unix_millis: Some(0),
+            ..request
+        })
+        .await?
+    else {
+        return Err("replay changed canonical family".into());
+    };
+    assert!(receipt.matches_envelope(outcome));
+    assert_eq!(&reopened.read_commit(receipt.commit_id).await?, outcome);
     drop(accepted);
     drop(error);
     meter.assert_refunded();
@@ -569,7 +569,17 @@ async fn native_compaction_drains_accepted_controls_and_actual_close()
     let crate::IdempotencyOutcome::Commit(outcome) = &accepted.outcome else {
         return Err("snapshot retained an unrelated operation".into());
     };
-    assert_eq!(&reopened.commit_before(request, 0).await?, outcome);
+    let CommitOutcome::Committed(receipt) = reopened
+        .commit(CommitRequest {
+            deadline_unix_millis: Some(0),
+            ..request
+        })
+        .await?
+    else {
+        return Err("replay changed canonical family".into());
+    };
+    assert!(receipt.matches_envelope(outcome));
+    assert_eq!(&reopened.read_commit(receipt.commit_id).await?, outcome);
     drop(accepted);
     drop(error);
     meter.assert_refunded();
@@ -733,6 +743,7 @@ async fn rejected_commits_do_not_grow_the_journal() -> Result<(), Box<dyn std::e
         assert!(matches!(
             provider
                 .commit(CommitRequest {
+                    deadline_unix_millis: None,
                     conditions: vec![crate::CommitCondition::Tail {
                         path: StreamPath::new("absent")?,
                         expected: 1

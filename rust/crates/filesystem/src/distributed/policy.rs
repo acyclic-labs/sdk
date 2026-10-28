@@ -122,6 +122,7 @@ pub(super) fn condition_path(condition: &CommitCondition) -> &StreamPath {
     match condition {
         CommitCondition::Head { path, .. }
         | CommitCondition::Tail { path, .. }
+        | CommitCondition::Present { path }
         | CommitCondition::Absent { path } => path,
     }
 }
@@ -285,6 +286,7 @@ mod tests {
         }
         let outcome = provider
             .commit(CommitRequest {
+                deadline_unix_millis: None,
                 conditions,
                 mutations: vec![CommitMutation::Append {
                     // The destination must have its own condition. Use the same

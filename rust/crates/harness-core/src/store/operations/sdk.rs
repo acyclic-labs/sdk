@@ -163,18 +163,18 @@ pub(crate) async fn read_records<P: StreamProvider + ?Sized>(
 }
 
 /// Preserves the provider's `NotFound` result for the canonical CAS selector.
-pub(crate) async fn bounds_with_work<P: StreamProvider + ?Sized>(
+pub(crate) async fn tail_result_with_work<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<std::result::Result<StreamBounds, StreamError>> {
+) -> Result<std::result::Result<u64, StreamError>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(original) = work
         .as_deref()
         .and_then(|observer| observer.original_native_work())
     {
         let result = client
-            .native_bounds(path.clone(), original.runtime_meter())
+            .native_tail(path.clone(), original.runtime_meter())
             .await;
         return crate::distributed::native_call_result(original, result)
             .map(|result| result.map(|output| *output.value()));
@@ -182,7 +182,7 @@ pub(crate) async fn bounds_with_work<P: StreamProvider + ?Sized>(
     if let Some(observer) = work.as_deref_mut() {
         observer.begin_call()?;
     }
-    Ok(client.bounds(path.clone()).await)
+    Ok(client.tail(path.clone()).await)
 }
 
 pub(crate) async fn tail_with_work<P: StreamProvider + ?Sized>(
@@ -200,26 +200,7 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider + ?Sized>(
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<u64>> {
-    let result: Option<std::result::Result<u64, StreamError>> = None;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    let mut result = result;
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
-        let tail = client
-            .native_tail(path.clone(), original.runtime_meter())
-            .await;
-        result = Some(
-            crate::distributed::native_call_result(original, tail)?.map(|output| *output.value()),
-        );
-    }
-    let result = if let Some(result) = result {
-        result
-    } else {
-        if let Some(observer) = work.as_deref_mut() {
-            observer.begin_call()?;
-        }
-        client.tail(path.clone()).await
-    };
+    let result = tail_result_with_work(client, path, work).await?;
     match result {
         Ok(tail) => Ok(Some(tail)),
         Err(StreamError::NotFound) => Ok(None),

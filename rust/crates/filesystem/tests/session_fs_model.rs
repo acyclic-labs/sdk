@@ -10,7 +10,7 @@ fn append(stream: &MemoryStream, path: &StreamPath, value: &'static [u8], from: 
         path: path.clone(),
         records: vec![Bytes::from_static(value).into()],
         if_tail: Some(from),
-        idempotency_key: None,
+        idempotency_key: acyclic_stream::IdempotencyKey::unique(),
     }))
     .unwrap() else {
         panic!("unexpected conflict")
@@ -45,7 +45,11 @@ fn resume(omit_wake: bool) {
         });
         verification::park(async {
             let mut follow = stream
-                .follow_updates(path, 1, Some(anchor), FollowFilter::default())
+                .follow(FollowRequest {
+                    preceding: Some(anchor),
+                    progress: true,
+                    ..FollowRequest::new(path, 1)
+                })
                 .await
                 .unwrap();
             let FollowUpdate::Record(record) = follow.next().await.unwrap().unwrap() else {
@@ -80,12 +84,11 @@ fn replacement(unchecked: bool) {
         });
         verification::park(async {
             let mut follow = stream
-                .follow_updates(
-                    path,
-                    1,
-                    if unchecked { None } else { Some(anchor) },
-                    FollowFilter::default(),
-                )
+                .follow(FollowRequest {
+                    preceding: (!unchecked).then_some(anchor),
+                    progress: true,
+                    ..FollowRequest::new(path, 1)
+                })
                 .await;
             writer.join().unwrap();
             let rejected = match &mut follow {

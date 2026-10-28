@@ -1,6 +1,7 @@
 use super::*;
 use crate::OwnedBytes as Bytes;
 use crate::verification::block_on;
+use futures::TryFutureExt as _;
 use std::{mem::ManuallyDrop, task::Context};
 
 // The writer executes accepted publication under its real publication fence.
@@ -20,7 +21,7 @@ pub(crate) fn registration(omit_wake: bool) {
             path: path.clone(),
             records: vec![Bytes::from_static(b"anchor").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
         let AppendOutcome::Committed(seed) = seed else {
@@ -39,7 +40,7 @@ pub(crate) fn registration(omit_wake: bool) {
                             path,
                             records: vec![Bytes::from_static(b"accepted").into()],
                             if_tail: Some(1),
-                            idempotency_key: None,
+                            idempotency_key: crate::IdempotencyKey::unique(),
                         })
                         .await
                         .unwrap();
@@ -48,7 +49,14 @@ pub(crate) fn registration(omit_wake: bool) {
         });
         block_on(async {
             let mut follow = provider
-                .follow_checked(path, 1, seed.commit_id, crate::FollowFilter::default())
+                .follow(crate::FollowRequest {
+                    path: path,
+                    from: 1,
+                    preceding: Some(seed.commit_id),
+                    filter: crate::FollowFilter::default(),
+                    progress: false,
+                })
+                .map_ok(crate::records_only)
                 .await
                 .unwrap();
             let record = follow.next().await.unwrap().unwrap();
@@ -69,13 +77,21 @@ pub(crate) fn cancellation(retain: bool) {
             path: path.clone(),
             records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
-        let mut cancelled =
-            block_on(provider.follow(path.clone(), 1, crate::FollowFilter::default())).unwrap();
-        let mut kept =
-            block_on(provider.follow(path.clone(), 1, crate::FollowFilter::default())).unwrap();
+        let mut cancelled = block_on(
+            provider
+                .follow(crate::FollowRequest::new(path.clone(), 1))
+                .map_ok(crate::records_only),
+        )
+        .unwrap();
+        let mut kept = block_on(
+            provider
+                .follow(crate::FollowRequest::new(path.clone(), 1))
+                .map_ok(crate::records_only),
+        )
+        .unwrap();
         let (_, wake) = crate::verification::probe();
         assert!(
             cancelled
@@ -104,7 +120,7 @@ pub(crate) fn cancellation(retain: bool) {
                     path: path.clone(),
                     records: vec![Bytes::from_static(b"next").into()],
                     if_tail: Some(1),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 })
                 .await
                 .unwrap();
@@ -141,7 +157,7 @@ pub(crate) fn failure_lock_order(hold_borrow: bool) {
             path: path.clone(),
             records: vec![Bytes::from_static(b"seed").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
         let AppendOutcome::Committed(seed) = seed else {
@@ -170,7 +186,14 @@ pub(crate) fn failure_lock_order(hold_borrow: bool) {
         } else {
             block_on(async {
                 match provider
-                    .follow_checked(path, 1, seed.commit_id, crate::FollowFilter::default())
+                    .follow(crate::FollowRequest {
+                        path: path,
+                        from: 1,
+                        preceding: Some(seed.commit_id),
+                        filter: crate::FollowFilter::default(),
+                        progress: false,
+                    })
+                    .map_ok(crate::records_only)
                     .await
                 {
                     Err(error) => assert_eq!(error, StreamError::Unavailable),

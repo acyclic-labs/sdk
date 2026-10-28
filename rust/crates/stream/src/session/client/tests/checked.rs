@@ -1,5 +1,6 @@
 use super::*;
 use crate::{CommitId, ReadRequest};
+use futures::TryFutureExt as _;
 
 pub(super) async fn anchor(
     provider: &MemoryStream,
@@ -28,26 +29,31 @@ async fn checked_registration_fails_before_returning_a_cursor_and_keeps_siblings
     let client = fixture.client()?;
     let path = StreamPath::new("events")?;
     let mut ordinary = client
-        .follow(path.clone(), 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest::new(path.clone(), 1))
+        .map_ok(crate::records_only)
         .await?;
     assert!(matches!(
         client
-            .follow_checked(
-                path.clone(),
-                1,
-                CommitId::from_bytes([42; 32]),
-                crate::FollowFilter::default()
-            )
+            .follow(crate::FollowRequest {
+                path: path.clone(),
+                from: 1,
+                preceding: Some(CommitId::from_bytes([42; 32])),
+                filter: crate::FollowFilter::default(),
+                progress: false
+            })
+            .map_ok(crate::records_only)
             .await,
         Err(StreamError::PrefixNotRetained)
     ));
     let mut checked = client
-        .follow_checked(
-            path.clone(),
-            1,
-            anchor(&provider, "events", 0).await?,
-            crate::FollowFilter::default(),
-        )
+        .follow(crate::FollowRequest {
+            path: path.clone(),
+            from: 1,
+            preceding: Some(anchor(&provider, "events", 0).await?),
+            filter: crate::FollowFilter::default(),
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await?;
     append(&provider, "events", 1).await?;
     assert_eq!(next(&mut checked).await?.sequence, 1);
@@ -66,16 +72,19 @@ async fn unconfirmed_history_is_rejected_without_granting_credit_or_closing_sibl
     let client = fixture.client()?;
     let path = StreamPath::new("events")?;
     let mut ordinary = client
-        .follow(path.clone(), 3, crate::FollowFilter::default())
+        .follow(crate::FollowRequest::new(path.clone(), 3))
+        .map_ok(crate::records_only)
         .await?;
     assert!(matches!(
         client
-            .follow_checked(
-                path.clone(),
-                1,
-                anchor(&provider, "events", 0).await?,
-                crate::FollowFilter::default()
-            )
+            .follow(crate::FollowRequest {
+                path: path.clone(),
+                from: 1,
+                preceding: Some(anchor(&provider, "events", 0).await?),
+                filter: crate::FollowFilter::default(),
+                progress: false
+            })
+            .map_ok(crate::records_only)
             .await,
         Err(StreamError::Unsupported)
     ));
@@ -107,12 +116,14 @@ async fn checked_move_and_reconnect_use_the_yielded_commit_instead_of_buffered_r
     client.register_credential(0, crate::session::testing::credential())?;
     let path = StreamPath::new("events")?;
     let mut records = client
-        .follow_checked(
-            path,
-            1,
-            anchor(&provider, "events", 0).await?,
-            crate::FollowFilter::default(),
-        )
+        .follow(crate::FollowRequest {
+            path: path,
+            from: 1,
+            preceding: Some(anchor(&provider, "events", 0).await?),
+            filter: crate::FollowFilter::default(),
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await?;
     append(&provider, "events", 1).await?;
     let yielded = next(&mut records).await?;
@@ -173,12 +184,14 @@ async fn checked_delivery_reports_history_replacement_after_registration() -> Te
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = fixture.client()?;
     let mut records = client
-        .follow_checked(
-            StreamPath::new("events")?,
-            1,
-            anchor(&provider, "events", 0).await?,
-            crate::FollowFilter::default(),
-        )
+        .follow(crate::FollowRequest {
+            path: StreamPath::new("events")?,
+            from: 1,
+            preceding: Some(anchor(&provider, "events", 0).await?),
+            filter: crate::FollowFilter::default(),
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await?;
     let replacement = MemoryStream::default();
     replacement
@@ -186,7 +199,7 @@ async fn checked_delivery_reports_history_replacement_after_registration() -> Te
             path: StreamPath::new("events")?,
             records: vec![(OwnedBytes::from_static(b"replacement")).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     provider

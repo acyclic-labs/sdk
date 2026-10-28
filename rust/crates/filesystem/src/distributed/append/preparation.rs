@@ -122,6 +122,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     lease_path,
                 },
                 request: CommitRequest {
+                    deadline_unix_millis: None,
                     conditions,
                     mutations,
                     idempotency_key,

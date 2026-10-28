@@ -63,7 +63,7 @@ fn lost_ack_restart_and_append(broken: bool) -> Result {
         path: inbox.clone(),
         records: vec![b"concurrent".to_vec().into()],
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: acyclic_stream::IdempotencyKey::unique(),
     }))?;
     let repeated = retry.join().map_err(|_| "retry panicked")??;
     assert_eq!(
@@ -112,16 +112,16 @@ macro_rules! delegate {
             $(async fn $name(&self, $arg: $input) -> std::result::Result<$output, acyclic_stream::StreamError> {
                 self.0.$name($arg).await
             })*
-            async fn follow(&self, path: StreamPath, from: u64)
-                -> std::result::Result<acyclic_stream::RecordStream, acyclic_stream::StreamError>
+            async fn follow(&self, request: acyclic_stream::FollowRequest)
+                -> std::result::Result<acyclic_stream::FollowStream, acyclic_stream::StreamError>
             {
-                self.0.follow(path, from).await
+                self.0.follow(request).await
             }
             async fn append(&self, mut request: AppendRequest)
                 -> std::result::Result<acyclic_stream::AppendOutcome, acyclic_stream::StreamError>
             {
-                // Deliberately drop the production fire's stable retry key.
-                request.idempotency_key = None;
+                // Deliberately replace the production fire's stable retry key.
+                request.idempotency_key = acyclic_stream::IdempotencyKey::unique();
                 self.0.append(request).await
             }
         }
@@ -129,9 +129,9 @@ macro_rules! delegate {
 }
 
 delegate! {
+    head(path: StreamPath) -> acyclic_stream::PathHead;
     inspect_idempotency(key: acyclic_stream::IdempotencyKey) -> Option<acyclic_stream::IdempotencyObservation>;
     tail(path: StreamPath) -> u64;
-    bounds(path: StreamPath) -> acyclic_stream::StreamBounds;
     fork(request: acyclic_stream::ForkRequest) -> acyclic_stream::ForkReceipt;
     read(request: acyclic_stream::ReadRequest) -> acyclic_stream::RecordStream;
     commit(request: acyclic_stream::CommitRequest) -> acyclic_stream::CommitOutcome;

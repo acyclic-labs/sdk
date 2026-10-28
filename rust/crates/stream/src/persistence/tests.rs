@@ -1,8 +1,8 @@
 use super::*;
 use crate::OwnedBytes as Bytes;
 use crate::{
-    AppendRequest, CommitCondition, CommitConflict, CommitMutation, CommitRequest, ForkRequest,
-    IdempotencyKey, MemoryStream, StreamProvider,
+    AppendRequest, CommitCondition, CommitMutation, CommitRequest, ForkRequest, IdempotencyKey,
+    MemoryStream, StreamProvider,
 };
 
 const BOUND: usize = 1024 * 1024;
@@ -25,7 +25,7 @@ async fn round_trip(
         bytes,
         wire_codec::observation_wire(value.clone()).encode_to_vec()
     );
-    if let IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) = &value.outcome {
+    if let IdempotencyOutcome::Commit(envelope) = &value.outcome {
         let bytes = encode_envelope(envelope, BOUND)?;
         assert_eq!(decode_envelope(&bytes, bytes.len())?, *envelope);
     }
@@ -41,12 +41,12 @@ async fn real_provider_receipts_preserve_append_fork_atomic_commit_and_conflicts
         path: source.clone(),
         records: vec![(Bytes::from_static(b"one")).into()],
         if_tail: Some(0),
-        idempotency_key: Some(key(b"append")?),
+        idempotency_key: key(b"append")?,
     };
     provider.append(append.clone()).await?;
     round_trip(&provider, key(b"append")?).await?;
     let mut conflict = append.clone();
-    conflict.idempotency_key = Some(key(b"append-conflict")?);
+    conflict.idempotency_key = key(b"append-conflict")?;
     provider.append(conflict).await?;
     assert!(
         provider
@@ -60,11 +60,12 @@ async fn real_provider_receipts_preserve_append_fork_atomic_commit_and_conflicts
             source: source.clone(),
             destination: StreamPath::new("copy")?,
             at_tail: Some(1),
-            idempotency_key: Some(key(b"fork")?),
+            idempotency_key: key(b"fork")?,
         })
         .await?;
     round_trip(&provider, key(b"fork")?).await?;
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Absent {
                 path: StreamPath::new("forked")?,
@@ -120,16 +121,23 @@ fn observation() -> Result<IdempotencyObservation, StreamError> {
     Ok(IdempotencyObservation {
         idempotency_key: key(b"original")?,
         request_digest: [7; 32],
-        outcome: IdempotencyOutcome::Commit(CommitOutcome::Conflict(vec![
-            CommitConflict::Tail {
+        outcome: IdempotencyOutcome::Commit(CommittedEnvelope {
+            commit_id: CommitId::from_bytes([9; 32]),
+            committed_at_micros: 17,
+            mutations: vec![CommittedMutation::Append(crate::CommittedAppend {
                 path: StreamPath::new("a")?,
-                expected: 2,
-                actual: None,
-            },
-            CommitConflict::Exists {
-                path: StreamPath::new("b")?,
-            },
-        ])),
+                start: 2,
+                end: 3,
+                tail: 3,
+                records: vec![Record {
+                    sequence: 2,
+                    commit_id: CommitId::from_bytes([9; 32]),
+                    committed_at_micros: 17,
+                    value: Bytes::from_static(b"retained"),
+                    headers: Default::default(),
+                }],
+            })],
+        }),
     })
 }
 
@@ -182,7 +190,7 @@ async fn invalid_record_identity_sequence_time_and_positions_are_rejected()
                 (Bytes::from_static(b"b")).into(),
             ],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?
     else {

@@ -56,9 +56,7 @@ pub(super) fn keyed_append(path: &str, tail: u64) -> Result<AppendRequest, Strea
         path: StreamPath::new(path)?,
         records: vec![(OwnedBytes::from_static(b"native-append-record")).into()],
         if_tail: Some(tail),
-        idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(format!(
-            "{path}@{tail}"
-        )))?),
+        idempotency_key: IdempotencyKey::new(OwnedBytes::from(format!("{path}@{tail}")))?,
     })
 }
 
@@ -87,11 +85,12 @@ pub(super) async fn prepared_fixture<P: StreamProvider + ?Sized>(
                 path: StreamPath::new(path)?,
                 records: vec![(OwnedBytes::from_static(b"seed")).into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             crate::CommitCondition::Tail {
                 path: StreamPath::new("prepared/owner")?,

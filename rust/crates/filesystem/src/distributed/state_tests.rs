@@ -24,6 +24,7 @@ fn commit(key: &'static [u8]) -> Result<FilesystemCommit, StreamError> {
         conditions: Vec::new(),
         mutations: Vec::new(),
         idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(key))?,
+        deadline_unix_millis: None,
     }))
 }
 
@@ -33,7 +34,7 @@ async fn publish(
     key: &'static [u8],
     value: &StateRecord,
     work: &mut AuthorityWork<'_>,
-) -> Result<acyclic_stream::CommittedEnvelope, Box<dyn std::error::Error>> {
+) -> Result<acyclic_stream::CommitReceipt, Box<dyn std::error::Error>> {
     let observed = store.observe_record(path.clone(), work).await?;
     let mut publication = commit(key)?;
     store.contribute_record(
@@ -45,7 +46,7 @@ async fn publish(
     )?;
     store.seal_observed(&mut publication, &[], None, work)?;
     match store.submit(publication, work).await? {
-        FilesystemCommitOutcome::Committed(envelope) => Ok(envelope),
+        FilesystemCommitOutcome::Committed(receipt) => Ok(receipt),
         _ => Err("publication did not commit".into()),
     }
 }
@@ -57,7 +58,7 @@ async fn portable_root_and_companion_share_one_record_and_exact_receipt() -> Tes
     let cancellation = CancellationToken::new();
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let path = StreamPath::new("agent/one/files/root")?;
-    let envelope = publish(
+    let committed = publish(
         &store,
         &path,
         b"create",
@@ -65,8 +66,9 @@ async fn portable_root_and_companion_share_one_record_and_exact_receipt() -> Tes
         &mut work,
     )
     .await?;
-    assert_eq!(envelope.mutations.len(), 1);
-    let receipt = RecordReceipt::from_envelope(&envelope, &path, 0).ok_or("missing receipt")?;
+    assert_eq!(committed.appends.len() + committed.forks.len(), 1);
+    assert!(RecordReceipt::from_receipt(&committed, &path, 1).is_none());
+    let receipt = RecordReceipt::from_receipt(&committed, &path, 0).ok_or("missing receipt")?;
     let recorded = store.read_receipt(&receipt, &mut work).await?;
     let record = recorded.record.as_ref().ok_or("missing record")?;
     let decoded = StateRecord::decode(record.value.clone())?;
@@ -390,10 +392,16 @@ async fn local_retry_refusals_preserve_lost_ack_commit_and_collection_hold() -> 
         .inspect_idempotency(request.idempotency_key.clone())
         .await?
         .ok_or("missing actual outcome")?;
-    let acyclic_stream::IdempotencyOutcome::Commit(outcome) = observed.outcome else {
+    let acyclic_stream::IdempotencyOutcome::Commit(envelope) = observed.outcome else {
         return Err("wrong outcome family".into());
     };
-    assert!(matches!(&outcome, CommitOutcome::Committed(_)));
+    let outcome = CommitOutcome::Committed(acyclic_stream::CommitReceipt::project(
+        &envelope,
+        Vec::with_capacity(envelope.mutations.len()),
+        Vec::with_capacity(envelope.mutations.len()),
+        |_, _| Ok::<(), StreamError>(()),
+    )?);
+    drop(envelope);
     let mut collecting = Box::pin(collection.begin());
     assert!(futures::poll!(collecting.as_mut()).is_pending());
 

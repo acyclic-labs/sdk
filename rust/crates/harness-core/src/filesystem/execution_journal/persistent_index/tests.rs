@@ -44,7 +44,7 @@ async fn check_roots(native: bool) -> Result<()> {
                 path: path.clone(),
                 records: records.iter().cloned().map(Into::into).collect(),
                 if_tail: Some(index as u64 * 128),
-                idempotency_key: None,
+                idempotency_key: acyclic_stream::IdempotencyKey::unique(),
             })
             .await?;
         assert!(matches!(outcome, AppendOutcome::Committed(_)));
@@ -160,7 +160,7 @@ async fn record_framing_never_substitutes_for_the_authenticated_value_digest() -
                 path: path.clone(),
                 records: vec![bytes[..length].to_vec().into()],
                 if_tail: Some(sequence),
-                idempotency_key: None,
+                idempotency_key: acyclic_stream::IdempotencyKey::unique(),
             })
             .await?;
         let reader = Reader {

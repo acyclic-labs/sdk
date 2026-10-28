@@ -14,10 +14,13 @@ CREATE INDEX IF NOT EXISTS acyclic_stream_journal_namespace_revision
 -- Physical append-if-revision only. The canonical Stream core decides paths,
 -- conditions and retry identity; SQL never decodes a command. VOLATILE keeps
 -- the head query's READ COMMITTED snapshot after the namespace lock wait.
+-- The core plans at the caller-read transaction clock; the row records exactly
+-- that time so replay reproduces the same decision.
 CREATE OR REPLACE FUNCTION acyclic_stream_publish(
     stream_namespace text,
     expected_revision bigint,
     command_bytes bytea,
+    planned_millis bigint,
     deadline_millis bigint
 ) RETURNS TABLE (revision bigint, at_millis bigint, accepted boolean)
 LANGUAGE plpgsql VOLATILE AS $$
@@ -38,7 +41,7 @@ BEGIN
         RETURN QUERY SELECT current_revision, 0::bigint, false;
         RETURN;
     END IF;
-    accepted_millis := floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint;
+    accepted_millis := planned_millis;
     IF deadline_millis IS NOT NULL AND accepted_millis >= deadline_millis THEN
         RAISE EXCEPTION USING ERRCODE = 'PST01',
             MESSAGE = 'STEP stream-publication refused: acceptance deadline elapsed',

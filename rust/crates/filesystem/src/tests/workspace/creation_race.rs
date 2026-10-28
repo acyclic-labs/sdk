@@ -85,20 +85,19 @@ impl acyclic_stream::StreamProvider for YieldStream {
         self.inner.inspect_idempotency(key).await
     }
 
+    async fn head(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> Result<acyclic_stream::PathHead, acyclic_stream::StreamError> {
+        self.pause().await;
+        self.inner.head(path).await
+    }
     async fn tail(
         &self,
         path: acyclic_stream::StreamPath,
     ) -> Result<u64, acyclic_stream::StreamError> {
         self.pause().await;
         self.inner.tail(path).await
-    }
-
-    async fn bounds(
-        &self,
-        path: acyclic_stream::StreamPath,
-    ) -> Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError> {
-        self.pause().await;
-        self.inner.bounds(path).await
     }
 
     async fn append(
@@ -127,12 +126,10 @@ impl acyclic_stream::StreamProvider for YieldStream {
 
     async fn follow(
         &self,
-        path: acyclic_stream::StreamPath,
-        from: u64,
-        filter: acyclic_stream::FollowFilter,
-    ) -> Result<acyclic_stream::RecordStream, acyclic_stream::StreamError> {
+        request: acyclic_stream::FollowRequest,
+    ) -> Result<acyclic_stream::FollowStream, acyclic_stream::StreamError> {
         self.pause().await;
-        self.inner.follow(path, from, filter).await
+        self.inner.follow(request).await
     }
 
     async fn commit(

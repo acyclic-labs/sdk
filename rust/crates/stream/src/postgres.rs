@@ -5,7 +5,7 @@
 //! processes; LISTEN/NOTIFY drives live replicas without timers or polling.
 
 use crate::{
-    journal::{Command, decode_command, replay},
+    journal::{Command, Outcome, decode_command, replay},
     *,
 };
 use futures::StreamExt;
@@ -89,7 +89,7 @@ impl PostgresStream {
         client.batch_execute(SCHEMA).await.map_err(unavailable)?;
         let publish = client
             .prepare(
-                "SELECT revision, at_millis, accepted FROM acyclic_stream_publish($1,$2,$3,$4)",
+                "SELECT revision, at_millis, accepted FROM acyclic_stream_publish($1,$2,$3,$4,$5)",
             )
             .await
             .map_err(unavailable)?;
@@ -125,9 +125,11 @@ impl PostgresStream {
             .await
             .map_err(unavailable)?;
         let clock = Arc::new(Clock::default());
+        // Both planning and recorded admission use the transaction's database
+        // clock. A process wall-clock skew cannot override SQL admission.
         let core = MemoryStream::new_with_commit_clock(
             MemoryLimits::default(),
-            Arc::new(SystemUnixMillisClock),
+            clock.clone(),
             clock.clone(),
         );
         let (failure, _) = watch::channel(false);
@@ -299,15 +301,23 @@ impl PostgresStream {
         self.catch_up(&tx, cursor).await?;
         // The shared core gives an existing retry receipt precedence over an
         // elapsed deadline, including cross-operation identity mismatches.
-        if let Command::Commit(request) = &command
-            && self
-                .inner
-                .core
-                .inspect_idempotency(request.idempotency_key.clone())
-                .await?
-                .is_some()
-        {
+        if command.has_replay(&self.inner.core).await? {
             return self.apply(command).await;
+        }
+        // Admission and the recorded commit time are the transaction's database
+        // clock, read before the canonical core plans. Replay restores exactly
+        // this time from the journal row.
+        let millis: i64 = tx
+            .query_one(
+                "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint",
+                &[],
+            )
+            .await
+            .map_err(unavailable)?
+            .get(0);
+        let at = u64::try_from(millis).map_err(unavailable)?;
+        if deadline.is_some_and(|deadline| at >= deadline) {
+            return Err(StreamError::DeadlineElapsed);
         }
         let bytes = command.encode_to_vec();
         // The journal's protobuf oneof adds a field tag and length delimiter;
@@ -315,48 +325,64 @@ impl PostgresStream {
         if bytes.len() > crate::wire_codec::requests::block_len(MAX_COMMAND_BYTES) {
             return Err(StreamError::LimitExceeded);
         }
-        // Clock, physical cursor CAS, insertion, notification and the final
-        // acceptance deadline share one server-side statement. The transaction
-        // fence still serializes catch-up/publication; Stream conditions remain
-        // in the canonical core.
-        let deadline = deadline.map(|value| i64::try_from(value).unwrap_or(i64::MAX));
-        let row = tx
-            .query_one(
-                &*publish,
-                &[&self.inner.namespace, &*cursor, &bytes, &deadline],
-            )
-            .await
-            .map_err(|error| {
-                if error
-                    .as_db_error()
-                    .is_some_and(|error| error.code().code() == "PST01")
-                {
-                    StreamError::DeadlineElapsed
-                } else {
-                    unavailable(error)
-                }
-            })?;
-        if !row.get::<_, bool>(2) {
-            // A cursor mismatch is impossible under this publication fence.
-            // The future shared replica owns refresh/replan, not the SQL adapter.
-            self.fail();
-            return Err(unavailable(
-                "journal changed while holding its namespace fence",
-            ));
-        }
-        let revision: i64 = row.get(0);
-        let at = u64::try_from(row.get::<_, i64>(1)).map_err(unavailable)?;
-        tx.commit().await.map_err(unavailable)?;
         self.inner.clock.0.store(at, Ordering::Release);
-        let result = self.apply(command).await;
-        if matches!(
-            result,
-            Err(StreamError::Unavailable | StreamError::InvalidResponse)
-        ) {
+        let sql_deadline = deadline.map(|value| i64::try_from(value).unwrap_or(i64::MAX));
+        let mut published = None;
+        // The canonical core decides before durability: a refused command is
+        // never journaled. Physical cursor CAS, insertion at the planned time,
+        // notification and the final acceptance deadline share one statement.
+        let result = self
+            .inner
+            .core
+            .apply_durable(command, deadline, async {
+                let row = tx
+                    .query_one(
+                        &*publish,
+                        &[
+                            &self.inner.namespace,
+                            &*cursor,
+                            &bytes,
+                            &millis,
+                            &sql_deadline,
+                        ],
+                    )
+                    .await
+                    .map_err(|error| {
+                        if error
+                            .as_db_error()
+                            .is_some_and(|error| error.code().code() == "PST01")
+                        {
+                            StreamError::DeadlineElapsed
+                        } else {
+                            unavailable(error)
+                        }
+                    })?;
+                if !row.get::<_, bool>(2) {
+                    // A cursor mismatch is impossible under this publication
+                    // fence; the shared replica owns refresh/replan.
+                    self.fail();
+                    return Err(unavailable(
+                        "journal changed while holding its namespace fence",
+                    ));
+                }
+                let revision: i64 = row.get(0);
+                tx.commit().await.map_err(unavailable)?;
+                published = Some(revision);
+                Ok(())
+            })
+            .await;
+        if (published.is_some() && result.is_err())
+            || matches!(
+                result,
+                Err(StreamError::Unavailable | StreamError::InvalidResponse)
+            )
+        {
             self.fail();
             return result;
         }
-        *cursor = revision;
+        if let Some(revision) = published {
+            *cursor = revision;
+        }
         result
     }
 
@@ -387,12 +413,6 @@ impl PostgresStream {
     }
 }
 
-enum Outcome {
-    Append(AppendOutcome),
-    Fork(ForkReceipt),
-    Commit(CommitOutcome),
-}
-
 #[async_trait]
 impl StreamProvider for PostgresStream {
     fn operation_claims(&self) -> &OperationClaims {
@@ -405,13 +425,16 @@ impl StreamProvider for PostgresStream {
         self.refresh().await?;
         self.inner.core.inspect_idempotency(key).await
     }
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        self.refresh().await?;
+        let mut head = self.inner.core.head(path).await?;
+        head.durable = head.tail;
+        Ok(head)
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.refresh().await?;
         self.inner.core.tail(path).await
-    }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.refresh().await?;
-        self.inner.core.bounds(path).await
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         let tail = self.tail(path).await?;
@@ -433,20 +456,8 @@ impl StreamProvider for PostgresStream {
         }
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        match self.publish(Command::Commit(request), None).await? {
-            Outcome::Commit(value) => Ok(value),
-            _ => Err(StreamError::InvalidResponse),
-        }
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        match self
-            .publish(Command::Commit(request), Some(deadline))
-            .await?
-        {
+        let deadline = request.deadline_unix_millis;
+        match self.publish(Command::Commit(request), deadline).await? {
             Outcome::Commit(value) => Ok(value),
             _ => Err(StreamError::InvalidResponse),
         }
@@ -468,41 +479,9 @@ impl StreamProvider for PostgresStream {
     }
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
+        request: crate::FollowRequest,
+    ) -> Result<crate::FollowStream, StreamError> {
         self.refresh().await?;
-        Ok(self.guarded(self.inner.core.follow(path, from, filter).await?))
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.refresh().await?;
-        Ok(self.guarded(
-            self.inner
-                .core
-                .follow_checked(path, from, preceding, filter)
-                .await?,
-        ))
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<CommitId>,
-        filter: FollowFilter,
-    ) -> Result<FollowStream, StreamError> {
-        self.refresh().await?;
-        Ok(self.guarded(
-            self.inner
-                .core
-                .follow_updates(path, from, preceding, filter)
-                .await?,
-        ))
+        Ok(self.guarded(self.inner.core.follow(request).await?))
     }
 }

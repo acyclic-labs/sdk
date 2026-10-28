@@ -46,9 +46,17 @@ async fn prepared_memory_and_local_commits_cover_every_late_header_field()
             .await
             .map_err(|error| format!("prepared header completion failed: {error}"))?
             .map_err(|error| format!("prepared header completion failed: {error}"))?;
-        let CommitOutcome::Committed(envelope) = result.value() else {
+        let CommitOutcome::Committed(receipt) = result.value() else {
             return Err("prepared header completion was not committed".into());
         };
+        assert_eq!(
+            meter.allocations.load(Ordering::SeqCst),
+            allocations,
+            "prepared header completion allocated after issuance"
+        );
+        // Inspect immutable facts separately from the compact completion output.
+        let envelope = provider.read_commit(receipt.commit_id).await?;
+        assert!(receipt.matches_envelope(&envelope));
         let [crate::CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
             return Err("prepared header completion changed family".into());
         };
@@ -57,16 +65,11 @@ async fn prepared_memory_and_local_commits_cover_every_late_header_field()
         };
         assert_eq!(record.value, body.value);
         assert_eq!(record.headers, body.headers);
-        assert_eq!(
-            meter.allocations.load(Ordering::SeqCst),
-            allocations,
-            "prepared header completion allocated after issuance"
-        );
         let recovered = recovery.await??;
         let observed = recovered.value().as_ref().ok_or("missing completion")?;
         assert_eq!(
             observed.outcome,
-            crate::IdempotencyOutcome::Commit(result.value().clone())
+            crate::IdempotencyOutcome::Commit(envelope)
         );
         drop(result);
         drop(recovered);

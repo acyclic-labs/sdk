@@ -56,7 +56,7 @@ message AppendRequest {
   string path = 1;
   repeated AppendRecord records = 2;
   optional uint64 if_tail = 3;
-  optional bytes idempotency_key = 4;
+  bytes idempotency_key = 4;
 }
 
 message AppendReceipt {
@@ -75,6 +75,23 @@ message AppendResponse {
     AppendReceipt committed = 1;
     TailConflict conflict = 2;
   }
+}
+
+message HeadRequest {
+  string path = 1;
+}
+
+message ForkOrigin {
+  string source = 1;
+  uint64 forked_at = 2;
+  bytes commit_id = 3;
+}
+
+message PathHead {
+  uint64 tail = 1;
+  Record last = 2;
+  uint64 durable = 3;
+  ForkOrigin origin = 4;
 }
 
 message TailRequest {
@@ -100,7 +117,7 @@ message ForkRequest {
   string source = 1;
   string destination = 2;
   optional uint64 at_tail = 3;
-  optional bytes idempotency_key = 4;
+  bytes idempotency_key = 4;
 }
 
 message ForkReceipt {
@@ -121,6 +138,7 @@ message FollowRequest {
   string path = 1;
   uint64 from = 2;
   SessionFilter filter = 3;
+  bool progress = 4;
 }
 
 // Ranges are OR; named attribute clauses are AND. Empty end is unbounded.
@@ -171,20 +189,14 @@ message ReadResponse {
   Codec codec = 2;
   bytes data = 3;
   uint64 decoded_length = 4;
-  // Opaque hosted receipt token; absent on local and older servers.
-  bytes delivery_token = 5;
+  reserved 5;
+  reserved "delivery_token";
 }
-
-message AcknowledgeDeliveryRequest {
-  // Exactly 32 opaque bytes from the issuing endpoint; transport receipt only.
-  bytes delivery_token = 1;
-}
-
-message AcknowledgeDeliveryResponse {}
 
 message Child {
   string path = 1;
   optional Record tail_record = 2;
+  optional ForkOrigin origin = 3;
 }
 message ChildrenPageRequest {
   optional string tail_stream = 5;
@@ -209,11 +221,16 @@ message AbsentCondition {
   string path = 1;
 }
 
+message PresentCondition {
+  string path = 1;
+}
+
 message CommitCondition {
   oneof condition {
     TailCondition tail = 1;
     AbsentCondition absent = 2;
     HeadCondition head = 3;
+    PresentCondition present = 4;
   }
 }
 
@@ -286,6 +303,7 @@ message CommittedMutation {
 message CommittedEnvelope {
   bytes commit_id = 1;
   repeated CommittedMutation mutations = 2;
+  uint64 committed_at_micros = 3;
 }
 
 message TailCommitConflict {
@@ -297,6 +315,9 @@ message TailCommitConflict {
 message ExistsCommitConflict {
   string path = 1;
 }
+message MissingCommitConflict {
+  string path = 1;
+}
 message CommitConflict {
   reserved 3;
   reserved "retired";
@@ -304,6 +325,7 @@ message CommitConflict {
     TailCommitConflict tail = 1;
     ExistsCommitConflict exists = 2;
     HeadCommitConflict head = 4;
+    MissingCommitConflict missing = 5;
   }
 }
 
@@ -319,9 +341,22 @@ message CommitConflicts {
 
 message CommitResponse {
   oneof outcome {
-    CommittedEnvelope committed = 1;
+    CommitReceipt committed = 1;
     CommitConflicts conflict = 2;
   }
+}
+
+message AppendRange {
+  string path = 1;
+  uint64 start = 2;
+  uint64 tail = 3;
+}
+
+message CommitReceipt {
+  bytes commit_id = 1;
+  uint64 committed_at_micros = 2;
+  repeated AppendRange appends = 3;
+  repeated ForkReceipt forks = 4;
 }
 
 message ReadCommitRequest {
@@ -340,7 +375,7 @@ message IdempotencyObservation {
   oneof outcome {
     AppendResponse append = 3;
     ForkReceipt fork = 4;
-    CommitResponse commit = 7;
+    CommittedEnvelope commit = 7;
   }
 }
 
@@ -375,6 +410,12 @@ service StreamService {
       resource: "streams:/{path}"
     };
   }
+  rpc Head(HeadRequest) returns (PathHead) {
+    option (acyclic.validation.v1.auth) = {
+      action: "streams/read"
+      resource: "streams:/{path}"
+    };
+  }
   rpc Tail(TailRequest) returns (TailResponse) {
     option (acyclic.validation.v1.auth) = {
       action: "streams/read"
@@ -395,18 +436,6 @@ service StreamService {
     option (acyclic.validation.v1.auth) = {
       action: "streams/read"
       resource: "streams:/{path}"
-    };
-  }
-  rpc Follow(FollowRequest) returns (stream ReadResponse) {
-    option (acyclic.validation.v1.auth) = {
-      action: "streams/follow"
-      resource: "streams:/{path}"
-    };
-  }
-  rpc AcknowledgeDelivery(AcknowledgeDeliveryRequest) returns (AcknowledgeDeliveryResponse) {
-    option (acyclic.validation.v1.auth) = {
-      action: "streams/follow"
-      extractor: "streams.delivery-resource"
     };
   }
   rpc ChildrenPage(ChildrenPageRequest) returns (ChildrenPageResponse) {

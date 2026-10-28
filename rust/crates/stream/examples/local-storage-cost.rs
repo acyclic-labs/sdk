@@ -60,7 +60,9 @@ mod benchmark {
                     path: path.clone(),
                     records: vec![OwnedBytes::copy_from_slice(&[42; 32]).into()],
                     if_tail: Some(step - 1),
-                    idempotency_key: None,
+                    idempotency_key: acyclic_stream::IdempotencyKey::new(
+                        format!("local-storage-cost-{step}").into_bytes(),
+                    )?,
                 })
                 .await?
             else {

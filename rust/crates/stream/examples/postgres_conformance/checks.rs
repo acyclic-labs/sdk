@@ -1,7 +1,10 @@
 //! Runs the unchanged suite and cross-session durability/CAS/notification checks.
 use acyclic_stream::{postgres::PostgresStream, *};
 use futures::StreamExt;
+use futures::TryFutureExt as _;
 use std::time::{Duration, Instant};
+#[path = "refusals.rs"]
+mod refusals;
 
 pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     let namespace = uuid::Uuid::new_v4().to_string();
@@ -20,20 +23,26 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
         path: path.clone(),
         records: vec![OwnedBytes::from_static(b"first").into()],
         if_tail: Some(0),
-        idempotency_key: Some(IdempotencyKey::new(b"cross-session-first".to_vec())?),
+        idempotency_key: IdempotencyKey::new(b"cross-session-first".to_vec())?,
     };
     let receipt = provider.append(first.clone()).await?;
     assert_eq!(peer.append(first).await?, receipt);
     let mut follow = peer
-        .follow(path.clone(), 1, FollowFilter::default())
+        .follow(acyclic_stream::FollowRequest::new(path.clone(), 1))
+        .map_ok(acyclic_stream::records_only)
         .await?;
     let request = AppendRequest {
         path: path.clone(),
         records: vec![OwnedBytes::from_static(b"second").into()],
         if_tail: Some(1),
-        idempotency_key: None,
+        idempotency_key: acyclic_stream::IdempotencyKey::new(&b"checks-1"[..])?,
     };
-    let (left, right) = tokio::join!(provider.append(request.clone()), peer.append(request));
+    // Two distinct writers race the same tail: distinct retry identities.
+    let rival = AppendRequest {
+        idempotency_key: acyclic_stream::IdempotencyKey::new(&b"checks-rival"[..])?,
+        ..request.clone()
+    };
+    let (left, right) = tokio::join!(provider.append(request), peer.append(rival));
     assert!(matches!(
         (left?, right?),
         (
@@ -50,14 +59,15 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(record.sequence, 1);
     let observer = PostgresStream::connect(database, &namespace).await?;
     let mut remote = observer
-        .follow(path.clone(), 2, FollowFilter::default())
+        .follow(acyclic_stream::FollowRequest::new(path.clone(), 2))
+        .map_ok(acyclic_stream::records_only)
         .await?;
     provider
         .append(AppendRequest {
             path: path.clone(),
             records: vec![OwnedBytes::from_static(b"notification-only").into()],
             if_tail: Some(2),
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::new(&b"checks-2"[..])?,
         })
         .await?;
     assert_eq!(
@@ -68,6 +78,7 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
         2
     );
     let committed = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Tail {
             path: path.clone(),
             expected: 3,
@@ -79,17 +90,25 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
         idempotency_key: IdempotencyKey::new(b"deadline-replay".to_vec())?,
     };
     let outcome = provider.commit(committed.clone()).await?;
-    assert_eq!(peer.commit_before(committed, 0).await?, outcome);
+    assert_eq!(
+        peer.commit(CommitRequest {
+            deadline_unix_millis: Some(0),
+            ..committed
+        })
+        .await?,
+        outcome
+    );
     let reopened = PostgresStream::connect(database, &namespace).await?;
     assert_eq!(reopened.tail(path).await?, 4);
     println!("Cross-session replay, exact CAS, LISTEN/NOTIFY and reopen checks passed");
+    refusals::verify(database).await?;
     subscription_lifetime(database).await?;
     listener_failure(database).await?;
     Ok(())
 }
 
 async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error::Error>> {
-    for kind in ["follow", "follow_checked", "follow_updates"] {
+    for (anchored, progress) in [(false, false), (true, false), (true, true)] {
         let namespace = uuid::Uuid::new_v4().to_string();
         let provider = PostgresStream::connect(database, &namespace).await?;
         let path = StreamPath::new("subscription-owner")?;
@@ -98,34 +117,21 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
                 path: path.clone(),
                 records: vec![OwnedBytes::from_static(b"anchor").into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: acyclic_stream::IdempotencyKey::new(&b"checks-3"[..])?,
             })
             .await?
         else {
             return Err("initial append unexpectedly conflicted".into());
         };
-        let mut subscription: FollowStream = match kind {
-            "follow" => provider
-                .follow(path.clone(), 1, FollowFilter::default())
-                .await?
-                .map(|record| record.map(FollowUpdate::Record))
-                .boxed(),
-            "follow_checked" => provider
-                .follow_checked(path.clone(), 1, receipt.commit_id, FollowFilter::default())
-                .await?
-                .map(|record| record.map(FollowUpdate::Record))
-                .boxed(),
-            _ => {
-                provider
-                    .follow_updates(
-                        path.clone(),
-                        1,
-                        Some(receipt.commit_id),
-                        FollowFilter::default(),
-                    )
-                    .await?
-            }
-        };
+        let mut subscription = provider
+            .follow(acyclic_stream::FollowRequest {
+                path: path.clone(),
+                from: 1,
+                preceding: anchored.then_some(receipt.commit_id),
+                filter: FollowFilter::default(),
+                progress,
+            })
+            .await?;
         drop(provider);
         // A distinct provider must wake this subscription through LISTEN after
         // its creator's last handle is gone, including after a previous yield.
@@ -136,7 +142,9 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
                     path: path.clone(),
                     records: vec![OwnedBytes::from_static(b"still-following").into()],
                     if_tail: Some(sequence),
-                    idempotency_key: None,
+                    idempotency_key: acyclic_stream::IdempotencyKey::new(
+                        format!("checks-4-{sequence}").into_bytes(),
+                    )?,
                 })
                 .await?;
             let update = tokio::time::timeout(Duration::from_secs(1), subscription.next())
@@ -144,7 +152,9 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
                 .ok_or("subscription closed after dropping provider")??;
             assert!(matches!(update, FollowUpdate::Record(record) if record.sequence == sequence));
         }
-        println!("{kind} retains shared connections after its provider handle is dropped");
+        println!(
+            "follow anchored={anchored} progress={progress} retains shared connections after its provider handle is dropped"
+        );
     }
     Ok(())
 }
@@ -158,14 +168,21 @@ async fn listener_failure(database: &str) -> Result<(), Box<dyn std::error::Erro
             path: path.clone(),
             records: vec![OwnedBytes::new().into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::new(&b"checks-5"[..])?,
         })
         .await?;
     let mut records = provider
-        .follow(path.clone(), 1, FollowFilter::default())
+        .follow(acyclic_stream::FollowRequest::new(path.clone(), 1))
+        .map_ok(acyclic_stream::records_only)
         .await?;
     let mut updates = provider
-        .follow_updates(path, 1, None, FollowFilter::default())
+        .follow(acyclic_stream::FollowRequest {
+            path: path,
+            from: 1,
+            preceding: None,
+            filter: FollowFilter::default(),
+            progress: true,
+        })
         .await?;
     let (client, connection) = tokio_postgres::connect(database, tokio_postgres::NoTls).await?;
     let driver = tokio::spawn(connection);

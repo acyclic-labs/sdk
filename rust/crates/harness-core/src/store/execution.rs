@@ -90,13 +90,7 @@ impl<P: StreamProvider + ?Sized> StreamAggregate<P> {
             return Ok(None);
         };
         match observation.outcome {
-            IdempotencyOutcome::Commit(CommitOutcome::Conflict(_)) => {
-                if let Action::PublishFork { seed } = &command.action {
-                    self.release_replayed_fork_fence(seed).await?;
-                }
-                Err(Error::Conflict("aggregate publication was rejected".into()))
-            }
-            IdempotencyOutcome::Commit(CommitOutcome::Committed(_)) => Err(Error::Storage(
+            IdempotencyOutcome::Commit(_) => Err(Error::Storage(
                 "committed aggregate publication has no atomic operation location".into(),
             )),
             _ => Err(Error::Conflict(

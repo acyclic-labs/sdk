@@ -1,8 +1,6 @@
 //! One owner-fenced commit publishes the journal cut and its authenticated root.
 use super::*;
-use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, CommittedMutation, OwnedBytes, StreamPath,
-};
+use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, OwnedBytes, StreamPath};
 use checkpoint::{IndexState, Recovery};
 
 mod pages;
@@ -51,33 +49,18 @@ fn add_records(
     Ok(())
 }
 
+/// The receipt assigns exactly `records` to `path`, starting at `start`.
 fn confirms(
-    envelope: &acyclic_stream::CommittedEnvelope,
+    receipt: &acyclic_stream::CommitReceipt,
     path: &StreamPath,
     start: u64,
     records: &[OwnedBytes],
 ) -> bool {
-    let Some(CommittedMutation::Append(append)) = envelope.mutations.iter().find(
-        |mutation| matches!(mutation, CommittedMutation::Append(append) if append.path == *path),
-    ) else {
-        return false;
-    };
-    append.start == start
-        && start.checked_add(records.len() as u64) == Some(append.end)
-        && append.tail == append.end
-        && append.records.len() == records.len()
-        && append
-            .records
-            .iter()
-            .zip(records)
-            .enumerate()
-            .all(|(index, (record, value))| {
-                record.sequence == start + index as u64
-                    && record.value == *value
-                    && record.headers.keys().is_empty()
-                    && record.headers.attributes().is_empty()
-                    && record.commit_id == envelope.commit_id
-            })
+    receipt.appends.iter().any(|append| {
+        append.path == *path
+            && append.start == start
+            && start.checked_add(records.len() as u64) == Some(append.tail)
+    })
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>

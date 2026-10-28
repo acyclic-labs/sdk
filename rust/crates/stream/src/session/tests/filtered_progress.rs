@@ -9,7 +9,7 @@ async fn keyed(provider: &MemoryStream, key: &'static str) -> TestResult {
                 headers: crate::RecordHeaders::new(vec![key.into()], vec![])?,
             }],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     Ok(())

@@ -30,7 +30,7 @@ try {
     conditions: [{ path: "browser/next", ifAbsent: true }],
     mutations: [{ append: { stream: client.bytes("browser/next"), values: [new Uint8Array([2])] } }],
   }, { idempotencyKey: new Uint8Array([3]) });
-  if (!committed.ok || committed.tails["browser/next"] !== 1n) throw new Error("browser commit failed");
+  if (!committed.ok || committed.appends.find(item => item.path === "browser/next")?.tail !== 1n) throw new Error("browser commit failed");
   await validateWireRequest({ kind: "fork", source: "browser/events", destination: "browser/copy", options: { atTail: 0n, idempotencyKey: new Uint8Array([4]) } });
   await validateWireRequest({ kind: "read", path: "browser/events", from: 0n, limit: 1 });
   await validateWireRequest({ kind: "follow", path: "browser/events", from: 0n });

@@ -116,7 +116,7 @@ impl IndexedPublication {
         if let Some(io) = request.1.work().as_deref() {
             io.check_cancellation()?;
         }
-        let absent = match bounds_with_work(client, &self.path, request.1.work()).await? {
+        let absent = match tail_result_with_work(client, &self.path, request.1.work()).await? {
             Ok(_) => false,
             Err(StreamError::NotFound) if self.expected_tail == 0 => true,
             Err(error) => return Err(stream_error_with_work(error, request.1.work())),
@@ -142,9 +142,9 @@ impl IndexedPublication {
         }
         Ok(request)
     }
-    pub(crate) fn verify(
+    pub(crate) fn verify_request(
         &self,
-        envelope: &CommittedEnvelope,
+        request: &CommitRequest,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         let appends = std::iter::once((&self.path, self.expected_tail, &self.bytes)).chain(
@@ -152,28 +152,62 @@ impl IndexedPublication {
                 .iter()
                 .map(|(path, tail, bytes)| (path, *tail, bytes)),
         );
-        let mut valid = envelope.mutations.len() == 1 + self.indexes.len();
+        let mut valid = request.mutations.len() == 1 + self.indexes.len();
         for (path, tail, bytes) in appends {
             if let Some(io) = work.as_deref() {
                 io.check_cancellation()?;
             }
-            valid &= envelope
+            valid &= request
                 .mutations
                 .iter()
                 .find_map(|mutation| match mutation {
-                    CommittedMutation::Append(append) if &append.path == path => Some(append),
+                    acyclic_stream::CommitMutation::Append {
+                        path: target,
+                        records,
+                    } if target == path => Some(records),
                     _ => None,
                 })
+                .is_some_and(|records| {
+                    matches!(records.as_slice(), [record] if record.value == *bytes)
+                        && request.conditions.iter().any(|condition| match condition {
+                            CommitCondition::Tail {
+                                path: target,
+                                expected,
+                            } => target == path && *expected == tail,
+                            CommitCondition::Absent { path: target } => target == path && tail == 0,
+                            _ => false,
+                        })
+                });
+        }
+        if !valid {
+            return Err(boundary(
+                work,
+                Storage,
+                "indexed publication append is invalid",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn verify(
+        &self,
+        receipt: &CommitReceipt,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        let appends = std::iter::once((&self.path, self.expected_tail))
+            .chain(self.indexes.iter().map(|(path, tail, _)| (path, *tail)));
+        let mut valid = receipt.forks.is_empty() && receipt.appends.len() == 1 + self.indexes.len();
+        for (path, tail) in appends {
+            if let Some(io) = work.as_deref() {
+                io.check_cancellation()?;
+            }
+            valid &= receipt
+                .appends
+                .iter()
+                .find(|append| &append.path == path)
                 .is_some_and(|append| {
-                    tail.checked_add(1).is_some_and(|end| {
-                        (append.start, append.end, append.tail, append.records.len())
-                            == (tail, end, end, 1)
-                            && append.records.first().is_some_and(|record| {
-                                record.sequence == tail
-                                    && record.value == *bytes
-                                    && record.commit_id == envelope.commit_id
-                            })
-                    })
+                    tail.checked_add(1)
+                        .is_some_and(|end| append.start == tail && append.tail == end)
                 });
         }
         if !valid {

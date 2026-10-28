@@ -426,6 +426,19 @@ impl NativeReadMeter for Meter {
         {
             return Err(Self::denial("examination"));
         }
+        if copied != 0 {
+            let pending = self
+                .pending_codec
+                .lock()
+                .map_err(|_| std::io::ErrorKind::Other)?;
+            self.codec_available(
+                &pending,
+                NativeCodecWork {
+                    copied,
+                    ..NativeCodecWork::default()
+                },
+            )?;
+        }
         Ok(())
     }
     fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {

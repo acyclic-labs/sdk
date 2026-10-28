@@ -311,15 +311,11 @@ mod source_bound_lost_ack {
             self.inner.inspect_idempotency(key).await
         }
 
+        async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+            self.inner.head(path).await
+        }
         async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
             self.inner.tail(path).await
-        }
-
-        async fn bounds(
-            &self,
-            path: StreamPath,
-        ) -> Result<acyclic_stream::StreamBounds, StreamError> {
-            self.inner.bounds(path).await
         }
 
         async fn append(
@@ -345,11 +341,9 @@ mod source_bound_lost_ack {
 
         async fn follow(
             &self,
-            path: StreamPath,
-            from: u64,
-            filter: acyclic_stream::FollowFilter,
-        ) -> Result<acyclic_stream::RecordStream, StreamError> {
-            self.inner.follow(path, from, filter).await
+            request: acyclic_stream::FollowRequest,
+        ) -> Result<acyclic_stream::FollowStream, StreamError> {
+            self.inner.follow(request).await
         }
 
         async fn children_page(
@@ -371,16 +365,6 @@ mod source_bound_lost_ack {
                 }
             }
             Ok(result)
-        }
-
-        async fn commit_before(
-            &self,
-            request: CommitRequest,
-            deadline_unix_millis: u64,
-        ) -> Result<acyclic_stream::CommitOutcome, StreamError> {
-            self.inner
-                .commit_before(request, deadline_unix_millis)
-                .await
         }
 
         async fn read_commit(

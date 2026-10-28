@@ -1,4 +1,5 @@
 use acyclic_stream::{postgres::PostgresStream, *};
+use futures::TryFutureExt as _;
 use std::time::Instant;
 
 pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -25,6 +26,7 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
         assert!(matches!(
             provider
                 .commit(CommitRequest {
+                    deadline_unix_millis: None,
                     conditions,
                     mutations,
                     idempotency_key: IdempotencyKey::new(format!("scale-{base}").into_bytes())?,
@@ -41,11 +43,11 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     for index in 0..AGENTS {
         subscriptions.push(
             provider
-                .follow(
+                .follow(acyclic_stream::FollowRequest::new(
                     StreamPath::new(format!("agent-{index:06}"))?,
                     1,
-                    FollowFilter::default(),
-                )
+                ))
+                .map_ok(acyclic_stream::records_only)
                 .await?,
         );
     }

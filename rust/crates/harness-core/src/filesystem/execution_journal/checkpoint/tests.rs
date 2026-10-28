@@ -245,7 +245,7 @@ async fn detached_and_forged_checkpoint_heads_cannot_authorize_recovery() -> Res
             path: (*head).clone(),
             records: vec![original.clone().into()],
             if_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
     assert!(
@@ -261,6 +261,7 @@ async fn detached_and_forged_checkpoint_heads_cannot_authorize_recovery() -> Res
     forged.state.anchor = *blake3::hash(&observation).as_bytes();
     let execution = crate::distributed::execution_path(operation, &mut None)?;
     let request = acyclic_stream::CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             acyclic_stream::CommitCondition::Tail {
                 path: (*head).clone(),

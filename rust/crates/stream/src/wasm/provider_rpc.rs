@@ -158,28 +158,6 @@ impl InjectedStream {
             .boxed_local(),
         )
     }
-    async fn commit_deadline(
-        &self,
-        request: CommitRequest,
-        deadline: Option<u64>,
-    ) -> Result<CommitOutcome, StreamError> {
-        let input = wire::CommitRequest {
-            deadline_unix_millis: deadline,
-            ..wire_codec::commit_to_wire(&request)
-        };
-        wire_codec::commit_outcome_from_wire(self.call("commit", input).await?)
-    }
-}
-fn records(updates: FollowStream) -> RecordStream {
-    updates
-        .filter_map(|update| async {
-            match update {
-                Ok(FollowUpdate::Record(record)) => Some(Ok(record)),
-                Err(error) => Some(Err(error)),
-                Ok(FollowUpdate::Progress { .. }) => None,
-            }
-        })
-        .boxed_local()
 }
 #[async_trait::async_trait(?Send)]
 impl StreamProvider for InjectedStream {
@@ -207,13 +185,20 @@ impl StreamProvider for InjectedStream {
         }
         Ok(observed)
     }
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        wire_codec::head_from_wire(
+            self.call(
+                "head",
+                wire::HeadRequest {
+                    path: path.to_string(),
+                },
+            )
+            .await?,
+        )
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         Ok(self.watermarks(path).await?.accepted)
-    }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        Ok(StreamBounds {
-            tail: self.tail(path).await?,
-        })
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         wire_codec::watermarks_from_wire(
@@ -259,9 +244,7 @@ impl StreamProvider for InjectedStream {
                 .map(wire_codec::append_record_wire)
                 .collect(),
             if_tail: request.if_tail,
-            idempotency_key: request
-                .idempotency_key
-                .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
+            idempotency_key: bytes::Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
         };
         wire_codec::append_outcome_from_wire(self.call("append", input).await?)
     }
@@ -270,9 +253,7 @@ impl StreamProvider for InjectedStream {
             source: request.source.to_string(),
             destination: request.destination.to_string(),
             at_tail: request.at_tail,
-            idempotency_key: request
-                .idempotency_key
-                .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
+            idempotency_key: bytes::Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
             exclude: request.exclude.into_iter().map(|p| p.to_string()).collect(),
         };
         let result: wire::ForkReceipt = self.call("fork", input).await?;
@@ -285,19 +266,13 @@ impl StreamProvider for InjectedStream {
         })
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.commit_deadline(request, None).await
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.commit_deadline(request, Some(deadline)).await
+        let input = wire_codec::commit_to_wire(&request);
+        wire_codec::commit_outcome_from_wire(self.call("commit", input).await?)
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         crate::memory::validate_limit(request.limit)?;
         let from = request.from;
-        Ok(records(
+        Ok(crate::records_only(
             self.cursor(
                 "read",
                 wire::ReadRequest {
@@ -332,6 +307,10 @@ impl StreamProvider for InjectedStream {
                 .into_iter()
                 .map(|child| {
                     Ok(Child {
+                        origin: child
+                            .origin
+                            .map(wire_codec::fork_origin_from_wire)
+                            .transpose()?,
                         path: wire_codec::path(child.path)?,
                         tail_record: child.tail_record.map(wire_codec::record).transpose()?,
                     })
@@ -353,42 +332,18 @@ impl StreamProvider for InjectedStream {
     }
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        Ok(records(
-            self.follow_updates(path, from, None, filter).await?,
-        ))
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        Ok(records(
-            self.follow_updates(path, from, Some(preceding), filter)
-                .await?,
-        ))
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<CommitId>,
-        filter: FollowFilter,
-    ) -> Result<FollowStream, StreamError> {
+        request: crate::FollowRequest,
+    ) -> Result<crate::FollowStream, StreamError> {
         self.cursor(
             "follow",
             wire::FollowRequest {
-                path: path.to_string(),
-                from,
-                filter: Some(filter.transport_filter()?),
+                path: request.path.to_string(),
+                from: request.from,
+                filter: Some(request.filter.transport_filter()?),
+                progress: request.progress,
             },
-            preceding,
-            from,
+            request.preceding,
+            request.from,
         )
         .await
     }
@@ -416,16 +371,23 @@ impl super::WasmStream {
                     .boxed_local()
             }
             "follow" => {
+                let input = super::decode::<wire::FollowRequest>(input)?;
+                let progress = input.progress;
                 let (path, from, filter) =
-                    wire_codec::follow_from_wire(super::decode::<wire::FollowRequest>(input)?)
-                        .map_err(super::js_error)?;
+                    wire_codec::follow_from_wire(input).map_err(super::js_error)?;
                 let anchor = if preceding.is_empty() {
                     None
                 } else {
                     Some(wire_codec::commit_id(preceding).map_err(super::js_error)?)
                 };
                 provider
-                    .follow_updates(path, from, anchor, filter)
+                    .follow(crate::FollowRequest {
+                        path,
+                        from,
+                        preceding: anchor,
+                        filter,
+                        progress,
+                    })
                     .await
                     .map_err(super::js_error)?
             }

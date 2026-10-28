@@ -48,10 +48,7 @@ pub(crate) fn append_len(request: &AppendRequest) -> usize {
     block_len(request.path.as_str().len())
         + records_len(&request.records)
         + uint_len(request.if_tail)
-        + request
-            .idempotency_key
-            .as_ref()
-            .map_or(0, |key| block_len(key.as_bytes().len()))
+        + block_len(request.idempotency_key.as_bytes().len())
 }
 pub(crate) fn fork_len(request: &ForkRequest) -> usize {
     request
@@ -62,10 +59,7 @@ pub(crate) fn fork_len(request: &ForkRequest) -> usize {
         + block_len(request.source.as_str().len())
         + block_len(request.destination.as_str().len())
         + uint_len(request.at_tail)
-        + request
-            .idempotency_key
-            .as_ref()
-            .map_or(0, |key| block_len(key.as_bytes().len()))
+        + block_len(request.idempotency_key.as_bytes().len())
 }
 fn condition_len(condition: &CommitCondition) -> usize {
     block_len(match condition {
@@ -77,7 +71,9 @@ fn condition_len(condition: &CommitCondition) -> usize {
         CommitCondition::Tail { path, expected } => {
             block_len(path.as_str().len()) + uint_len((*expected != 0).then_some(*expected))
         }
-        CommitCondition::Absent { path } => block_len(path.as_str().len()),
+        CommitCondition::Absent { path } | CommitCondition::Present { path } => {
+            block_len(path.as_str().len())
+        }
     })
 }
 #[cfg(any(
@@ -131,6 +127,7 @@ fn commit_len_with(request: &CommitRequest, length: &impl Fn(&AppendRecord) -> u
                 .fold(0_usize, usize::saturating_add),
         )
         .saturating_add(block_len(request.idempotency_key.as_bytes().len()))
+        .saturating_add(uint_len(request.deadline_unix_millis))
 }
 
 /// A prepared single-record command admits unknown value and header bytes.
@@ -226,9 +223,7 @@ pub(crate) fn append(out: &mut Vec<u8>, request: &AppendRequest) {
     bytes(out, 1, request.path.as_str().as_bytes());
     records(out, 2, &request.records);
     uint(out, 3, request.if_tail);
-    if let Some(key) = &request.idempotency_key {
-        bytes(out, 4, key.as_bytes());
-    }
+    bytes(out, 4, request.idempotency_key.as_bytes());
 }
 #[cfg(any(
     feature = "local",
@@ -245,9 +240,7 @@ pub(crate) fn fork(out: &mut Vec<u8>, request: &ForkRequest) {
     bytes(out, 1, request.source.as_str().as_bytes());
     bytes(out, 2, request.destination.as_str().as_bytes());
     uint(out, 3, request.at_tail);
-    if let Some(key) = &request.idempotency_key {
-        bytes(out, 4, key.as_bytes());
-    }
+    bytes(out, 4, request.idempotency_key.as_bytes());
 }
 #[cfg(any(
     feature = "local",
@@ -261,6 +254,10 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
     for condition in &request.conditions {
         header(out, 1, condition_len(condition));
         match condition {
+            CommitCondition::Present { path } => {
+                header(out, 4, block_len(path.as_str().len()));
+                bytes(out, 1, path.as_str().as_bytes());
+            }
             CommitCondition::Head {
                 path,
                 expected,
@@ -334,6 +331,7 @@ pub(crate) fn commit(out: &mut Vec<u8>, request: &CommitRequest) {
         }
     }
     bytes(out, 3, request.idempotency_key.as_bytes());
+    uint(out, 4, request.deadline_unix_millis);
 }
 
 #[cfg(test)]
@@ -353,7 +351,9 @@ mod tests {
             for length in [0, 127, 128, 16_383, 16_384, crate::MAX_RECORD_BYTES] {
                 let records: Vec<AppendRecord> = vec![OwnedBytes::from(vec![7; length]).into()];
                 let request = CommitRequest {
+                    deadline_unix_millis: (tail != 0).then_some(tail),
                     conditions: vec![
+                        CommitCondition::Present { path: path.clone() },
                         CommitCondition::Absent {
                             path: destination.clone(),
                         },
@@ -402,10 +402,8 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         for tail in [None, Some(0), Some(u64::MAX)] {
             for key in [
-                None,
-                Some(crate::IdempotencyKey::new(bytes::Bytes::from_static(
-                    b"request-key",
-                ))?),
+                crate::IdempotencyKey::new(bytes::Bytes::from_static(b"k"))?,
+                crate::IdempotencyKey::new(bytes::Bytes::from_static(b"request-key"))?,
             ] {
                 let request = AppendRequest {
                     path: crate::StreamPath::new("request/events")?,
@@ -425,10 +423,9 @@ mod tests {
                         .map(crate::wire_codec::append_record_wire)
                         .collect(),
                     if_tail: tail,
-                    idempotency_key: request
-                        .idempotency_key
-                        .as_ref()
-                        .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
+                    idempotency_key: bytes::Bytes::copy_from_slice(
+                        request.idempotency_key.as_bytes(),
+                    ),
                 }
                 .encode_to_vec();
                 let mut actual = Vec::with_capacity(append_len(&request));
@@ -452,7 +449,7 @@ mod tests {
             path: crate::StreamPath::new("request/events")?,
             records: Vec::new(),
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         };
         for records in [
             Vec::new(),
@@ -484,7 +481,7 @@ mod tests {
             path: crate::StreamPath::new("request/events")?,
             records: vec![OwnedBytes::from(vec![7; 65_536]).into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         };
         let mut binary = Vec::with_capacity(append_len(&request));
         append(&mut binary, &request);

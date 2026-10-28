@@ -16,7 +16,7 @@ fn check<const OMIT_ANCHOR: bool>() {
             path: path.clone(),
             records: vec![Bytes::from_static(b"old").into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap() else {
             panic!("seed conflicted")
@@ -29,7 +29,7 @@ fn check<const OMIT_ANCHOR: bool>() {
                 Bytes::from_static(b"next").into(),
             ],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
         let encoded = block_on(replacement.encode_state());

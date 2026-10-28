@@ -31,7 +31,8 @@ impl Builder {
         let path = match &condition {
             CommitCondition::Head { path, .. }
             | CommitCondition::Tail { path, .. }
-            | CommitCondition::Absent { path } => path.clone(),
+            | CommitCondition::Absent { path }
+            | CommitCondition::Present { path } => path.clone(),
         };
         self.conditions.entry(path).or_insert(condition);
     }
@@ -152,6 +153,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             .map(|(path, records)| CommitMutation::Append { path, records }),
     );
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: builder.conditions.into_values().collect(),
         mutations,
         idempotency_key: key,

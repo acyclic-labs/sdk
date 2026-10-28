@@ -1,9 +1,9 @@
 use super::*;
 use crate::sync::atomic::{AtomicBool, Ordering};
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, FollowFilter, ForkReceipt,
-    ForkRequest, IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
-    StreamBounds, StreamError, StreamProvider,
+    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, ForkReceipt, ForkRequest,
+    IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamError,
+    StreamProvider,
 };
 use std::cell::Cell;
 use std::future::Future;
@@ -93,6 +93,9 @@ impl StreamProvider for ModelStream {
         self.inner.operation_claims()
     }
 
+    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+        self.call(self.inner.head(path)).await
+    }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.call(self.inner.tail(path)).await
     }
@@ -124,9 +127,6 @@ impl StreamProvider for ModelStream {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         Err(StreamError::Unsupported)
     }
-    async fn bounds(&self, _: StreamPath) -> Result<StreamBounds, StreamError> {
-        Err(StreamError::Unsupported)
-    }
     async fn append(&self, _: AppendRequest) -> Result<AppendOutcome, StreamError> {
         Err(StreamError::Unsupported)
     }
@@ -135,10 +135,8 @@ impl StreamProvider for ModelStream {
     }
     async fn follow(
         &self,
-        _: StreamPath,
-        _: u64,
-        _: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
+        _request: acyclic_stream::FollowRequest,
+    ) -> Result<acyclic_stream::FollowStream, StreamError> {
         Err(StreamError::Unsupported)
     }
     async fn read_commit(&self, _: CommitId) -> Result<CommittedEnvelope, StreamError> {
@@ -185,6 +183,7 @@ fn request(
 ) -> CommitRequest {
     let path = stream_path(ID, suffix).unwrap();
     CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![match tail {
             Some(expected) => CommitCondition::Tail {
                 path: path.clone(),

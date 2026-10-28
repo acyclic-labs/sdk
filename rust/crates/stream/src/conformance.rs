@@ -15,6 +15,7 @@ pub use backend::injected;
 pub use backend::{Backend, Failure, Fixture, Measurement, bench, suite, verify};
 
 use crate::OwnedBytes as Bytes;
+use futures::TryFutureExt as _;
 use futures::{StreamExt as _, TryStreamExt as _};
 
 use crate::{
@@ -51,7 +52,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             Bytes::from_static(b"two").into(),
         ],
         if_tail: Some(0),
-        idempotency_key: Some(append_key.clone()),
+        idempotency_key: append_key.clone(),
     };
     let first = provider.append(initial.clone()).await?;
     let AppendOutcome::Committed(first_receipt) = &first else {
@@ -69,7 +70,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             path: source.clone(),
             records: vec![Bytes::from_static(b"different").into()],
             if_tail: Some(0),
-            idempotency_key: Some(append_key.clone()),
+            idempotency_key: append_key.clone(),
         })
         .await
         != Err(StreamError::IdempotencyMismatch)
@@ -91,7 +92,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             path: source.clone(),
             records: vec![Bytes::from_static(b"never").into()],
             if_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: key(b"conformance-tail-conflict")?,
         })
         .await?
         != (AppendOutcome::TailConflict { actual_tail: 2 })
@@ -104,7 +105,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             source: source.clone(),
             destination: child.clone(),
             at_tail: Some(1),
-            idempotency_key: Some(key(b"stream-fork")?),
+            idempotency_key: key(b"stream-fork")?,
         })
         .await?;
     if fork.forked_at != 1 || fork.tail != 1 {
@@ -178,7 +179,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             path: path("conformance/paging-new")?,
             records: vec![Bytes::from_static(b"created").into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: key(b"conformance-paging-new")?,
         })
         .await?;
     if provider
@@ -195,14 +196,15 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         return Err(StreamError::Unavailable);
     }
     let mut follow = provider
-        .follow(child.clone(), 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest::new(child.clone(), 1))
+        .map_ok(crate::records_only)
         .await?;
     provider
         .append(AppendRequest {
             path: child.clone(),
             records: vec![Bytes::from_static(b"live").into()],
             if_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: key(b"conformance-live-follow")?,
         })
         .await?;
     #[cfg(not(target_arch = "wasm32"))]
@@ -227,12 +229,13 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     if !matches!(complete_history.as_slice(), [first, second]
         if first.value == Bytes::from_static(b"one")
             && second.value == Bytes::from_static(b"live"))
-        || provider.bounds(child.clone()).await?.tail != 2
+        || provider.tail(child.clone()).await? != 2
     {
         return Err(StreamError::Unavailable);
     }
     let committed_path = path("conformance/committed")?;
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Tail {
                 path: source.clone(),
@@ -252,11 +255,11 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         idempotency_key: key(b"stream-commit")?,
     };
     let committed = provider.commit(request.clone()).await?;
-    let CommitOutcome::Committed(envelope) = &committed else {
+    let CommitOutcome::Committed(receipt) = &committed else {
         return Err(StreamError::Unavailable);
     };
     if provider.commit(request).await? != committed
-        || provider.read_commit(envelope.commit_id).await? != *envelope
+        || !receipt.matches_envelope(&provider.read_commit(receipt.commit_id).await?)
     {
         return Err(StreamError::Unavailable);
     }
@@ -266,6 +269,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     let absent = path("conformance/absent-tail")?;
     let absent_key = key(b"stream-absent-tail")?;
     let absent_request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Tail {
             path: absent.clone(),
             expected: 0,
@@ -287,7 +291,13 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
         .inspect_idempotency(absent_key)
         .await?
         .ok_or(StreamError::Unavailable)?;
-    if absent_observation.outcome != IdempotencyOutcome::Commit(absent_outcome) {
+    let CommitOutcome::Committed(receipt) = absent_outcome else {
+        return Err(StreamError::Unavailable);
+    };
+    let facts = provider.read_commit(receipt.commit_id).await?;
+    if !receipt.matches_envelope(&facts)
+        || absent_observation.outcome != IdempotencyOutcome::Commit(facts)
+    {
         return Err(StreamError::Unavailable);
     }
     verify_unspent_conflicts(provider).await?;
@@ -335,6 +345,7 @@ async fn verify_stale_tail_condition(
     }]);
     if provider
         .commit(CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![
                 CommitCondition::Tail {
                     path: source.clone(),
@@ -370,6 +381,7 @@ async fn verify_fork_with_records(
 ) -> Result<(), StreamError> {
     let destination = path("conformance/forked-and-extended")?;
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Tail {
                 path: source.clone(),
@@ -392,9 +404,13 @@ async fn verify_fork_with_records(
         idempotency_key: key(b"stream-fork-with-records")?,
     };
     let committed = provider.commit(request.clone()).await?;
-    let CommitOutcome::Committed(envelope) = &committed else {
+    let CommitOutcome::Committed(receipt) = &committed else {
         return Err(StreamError::Unavailable);
     };
+    let envelope = provider.read_commit(receipt.commit_id).await?;
+    if !receipt.matches_envelope(&envelope) {
+        return Err(StreamError::Unavailable);
+    }
     let [CommittedMutation::Fork(fork)] = envelope.mutations.as_slice() else {
         return Err(StreamError::Unavailable);
     };
@@ -455,7 +471,7 @@ async fn verify_unspent_conflicts(
         path: path.clone(),
         records: vec![Bytes::from_static(b"intent").into()],
         if_tail: Some(1),
-        idempotency_key: Some(append_key.clone()),
+        idempotency_key: append_key.clone(),
     };
     if !matches!(
         provider.append(request.clone()).await?,
@@ -470,6 +486,7 @@ async fn verify_unspent_conflicts(
     }
     let commit_key = key(b"unspent-commit")?;
     let mut request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Tail {
             path: path.clone(),
             expected: 0,
@@ -530,7 +547,7 @@ async fn seed_subtree(
             path: child.clone(),
             records: vec![Bytes::from_static(b"prefix").into()],
             if_tail: Some(0),
-            idempotency_key: Some(key(b"tree-seed")?),
+            idempotency_key: key(b"tree-seed")?,
         })
         .await?;
     let AppendOutcome::Committed(seed) = initial else {
@@ -541,7 +558,7 @@ async fn seed_subtree(
             path: path("conformance/tree/children/old/events")?,
             records: vec![Bytes::from_static(b"sibling").into()],
             if_tail: Some(0),
-            idempotency_key: Some(key(b"tree-sibling")?),
+            idempotency_key: key(b"tree-sibling")?,
         })
         .await?;
     // Volume authority streams share the account-tree domain and caller commit.
@@ -551,7 +568,7 @@ async fn seed_subtree(
                 path: path(name)?,
                 records: vec![Bytes::from_static(b"volume-head").into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: IdempotencyKey::new(name.as_bytes().to_vec())?,
             })
             .await?;
     }
@@ -564,6 +581,7 @@ fn subtree_request() -> Result<CommitRequest, StreamError> {
     let destination = path("conformance/tree/children/fork")?;
     let marker = path("conformance/adopted")?;
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Absent {
                 path: destination.clone(),
@@ -704,7 +722,7 @@ async fn verify_subtree_private_writes(
             path: inherited.clone(),
             records: vec![Bytes::from_static(b"private").into()],
             if_tail: Some(1),
-            idempotency_key: Some(key(b"tree-private")?),
+            idempotency_key: key(b"tree-private")?,
         })
         .await?;
     let source_records: Vec<_> = provider
@@ -763,7 +781,7 @@ async fn verify_subtree_private_writes(
             source: destination,
             destination: second,
             at_tail: None,
-            idempotency_key: Some(key(b"tree-second")?),
+            idempotency_key: key(b"tree-second")?,
         })
         .await?;
     if provider
@@ -789,7 +807,7 @@ pub async fn verify_page_tails(
                 path: target.clone(),
                 records: vec![Bytes::from_static(b"old").into()],
                 if_tail: Some(0),
-                idempotency_key: Some(IdempotencyKey::new(target.as_str().as_bytes().to_vec())?),
+                idempotency_key: IdempotencyKey::new(target.as_str().as_bytes().to_vec())?,
             })
             .await?;
     }
@@ -812,6 +830,7 @@ pub async fn verify_page_tails(
     }
     let cut = provider
         .commit(CommitRequest {
+            deadline_unix_millis: None,
             conditions: [&a, &b]
                 .into_iter()
                 .map(|path| CommitCondition::Tail {
@@ -881,7 +900,7 @@ pub async fn verify_page_tail_bytes(
         let target = path(&format!("conformance/page-bytes/{index:04}/status"))?;
         let outcome = provider
             .append(AppendRequest {
-                idempotency_key: Some(IdempotencyKey::new(target.as_str().as_bytes().to_vec())?),
+                idempotency_key: IdempotencyKey::new(target.as_str().as_bytes().to_vec())?,
                 path: target,
                 records: vec![crate::AppendRecord {
                     value: value.clone(),

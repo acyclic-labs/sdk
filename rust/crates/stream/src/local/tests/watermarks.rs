@@ -31,7 +31,7 @@ fn qualify(operations: &[u8], early_durable: bool) -> Result {
                         path: path.clone(),
                         records: vec![(Bytes::from_static(b"accepted")).into()],
                         if_tail: None,
-                        idempotency_key: None,
+                        idempotency_key: crate::IdempotencyKey::unique(),
                     }))
                     .await?;
                     *count += 1;

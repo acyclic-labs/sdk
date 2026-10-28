@@ -21,4 +21,8 @@ mod work_custody;
 #[cfg(not(target_arch = "wasm32"))]
 mod commit_index;
 
+mod head;
 mod subtree;
+
+#[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+mod durable;

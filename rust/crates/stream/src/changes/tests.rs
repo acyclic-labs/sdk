@@ -1,6 +1,7 @@
 use super::*;
 use crate::{FollowFilter, MemoryStream, StreamPath, StreamProvider};
 use futures::StreamExt;
+use futures::TryFutureExt as _;
 
 pub(super) fn filter() -> FollowFilter {
     use acyclic_auth::{contract::*, testing as signed};
@@ -233,7 +234,7 @@ async fn prepared_ingress(provider: &impl StreamProvider) {
                 path: path.clone(),
                 records: vec![b"seed".as_slice().into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await
             .unwrap();
@@ -241,6 +242,7 @@ async fn prepared_ingress(provider: &impl StreamProvider) {
     let meter = std::sync::Arc::new(crate::test_meter::Meter::local());
     let body = forged();
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Tail {
                 path: owner,
@@ -323,18 +325,35 @@ async fn qualify(provider: &impl StreamProvider) {
             path: path.clone(),
             records: vec![body.clone()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await
         .unwrap();
-    let mut history = provider.follow(path.clone(), 0, filter()).await.unwrap();
+    let mut history = provider
+        .follow(crate::FollowRequest {
+            path: path.clone(),
+            from: 0,
+            preceding: None,
+            filter: filter(),
+            progress: false,
+        })
+        .map_ok(crate::records_only)
+        .await
+        .unwrap();
     let first = history.next().await.unwrap().unwrap();
     assert_eq!(
         decode(&first.value, &first.headers).unwrap().entries.len(),
         1
     );
     let mut live = provider
-        .follow_checked(path.clone(), 1, first.commit_id, filter())
+        .follow(crate::FollowRequest {
+            path: path.clone(),
+            from: 1,
+            preceding: Some(first.commit_id),
+            filter: filter(),
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await
         .unwrap();
     assert!(futures::poll!(live.next()).is_pending());
@@ -343,7 +362,7 @@ async fn qualify(provider: &impl StreamProvider) {
             path: path.clone(),
             records: vec![body],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await
         .unwrap();
@@ -357,7 +376,14 @@ async fn qualify(provider: &impl StreamProvider) {
     );
     assert_eq!(second.sequence, 1);
     let mut resumed = provider
-        .follow_checked(path, 1, first.commit_id, filter())
+        .follow(crate::FollowRequest {
+            path: path,
+            from: 1,
+            preceding: Some(first.commit_id),
+            filter: filter(),
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await
         .unwrap();
     assert_eq!(resumed.next().await.unwrap().unwrap(), second);

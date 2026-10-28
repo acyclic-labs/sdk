@@ -57,6 +57,11 @@ class RustStreamProvider implements StreamProvider {
     return this.#project<IdempotencyObservation | undefined>("inspect_idempotency", request);
   }
 
+  async head(path: string): Promise<import("./types.js").PathHead> {
+    const request = { kind: "head" as const, path };
+    await validateWireRequest(request);
+    return this.#project("head", wireRequest(request));
+  }
   async tail(path: string): Promise<Sequence> {
     const request = { kind: "tail" as const, path };
     await validateWireRequest(request);

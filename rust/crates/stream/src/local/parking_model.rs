@@ -1,5 +1,6 @@
 use super::*;
 use crate::verification::block_on;
+use futures::TryFutureExt as _;
 use std::{mem::ManuallyDrop, task::Context};
 
 // The consumer polls exactly once during a publication, then waits for a new
@@ -18,14 +19,18 @@ pub(crate) fn verify(retain_pending: bool, memory: bool) {
             path: path.clone(),
             records: vec![crate::OwnedBytes::from_static(b"seed").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
         let follow: futures::stream::BoxStream<'static, _> = {
-            block_on(provider.follow(path, 0, crate::FollowFilter::default()))
-                .unwrap()
-                .map(|record| record.map(|_| ()))
-                .boxed()
+            block_on(
+                provider
+                    .follow(crate::FollowRequest::new(path, 0))
+                    .map_ok(crate::records_only),
+            )
+            .unwrap()
+            .map(|record| record.map(|_| ()))
+            .boxed()
         };
         let mut follow = ManuallyDrop::new(follow);
         let held = if memory {
@@ -69,14 +74,18 @@ pub(crate) fn abandon(
             path: path.clone(),
             records: vec![crate::OwnedBytes::from_static(b"seed").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
         let follow: futures::stream::BoxStream<'static, _> = {
-            block_on(provider.follow(path, 0, crate::FollowFilter::default()))
-                .unwrap()
-                .map(|record| record.map(|_| ()))
-                .boxed()
+            block_on(
+                provider
+                    .follow(crate::FollowRequest::new(path, 0))
+                    .map_ok(crate::records_only),
+            )
+            .unwrap()
+            .map(|record| record.map(|_| ()))
+            .boxed()
         };
         let held = block_on(provider.inner.publication.write());
         crate::snapshot::model::depart(

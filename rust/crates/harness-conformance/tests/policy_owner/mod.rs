@@ -28,8 +28,8 @@ impl StreamProvider for Session {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.0.tail(path).await
     }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.0.bounds(path).await
+    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+        self.0.head(path).await
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.0.append(request).await
@@ -42,11 +42,9 @@ impl StreamProvider for Session {
     }
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.0.follow(path, from, filter).await
+        request: acyclic_stream::FollowRequest,
+    ) -> Result<acyclic_stream::FollowStream, StreamError> {
+        self.0.follow(request).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.0.commit(request).await

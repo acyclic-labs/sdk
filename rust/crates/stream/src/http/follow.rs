@@ -30,47 +30,46 @@ fn parse_records(value: &Value) -> Result<Vec<Record>, StreamError> {
         .as_array()
         .ok_or(StreamError::Unavailable)?
         .iter()
-        .map(|value| {
-            let bytes = parse_bytes(field(value, "value")?)?;
-            let keys = field(value, "keys")?
-                .as_array()
-                .ok_or(StreamError::Unavailable)?;
-            let attributes = field(value, "attributes")?
-                .as_array()
-                .ok_or(StreamError::Unavailable)?;
-            if keys.len() > crate::MAX_RECORD_KEYS
-                || attributes.len() > crate::MAX_RECORD_ATTRIBUTES
-            {
-                return Err(StreamError::Unavailable);
-            }
-            let headers = crate::changes::record_headers(
-                &bytes,
-                keys.iter()
-                    .map(|key| parse_bytes(key).map(Into::into))
-                    .collect::<Result<Vec<_>, _>>()?,
-                attributes
-                    .iter()
-                    .map(|attribute| {
-                        Ok(crate::Attribute {
-                            name: parse_string(field(attribute, "name")?)?.to_owned(),
-                            value: parse_bytes(field(attribute, "value")?)?.into(),
-                        })
-                    })
-                    .collect::<Result<Vec<_>, StreamError>>()?,
-            )
-            .map_err(|_| StreamError::Unavailable)?;
-            if bytes.len().saturating_add(headers.payload_bytes()) > MAX_RECORD_BYTES {
-                return Err(StreamError::Unavailable);
-            }
-            Ok(Record {
-                sequence: parse_u64(field(value, "sequence")?)?,
-                value: bytes.into(),
-                commit_id: parse_id(field(value, "commitId")?)?,
-                committed_at_micros: parse_u64(field(value, "committedAtMicros")?)?,
-                headers,
-            })
-        })
+        .map(parse_record)
         .collect()
+}
+fn parse_record(value: &Value) -> Result<Record, StreamError> {
+    let bytes = parse_bytes(field(value, "value")?)?;
+    let keys = field(value, "keys")?
+        .as_array()
+        .ok_or(StreamError::Unavailable)?;
+    let attributes = field(value, "attributes")?
+        .as_array()
+        .ok_or(StreamError::Unavailable)?;
+    if keys.len() > crate::MAX_RECORD_KEYS || attributes.len() > crate::MAX_RECORD_ATTRIBUTES {
+        return Err(StreamError::Unavailable);
+    }
+    let headers = crate::changes::record_headers(
+        &bytes,
+        keys.iter()
+            .map(|key| parse_bytes(key).map(Into::into))
+            .collect::<Result<Vec<_>, _>>()?,
+        attributes
+            .iter()
+            .map(|attribute| {
+                Ok(crate::Attribute {
+                    name: parse_string(field(attribute, "name")?)?.to_owned(),
+                    value: parse_bytes(field(attribute, "value")?)?.into(),
+                })
+            })
+            .collect::<Result<Vec<_>, StreamError>>()?,
+    )
+    .map_err(|_| StreamError::Unavailable)?;
+    if bytes.len().saturating_add(headers.payload_bytes()) > MAX_RECORD_BYTES {
+        return Err(StreamError::Unavailable);
+    }
+    Ok(Record {
+        sequence: parse_u64(field(value, "sequence")?)?,
+        value: bytes.into(),
+        commit_id: parse_id(field(value, "commitId")?)?,
+        committed_at_micros: parse_u64(field(value, "committedAtMicros")?)?,
+        headers,
+    })
 }
 fn parse_append(value: &Value) -> Result<AppendOutcome, StreamError> {
     if value["ok"] == true {
@@ -140,6 +139,7 @@ fn parse_envelope(value: &Value) -> Result<CommittedEnvelope, StreamError> {
         .collect::<Result<Vec<_>, StreamError>>()?;
     let envelope = CommittedEnvelope {
         commit_id: parse_id(field(value, "commitId")?)?,
+        committed_at_micros: parse_u64(field(value, "committedAtMicros")?)?,
         mutations,
     };
     wire_codec::envelope_from_wire(wire_codec::envelope_to_wire(envelope))

@@ -67,7 +67,7 @@ fn baseline_native_read<'a>(
                     .value
                     .len();
                 meter.check()?;
-                let mut bytes = NativeByteReservation::new(
+                let mut bytes = acyclic_native_runtime::NativeByteReservation::new(
                     Arc::clone(&meter),
                     NativeOperationKind::Read,
                     length,
@@ -110,7 +110,7 @@ async fn seed(batches: usize) -> MemoryStream {
                 path: path.clone(),
                 records: vec![(Bytes::from(vec![i.to_le_bytes()[0], 0, 255])).into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await
             .unwrap();

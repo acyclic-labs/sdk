@@ -2,7 +2,7 @@ use super::*;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, CommittedMutation, ForkReceipt,
     ForkRequest, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, MemoryStream,
-    ReadRequest, RecordStream, StreamBounds, StreamError, StreamProvider,
+    ReadRequest, RecordStream, StreamError, StreamProvider,
 };
 use futures::TryStreamExt;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
@@ -120,6 +120,7 @@ fn gate_commit(
 ) -> Result<CommitRequest, AuthorityStoreError> {
     let path = stream_path(reservation.authority_id, "/publication-gate")?;
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Tail {
             path: path.clone(),
             expected: reservation.gate_tail,
@@ -335,6 +336,7 @@ async fn missing_and_corrupt_gates_fail_authority_reopen() -> TestResult {
         let stream = Arc::new(MemoryStream::default());
         let id = AuthorityId::from_bytes([1; 16]);
         let mut request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: Vec::new(),
             mutations: Vec::new(),
             idempotency_key: stream_key(b"gateless", &id.into_bytes())?,
@@ -594,7 +596,7 @@ async fn release_refuses_a_committed_different_request_or_mutation_family() -> T
                         path: stream_path(reservation.authority_id, "/publication-gate")?,
                         records: vec![value.into()],
                         if_tail: Some(reservation.gate_tail),
-                        idempotency_key: Some(key)
+                        idempotency_key: key
                     })
                     .await?,
                 AppendOutcome::Committed(_)
@@ -673,10 +675,8 @@ impl ReleaseSpy {
                         path: path.clone(),
                         records: vec![acyclic_stream::OwnedBytes::from_static(b"closed").into()],
                         if_tail: Some(1),
-                        idempotency_key: Some(
-                            stream_key(b"close-lease", path.as_str().as_bytes())
-                                .map_err(|_| StreamError::InvalidArgument)?,
-                        ),
+                        idempotency_key: stream_key(b"close-lease", path.as_str().as_bytes())
+                            .map_err(|_| StreamError::InvalidArgument)?,
                     })
                     .await?;
             }
@@ -741,9 +741,7 @@ impl StreamProvider for ReleaseSpy {
                 observation.idempotency_key = stream_key(b"another-release", b"identity")
                     .map_err(|_| StreamError::InvalidArgument)?;
             }
-            if let IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) =
-                &mut observation.outcome
-            {
+            if let IdempotencyOutcome::Commit(envelope) = &mut observation.outcome {
                 if let Some(CommittedMutation::Append(append)) = envelope.mutations.first_mut() {
                     match self.corrupt_observation {
                         2 => append.path = StreamPath::new("other/gate")?,
@@ -767,6 +765,13 @@ impl StreamProvider for ReleaseSpy {
             cancellation.cancel();
         }
         Ok(result)
+    }
+    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+        self.reads.store(true, SeqCst);
+        if self.deny_probes_after_commit && self.writes.load(SeqCst) {
+            return Err(StreamError::InvalidArgument);
+        }
+        self.inner.head(path).await
     }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.reads.store(true, SeqCst);
@@ -816,19 +821,6 @@ impl StreamProvider for ReleaseSpy {
         self.finish_commit(result).await
     }
 
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.interleave().await?;
-        let result = self.inner.commit_before(request, deadline).await?;
-        self.finish_commit(result).await
-    }
-
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.inner.bounds(path).await
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.inner.append(request).await
     }
@@ -837,11 +829,9 @@ impl StreamProvider for ReleaseSpy {
     }
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: acyclic_stream::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.inner.follow(path, from, filter).await
+        request: acyclic_stream::FollowRequest,
+    ) -> Result<acyclic_stream::FollowStream, StreamError> {
+        self.inner.follow(request).await
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.inner.read_commit(id).await

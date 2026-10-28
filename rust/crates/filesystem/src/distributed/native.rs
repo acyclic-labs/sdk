@@ -460,6 +460,7 @@ impl<'a> AuthorityWork<'a> {
             conditions,
             mutations,
             idempotency_key: request.idempotency_key.clone(),
+            deadline_unix_millis: request.deadline_unix_millis,
         })
     }
 

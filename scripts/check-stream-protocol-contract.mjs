@@ -28,14 +28,13 @@ try {
   const service = stream.service.find(item => item.name === "StreamService");
   assert.ok(service, "StreamService is missing");
   assert.deepEqual(service.method.map(method => method.name), [
-    "InspectIdempotency", "Append", "Tail", "Fork", "Read", "Follow", "AcknowledgeDelivery",
+    "InspectIdempotency", "Append", "Head", "Tail", "Fork", "Read",
     "ChildrenPage", "Commit", "ReadCommit",
   ]);
   assert.equal(service.method.find(method => method.name === "Read").serverStreaming, true);
-  assert.equal(service.method.find(method => method.name === "Follow").serverStreaming, true);
 
   for (const name of ["ChildrenRequest", "ChildrenResponse", "TrimRequest", "TrimReceipt", "DeleteRequest", "DeleteReceipt",
-    "TrimMutation", "DeleteMutation", "CommittedTrim", "CommittedDelete", "RetiredCommitConflict"]) {
+    "TrimMutation", "DeleteMutation", "CommittedTrim", "CommittedDelete", "RetiredCommitConflict", "AcknowledgeDeliveryRequest", "AcknowledgeDeliveryResponse"]) {
     assert.equal(messages.has(name), false, `${name} must not be published`);
   }
 
@@ -53,15 +52,16 @@ try {
   assertFields("ForkRequest", [["source", 1], ["destination", 2], ["at_tail", 3], ["idempotency_key", 4], ["exclude", 5]]);
   assertFields("ForkMutation", [["source", 1], ["destination", 2], ["at_tail", 3], ["records", 4], ["exclude", 5]]);
   assertFields("CommittedFork", [["source", 1], ["destination", 2], ["forked_at", 3], ["tail", 4], ["records", 5], ["exclude", 6]]);
-  assertFields("Child", [["path", 1], ["tail_record", 2]]);
+  assertFields("Child", [["path", 1], ["tail_record", 2], ["origin", 3]]);
   assertFields("ChildrenPageRequest", [["parent", 1], ["after", 2], ["hierarchy_version", 3], ["limit", 4], ["tail_stream", 5]]);
   assertFields("ChildrenPageResponse", [["hierarchy_version", 1], ["children", 2], ["next_after", 3]]);
-  assertFields("TailRequest", [["path", 1], ["accepted", 2]]);
+  assertFields("TailRequest", [["path", 1], ["accepted", 2], ["durable_through", 3]]);
+  assertFields("HeadRequest", [["path", 1]]);
+  assertFields("PathHead", [["tail", 1], ["last", 2], ["durable", 3], ["origin", 4]]);
+  assertFields("ForkOrigin", [["source", 1], ["forked_at", 2], ["commit_id", 3]]);
   assertFields("TailResponse", [["tail", 1], ["durable", 3]]);
-  assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4], ["delivery_token", 5]]);
-  assertFields("AcknowledgeDeliveryRequest", [["delivery_token", 1]]);
-  assertFields("AcknowledgeDeliveryResponse", []);
-  assertReserved("ReadResponse", [[1, 2]], ["record"]);
+  assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4]]);
+  assertReserved("ReadResponse", [[1, 2], [5, 6]], ["record", "delivery_token"]);
   assertFields("RecordBatch", [["records", 1]]);
   assertFields("Record", [["sequence", 1], ["value", 2], ["commit_id", 3], ["committed_at_micros", 4], ["keys", 5], ["attributes", 6]]);
   assertReserved("TailResponse", [[2, 3]], ["trim_point"]);
@@ -69,9 +69,11 @@ try {
   assertReserved("CommitMutation", [[3, 4], [4, 5]], ["trim", "delete"]);
   assertFields("CommittedMutation", [["append", 1], ["fork", 2]]);
   assertReserved("CommittedMutation", [[3, 4], [4, 5]], ["trim", "delete"]);
-  assertFields("CommitCondition", [["tail", 1], ["absent", 2], ["head", 3]]);
+  assertFields("CommitCondition", [["tail", 1], ["absent", 2], ["head", 3], ["present", 4]]);
   assertFields("HeadCondition", [["path", 1], ["expected", 2], ["commit_id", 3]]);
-  assertFields("CommitConflict", [["tail", 1], ["exists", 2], ["head", 4]]);
+  assertFields("CommitConflict", [["tail", 1], ["exists", 2], ["head", 4], ["missing", 5]]);
+  assertFields("PresentCondition", [["path", 1]]);
+  assertFields("MissingCommitConflict", [["path", 1]]);
   assertFields("HeadCommitConflict", [["path", 1], ["expected", 2], ["actual", 3]]);
   assertReserved("CommitConflict", [[3, 4]], ["retired"]);
   assertFields("IdempotencyObservation", [

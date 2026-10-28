@@ -5,7 +5,7 @@ impl LocalStream {
         from: u64,
         anchor: Option<crate::CommitId>,
         filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
+    ) -> Result<crate::FollowStream, StreamError> {
         let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.follow",
             rev = from,
@@ -56,7 +56,9 @@ impl LocalStream {
                     .await;
                     state = next;
                     let result = match record {
-                        Ok(Some(record)) => return Ok(Some((record, state))),
+                        Ok(Some(record)) => {
+                            return Ok(Some((crate::FollowUpdate::Record(record), state)));
+                        }
                         Ok(None) => state.wait().await,
                         Err(error) => Err(error),
                     };

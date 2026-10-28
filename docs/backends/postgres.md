@@ -32,9 +32,9 @@ prepares the canonical decision before SQL publication and installs it after
 durability; its source-scoped receipts below do not qualify this source.
 SQL synchronous commit must remain enabled for durable acknowledgements.
 
-`acyclic_stream_publish(namespace, expected_revision, command_bytes, deadline)`
+`acyclic_stream_publish(namespace, expected_revision, command_bytes, planned_millis, deadline)`
 is the physical publication primitive. Its prepared call checks the journal
-cursor under the namespace fence, samples the database clock, inserts the exact
+cursor under the namespace fence, records the core's planned database-clock time, inserts the exact
 command and queues NOTIFY in one server-side statement. A final database-clock
 deadline refusal aborts both insertion and notification. READ COMMITTED is
 required, and the head snapshot is obtained after waiting for the lock. A stale

@@ -26,6 +26,26 @@ pub(super) async fn inspect_idempotency(
     )
 }
 
+pub(super) async fn head(
+    client: &Arc<grpc::Client>,
+    request: Buffer,
+    cancellation: Option<&NativeStreamCancellation>,
+) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
+    let request = decode::<wire::HeadRequest>(&request, "head")?;
+    let value = run_with_cancellation(
+        async {
+            let path = StreamPath::new(request.path).map_err(|error| stream_error(&error))?;
+            client
+                .head(path)
+                .await
+                .map_err(|error| stream_error(&error))
+        },
+        cancellation_state(cancellation),
+    )
+    .await?;
+    encode(&wire_codec::head_to_wire(value), "head")
+}
+
 pub(super) async fn tail(
     client: &Arc<grpc::Client>,
     request: Buffer,
@@ -45,32 +65,6 @@ pub(super) async fn tail(
             ..Default::default()
         },
         "tail",
-    )
-}
-
-pub(super) async fn bounds(
-    client: &Arc<grpc::Client>,
-    request: Buffer,
-    cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
-    let request = decode::<wire::TailRequest>(&request, "bounds")?;
-    let value = run_with_cancellation(
-        async {
-            let path = StreamPath::new(&request.path).map_err(|error| stream_error(&error))?;
-            client
-                .bounds(path)
-                .await
-                .map_err(|error| stream_error(&error))
-        },
-        cancellation_state(cancellation),
-    )
-    .await?;
-    encode(
-        &wire::TailResponse {
-            tail: value.tail,
-            ..Default::default()
-        },
-        "bounds",
     )
 }
 
@@ -181,7 +175,12 @@ pub(super) async fn open_follow(
     })
 }
 
-pub(super) fn record_frames(records: acyclic_stream::RecordStream) -> FollowFrames {
+pub(super) fn record_frames(
+    records: impl futures::Stream<
+        Item = std::result::Result<acyclic_stream::Record, acyclic_stream::StreamError>,
+    > + Send
+    + 'static,
+) -> FollowFrames {
     records
         .map(|record| {
             record.map(|record| {
@@ -221,15 +220,13 @@ pub(super) async fn commit(
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
     let request = decode::<wire::CommitRequest>(&request, "commit")?;
-    let deadline = request.deadline_unix_millis;
     let request = wire_codec::commit_from_wire(request).map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
         async {
-            match deadline {
-                Some(deadline) => client.commit_before(request, deadline).await,
-                None => client.commit(request).await,
-            }
-            .map_err(|error| stream_error(&error))
+            client
+                .commit(request)
+                .await
+                .map_err(|error| stream_error(&error))
         },
         cancellation_state(cancellation),
     )

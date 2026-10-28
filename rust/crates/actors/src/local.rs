@@ -12,11 +12,9 @@ use crate::guest::{
     AlarmChange, Checkpoint, Composer, Composition, Effect, GuestError, Transition, Trigger,
 };
 use acyclic_stream::{
-    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitRequest, CommittedEnvelope,
-    CommittedMutation, IdempotencyKey, ReadRequest, Record, StreamError, StreamPath,
-    StreamProvider,
+    CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitReceipt, CommitRequest,
+    IdempotencyKey, Record, StreamError, StreamPath, StreamProvider,
 };
-use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -158,24 +156,15 @@ impl std::fmt::Debug for PreparedPublish {
     }
 }
 impl PreparedPublish {
-    /// Recover this publication's own state from its real, immutable receipt.
-    fn retained(&self, envelope: &CommittedEnvelope) -> Result<Option<Snapshot>, Error> {
+    /// Join the sealed authored state with its confirmed publication range.
+    fn retained(&self, receipt: &CommitReceipt) -> Result<Option<Snapshot>, Error> {
         let Some(path) = &self.own else {
             return Ok(None);
         };
-        let mut appends = envelope
-            .mutations
-            .iter()
-            .filter_map(|mutation| match mutation {
-                CommittedMutation::Append(append) if &append.path == path => Some(append),
-                _ => None,
-            });
+        let mut appends = receipt.appends.iter().filter(|append| &append.path == path);
         let append = appends
             .next()
             .ok_or(Error::Invalid("receipt omits actor state"))?;
-        let [record] = append.records.as_slice() else {
-            return Err(Error::Invalid("receipt changes actor state record count"));
-        };
         let expected = self
             .request
             .conditions
@@ -197,24 +186,20 @@ impl PreparedPublish {
                 CommitMutation::Append { path: own, records } if own == path => Some(records),
                 _ => None,
             });
-        if appends.next().is_some()
+        let Some([record]) = authored.map(Vec::as_slice) else {
+            return Err(Error::Invalid("receipt changes actor state record count"));
+        };
+        if !self.sealed
+            || appends.next().is_some()
             || expected != Some(append.start)
-            || append.start.checked_add(1) != Some(append.end)
-            || append.end != append.tail
-            || record.sequence != append.start
-            || record.commit_id != envelope.commit_id
-            || !authored.is_some_and(|records| {
-                records.len() == 1
-                    && records[0].value == record.value
-                    && records[0].headers == record.headers
-            })
+            || append.start.checked_add(1) != Some(append.tail)
         {
             return Err(Error::Invalid("receipt differs from the actor publication"));
         }
         Ok(Some(Snapshot {
             path: path.clone(),
             tail: append.tail,
-            anchor: Some(envelope.commit_id),
+            anchor: Some(receipt.commit_id),
             state: Some(State::decode(&record.value)?),
         }))
     }
@@ -228,6 +213,7 @@ impl PreparedPublish {
             sealed: false,
             acknowledgement_unknown: false,
             request: CommitRequest {
+                deadline_unix_millis: None,
                 conditions: Vec::new(),
                 mutations: Vec::new(),
                 idempotency_key: key,
@@ -422,9 +408,9 @@ impl<P: StreamProvider + ?Sized> Store<P> {
     }
 
     async fn load_path(&self, path: StreamPath) -> Result<Snapshot, Error> {
-        let tail = match self.provider.tail(path.clone()).await {
-            Ok(tail) => tail,
-            Err(StreamError::NotFound) => 0,
+        let (tail, last) = match self.provider.head(path.clone()).await {
+            Ok(head) => (head.tail, head.last),
+            Err(StreamError::NotFound) => (0, None),
             Err(error) => return Err(error.into()),
         };
         if tail == 0 {
@@ -435,18 +421,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                 state: None,
             });
         }
-        let mut records = self
-            .provider
-            .read(ReadRequest {
-                path: path.clone(),
-                from: tail - 1,
-                limit: 1,
-            })
-            .await?;
-        let record = records
-            .try_next()
-            .await?
-            .ok_or(Error::Invalid("checkpoint history is incomplete"))?;
+        let record = last.ok_or(Error::Invalid("checkpoint history is incomplete"))?;
         if record.sequence != tail - 1 {
             return Err(Error::Invalid("checkpoint cursor changed"));
         }
@@ -629,7 +604,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             ) => {}
         }
         let retained = match &outcome {
-            Ok(CommitOutcome::Committed(envelope)) => prepared.retained(envelope),
+            Ok(CommitOutcome::Committed(receipt)) => prepared.retained(receipt),
             Ok(CommitOutcome::Conflict(_)) | Err(_) => Ok(None),
         };
         if let Some(composition) = prepared.composition {
@@ -670,6 +645,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             sealed: false,
             acknowledgement_unknown: false,
             request: CommitRequest {
+                deadline_unix_millis: None,
                 conditions: vec![own],
                 mutations: vec![CommitMutation::Append {
                     path: previous.path.clone(),
@@ -689,7 +665,8 @@ fn condition_path(condition: &CommitCondition) -> &StreamPath {
     match condition {
         CommitCondition::Head { path, .. }
         | CommitCondition::Tail { path, .. }
-        | CommitCondition::Absent { path } => path,
+        | CommitCondition::Absent { path }
+        | CommitCondition::Present { path } => path,
     }
 }
 

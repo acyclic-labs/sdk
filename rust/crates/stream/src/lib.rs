@@ -164,7 +164,7 @@ pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
 
 /// Route-to-response families for the hosted HTTP projection.
 pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
-    ("delivery/acknowledge", "empty"),
+    ("head", "head"),
     ("idempotency/inspect", "observation"),
     ("tail", "sequence"),
     ("append", "append"),
@@ -186,6 +186,8 @@ mod path;
 pub use path::StreamPath;
 
 include!("lib/domain.rs");
+include!("lib/head.rs");
+include!("lib/receipt.rs");
 
 mod changes;
 mod record_headers;

@@ -13,10 +13,11 @@ use crate::guest::{
 use crate::local::{Clock, Error, PreparedPublish, Store, Subscription};
 use acyclic_stream::testing::{RequestLedger, Requests};
 use acyclic_stream::{
-    AppendRecord, BoxProviderFuture, CommitCondition, CommitMutation, FollowFilter, IdempotencyKey,
+    AppendRecord, BoxProviderFuture, CommitCondition, CommitMutation, IdempotencyKey,
     ProviderPlatform, StreamError, StreamPath, StreamProvider, UnixMillisClock as _,
 };
 use bytes::Bytes;
+use futures::TryFutureExt as _;
 use futures::{FutureExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -287,8 +288,15 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
         };
         let mut prepared =
             PreparedPublish::foreign(idempotency(&format!("{}/send/{}", self.inbox, self.sent))?);
-        for effect in self.creation.take().into_iter().flatten() {
-            prepared.join(effect)?;
+        // The creation carries the activation entry; every later input wakes
+        // the actor with its own same-commit entry.
+        match self.creation.take() {
+            Some(creation) => {
+                for effect in creation {
+                    prepared.join(effect)?;
+                }
+            }
+            None => prepared.join(store.activation(&self.actor))?,
         }
         prepared.join(Effect {
             conditions: vec![condition],
@@ -329,16 +337,17 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
         // The outbox is created by a publication, which always appends the
         // actor's state in the same commit: wake on state records until it exists.
         let mut state = provider
-            .follow(
+            .follow(acyclic_stream::FollowRequest::new(
                 self.target.store().path(&self.actor)?,
                 0,
-                FollowFilter::default(),
-            )
+            ))
+            .map_ok(acyclic_stream::records_only)
             .await
             .map_err(Error::from)?;
         let mut follow = loop {
             match provider
-                .follow(self.outbox.clone(), 0, FollowFilter::default())
+                .follow(acyclic_stream::FollowRequest::new(self.outbox.clone(), 0))
+                .map_ok(acyclic_stream::records_only)
                 .await
             {
                 Ok(follow) => break follow,

@@ -288,15 +288,7 @@ impl BrowserStream {
         dispatch.failed = result.is_err();
         let (count, bytes) = result?;
         let before = publication::Before::capture(&cache.provider, &command).await?;
-        let key = match &command {
-            Command::Append(request) => request.idempotency_key.clone(),
-            Command::Fork(request) => request.idempotency_key.clone(),
-            Command::Commit(request) => Some(request.idempotency_key.clone()),
-        };
-        let existing = match key {
-            Some(key) => cache.provider.inspect_idempotency(key).await?.is_some(),
-            None => false,
-        };
+        let existing = command.has_replay(&cache.provider).await?;
         let millis = BrowserClock.now_unix_millis();
         self.inner.clock.set(millis);
         cache.valid = false;
@@ -304,10 +296,13 @@ impl BrowserStream {
         let outcome = match command {
             Command::Append(request) => Outcome::Append(cache.provider.append(request).await?),
             Command::Fork(request) => Outcome::Fork(cache.provider.fork(request).await?),
-            Command::Commit(request) => Outcome::Commit(match deadline {
-                Some(deadline) => cache.provider.commit_before(request, deadline).await?,
-                None => cache.provider.commit(request).await?,
-            }),
+            Command::Commit(mut request) => {
+                request.deadline_unix_millis = deadline
+                    .into_iter()
+                    .chain(request.deadline_unix_millis)
+                    .min();
+                Outcome::Commit(cache.provider.commit(request).await?)
+            }
         };
         if existing
             || matches!(
@@ -408,6 +403,15 @@ impl StreamProvider for BrowserStream {
         self.with_provider(async move |provider| provider.inspect_idempotency(key).await)
             .await
     }
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        self.with_provider(async move |provider| {
+            let mut head = provider.head(path).await?;
+            head.durable = head.tail;
+            Ok(head)
+        })
+        .await
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.with_provider(async move |provider| provider.tail(path).await)
             .await
@@ -420,10 +424,6 @@ impl StreamProvider for BrowserStream {
             accepted,
             durable: accepted,
         })
-    }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.with_provider(async move |provider| provider.bounds(path).await)
-            .await
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         match self.execute(Command::Append(request), None).await? {
@@ -438,20 +438,8 @@ impl StreamProvider for BrowserStream {
         }
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        match self.execute(Command::Commit(request), None).await? {
-            Outcome::Commit(value) => Ok(value),
-            _ => Err(StreamError::Unavailable),
-        }
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        match self
-            .execute(Command::Commit(request), Some(deadline))
-            .await?
-        {
+        let deadline = request.deadline_unix_millis;
+        match self.execute(Command::Commit(request), deadline).await? {
             Outcome::Commit(value) => Ok(value),
             _ => Err(StreamError::Unavailable),
         }
@@ -474,28 +462,19 @@ impl StreamProvider for BrowserStream {
     }
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.follow_from(path, from, None, filter).await
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
-        filter: crate::FollowFilter,
+        request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.progress_from(path, from, preceding, filter).await
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.follow_from(path, from, Some(preceding), filter).await
+        let crate::FollowRequest {
+            path,
+            from,
+            preceding,
+            filter,
+            progress,
+        } = request;
+        if progress {
+            self.progress_from(path, from, preceding, filter).await
+        } else {
+            self.follow_from(path, from, preceding, filter).await
+        }
     }
 }

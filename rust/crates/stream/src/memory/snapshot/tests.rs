@@ -25,7 +25,7 @@ async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError
         path: StreamPath::new("snapshot/retained")?,
         records: vec![(Bytes::from_static(b"once")).into()],
         if_tail: None,
-        idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"snapshot-once"))?),
+        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"snapshot-once"))?,
     };
     let first = stream.append(request.clone()).await?;
     let restored = MemoryStream::new(limits);
@@ -39,7 +39,7 @@ async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError
         Err(StreamError::IdempotencyMismatch)
     );
     let mut fresh = request;
-    fresh.idempotency_key = Some(IdempotencyKey::new(Bytes::from_static(b"fresh"))?);
+    fresh.idempotency_key = IdempotencyKey::new(Bytes::from_static(b"fresh"))?;
     assert_eq!(restored.append(fresh).await, Err(StreamError::Capacity));
     Ok(())
 }
@@ -57,7 +57,7 @@ async fn real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retr
             (Bytes::from_static(b"second")).into(),
         ],
         if_tail: Some(0),
-        idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"append"))?),
+        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"append"))?,
     };
     let append_result = stream.append(appended.clone()).await?;
     let forked = crate::ForkRequest {
@@ -65,10 +65,11 @@ async fn real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retr
         source: source.clone(),
         destination: destination.clone(),
         at_tail: Some(1),
-        idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"fork"))?),
+        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"fork"))?,
     };
     let fork_result = stream.fork(forked.clone()).await?;
     let committed = crate::CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![crate::CommitCondition::Tail {
             path: destination.clone(),
             expected: 1,
@@ -117,7 +118,7 @@ fn snapshot_append(path: StreamPath, value: &'static [u8]) -> AppendRequest {
         path,
         records: vec![Bytes::from_static(value).into()],
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: crate::IdempotencyKey::unique(),
     }
 }
 
@@ -140,7 +141,7 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
             source: parent.clone(),
             destination: no_history.clone(),
             at_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     stream
@@ -152,7 +153,7 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
             source: root.clone(),
             destination: source.clone(),
             at_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     stream
@@ -161,13 +162,14 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
             source: source.clone(),
             destination: empty.clone(),
             at_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     stream
         .append(snapshot_append(source.clone(), b"before"))
         .await?;
     let request = crate::CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             crate::CommitCondition::Tail {
                 path: source.clone(),
@@ -235,7 +237,7 @@ async fn malformed_and_over_capacity_snapshots_leave_live_state_unchanged()
             path: StreamPath::new("snapshot/atomic")?,
             records: vec![(Bytes::from_static(b"kept")).into()],
             if_tail: None,
-            idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"kept"))?),
+            idempotency_key: IdempotencyKey::new(Bytes::from_static(b"kept"))?,
         })
         .await?;
     let valid = stream.encode_state().await;
@@ -397,7 +399,7 @@ async fn retained_facts_reject_impossible_receipts_records_and_phantom_payloads(
             path: StreamPath::new("inventory/path")?,
             records: vec![(Bytes::from_static(b"real")).into()],
             if_tail: Some(0),
-            idempotency_key: Some(key.clone()),
+            idempotency_key: key.clone(),
         })
         .await?;
     let mut state = stream.state.write().await;
@@ -484,7 +486,7 @@ async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(
             path: StreamPath::new("chronology/seed")?,
             records: vec![(Bytes::from_static(b"seed")).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let receipt = stream
@@ -493,7 +495,7 @@ async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(
             source: root,
             destination: first.clone(),
             at_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     stream
@@ -502,7 +504,7 @@ async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(
             source: first,
             destination: later.clone(),
             at_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     assert!(decode(&stream.encode_state().await).is_some());
@@ -538,7 +540,7 @@ async fn retained_fork_cannot_capture_a_future_source_head() -> Result<(), Strea
         path: source.clone(),
         records: vec![(Bytes::from_static(value)).into()],
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: crate::IdempotencyKey::unique(),
     };
     stream.append(append(b"before")).await?;
     stream
@@ -547,7 +549,7 @@ async fn retained_fork_cannot_capture_a_future_source_head() -> Result<(), Strea
             source: source.clone(),
             destination: destination.clone(),
             at_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     stream.append(append(b"future")).await?;
@@ -603,7 +605,7 @@ async fn snapshots_preserve_committed_timestamps() -> Result<(), StreamError> {
             path: path.clone(),
             records: vec![(Bytes::from_static(b"one")).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let timed = stream.encode_state().await;
@@ -627,7 +629,7 @@ async fn snapshots_preserve_committed_timestamps() -> Result<(), StreamError> {
             path: path.clone(),
             records: vec![(Bytes::from_static(b"two")).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let next = restored

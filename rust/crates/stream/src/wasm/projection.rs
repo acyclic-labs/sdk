@@ -74,7 +74,6 @@ pub fn decode_read_response(
     decoded_length: u64,
 ) -> Result<Vec<u8>, JsValue> {
     let response = wire::ReadResponse {
-        delivery_token: Default::default(),
         codec,
         data: data.into(),
         decoded_length,

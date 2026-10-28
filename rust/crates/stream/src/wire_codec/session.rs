@@ -1,6 +1,6 @@
 //! Session receive-credit accounting shared by transport adapters.
 
-use crate::{CommitId, RecordStream, StreamError, StreamProvider, wire};
+use crate::{CommitId, Record, StreamError, StreamProvider, wire};
 use prost::Message as _;
 
 mod resource;
@@ -183,23 +183,26 @@ pub async fn follow_records<P: StreamProvider + ?Sized>(
     provider: &P,
     follow: &wire::SessionFollow,
     cursor: &wire::SessionCursor,
-) -> Result<RecordStream, StreamError> {
+) -> Result<
+    impl futures::Stream<Item = Result<Record, StreamError>> + Unpin + crate::ProviderTask + use<P>,
+    StreamError,
+> {
     if follow.delivery != wire::SessionDelivery::All as i32 {
         return Err(StreamError::InvalidArgument);
     }
     let path = stream_path(&follow.resource)?;
-    match record_anchor(cursor)? {
-        Some(anchor) => {
-            provider
-                .follow_checked(path, cursor.next, anchor, crate::FollowFilter::default())
-                .await
-        }
-        None => {
-            provider
-                .follow(path, 0, crate::FollowFilter::default())
-                .await
-        }
-    }
+    let preceding = record_anchor(cursor)?;
+    Ok(crate::records_only(
+        provider
+            .follow(crate::FollowRequest {
+                path,
+                from: if preceding.is_some() { cursor.next } else { 0 },
+                preceding,
+                filter: crate::FollowFilter::default(),
+                progress: false,
+            })
+            .await?,
+    ))
 }
 
 /// Validates a peer's ALL/LATEST data against the next received cursor.

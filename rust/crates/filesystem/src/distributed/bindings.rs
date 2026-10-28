@@ -375,11 +375,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
             path,
             records: vec![acyclic_stream::OwnedBytes::from_static(AUTHORITY_RETIRED).into()],
             if_tail: Some(0),
-            idempotency_key: Some(placed_stream_key(
+            idempotency_key: placed_stream_key(
                 self.placement.key_scope(),
                 b"retire-authority",
                 &authority.into_bytes(),
-            )?),
+            )?,
         };
         match self.provider.append(request).await {
             Ok(acyclic_stream::AppendOutcome::Committed(_)) => Ok(()),

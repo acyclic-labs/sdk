@@ -5,7 +5,7 @@ use acyclic_native_runtime::NativeReadMeter;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitId, CommitOutcome, ForkReceipt, ForkRequest,
     IdempotencyObservation, NativeProviderFuture, NativeRecordStream, ReadRequest, RecordStream,
-    StreamBounds, StreamError,
+    StreamError,
 };
 use std::sync::{
     Arc,
@@ -33,10 +33,13 @@ impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
     ) -> std::result::Result<Option<IdempotencyObservation>, StreamError> {
         Err(self.ordinary_error())
     }
-    async fn tail(&self, _: StreamPath) -> std::result::Result<u64, StreamError> {
+    async fn head(
+        &self,
+        _: StreamPath,
+    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
         Err(self.ordinary_error())
     }
-    async fn bounds(&self, _: StreamPath) -> std::result::Result<StreamBounds, StreamError> {
+    async fn tail(&self, _: StreamPath) -> std::result::Result<u64, StreamError> {
         Err(self.ordinary_error())
     }
     async fn append(&self, _: AppendRequest) -> std::result::Result<AppendOutcome, StreamError> {
@@ -50,10 +53,8 @@ impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
     }
     async fn follow(
         &self,
-        _: StreamPath,
-        _: u64,
-        _filter: acyclic_stream::FollowFilter,
-    ) -> std::result::Result<RecordStream, StreamError> {
+        _request: acyclic_stream::FollowRequest,
+    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
         Err(self.ordinary_error())
     }
     async fn commit(&self, _: CommitRequest) -> std::result::Result<CommitOutcome, StreamError> {
@@ -71,13 +72,6 @@ impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, u64> {
         self.0.native_tail(path, meter)
-    }
-    fn native_bounds(
-        &self,
-        path: StreamPath,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, StreamBounds> {
-        self.0.native_bounds(path, meter)
     }
     fn native_read(
         &self,
@@ -178,10 +172,10 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     assert_eq!(native.receipt().authority_bytes_read, event_bytes);
     assert_eq!(native.receipt().source_bytes_read, event_bytes);
     let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
-    let bounds = bounds_with_work(&client, &publication.path, &mut work)
+    let tail = tail_result_with_work(&client, &publication.path, &mut work)
         .await?
         .map_err(|error| crate::store::operations::stream_error_with_work(error, &work))?;
-    assert_eq!(bounds.tail, 1);
+    assert_eq!(tail, 1);
     drop(page);
     drop(cursor);
     drop(io.into_custody()?);

@@ -11,7 +11,7 @@ async fn an_open_stream_holds_one_journal_descriptor() -> Result<(), Box<dyn std
             path: StreamPath::new("agents")?,
             records: vec![(Bytes::from_static(b"one")).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     // Appends, syncs and replay share the journal's single descriptor,
@@ -26,7 +26,7 @@ fn append(path: &str, tail: u64) -> Result<AppendRequest, Box<dyn std::error::Er
         path: StreamPath::new(path)?,
         records: vec![Bytes::from_static(b"record").into()],
         if_tail: Some(tail),
-        idempotency_key: None,
+        idempotency_key: crate::IdempotencyKey::unique(),
     })
 }
 

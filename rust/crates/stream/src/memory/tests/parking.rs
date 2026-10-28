@@ -1,4 +1,5 @@
 use super::*;
+use futures::TryFutureExt as _;
 use std::task::{Context, Waker};
 
 #[tokio::test]
@@ -11,7 +12,7 @@ async fn unpolled_streams_do_not_block_appends() {
                 path: path.clone(),
                 records: vec![(Bytes::from_static(b"seed")).into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await
             .unwrap()
@@ -21,17 +22,20 @@ async fn unpolled_streams_do_not_block_appends() {
         let mut follow = {
             let follow = if checked {
                 provider
-                    .follow_checked(
-                        path.clone(),
-                        1,
-                        seed.commit_id,
-                        crate::FollowFilter::default(),
-                    )
+                    .follow(crate::FollowRequest {
+                        path: path.clone(),
+                        from: 1,
+                        preceding: Some(seed.commit_id),
+                        filter: crate::FollowFilter::default(),
+                        progress: false,
+                    })
+                    .map_ok(crate::records_only)
                     .await
                     .unwrap()
             } else {
                 provider
-                    .follow(path.clone(), 0, crate::FollowFilter::default())
+                    .follow(crate::FollowRequest::new(path.clone(), 0))
+                    .map_ok(crate::records_only)
                     .await
                     .unwrap()
             };
@@ -51,7 +55,7 @@ async fn unpolled_streams_do_not_block_appends() {
                     path,
                     records: vec![(Bytes::from_static(b"next")).into()],
                     if_tail: Some(1),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 })
                 .await
                 .unwrap(),
@@ -75,13 +79,14 @@ async fn dropped_consumers_leave_no_queued_snapshot_reservation() {
                 path: path.clone(),
                 records: vec![(Bytes::from_static(b"seed")).into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await
             .unwrap();
         let mut follow = {
             provider
-                .follow(path, 0, crate::FollowFilter::default())
+                .follow(crate::FollowRequest::new(path, 0))
+                .map_ok(crate::records_only)
                 .await
                 .unwrap()
                 .map(|item| item.map(|_| ()))

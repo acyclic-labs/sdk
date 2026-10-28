@@ -1,8 +1,9 @@
 use super::*;
 use crate::{
     AppendOutcome, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
-    ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, StreamBounds,
+    ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest,
 };
+use futures::TryFutureExt as _;
 
 fn subscription(path: &str, latest: bool) -> wire::SessionFollow {
     wire::SessionFollow {
@@ -28,7 +29,7 @@ async fn status(memory: &MemoryStream, sequence: u64, attention: bool) -> Result
             path: StreamPath::new("status")?,
             records: vec![value(sequence, attention).encode_to_vec().into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     Ok(())
@@ -64,11 +65,11 @@ impl StreamProvider for Arc<Counted> {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         self.memory.inspect_idempotency(key).await
     }
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        self.memory.head(path).await
+    }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.memory.tail(path).await
-    }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.memory.bounds(path).await
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.memory.append(request).await
@@ -88,36 +89,13 @@ impl StreamProvider for Arc<Counted> {
     }
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        let status = path.as_str() == "status";
-        let counted = Arc::clone(self);
-        Ok(self
-            .memory
-            .follow(path, from, filter)
-            .await?
-            .inspect(move |_| {
-                if status {
-                    counted.pulled.fetch_add(1, Ordering::Relaxed);
-                    counted.changed.notify_one();
-                }
-            })
-            .boxed())
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
-        filter: crate::FollowFilter,
+        request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        let status = path.as_str() == "status";
+        let status = request.path.as_str() == "status";
         let counted = Arc::clone(self);
         Ok(self
             .memory
-            .follow_updates(path, from, preceding, filter)
+            .follow(request)
             .await?
             .inspect(move |_| {
                 if status {
@@ -149,11 +127,8 @@ async fn saturated_latest_conflates_only_ordinary_values_and_shares_healthy_all(
         )
         .await?;
     let mut full = client
-        .follow(
-            StreamPath::new("events")?,
-            1,
-            crate::FollowFilter::default(),
-        )
+        .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
+        .map_ok(crate::records_only)
         .await?;
     for (sent, sequence) in (1..=2).enumerate() {
         status(&memory, sequence, false).await?;

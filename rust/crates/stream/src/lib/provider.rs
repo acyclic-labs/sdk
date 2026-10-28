@@ -42,6 +42,8 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// Distinct provider sessions are distinct owners; backend leases remain
     /// responsible for exclusion across independently opened sessions.
     fn operation_claims(&self) -> &crate::OperationClaims;
+    /// Atomically observes accepted history, its last record, durable cut and fork origin.
+    async fn head(&self, path: StreamPath) -> Result<PathHead, StreamError>;
     /// Whether every mutation of this provider's storage shares these process
     /// claims. Remote sessions must leave this false, even with local caches.
     fn has_exclusive_process_owner(&self) -> bool {
@@ -81,8 +83,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     ) -> Result<Option<IdempotencyObservation>, StreamError>;
     /// Current next sequence.
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError>;
-    /// Atomically observes both ends of the retained replay window.
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError>;
     /// Observes accepted visibility and a confirmed durable prefix. Implementations
     /// with independent persistence report its watermark without awaiting a flush.
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
@@ -106,40 +106,13 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// Atomic immutable-prefix fork.
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError>;
     /// Opens a bounded finite read pinned to one immutable history snapshot.
+    /// Opening a missing path returns NotFound; a start beyond that snapshot's
+    /// tail returns OutOfRange. Neither refusal is deferred to the first item.
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError>;
-    /// Replays and then remains live without a handoff gap.
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError>;
-    /// Atomically checks the record at `from - 1` and subscribes after it. A missing
-    /// or changed anchor fails immediately; it must never wait for a future record.
-    /// History replacement during delivery must fail instead of joining histories.
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        let _ = (path, from, preceding, filter);
-        Err(StreamError::Unsupported)
-    }
-    /// Atomically opens a filtered follow with ordered skipped-prefix progress.
-    /// Progress must never pass an earlier matching record. Metadata-only wakes
-    /// belong to this stream; ordinary record-only follows remain indexed.
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<CommitId>,
-        filter: crate::FollowFilter,
-    ) -> Result<crate::FollowStream, StreamError> {
-        let _ = (path, from, preceding, filter);
-        Err(StreamError::Unsupported)
-    }
+    /// Replays and remains live without a handoff gap. The history fence is checked
+    /// atomically before subscription and on replacement. Ordered progress never
+    /// passes an earlier matching record; record-only follows retain indexed wakes.
+    async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError>;
 
     /// Traverses arbitrarily large direct-child sets without silently
     async fn children_page(
@@ -151,15 +124,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     }
     /// Executes one all-or-nothing optimistic commit.
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError>;
-    /// Executes one coordinated commit only if the provider's trusted clock is
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        let _ = (request, deadline_unix_millis);
-        Err(StreamError::Unsupported)
-    }
     /// Reads one complete immutable successful envelope.
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError>;
     /// Canonical inspection funded by the original native work owner.
@@ -191,17 +155,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         path: StreamPath,
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, u64> {
-        let _ = path;
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
-    }
-
-    /// Canonical retained-window observation on the original ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_bounds(
-        &self,
-        path: StreamPath,
-        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, StreamBounds> {
         let _ = path;
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }

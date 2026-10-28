@@ -147,12 +147,18 @@ mod tests {
                     path: path.clone(),
                     records: vec![Bytes::copy_from_slice(value).into(); count],
                     if_tail: Some(0),
-                    idempotency_key: None,
+                    idempotency_key: acyclic_stream::IdempotencyKey::new(
+                        format!("interrupt/{id}").into_bytes(),
+                    )?,
                 })
                 .await?;
             inner.follows.insert(
                 id.into(),
-                provider.follow(path, 0, FollowFilter::default()).await?,
+                acyclic_stream::records_only(
+                    provider
+                        .follow(acyclic_stream::FollowRequest::new(path, 0))
+                        .await?,
+                ),
             );
         }
         let cancellation = CancellationToken::new();

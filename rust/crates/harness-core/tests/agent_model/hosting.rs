@@ -304,17 +304,17 @@ impl StreamProvider for Evidence {
     ) -> std::result::Result<Option<acyclic_stream::IdempotencyObservation>, StreamError> {
         self.inner.inspect_idempotency(key).await
     }
+    async fn head(
+        &self,
+        path: acyclic_stream::StreamPath,
+    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
+        self.inner.head(path).await
+    }
     async fn tail(
         &self,
         path: acyclic_stream::StreamPath,
     ) -> std::result::Result<u64, StreamError> {
         self.inner.tail(path).await
-    }
-    async fn bounds(
-        &self,
-        path: acyclic_stream::StreamPath,
-    ) -> std::result::Result<acyclic_stream::StreamBounds, StreamError> {
-        self.inner.bounds(path).await
     }
     async fn append(
         &self,
@@ -338,11 +338,9 @@ impl StreamProvider for Evidence {
     }
     async fn follow(
         &self,
-        path: acyclic_stream::StreamPath,
-        from: u64,
-        filter: acyclic_stream::FollowFilter,
-    ) -> std::result::Result<acyclic_stream::RecordStream, StreamError> {
-        self.inner.follow(path, from, filter).await
+        request: acyclic_stream::FollowRequest,
+    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
+        self.inner.follow(request).await
     }
     async fn commit(
         &self,

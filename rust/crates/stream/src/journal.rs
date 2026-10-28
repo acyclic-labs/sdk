@@ -12,15 +12,46 @@ pub(crate) enum Command {
     Commit(CommitRequest),
 }
 
+#[cfg(any(
+    feature = "postgres",
+    all(feature = "wasm-journal", target_arch = "wasm32")
+))]
+pub(crate) enum Outcome {
+    Append(crate::AppendOutcome),
+    Fork(crate::ForkReceipt),
+    Commit(crate::CommitOutcome),
+}
+
 pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<(), StreamError> {
     match command {
         Command::Append(request) => provider.append(request).await.map(|_| ()),
         Command::Fork(request) => provider.fork(request).await.map(|_| ()),
-        Command::Commit(request) => provider.commit(request).await.map(|_| ()),
+        Command::Commit(mut request) => {
+            // This command already passed its publication deadline. Recovery
+            // installs that accepted decision rather than admitting a new one.
+            request.deadline_unix_millis = None;
+            provider.commit(request).await.map(|_| ())
+        }
     }
 }
 
 impl Command {
+    #[cfg(any(
+        all(feature = "postgres", not(target_arch = "wasm32")),
+        all(
+            any(feature = "wasm", feature = "wasm-journal"),
+            target_arch = "wasm32"
+        )
+    ))]
+    pub(crate) async fn has_replay(&self, provider: &MemoryStream) -> Result<bool, StreamError> {
+        let key = match self {
+            Self::Append(request) => &request.idempotency_key,
+            Self::Fork(request) => &request.idempotency_key,
+            Self::Commit(request) => &request.idempotency_key,
+        };
+        provider.has_replay(key).await
+    }
+
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn validated(mut self) -> Result<Self, StreamError> {
         match &mut self {
@@ -125,16 +156,17 @@ mod tests {
             path: crate::StreamPath::new("codec/events")?,
             records: vec![(Bytes::from_static(b"one")).into(), (Bytes::new()).into()],
             if_tail: Some(0),
-            idempotency_key: Some(crate::IdempotencyKey::new(Bytes::from_static(b"key"))?),
+            idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(b"key"))?,
         });
         let fork = Command::Fork(ForkRequest {
             exclude: Vec::new(),
             source: crate::StreamPath::new("codec/events")?,
             destination: crate::StreamPath::new("codec/fork")?,
             at_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         });
         let commit = Command::Commit(CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![crate::CommitCondition::Tail {
                 path: crate::StreamPath::new("codec/events")?,
                 expected: 2,
@@ -169,7 +201,7 @@ mod tests {
             path: crate::StreamPath::new("events")?,
             records: vec![(Bytes::from_static(&[1])).into()],
             if_tail: None,
-            idempotency_key: Some(crate::IdempotencyKey::new(Bytes::from_static(b"first"))?),
+            idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(b"first"))?,
         };
         let encoded = Command::Append(request.clone()).encode_to_vec();
         replay(&provider, decode_command(&encoded)?).await?;

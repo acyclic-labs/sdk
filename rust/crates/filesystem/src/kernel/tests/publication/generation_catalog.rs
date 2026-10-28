@@ -91,13 +91,13 @@ mod probe {
             self.read_request();
             self.inner.inspect_idempotency(key).await
         }
+        async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+            self.read_request();
+            self.inner.head(path).await
+        }
         async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
             self.read_request();
             self.inner.tail(path).await
-        }
-        async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-            self.read_request();
-            self.inner.bounds(path).await
         }
         async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
             self.append_request();
@@ -113,12 +113,10 @@ mod probe {
         }
         async fn follow(
             &self,
-            path: StreamPath,
-            from: u64,
-            filter: FollowFilter,
-        ) -> Result<RecordStream, StreamError> {
+            request: acyclic_stream::FollowRequest,
+        ) -> Result<acyclic_stream::FollowStream, StreamError> {
             self.read_request();
-            self.inner.follow(path, from, filter).await
+            self.inner.follow(request).await
         }
         async fn children_page(
             &self,
@@ -151,14 +149,6 @@ mod probe {
         ) -> NativeProviderFuture<'_, u64> {
             self.read_request();
             self.inner.native_tail(path, meter)
-        }
-        fn native_bounds(
-            &self,
-            path: StreamPath,
-            meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-        ) -> NativeProviderFuture<'_, StreamBounds> {
-            self.read_request();
-            self.inner.native_bounds(path, meter)
         }
         fn native_read(
             &self,
@@ -836,6 +826,7 @@ async fn generation_catalog_cached_locators_remain_atomically_fenced() -> TestRe
             let provider = store.provider();
             let outcome = provider
                 .commit(CommitRequest {
+                    deadline_unix_millis: None,
                     conditions: vec![CommitCondition::Tail {
                         path: locator.clone(),
                         expected: 1,

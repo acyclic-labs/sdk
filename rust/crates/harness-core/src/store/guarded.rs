@@ -165,7 +165,7 @@ impl<P: StreamProvider + ?Sized> StreamAggregate<P> {
         transient: &mut crate::wire_codec::CodecQuota<'_, '_>,
     ) -> Result<bool> {
         async {
-            let request = publication
+            let mut request = publication
                 .request(
                     &self.client,
                     key.take().ok_or_else(|| {
@@ -178,6 +178,7 @@ impl<P: StreamProvider + ?Sized> StreamAggregate<P> {
                     transient.work(),
                 )
                 .await?;
+            publication.verify_request(&request.0, request.1.work())?;
             let (outcome, retained) = crate::distributed::commit(
                 request,
                 &self.client,

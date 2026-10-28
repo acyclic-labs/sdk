@@ -10,8 +10,7 @@
 
 use super::{Failure, Fetched, ListedChild, Op, Outcome, Reader};
 use acyclic_stream::{
-    ChildrenPageRequest, FollowFilter, ReadRequest, Record, RecordStream, StreamError, StreamPath,
-    StreamProvider,
+    ChildrenPageRequest, ReadRequest, Record, RecordStream, StreamError, StreamPath, StreamProvider,
 };
 use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -126,15 +125,13 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             let anchor = reader.follow_anchor(&path, from);
             let provider = Arc::clone(&self.provider);
             let open = async move {
-                let filter = FollowFilter::default();
-                let opened = match anchor {
-                    Some(preceding) => {
-                        provider
-                            .follow_checked(path.clone(), from, preceding, filter)
-                            .await
-                    }
-                    None => provider.follow(path.clone(), from, filter).await,
-                };
+                let opened = provider
+                    .follow(acyclic_stream::FollowRequest {
+                        preceding: anchor,
+                        ..acyclic_stream::FollowRequest::new(path.clone(), from)
+                    })
+                    .await
+                    .map(acyclic_stream::records_only);
                 (path, from, opened)
             };
             self.opening.push(Box::pin(async move {

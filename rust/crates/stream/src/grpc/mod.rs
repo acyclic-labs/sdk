@@ -20,13 +20,13 @@ use crate::wire_codec::{
     append_from_wire, append_outcome_from_wire, append_outcome_to_wire, commit_from_wire,
     commit_id, commit_outcome_from_wire, commit_outcome_to_wire, commit_to_wire,
     envelope_from_wire, envelope_to_wire, fork_receipt_to_wire, observation_from_wire,
-    observation_wire, optional_key, path, read_response_wire, record_wire,
+    observation_wire, path, read_response_wire, record_wire,
 };
 use crate::{
     AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
     CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamBounds, StreamError,
-    StreamPath, StreamProvider, wire,
+    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamPath,
+    StreamProvider, wire,
 };
 pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
@@ -81,19 +81,13 @@ pub struct Client {
 /// Thin server adapter from the canonical wire service to one provider.
 pub struct Service<P> {
     provider: Arc<P>,
-    #[cfg(test)]
-    test_delivery: Option<(Bytes, Arc<std::sync::atomic::AtomicUsize>)>,
 }
 
 impl<P> Service<P> {
     /// Binds the generated server to one semantic provider.
     #[must_use]
     pub fn new(provider: Arc<P>) -> Self {
-        Self {
-            provider,
-            #[cfg(test)]
-            test_delivery: None,
-        }
+        Self { provider }
     }
 }
 
@@ -101,8 +95,6 @@ impl<P> Clone for Service<P> {
     fn clone(&self) -> Self {
         Self {
             provider: Arc::clone(&self.provider),
-            #[cfg(test)]
-            test_delivery: self.test_delivery.clone(),
         }
     }
 }

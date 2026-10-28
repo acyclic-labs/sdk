@@ -20,8 +20,7 @@ impl StreamProvider for LocalStream {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, ()> {
         let stream = self.clone();
-        crate::NativeProviderFuture::new(&Arc::clone(&meter), async move {
-            let work = crate::memory::Work::new(meter)?;
+        crate::native::Work::start(meter, |work| async move {
             let stream = Self {
                 work: Some(Arc::clone(&work)),
                 ..stream
@@ -39,7 +38,7 @@ impl StreamProvider for LocalStream {
         &self,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<crate::NativeProviderFuture<'_, ()>> {
-        let work = crate::memory::Work::new(Arc::clone(&meter))?;
+        let work = crate::native::Work::new(Arc::clone(&meter))?;
         // This ticket survives original cancellation and excludes competing
         // work from consuming the phase's final durability allowance.
         work.prepare_durability(1)?;
@@ -61,37 +60,25 @@ impl StreamProvider for LocalStream {
             .await?
     }
 
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.visible(self.inner.provider.tail(path)).await?
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        self.accepted(async {
+            let mut head = self.inner.provider.head(path.clone()).await?;
+            head.durable = self.durable_tail_for_accepted(path, head.tail)?;
+            Ok(head)
+        })
+        .await?
     }
 
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.visible(self.inner.provider.bounds(path)).await?
+    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
+        self.visible(self.inner.provider.tail(path)).await?
     }
 
     async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
         self.accepted(async {
             let accepted = self.inner.provider.tail(path.clone()).await?;
-            // Both frame counters are published before publication is released.
-            // Do not borrow the journal: compaction may hold it during device I/O.
-            let synced = self
-                .inner
-                .synced
-                .borrow()
-                .flushed
-                .is_some_and(|cut| cut >= *self.inner.revision.borrow());
-            let mut tails = self
-                .inner
-                .durable_tails
-                .lock()
-                .map_err(|_| StreamError::Unavailable)?;
-            let durable = tails.entry(path).or_default();
-            if synced {
-                *durable = (*durable).max(accepted);
-            }
             Ok(crate::StreamWatermarks {
                 accepted,
-                durable: *durable,
+                durable: self.durable_tail_for_accepted(path, accepted)?,
             })
         })
         .await?
@@ -193,31 +180,20 @@ impl StreamProvider for LocalStream {
 
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.follow_from(path, from, None, filter).await
-    }
-
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: crate::CommitId,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.follow_from(path, from, Some(preceding), filter).await
-    }
-
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
-        filter: crate::FollowFilter,
+        request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.progress_from(path, from, preceding, filter).await
+        let crate::FollowRequest {
+            path,
+            from,
+            preceding,
+            filter,
+            progress,
+        } = request;
+        if progress {
+            self.progress_from(path, from, preceding, filter).await
+        } else {
+            self.follow_from(path, from, preceding, filter).await
+        }
     }
 
     async fn children_page(
@@ -230,13 +206,6 @@ impl StreamProvider for LocalStream {
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         commit::<true>(self, request, None).await
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        commit::<true>(self, request, Some(deadline)).await
     }
 
     async fn read_commit(
@@ -254,18 +223,6 @@ impl StreamProvider for LocalStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::new(&original, async move {
             self.visible(self.inner.provider.native_tail(path, meter))
-                .await
-                .unwrap_or_else(|error| Ok(Err(error)))
-        })
-    }
-    fn native_bounds(
-        &self,
-        path: StreamPath,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, StreamBounds> {
-        let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(&original, async move {
-            self.visible(self.inner.provider.native_bounds(path, meter))
                 .await
                 .unwrap_or_else(|error| Ok(Err(error)))
         })
@@ -404,6 +361,32 @@ fn describe_commit(request: &CommitRequest) {
 }
 
 impl LocalStream {
+    // Called under accepted's publication guard after observing this path's tail.
+    fn durable_tail_for_accepted(
+        &self,
+        path: StreamPath,
+        accepted: u64,
+    ) -> Result<u64, StreamError> {
+        // Both frame counters are published before publication is released.
+        // Do not borrow the journal: compaction may hold it during device I/O.
+        let synced = self
+            .inner
+            .synced
+            .borrow()
+            .flushed
+            .is_some_and(|cut| cut >= *self.inner.revision.borrow());
+        let mut tails = self
+            .inner
+            .durable_tails
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?;
+        let durable = tails.entry(path).or_default();
+        if synced {
+            *durable = (*durable).max(accepted);
+        }
+        Ok(*durable)
+    }
+
     fn receipt_for_flushed_snapshot(
         &self,
         path: StreamPath,

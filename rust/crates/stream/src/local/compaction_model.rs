@@ -1,9 +1,11 @@
 use super::*;
 use crate::verification::block_on;
+use futures::TryFutureExt as _;
 use std::task::{Context, Poll};
 
 fn request() -> CommitRequest {
     CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             crate::CommitCondition::Tail {
                 path: StreamPath::new("agents/a").unwrap(),
@@ -41,7 +43,7 @@ pub(crate) fn verify(fault: u8) {
             path: path.clone(),
             records: vec![crate::OwnedBytes::from_static(b"seed").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
         let AppendOutcome::Committed(seed) = seeded else {
@@ -51,10 +53,18 @@ pub(crate) fn verify(fault: u8) {
             block_on(provider.watermarks(path.clone())).unwrap().durable,
             1
         );
-        let mut records =
-            block_on(provider.follow(path.clone(), 1, crate::FollowFilter::default())).unwrap();
-        let mut cancelled =
-            block_on(provider.follow(path.clone(), 1, crate::FollowFilter::default())).unwrap();
+        let mut records = block_on(
+            provider
+                .follow(crate::FollowRequest::new(path.clone(), 1))
+                .map_ok(crate::records_only),
+        )
+        .unwrap();
+        let mut cancelled = block_on(
+            provider
+                .follow(crate::FollowRequest::new(path.clone(), 1))
+                .map_ok(crate::records_only),
+        )
+        .unwrap();
         let (_, wake) = crate::verification::probe();
         assert!(poll(records.next(), &wake).is_pending());
         assert!(poll(cancelled.next(), &wake).is_pending());
@@ -110,12 +120,15 @@ pub(crate) fn verify(fault: u8) {
         // Poll once at the known held cut; no timeout or repeated-poll guess.
         let record = poll(records.next(), &wake);
         let opened = poll(
-            provider.follow_checked(
-                path.clone(),
-                1,
-                seed.commit_id,
-                crate::FollowFilter::default(),
-            ),
+            provider
+                .follow(crate::FollowRequest {
+                    path: path.clone(),
+                    from: 1,
+                    preceding: Some(seed.commit_id),
+                    filter: crate::FollowFilter::default(),
+                    progress: false,
+                })
+                .map_ok(crate::records_only),
             &wake,
         );
         let marks = poll(provider.watermarks(path.clone()), &wake);
@@ -143,7 +156,7 @@ pub(crate) fn verify(fault: u8) {
             path: StreamPath::new("agents/c").unwrap(),
             records: vec![crate::OwnedBytes::from_static(b"later").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })))
         .unwrap();
         assert!(

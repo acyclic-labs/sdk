@@ -96,7 +96,7 @@ impl LocalInner {
         &self,
         file: &acyclic_native_runtime::FileLease,
         durability: LocalDurability,
-        work: Option<&crate::memory::Work>,
+        work: Option<&crate::native::Work>,
     ) -> Option<(u64, u64, u64)> {
         #[cfg(test)]
         {

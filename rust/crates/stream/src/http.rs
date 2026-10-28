@@ -33,15 +33,6 @@ pub struct HttpStream {
     session_verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
 }
 impl HttpStream {
-    /// Acknowledges an opaque hosted transport receipt.
-    pub async fn acknowledge_delivery(&self, delivery_token: Bytes) -> Result<(), StreamError> {
-        self.request(
-            "delivery/acknowledge",
-            wire::AcknowledgeDeliveryRequest { delivery_token }.encode_to_vec(),
-        )
-        .await?;
-        Ok(())
-    }
     /// Creates an HTTPS client; loopback HTTP is permitted for local test servers.
     pub fn new(
         endpoint: &str,
@@ -222,50 +213,32 @@ impl HttpStream {
         http_validation::validate(route, &value).map_err(|_| StreamError::Unavailable)?;
         Ok(value)
     }
-    async fn commit_response(&self, value: &Value) -> Result<CommitOutcome, StreamError> {
+    fn commit_response(value: &Value) -> Result<CommitOutcome, StreamError> {
         if value["ok"] == true {
-            let id = parse_id(field(value, "commitId")?)?;
-            let envelope = if let Some(envelope) = value.get("envelope") {
-                let envelope = parse_envelope(envelope)?;
-                if envelope.commit_id != id {
-                    return Err(StreamError::Unavailable);
-                }
-                envelope
-            } else {
-                // Published compact-only HTTP servers need commit-read access.
-                self.read_commit(id).await?
+            let receipt = crate::CommitReceipt {
+                commit_id: parse_id(field(value, "commitId")?)?,
+                committed_at_micros: parse_u64(field(value, "committedAtMicros")?)?,
+                appends: field(value, "appends")?
+                    .as_array()
+                    .ok_or(StreamError::Unavailable)?
+                    .iter()
+                    .map(|range| {
+                        Ok(crate::AppendRange {
+                            path: parse_path(field(range, "path")?)?,
+                            start: parse_u64(field(range, "start")?)?,
+                            tail: parse_u64(field(range, "tail")?)?,
+                        })
+                    })
+                    .collect::<Result<_, StreamError>>()?,
+                forks: field(value, "forks")?
+                    .as_array()
+                    .ok_or(StreamError::Unavailable)?
+                    .iter()
+                    .map(parse_fork)
+                    .collect::<Result<_, _>>()?,
             };
-            let tails = value["tails"].as_object().ok_or(StreamError::Unavailable)?;
-            let forks = value["forks"].as_array().ok_or(StreamError::Unavailable)?;
-            let mut actual_tails = std::collections::BTreeMap::new();
-            let mut actual_forks = Vec::new();
-            for mutation in &envelope.mutations {
-                match mutation {
-                    CommittedMutation::Append(append) => {
-                        actual_tails.insert(append.path.to_string(), append.tail);
-                    }
-                    CommittedMutation::Fork(fork) => {
-                        actual_forks.push((fork.destination.to_string(), fork.tail));
-                    }
-                }
-            }
-            let reported_tails = tails
-                .iter()
-                .map(|(path, tail)| Ok((path.clone(), parse_u64(tail)?)))
-                .collect::<Result<std::collections::BTreeMap<_, _>, StreamError>>()?;
-            let reported_forks = forks
-                .iter()
-                .map(|fork| {
-                    Ok((
-                        parse_string(&fork["path"])?.to_owned(),
-                        parse_u64(&fork["tail"])?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, StreamError>>()?;
-            if reported_tails != actual_tails || reported_forks != actual_forks {
-                return Err(StreamError::Unavailable);
-            }
-            Ok(CommitOutcome::Committed(envelope))
+            receipt.validate().map_err(|_| StreamError::Unavailable)?;
+            Ok(CommitOutcome::Committed(receipt))
         } else {
             let conflicts = value["conflicts"]
                 .as_array()
@@ -273,7 +246,9 @@ impl HttpStream {
                 .iter()
                 .map(|value| {
                     let path = parse_path(field(value, "path")?)?;
-                    if value["expectedAbsent"] == true {
+                    if value["expectedPresent"] == true {
+                        Ok(CommitConflict::Missing { path })
+                    } else if value["expectedAbsent"] == true {
                         Ok(CommitConflict::Exists { path })
                     } else if let Some(expected) = value.get("expectedCommitId") {
                         Ok(CommitConflict::Head {
@@ -295,16 +270,6 @@ impl HttpStream {
             }
             Ok(CommitOutcome::Conflict(conflicts))
         }
-    }
-    async fn commit_request(
-        &self,
-        request: CommitRequest,
-        deadline: Option<u64>,
-    ) -> Result<CommitOutcome, StreamError> {
-        let mut wire = wire_codec::commit_to_wire(&request);
-        wire.deadline_unix_millis = deadline;
-        let response = self.request("commit", wire.encode_to_vec()).await?;
-        self.commit_response(&response).await
     }
 }
 
@@ -342,9 +307,7 @@ impl StreamProvider for HttpStream {
         let outcome = match parse_string(&outcome["type"])? {
             "append" => IdempotencyOutcome::Append(parse_append(&outcome["outcome"])?),
             "fork" => IdempotencyOutcome::Fork(parse_fork(&outcome["receipt"])?),
-            "commit" => {
-                IdempotencyOutcome::Commit(self.commit_response(&outcome["outcome"]).await?)
-            }
+            "commit" => IdempotencyOutcome::Commit(parse_envelope(&outcome["outcome"])?),
             _ => return Err(StreamError::Unavailable),
         };
         Ok(Some(IdempotencyObservation {
@@ -353,6 +316,40 @@ impl StreamProvider for HttpStream {
             outcome,
         }))
     }
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        let value = self
+            .request(
+                "head",
+                wire::HeadRequest {
+                    path: path.to_string(),
+                }
+                .encode_to_vec(),
+            )
+            .await?;
+        let head = crate::PathHead {
+            tail: parse_u64(field(&value, "tail")?)?,
+            last: value
+                .get("last")
+                .filter(|last| !last.is_null())
+                .map(parse_record)
+                .transpose()?,
+            durable: parse_u64(field(&value, "durable")?)?,
+            origin: value
+                .get("origin")
+                .filter(|origin| !origin.is_null())
+                .map(|origin| -> Result<crate::ForkOrigin, StreamError> {
+                    Ok(crate::ForkOrigin {
+                        source: parse_path(field(origin, "source")?)?,
+                        forked_at: parse_u64(field(origin, "forkedAt")?)?,
+                        commit_id: parse_id(field(origin, "commitId")?)?,
+                    })
+                })
+                .transpose()?,
+        };
+        head.validate()?;
+        Ok(head)
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         parse_u64(
             &self
@@ -366,11 +363,6 @@ impl StreamProvider for HttpStream {
                 )
                 .await?,
         )
-    }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        Ok(StreamBounds {
-            tail: self.tail(path).await?,
-        })
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         self.session_client()?.watermarks(path).await
@@ -397,9 +389,7 @@ impl StreamProvider for HttpStream {
             source: source.to_string(),
             destination: destination.to_string(),
             at_tail: request.at_tail,
-            idempotency_key: request
-                .idempotency_key
-                .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
+            idempotency_key: bytes::Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
         };
         let result = parse_fork(&self.request("fork", wire.encode_to_vec()).await?)?;
         if result.source != source || result.destination != destination {
@@ -413,33 +403,9 @@ impl StreamProvider for HttpStream {
     }
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.session_client()?.follow(path, from, filter).await
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
-        filter: crate::FollowFilter,
+        request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.session_client()?
-            .follow_updates(path, from, preceding, filter)
-            .await
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.session_client()?
-            .follow_checked(path, from, preceding, filter)
-            .await
+        self.session_client()?.follow(request).await
     }
 
     async fn children_page(
@@ -449,14 +415,9 @@ impl StreamProvider for HttpStream {
         self.session_client()?.children_page(request).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.commit_request(request, None).await
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.commit_request(request, Some(deadline)).await
+        let wire = wire_codec::commit_to_wire(&request);
+        let response = self.request("commit", wire.encode_to_vec()).await?;
+        Self::commit_response(&response)
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let value = self

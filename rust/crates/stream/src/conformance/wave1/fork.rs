@@ -44,7 +44,7 @@ pub(super) async fn append<P: StreamProvider + ?Sized>(
                 path: target.clone(),
                 records: vec![OwnedBytes::from_static(value).into()],
                 if_tail: Some(tail),
-                idempotency_key: Some(key(history, label)?),
+                idempotency_key: key(history, label)?,
             })
             .await,
     )?;
@@ -66,6 +66,22 @@ pub(super) async fn absent<P: StreamProvider + ?Sized>(
             source,
         )),
     }
+}
+
+pub(super) async fn facts<P: StreamProvider + ?Sized>(
+    history: &History<'_, P>,
+    receipt: &crate::CommitReceipt,
+) -> Result<crate::CommittedEnvelope, Failure> {
+    let envelope = history.result(
+        "read_committed_facts",
+        history.provider.read_commit(receipt.commit_id).await,
+    )?;
+    history.check(
+        "committed_receipt",
+        Invariant::CompositionReceipt,
+        receipt.matches_envelope(&envelope),
+    )?;
+    Ok(envelope)
 }
 
 pub(super) async fn values<P: StreamProvider + ?Sized>(
@@ -261,7 +277,7 @@ pub(super) async fn subtree<P: StreamProvider + ?Sized>(
         source: history.path.clone(),
         destination: destination.clone(),
         at_tail: Some(1),
-        idempotency_key: Some(history.key.clone()),
+        idempotency_key: history.key.clone(),
     };
     let receipt = history.result("fork_subtree", history.provider.fork(request.clone()).await)?;
     history.check(
@@ -297,6 +313,7 @@ pub(super) async fn composed<P: StreamProvider + ?Sized>(
     let destination = prepare(history).await?;
     let branch = path(history, "/branch")?;
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Tail {
                 path: history.path.clone(),
@@ -333,17 +350,14 @@ pub(super) async fn composed<P: StreamProvider + ?Sized>(
         "composed_fork",
         history.provider.commit(request.clone()).await,
     )?;
-    let CommitOutcome::Committed(envelope) = &outcome else {
+    let CommitOutcome::Committed(receipt) = &outcome else {
         return history.check("composed_fork", Invariant::PreCommitCut, false);
     };
-    let retained = history.result(
-        "read_composed_envelope",
-        history.provider.read_commit(envelope.commit_id).await,
-    )?;
+    let retained = facts(history, receipt).await?;
     history.check(
         "composed_envelope",
         Invariant::CompositionReceipt,
-        retained == *envelope && retained.mutations.len() == 3,
+        retained.mutations.len() == 3,
     )?;
     values(
         history,
@@ -370,6 +384,6 @@ pub(super) async fn composed<P: StreamProvider + ?Sized>(
         replay == outcome,
     )?;
     history
-        .require_recovery(IdempotencyOutcome::Commit(outcome))
+        .require_recovery(IdempotencyOutcome::Commit(retained))
         .await
 }

@@ -15,7 +15,8 @@ use acyclic_harness_core::{
     preset::Preset,
     tool::{JsonToolProjection, Tool, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult},
 };
-use acyclic_stream::{BoxProviderStream, FollowFilter, session::Client};
+use acyclic_stream::{BoxProviderStream, session::Client};
+use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 type Objects = crate::conformance::ObjectStore;
@@ -264,7 +265,10 @@ impl Endpoint for Embedded {
             let provider = self.provider();
             let from = provider.tail(path.clone()).await?;
             let driving = async {
-                let mut input = provider.follow(path, from, FollowFilter::default()).await?;
+                let mut input = provider
+                    .follow(acyclic_stream::FollowRequest::new(path, from))
+                    .map_ok(acyclic_stream::records_only)
+                    .await?;
                 input.try_next().await?.ok_or("spawn inbox follow ended")?;
                 self.server.drain(parent).await?;
                 futures::future::pending::<Result<Bytes>>().await

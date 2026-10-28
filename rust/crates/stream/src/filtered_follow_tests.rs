@@ -1,5 +1,6 @@
 use crate::*;
 use futures::StreamExt;
+use futures::TryFutureExt as _;
 use std::{
     sync::{
         Arc,
@@ -14,7 +15,13 @@ pub(crate) async fn qualify_progress(provider: &impl StreamProvider) -> TestResu
     let path = StreamPath::new("filtered")?;
     let first = append(provider, record("z", "alice")?).await?;
     let mut updates = provider
-        .follow_updates(path.clone(), 1, Some(first), filter()?)
+        .follow(crate::FollowRequest {
+            path: path.clone(),
+            from: 1,
+            preceding: Some(first),
+            filter: filter()?,
+            progress: true,
+        })
         .await?;
     assert!(futures::poll!(updates.next()).is_pending());
     let skipped = append(provider, record("z", "alice")?).await?;
@@ -35,7 +42,7 @@ pub(crate) async fn qualify_progress(provider: &impl StreamProvider) -> TestResu
             record("a", "alice")?,
         ],
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: crate::IdempotencyKey::unique(),
     };
     provider.append(request).await?;
     for expected in [4, 6] {
@@ -59,7 +66,13 @@ async fn qualify_resume(
 ) -> TestResult {
     // A checked resume at a skipped cut must lead to exactly the same match.
     let mut resumed = provider
-        .follow_updates(path.clone(), next, Some(preceding), filter()?)
+        .follow(crate::FollowRequest {
+            path: path.clone(),
+            from: next,
+            preceding: Some(preceding),
+            filter: filter()?,
+            progress: true,
+        })
         .await?;
     for source in [updates, &mut resumed] {
         assert!(
@@ -69,12 +82,13 @@ async fn qualify_resume(
     }
     assert!(matches!(
         provider
-            .follow_updates(
-                path.clone(),
-                next,
-                Some(CommitId::from_bytes([0x55; 32])),
-                filter()?
-            )
+            .follow(crate::FollowRequest {
+                path: path.clone(),
+                from: next,
+                preceding: Some(CommitId::from_bytes([0x55; 32])),
+                filter: filter()?,
+                progress: true
+            })
             .await,
         Err(StreamError::PrefixNotRetained)
     ));
@@ -136,7 +150,7 @@ async fn append(
             path: StreamPath::new("filtered")?,
             records: vec![body],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?
     else {
@@ -149,16 +163,18 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
     let path = StreamPath::new("filtered")?;
     let first = append(provider, record("z", "alice")?).await?;
     let mut follow = provider
-        .follow_checked(
-            path.clone(),
-            1,
-            first,
-            if omit {
+        .follow(crate::FollowRequest {
+            path: path.clone(),
+            from: 1,
+            preceding: Some(first),
+            filter: if omit {
                 FollowFilter::default()
             } else {
                 filter()?
             },
-        )
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await?;
     let probe = Arc::new(Wakes::default());
     let waker = Waker::from(probe.clone());
@@ -187,7 +203,14 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
     assert_eq!(matched.sequence, 3);
     assert_eq!(matched.headers, selected.headers);
     let mut resumed = provider
-        .follow_checked(path.clone(), 3, preceding, filter()?)
+        .follow(crate::FollowRequest {
+            path: path.clone(),
+            from: 3,
+            preceding: Some(preceding),
+            filter: filter()?,
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await?;
     assert_eq!(resumed.next().await.ok_or("resume ended")??, matched);
     let mut read = provider
@@ -223,7 +246,7 @@ async fn retry_headers(provider: &impl StreamProvider) -> TestResult {
         path: path.clone(),
         records: vec![record("a", "alice")?],
         if_tail: None,
-        idempotency_key: Some(IdempotencyKey::new("append")?),
+        idempotency_key: IdempotencyKey::new("append")?,
     };
     let outcome = provider.append(request.clone()).await?;
     assert_eq!(provider.append(request.clone()).await?, outcome);
@@ -237,6 +260,7 @@ async fn retry_headers(provider: &impl StreamProvider) -> TestResult {
     }
     for fork in [false, true] {
         let request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![if fork {
                 CommitCondition::Absent {
                     path: StreamPath::new("header-fork")?,

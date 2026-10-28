@@ -42,15 +42,8 @@ fn check_command_size(input: &[u8]) -> Result<(), JsValue> {
 
 async fn dispatch_commit(provider: &dyn StreamProvider, input: &[u8]) -> Result<Vec<u8>, JsValue> {
     let request = decode::<wire::CommitRequest>(input)?;
-    let deadline_unix_millis = request.deadline_unix_millis;
     let request = wire_codec::commit_from_wire(request).map_err(js_error)?;
-    let response = match deadline_unix_millis {
-        Some(deadline) => provider
-            .commit_before(request, deadline)
-            .await
-            .map_err(js_error)?,
-        None => provider.commit(request).await.map_err(js_error)?,
-    };
+    let response = provider.commit(request).await.map_err(js_error)?;
     Ok(wire_codec::commit_outcome_to_wire(response).encode_to_vec())
 }
 
@@ -120,6 +113,9 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
     let result = check_command_size(input)
         .map_err(|_| StreamError::LimitExceeded)
         .and_then(|_| match kind {
+            "head" => wire::HeadRequest::decode(input)
+                .map_err(|_| StreamError::InvalidArgument)
+                .and_then(|request| wire_codec::path(request.path).map(|_| ())),
             "tail" => wire::TailRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(|request| wire_codec::path(request.path).map(|_| ())),
@@ -168,7 +164,7 @@ mod http {
             "inspect_idempotency" => "idempotency/inspect",
             "read_commit" => "commits/read",
             "children_page" => "children/page",
-            "append" | "fork" | "commit" => operation,
+            "head" | "append" | "fork" | "commit" => operation,
             _ => return Err("invalid_argument"),
         };
         match crate::http_response::value(route, input)? {
@@ -304,6 +300,9 @@ mod http {
                 if let Some(record) = child.get("tailRecord") {
                     set(&result, "tailRecord", &record_js(record)?)?;
                 }
+                if let Some(origin) = child.get("origin") {
+                    set(&result, "origin", &origin_js(origin)?)?;
+                }
                 Ok(result.into())
             })?,
         )?;
@@ -372,7 +371,13 @@ mod http {
         path(field(item, "path")?)?;
         let result = Object::new();
         set(&result, "path", &string_js(field(item, "path")?)?)?;
-        if item.get("expectedAbsent") == Some(&Value::Bool(true)) {
+        if item.get("expectedPresent") == Some(&Value::Bool(true)) {
+            if string(field(item, "actual")?)? != "missing" {
+                return Err("invalid presence conflict state");
+            }
+            set(&result, "expectedPresent", &JsValue::TRUE)?;
+            set(&result, "actual", &string_js(field(item, "actual")?)?)?;
+        } else if item.get("expectedAbsent") == Some(&Value::Bool(true)) {
             match string(field(item, "actual")?)? {
                 "exists" => {}
                 _ => return Err("invalid conflict state"),
@@ -403,17 +408,6 @@ mod http {
         Ok(result.into())
     }
 
-    fn tails_js(value: &Value) -> Result<JsValue> {
-        let null_prototype: Object = JsValue::NULL.unchecked_into();
-        let result = Object::create(&null_prototype);
-        for (path_name, tail) in object(value)? {
-            // A null prototype keeps `__proto__` as an own data property.
-            crate::StreamPath::new(path_name).map_err(|_| "invalid path")?;
-            set(&result, path_name, &bigint_js(tail)?)?;
-        }
-        Ok(result.into())
-    }
-
     fn commit_result_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
         let result = Object::new();
@@ -422,19 +416,27 @@ mod http {
         if ok {
             id(field(item, "commitId")?)?;
             set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
-            set(&result, "tails", &tails_js(field(item, "tails")?)?)?;
+            set(
+                &result,
+                "committedAtMicros",
+                &bigint_js(field(item, "committedAtMicros")?)?,
+            )?;
+            set(
+                &result,
+                "appends",
+                &array_js(field(item, "appends")?, |value| {
+                    let range = object(value)?;
+                    let result = Object::new();
+                    set(&result, "path", &string_js(field(range, "path")?)?)?;
+                    set(&result, "start", &bigint_js(field(range, "start")?)?)?;
+                    set(&result, "tail", &bigint_js(field(range, "tail")?)?)?;
+                    Ok(result.into())
+                })?,
+            )?;
             set(
                 &result,
                 "forks",
-                &array_js(field(item, "forks")?, |value| {
-                    let fork = object(value)?;
-                    path(field(fork, "path")?)?;
-                    u64_string(field(fork, "tail")?)?;
-                    let result = Object::new();
-                    set(&result, "path", &string_js(field(fork, "path")?)?)?;
-                    set(&result, "tail", &bigint_js(field(fork, "tail")?)?)?;
-                    Ok(result.into())
-                })?,
+                &array_js(field(item, "forks")?, fork_receipt_js)?,
             )?;
         } else {
             if string(field(item, "code")?)? != "conflict" {
@@ -518,8 +520,14 @@ mod http {
     fn envelope_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
         id(field(item, "commitId")?)?;
+        u64_string(field(item, "committedAtMicros")?)?;
         let result = Object::new();
         set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
+        set(
+            &result,
+            "committedAtMicros",
+            &bigint_js(field(item, "committedAtMicros")?)?,
+        )?;
         set(
             &result,
             "mutations",
@@ -563,7 +571,7 @@ mod http {
             "commit" => set(
                 &outcome_result,
                 "outcome",
-                &commit_result_js(field(outcome, "outcome")?)?,
+                &envelope_js(field(outcome, "outcome")?)?,
             )?,
             _ => return Err("invalid idempotency outcome type"),
         }
@@ -584,6 +592,31 @@ mod http {
         Ok(result.into())
     }
 
+    fn head_js(value: &Value) -> Result<JsValue> {
+        let item = object(value)?;
+        let result = Object::new();
+        set(&result, "tail", &bigint_js(field(item, "tail")?)?)?;
+        set(&result, "durable", &bigint_js(field(item, "durable")?)?)?;
+        let last = field(item, "last")?;
+        if !last.is_null() {
+            set(&result, "last", &record_js(last)?)?;
+        }
+        let origin = field(item, "origin")?;
+        if !origin.is_null() {
+            set(&result, "origin", &origin_js(origin)?)?;
+        }
+        Ok(result.into())
+    }
+
+    fn origin_js(value: &Value) -> Result<JsValue> {
+        let origin = object(value)?;
+        let result = Object::new();
+        set(&result, "source", &string_js(field(origin, "source")?)?)?;
+        set(&result, "forkedAt", &bigint_js(field(origin, "forkedAt")?)?)?;
+        set(&result, "commitId", &bytes_js(field(origin, "commitId")?)?)?;
+        Ok(result.into())
+    }
+
     pub(super) fn decode(route: &str, value: &Value) -> Result<JsValue> {
         crate::http_validation::validate(route, value)?;
         match crate::HTTP_RESPONSE_CONTRACT
@@ -592,6 +625,7 @@ mod http {
         {
             Some("empty") => Ok(JsValue::UNDEFINED),
             Some("sequence") => bigint_js(value),
+            Some("head") => head_js(value),
             Some("append") => append_result_js(value),
             Some("fork") => fork_receipt_js(value),
             Some("records") => array_js(value, record_js),

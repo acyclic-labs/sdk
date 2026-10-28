@@ -73,7 +73,7 @@ async fn append(provider: &MemoryStream, path: &str, value: Bytes) -> Result<(),
             path: StreamPath::new(path)?,
             records: vec![(OwnedBytes::from(value)).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     Ok(())

@@ -14,11 +14,12 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
                 path: path(name)?,
                 records: vec![(OwnedBytes::from_static(b"seed")).into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Tail {
                 path: path("completion/owner")?,
@@ -58,7 +59,10 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
     let CommitOutcome::Committed(envelope) = output.value() else {
         panic!("canonical Commit")
     };
-    let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
+    let retained = provider.read_commit(envelope.commit_id).await?;
+    assert!(envelope.matches_envelope(&retained));
+    assert_eq!(envelope.committed_at_micros, 125_000);
+    let [CommittedMutation::Append(append)] = retained.mutations.as_slice() else {
         panic!("single append")
     };
     assert_eq!(
@@ -69,8 +73,6 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
             .committed_at_micros,
         125_000
     );
-    let retained = provider.read_commit(envelope.commit_id).await?;
-    assert_eq!(&retained, envelope);
     let mut rows = provider
         .read(ReadRequest {
             path: path("completion/target")?,

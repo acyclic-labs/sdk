@@ -217,6 +217,12 @@ impl WasmStream {
                     None => wire::InspectIdempotencyResponse { observation: None }.encode_to_vec(),
                 }
             }
+            "head" => {
+                let request = decode::<wire::HeadRequest>(input)?;
+                let path = wire_codec::path(request.path).map_err(js_error)?;
+                let head = self.provider.head(path).await.map_err(js_error)?;
+                wire_codec::head_to_wire(head).encode_to_vec()
+            }
             "tail" => {
                 let request = decode::<wire::TailRequest>(input)?;
                 let path = wire_codec::path(request.path).map_err(js_error)?;
@@ -309,12 +315,22 @@ impl WasmStream {
     pub async fn open_follow(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
         check_command_size(input)?;
         let request = decode::<wire::FollowRequest>(input)?;
+        if request.progress {
+            return Err(js_error(StreamError::InvalidArgument));
+        }
         let (path, from, filter) = wire_codec::follow_from_wire(request).map_err(js_error)?;
-        let stream = self
-            .provider
-            .follow(path, from, filter)
-            .await
-            .map_err(js_error)?;
+        let stream = crate::records_only(
+            self.provider
+                .follow(crate::FollowRequest {
+                    path,
+                    from,
+                    preceding: None,
+                    filter,
+                    progress: false,
+                })
+                .await
+                .map_err(js_error)?,
+        );
         Ok(WasmFollow {
             state: Rc::new(FollowState::new(
                 stream

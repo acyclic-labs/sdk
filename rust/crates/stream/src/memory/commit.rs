@@ -1,6 +1,6 @@
 struct CommitPlan {
+    envelope: CommittedEnvelope,
     result: CommitOutcome,
-    cached: CommitOutcome,
     histories: Vec<Arc<History>>,
     paths: Vec<(StreamPath, PathState)>,
     resident: Allocation,
@@ -10,25 +10,15 @@ struct CommitPlan {
 
 impl CommitPlan {
     fn bind(&mut self, commit_id: CommitId, time: u64) -> Result<(), StreamError> {
-        for output in [&mut self.result, &mut self.cached] {
-            if let CommitOutcome::Committed(envelope) = output {
-                bind_envelope(envelope, commit_id, time);
+        bind_envelope(&mut self.envelope, commit_id, time);
+        if let CommitOutcome::Committed(receipt) = &mut self.result {
+            receipt.commit_id = commit_id;
+            receipt.committed_at_micros = time;
+            for fork in &mut receipt.forks {
+                fork.commit_id = commit_id;
             }
         }
-        for history in &mut self.histories {
-            if let History::Batch { records, .. } =
-                Arc::get_mut(history).ok_or(StreamError::Unavailable)?
-            {
-                for record in &mut Arc::get_mut(records)
-                    .ok_or(StreamError::Unavailable)?
-                    .records
-                {
-                    record.commit_id = commit_id;
-                    record.committed_at_micros = time;
-                }
-            }
-        }
-        Ok(())
+        bind_histories(&mut self.histories, commit_id, time)
     }
 
     fn publish(
@@ -40,10 +30,7 @@ impl CommitPlan {
         digest: [u8; 32],
         time: u64,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        let CommitOutcome::Committed(envelope) = &self.result else {
-            unreachable!()
-        };
-        publish(state, self.paths, self.histories, envelope, build)?;
+        publish(state, self.paths, self.histories, &self.envelope, build)?;
         state.decision += 1;
         state.last_committed_at_micros = time;
         retain(
@@ -52,11 +39,32 @@ impl CommitPlan {
             None,
             Some(key),
             digest,
-            IdempotencyOutcome::Commit(self.cached),
+            IdempotencyOutcome::Commit(self.envelope),
             self.resident,
         );
         Ok((self.result, self.output_claim))
     }
+}
+
+fn bind_histories(
+    histories: &mut [Arc<History>],
+    commit_id: CommitId,
+    time: u64,
+) -> Result<(), StreamError> {
+    for history in histories {
+        if let History::Batch { records, .. } =
+            Arc::get_mut(history).ok_or(StreamError::Unavailable)?
+        {
+            for record in &mut Arc::get_mut(records)
+                .ok_or(StreamError::Unavailable)?
+                .records
+            {
+                record.commit_id = commit_id;
+                record.committed_at_micros = time;
+            }
+        }
+    }
+    Ok(())
 }
 
 impl MemoryStream {
@@ -106,10 +114,33 @@ impl MemoryStream {
         let facts = crate::preparation::facts(
             source,
             |path| Ok(state.paths.get(path).map(|path| path.tail)),
-            |start, bodies| {
+            |start, bodies, exclusions| {
                 let (records, claim) = self.records(bodies, start, commit_id, time)?;
                 self.absorb(&mut allocation, claim)?;
-                Ok(records)
+                let (mut exclude, claim) = if exclusions.is_empty() {
+                    (Vec::new(), Default::default())
+                } else {
+                    self.vector(exclusions.len())?
+                };
+                self.absorb(&mut allocation, claim)?;
+                for path in exclusions {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = &self.work {
+                        work.record(work.meter.admit_examination(
+                            1,
+                            std::mem::size_of::<crate::RelativePath>() as u64,
+                        ))?;
+                    }
+                    exclude.push(path.clone());
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(work) = &self.work {
+                        work.record(work.meter.record_examination(
+                            1,
+                            std::mem::size_of::<crate::RelativePath>() as u64,
+                        ))?;
+                    }
+                }
+                Ok((records, exclude))
             },
             output,
         )?;
@@ -271,19 +302,22 @@ impl MemoryStream {
         commit_id: CommitId,
         time: u64,
     ) -> Result<CommitPlan, StreamError> {
-        let (facts, output_claim) = self.facts(state, &request.mutations, commit_id, time)?;
+        let (facts, facts_claim) = self.facts(state, &request.mutations, commit_id, time)?;
         let (histories, mut scratch) = self.histories(state, &facts)?;
         let (paths, paths_claim) =
             self.paths(state, request.mutations.iter().map(mutation_path))?;
-        let result = CommitOutcome::Committed(CommittedEnvelope {
+        let envelope = CommittedEnvelope {
             commit_id,
+            committed_at_micros: time,
             mutations: facts,
-        });
-        let (cached, resident) = self.copy_commit(&result)?;
+        };
+        let (receipt, output_claim) = self.receipt(&envelope)?;
+        let result = CommitOutcome::Committed(receipt);
+        let resident = facts_claim;
         self.absorb(&mut scratch, paths_claim)?;
         Ok(CommitPlan {
+            envelope,
             result,
-            cached,
             histories,
             paths,
             resident,
@@ -299,6 +333,23 @@ impl MemoryStream {
         digest: [u8; 32],
         deadline: Option<u64>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
+        self.plan_commit_locked(state, request, digest, deadline)?
+            .install(self, state)
+    }
+
+    fn plan_commit_locked<'a>(
+        &'a self,
+        state: &mut State,
+        request: CommitRequest,
+        digest: [u8; 32],
+        deadline: Option<u64>,
+    ) -> Result<
+        Decision<
+            (CommitOutcome, Allocation),
+            impl FnOnce(&mut State, bool) -> Result<(CommitOutcome, Allocation), StreamError> + use<'a>,
+        >,
+        StreamError,
+    > {
         if let Some(replay) = self.replay(state, request.idempotency_key.as_bytes())? {
             if replay.digest != digest {
                 return Err(StreamError::IdempotencyMismatch);
@@ -306,9 +357,15 @@ impl MemoryStream {
             let IdempotencyOutcome::Commit(result) = &replay.result else {
                 return Err(StreamError::IdempotencyMismatch);
             };
-            return self.copy_commit(result);
+            return self.receipt(result).map(|(receipt, claim)| {
+                Decision::Returned((CommitOutcome::Committed(receipt), claim))
+            });
         }
-        let check_deadline = || {
+        let deadline = deadline
+            .into_iter()
+            .chain(request.deadline_unix_millis)
+            .min();
+        let check_deadline = move || {
             if deadline.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
                 Err(StreamError::DeadlineElapsed)
             } else {
@@ -330,25 +387,26 @@ impl MemoryStream {
             // Old behaviour, for negative controls only: the conflict spends the key.
             #[cfg(all(loom, feature = "local"))]
             if crate::verification::fault_is(crate::verification::Fault::RetainConflictKey) {
-                admit_replay(state, Some(&request.idempotency_key), self.limits)?;
-                let (cached, resident) = self.copy_commit(&result)?;
+                admit_replay(state, self.limits)?;
                 retain(
                     state,
                     &mut || self.record_replay_probe(&mut probes),
                     None,
                     Some(request.idempotency_key),
                     digest,
-                    IdempotencyOutcome::Commit(cached),
-                    resident,
+                    // Spending a refused key is the injected defect. Its invalid
+                    // retained family cannot be emitted by successful commits.
+                    IdempotencyOutcome::Append(AppendOutcome::TailConflict { actual_tail: 0 }),
+                    Default::default(),
                 );
             }
-            return Ok((result, output_claim));
+            return Ok(Decision::Returned((result, output_claim)));
         }
         drop((conflicts, output_claim));
         crate::preparation::authority(&request, |path| {
             Ok(state.paths.get(path).map(|path| path.tail))
         })?;
-        admit_replay(state, Some(&request.idempotency_key), self.limits)?;
+        admit_replay(state, self.limits)?;
         reserve_coordinated(state, &request, self.limits)?;
         self.reserve_commit_index(&mut probes)?;
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
@@ -363,21 +421,26 @@ impl MemoryStream {
         }
         self.reserve_retained(state)?;
         let mut plan = self.plan_commit(state, &request, commit_id, 0)?;
-        self.publish(envelope_payload_bytes(&plan.result), || {
-            check_deadline()?;
-            let time = crate::preparation::committed_time(
-                state.last_committed_at_micros,
-                self.commit_clock.now_unix_millis(),
-            );
-            plan.bind(commit_id, time)?;
-            plan.publish(
-                state,
-                &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
-                &mut || self.record_replay_probe(&mut probes),
-                request.idempotency_key,
-                digest,
-                time,
-            )
+        Ok(Decision::Accepted {
+            bytes: envelope_payload_bytes(&plan.envelope),
+            install: move |state: &mut State, durable: bool| {
+                if !durable {
+                    check_deadline()?;
+                }
+                let time = crate::preparation::committed_time(
+                    state.last_committed_at_micros,
+                    self.commit_clock.now_unix_millis(),
+                );
+                plan.bind(commit_id, time)?;
+                plan.publish(
+                    state,
+                    &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
+                    &mut || self.record_replay_probe(&mut probes),
+                    request.idempotency_key,
+                    digest,
+                    time,
+                )
+            },
         })
     }
 }
@@ -449,20 +512,18 @@ fn identity_bytes() -> u64 {
     b"acyclic.stream.commit.v1\0".len() as u64 + 8 + 32
 }
 
-fn envelope_payload_bytes(result: &CommitOutcome) -> usize {
-    match result {
-        CommitOutcome::Committed(envelope) => envelope
-            .mutations
-            .iter()
-            .flat_map(fact_records)
-            .map(|record| record.payload_bytes())
-            .sum(),
-        CommitOutcome::Conflict(_) => 0,
-    }
+fn envelope_payload_bytes(envelope: &CommittedEnvelope) -> usize {
+    envelope
+        .mutations
+        .iter()
+        .flat_map(fact_records)
+        .map(|record| record.payload_bytes())
+        .sum()
 }
 
 fn bind_envelope(envelope: &mut CommittedEnvelope, commit_id: CommitId, time: u64) {
     envelope.commit_id = commit_id;
+    envelope.committed_at_micros = time;
     for mutation in &mut envelope.mutations {
         let records = match mutation {
             CommittedMutation::Append(append) => &mut append.records,
@@ -484,9 +545,10 @@ fn publish(
 ) -> Result<(), StreamError> {
     let mut next = state.paths.clone();
     for (path, data) in paths {
-        next.put_data(&path, data, build)?;
+        next.put_data(&path, data, None, build)?;
     }
     for (fact, history) in envelope.mutations.iter().zip(histories) {
+        let mut origin = None;
         let (path, tail) = match fact {
             CommittedMutation::Append(append) => (&append.path, append.tail),
             CommittedMutation::Fork(fork) => {
@@ -498,7 +560,7 @@ fn publish(
                 #[cfg(all(loom, feature = "local"))]
                 let subtree =
                     if crate::verification::fault_is(crate::verification::Fault::RootOnlyFork) {
-                        build.node(subtree.data.clone(), None)?
+                        build.node(subtree.data.clone(), None, subtree.origin.clone())?
                     } else {
                         subtree
                     };
@@ -513,6 +575,13 @@ fn publish(
                 #[cfg(not(all(loom, feature = "local")))]
                 let excludes = &fork.exclude[..];
                 let subtree = Namespace::excluded(&subtree, excludes, build)?;
+                origin = Some(ForkMarker {
+                    source: fork.source.clone(),
+                    snapshot: subtree.clone(),
+                    forked_at: fork.forked_at,
+                    commit_id: envelope.commit_id,
+                    decision: state.decision.checked_add(1).ok_or(StreamError::Capacity)?,
+                });
                 next.put(&fork.destination, subtree, build)?;
                 (&fork.destination, fork.tail)
             }
@@ -520,7 +589,7 @@ fn publish(
         // Root prefix and histories are derived from the same old cut even
         // when this envelope also appends to the source.
         let data = fact_data(&state.paths, fact, history, tail)?;
-        next.put_data(path, data, build)?;
+        next.put_data(path, data, origin, build)?;
     }
     if next.len() != state.paths.len() {
         state.hierarchy_version = envelope.commit_id;

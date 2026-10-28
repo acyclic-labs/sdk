@@ -40,7 +40,7 @@ pub struct FilesystemCommit {
 #[must_use]
 pub enum FilesystemCommitOutcome {
     /// Every caller and filesystem mutation committed under one receipt.
-    Committed(acyclic_stream::CommittedEnvelope),
+    Committed(acyclic_stream::CommitReceipt),
     /// Nothing changed; a caller or filesystem condition did not hold.
     Rejected(Vec<acyclic_stream::CommitConflict>),
     /// The result is unknown. Retry exactly this commit: its idempotency key
@@ -269,6 +269,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         // adds at most this many conditions and mutations: four absent
         // streams, records, epoch, gate, lineage and namespace changes.
         let mut part = CommitRequest {
+            deadline_unix_millis: None,
             conditions: work.vec(CREATION_ENTRIES)?,
             mutations: work.vec(CREATION_ENTRIES)?,
             idempotency_key: commit.request.idempotency_key.clone(),

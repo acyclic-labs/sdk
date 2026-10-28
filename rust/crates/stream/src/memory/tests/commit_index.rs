@@ -15,7 +15,7 @@ async fn historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_hist
                 path: path.clone(),
                 records: vec![Bytes::from_static(b"value").into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?
         else {
@@ -89,6 +89,7 @@ fn every_commit_key_bit_fits_the_fixed_lookup_and_insertion_reservations() -> Te
         let commit_id = CommitId::from_bytes(key);
         let envelope = CommittedEnvelope {
             commit_id,
+            committed_at_micros: 0,
             mutations: Vec::new(),
         };
         let mut probes = 0;
@@ -98,7 +99,7 @@ fn every_commit_key_bit_fits_the_fixed_lookup_and_insertion_reservations() -> Te
             None,
             None,
             [0; 32],
-            IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)),
+            IdempotencyOutcome::Commit(envelope),
             Default::default(),
         );
         assert!(probes <= COMMIT_INDEX_PROBES);
@@ -145,7 +146,7 @@ async fn commit_index_work_is_admitted_before_append_or_coordinated_publication(
             path: path.clone(),
             records: vec![Bytes::from_static(b"value").into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         };
         provider.append(request.clone()).await?;
         let snapshot = provider.encode_state().await;
@@ -229,6 +230,7 @@ fn indexed_commit(
         });
     }
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions,
         mutations: vec![mutation],
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"indexed-commit"))?,

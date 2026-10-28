@@ -28,14 +28,14 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         &self.path
     }
 
+    /// One atomic observation of history, durability and inherited origin.
+    pub async fn head(&self) -> Result<PathHead, StreamError> {
+        self.provider.head(self.path.clone()).await
+    }
+
     /// Current tail.
     pub async fn tail(&self) -> Result<u64, StreamError> {
         self.provider.tail(self.path.clone()).await
-    }
-
-    /// Exact retained replay window observed atomically by the provider.
-    pub async fn bounds(&self) -> Result<StreamBounds, StreamError> {
-        self.provider.bounds(self.path.clone()).await
     }
 
     /// Unconditionally appends one record.
@@ -71,7 +71,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
                 path: self.path.clone(),
                 records,
                 if_tail,
-                idempotency_key: Some(idempotency_key),
+                idempotency_key,
             })
             .await
     }
@@ -90,7 +90,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
                 source: self.path.clone(),
                 destination: StreamPath::new(destination)?,
                 at_tail,
-                idempotency_key: Some(idempotency_key),
+                idempotency_key,
             })
             .await
     }
@@ -121,8 +121,21 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         &self,
         from: u64,
         filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.provider.follow(self.path.clone(), from, filter).await
+    ) -> Result<
+        impl futures::Stream<Item = Result<Record, StreamError>> + Unpin + ProviderTask + use<P>,
+        StreamError,
+    > {
+        Ok(records_only(
+            self.provider
+                .follow(FollowRequest {
+                    path: self.path.clone(),
+                    from,
+                    preceding: None,
+                    filter,
+                    progress: false,
+                })
+                .await?,
+        ))
     }
 }
 

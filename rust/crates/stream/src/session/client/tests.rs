@@ -1,6 +1,7 @@
 use super::*;
 use crate::grpc;
-use crate::{AppendRequest, MemoryStream, OwnedBytes};
+use crate::{AppendRequest, MemoryStream, OwnedBytes, RecordStream};
+use futures::TryFutureExt as _;
 use std::{
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
@@ -75,7 +76,7 @@ async fn append(provider: &MemoryStream, path: &str, count: usize) -> Result<(),
             path: StreamPath::new(path)?,
             records: vec![(OwnedBytes::from_static(b"delta")).into(); count],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     Ok(())
@@ -95,11 +96,13 @@ async fn public_follow_shares_one_session_and_slow_channels_do_not_block_others(
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = fixture.client()?;
     let mut slow = client
-        .follow(StreamPath::new("slow")?, 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest::new(StreamPath::new("slow")?, 1))
+        .map_ok(crate::records_only)
         .await?;
     let mut fast = client
         .clone()
-        .follow(StreamPath::new("fast")?, 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest::new(StreamPath::new("fast")?, 1))
+        .map_ok(crate::records_only)
         .await?;
     append(&provider, "slow", 20).await?;
     append(&provider, "fast", 20).await?;
@@ -125,14 +128,12 @@ async fn refused_channel_does_not_close_the_shared_session() -> TestResult {
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = fixture.client()?;
     let mut fast = client
-        .follow(StreamPath::new("fast")?, 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest::new(StreamPath::new("fast")?, 1))
+        .map_ok(crate::records_only)
         .await?;
     let mut refused = client
-        .follow(
-            StreamPath::new("missing")?,
-            0,
-            crate::FollowFilter::default(),
-        )
+        .follow(crate::FollowRequest::new(StreamPath::new("missing")?, 0))
+        .map_ok(crate::records_only)
         .await?;
     assert_eq!(refused.next().await, Some(Err(StreamError::NotFound)));
     assert!(refused.next().await.is_none());
@@ -154,11 +155,11 @@ async fn node_subscription_fan_in_reuses_the_same_client_session_protocol() -> T
     for index in 0..16 {
         follows.push(
             client
-                .follow(
+                .follow(crate::FollowRequest::new(
                     StreamPath::new(format!("agents/{index}"))?,
                     1,
-                    crate::FollowFilter::default(),
-                )
+                ))
+                .map_ok(crate::records_only)
                 .await?,
         );
     }
@@ -211,10 +212,12 @@ async fn moved_resumes_applied_cursor_and_dialing_does_not_block_other_channels(
     );
     client.register_credential(0, crate::session::testing::credential())?;
     let mut moving = client
-        .follow(StreamPath::new("move")?, 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest::new(StreamPath::new("move")?, 1))
+        .map_ok(crate::records_only)
         .await?;
     let mut staying = client
-        .follow(StreamPath::new("stay")?, 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest::new(StreamPath::new("stay")?, 1))
+        .map_ok(crate::records_only)
         .await?;
     append(&provider, "move", 4).await?;
     assert_eq!(next(&mut moving).await?.sequence, 1);
@@ -286,11 +289,12 @@ async fn measure<P: StreamProvider>(provider: &P, label: &str) -> TestResult {
             path: path.clone(),
             records: vec![(OwnedBytes::from_static(b"seed")).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let mut follow = provider
-        .follow(path.clone(), 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest::new(path.clone(), 1))
+        .map_ok(crate::records_only)
         .await?;
     let mut samples = Vec::new();
     for sequence in 1..=144 {
@@ -303,7 +307,7 @@ async fn measure<P: StreamProvider>(provider: &P, label: &str) -> TestResult {
                             path: path.clone(),
                             records: vec![(OwnedBytes::from_static(b"delta")).into()],
                             if_tail: None,
-                            idempotency_key: None,
+                            idempotency_key: crate::IdempotencyKey::unique(),
                         })
                         .await?,
                 )
@@ -337,10 +341,12 @@ async fn transport_reconnect_reopens_all_channels_from_consumed_cursors() -> Tes
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = fixture.client()?;
     let mut a = client
-        .follow(StreamPath::new("a")?, 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest::new(StreamPath::new("a")?, 1))
+        .map_ok(crate::records_only)
         .await?;
     let mut b = client
-        .follow(StreamPath::new("b")?, 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest::new(StreamPath::new("b")?, 1))
+        .map_ok(crate::records_only)
         .await?;
     for path in ["a", "b"] {
         append(&provider, path, 4).await?;
@@ -402,12 +408,16 @@ async fn cancelling_a_queued_open_does_not_leave_an_idle_subscription() -> TestR
         None,
     );
     client.register_credential(0, crate::session::testing::credential())?;
-    let mut cancelled =
-        Box::pin(client.follow(StreamPath::new("a")?, 1, crate::FollowFilter::default()));
+    let mut cancelled = Box::pin(
+        client
+            .follow(crate::FollowRequest::new(StreamPath::new("a")?, 1))
+            .map_ok(crate::records_only),
+    );
     assert!(futures::poll!(cancelled.as_mut()).is_pending());
     drop(cancelled);
     let mut follow = client
-        .follow(StreamPath::new("a")?, 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest::new(StreamPath::new("a")?, 1))
+        .map_ok(crate::records_only)
         .await?;
     append(&provider, "a", 1).await?;
     assert_eq!(next(&mut follow).await?.sequence, 1);
@@ -422,7 +432,8 @@ async fn aggregate_credit_is_replenished_beyond_the_initial_window() -> TestResu
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = fixture.client()?;
     let mut records = client
-        .follow(StreamPath::new("a")?, 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest::new(StreamPath::new("a")?, 1))
+        .map_ok(crate::records_only)
         .await?;
     append(&provider, "a", crate::MAX_ITEMS).await?;
     append(&provider, "a", 17).await?;
@@ -440,7 +451,8 @@ async fn translating_follow_releases_credit_without_application_acknowledgements
     let fixture = Fixture::open(Arc::clone(&provider), "node").await?;
     let client = fixture.client()?.without_delivery_acknowledgements();
     let mut records = client
-        .follow(StreamPath::new("a")?, 1, crate::FollowFilter::default())
+        .follow(crate::FollowRequest::new(StreamPath::new("a")?, 1))
+        .map_ok(crate::records_only)
         .await?;
     append(&provider, "a", 17).await?;
     for sequence in 1..=17 {
@@ -459,20 +471,14 @@ async fn dropping_buffered_follows_returns_aggregate_capacity() -> TestResult {
     let fixture = Fixture::open(Arc::clone(&memory), "node").await?;
     let client = fixture.client()?;
     let mut healthy = client
-        .follow(
-            StreamPath::new("healthy")?,
-            1,
-            crate::FollowFilter::default(),
-        )
+        .follow(crate::FollowRequest::new(StreamPath::new("healthy")?, 1))
+        .map_ok(crate::records_only)
         .await?;
     for sequence in 1..=crate::MAX_ITEMS + 8 {
         let before = fixture.counts.sent.load(Ordering::Relaxed);
         let unread = client
-            .follow(
-                StreamPath::new("unread")?,
-                0,
-                crate::FollowFilter::default(),
-            )
+            .follow(crate::FollowRequest::new(StreamPath::new("unread")?, 0))
+            .map_ok(crate::records_only)
             .await?;
         tokio::time::timeout(Duration::from_secs(1), async {
             loop {
@@ -507,8 +513,8 @@ async fn concurrent_first_follows_have_a_bounded_welcome_deadline() -> TestResul
     let one = StreamPath::new("one")?;
     let two = StreamPath::new("two")?;
     let (first, second) = tokio::time::timeout(Duration::from_secs(5), async {
-        let first = client.follow(one, 0, crate::FollowFilter::default());
-        let second = client.follow(two, 0, crate::FollowFilter::default());
+        let first = client.follow(crate::FollowRequest::new(one, 0)).map_ok(crate::records_only);
+        let second = client.follow(crate::FollowRequest::new(two, 0)).map_ok(crate::records_only);
         futures::pin_mut!(first, second);
         for attempt in 1..=3 {
             // Neither logical follow may finish before all physical handshake

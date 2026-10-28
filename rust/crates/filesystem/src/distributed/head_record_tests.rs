@@ -327,6 +327,7 @@ async fn retained_head_record_still_rejects_corrupt_digest_and_stream_sequence()
         store
             .provider
             .commit(CommitRequest {
+                deadline_unix_millis: None,
                 conditions: vec![CommitCondition::Tail {
                     path: path.clone(),
                     expected: 1,

@@ -41,24 +41,24 @@ fn projected_tail(
     let Some(stream) = paths.get(&target) else {
         return Ok(None);
     };
+    Ok(last_record(stream))
+}
+
+fn last_record(stream: &PathState) -> Option<Record> {
     let Some(from) = stream.tail.checked_sub(1) else {
-        return Ok(None);
+        return None;
     };
     if let Some(window) = stream.prefix_window(from, stream.tail) {
-        return Ok(window.records.records.get(window.start).cloned());
+        return window.records.records.get(window.start).cloned();
     }
-    Ok(
-        HistoryWalk::new(stream.history.as_ref(), stream.tail, from).find_map(
-            |(history, ceiling)| {
-                if let History::Batch { records, .. } = history {
-                    history_window(Arc::clone(records), ceiling, from)
-                        .and_then(|window| window.records.records.get(window.start).cloned())
-                } else {
-                    None
-                }
-            },
-        ),
-    )
+    HistoryWalk::new(stream.history.as_ref(), stream.tail, from).find_map(|(history, ceiling)| {
+        if let History::Batch { records, .. } = history {
+            history_window(Arc::clone(records), ceiling, from)
+                .and_then(|window| window.records.records.get(window.start).cloned())
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -69,6 +69,17 @@ impl StreamProvider for MemoryStream {
     }
     fn operation_claims(&self) -> &crate::OperationClaims {
         &self.operation_claims
+    }
+
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        let state = self.state.read().await;
+        let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
+        Ok(crate::PathHead {
+            tail: stream.tail,
+            last: last_record(stream),
+            durable: 0,
+            origin: state.paths.origin(&path)?,
+        })
     }
 
     async fn inspect_idempotency(
@@ -104,80 +115,15 @@ impl StreamProvider for MemoryStream {
             .ok_or(StreamError::NotFound)
     }
 
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        let state = self.state.read().await;
-        let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
-        Ok(StreamBounds { tail: stream.tail })
-    }
-
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.append_inner(request).await.map(|(value, _)| value)
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        let digest = fork_digest(&request)?;
         let mut state = self.state.write().await;
-        if let Some(result) = self.replay_fork(&state, request.idempotency_key.as_ref(), digest)? {
-            return Ok(result);
-        }
-        admit_replay(&state, request.idempotency_key.as_ref(), self.limits)?;
-        let mut probes = self.reserve_replay_probes(
-            request
-                .idempotency_key
-                .as_ref()
-                .map_or(0, |_| u64::from(state.replay_height(state.replay_root))),
-        )?;
-        let forked_at = crate::preparation::fork_cut(
-            &request,
-            state.paths.get(&request.source).map(|path| path.tail),
-            state.paths.get(&request.destination).map(|path| path.tail),
-        )?;
-        reserve_fork(&state, &request, self.limits)?;
-        reserve_commit(&state, self.limits)?;
-        self.reserve_commit_index(&mut probes)?;
-        let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
-        let commit_id = commit_identity(decision, digest);
-        let receipt = ForkReceipt {
-            source: request.source,
-            destination: request.destination,
-            forked_at,
-            tail: forked_at,
-            commit_id,
-        };
-        let envelope = CommittedEnvelope {
-            commit_id,
-            mutations: vec![CommittedMutation::Fork(CommittedFork {
-                exclude: crate::request::canonical_exclusions(&request.exclude)?,
-                source: receipt.source.clone(),
-                destination: receipt.destination.clone(),
-                forked_at,
-                tail: forked_at,
-                records: Vec::new(),
-            })],
-        };
-        let (histories, _histories) = self.histories(&state, &envelope.mutations)?;
-        let (paths, _paths) = self.paths(&state, std::iter::once(&receipt.destination))?;
-        self.reserve_retained(&mut state)?;
-        publish(
-            &mut state,
-            paths,
-            histories,
-            &envelope,
-            &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
-        )?;
-        state.decision = decision;
-        retain(
-            &mut state,
-            &mut || self.record_replay_probe(&mut probes),
-            Some(envelope),
-            request.idempotency_key,
-            digest,
-            IdempotencyOutcome::Fork(receipt.clone()),
-            Default::default(),
-        );
-        Ok(receipt)
+        self.plan_fork_locked(&mut state, request)?
+            .install(self, &mut state)
     }
-
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         validate_limit(request.limit)?;
         let state = self.state.read().await;
@@ -202,31 +148,20 @@ impl StreamProvider for MemoryStream {
 
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.follow_from(path, from, None, filter).await
-    }
-
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.follow_from(path, from, Some(preceding), filter).await
-    }
-
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
-        filter: crate::FollowFilter,
+        request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.progress_from(path, from, preceding, filter).await
+        let crate::FollowRequest {
+            path,
+            from,
+            preceding,
+            filter,
+            progress,
+        } = request;
+        if progress {
+            self.progress_from(path, from, preceding, filter).await
+        } else {
+            self.follow_from(path, from, preceding, filter).await
+        }
     }
 
     async fn children_page(
@@ -286,8 +221,17 @@ impl StreamProvider for MemoryStream {
             .map(|path| {
                 let tail_record =
                     projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
-                let child = Child { path, tail_record };
+                let origin = state.paths.origin(&path)?;
+                let child = Child {
+                    path,
+                    tail_record,
+                    origin,
+                };
                 let encoded = crate::wire::Child {
+                    origin: child
+                        .origin
+                        .clone()
+                        .map(crate::wire_codec::fork_origin_to_wire),
                     path: child.path.to_string(),
                     tail_record: child
                         .tail_record
@@ -321,16 +265,6 @@ impl StreamProvider for MemoryStream {
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.commit_inner(request, None)
-            .await
-            .map(|(value, _)| value)
-    }
-
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.commit_inner(request, Some(deadline_unix_millis))
             .await
             .map(|(value, _)| value)
     }
@@ -395,7 +329,7 @@ impl StreamProvider for MemoryStream {
                         .value
                         .len();
                     meter.check()?;
-                    let mut bytes = NativeByteReservation::new(
+                    let mut bytes = acyclic_native_runtime::NativeByteReservation::new(
                         Arc::clone(&meter),
                         NativeOperationKind::Read,
                         length,
@@ -462,26 +396,6 @@ impl StreamProvider for MemoryStream {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_bounds(
-        &self,
-        path: StreamPath,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, StreamBounds> {
-        crate::NativeProviderFuture::new(&Arc::clone(&meter), async move {
-            let state = self.state.read().await;
-            let value = inspect(&meter, || {
-                state
-                    .paths
-                    .get(&path)
-                    .map(|path| StreamBounds { tail: path.tail })
-            })?;
-            Ok(value
-                .ok_or(StreamError::NotFound)
-                .map(|value| crate::NativeStreamOutput::new(value, ReadAllocation::empty(&meter))))
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     fn native_inspect_idempotency(
         &self,
         key: IdempotencyKey,
@@ -532,8 +446,7 @@ impl StreamProvider for MemoryStream {
         F: FnMut() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), E>> + Send + 'static,
     {
-        crate::NativeProviderFuture::new(&Arc::clone(&meter), async move {
-            let work = Work::new(meter)?;
+        Work::start(meter, |work| async move {
             let provider = self.with_context(Arc::clone(&work));
             let result = async {
                 let _input = provider.request_claim(&request).map_err(E::from)?;
@@ -551,7 +464,10 @@ impl StreamProvider for MemoryStream {
                             let IdempotencyOutcome::Commit(value) = &replay.result else {
                                 return Err(E::from(StreamError::IdempotencyMismatch));
                             };
-                            return provider.copy_commit(value).map_err(E::from);
+                            return provider
+                                .receipt(value)
+                                .map(|(receipt, claim)| (CommitOutcome::Committed(receipt), claim))
+                                .map_err(E::from);
                         }
                     }
                     before().await?;
@@ -593,9 +509,7 @@ impl StreamProvider for MemoryStream {
         maximum_record_bytes: usize,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
-        let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(&original, async move {
-            let work = Work::new(meter)?;
+        Work::start(meter, |work| async move {
             let provider = self.with_context(Arc::clone(&work));
             let result = async {
                 let (plan, recovery) = provider.prepare(request, maximum_record_bytes).await?;
@@ -629,14 +543,9 @@ impl StreamProvider for MemoryStream {
         request: AppendRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, AppendOutcome> {
-        let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(&original, async move {
-            let work = Work::new(meter)?;
+        Work::start(meter, |work| async move {
             let provider = self.with_context(Arc::clone(&work));
-            let existing = match &request.idempotency_key {
-                Some(key) => provider.has_replay(key).await,
-                None => Ok(false),
-            };
+            let existing = provider.has_replay(&request.idempotency_key).await;
             let existing = match existing {
                 Ok(existing) => existing,
                 Err(error) => return work.finish(Err(error)),

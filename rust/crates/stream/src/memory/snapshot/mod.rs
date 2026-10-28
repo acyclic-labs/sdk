@@ -104,7 +104,13 @@ fn encode(state: &State) -> Vec<u8> {
     put_len(&mut out, state.retained.len());
     for retained in &state.retained {
         let replay = retained.replay.as_ref().map(|key| (key, retained));
-        let commit = retained.envelope();
+        let commit = if replay.is_some()
+            && matches!(retained.result, crate::IdempotencyOutcome::Commit(_))
+        {
+            None
+        } else {
+            retained.envelope()
+        };
         out.push(
             if replay.is_some() { RETAINS_REPLAY } else { 0 }
                 | if commit.is_some() { RETAINS_COMMIT } else { 0 },
@@ -173,6 +179,11 @@ fn decode(encoded: &[u8]) -> Option<State> {
     let inventory = std::mem::take(&mut state.retained);
     let builder = MemoryStream::default();
     for envelope in inventory.iter().filter_map(Retained::envelope) {
+        if envelope.committed_at_micros < state.last_committed_at_micros
+            || envelope.committed_at_micros > time
+        {
+            return None;
+        }
         for mutation in &envelope.mutations {
             match mutation {
                 CommittedMutation::Append(append) => {
@@ -213,6 +224,8 @@ fn decode(encoded: &[u8]) -> Option<State> {
             &mut super::NamespaceBuilder::new(&|_| Ok(None)),
         )
         .ok()?;
+        state.decision = state.decision.checked_add(1)?;
+        state.last_committed_at_micros = envelope.committed_at_micros;
     }
     state.retained = inventory;
     state.decision = decision;
@@ -262,12 +275,12 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
         let (key, digest, result, envelope) = match observation {
             Some(observation) => {
                 let key = observation.idempotency_key;
+                let commit_id = replay_commit_id(envelope.as_ref(), &observation.outcome)?;
                 if state
                     .replay(key.as_bytes(), || Ok::<_, StreamError>(()))
                     .ok()?
                     .is_some()
-                    || replay_commit_id(envelope.as_ref(), &observation.outcome)?
-                        != envelope.as_ref().map(|envelope| envelope.commit_id)
+                    || commit_id.is_some_and(|id| state.commit(&id).is_some())
                 {
                     return None;
                 }
@@ -278,12 +291,15 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
                     envelope,
                 )
             }
-            None => (
-                None,
-                [0; 32],
-                crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(envelope?)),
-                None,
-            ),
+            None => {
+                let envelope = envelope?;
+                (
+                    None,
+                    [0; 32],
+                    crate::IdempotencyOutcome::Commit(envelope),
+                    None,
+                )
+            }
         };
         retain(
             state,
@@ -328,14 +344,18 @@ fn replay_commit_id(
             }
             Some(receipt.commit_id)
         }
-        crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(committed)) => {
-            if envelope != Some(committed) {
+        crate::IdempotencyOutcome::Commit(committed) => {
+            if envelope.is_some() {
                 return None;
             }
             Some(committed.commit_id)
         }
-        crate::IdempotencyOutcome::Append(crate::AppendOutcome::TailConflict { .. })
-        | crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Conflict(_)) => None,
+        crate::IdempotencyOutcome::Append(crate::AppendOutcome::TailConflict { .. }) => {
+            if envelope.is_some() {
+                return None;
+            }
+            None
+        }
     };
     Some(commit)
 }

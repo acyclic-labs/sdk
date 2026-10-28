@@ -49,6 +49,7 @@ fn normalized_request(mut request: CommitRequest) -> CommitRequest {
     for condition in &mut request.conditions {
         match condition {
             CommitCondition::Absent { path }
+            | CommitCondition::Present { path }
             | CommitCondition::Tail { path, .. }
             | CommitCondition::Head { path, .. } => *path = normalized_path(path),
         }
@@ -83,13 +84,16 @@ impl StreamProvider for Observed {
         record(("inspect", &key));
         self.0.inspect_idempotency(key).await
     }
+    async fn head(
+        &self,
+        path: StreamPath,
+    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
+        record(("head", normalized_path(&path)));
+        self.0.head(path).await
+    }
     async fn tail(&self, path: StreamPath) -> std::result::Result<u64, StreamError> {
         record(("tail", normalized_path(&path)));
         self.0.tail(path).await
-    }
-    async fn bounds(&self, path: StreamPath) -> std::result::Result<StreamBounds, StreamError> {
-        record(("bounds", normalized_path(&path)));
-        self.0.bounds(path).await
     }
     async fn append(
         &self,
@@ -113,12 +117,10 @@ impl StreamProvider for Observed {
     }
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: acyclic_stream::FollowFilter,
-    ) -> std::result::Result<RecordStream, StreamError> {
-        record(("follow", normalized_path(&path), from));
-        self.0.follow(path, from, filter).await
+        request: acyclic_stream::FollowRequest,
+    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
+        record(("follow", normalized_path(&request.path), request.from));
+        self.0.follow(request).await
     }
     async fn commit(
         &self,
@@ -419,6 +421,7 @@ async fn workflow(
                 })
                 .collect();
             copy.commit(CommitRequest {
+                deadline_unix_millis: None,
                 conditions,
                 mutations,
                 idempotency_key: acyclic_stream::IdempotencyKey::new(format!("copy-{index}"))

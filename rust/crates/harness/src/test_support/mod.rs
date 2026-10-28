@@ -62,7 +62,7 @@ pub async fn prompt_settled(
     prompt: &str,
 ) -> crate::Result<PromptOutcome> {
     use crate::agent::{AgentOutcome, AgentRecord as _, IntentId, Phase, Reply, StatusRecord};
-    use acyclic_stream::{FollowFilter, StreamProvider as _};
+    use acyclic_stream::StreamProvider as _;
     use futures::TryStreamExt as _;
     let agent = |error: crate::agent::Error| crate::Error::Storage(error.to_string());
     let stream = |error: acyclic_stream::StreamError| crate::Error::Storage(error.to_string());
@@ -72,10 +72,15 @@ pub async fn prompt_settled(
     let id = IntentId::try_from(id).map_err(agent)?;
     let (agents, root) = harness.agents().await?;
     let provider = agents.provider();
-    let mut statuses = provider
-        .follow(root.status().map_err(agent)?, 0, FollowFilter::default())
-        .await
-        .map_err(stream)?;
+    let mut statuses = acyclic_stream::records_only(
+        provider
+            .follow(acyclic_stream::FollowRequest::new(
+                root.status().map_err(agent)?,
+                0,
+            ))
+            .await
+            .map_err(stream)?,
+    );
     loop {
         let record = statuses
             .try_next()

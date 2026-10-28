@@ -8,6 +8,17 @@ pub(super) struct Provider {
     pub(super) saved: AtomicBool,
     pub(super) outbox_saved: AtomicU64,
 }
+impl Provider {
+    fn durable(&self, path: &StreamPath, accepted: u64) -> u64 {
+        if path.as_str() == "remote-outbox/files" {
+            accepted.min(self.outbox_saved.load(Ordering::Acquire))
+        } else if self.saved.load(Ordering::Acquire) {
+            accepted
+        } else {
+            0
+        }
+    }
+}
 #[async_trait::async_trait]
 impl StreamProvider for Provider {
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
@@ -20,23 +31,19 @@ impl StreamProvider for Provider {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         self.memory.inspect_idempotency(key).await
     }
+    async fn head(&self, path: StreamPath) -> Result<PathHead, StreamError> {
+        let mut head = self.memory.head(path.clone()).await?;
+        head.durable = self.durable(&path, head.tail);
+        Ok(head)
+    }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.memory.tail(path).await
-    }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.memory.bounds(path).await
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         let accepted = self.memory.tail(path.clone()).await?;
         Ok(StreamWatermarks {
             accepted,
-            durable: if path.as_str() == "remote-outbox/files" {
-                accepted.min(self.outbox_saved.load(Ordering::Acquire))
-            } else if self.saved.load(Ordering::Acquire) {
-                accepted
-            } else {
-                0
-            },
+            durable: self.durable(&path, accepted),
         })
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -52,24 +59,8 @@ impl StreamProvider for Provider {
         }
         self.memory.read(request).await
     }
-    async fn follow(
-        &self,
-        path: StreamPath,
-        from: u64,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.memory.follow(path, from, filter).await
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.memory
-            .follow_checked(path, from, preceding, filter)
-            .await
+    async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError> {
+        self.memory.follow(request).await
     }
 
     async fn children_page(

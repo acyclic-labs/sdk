@@ -2,30 +2,13 @@ pub(crate) fn path(value: String) -> Result<StreamPath, StreamError> {
     StreamPath::new(value)
 }
 
-#[cfg(any(
-    feature = "grpc",
-    feature = "local",
-    feature = "postgres",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(
-        any(feature = "wasm", feature = "wasm-journal"),
-        target_arch = "wasm32"
-    )
-))]
-pub(crate) fn optional_key(value: Option<Bytes>) -> Result<Option<IdempotencyKey>, StreamError> {
-    value.map(IdempotencyKey::new).transpose()
-}
-
-#[cfg(feature = "grpc")]
-/// Converts an optional wire idempotency key, rejecting an omitted key.
-pub fn required_key(value: Option<Bytes>) -> Result<IdempotencyKey, StreamError> {
-    value
-        .ok_or(StreamError::InvalidArgument)
-        .and_then(IdempotencyKey::new)
-}
-
 pub(crate) fn condition_wire(value: CommitCondition) -> wire::CommitCondition {
     let condition = match value {
+        CommitCondition::Present { path } => {
+            wire::commit_condition::Condition::Present(wire::PresentCondition {
+                path: path.to_string(),
+            })
+        }
         CommitCondition::Head {
             path,
             expected,
@@ -56,6 +39,9 @@ pub(crate) fn condition_from_wire(
     value: wire::CommitCondition,
 ) -> Result<CommitCondition, StreamError> {
     match value.condition.ok_or(StreamError::InvalidArgument)? {
+        wire::commit_condition::Condition::Present(value) => Ok(CommitCondition::Present {
+            path: path(value.path)?,
+        }),
         wire::commit_condition::Condition::Head(value) => Ok(CommitCondition::Head {
             path: path(value.path)?,
             expected: value.expected,
@@ -144,16 +130,10 @@ pub(crate) fn observation_from_wire(
             IdempotencyOutcome::Append(append_outcome_from_wire(value)?)
         }
         wire::idempotency_observation::Outcome::Fork(value) => {
-            IdempotencyOutcome::Fork(ForkReceipt {
-                source: path(value.source)?,
-                destination: path(value.destination)?,
-                forked_at: value.forked_at,
-                tail: value.tail,
-                commit_id: commit_id(&value.commit_id)?,
-            })
+            IdempotencyOutcome::Fork(fork_receipt_from_wire(value)?)
         }
         wire::idempotency_observation::Outcome::Commit(value) => {
-            IdempotencyOutcome::Commit(commit_outcome_from_wire(value)?)
+            IdempotencyOutcome::Commit(envelope_from_wire(value)?)
         }
     };
     Ok(IdempotencyObservation {
@@ -173,7 +153,7 @@ pub fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObser
             wire::idempotency_observation::Outcome::Fork(fork_receipt_to_wire(&value))
         }
         IdempotencyOutcome::Commit(value) => {
-            wire::idempotency_observation::Outcome::Commit(commit_outcome_to_wire(value))
+            wire::idempotency_observation::Outcome::Commit(envelope_to_wire(value))
         }
     };
     wire::IdempotencyObservation {
@@ -200,8 +180,8 @@ pub(crate) fn commit_outcome_from_wire(
     value: wire::CommitResponse,
 ) -> Result<CommitOutcome, StreamError> {
     match value.outcome.ok_or(StreamError::Unavailable)? {
-        wire::commit_response::Outcome::Committed(envelope) => {
-            Ok(CommitOutcome::Committed(envelope_from_wire(envelope)?))
+        wire::commit_response::Outcome::Committed(receipt) => {
+            Ok(CommitOutcome::Committed(receipt_from_wire(receipt)?))
         }
         wire::commit_response::Outcome::Conflict(conflicts) => Ok(CommitOutcome::Conflict(
             conflicts
@@ -248,7 +228,7 @@ pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendReque
             .map(append_record)
             .collect::<Result<_, _>>()?,
         if_tail: value.if_tail,
-        idempotency_key: optional_key(value.idempotency_key)?,
+        idempotency_key: IdempotencyKey::new(value.idempotency_key)?,
     })
 }
 
@@ -273,7 +253,7 @@ pub fn fork_from_wire(value: wire::ForkRequest) -> Result<crate::ForkRequest, St
         source: path(value.source)?,
         destination: path(value.destination)?,
         at_tail: value.at_tail,
-        idempotency_key: optional_key(value.idempotency_key)?,
+        idempotency_key: IdempotencyKey::new(value.idempotency_key)?,
     })
 }
 
@@ -356,6 +336,7 @@ pub fn children_page_from_response(
             .into_iter()
             .map(|child| {
                 Ok(crate::Child {
+                    origin: child.origin.map(fork_origin_from_wire).transpose()?,
                     tail_record: child.tail_record.map(record).transpose()?,
                     path: path(child.path)?,
                 })
@@ -373,6 +354,7 @@ pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageRe
             .children
             .into_iter()
             .map(|child| wire::Child {
+                origin: child.origin.map(fork_origin_to_wire),
                 tail_record: child.tail_record.map(record_wire),
                 path: child.path.to_string(),
             })
@@ -384,6 +366,7 @@ pub fn children_page_to_wire(value: crate::ChildrenPage) -> wire::ChildrenPageRe
 /// Decodes a commit request from its generated wire representation.
 pub fn commit_from_wire(value: wire::CommitRequest) -> Result<crate::CommitRequest, StreamError> {
     Ok(crate::CommitRequest {
+        deadline_unix_millis: value.deadline_unix_millis,
         conditions: value
             .conditions
             .into_iter()
@@ -398,7 +381,7 @@ pub fn commit_from_wire(value: wire::CommitRequest) -> Result<crate::CommitReque
     })
 }
 
-/// Converts a domain commit request to its wire form, without a deadline.
+/// Converts a domain commit request, including its publication deadline.
 pub fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitRequest {
     wire::CommitRequest {
         conditions: value
@@ -409,7 +392,7 @@ pub fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitRequest {
             .collect(),
         mutations: value.mutations.iter().cloned().map(mutation_wire).collect(),
         idempotency_key: bytes::Bytes::copy_from_slice(value.idempotency_key.as_bytes()),
-        deadline_unix_millis: None,
+        deadline_unix_millis: value.deadline_unix_millis,
     }
 }
 
@@ -449,6 +432,7 @@ pub(crate) fn envelope_from_wire(
 ) -> Result<CommittedEnvelope, StreamError> {
     Ok(CommittedEnvelope {
         commit_id: commit_id(&value.commit_id)?,
+        committed_at_micros: value.committed_at_micros,
         mutations: value
             .mutations
             .into_iter()
@@ -460,8 +444,8 @@ pub(crate) fn envelope_from_wire(
 /// Converts a commit outcome into its generated wire representation.
 pub fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::CommitResponse {
     let outcome = match value {
-        crate::CommitOutcome::Committed(envelope) => {
-            wire::commit_response::Outcome::Committed(envelope_to_wire(envelope))
+        crate::CommitOutcome::Committed(receipt) => {
+            wire::commit_response::Outcome::Committed(receipt_to_wire(receipt))
         }
         crate::CommitOutcome::Conflict(conflicts) => {
             wire::commit_response::Outcome::Conflict(wire::CommitConflicts {
@@ -478,6 +462,7 @@ pub fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::CommitRespon
 pub fn envelope_to_wire(value: crate::CommittedEnvelope) -> wire::CommittedEnvelope {
     wire::CommittedEnvelope {
         commit_id: bytes::Bytes::copy_from_slice(value.commit_id.as_bytes()),
+        committed_at_micros: value.committed_at_micros,
         mutations: value
             .mutations
             .into_iter()
@@ -559,6 +544,9 @@ pub(crate) fn conflict_from_wire(
     value: wire::CommitConflict,
 ) -> Result<CommitConflict, StreamError> {
     match value.conflict.ok_or(StreamError::Unavailable)? {
+        wire::commit_conflict::Conflict::Missing(value) => Ok(CommitConflict::Missing {
+            path: path(value.path)?,
+        }),
         wire::commit_conflict::Conflict::Head(value) => Ok(CommitConflict::Head {
             path: path(value.path)?,
             expected: CommitId::from_bytes(
@@ -589,6 +577,11 @@ pub(crate) fn conflict_from_wire(
 
 pub(crate) fn conflict_wire(value: CommitConflict) -> wire::CommitConflict {
     let conflict = match value {
+        CommitConflict::Missing { path } => {
+            wire::commit_conflict::Conflict::Missing(wire::MissingCommitConflict {
+                path: path.to_string(),
+            })
+        }
         CommitConflict::Head {
             path,
             expected,

@@ -1,5 +1,6 @@
 use super::*;
 use crate::MAX_COMMAND_BYTES;
+use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[tokio::test]
@@ -13,6 +14,7 @@ async fn committed_record_times_never_regress_with_the_clock() -> Result<(), Str
             clock.0.store(90, Ordering::SeqCst);
             let outcome = stream
                 .commit(CommitRequest {
+                    deadline_unix_millis: None,
                     conditions: vec![CommitCondition::Tail {
                         path: path.clone(),
                         expected: 1,
@@ -32,7 +34,7 @@ async fn committed_record_times_never_regress_with_the_clock() -> Result<(), Str
                 path: path.clone(),
                 records: vec![(Bytes::copy_from_slice(body)).into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }
@@ -77,6 +79,7 @@ fn key(value: &'static [u8]) -> Result<crate::IdempotencyKey, StreamError> {
 #[test]
 fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
     let records = vec![crate::AppendRecord::from(vec![0_u8; MAX_RECORD_BYTES]); 16];
+    let idempotency_key = key(b"size")?;
     let mut low = 1_usize;
     let mut high = crate::MAX_PATH_BYTES;
     while low < high {
@@ -90,7 +93,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
                 .map(crate::wire_codec::append_record_wire)
                 .collect(),
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: bytes::Bytes::copy_from_slice(idempotency_key.as_bytes()),
         };
         if wire.encoded_len() <= MAX_COMMAND_BYTES {
             low = middle;
@@ -102,7 +105,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
         path: StreamPath::new("x".repeat(low))?,
         records,
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: idempotency_key.clone(),
     };
     assert!(validate_append_size(&request).is_ok());
     let next = StreamPath::new("x".repeat(low + 1))?;
@@ -115,7 +118,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
             .map(crate::wire_codec::append_record_wire)
             .collect(),
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: bytes::Bytes::copy_from_slice(idempotency_key.as_bytes()),
     };
     assert!(next_wire.encoded_len() > MAX_COMMAND_BYTES);
     Ok(())
@@ -130,7 +133,7 @@ async fn paginates_more_children_than_one_wire_page_without_gaps() -> Result<(),
                 path: path(&format!("agents/agent-{index:04}"))?,
                 records: vec![(Bytes::from_static(b"bound")).into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }
@@ -172,7 +175,7 @@ async fn deep_fork_history_is_dropped_without_recursive_stack_growth() -> Result
             path: source.clone(),
             records: vec![(Bytes::from_static(b"root")).into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     for depth in 0..2_048 {
@@ -183,7 +186,7 @@ async fn deep_fork_history_is_dropped_without_recursive_stack_growth() -> Result
                 source,
                 destination: destination.clone(),
                 at_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
         source = destination;
@@ -198,6 +201,7 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
     clock.0.store(100, Ordering::SeqCst);
     let provider = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Absent {
             path: path("deadline/accepted")?,
         }],
@@ -208,19 +212,43 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
         idempotency_key: key(b"deadline-accepted")?,
     };
     assert_eq!(
-        provider.commit_before(request.clone(), 100).await,
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: Some(100),
+                ..request.clone()
+            })
+            .await,
         Err(StreamError::DeadlineElapsed)
     );
     assert_eq!(
-        provider.commit_before(request.clone(), 99).await,
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: Some(99),
+                ..request.clone()
+            })
+            .await,
         Err(StreamError::DeadlineElapsed)
     );
-    let committed = provider.commit_before(request.clone(), 101).await?;
+    let committed = provider
+        .commit(CommitRequest {
+            deadline_unix_millis: Some(101),
+            ..request.clone()
+        })
+        .await?;
     assert!(matches!(committed, CommitOutcome::Committed(_)));
     clock.0.store(1_000, Ordering::SeqCst);
-    assert_eq!(provider.commit_before(request, 101).await?, committed);
+    assert_eq!(
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: Some(101),
+                ..request
+            })
+            .await?,
+        committed
+    );
 
     let retryable = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Absent {
             path: path("deadline/retry")?,
         }],
@@ -231,11 +259,21 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
         idempotency_key: key(b"deadline-retry")?,
     };
     assert_eq!(
-        provider.commit_before(retryable.clone(), 1_000).await,
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: Some(1_000),
+                ..retryable.clone()
+            })
+            .await,
         Err(StreamError::DeadlineElapsed)
     );
     assert!(matches!(
-        provider.commit_before(retryable, 1_001).await?,
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: Some(1_001),
+                ..retryable
+            })
+            .await?,
         CommitOutcome::Committed(_)
     ));
     Ok(())
@@ -251,7 +289,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
                 path: source.clone(),
                 records: vec![(Bytes::from(index.to_string())).into()],
                 if_tail: Some(index),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }
@@ -262,7 +300,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
             source: source.clone(),
             destination: destination.clone(),
             at_tail: Some(128),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
 
@@ -290,7 +328,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
             source: source.clone(),
             destination: child.clone(),
             at_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     provider
@@ -298,7 +336,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
             path: child.clone(),
             records: vec![(Bytes::from_static(b"child")).into()],
             if_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     for (path, expected) in [(child, b"child".as_slice()), (source, b"1".as_slice())] {
@@ -329,12 +367,13 @@ async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
                     path: stream.clone(),
                     records: vec![(Bytes::from_static(b"x")).into()],
                     if_tail: Some(index),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 })
                 .await?;
         }
         let mut follow = provider
-            .follow(stream, 0, crate::FollowFilter::default())
+            .follow(crate::FollowRequest::new(stream, 0))
+            .map_ok(crate::records_only)
             .await?;
         for expected in 0..count {
             let record = follow.next().await.ok_or(StreamError::Unavailable)??;
@@ -361,7 +400,7 @@ async fn exact_replay_precedes_capacity_and_changed_arguments_never_reclassify()
         path: path("a/b")?,
         records: vec![(Bytes::from_static(b"one")).into()],
         if_tail: Some(0),
-        idempotency_key: Some(key(b"only-key")?),
+        idempotency_key: key(b"only-key")?,
     };
     let committed = provider.append(request.clone()).await?;
     assert_eq!(
@@ -399,7 +438,7 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
             path: source.clone(),
             records: bodies.into_iter().map(Into::into).collect(),
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     for cut in 0_u64..=32 {
@@ -410,7 +449,7 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
                 source: source.clone(),
                 destination: destination.clone(),
                 at_tail: Some(cut),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
         let records = provider
@@ -432,7 +471,7 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
                 path: destination.clone(),
                 records: vec![(Bytes::from_static(b"own")).into(); 2],
                 if_tail: Some(cut),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
         let from = cut.saturating_sub(3);
@@ -505,9 +544,8 @@ async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), Str
         path: StreamPath::new("retained").unwrap_or_else(|_| unreachable!()),
         records: vec![(Bytes::from_static(name)).into()],
         if_tail: None,
-        idempotency_key: Some(
-            crate::IdempotencyKey::new(Bytes::from_static(name)).unwrap_or_else(|_| unreachable!()),
-        ),
+        idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(name))
+            .unwrap_or_else(|_| unreachable!()),
     };
     let AppendOutcome::Committed(first) = provider.append(append(b"first")).await? else {
         return Err(StreamError::Unavailable);
@@ -577,7 +615,7 @@ proptest::proptest! {
                         path: path(&format!("root/{name}"))?,
                         records: vec![(Bytes::from_static(b"x")).into()],
                         if_tail: None,
-                        idempotency_key: None,
+                        idempotency_key: crate::IdempotencyKey::unique(),
                     })
                     .await?;
             }
@@ -589,7 +627,7 @@ proptest::proptest! {
                         path: log.clone(),
                         records: chunk.iter().cloned().map(Into::into).collect(),
                         if_tail: None,
-                        idempotency_key: None,
+                        idempotency_key: crate::IdempotencyKey::unique(),
                     })
                     .await?;
             }
@@ -655,7 +693,7 @@ async fn hierarchy_page_starts_after_prefix_siblings() -> Result<(), StreamError
                 path: path(name)?,
                 records: vec![(Bytes::new()).into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }
@@ -688,6 +726,7 @@ async fn commit_counts_an_explicit_parent_once_across_prefix_siblings() -> Resul
     });
     let names = ["a", "a-/child", "a/child"];
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: names
             .iter()
             .map(|name| Ok(CommitCondition::Absent { path: path(name)? }))

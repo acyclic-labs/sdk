@@ -1,6 +1,7 @@
 use super::*;
 use crate::grpc::tests::retry_capture;
 use acyclic_grpc_observability::tests::Capture;
+use futures::TryFutureExt as _;
 
 const CLOSE: &str = "the first request must close while its pool remains cached";
 
@@ -27,11 +28,11 @@ fn run_context_case(observed_first: bool, retain_first: bool) -> TestResult {
         // Deliberately reproduce the former cached-pool ownership in the control.
         let retained = retain_first.then(|| origin.clone());
         let records = origin
-            .scope(client.follow(
-                StreamPath::new("events")?,
-                1,
-                crate::FollowFilter::default(),
-            ))
+            .scope(
+                client
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
+                    .map_ok(crate::records_only),
+            )
             .await?;
         drop(records);
         drop(origin);
@@ -47,11 +48,11 @@ fn run_context_case(observed_first: bool, retain_first: bool) -> TestResult {
             crate::obs::OperationSpan::new(tracing::info_span!("second.request"))
         });
         let records = origin
-            .scope(client.follow(
-                StreamPath::new("events")?,
-                1,
-                crate::FollowFilter::default(),
-            ))
+            .scope(
+                client
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
+                    .map_ok(crate::records_only),
+            )
             .await?;
         drop(records);
         drop(origin);
@@ -183,19 +184,19 @@ fn overlapping(fault: u8) -> TestResult {
         let client = fixture.client()?;
         let first = origin(&subscriber, true);
         let a = first
-            .scope(client.follow(
-                StreamPath::new("events")?,
-                1,
-                crate::FollowFilter::default(),
-            ))
+            .scope(
+                client
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
+                    .map_ok(crate::records_only),
+            )
             .await?;
         let second = origin(&subscriber, false);
         let mut b = second
-            .scope(client.follow(
-                StreamPath::new("events")?,
-                1,
-                crate::FollowFilter::default(),
-            ))
+            .scope(
+                client
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
+                    .map_ok(crate::records_only),
+            )
             .await?;
         // Lifetime mutant is independent of the root/causal-link controls below.
         let retained = (fault == 1).then(|| first.clone());
@@ -419,11 +420,19 @@ async fn moved_owner_withdraws() -> TestResult {
     client.register_credential(0, crate::session::testing::credential())?;
     let a_origin = origin(&subscriber, true);
     let moving = a_origin
-        .scope(client.follow(StreamPath::new("move")?, 1, crate::FollowFilter::default()))
+        .scope(
+            client
+                .follow(crate::FollowRequest::new(StreamPath::new("move")?, 1))
+                .map_ok(crate::records_only),
+        )
         .await?;
     let b_origin = origin(&subscriber, false);
     let mut staying = b_origin
-        .scope(client.follow(StreamPath::new("stay")?, 1, crate::FollowFilter::default()))
+        .scope(
+            client
+                .follow(crate::FollowRequest::new(StreamPath::new("stay")?, 1))
+                .map_ok(crate::records_only),
+        )
         .await?;
     home.controls.send(Ok(frame(
         1,
@@ -527,19 +536,23 @@ fn cancelling_the_dial_origin_releases_its_span_while_b_waits_for_welcome() -> T
         );
         client.register_credential(0, crate::session::testing::credential())?;
         let a_origin = origin(&subscriber, true);
-        let mut a = Box::pin(a_origin.scope(client.follow(
-            StreamPath::new("events")?,
-            1,
-            crate::FollowFilter::default(),
-        )));
+        let mut a = Box::pin(
+            a_origin.scope(
+                client
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
+                    .map_ok(crate::records_only),
+            ),
+        );
         assert!(futures::poll!(a.as_mut()).is_pending());
         started.notified().await;
         let b_origin = origin(&subscriber, false);
-        let mut b = Box::pin(b_origin.scope(client.follow(
-            StreamPath::new("events")?,
-            1,
-            crate::FollowFilter::default(),
-        )));
+        let mut b = Box::pin(
+            b_origin.scope(
+                client
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
+                    .map_ok(crate::records_only),
+            ),
+        );
         assert!(futures::poll!(b.as_mut()).is_pending());
         drop(a);
         drop(a_origin);
@@ -590,19 +603,19 @@ fn overlapping_subscribers_cannot_alias_equal_channel_span_ids() -> TestResult {
         let client = fixture.client()?;
         let a_origin = origin(&a_dispatch, true);
         let a = a_origin
-            .scope(client.follow(
-                StreamPath::new("events")?,
-                1,
-                crate::FollowFilter::default(),
-            ))
+            .scope(
+                client
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
+                    .map_ok(crate::records_only),
+            )
             .await?;
         let b_origin = origin(&b_dispatch, false);
         let mut b = b_origin
-            .scope(client.follow(
-                StreamPath::new("events")?,
-                1,
-                crate::FollowFilter::default(),
-            ))
+            .scope(
+                client
+                    .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
+                    .map_ok(crate::records_only),
+            )
             .await?;
         let a_history = first.0.lock().unwrap().spans.clone();
         let b_history = second.0.lock().unwrap().spans.clone();

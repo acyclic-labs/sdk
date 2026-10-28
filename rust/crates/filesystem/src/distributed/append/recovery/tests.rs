@@ -401,7 +401,7 @@ async fn conflict_recovery_authenticates_each_link_after_its_base() -> TestResul
             path: stream_path(authority, "/records")?,
             records: vec![acyclic_stream::OwnedBytes::from(encoded.to_vec()).into()],
             if_tail: Some(8),
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
     let conflicts = [acyclic_stream::CommitConflict::Tail {

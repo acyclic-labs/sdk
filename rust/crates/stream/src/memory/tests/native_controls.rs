@@ -7,6 +7,253 @@ use std::sync::atomic::Ordering;
 type MemoryResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[tokio::test]
+async fn native_receipt_replay_records_actual_metadata_copies_and_original_refusals()
+-> MemoryResult<()> {
+    let provider = MemoryStream::default();
+    let source = StreamPath::new("receipt-copy/a")?;
+    let destination = StreamPath::new("receipt-copy/z")?;
+    provider
+        .append(AppendRequest {
+            path: source.clone(),
+            records: vec![OwnedBytes::from_static(b"seed").into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::new("receipt-copy-seed")?,
+        })
+        .await?;
+    let request = CommitRequest {
+        deadline_unix_millis: None,
+        conditions: vec![
+            CommitCondition::Tail {
+                path: source.clone(),
+                expected: 1,
+            },
+            CommitCondition::Absent {
+                path: destination.clone(),
+            },
+        ],
+        mutations: vec![
+            CommitMutation::Append {
+                path: source.clone(),
+                records: vec![OwnedBytes::from_static(b"next").into()],
+            },
+            CommitMutation::Fork {
+                source: source.clone(),
+                destination: destination.clone(),
+                at_tail: 1,
+                exclude: Vec::new(),
+                records: Vec::new(),
+            },
+        ],
+        idempotency_key: IdempotencyKey::new("receipt-copy")?,
+    };
+    let accepted = provider.commit(request.clone()).await?;
+    assert!(matches!(&accepted, CommitOutcome::Committed(_)));
+    let first_copy = std::mem::size_of::<crate::AppendRange>() as u64;
+    let complete_copy = first_copy + std::mem::size_of::<ForkReceipt>() as u64;
+    for refusal in 0..5 {
+        let mut meter = Meter::local();
+        meter.codec_limit.copied = match refusal {
+            3 => first_copy - 1,
+            4 => complete_copy - 1,
+            _ => complete_copy,
+        };
+        let meter = Arc::new(meter);
+        meter.cancelled.store(refusal == 1, Ordering::SeqCst);
+        meter.cancel_on_copy.store(refusal == 2, Ordering::SeqCst);
+        let result = provider
+            .native_commit(request.clone(), None, meter.original())
+            .await;
+        let expected_copied = match refusal {
+            0 => {
+                let output = result??;
+                assert_eq!(output.value(), &accepted);
+                assert_eq!(meter.held.load(Ordering::SeqCst), complete_copy);
+                drop(output);
+                complete_copy
+            }
+            1 | 2 => {
+                assert!(matches!(result, Err(error)
+                    if error.kind() == std::io::ErrorKind::Interrupted
+                        && error.get_ref().is_some_and(|cause|
+                            cause.downcast_ref::<crate::test_meter::NativeDenial>()
+                                .is_some_and(|cause| cause.0 == "cancelled"))));
+                if refusal == 1 { 0 } else { first_copy }
+            }
+            _ => {
+                assert!(matches!(result, Err(error)
+                    if error.get_ref().is_some_and(|cause|
+                        cause.downcast_ref::<crate::test_meter::NativeDenial>()
+                            .is_some_and(|cause| cause.0 == "codec"))));
+                if refusal == 3 { 0 } else { first_copy }
+            }
+        };
+        assert_eq!(meter.copied.load(Ordering::SeqCst), expected_copied);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+        assert_eq!(provider.tail(source.clone()).await?, 2);
+        assert_eq!(provider.tail(destination.clone()).await?, 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_commit_owns_admitted_and_retained_fork_exclusions() -> MemoryResult<()> {
+    let provider = MemoryStream::default();
+    let source = StreamPath::new("resident-source")?;
+    let destination = StreamPath::new("resident-fork")?;
+    provider
+        .append(AppendRequest {
+            path: source.clone(),
+            records: vec![OwnedBytes::from_static(b"seed").into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::new("resident-seed")?,
+        })
+        .await?;
+    let mut exclude = Vec::with_capacity(7);
+    exclude.push(crate::RelativePath::new("private")?);
+    exclude.push(crate::RelativePath::new("secret")?);
+    let input_exclusions = exclude.capacity() * std::mem::size_of::<crate::RelativePath>();
+    let request = CommitRequest {
+        deadline_unix_millis: None,
+        conditions: vec![CommitCondition::Absent {
+            path: destination.clone(),
+        }],
+        mutations: vec![CommitMutation::Fork {
+            source,
+            destination,
+            at_tail: 1,
+            records: Vec::new(),
+            exclude,
+        }],
+        idempotency_key: IdempotencyKey::new("resident-exclusions")?,
+    };
+    let input_bytes = input_exclusions
+        + request.conditions.capacity() * std::mem::size_of::<CommitCondition>()
+        + request.mutations.capacity() * std::mem::size_of::<CommitMutation>();
+    let input_meter = Arc::new(Meter::default());
+    {
+        let work = Work::new(input_meter.original())?;
+        let admitted = provider.with_context(work);
+        let claim = admitted
+            .request_claim(&request)?
+            .ok_or(StreamError::Unavailable)?;
+        assert_eq!(claim.bytes(), input_bytes as u64);
+    }
+    assert_eq!(input_meter.held.load(Ordering::SeqCst), 0);
+    let denied = Arc::new(Meter {
+        memory_limit: (acyclic_native_runtime::arc_allocation_bytes::<Work>() + input_bytes - 1)
+            as u64,
+        ..Meter::default()
+    });
+    {
+        let admitted = provider.with_context(Work::new(denied.original())?);
+        assert!(
+            admitted.request_claim(&request).is_err(),
+            "unfunded exclusions must refuse admission"
+        );
+    }
+    assert_eq!(denied.held.load(Ordering::SeqCst), 0);
+    let meter = Arc::new(Meter::default());
+    let output = provider
+        .native_commit(request, None, meter.original())
+        .await??;
+    let CommitOutcome::Committed(receipt) = output.value() else {
+        panic!("committed fork")
+    };
+    {
+        let state = provider.state.read().await;
+        let entry = state.retained.last().ok_or(StreamError::Unavailable)?;
+        let facts = entry.envelope().ok_or(StreamError::Unavailable)?;
+        assert!(receipt.matches_envelope(facts));
+        let [CommittedMutation::Fork(fork)] = facts.mutations.as_slice() else {
+            panic!("one fork")
+        };
+        assert_eq!(
+            fork.exclude,
+            [
+                crate::RelativePath::new("private")?,
+                crate::RelativePath::new("secret")?,
+            ]
+        );
+        let expected = (facts.mutations.capacity() * std::mem::size_of::<CommittedMutation>()
+            + fork.exclude.capacity() * std::mem::size_of::<crate::RelativePath>()
+            + fork.records.capacity() * std::mem::size_of::<Record>())
+            as u64;
+        assert_eq!(
+            entry
+                ._allocation
+                .as_ref()
+                .ok_or(StreamError::Unavailable)?
+                .bytes(),
+            expected
+        );
+    }
+    drop(output);
+    assert!(
+        meter.held.load(Ordering::SeqCst) > 0,
+        "resident facts retain their custody"
+    );
+    drop(provider);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn retained_fork_inspection_owns_every_exclusion_buffer() -> MemoryResult<()> {
+    let provider = MemoryStream::default();
+    let source = StreamPath::new("inspection-source")?;
+    let destination = StreamPath::new("inspection-fork")?;
+    provider
+        .append(AppendRequest {
+            path: source.clone(),
+            records: vec![OwnedBytes::from_static(b"seed").into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::new("inspection-seed")?,
+        })
+        .await?;
+    let key = IdempotencyKey::new("inspection-exclusions")?;
+    provider
+        .commit(CommitRequest {
+            deadline_unix_millis: None,
+            conditions: vec![CommitCondition::Absent {
+                path: destination.clone(),
+            }],
+            mutations: vec![CommitMutation::Fork {
+                source,
+                destination,
+                at_tail: 1,
+                records: Vec::new(),
+                exclude: vec![
+                    crate::RelativePath::new("private")?,
+                    crate::RelativePath::new("secret")?,
+                ],
+            }],
+            idempotency_key: key.clone(),
+        })
+        .await?;
+    let meter = Arc::new(Meter::default());
+    let output = provider
+        .native_inspect_idempotency(key, meter.original())
+        .await??;
+    let observation = output.value().as_ref().ok_or(StreamError::Unavailable)?;
+    let IdempotencyOutcome::Commit(facts) = &observation.outcome else {
+        panic!("full commit facts")
+    };
+    let [CommittedMutation::Fork(fork)] = facts.mutations.as_slice() else {
+        panic!("one fork")
+    };
+    assert_eq!(fork.exclude.len(), 2);
+    let expected = (facts.mutations.capacity() * std::mem::size_of::<CommittedMutation>()
+        + fork.exclude.capacity() * std::mem::size_of::<crate::RelativePath>()
+        + fork.records.capacity() * std::mem::size_of::<Record>()) as u64;
+    assert_eq!(output.allocation.bytes(), expected);
+    assert_eq!(meter.held.load(Ordering::SeqCst), expected);
+    drop(output);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[tokio::test]
 async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> MemoryResult<()> {
     let provider = MemoryStream::default();
     let meter = Arc::new(Meter::default());
@@ -18,9 +265,9 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
                     path: path("replay/growth")?,
                     records: vec![(OwnedBytes::from_static(b"value")).into()],
                     if_tail: Some(index),
-                    idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(
+                    idempotency_key: IdempotencyKey::new(OwnedBytes::from(
                         (255 - index).to_be_bytes().to_vec(),
-                    ))?),
+                    ))?,
                 },
                 meter.original(),
             )
@@ -39,9 +286,7 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
         path: path("replay/growth")?,
         records: vec![(OwnedBytes::from_static(b"value")).into()],
         if_tail: Some(0),
-        idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(
-            255_u64.to_be_bytes().to_vec(),
-        ))?),
+        idempotency_key: IdempotencyKey::new(OwnedBytes::from(255_u64.to_be_bytes().to_vec()))?,
     };
     let denied = Arc::new(Meter::default());
     denied.examination_limit.store(0, Ordering::SeqCst);
@@ -66,9 +311,9 @@ async fn descending_replay_keys_keep_copy_work_and_lookup_depth_bounded() -> Mem
                 path: path("replay/growth")?,
                 records: vec![(OwnedBytes::from_static(b"value")).into()],
                 if_tail: Some(0),
-                idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(
+                idempotency_key: IdempotencyKey::new(OwnedBytes::from(
                     256_u64.to_be_bytes().to_vec(),
-                ))?),
+                ))?,
             },
             insertion.original(),
         )
@@ -127,9 +372,9 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
                     path: path("other")?,
                     records: vec![(OwnedBytes::from_static(b"other")).into()],
                     if_tail: Some(index),
-                    idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from(format!(
+                    idempotency_key: IdempotencyKey::new(OwnedBytes::from(format!(
                         "other/{index}"
-                    )))?),
+                    )))?,
                 },
                 meter.original(),
             )
@@ -155,10 +400,16 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
         );
         let cached = provider.inspect_idempotency(key).await?;
         if index == 0 {
-            assert_eq!(
-                cached.ok_or(StreamError::Unavailable)?.outcome,
-                IdempotencyOutcome::Commit(output.value().clone())
-            );
+            let IdempotencyOutcome::Commit(envelope) =
+                cached.ok_or(StreamError::Unavailable)?.outcome
+            else {
+                panic!("original Commit family")
+            };
+            let CommitOutcome::Committed(receipt) = output.value() else {
+                panic!("original Commit result")
+            };
+            assert!(receipt.matches_envelope(&envelope));
+            assert_eq!(provider.read_commit(receipt.commit_id).await?, envelope);
         } else {
             assert!(cached.is_none());
         }
@@ -197,11 +448,12 @@ async fn prepared_fixture(limits: MemoryLimits) -> MemoryResult<(MemoryStream, C
                 path: path(name)?,
                 records: vec![(OwnedBytes::from_static(b"seed")).into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
     }
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Tail {
                 path: path("completion/owner")?,
@@ -282,18 +534,22 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
     let CommitOutcome::Committed(envelope) = output.value() else {
         panic!("canonical Commit result")
     };
-    let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
-        panic!("single append")
-    };
-    assert_eq!(
-        append
-            .records
-            .first()
-            .ok_or(StreamError::InvalidArgument)?
-            .value
-            .as_ref(),
-        b"root-body"
-    );
+    {
+        let facts = provider.read_commit(envelope.commit_id).await?;
+        assert!(envelope.matches_envelope(&facts));
+        let [CommittedMutation::Append(append)] = facts.mutations.as_slice() else {
+            panic!("single append")
+        };
+        assert_eq!(
+            append
+                .records
+                .first()
+                .ok_or(StreamError::InvalidArgument)?
+                .value
+                .as_ref(),
+            b"root-body"
+        );
+    }
     assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
     assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
     assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
@@ -302,7 +558,8 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
     let IdempotencyOutcome::Commit(recovered) = &observation.outcome else {
         panic!("original Commit family")
     };
-    assert_eq!(recovered, output.value());
+    assert!(envelope.matches_envelope(recovered));
+    assert_eq!(*recovered, provider.read_commit(envelope.commit_id).await?);
     assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
     assert_eq!(meter.pending_read.load(Ordering::SeqCst), 0);
     assert_eq!(meter.pending_read_operations.load(Ordering::SeqCst), 0);
@@ -340,6 +597,7 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
         let published = if larger_commit {
             let outcome = provider
                 .commit(CommitRequest {
+                    deadline_unix_millis: None,
                     // Each real Append mutation needs its own current-tail guard.
                     conditions: vec![
                         CommitCondition::Tail {
@@ -367,16 +625,17 @@ async fn prebuilt_recovery_rejects_actual_foreign_family_and_larger_commit_witho
             let CommitOutcome::Committed(envelope) = &outcome else {
                 panic!("the larger foreign Commit must actually publish")
             };
-            assert_eq!(envelope.mutations.len(), 2);
+            assert_eq!(envelope.appends.len(), 2);
+            assert!(envelope.forks.is_empty());
             assert_eq!(provider.tail(path("completion/owner")?).await?, 2);
-            IdempotencyOutcome::Commit(outcome)
+            IdempotencyOutcome::Commit(provider.read_commit(envelope.commit_id).await?)
         } else {
             let outcome = provider
                 .append(AppendRequest {
                     path: path("completion/target")?,
                     records: vec![(OwnedBytes::from_static(b"foreign-append")).into()],
                     if_tail: Some(1),
-                    idempotency_key: Some(foreign_key.clone()),
+                    idempotency_key: foreign_key.clone(),
                 })
                 .await?;
             assert!(matches!(&outcome, AppendOutcome::Committed(_)));
@@ -445,32 +704,35 @@ async fn preaccepted_completion_survives_cancellation_and_lost_ack_with_exact_re
         .inspect_idempotency(key)
         .await?
         .ok_or(StreamError::Unavailable)?;
-    let IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) = &accepted.outcome else {
+    let IdempotencyOutcome::Commit(envelope) = &accepted.outcome else {
         panic!("canonical Commit family");
     };
-    let [CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
-        panic!("one append");
-    };
-    assert_eq!(
-        append
-            .records
-            .first()
-            .ok_or(StreamError::InvalidArgument)?
-            .value
-            .as_ref(),
-        b"actual-scalars"
-    );
-    assert_eq!((append.start, append.end), (1, 2));
-    assert_eq!(provider.read_commit(envelope.commit_id).await?, *envelope);
+    {
+        let facts = provider.read_commit(envelope.commit_id).await?;
+        assert_eq!(*envelope, facts);
+        let [CommittedMutation::Append(append)] = facts.mutations.as_slice() else {
+            panic!("one append");
+        };
+        assert_eq!(
+            append
+                .records
+                .first()
+                .ok_or(StreamError::InvalidArgument)?
+                .value
+                .as_ref(),
+            b"actual-scalars"
+        );
+        assert_eq!((append.start, append.end), (1, 2));
+    }
     let repeated = replay
         .into_parts()
         .0
         .finish((OwnedBytes::from_static(b"actual-scalars")).into())
         .await??;
-    assert_eq!(
-        IdempotencyOutcome::Commit(repeated.value().clone()),
-        accepted.outcome
-    );
+    let CommitOutcome::Committed(receipt) = repeated.value() else {
+        panic!("original Commit result")
+    };
+    assert!(receipt.matches_envelope(envelope));
     let (mut mismatch, mismatch_guard) = mismatch.into_parts();
     let recovery = mismatch
         .take_recovery_future()
@@ -512,7 +774,7 @@ async fn competing_tail_keeps_canonical_conflict_and_target_unchanged() -> Memor
             path: path("completion/owner")?,
             records: vec![(OwnedBytes::from_static(b"competing")).into()],
             if_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     let allocations = meter.allocations.load(Ordering::SeqCst);
@@ -563,16 +825,17 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
             path: path("unrelated")?,
             records: vec![(OwnedBytes::new()).into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         };
         let fork = ForkRequest {
             exclude: Vec::new(),
             source: path("completion/owner")?,
             destination: path("unrelated")?,
             at_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         };
         let commit = CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![CommitCondition::Absent {
                 path: path("unrelated")?,
             }],

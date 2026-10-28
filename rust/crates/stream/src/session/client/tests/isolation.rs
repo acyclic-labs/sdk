@@ -1,4 +1,5 @@
 use super::*;
+use futures::TryFutureExt as _;
 
 #[tokio::test]
 async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -> TestResult {
@@ -22,18 +23,15 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
         );
         client.register_credential(0, crate::session::testing::credential())?;
         let mut healthy = client
-            .follow(
-                StreamPath::new("healthy")?,
-                1,
-                crate::FollowFilter::default(),
-            )
+            .follow(crate::FollowRequest::new(StreamPath::new("healthy")?, 1))
+            .map_ok(crate::records_only)
             .await?;
         let mut children = client
-            .follow(
+            .follow(crate::FollowRequest::new(
                 StreamPath::new("agents/first")?,
                 0,
-                crate::FollowFilter::default(),
-            )
+            ))
+            .map_ok(crate::records_only)
             .await?;
         assert_eq!(children.next().await.ok_or("discovery ended")??.sequence, 0);
         let id = good
@@ -70,11 +68,8 @@ async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -
         );
         assert!(children.next().await.is_none());
         let mut later = client
-            .follow(
-                StreamPath::new("healthy")?,
-                1,
-                crate::FollowFilter::default(),
-            )
+            .follow(crate::FollowRequest::new(StreamPath::new("healthy")?, 1))
+            .map_ok(crate::records_only)
             .await?;
         append(&memory, "healthy", 1).await?;
         assert_eq!(next(&mut healthy).await?.sequence, 1);

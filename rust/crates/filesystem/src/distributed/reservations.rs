@@ -46,6 +46,7 @@ fn request(
         b"release-publication\0"
     };
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions,
         mutations,
         idempotency_key: work.key(
@@ -80,7 +81,7 @@ fn digest(
         let (path, scalar) = match condition {
             CommitCondition::Head { path, .. } => (path, 40),
             CommitCondition::Tail { path, .. } => (path, 8),
-            CommitCondition::Absent { path } => (path, 0),
+            CommitCondition::Absent { path } | CommitCondition::Present { path } => (path, 0),
         };
         bytes = bytes
             .checked_add(1 + 8 + path.as_str().len() as u64 + scalar)
@@ -131,15 +132,10 @@ fn verify_release(
             work,
         ));
     }
-    let acyclic_stream::IdempotencyOutcome::Commit(outcome) = &observation.outcome else {
+    let acyclic_stream::IdempotencyOutcome::Commit(envelope) = &observation.outcome else {
         return Err(authority_corrupt(
             "publication release identity retained another Stream mutation family",
             work,
-        ));
-    };
-    let CommitOutcome::Committed(envelope) = outcome else {
-        return Err(AuthorityStoreError::RejectedStatic(
-            "publication reservation is no longer active",
         ));
     };
     let mut request = request(
@@ -199,9 +195,7 @@ fn qualified(
     ) {
         return Ok(false);
     }
-    let acyclic_stream::IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) =
-        &observation.outcome
-    else {
+    let acyclic_stream::IdempotencyOutcome::Commit(envelope) = &observation.outcome else {
         return Ok(false);
     };
     let [acyclic_stream::CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
@@ -278,8 +272,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let result = self.authority_inspect(key, work).await;
         let mut actual = WorkCounters::UNCHARGED;
         if let Ok((Some(observation), _)) = &result
-            && let acyclic_stream::IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) =
-                &observation.outcome
+            && let acyclic_stream::IdempotencyOutcome::Commit(envelope) = &observation.outcome
         {
             for mutation in &envelope.mutations {
                 let records = match mutation {

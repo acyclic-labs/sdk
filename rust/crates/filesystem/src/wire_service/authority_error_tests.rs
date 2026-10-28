@@ -3,9 +3,8 @@
 use super::*;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
-    CommitRequest, CommittedEnvelope, FollowFilter, ForkReceipt, ForkRequest,
-    IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamBounds, StreamError,
-    StreamPath, StreamProvider,
+    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyObservation,
+    MemoryStream, ReadRequest, RecordStream, StreamError, StreamPath, StreamProvider,
 };
 use std::sync::Mutex;
 use tonic::Code;
@@ -45,6 +44,12 @@ impl StreamProvider for FaultStream {
         self.inner.operation_claims()
     }
 
+    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+        if let Some(error) = self.take_failure(&path) {
+            return Err(error);
+        }
+        self.inner.head(path).await
+    }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         if let Some(error) = self.take_failure(&path) {
             return Err(error);
@@ -67,10 +72,6 @@ impl StreamProvider for FaultStream {
         self.inner.inspect_idempotency(key).await
     }
 
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.inner.bounds(path).await
-    }
-
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.inner.append(request).await
     }
@@ -81,11 +82,9 @@ impl StreamProvider for FaultStream {
 
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.inner.follow(path, from, filter).await
+        request: acyclic_stream::FollowRequest,
+    ) -> Result<acyclic_stream::FollowStream, StreamError> {
+        self.inner.follow(request).await
     }
 
     async fn children_page(

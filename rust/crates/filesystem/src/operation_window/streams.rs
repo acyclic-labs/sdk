@@ -172,6 +172,7 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> OperationWindowStore
         match self
             .provider
             .commit(acyclic_stream::CommitRequest {
+                deadline_unix_millis: None,
                 conditions,
                 mutations,
                 idempotency_key: key,

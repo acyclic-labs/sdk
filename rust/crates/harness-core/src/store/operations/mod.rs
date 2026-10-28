@@ -9,10 +9,12 @@ use crate::{
 };
 
 use acyclic_stream::{
-    CommitCondition, CommitRequest, CommittedEnvelope, CommittedMutation, IdempotencyKey,
-    OwnedBytes, ReadRequest, Record, RecordStream, StreamBounds, StreamError, StreamPath,
-    StreamProvider,
+    CommitCondition, CommitReceipt, CommitRequest, IdempotencyKey, OwnedBytes, ReadRequest, Record,
+    RecordStream, StreamError, StreamPath, StreamProvider,
 };
+
+#[cfg(all(test, feature = "native-execution", not(target_arch = "wasm32")))]
+use acyclic_stream::CommittedEnvelope;
 
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;

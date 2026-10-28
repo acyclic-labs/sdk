@@ -1,5 +1,6 @@
 use super::*;
 use futures::StreamExt as _;
+use futures::TryFutureExt as _;
 use loom::thread;
 use std::cell::Cell;
 use std::mem::ManuallyDrop;
@@ -83,7 +84,7 @@ fn seed(provider: &MemoryStream) -> Result<(StreamPath, CommitId)> {
         path: path.clone(),
         records: vec![Bytes::from_static(b"anchor").into()],
         if_tail: Some(0),
-        idempotency_key: None,
+        idempotency_key: crate::IdempotencyKey::unique(),
     }))?;
     let AppendOutcome::Committed(receipt) = outcome else {
         return Err("seed conflicted".into());
@@ -159,13 +160,20 @@ fn subscription_and_append(omit_wake: bool) {
                     path,
                     records: vec![Bytes::from_static(b"next").into()],
                     if_tail: Some(1),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 }))
             }
         });
         block_on(async {
             let mut stream = provider
-                .follow_checked(path, 1, anchor, crate::FollowFilter::default())
+                .follow(crate::FollowRequest {
+                    path: path,
+                    from: 1,
+                    preceding: Some(anchor),
+                    filter: crate::FollowFilter::default(),
+                    progress: false,
+                })
+                .map_ok(crate::records_only)
                 .await?;
             let record = stream.next().await.ok_or("follow ended")??;
             assert_eq!(record.sequence, 1);
@@ -199,7 +207,14 @@ fn subscription_and_recovery(retain_old: bool) {
         });
         block_on(async {
             match provider
-                .follow_checked(path, 1, anchor, crate::FollowFilter::default())
+                .follow(crate::FollowRequest {
+                    path: path,
+                    from: 1,
+                    preceding: Some(anchor),
+                    filter: crate::FollowFilter::default(),
+                    progress: false,
+                })
+                .map_ok(crate::records_only)
                 .await
             {
                 Ok(mut stream) => assert!(matches!(
@@ -235,7 +250,7 @@ fn head_fence_and_recovery(ignore_head: bool) {
             path: path.clone(),
             records: vec![Bytes::from_static(b"replaced").into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))?;
         let bytes = block_on(replacement.encode_state());
         let recovery = thread::spawn({
@@ -243,6 +258,7 @@ fn head_fence_and_recovery(ignore_head: bool) {
             move || block_on(provider.install_state(&bytes))
         });
         let request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![CommitCondition::Head {
                 path: path.clone(),
                 expected: 1,
@@ -328,7 +344,7 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
                 Bytes::from_static(b"new tail").into(),
             ],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap();
         let recovery = thread::spawn({
@@ -344,7 +360,8 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
             let cursor = wire_codec::session::record_cursor(1, anchor).unwrap();
             let registered = if omit_anchor {
                 provider
-                    .follow(path, cursor.next, crate::FollowFilter::default())
+                    .follow(crate::FollowRequest::new(path, cursor.next))
+                    .map_ok(crate::records_only)
                     .await
             } else {
                 wire_codec::session::follow_records(&provider, &follow, &cursor).await
@@ -468,7 +485,7 @@ pub fn subtree_cut(root_only: bool) {
                 path: StreamPath::new(name)?,
                 records: vec![Bytes::from_static(b"seed").into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             }))?;
         }
         let writing = thread::spawn({
@@ -476,6 +493,7 @@ pub fn subtree_cut(root_only: bool) {
             move || {
                 block_on(
                     provider.commit(CommitRequest {
+                        deadline_unix_millis: None,
                         conditions: ["tree/a", "tree/b"]
                             .map(|name| CommitCondition::Tail {
                                 path: StreamPath::new(name).unwrap(),
@@ -505,7 +523,7 @@ pub fn subtree_cut(root_only: bool) {
                     destination: StreamPath::new("copy").unwrap(),
                     exclude: Vec::new(),
                     at_tail: Some(0),
-                    idempotency_key: None,
+                    idempotency_key: crate::IdempotencyKey::unique(),
                 }))
                 .unwrap();
             }
@@ -522,7 +540,7 @@ pub fn subtree_cut(root_only: bool) {
             path: StreamPath::new("copy/a")?,
             records: vec![Bytes::from_static(b"private").into()],
             if_tail: a,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))?;
         assert_eq!(block_on(provider.tail(StreamPath::new("tree/a")?))?, 2);
         assert_eq!(
@@ -541,7 +559,7 @@ pub fn subtree_exclusions(ignore: bool) {
             path: StreamPath::new("tree/children/old/events")?,
             records: vec![Bytes::from_static(b"sibling").into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))?;
         if ignore {
             set_fault(Fault::IgnoreForkExclusions);
@@ -551,7 +569,7 @@ pub fn subtree_exclusions(ignore: bool) {
             destination: StreamPath::new("tree/children/new")?,
             exclude: vec![StreamPath::new("children")?],
             at_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))?;
         assert_eq!(
             block_on(provider.tail(StreamPath::new("tree/children/new/children/old/events")?)),
@@ -593,7 +611,7 @@ pub fn page_tail_cut(split_reads: bool) {
                 path: StreamPath::new(name)?,
                 records: vec![Bytes::from_static(b"old").into()],
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             }))?;
         }
         let writer = thread::spawn({
@@ -601,6 +619,7 @@ pub fn page_tail_cut(split_reads: bool) {
             move || {
                 let outcome = block_on(
                     provider.commit(CommitRequest {
+                        deadline_unix_millis: None,
                         conditions: ["agents/a/status", "agents/b/status"]
                             .map(|name| crate::CommitCondition::Tail {
                                 path: StreamPath::new(name).unwrap(),
@@ -724,6 +743,7 @@ pub fn stable_intent_key(retain_conflicts: bool) {
         let path = StreamPath::new("intent")?;
         let key = IdempotencyKey::new(b"intent".to_vec())?;
         let request = |expected| CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![CommitCondition::Tail {
                 path: path.clone(),
                 expected,
@@ -742,7 +762,7 @@ pub fn stable_intent_key(retain_conflicts: bool) {
                     path,
                     records: vec![Bytes::from_static(b"other").into()],
                     if_tail: None,
-                    idempotency_key: Some(IdempotencyKey::new(b"other".to_vec()).unwrap()),
+                    idempotency_key: IdempotencyKey::new(b"other".to_vec()).unwrap(),
                 }))
                 .unwrap();
             }
@@ -754,10 +774,12 @@ pub fn stable_intent_key(retain_conflicts: bool) {
         writer.join().unwrap();
         let observed = block_on(provider.inspect_idempotency(key.clone()))?;
         let settled = match first {
-            CommitOutcome::Committed(_) => {
+            CommitOutcome::Committed(ref receipt) => {
                 assert_eq!(
                     observed.map(|observation| observation.outcome),
-                    Some(IdempotencyOutcome::Commit(first.clone())),
+                    Some(IdempotencyOutcome::Commit(block_on(
+                        provider.read_commit(receipt.commit_id)
+                    )?)),
                     "a committed intent must be recoverable"
                 );
                 first

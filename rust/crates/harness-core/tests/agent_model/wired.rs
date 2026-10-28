@@ -20,9 +20,9 @@ use acyclic_harness_core::{
 };
 use acyclic_stream::{
     AppendOutcome, AppendRequest, BoxProviderFuture, CommitCondition, CommitId, CommitMutation,
-    CommitOutcome, CommitRequest, CommittedEnvelope, FollowFilter, ForkReceipt, ForkRequest,
-    IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamBounds,
-    StreamError, StreamPath, StreamProvider,
+    CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
+    IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamError, StreamPath,
+    StreamProvider,
 };
 use std::sync::Arc;
 
@@ -230,6 +230,7 @@ async fn a_later_turn_sees_the_prompt_and_settled_conversation_and_nothing_else(
         .collect();
     stream
         .commit(CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![CommitCondition::Absent {
                 path: path.conversation()?,
             }],
@@ -345,6 +346,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
     for path in [parent.conversation()?, child.conversation()?] {
         stream
             .commit(CommitRequest {
+                deadline_unix_millis: None,
                 conditions: vec![CommitCondition::Absent { path: path.clone() }],
                 mutations: vec![CommitMutation::Append {
                     path: path.clone(),
@@ -474,6 +476,13 @@ impl Refusing {
 
 #[async_trait::async_trait]
 impl StreamProvider for Refusing {
+    async fn head(
+        &self,
+        _: StreamPath,
+    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
+        self.refuse()
+    }
+
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
         &self.claims
     }
@@ -484,9 +493,6 @@ impl StreamProvider for Refusing {
         self.refuse()
     }
     async fn tail(&self, _: StreamPath) -> std::result::Result<u64, StreamError> {
-        self.refuse()
-    }
-    async fn bounds(&self, _: StreamPath) -> std::result::Result<StreamBounds, StreamError> {
         self.refuse()
     }
     async fn append(&self, _: AppendRequest) -> std::result::Result<AppendOutcome, StreamError> {
@@ -500,10 +506,8 @@ impl StreamProvider for Refusing {
     }
     async fn follow(
         &self,
-        _: StreamPath,
-        _: u64,
-        _: FollowFilter,
-    ) -> std::result::Result<RecordStream, StreamError> {
+        _: acyclic_stream::FollowRequest,
+    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
         self.refuse()
     }
     async fn commit(&self, _: CommitRequest) -> std::result::Result<CommitOutcome, StreamError> {

@@ -13,7 +13,7 @@ async fn append_batch(
             path: path.clone(),
             records: values.into_iter().map(Into::into).collect(),
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
     Ok(())
@@ -180,7 +180,7 @@ async fn jumps_preserve_nested_fork_cuts_inside_batches_and_recovery() -> TestRe
                 source,
                 destination: destination.clone(),
                 at_tail: Some(cut as u64),
-                idempotency_key: None,
+                idempotency_key: crate::IdempotencyKey::unique(),
             })
             .await?;
         expected.truncate(cut);

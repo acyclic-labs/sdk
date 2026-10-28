@@ -275,7 +275,7 @@ mod tests {
                 path: path.clone(),
                 records: writer.records().iter().cloned().map(Into::into).collect(),
                 if_tail: Some(0),
-                idempotency_key: None,
+                idempotency_key: acyclic_stream::IdempotencyKey::unique(),
             })
             .await?;
         assert!(matches!(outcome, AppendOutcome::Committed(_)));

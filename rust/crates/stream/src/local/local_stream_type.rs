@@ -8,5 +8,5 @@ pub struct LocalStream {
     /// `inner`.
     handle: Option<acyclic_native_runtime::StoreHandle>,
     inner: Arc<LocalInner>,
-    work: Option<Arc<crate::memory::Work>>,
+    work: Option<Arc<crate::native::Work>>,
 }

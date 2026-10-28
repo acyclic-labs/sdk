@@ -294,7 +294,7 @@ async fn a_malformed_operation_locator_is_still_corrupt() -> TestResult {
                 )?,
                 records: vec![acyclic_stream::OwnedBytes::from_static(b"foreign").into()],
                 if_tail: None,
-                idempotency_key: None,
+                idempotency_key: acyclic_stream::IdempotencyKey::unique(),
             })
             .await?;
         assert!(matches!(

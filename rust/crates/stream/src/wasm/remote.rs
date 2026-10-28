@@ -62,23 +62,6 @@ impl Remote {
             .insert("authorization", authorization);
         Ok(request)
     }
-    async fn commit_deadline(
-        &self,
-        request: CommitRequest,
-        deadline: Option<u64>,
-    ) -> Result<CommitOutcome, StreamError> {
-        let body = wire::CommitRequest {
-            deadline_unix_millis: deadline,
-            ..wire_codec::commit_to_wire(&request)
-        };
-        let response = self
-            .service()
-            .commit(self.request(body).await?)
-            .await
-            .map_err(|e| wire_codec::status(&e))?
-            .into_inner();
-        wire_codec::commit_outcome_from_wire(response)
-    }
 }
 #[async_trait(?Send)]
 impl StreamProvider for Remote {
@@ -108,6 +91,21 @@ impl StreamProvider for Remote {
         }
         Ok(observed)
     }
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        let response = self
+            .service()
+            .head(
+                self.request(wire::HeadRequest {
+                    path: path.to_string(),
+                })
+                .await?,
+            )
+            .await
+            .map_err(|error| wire_codec::status(&error))?
+            .into_inner();
+        wire_codec::head_from_wire(response)
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         Ok(self
             .service()
@@ -123,11 +121,6 @@ impl StreamProvider for Remote {
             .map_err(|e| wire_codec::status(&e))?
             .into_inner()
             .tail)
-    }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        Ok(StreamBounds {
-            tail: self.tail(path).await?,
-        })
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         let body = wire::TailRequest {
@@ -165,6 +158,7 @@ impl StreamProvider for Remote {
         Ok(crate::DurableReceipt::covering(path, &marks, through))
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+        let key = request.idempotency_key;
         let body = wire::AppendRequest {
             path: request.path.to_string(),
             records: request
@@ -173,7 +167,7 @@ impl StreamProvider for Remote {
                 .map(crate::wire_codec::append_record_wire)
                 .collect(),
             if_tail: request.if_tail,
-            idempotency_key: Some(identity(request.idempotency_key)),
+            idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
         };
         let result = self
             .service()
@@ -184,6 +178,7 @@ impl StreamProvider for Remote {
         wire_codec::append_outcome_from_wire(result)
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
+        let key = request.idempotency_key;
         let body = wire::ForkRequest {
             exclude: request
                 .exclude
@@ -193,7 +188,7 @@ impl StreamProvider for Remote {
             source: request.source.to_string(),
             destination: request.destination.to_string(),
             at_tail: request.at_tail,
-            idempotency_key: Some(identity(request.idempotency_key)),
+            idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
         };
         let result = self
             .service()
@@ -214,33 +209,9 @@ impl StreamProvider for Remote {
     }
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.sessions.follow(path, from, filter).await
-    }
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
-        filter: crate::FollowFilter,
+        request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.sessions
-            .follow_updates(path, from, preceding, filter)
-            .await
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.sessions
-            .follow_checked(path, from, preceding, filter)
-            .await
+        self.sessions.follow(request).await
     }
 
     async fn children_page(
@@ -250,14 +221,14 @@ impl StreamProvider for Remote {
         self.sessions.children_page(request, 0).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.commit_deadline(request, None).await
-    }
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.commit_deadline(request, Some(deadline)).await
+        let body = wire_codec::commit_to_wire(&request);
+        let response = self
+            .service()
+            .commit(self.request(body).await?)
+            .await
+            .map_err(|e| wire_codec::status(&e))?
+            .into_inner();
+        wire_codec::commit_outcome_from_wire(response)
     }
     async fn read_commit(&self, commit: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let body = wire::ReadCommitRequest {
@@ -271,10 +242,4 @@ impl StreamProvider for Remote {
             .into_inner();
         wire_codec::envelope_from_wire(result)
     }
-}
-fn identity(key: Option<IdempotencyKey>) -> bytes::Bytes {
-    key.map_or_else(
-        || bytes::Bytes::copy_from_slice(uuid::Uuid::new_v4().as_bytes()),
-        |key| bytes::Bytes::copy_from_slice(key.as_bytes()),
-    )
 }

@@ -113,6 +113,10 @@ export class StreamClient {
         return { path: condition.stream.path, ifTail: validateSequenceValue(condition.ifTail), ...(condition.ifCommitId === undefined ? {} : { ifCommitId: commitId(condition.ifCommitId) }) };
       }
       validatePathValue(condition.path);
+      if ("ifPresent" in condition) {
+        if (condition.ifPresent !== true) throw new StreamError("invalid_argument", "presence condition must be true");
+        return { path: condition.path, ifPresent: true as const };
+      }
       if (condition.ifAbsent !== true) throw new StreamError("invalid_argument", "absence condition must be true");
       return { path: condition.path, ifAbsent: true as const };
     });
@@ -150,6 +154,7 @@ export class Stream<Value = Uint8Array> {
     validatePathValue(path);
   }
   encode(value: Value): Uint8Array { return this.codec.encode(value); }
+  head(): Promise<import("./types.js").PathHead> { return this.provider.head(this.path); }
   tail(): Promise<Sequence> { return this.provider.tail(this.path); }
   append(value: Value, options: AppendOptions & { readonly idempotencyKey: IdempotencyKey }): Promise<AppendResult> { return this.appendBatch([value], options); }
   appendBatch(values: readonly Value[], options: AppendOptions & { readonly idempotencyKey: IdempotencyKey }): Promise<AppendResult> {

@@ -1,4 +1,5 @@
 use super::*;
+use futures::TryFutureExt as _;
 use std::{
     sync::{
         Barrier,
@@ -28,7 +29,7 @@ fn append(provider: &MemoryStream) -> crate::AppendReceipt {
             path: StreamPath::new("watched").unwrap(),
             records: vec![(Bytes::from_static(b"x")).into()],
             if_tail: None,
-            idempotency_key: None,
+            idempotency_key: crate::IdempotencyKey::unique(),
         }))
         .unwrap()
     else {
@@ -53,18 +54,23 @@ fn pending_stream_survives_its_polling_runtime() {
             let path = StreamPath::new("watched").unwrap();
             let mut follow = {
                 let follow = if checked {
-                    futures::executor::block_on(provider.follow_checked(
-                        path,
-                        1,
-                        seed.commit_id,
-                        crate::FollowFilter::default(),
-                    ))
+                    futures::executor::block_on(
+                        provider
+                            .follow(crate::FollowRequest {
+                                path: path,
+                                from: 1,
+                                preceding: Some(seed.commit_id),
+                                filter: crate::FollowFilter::default(),
+                                progress: false,
+                            })
+                            .map_ok(crate::records_only),
+                    )
                 } else {
-                    futures::executor::block_on(provider.follow(
-                        path,
-                        0,
-                        crate::FollowFilter::default(),
-                    ))
+                    futures::executor::block_on(
+                        provider
+                            .follow(crate::FollowRequest::new(path, 0))
+                            .map_ok(crate::records_only),
+                    )
                 }
                 .unwrap();
                 follow

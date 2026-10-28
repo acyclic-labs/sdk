@@ -145,7 +145,13 @@ where
                     .authorization
                     .filter_paths(&resource(volume_id, "")?, &request.filter)?;
                 let records = streams
-                    .follow_updates(path, request.from, request.preceding, filter)
+                    .follow(acyclic_stream::FollowRequest {
+                        path,
+                        from: request.from,
+                        preceding: request.preceding,
+                        filter,
+                        progress: true,
+                    })
                     .await?;
                 opened.validate()?;
                 let output = records.map(move |update| {

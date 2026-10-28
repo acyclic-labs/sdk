@@ -39,6 +39,16 @@ impl IdempotencyKey {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+
+    /// A key no other call in this process has used, for fixtures whose
+    /// writes carry no retry identity of their own.
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn unique() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let next = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(Bytes::from(format!("fixture/{next}")))
+    }
 }
 
 /// One immutable record.
@@ -147,8 +157,8 @@ pub struct AppendRequest {
     pub records: Vec<AppendRecord>,
     /// Optional exact tail condition.
     pub if_tail: Option<u64>,
-    /// Optional stable recovery identity.
-    pub idempotency_key: Option<IdempotencyKey>,
+    /// Stable recovery identity; a retry with the same key observes the first outcome.
+    pub idempotency_key: IdempotencyKey,
 }
 
 /// Successful immutable subtree fork, constant in descendant count.
@@ -179,8 +189,8 @@ pub struct ForkRequest {
     pub destination: StreamPath,
     /// Optional exact prefix.
     pub at_tail: Option<u64>,
-    /// Optional stable recovery identity.
-    pub idempotency_key: Option<IdempotencyKey>,
+    /// Stable recovery identity; a retry with the same key observes the first outcome.
+    pub idempotency_key: IdempotencyKey,
 }
 
 /// Required-bounds finite read.
@@ -194,11 +204,33 @@ pub struct ReadRequest {
     pub limit: u32,
 }
 
-/// One atomic replay boundary. `tail` is the next sequence and may advance
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StreamBounds {
-    /// Exclusive end of the currently committed history.
-    pub tail: u64,
+/// One atomic replay-to-live subscription, including its history fence.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FollowRequest {
+    /// Stream path.
+    pub path: StreamPath,
+    /// First sequence, inclusive.
+    pub from: u64,
+    /// Required commit at `from - 1`; missing or changed history refuses immediately.
+    pub preceding: Option<CommitId>,
+    /// Projection intersected with the authenticated authority ceiling.
+    pub filter: crate::FollowFilter,
+    /// Emit contiguous skipped-prefix progress. False retains indexed record-only wakes.
+    pub progress: bool,
+}
+
+impl FollowRequest {
+    /// Every record from `from`, unanchored and unfiltered.
+    #[must_use]
+    pub fn new(path: StreamPath, from: u64) -> Self {
+        Self {
+            path,
+            from,
+            preceding: None,
+            filter: crate::FollowFilter::default(),
+            progress: false,
+        }
+    }
 }
 
 /// Accepted visibility and confirmed persistence at one observation cut.
@@ -259,6 +291,8 @@ impl DurableReceipt {
 /// One immutable direct child.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Child {
+    /// Immediate inherited source at the page's immutable namespace cut.
+    pub origin: Option<crate::ForkOrigin>,
     /// Last record of the requested relative stream at this page cut.
     pub tail_record: Option<Record>,
     /// Exact child path.
@@ -337,6 +371,8 @@ pub enum CommittedMutation {
 pub struct CommittedEnvelope {
     /// Content-bound identity.
     pub commit_id: CommitId,
+    /// Publication time, including forks that append no records.
+    pub committed_at_micros: u64,
     /// Canonically ordered mutation facts.
     pub mutations: Vec<CommittedMutation>,
 }
@@ -344,6 +380,11 @@ pub struct CommittedEnvelope {
 /// Exact optimistic condition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitCondition {
+    /// Path must exist, including an empty fork root. No head read is required.
+    Present {
+        /// Permanently named path that must already exist.
+        path: StreamPath,
+    },
     /// Existing tail and the immutable record immediately before it must match.
     Head {
         /// Existing nonempty path.
@@ -396,6 +437,8 @@ pub enum CommitMutation {
 /// One bounded all-or-nothing optimistic commit.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CommitRequest {
+    /// Trusted-clock publication deadline; successful retries keep their original identity.
+    pub deadline_unix_millis: Option<u64>,
     /// Exact conditions for every participant.
     pub conditions: Vec<CommitCondition>,
     /// Nonempty mutation set.
@@ -454,6 +497,11 @@ impl UnixMillisClock for SystemUnixMillisClock {
 /// Failed exact condition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitConflict {
+    /// Requested present path does not exist.
+    Missing {
+        /// Path that must already exist.
+        path: StreamPath,
+    },
     /// The tail matched but the preceding record belonged to another history.
     Head {
         /// Path.
@@ -483,7 +531,7 @@ pub enum CommitConflict {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CommitOutcome {
     /// Every mutation committed.
-    Committed(CommittedEnvelope),
+    Committed(CommitReceipt),
     /// Nothing changed.
     Conflict(Vec<CommitConflict>),
 }
@@ -496,7 +544,7 @@ pub enum IdempotencyOutcome {
     /// Successful immutable-prefix fork.
     Fork(ForkReceipt),
     /// Successful coordinated commit. Conflicts leave the key unspent.
-    Commit(CommitOutcome),
+    Commit(CommittedEnvelope),
 }
 
 /// Exact retained recovery fact for one caller-owned retry identity.
@@ -530,3 +578,15 @@ pub enum FollowUpdate {
 
 /// Ordered records and skipped-prefix observations from one atomic follow.
 pub type FollowStream = BoxProviderStream<'static, Result<FollowUpdate, StreamError>>;
+
+/// Projects records from an existing follow without subscribing again.
+pub fn records_only(updates: FollowStream) -> RecordStream {
+    use futures::StreamExt as _;
+    Box::pin(updates.filter_map(|update| {
+        futures::future::ready(match update {
+            Ok(FollowUpdate::Record(record)) => Some(Ok(record)),
+            Ok(FollowUpdate::Progress { .. }) => None,
+            Err(error) => Some(Err(error)),
+        })
+    }))
+}

@@ -1,158 +1,12 @@
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::{
-    NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
-    ReadAllocation,
+    NativeOperationKind, NativeOperationReservation, NativeReadMeter, ReadAllocation,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
 type Allocation = Option<ReadAllocation>;
 #[cfg(target_arch = "wasm32")]
 type Allocation = Option<()>;
-
-#[cfg(not(target_arch = "wasm32"))]
-type WriteReservation = (
-    NativeOperationReservation<Arc<dyn NativeReadMeter>>,
-    NativeByteReservation<Arc<dyn NativeReadMeter>>,
-);
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct Work {
-    pub(crate) meter: Arc<dyn NativeReadMeter>,
-    error: std::sync::Mutex<Option<std::io::Error>>,
-    write: std::sync::Mutex<Option<WriteReservation>>,
-    #[cfg(feature = "local")]
-    durability: std::sync::Mutex<Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>>,
-    _allocation: ReadAllocation,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Work {
-    pub(crate) fn new(meter: Arc<dyn NativeReadMeter>) -> std::io::Result<Arc<Self>> {
-        let allocation = ReadAllocation::new(
-            &meter,
-            acyclic_native_runtime::arc_allocation_bytes::<Self>(),
-        )?;
-        Ok(Arc::new(Self {
-            meter,
-            error: std::sync::Mutex::new(None),
-            write: std::sync::Mutex::new(None),
-            #[cfg(feature = "local")]
-            durability: std::sync::Mutex::new(None),
-            _allocation: allocation,
-        }))
-    }
-
-    pub(crate) fn record<T>(&self, result: std::io::Result<T>) -> Result<T, StreamError> {
-        result.map_err(|error| {
-            self.error
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .get_or_insert(error);
-            StreamError::Unavailable
-        })
-    }
-
-    pub(crate) fn reserve_write(&self, bytes: usize) -> Result<(), StreamError> {
-        let operation = self.record(NativeOperationReservation::new(
-            Arc::clone(&self.meter),
-            NativeOperationKind::Write,
-            1,
-        ))?;
-        let bytes = self.record(NativeByteReservation::new(
-            Arc::clone(&self.meter),
-            NativeOperationKind::Write,
-            bytes,
-        ))?;
-        *self
-            .write
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((operation, bytes));
-        Ok(())
-    }
-
-    fn publish<T>(
-        &self,
-        bytes: usize,
-        operation: impl FnOnce() -> Result<T, StreamError>,
-    ) -> Result<T, StreamError> {
-        let mut allowance = self
-            .write
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        let (result, observed) = match &mut allowance {
-            Some((write, _)) => write.attempt(operation),
-            None => (operation(), Ok(())),
-        };
-        let transferred = match &mut allowance {
-            Some((_, transfer)) if result.is_ok() && bytes != 0 => transfer.record(bytes),
-            _ => Ok(()),
-        };
-        self.record(observed)?;
-        self.record(transferred)?;
-        result
-    }
-
-    #[cfg(feature = "local")]
-    pub(crate) fn reserve_durability(&self, count: u64) -> Result<(), StreamError> {
-        self.record(self.prepare_durability(count))
-    }
-    #[cfg(feature = "local")]
-    pub(crate) fn prepare_durability(&self, count: u64) -> std::io::Result<()> {
-        let ticket = NativeOperationReservation::new(
-            Arc::clone(&self.meter),
-            NativeOperationKind::Durability,
-            count,
-        )?;
-        *self
-            .durability
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(ticket);
-        Ok(())
-    }
-    #[cfg(feature = "local")]
-    pub(crate) fn sync<T>(
-        &self,
-        operation: impl FnOnce() -> std::io::Result<T>,
-    ) -> std::io::Result<T> {
-        let mut ticket = self
-            .durability
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (physical, observed) = ticket
-            .as_mut()
-            .ok_or(std::io::ErrorKind::InvalidInput)?
-            .attempt(operation);
-        let _ = self.record(observed);
-        match physical {
-            Ok(value) => Ok(value),
-            Err(error) => {
-                let _ = self.record::<()>(Err(error));
-                Err(std::io::ErrorKind::Other.into())
-            }
-        }
-    }
-
-    pub(crate) fn finish<T, E>(
-        &self,
-        result: Result<(T, Allocation), E>,
-    ) -> crate::NativeStreamResult<T, E> {
-        if let Some(error) = self
-            .error
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
-            return Err(error);
-        }
-        Ok(result.map(|(value, allocation)| {
-            crate::NativeStreamOutput::new(
-                value,
-                allocation.unwrap_or_else(|| ReadAllocation::empty(&self.meter)),
-            )
-        }))
-    }
-}
 
 impl MemoryStream {
     #[cfg(not(target_arch = "wasm32"))]
@@ -163,7 +17,6 @@ impl MemoryStream {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn has_replay(&self, key: &IdempotencyKey) -> Result<bool, StreamError> {
         self.replay(&*self.state.read().await, key.as_bytes())
             .map(|entry| entry.is_some())
@@ -230,16 +83,16 @@ impl MemoryStream {
         Ok(())
     }
 
-    fn copy_commit(
+    fn copy_envelope(
         &self,
-        value: &CommitOutcome,
-    ) -> Result<(CommitOutcome, Allocation), StreamError> {
+        value: &CommittedEnvelope,
+    ) -> Result<(CommittedEnvelope, Allocation), StreamError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = &self.work {
-            let output = work.record(crate::native::clone_commit(
+            let output = work.record(crate::native::clone_envelope(
                 value,
                 &work.meter,
-                NativeOperationKind::Write,
+                acyclic_native_runtime::NativeOperationKind::Write,
             ))?;
             let (value, allocation) = output.into_parts();
             return Ok((value, Some(allocation)));
@@ -256,15 +109,22 @@ impl MemoryStream {
             + request
                 .mutations
                 .iter()
-                .map(|mutation| match mutation {
-                    CommitMutation::Append { records, .. }
-                    | CommitMutation::Fork { records, .. } => {
-                        records.capacity() * std::mem::size_of::<AppendRecord>()
-                            + records
-                                .iter()
-                                .map(|record| record.headers.owned_bytes())
-                                .sum::<usize>()
-                    }
+                .map(|mutation| {
+                    let (records, exclusions) = match mutation {
+                        CommitMutation::Append { records, .. } => (records, 0),
+                        CommitMutation::Fork {
+                            records, exclude, ..
+                        } => (
+                            records,
+                            exclude.capacity() * std::mem::size_of::<crate::RelativePath>(),
+                        ),
+                    };
+                    exclusions
+                        + records.capacity() * std::mem::size_of::<AppendRecord>()
+                        + records
+                            .iter()
+                            .map(|record| record.headers.owned_bytes())
+                            .sum::<usize>()
                 })
                 .sum::<usize>();
         self.adopt(bytes)

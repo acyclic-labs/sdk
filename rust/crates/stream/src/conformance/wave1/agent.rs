@@ -3,13 +3,14 @@
 //! These are the exact commit shapes of the wave-2 agent model, expressed with
 //! public provider operations only: spawn (subtree fork + adoption record +
 //! companion writes), a closed inbox, inherited follows and fork-of-fork lineage.
-use super::fork::{absent, append, key, path, values};
+use super::fork::{absent, append, facts, key, path, values};
 use super::{Failure, History, Invariant};
 use crate::{
     ChildrenPageRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
-    CommittedEnvelope, FollowFilter, IdempotencyOutcome, OwnedBytes, ReadRequest, Record,
-    StreamError, StreamPath, StreamProvider,
+    CommittedEnvelope, IdempotencyOutcome, OwnedBytes, ReadRequest, Record, StreamError,
+    StreamPath, StreamProvider,
 };
+use futures::TryFutureExt as _;
 use futures::{StreamExt as _, TryStreamExt as _};
 
 /// Never inherited by a spawned child.
@@ -78,7 +79,7 @@ async fn commit<P: StreamProvider + ?Sized>(
     request: CommitRequest,
 ) -> Result<CommittedEnvelope, Failure> {
     match history.result(step, history.provider.commit(request).await)? {
-        CommitOutcome::Committed(envelope) => Ok(envelope),
+        CommitOutcome::Committed(receipt) => facts(history, &receipt).await,
         CommitOutcome::Conflict(_) => Err(Failure::Violation {
             case: history.case,
             step,
@@ -101,6 +102,7 @@ fn spawn_request<P: StreamProvider + ?Sized>(
         StreamPath::new(format!("{}/conversation", parent.as_str())),
     )?;
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Absent {
                 path: child.clone(),
@@ -192,6 +194,7 @@ impl Spawn {
         parent_head: CommitCondition,
     ) -> Result<CommitRequest, Failure> {
         Ok(CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![
                 CommitCondition::Absent {
                     path: self.actor.clone(),
@@ -376,15 +379,16 @@ pub(super) async fn spawn<P: StreamProvider + ?Sized>(
     shape.require_nothing(history).await?;
     let request = shape.request(history, head(history, &shape.parent_actor).await?)?;
     let outcome = history.result("spawn", history.provider.commit(request.clone()).await)?;
-    let CommitOutcome::Committed(envelope) = &outcome else {
+    let CommitOutcome::Committed(receipt) = &outcome else {
         return history.check("spawn", Invariant::StableKeyRetry, false);
     };
-    shape.require_child(history, envelope).await?;
+    let envelope = facts(history, receipt).await?;
+    shape.require_child(history, &envelope).await?;
     shape.require_companions(history).await?;
     let replay = history.result("replay_spawn", history.provider.commit(request).await)?;
     history.check("replay_spawn", Invariant::ExactReplay, replay == outcome)?;
     history
-        .require_recovery(IdempotencyOutcome::Commit(outcome))
+        .require_recovery(IdempotencyOutcome::Commit(envelope))
         .await
 }
 
@@ -395,6 +399,7 @@ fn send<P: StreamProvider + ?Sized>(
     label: &str,
 ) -> Result<CommitRequest, Failure> {
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Absent {
             path: closed.clone(),
         }],
@@ -420,6 +425,7 @@ pub(super) async fn closed_inbox<P: StreamProvider + ?Sized>(
     )
     .await?;
     let archive = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Absent {
             path: closed.clone(),
         }],
@@ -469,8 +475,12 @@ pub(super) async fn closed_inbox<P: StreamProvider + ?Sized>(
     .await?;
     let replay = history.result("replay_archive", history.provider.commit(archive).await)?;
     history.check("replay_archive", Invariant::ExactReplay, replay == archived)?;
+    let CommitOutcome::Committed(receipt) = &archived else {
+        return history.check("archive_receipt", Invariant::StableKeyRetry, false);
+    };
+    let envelope = facts(history, receipt).await?;
     history
-        .require_recovery(IdempotencyOutcome::Commit(archived))
+        .require_recovery(IdempotencyOutcome::Commit(envelope))
         .await
 }
 
@@ -486,7 +496,8 @@ pub(super) async fn inherited_follow<P: StreamProvider + ?Sized>(
     let missing = path(history, "/children/missing/conversation")?;
     match history
         .provider
-        .follow(missing.clone(), 0, FollowFilter::default())
+        .follow(crate::FollowRequest::new(missing.clone(), 0))
+        .map_ok(crate::records_only)
         .await
     {
         Err(StreamError::NotFound) => {}
@@ -520,14 +531,16 @@ pub(super) async fn inherited_follow<P: StreamProvider + ?Sized>(
         "follow_source",
         history
             .provider
-            .follow(source.clone(), 2, FollowFilter::default())
+            .follow(crate::FollowRequest::new(source.clone(), 2))
+            .map_ok(crate::records_only)
             .await,
     )?;
     let mut inherited_follow = history.result(
         "follow_inherited",
         history
             .provider
-            .follow(inherited.clone(), 1, FollowFilter::default())
+            .follow(crate::FollowRequest::new(inherited.clone(), 1))
+            .map_ok(crate::records_only)
             .await,
     )?;
     // Source first: a shared wake or shared history would surface it in the child.

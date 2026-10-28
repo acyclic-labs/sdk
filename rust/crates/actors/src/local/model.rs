@@ -10,10 +10,11 @@
 use super::*;
 use crate::guest::CodecIdentity;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, FollowFilter, ForkReceipt,
-    ForkRequest, IdempotencyObservation, MemoryStream, RecordStream, StreamBounds,
+    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, ForkReceipt, ForkRequest,
+    IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
 };
 use bytes::Bytes;
+use futures::TryStreamExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod composition;
@@ -45,13 +46,8 @@ macro_rules! delegate {
             $(async fn $name(&self, $arg: $input) -> Result<$output, StreamError> {
                 self.inner.$name($arg).await
             })*
-            async fn follow(
-                &self,
-                path: StreamPath,
-                from: u64,
-                filter: FollowFilter,
-            ) -> Result<RecordStream, StreamError> {
-                self.inner.follow(path, from, filter).await
+            async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, StreamError> {
+                self.inner.follow(request).await
             }
             async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
                 let call = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -70,9 +66,9 @@ macro_rules! delegate {
 }
 
 delegate! {
+    head(path: StreamPath) -> acyclic_stream::PathHead;
     inspect_idempotency(key: IdempotencyKey) -> Option<IdempotencyObservation>;
     tail(path: StreamPath) -> u64;
-    bounds(path: StreamPath) -> StreamBounds;
     append(request: AppendRequest) -> AppendOutcome;
     fork(request: ForkRequest) -> ForkReceipt;
     read(request: ReadRequest) -> RecordStream;
@@ -333,6 +329,7 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
                     });
                 let first = provider
                     .commit(CommitRequest {
+                        deadline_unix_millis: None,
                         conditions: state_conditions,
                         mutations: state_mutations,
                         idempotency_key: key("state")?,
@@ -342,6 +339,7 @@ async fn run(shape: Shape, plan: Vec<Fault>) -> Result<(), Failure> {
                 {
                     let _crash = provider
                         .commit(CommitRequest {
+                            deadline_unix_millis: None,
                             conditions: effect_conditions,
                             mutations: effect_mutations,
                             idempotency_key: key("effects")?,

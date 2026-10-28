@@ -45,28 +45,6 @@ impl Client {
         self.acknowledge_deliveries = false;
         self
     }
-
-    /// Acknowledges an opaque token at this client's authenticated endpoint.
-    pub async fn acknowledge_delivery(&self, token: Bytes) -> Result<(), StreamError> {
-        if token.len() != 32 {
-            return Err(StreamError::InvalidArgument);
-        }
-        let mut service = self.service();
-        tokio::time::timeout(Duration::from_millis(500), async {
-            service
-                .acknowledge_delivery(
-                    self.request(wire::AcknowledgeDeliveryRequest {
-                        delivery_token: token,
-                    })
-                    .await?,
-                )
-                .await
-        })
-        .await
-        .map_err(|_| StreamError::Unavailable)?
-        .map_err(|error| status(&error))?;
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -103,6 +81,18 @@ impl StreamProvider for Client {
         })
     }
 
+    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        let body = wire::HeadRequest {
+            path: path.to_string(),
+        };
+        let response = self
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.head(request).await })
+            })
+            .await?;
+        decode_response(response, crate::wire_codec::head_from_wire)
+    }
+
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         let body = wire::TailRequest {
             path: path.to_string(),
@@ -114,12 +104,6 @@ impl StreamProvider for Client {
             })
             .await?;
         decode_response(response, |response| Ok(response.tail))
-    }
-
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        Ok(StreamBounds {
-            tail: self.tail(path).await?,
-        })
     }
 
     async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
@@ -166,7 +150,7 @@ impl StreamProvider for Client {
                 .map(crate::wire_codec::append_record_wire)
                 .collect(),
             if_tail: request.if_tail,
-            idempotency_key: Some(retry_identity(request.idempotency_key)),
+            idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
         };
         let response = self
             .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
@@ -186,7 +170,7 @@ impl StreamProvider for Client {
             source: request.source.to_string(),
             destination: request.destination.to_string(),
             at_tail: request.at_tail,
-            idempotency_key: Some(retry_identity(request.idempotency_key)),
+            idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
         };
         let response = self
             .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
@@ -213,41 +197,10 @@ impl StreamProvider for Client {
 
     async fn follow(
         &self,
-        path: StreamPath,
-        from: u64,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.session()?
-            .follow_with_ack(path, from, self.acknowledge_deliveries, filter)
-            .await
-    }
-
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: Option<crate::CommitId>,
-        filter: crate::FollowFilter,
+        request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
         self.session()?
-            .follow_updates_with_ack(path, from, preceding, self.acknowledge_deliveries, filter)
-            .await
-    }
-    async fn follow_checked(
-        &self,
-        path: StreamPath,
-        from: u64,
-        preceding: CommitId,
-        filter: crate::FollowFilter,
-    ) -> Result<RecordStream, StreamError> {
-        self.session()?
-            .follow_records(
-                path,
-                from,
-                Some(preceding),
-                self.acknowledge_deliveries,
-                filter,
-            )
+            .follow_with_ack(request, self.acknowledge_deliveries)
             .await
     }
 
@@ -259,16 +212,13 @@ impl StreamProvider for Client {
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.commit_with_deadline(request, None).await
-    }
-
-    async fn commit_before(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: u64,
-    ) -> Result<CommitOutcome, StreamError> {
-        self.commit_with_deadline(request, Some(deadline_unix_millis))
-            .await
+        let body = commit_to_wire(&request);
+        let response = self
+            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                Box::pin(async move { service.commit(request).await })
+            })
+            .await?;
+        decode_response(response, commit_outcome_from_wire)
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
@@ -282,30 +232,4 @@ impl StreamProvider for Client {
             .await?;
         decode_response(response, envelope_from_wire)
     }
-}
-
-impl Client {
-    async fn commit_with_deadline(
-        &self,
-        request: CommitRequest,
-        deadline_unix_millis: Option<u64>,
-    ) -> Result<CommitOutcome, StreamError> {
-        let body = wire::CommitRequest {
-            deadline_unix_millis,
-            ..commit_to_wire(&request)
-        };
-        let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.commit(request).await })
-            })
-            .await?;
-        decode_response(response, commit_outcome_from_wire)
-    }
-}
-
-/// A fixed retry identity keeps transport retries of one append or fork exactly-once.
-fn retry_identity(key: Option<IdempotencyKey>) -> Bytes {
-    key.map_or_else(crate::new_identity_bytes, |key| {
-        Bytes::copy_from_slice(key.as_bytes())
-    })
 }

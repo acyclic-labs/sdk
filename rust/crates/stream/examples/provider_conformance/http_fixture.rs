@@ -38,6 +38,7 @@ async fn verify_commit_only(endpoint: &str) -> Result<(), Box<dyn std::error::Er
         idempotency_key: acyclic_stream::IdempotencyKey::new(
             acyclic_stream::OwnedBytes::from_static(b"commit-only"),
         )?,
+        deadline_unix_millis: None,
     };
     let commit_only_result = commit_only.commit(commit_only_request.clone()).await?;
     assert_eq!(

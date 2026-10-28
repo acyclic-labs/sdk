@@ -7,10 +7,8 @@ impl LocalStream {
     ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
         #[cfg(feature = "test-support")]
         describe_commit(&request);
-        let original = Arc::clone(&meter);
         let stream = self.clone();
-        crate::NativeProviderFuture::new(&Arc::clone(&original), async move {
-            let work = crate::memory::Work::new(meter)?;
+        crate::native::Work::start(meter, |work| async move {
             let mut stream = Self {
                 work: Some(Arc::clone(&work)),
                 ..stream

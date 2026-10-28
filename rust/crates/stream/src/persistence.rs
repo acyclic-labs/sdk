@@ -1,8 +1,8 @@
 //! Bounded canonical protobuf codecs for retained Stream v1 facts.
 use crate::{
-    AppendOutcome, CommitConflict, CommitId, CommitOutcome, CommittedEnvelope, CommittedMutation,
-    IdempotencyObservation, IdempotencyOutcome, MAX_ITEMS, MAX_RECORD_BYTES, Record, StreamError,
-    StreamPath, wire, wire_codec,
+    AppendOutcome, CommitId, CommittedEnvelope, CommittedMutation, IdempotencyObservation,
+    IdempotencyOutcome, MAX_ITEMS, MAX_RECORD_BYTES, Record, StreamError, StreamPath, wire,
+    wire_codec,
 };
 use prost::Message;
 
@@ -85,55 +85,18 @@ fn validate_observation(value: &IdempotencyObservation) -> Result<(), StreamErro
                 return Err(StreamError::InvalidArgument);
             }
         }
-        IdempotencyOutcome::Commit(CommitOutcome::Committed(envelope)) => {
-            validate_envelope(envelope)?;
-        }
-        IdempotencyOutcome::Commit(CommitOutcome::Conflict(conflicts)) => {
-            if conflicts.is_empty() || conflicts.len() > MAX_ITEMS {
-                return Err(StreamError::InvalidArgument);
-            }
-            let mut previous = None;
-            for conflict in conflicts {
-                let path = match conflict {
-                    CommitConflict::Head {
-                        path,
-                        expected,
-                        actual,
-                    } => {
-                        if expected == actual {
-                            return Err(StreamError::InvalidArgument);
-                        }
-                        path
-                    }
-                    CommitConflict::Tail {
-                        path,
-                        expected,
-                        actual,
-                    } => {
-                        if *actual == Some(*expected) {
-                            return Err(StreamError::InvalidArgument);
-                        }
-                        path
-                    }
-                    CommitConflict::Exists { path } => path,
-                };
-                if previous.is_some_and(|previous| previous >= path) {
-                    return Err(StreamError::InvalidArgument);
-                }
-                previous = Some(path);
-            }
-        }
+        IdempotencyOutcome::Commit(envelope) => validate_envelope(envelope)?,
         IdempotencyOutcome::Append(AppendOutcome::TailConflict { .. }) => {}
     }
     Ok(())
 }
 
-fn validate_envelope(value: &CommittedEnvelope) -> Result<(), StreamError> {
+pub(crate) fn validate_envelope(value: &CommittedEnvelope) -> Result<(), StreamError> {
     if value.mutations.is_empty() || value.mutations.len() > MAX_ITEMS {
         return Err(StreamError::InvalidArgument);
     }
     let mut previous: Option<&StreamPath> = None;
-    let mut time = None;
+    let mut time = Some(value.committed_at_micros);
     for mutation in &value.mutations {
         let (path, start, end, records) = match mutation {
             CommittedMutation::Append(append) => {

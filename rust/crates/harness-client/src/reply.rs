@@ -363,6 +363,7 @@ mod tests {
     fn request() -> Result<CommitRequest, acyclic_stream::StreamError> {
         let path = StreamPath::new("agent/inbox")?;
         Ok(CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![CommitCondition::Tail {
                 path: path.clone(),
                 expected: 7,

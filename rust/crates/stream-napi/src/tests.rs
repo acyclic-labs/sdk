@@ -3,7 +3,7 @@ mod reconnect;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
     CommitRequest, CommittedEnvelope, ForkRequest, IdempotencyKey, IdempotencyObservation,
-    ReadRequest, RecordStream, StreamBounds, StreamProvider,
+    ReadRequest, RecordStream, StreamProvider,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -251,7 +251,10 @@ impl StreamProvider for TcpDropProbe {
         Err(StreamError::Unsupported)
     }
 
-    async fn bounds(&self, _path: StreamPath) -> std::result::Result<StreamBounds, StreamError> {
+    async fn head(
+        &self,
+        _path: StreamPath,
+    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
         Err(StreamError::Unsupported)
     }
 
@@ -275,10 +278,8 @@ impl StreamProvider for TcpDropProbe {
 
     async fn follow(
         &self,
-        _path: StreamPath,
-        _from: u64,
-        _filter: acyclic_stream::FollowFilter,
-    ) -> std::result::Result<RecordStream, StreamError> {
+        _request: acyclic_stream::FollowRequest,
+    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
         self.started.notify_one();
         let dropped = Arc::clone(&self.dropped);
         let sentinel = TcpDropped(dropped);
@@ -287,19 +288,6 @@ impl StreamProvider for TcpDropProbe {
             Poll::Pending
         })
         .boxed())
-    }
-
-    async fn follow_updates(
-        &self,
-        path: StreamPath,
-        from: u64,
-        _preceding: Option<acyclic_stream::CommitId>,
-        filter: acyclic_stream::FollowFilter,
-    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
-        let records = self.follow(path, from, filter).await?;
-        Ok(Box::pin(records.map(|item| {
-            item.map(acyclic_stream::FollowUpdate::Record)
-        })))
     }
 
     async fn children_page(
@@ -412,6 +400,7 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             filter: None,
             path: "accounts/events".to_owned(),
             from: 0,
+            progress: false,
         };
         let follow = Arc::new(
             open_follow(

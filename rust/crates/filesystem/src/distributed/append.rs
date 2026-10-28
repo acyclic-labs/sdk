@@ -169,26 +169,20 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let sequence = durable.sequence;
         match outcome {
             CommitOutcome::Committed(envelope) => {
-                let record = envelope
-                    .mutations
+                envelope
+                    .appends
                     .iter()
-                    .find_map(|mutation| match mutation {
-                        acyclic_stream::CommittedMutation::Append(append)
-                            if &append.path == records =>
-                        {
-                            append.records.iter().find(|record| {
-                                record.sequence == sequence.get()
-                                    && record.commit_id == envelope.commit_id
-                            })
-                        }
-                        _ => None,
+                    .find(|append| {
+                        &append.path == records
+                            && append.start <= sequence.get()
+                            && sequence.get() < append.tail
                     })
                     .ok_or_else(|| {
                         authority_corrupt("commit envelope omits its authority record", work)
                     })?;
                 Ok(FsAppendOutcome::Committed(durable_commit(
                     durable,
-                    record.committed_at_micros,
+                    envelope.committed_at_micros,
                     commit.payload.clone(),
                 )))
             }
@@ -210,6 +204,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
                     let path = match conflict {
                         acyclic_stream::CommitConflict::Tail { path, .. }
                         | acyclic_stream::CommitConflict::Head { path, .. }
+                        | acyclic_stream::CommitConflict::Missing { path }
                         | acyclic_stream::CommitConflict::Exists { path } => path,
                     };
                     path == gate || lease_path.as_ref().is_some_and(|lease| path == lease)

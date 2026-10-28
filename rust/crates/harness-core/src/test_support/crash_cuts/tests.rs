@@ -27,6 +27,7 @@ fn key(name: &'static str) -> IdempotencyKey {
 }
 fn commit(name: &'static str, expected: u64) -> CommitRequest {
     CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Tail {
             path: path(),
             expected,
@@ -51,7 +52,7 @@ async fn cuts(limits: LocalStreamLimits) -> Result<CrashCuts<Frames>, CutSimulat
                     path: path(),
                     records: vec![OwnedBytes::from_static(b"setup").into()],
                     if_tail: Some(0),
-                    idempotency_key: None,
+                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
                 })
                 .await
                 .unwrap();
@@ -79,7 +80,7 @@ async fn cuts(limits: LocalStreamLimits) -> Result<CrashCuts<Frames>, CutSimulat
                     path: path(),
                     records: vec![OwnedBytes::from_static(b"after").into()],
                     if_tail: None,
-                    idempotency_key: None,
+                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
                 })
                 .await;
         },

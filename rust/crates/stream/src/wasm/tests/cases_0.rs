@@ -47,7 +47,7 @@ fn append_validation_uses_domain_limits() {
             ..Default::default()
         }],
         if_tail: None,
-        idempotency_key: None,
+        idempotency_key: bytes::Bytes::from_static(b"key"),
     };
     assert_eq!(validate_append_request(&request.encode_to_vec()), "");
 
@@ -89,6 +89,7 @@ fn commit_normalization_is_canonical_and_shape_checked() -> Result<(), StreamErr
     let path = StreamPath::new("events")?;
     let key = IdempotencyKey::new(Bytes::from_static(b"request"))?;
     let request = CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![CommitCondition::Absent { path: path.clone() }],
         mutations: vec![CommitMutation::Append {
             path,
@@ -150,7 +151,7 @@ fn fork_validation_rejects_same_paths_and_oversized_payloads() {
         source: "events".to_owned(),
         destination: "events".to_owned(),
         at_tail: None,
-        idempotency_key: None,
+        idempotency_key: bytes::Bytes::new(),
     };
     assert_eq!(
         validate_request("fork", &same.encode_to_vec()),
@@ -162,7 +163,7 @@ fn fork_validation_rejects_same_paths_and_oversized_payloads() {
         source: "a".repeat(crate::MAX_PATH_BYTES + 1),
         destination: "b".to_owned(),
         at_tail: None,
-        idempotency_key: None,
+        idempotency_key: bytes::Bytes::new(),
     };
     assert_eq!(
         validate_request("fork", &oversized.encode_to_vec()),
@@ -175,6 +176,7 @@ fn page_tail_records_keep_keys_and_attributes() {
     let response = wire::ChildrenPageResponse {
         hierarchy_version: vec![7; 32].into(),
         children: vec![wire::Child {
+            origin: None,
             path: "agents/a".to_owned(),
             tail_record: Some(wire::Record {
                 sequence: 0,

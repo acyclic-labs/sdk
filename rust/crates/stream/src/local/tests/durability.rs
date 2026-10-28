@@ -1,4 +1,5 @@
 use super::*;
+use futures::TryFutureExt as _;
 
 #[tokio::test]
 async fn dispatch_publication_admits_durability_before_accepting_a_start()
@@ -19,6 +20,7 @@ async fn dispatch_publication_admits_durability_before_accepting_a_start()
                     provider
                         .native_commit_guarded::<NativeGuardFailure, _, _>(
                             CommitRequest {
+                                deadline_unix_millis: None,
                                 conditions: vec![crate::CommitCondition::Tail {
                                     path: path.clone(),
                                     expected: 1,
@@ -79,7 +81,8 @@ async fn phase_barrier_preserves_live_delivery_and_reopens_the_accepted_prefix()
             assert_eq!(watermarks.accepted, ordinal + 1);
             assert_eq!(watermarks.durable, if defer { 0 } else { ordinal + 1 });
             let mut follow = provider
-                .follow(path.clone(), ordinal, crate::FollowFilter::default())
+                .follow(crate::FollowRequest::new(path.clone(), ordinal))
+                .map_ok(crate::records_only)
                 .await?;
             assert_eq!(
                 follow
@@ -127,6 +130,7 @@ async fn native_phase_barrier_admits_before_io_and_flushes_append_and_guarded_co
             .await??;
         drop(output);
         let request = CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![crate::CommitCondition::Tail {
                 path: path.clone(),
                 expected: 1,

@@ -12,6 +12,7 @@ async fn external_composition_policy_fence(seal: bool) -> TestResult {
     let cut = store.policy_cut(authority, &mut work).await?;
     let effect = StreamPath::new("harness/approval-answer")?;
     let mut commit = crate::FilesystemCommit::new(acyclic_stream::CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![acyclic_stream::CommitCondition::Absent {
             path: effect.clone(),
         }],

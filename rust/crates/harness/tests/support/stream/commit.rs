@@ -66,7 +66,7 @@ impl<P: StreamProvider> LostSessionAck<P> {
                     path,
                     records: vec![OwnedBytes::from_static(b"dispatch won").into()],
                     if_tail: Some(tail),
-                    idempotency_key: None,
+                    idempotency_key: acyclic_stream::IdempotencyKey::unique(),
                 })
                 .await?;
         }
@@ -103,9 +103,6 @@ impl<P: StreamProvider> LostSessionAck<P> {
         fault: u8,
         aggregate_fault: u8,
     ) -> Result<(), StreamError> {
-        if let acyclic_stream::CommitOutcome::Committed(envelope) = outcome {
-            self.measure_received(envelope);
-        }
         if aggregate_fault == 3 {
             self.hide_receipt.store(true, Ordering::SeqCst);
         }

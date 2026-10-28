@@ -227,6 +227,7 @@ async fn cold_projection_rejects_forged_state_and_non_atomic_heads() -> Result<(
         if forged {
             client
                 .commit(CommitRequest {
+                    deadline_unix_millis: None,
                     conditions: vec![
                         CommitCondition::Tail {
                             path: stream.path().clone(),

@@ -368,7 +368,7 @@ where
                 path: Self::multipart_path(workspace, upload_id)?,
                 records: vec![record.into()],
                 if_tail: Some(expected_tail),
-                idempotency_key: Some(operation),
+                idempotency_key: operation,
             })
             .await
             .map_err(|error| stream_write_error(&error))?

@@ -104,11 +104,11 @@ mod replay_tests {
         ) -> Result<Option<IdempotencyObservation>, StreamError> {
             self.inner.inspect_idempotency(key).await
         }
+        async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+            self.inner.head(path).await
+        }
         async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
             self.inner.tail(path).await
-        }
-        async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-            self.inner.bounds(path).await
         }
         async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
             self.inner.append(request).await
@@ -123,13 +123,8 @@ mod replay_tests {
                 std::future::ready(!matches!(record, Ok(record) if record.sequence == missing))
             })))
         }
-        async fn follow(
-            &self,
-            path: StreamPath,
-            from: u64,
-            filter: crate::FollowFilter,
-        ) -> Result<RecordStream, StreamError> {
-            self.inner.follow(path, from, filter).await
+        async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError> {
+            self.inner.follow(request).await
         }
 
         async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
@@ -179,6 +174,62 @@ mod replay_tests {
         assert!(drain(&mut replay).await.unwrap().is_empty());
         assert_eq!(replay.cursor(), 0);
         assert!(replay.next_page().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn append_helper_recovers_accepted_append_after_reopen_and_keeps_conflicts_unspent() {
+        let provider = Arc::new(MemoryStream::default());
+        let first_key = IdempotencyKey::new(b"first".as_slice()).unwrap();
+        let path = StreamPath::new("append-helper").unwrap();
+        // The response is lost after the existing provider has accepted it.
+        let first = provider
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec!["first".into()],
+                if_tail: None,
+                idempotency_key: first_key.clone(),
+            })
+            .await
+            .unwrap();
+        let restored = Arc::new(MemoryStream::default());
+        restored
+            .install_state(&provider.encode_state().await)
+            .await
+            .unwrap();
+        let provider = restored;
+        let stream = Stream::new(provider.clone(), path.as_str()).unwrap();
+        assert_eq!(
+            stream.append("first", first_key.clone()).await.unwrap(),
+            first
+        );
+        let observed = provider
+            .inspect_idempotency(first_key)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(observed.outcome, IdempotencyOutcome::Append(first));
+        let key = IdempotencyKey::new(b"retry".as_slice()).unwrap();
+        assert_eq!(
+            stream.append_at("second", 0, key.clone()).await.unwrap(),
+            AppendOutcome::TailConflict { actual_tail: 1 }
+        );
+        assert!(
+            provider
+                .inspect_idempotency(key.clone())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let accepted = stream.append_at("second", 1, key.clone()).await.unwrap();
+        assert_eq!(
+            stream.append_at("second", 1, key.clone()).await.unwrap(),
+            accepted
+        );
+        assert_eq!(
+            stream.append_at("changed", 1, key).await,
+            Err(StreamError::IdempotencyMismatch)
+        );
+        assert_eq!(provider.head(stream.path().clone()).await.unwrap().tail, 2);
     }
 
     #[tokio::test]

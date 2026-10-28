@@ -8,6 +8,8 @@ use std::{
 #[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::MAX_RECORD_BYTES;
 use crate::OwnedBytes as Bytes;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::native::Work;
 use crate::preparation::commit_identity;
 use crate::query_sync::{RwLock, watch};
 #[cfg(test)]
@@ -34,8 +36,7 @@ use crate::{
     ChildrenPageRequest, CommitCondition, CommitConflict, CommitId, CommitMutation, CommitOutcome,
     CommitRequest, CommittedEnvelope, CommittedFork, CommittedMutation, ForkReceipt, ForkRequest,
     IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, MAX_ITEMS, ReadRequest, Record,
-    RecordStream, StreamBounds, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock,
-    UnixMillisClock,
+    RecordStream, StreamError, StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
 };
 
 #[cfg(all(loom, feature = "local"))]
@@ -52,11 +53,13 @@ pub(crate) use prepared::PreparedCommit;
 include!("memory_limits.rs");
 
 include!("memory_stream.rs");
+include!("decision.rs");
 include!("provider.rs");
 include!("follow.rs");
 include!("follow_progress.rs");
 
 include!("namespace.rs");
+include!("head.rs");
 include!("state.rs");
 
 include!("retained.rs");
@@ -80,6 +83,7 @@ include!("history_cursor.rs");
 include!("work.rs");
 
 include!("commit.rs");
+include!("receipt.rs");
 
 #[cfg(test)]
 impl UnixMillisClock for std::sync::atomic::AtomicU64 {
@@ -89,3 +93,4 @@ impl UnixMillisClock for std::sync::atomic::AtomicU64 {
 }
 
 include!("append.rs");
+include!("fork.rs");

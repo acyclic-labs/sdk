@@ -19,9 +19,19 @@ pub fn encode(route: &str, input: &[u8], maximum_bytes: usize) -> Result<Vec<u8>
 }
 pub(crate) fn value(route: &str, input: &[u8]) -> Result<Option<Value>> {
     let value = match route {
-        "delivery/acknowledge" => {
-            wire::AcknowledgeDeliveryResponse::decode(input).map_err(|_| "invalid_response")?;
-            json!({})
+        "head" => {
+            let head = crate::wire_codec::head_to_wire(
+                crate::wire_codec::head_from_wire(
+                    wire::PathHead::decode(input).map_err(|_| "invalid_response")?,
+                )
+                .map_err(|_| "invalid_response")?,
+            );
+            json!({
+                "tail": head.tail.to_string(),
+                "last": head.last.as_ref().map(record_json),
+                "durable": head.durable.to_string(),
+                "origin": head.origin.as_ref().map(origin_json),
+            })
         }
         "append" => {
             append_value(wire::AppendResponse::decode(input).map_err(|_| "invalid_response")?)?
@@ -59,6 +69,14 @@ fn record_json(value: &wire::Record) -> Value {
             "name": attribute.name,
             "value": STANDARD.encode(&attribute.value),
         })).collect::<Vec<_>>(),
+    })
+}
+
+fn origin_json(value: &wire::ForkOrigin) -> Value {
+    json!({
+        "source": value.source,
+        "forkedAt": value.forked_at.to_string(),
+        "commitId": STANDARD.encode(&value.commit_id),
     })
 }
 
@@ -121,6 +139,7 @@ fn envelope_value(value: &wire::CommittedEnvelope) -> Result<Value> {
     Ok(json!({
         "commitId": STANDARD.encode(&value.commit_id),
         "mutations": mutations,
+        "committedAtMicros": value.committed_at_micros.to_string(),
     }))
 }
 
@@ -132,6 +151,9 @@ fn children_page_value(value: wire::ChildrenPageResponse) -> Result<Value> {
             let mut value = serde_json::Map::from_iter([("path".into(), json!(child.path))]);
             if let Some(record) = child.tail_record {
                 value.insert("tailRecord".into(), record_json(&record));
+            }
+            if let Some(origin) = child.origin {
+                value.insert("origin".into(), origin_json(&origin));
             }
             Value::Object(value)
         })
@@ -151,6 +173,11 @@ fn children_page_value(value: wire::ChildrenPageResponse) -> Result<Value> {
 
 fn conflict_value(value: &wire::CommitConflict) -> Result<Value> {
     Ok(match value.conflict.as_ref().ok_or("invalid_response")? {
+        wire::commit_conflict::Conflict::Missing(value) => json!({
+            "path": value.path,
+            "expectedPresent": true,
+            "actual": "missing",
+        }),
         wire::commit_conflict::Conflict::Head(value) => json!({
             "path": value.path,
             "expectedCommitId": STANDARD.encode(&value.expected),
@@ -176,28 +203,17 @@ fn conflict_value(value: &wire::CommitConflict) -> Result<Value> {
 
 fn commit_value(value: wire::CommitResponse) -> Result<Value> {
     Ok(match value.outcome.ok_or("invalid_response")? {
-        wire::commit_response::Outcome::Committed(envelope) => {
-            let envelope_json = envelope_value(&envelope)?;
-            validate("commits/read", &envelope_json)?;
-            let mut tails = serde_json::Map::new();
-            let mut forks = Vec::new();
-            for mutation in &envelope.mutations {
-                match mutation.mutation.as_ref().ok_or("invalid_response")? {
-                    wire::committed_mutation::Mutation::Append(value) => {
-                        tails.insert(value.path.clone(), json!(value.tail.to_string()));
-                    }
-                    wire::committed_mutation::Mutation::Fork(value) => forks.push(json!({
-                        "path": value.destination,
-                        "tail": value.tail.to_string(),
-                    })),
-                }
-            }
+        wire::commit_response::Outcome::Committed(receipt) => {
+            crate::wire_codec::receipt_from_wire(receipt.clone())
+                .map_err(|_| "invalid_response")?;
             json!({
                 "ok": true,
-                "commitId": STANDARD.encode(envelope.commit_id),
-                "tails": tails,
-                "forks": forks,
-                "envelope": envelope_json,
+                "commitId": STANDARD.encode(receipt.commit_id),
+                "committedAtMicros": receipt.committed_at_micros.to_string(),
+                "appends": receipt.appends.into_iter().map(|range| json!({
+                    "path": range.path, "start": range.start.to_string(), "tail": range.tail.to_string(),
+                })).collect::<Vec<_>>(),
+                "forks": receipt.forks.into_iter().map(fork_value).collect::<Vec<_>>(),
             })
         }
         wire::commit_response::Outcome::Conflict(conflicts) => json!({
@@ -223,7 +239,7 @@ fn observation_value(value: wire::InspectIdempotencyResponse) -> Result<Option<V
         }),
         wire::idempotency_observation::Outcome::Commit(value) => json!({
             "type": "commit",
-            "outcome": commit_value(value)?,
+            "outcome": envelope_value(&value)?,
         }),
     };
     Ok(Some(json!({
