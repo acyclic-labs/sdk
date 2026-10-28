@@ -240,7 +240,8 @@ impl Authority {
         }
         slots.entries.insert(slot, (revision, length, credential));
         slots.credential_bytes = credential_bytes;
-        if slots.expiries.len() > slots.entries.len().saturating_mul(2) {
+        let stale_expiries = slots.expiries.len().saturating_sub(slots.entries.len());
+        if stale_expiries > slots.entries.len() {
             slots.expiries = slots
                 .entries
                 .iter()
