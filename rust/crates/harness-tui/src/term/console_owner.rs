@@ -170,9 +170,7 @@ impl<W: Write + Send + 'static> Owner<W> {
             if Instant::now() >= deadline {
                 return Err(io::ErrorKind::TimedOut.into());
             }
-            let remaining = deadline
-                .saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(1));
+            let remaining = deadline.saturating_duration_since(Instant::now());
             state = this.wait(state, remaining)?;
         }
         if !restoring && state.closed {
