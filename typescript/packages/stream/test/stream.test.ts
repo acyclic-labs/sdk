@@ -1015,7 +1015,23 @@ describe("website Stream contract", () => {
     expect(requestBody).toEqual({ expiresIn: "1h", allow: [{ path: "runs", operations: ["read"] }] });
   });
 
-  test("cancels oversized streaming transport responses at the configured bound", async () => {
+  test("serves complete HTTP responses by default and cancels at explicit byte policies", async () => {
+    const token = "credential".repeat(1_048_577);
+    const encoded = new TextEncoder().encode(JSON.stringify({ token, expiresAt: "2030-01-02T03:04:05.000Z" }));
+    let offset = 0;
+    const complete = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset === encoded.byteLength) controller.close();
+        else {
+          const end = Math.min(offset + 8192, encoded.byteLength);
+          controller.enqueue(encoded.subarray(offset, end));
+          offset = end;
+        }
+      },
+    })) });
+    const received = await complete.createToken!({ expiresIn: "1h", allow: [{ path: "events", operations: ["read"] }] });
+    expect(received.token).toBe(token);
+    expect(offset).toBe(encoded.byteLength);
     let cancelled = false;
     const body = new ReadableStream<Uint8Array>({
       start(controller) { controller.enqueue(new Uint8Array([1, 2, 3])); },
@@ -1026,7 +1042,7 @@ describe("website Stream contract", () => {
     expect(cancelled).toBeTrue();
   });
 
-  test("HTTP transport refuses redirects and header-unsafe or oversized bearer tokens", async () => {
+  test("HTTP transport refuses redirects and header-unsafe bearer tokens", async () => {
     for (const token of [" ", "a\nb", "a\rb", "a\0b"]) {
       expect(() => new HttpStreamProvider({ endpoint: "https://example.test", token })).toThrow(TypeError);
     }
