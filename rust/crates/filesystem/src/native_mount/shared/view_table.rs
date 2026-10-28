@@ -104,22 +104,22 @@ impl<C> ViewTable<C> {
     /// Adds a view and returns its only owner.
     #[cfg(any(test, loom))]
     pub(crate) fn insert(table: &Arc<Self>, core: C) -> Result<ViewOwner<C>, ViewSerialsExhausted> {
-        let serial = table.reserve()?;
+        let serial = Self::reserve(table)?;
         Ok(Self::insert_reserved(table, serial, core))
     }
 
     /// Issues the next serial without listing a view, so a core can be built
     /// for it first. A reservation that is never inserted is never reissued.
-    pub(crate) fn reserve(self: &Arc<Self>) -> Result<ReservedSerial<C>, ViewSerialsExhausted> {
-        let mut views = self.views.write().unwrap_or_else(PoisonError::into_inner);
+    pub(crate) fn reserve(table: &Arc<Self>) -> Result<ReservedSerial<C>, ViewSerialsExhausted> {
+        let mut views = table.views.write().unwrap_or_else(PoisonError::into_inner);
         let serial = views.next;
-        if serial > self.max_serial {
+        if serial > table.max_serial {
             return Err(ViewSerialsExhausted);
         }
         views.next = serial + 1;
         Ok(ReservedSerial {
             serial,
-            table: Arc::clone(self),
+            table: Arc::clone(table),
         })
     }
 
@@ -395,7 +395,7 @@ mod tests {
         assert!(table.enter(u64::MAX).is_none());
         assert_eq!(table.serials(), vec![second.serial()]);
         // A reservation that is abandoned is skipped, not reissued.
-        let abandoned = table.reserve().unwrap().get();
+        let abandoned = ViewTable::reserve(&table).unwrap().get();
         let third = ViewTable::insert(&table, core(3, &drops)).unwrap();
         assert!(third.serial().get() > abandoned);
         assert!(table.enter(abandoned).is_none());
@@ -434,8 +434,8 @@ mod tests {
     fn reservation_cannot_enter_another_table_with_the_same_counter() {
         let first = Arc::new(ViewTable::<u32>::new(2));
         let second = Arc::new(ViewTable::<u32>::new(2));
-        let reservation = first.reserve().unwrap();
-        drop(second.reserve().unwrap());
+        let reservation = ViewTable::reserve(&first).unwrap();
+        drop(ViewTable::reserve(&second).unwrap());
         assert!(
             std::panic::catch_unwind(|| { ViewTable::insert_reserved(&second, reservation, 7) })
                 .is_err(),

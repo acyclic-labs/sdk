@@ -13,7 +13,7 @@ use std::hash::Hash;
 use std::sync::{Arc, PoisonError, RwLock};
 
 pub(crate) struct NamedViews<K, C> {
-    table: Arc<ViewTable<C>>,
+    table: crate::sync::native::Arc<ViewTable<C>>,
     names: RwLock<Names<K>>,
 }
 
@@ -27,7 +27,7 @@ impl<K: Clone + Eq + Hash, C> NamedViews<K, C> {
     /// Views with serials `1..=max_serial`.
     pub(crate) fn new(max_serial: u64) -> Self {
         Self {
-            table: Arc::new(ViewTable::new(max_serial)),
+            table: crate::sync::native::Arc::new(ViewTable::new(max_serial)),
             names: RwLock::new(Names {
                 by_name: HashMap::new(),
                 by_serial: BTreeMap::new(),
@@ -51,9 +51,7 @@ impl<K: Clone + Eq + Hash, C> NamedViews<K, C> {
         if names.by_name.contains_key(&name) {
             return Err(NativeMountError::InvalidDestination);
         }
-        let serial = self
-            .table
-            .reserve()
+        let serial = ViewTable::reserve(&self.table)
             .map_err(|_| NativeMountError::Lifecycle("view serials are exhausted"))?;
         let number = serial.get();
         let owner = ViewTable::insert_reserved(&self.table, serial, build(number)?);
