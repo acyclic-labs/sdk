@@ -4,9 +4,21 @@ import json
 import subprocess
 import sys
 
+
+def fail(step, detail):
+    recovery = ("bash scripts/qualify-dst.sh" if sys.argv[1:2] == ["--runner"]
+                else "bash scripts/qualify-graphcoder-lane.sh")
+    sys.exit(f"STEP_FAILED {step}: {detail}; recovery: {recovery}")
+
+
 executable = None
-for line in sys.stdin:
-    message = json.loads(line)
+for number, line in enumerate(sys.stdin, 1):
+    try:
+        message = json.loads(line)
+    except json.JSONDecodeError:
+        fail("cargo-artifact-json", f"invalid Cargo JSON at line {number}")
+    if not isinstance(message, dict):
+        fail("cargo-artifact-json", f"Cargo JSON object required at line {number}")
     if message.get("reason") == "compiler-message":
         rendered = message["message"].get("rendered")
         if rendered:
@@ -15,27 +27,33 @@ for line in sys.stdin:
             and message.get("profile", {}).get("test")
             and message.get("executable")):
         if executable is not None and executable != message["executable"]:
-            sys.exit("Qualification requires one focused test target")
+            fail("cargo-artifact-target", "qualification requires one focused test target")
         executable = message["executable"]
 if executable is None:
-    sys.exit("Cargo did not produce a test executable")
+    fail("cargo-artifact-target", "Cargo did not produce a test executable")
 
 if sys.argv[1:2] == ["--runner"]:
     if len(sys.argv) != 3:
-        sys.exit("Qualification requires exactly one artifact runner")
-    subprocess.run([sys.executable, sys.argv[2], executable], check=True)
+        fail("artifact-runner", "qualification requires exactly one artifact runner")
+    try:
+        subprocess.run([sys.executable, sys.argv[2], executable], check=True)
+    except (OSError, subprocess.CalledProcessError) as error:
+        fail("artifact-runner", str(error))
     sys.exit(0)
 
-listed = subprocess.check_output([executable, "--list"], text=True)
+try:
+    listed = subprocess.check_output([executable, "--list"], text=True)
+except (OSError, subprocess.CalledProcessError) as error:
+    fail("artifact-list", str(error))
 tests = [line.removesuffix(": test") for line in listed.splitlines()
          if line.endswith(": test")]
 whole_suite = "--suite" in sys.argv[1:]
 prefixes = [argument for argument in sys.argv[1:] if argument != "--suite"]
 if not prefixes:
-    sys.exit("Qualification requires explicit test filters")
+    fail("artifact-selector", "qualification requires explicit test filters")
 for prefix in prefixes:
     if not any(name.startswith(prefix) for name in tests):
-        sys.exit(f"No tests matched qualification filter {prefix}")
+        fail("artifact-selector", f"no tests matched qualification filter {prefix}")
 selected = [name for name in tests if name.startswith(tuple(prefixes))]
 print(f"Test executable: {executable}", flush=True)
 groups = [selected] if whole_suite else [[name] for name in selected]
@@ -52,7 +70,10 @@ for names in groups:
         for output, stream in [(error.stdout, sys.stdout), (error.stderr, sys.stderr)]:
             if output:
                 stream.write(output.decode(errors="replace"))
-        raise
+        fail("artifact-timeout", f"test exceeded its original nine-second bound: {names}")
+    except OSError as error:
+        fail("artifact-execute", str(error))
     print(result.stdout, end="", flush=True)
     print(result.stderr, end="", file=sys.stderr, flush=True)
-    result.check_returncode()
+    if result.returncode:
+        fail("artifact-execute", f"test returned {result.returncode}: {names}")
