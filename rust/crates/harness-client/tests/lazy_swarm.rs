@@ -531,7 +531,7 @@ fn row_agent(client: &Client, index: usize) -> AgentPath {
 
 fn policy() -> ReaderPolicy {
     ReaderPolicy {
-        timeout_ms: 1_500,
+        timeout_ms: Some(1_500),
         ..ReaderPolicy::default()
     }
 }
