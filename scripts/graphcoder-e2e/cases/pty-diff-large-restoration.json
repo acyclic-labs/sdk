@@ -52,7 +52,7 @@
         {
           "when": {
             "contains": [
-              "GraphCoder"
+              "graphcoder"
             ],
             "cursor": true
           },
@@ -62,7 +62,7 @@
           "when": {
             "contains": [
               "LARGE_CHANGE_DONE",
-              "○"
+              "Enter sends"
             ]
           },
           "prompt": "/diff "
@@ -82,7 +82,7 @@
               "small.txt (added)",
               "+SMALL_DIFF_E2E",
               "LARGE_RESTORE_DONE",
-              "○"
+              "Enter sends"
             ],
             "absent": [
               "large.txt (modified)"

@@ -21,7 +21,7 @@
         {
           "when": {
             "contains": [
-              "GraphCoder"
+              "graphcoder"
             ],
             "cursor": true
           },
@@ -31,7 +31,7 @@
           "when": {
             "contains": [
               "NOTIFICATION_E2E",
-              "\u25cb"
+              "Enter sends"
             ],
             "raw": [
               "\u0007"

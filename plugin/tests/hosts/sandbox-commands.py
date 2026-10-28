@@ -91,23 +91,32 @@ def pi_command(binary, command, *, cwd, env, log, prefix=()):
     native = subprocess.Popen([*prefix, binary, '--mode', 'rpc', '--no-session', '--no-skills',
                                '--no-prompt-templates', '--no-themes'], cwd=cwd, env=env,
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
-                              text=True, bufsize=1)
+                              bufsize=0)
     try:
-        native.stdin.write(json.dumps({'id': 'sandbox', 'type': 'bash', 'command': command}) + '\n')
+        native.stdin.write((json.dumps({'id': 'sandbox', 'type': 'bash', 'command': command}) + '\n').encode())
         native.stdin.flush()
         with selectors.DefaultSelector() as ready:
             ready.register(native.stdout, selectors.EVENT_READ)
             deadline = time.monotonic() + 8
-            while True:
+            pending = b''
+            completed = False
+            while not completed:
                 remaining = deadline - time.monotonic()
                 assert remaining > 0 and ready.select(remaining), 'Pi command did not complete'
-                line = native.stdout.readline()
-                assert line, 'Pi exited without command result'
-                message = json.loads(line)
-                if message.get('id') == 'sandbox':
+                data = os.read(native.stdout.fileno(), 65536)
+                assert data, 'Pi exited without command result'
+                pending += data
+                while b'\n' in pending:
+                    line, pending = pending.split(b'\n', 1)
+                    if not line:
+                        continue
+                    message = json.loads(line)
+                    if message.get('id') != 'sandbox' or message.get('type') != 'response':
+                        continue
+                    assert message.get('command') == 'bash', message
                     assert message.get('success'), message
                     assert message['data']['exitCode'] == 0, message
-                    break
+                    completed = True
         native.stdin.close()
         assert native.wait(timeout=2) == 0
     finally:
@@ -152,16 +161,14 @@ def main():
                 path = root / 'owner-profile' / name.lower()
                 path.mkdir(parents=True)
                 owner_env[name] = str(path)
-            owner = subprocess.Popen([args.graphcoder, '--host-workspace', '--host-state-directory', str(state),
-                                      '--workspace', str(workspace)], cwd=workspace, env=owner_env,
-                                     stdout=owner_log, stderr=owner_log)
+            owner = subprocess.Popen(['node', str(Path(__file__).with_name('workspace-owner.mjs')),
+                                      args.graphcoder, str(workspace), str(state), str(root)],
+                                     cwd=workspace, env=owner_env, stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=owner_log, text=True)
             try:
                 descriptor = workspace / '.acyclic-sdk/host-files/owner.json'
-                deadline = time.monotonic() + 2
-                while not descriptor.exists():
-                    assert owner.poll() is None, 'workspace owner exited'
-                    assert time.monotonic() < deadline, 'workspace owner not ready'
-                    time.sleep(0.01)
+                acknowledged = json.loads(owner.stdout.readline())
+                assert acknowledged == {'event': 'workspace-owner-ready'}, acknowledged
 
                 def action(value):
                     return json.loads(checked([args.binary, '__workspace'], cwd=workspace, env=env,
@@ -219,9 +226,14 @@ def main():
                 assert result['seconds'] < 10, result
                 print(json.dumps(result), flush=True)
             finally:
-                owner.terminate()
+                owner.stdin.close()
                 owner.wait(timeout=2)
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as error:
+        print(f'step=native host command contract: {error}; recovery='
+              + shlex.join([sys.executable, *sys.argv]), file=sys.stderr)
+        raise SystemExit(1)

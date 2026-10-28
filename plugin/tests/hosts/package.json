@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Exact external host inputs for Acyclic qualification",
   "scripts": {
+    "test:native-installation": "node --test --test-concurrency=1 native-installation.test.mjs",
     "test:scripted-selection": "node --test --test-concurrency=1 scripted-selection.test.mjs",
     "test:shim": "bun test shim-contract.test.ts && bun test pi-bridge.test.ts && node --test --test-concurrency=1 scripted-selection.test.mjs",
     "test:version-admission": "node --test --test-reporter=tap --test-concurrency=1 version-admission.test.mjs",

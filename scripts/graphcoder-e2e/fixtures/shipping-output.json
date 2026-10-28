@@ -1,0 +1,31 @@
+{
+  "provenance": {
+    "main": "736854cc314cd583872d6f5297158c0d209527db",
+    "graphcoder_sha256": "1d315aa54de3db1a2eb82854b8ce6b86dd382dc1518410017425c6c4a99a08f4",
+    "platform": "win32",
+    "origins": [
+      {
+        "case": "text-responses",
+        "receipt_sha256": "94ee09a21240028db8430af72dfa513327848c976c431b5a2c8e5f5ac66ecd24"
+      },
+      {
+        "case": "jsonl-reopen",
+        "receipt_sha256": "74389c828640070c533bd552f5ac4ed329ef7c57c117aaab28457ebe7e3aed25"
+      }
+    ]
+  },
+  "captures": {
+    "text-responses": {
+      "code": 0,
+      "signal": null,
+      "stdout": "hé λ 🙂 **streamed answer**\n\n",
+      "stderr": ""
+    },
+    "jsonl-reopen": {
+      "code": 0,
+      "signal": null,
+      "stdout": "{\"id\":\"e2e\",\"inbox\":1,\"text\":\"done\"}\n",
+      "stderr": ""
+    }
+  }
+}

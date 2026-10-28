@@ -38,7 +38,7 @@
         {
           "when": {
             "contains": [
-              "GraphCoder"
+              "graphcoder"
             ],
             "cursor": true
           },
@@ -56,7 +56,7 @@
           "when": {
             "contains": [
               "APPROVAL_E2E_DONE",
-              "\u25cb"
+              "Enter sends"
             ]
           },
           "send": "\u0004"

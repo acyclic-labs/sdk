@@ -52,11 +52,16 @@
       "mode": "headless",
       "operation": "00000000-0000-0000-0000-000000000002",
       "text": "ORPHAN_RECOVER",
-      "answer": "ORPHAN_RECOVERED"
+      "exit": 1,
+      "outcome": {
+        "completion": "failed",
+        "error": "tool was interrupted before its outcome was recorded; it may have run, partly or fully"
+      }
     }
   ],
   "assert": {
-    "requests": 2,
+    "requests": 1,
+    "steps": [0, 1],
     "dead_tree": "orphan-ready"
   }
 }

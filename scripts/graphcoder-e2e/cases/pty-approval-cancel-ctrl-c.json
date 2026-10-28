@@ -38,7 +38,7 @@
           "when": {
             "cursor": true,
             "contains": [
-              "GraphCoder"
+              "graphcoder"
             ]
           }
         },
@@ -56,7 +56,7 @@
             "task_failure": "cancelled",
             "contains": [
               "cancelled",
-              "○"
+              "Enter sends"
             ],
             "absent": [
               "E2E approval policy"
@@ -68,7 +68,7 @@
           "when": {
             "contains": [
               "AFTER_CANCEL_E2E_DONE",
-              "○"
+              "Enter sends"
             ],
             "absent": [
               "failed: cancelled",

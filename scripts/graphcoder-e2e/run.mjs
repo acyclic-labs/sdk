@@ -23,6 +23,7 @@ import { qualification } from "./qualification.mjs";
 import { publishReport } from "./report.mjs";
 import { environment, scratchDirectory } from "./scratch.mjs";
 import { withOwnedCase } from "./suite.mjs";
+import { conversation } from "./conversation.mjs";
 
 const [binaryArg, mockArg, ...selected] = process.argv.slice(2);
 assert.ok(binaryArg && mockArg, "usage: node run.mjs GRAPHCODER MOCK_MODEL [case-id...]");
@@ -81,6 +82,8 @@ async function execute(test, gitOrigin) {
   const begin = performance.now();
   const fixture = { id: test.id, workspace: join(test.root, test.id, "workspace"), settings: join(test.root, test.id, "settings"), catalog: join(test.root, test.id, "catalog.json") };
   const artifact = join(output, test.id); await mkdir(artifact, { recursive: true });
+  fixture.binary = binary;
+  fixture.output = artifact;
   const captures = [], interrupted = [];
   try {
     fixture.env = environment(fixture.settings);
@@ -101,10 +104,16 @@ async function execute(test, gitOrigin) {
     fixture.onRequest = listener => events.subscribe(event => {
       if (event.case === test.id) { fixture.requests.push(event); listener(event); }
     });
+    fixture.waitRequest = match => events.wait(event => event.case === test.id && match(event));
     fixture.args = ["--workspace", fixture.workspace, "--settings-root", fixture.settings, "--catalog", fixture.catalog, "--model", "e2e/tiny"];
     const operation = "00000000-0000-0000-0000-000000000001";
     for (const raw of test.inputs) {
       const input = expand(raw, fixture);
+      if (input.mode === "conversation") {
+        await conversation(processes, binary, fixture, { ...input, operation: input.operation ?? operation },
+          capture => captures.push(capture));
+        continue;
+      }
       if (input.mode === "qualification") {
         await qualification(processes, input, fixture, capture => captures.push(capture));
         continue;

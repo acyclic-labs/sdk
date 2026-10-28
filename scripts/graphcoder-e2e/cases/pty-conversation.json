@@ -32,7 +32,7 @@
         {
           "when": {
             "contains": [
-              "GraphCoder"
+              "graphcoder"
             ],
             "cursor": true
           },
@@ -42,7 +42,7 @@
           "when": {
             "contains": [
               "FIRST_REPLY",
-              "\u25cb"
+              "Enter sends"
             ]
           },
           "prompt": "second prompt"
@@ -51,7 +51,7 @@
           "when": {
             "contains": [
               "SECOND_REPLY",
-              "\u25cb"
+              "Enter sends"
             ]
           },
           "send": "\u0004"

@@ -55,7 +55,16 @@ with tempfile.TemporaryDirectory(prefix="plugins-mcp-framing-") as temporary:
                     assert answer.get("error", {}).get("code") == -32700, answer
                     assert process.stdout.read(1) == b"", "failed frame kept the session open"
                     assert not process.stdin.closed, "peer must remain open during rejection"
-                assert process.wait(timeout=2) == 0, process.stderr.read().decode()
+                # Framing/decoding failures emit -32700 and terminate with an
+                # error; the shipping CLI propagates that error as exit 1.
+                expected_exit = 0 if case == "framed" else 1
+                actual_exit = process.wait(timeout=2)
+                diagnostic = process.stderr.read().decode()
+                assert actual_exit == expected_exit, (
+                    f"step=verify MCP {host}/{case} termination: exit {actual_exit}, "
+                    f"expected {expected_exit}: {diagnostic}; recovery=python3 "
+                    f"plugin/tests/hosts/mcp-framing.py {binary} --host {host} --case {case}"
+                )
                 results.append({"host": host, "case": case, "passed": True})
             finally:
                 if process.poll() is None:

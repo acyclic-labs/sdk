@@ -21,7 +21,7 @@
         {
           "when": {
             "contains": [
-              "GraphCoder"
+              "graphcoder"
             ],
             "cursor": true
           },
@@ -31,7 +31,7 @@
           "when": {
             "contains": [
               "SCROLL_LINE_49",
-              "\u25cb"
+              "Enter sends"
             ],
             "absent": [
               "SCROLL_LINE_00"
@@ -54,7 +54,7 @@
           "when": {
             "contains": [
               "SCROLL_LINE_49",
-              "\u25cb"
+              "Enter sends"
             ]
           },
           "send": "\u0004"

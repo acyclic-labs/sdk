@@ -37,12 +37,9 @@
         "tools": [
           {
             "id": "topic-text",
-            "name": "write",
+            "name": "shell",
             "arguments": {
-              "path": "seed.txt",
-              "text": "topic\n",
-              "media_type": "text/plain",
-              "display_name": "seed.txt"
+              "command": "node \"{{support}}/write-project.mjs\" \"seed.txt\" dG9waWMK"
             }
           }
         ]
@@ -88,12 +85,9 @@
         "tools": [
           {
             "id": "main-text",
-            "name": "write",
+            "name": "shell",
             "arguments": {
-              "path": "seed.txt",
-              "text": "main\n",
-              "media_type": "text/plain",
-              "display_name": "seed.txt"
+              "command": "node \"{{support}}/write-project.mjs\" \"seed.txt\" bWFpbgo="
             }
           }
         ]
@@ -141,12 +135,9 @@
         "tools": [
           {
             "id": "resolve",
-            "name": "write",
+            "name": "shell",
             "arguments": {
-              "path": "seed.txt",
-              "text": "resolved\n",
-              "media_type": "text/plain",
-              "display_name": "seed.txt"
+              "command": "node \"{{support}}/write-project.mjs\" \"seed.txt\" cmVzb2x2ZWQK"
             }
           }
         ]

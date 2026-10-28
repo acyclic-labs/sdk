@@ -1,6 +1,8 @@
 // A matrix is a collection of bounded case suites. Windows executes them serially.
 import assert from "node:assert/strict";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
@@ -56,14 +58,83 @@ export async function runSuites(cases, run, read) {
   return receipts;
 }
 
+// Partitioning only splits a matrix into selections. It never qualifies a
+// subset, changes a case budget or retries a previously executed case.
+export function partition(cases, value) {
+  if (value === undefined) return { index: 0, count: 1, cases };
+  assert.match(value, /^\d+\/[1-9]\d*$/, "partition must be zero-based INDEX/COUNT");
+  const [index, count] = value.split("/").map(Number);
+  assert.ok(Number.isSafeInteger(index) && Number.isSafeInteger(count)
+    && index < count && count <= cases.length, "partition is empty or outside the inventory");
+  return { index, count, cases: cases.slice(Math.floor(index * cases.length / count),
+    Math.floor((index + 1) * cases.length / count)) };
+}
+
+export function collectPartitions(cases, bundles, platform, coverage) {
+  assert.ok(bundles.length > 0, "no partition receipts supplied");
+  const ordered = [...bundles].sort((a, b) => a.index - b.index), first = ordered[0];
+  for (const key of ["binary", "mock", "cases"])
+    assert.match(first.binding?.[key] ?? "", /^[a-f0-9]{64}$/, `missing partition ${key} identity`);
+  assert.equal(first.binding.cases, createHash("sha256").update(JSON.stringify(cases)).digest("hex"),
+    "partition case definitions changed");
+  assert.ok(first.binding.source && typeof first.binding.source === "object"
+    && !Array.isArray(first.binding.source) && Object.keys(first.binding.source).length > 0,
+    "missing partition acceptance source");
+  for (const [name, digest] of Object.entries(first.binding.source))
+    assert.ok(name.length > 0 && typeof digest === "string" && /^[a-f0-9]{64}$/.test(digest),
+      `invalid partition acceptance source digest: ${name}`);
+  assert.equal(ordered.length, first.count, "every partition needs a receipt");
+  for (let index = 0; index < ordered.length; index++) {
+    const bundle = ordered[index];
+    assert.equal(bundle.index, index, "duplicate or missing partition");
+    assert.equal(bundle.count, first.count, "partition plan changed");
+    assert.equal(bundle.platform, platform, "partition OS changed");
+    assert.deepEqual(bundle.binding, first.binding, "partition executable or acceptance source changed");
+    assert.deepEqual(bundle.coverage, coverage, "partition coverage changed");
+    assert.deepEqual(bundle.inventory, cases.map(test => test.id), "partition inventory changed");
+    const selected = partition(cases, `${index}/${first.count}`).cases;
+    assert.deepEqual(bundle.selected, selected.map(test => test.id), "partition selection changed");
+    assert.equal(bundle.receipts.length, selected.length, "partition lost a suite receipt");
+  }
+  return collect(cases, ordered.flatMap(bundle => bundle.receipts), platform, coverage);
+}
+
+async function digest(path) {
+  const hash = createHash("sha256");
+  for await (const bytes of createReadStream(path)) hash.update(bytes);
+  return hash.digest("hex");
+}
+
+async function acceptanceBinding(directory, binary, mock, cases) {
+  const source = {};
+  for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name)))
+    if (entry.isFile() && !entry.name.startsWith(".")) source[entry.name] = await digest(join(directory, entry.name));
+  return { binary: await digest(binary), mock: await digest(mock), source,
+    cases: createHash("sha256").update(JSON.stringify(cases)).digest("hex") };
+}
+
 async function main() {
   const [binary, mock, ...extra] = process.argv.slice(2);
-  assert.ok(binary && mock && !extra.length, "usage: node serial.mjs GRAPHCODER MOCK_MODEL");
+  if (binary === "--collect") {
+    assert.ok(mock && extra.length, "usage: node serial.mjs --collect FRESH_OUTPUT PARTITION.json ...");
+    const cases = inventory(), coverage = readCoverage(cases);
+    const bundles = await Promise.all(extra.map(async path => JSON.parse(await readFile(path, "utf8"))));
+    const report = collectPartitions(cases, bundles, process.platform, coverage);
+    report.seconds = bundles.reduce((total, bundle) => total + bundle.seconds, 0);
+    const output = resolve(mock); await mkdir(output);
+    await publishReport(join(output, "matrix.json"), report);
+    process.exitCode = report.pass ? 0 : 1;
+    return;
+  }
+  assert.ok(binary && mock && extra.length <= 1, "usage: node serial.mjs GRAPHCODER MOCK_MODEL [INDEX/COUNT]");
   const directory = dirname(fileURLToPath(import.meta.url));
   const scratch = scratchDirectory("graphcoder-e2e-matrix-");
   const output = resolve(process.env.E2E_OUTPUT ?? join(scratch, "results"));
-  await mkdir(output, { recursive: true });
-  const cases = inventory(), coverage = readCoverage(cases), processes = new Processes();
+  await mkdir(dirname(output), { recursive: true });
+  await mkdir(output); // A completed or partial evidence identity is never rerun.
+  const all = inventory(), plan = partition(all, extra[0]), cases = plan.cases;
+  const coverage = readCoverage(all), processes = new Processes();
+  const binding = await acceptanceBinding(directory, binary, mock, all);
   let receipts;
   const begin = performance.now();
   try {
@@ -75,9 +146,20 @@ async function main() {
       return result;
     }, async test => JSON.parse(await readFile(join(output, test.id, "matrix.json"), "utf8")));
   } finally { await processes.close(); }
-  const report = { ...collect(cases, receipts, process.platform, coverage), seconds: (performance.now() - begin) / 1000 };
+  const seconds = (performance.now() - begin) / 1000;
+  await writeFile(join(output, "partition.json"), JSON.stringify({ index: plan.index, count: plan.count,
+    platform: process.platform, inventory: all.map(test => test.id), selected: cases.map(test => test.id),
+    coverage, binding, receipts, seconds }, null, 2), { flag: "wx" });
+  const report = { ...collect(cases, receipts, process.platform, coverage), seconds,
+    qualification: plan.count === 1 };
   await publishReport(join(output, "matrix.json"), report);
   process.exitCode = report.pass ? 0 : 1;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try { await main(); }
+  catch (error) {
+    console.error(`step=serial matrix admission or collection: ${error.message}; recovery=${JSON.stringify(process.argv)}; inspect retained receipts and correct the rejected input before rerunning`);
+    process.exitCode = 1;
+  }
+}

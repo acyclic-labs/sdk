@@ -55,7 +55,7 @@
         {
           "when": {
             "contains": [
-              "GraphCoder"
+              "graphcoder"
             ],
             "cursor": true
           },
@@ -65,7 +65,7 @@
           "when": {
             "contains": [
               "FOLDER_EDIT_READY",
-              "○"
+              "Enter sends"
             ]
           },
           "prompt": "/diff "
@@ -87,7 +87,7 @@
               "folder/a.txt (removed)",
               "-FOLDER_BASE_E2E",
               "FOLDER_CHANGE_READY",
-              "○"
+              "Enter sends"
             ]
           },
           "send": "\u0004"

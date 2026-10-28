@@ -36,7 +36,7 @@
         {
           "when": {
             "contains": [
-              "GraphCoder"
+              "graphcoder"
             ],
             "cursor": true
           },
@@ -54,7 +54,7 @@
           "when": {
             "contains": [
               "DENIAL_E2E_DONE",
-              "○"
+              "Enter sends"
             ]
           },
           "send": "\u0004"
