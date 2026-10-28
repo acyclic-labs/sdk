@@ -18,8 +18,6 @@ pub(in crate::bindings) struct BrowserSpeculationOptions {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(in crate::bindings) struct BrowserResidencySpeculationOptions {
-    pub(in crate::bindings) maximum_active_operations: u32,
-    pub(in crate::bindings) maximum_active_bytes: u64,
     pub(in crate::bindings) outcome_window: u32,
     pub(in crate::bindings) traffic_window: u32,
     pub(in crate::bindings) speculative_cost_basis_points: u16,
@@ -30,9 +28,6 @@ pub(in crate::bindings) struct BrowserResidencySpeculationOptions {
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(in crate::bindings) struct BrowserPromotionSpeculationOptions {
-    pub(in crate::bindings) maximum_active_operations: u32,
-    pub(in crate::bindings) maximum_active_bytes: u64,
-    pub(in crate::bindings) maximum_active_cost_units: u64,
     pub(in crate::bindings) outcome_window: u32,
     pub(in crate::bindings) minimum_usefulness_samples: u32,
     pub(in crate::bindings) minimum_usefulness_basis_points: u16,
@@ -127,7 +122,7 @@ pub struct BrowserResidencyMetrics {
     pub(in crate::bindings) wasted: u64,
     pub(in crate::bindings) rejected_fence: u64,
     pub(in crate::bindings) rejected_duplicate: u64,
-    pub(in crate::bindings) rejected_capacity: u64,
+    pub(in crate::bindings) rejected_invalid: u64,
     pub(in crate::bindings) rejected_cost: u64,
     pub(in crate::bindings) rejected_usefulness: u64,
 }
@@ -338,8 +333,6 @@ pub(in crate::bindings) const fn browser_speculation_options(
 ) -> SpeculationOptions {
     SpeculationOptions {
         residency: ResidencySpeculatorOptions {
-            maximum_active_operations: options.residency.maximum_active_operations,
-            maximum_active_bytes: options.residency.maximum_active_bytes,
             outcome_window: options.residency.outcome_window,
             traffic_window: options.residency.traffic_window,
             speculative_cost_basis_points: options.residency.speculative_cost_basis_points,
@@ -347,9 +340,6 @@ pub(in crate::bindings) const fn browser_speculation_options(
             minimum_usefulness_basis_points: options.residency.minimum_usefulness_basis_points,
         },
         promotion: PromotionSpeculatorOptions {
-            maximum_active_operations: options.promotion.maximum_active_operations,
-            maximum_active_bytes: options.promotion.maximum_active_bytes,
-            maximum_active_cost_units: options.promotion.maximum_active_cost_units,
             outcome_window: options.promotion.outcome_window,
             minimum_usefulness_samples: options.promotion.minimum_usefulness_samples,
             minimum_usefulness_basis_points: options.promotion.minimum_usefulness_basis_points,
@@ -448,7 +438,7 @@ pub(in crate::bindings) fn browser_residency_metrics(
         wasted: value.wasted,
         rejected_fence: value.rejected_fence,
         rejected_duplicate: value.rejected_duplicate,
-        rejected_capacity: value.rejected_capacity,
+        rejected_invalid: value.rejected_invalid,
         rejected_cost: value.rejected_cost,
         rejected_usefulness: value.rejected_usefulness,
     }
