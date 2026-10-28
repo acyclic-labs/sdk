@@ -65,7 +65,7 @@ async fn exec_form_placeholders_launch_guards_without_retokenizing_paths_or_argu
             eprintln!("guard argument was changed");
             std::process::exit(3);
         }
-        eprintln!("expanded guard denied");
+        eprintln!("expanded guard denied{}", "é".repeat(40_000));
         std::process::exit(2);
     }
     let executable = std::env::current_exe().map_err(|error| Error::Invalid(error.to_string()))?;
@@ -99,17 +99,18 @@ async fn exec_form_placeholders_launch_guards_without_retokenizing_paths_or_argu
             ]
         }]}]}}).to_string().as_bytes())?;
         let output = hooks
-            .run(
+            .run_checked(
                 HookEvent::PreToolUse,
-                root,
-                &cwd,
-                &json!({"tool_name":"shell"}),
+                (root, &cwd),
+                (&json!({"tool_name":"shell"})).into(),
                 &registry()?,
+                262_144,
+                (Arc::new(|| Ok(())), None),
             )
             .await?;
         assert_eq!(
             output.blocked.as_deref(),
-            Some("expanded guard denied\n"),
+            Some(format!("expanded guard denied{}\n", "é".repeat(40_000)).as_str()),
             "{output:?}"
         );
         assert!(output.diagnostics.is_empty(), "{output:?}");
