@@ -32,6 +32,8 @@ export class Actors extends DurableObject<Env> {
       // Durable recovery exists BEFORE publishing any state or routing changes.
       await this.ctx.storage.setAlarm(Date.now());
       await this.journal.append(index, admit, changes);
+      // Close cleanup racing the pre-publication arm while append awaited IO.
+      await this.ctx.storage.setAlarm(Date.now());
     },
   }, async (address: Uint8Array, paused: boolean) => {
     await this.discover();
@@ -81,7 +83,6 @@ export class Actors extends DurableObject<Env> {
     if (raw === undefined || paths.length === 0 || paths.length > 1000 || new Set(paths).size !== paths.length
       || paths.some(path => !path || path.length > 4096)) refuse("registration");
     const row = route(raw);
-    if (this.rows().some(([other, route]) => other !== name && route.paths.some(path => paths.includes(path)))) refuse("route-owner");
     // Register before Host::wake performs its final committed-input recheck.
     this.routes.put(name, JSON.stringify({ ...row, paths }));
     await this.routes.flush();
