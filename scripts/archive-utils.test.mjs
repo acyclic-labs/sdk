@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,8 +7,31 @@ import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
-import { collectBody, hashBody, readTarGzip, sha256, visitTar } from "./archive-utils.mjs";
+import { collectBody, hashBody, readPayloadEntries, readTarGzip, sha256, visitTar } from "./archive-utils.mjs";
 import { validateArchive } from "./validate-npm-package.mjs";
+
+test("digest-only archive admission streams every chunk and rejects names before reading bodies", async () => {
+  const chunk = Buffer.alloc(65536, 7), expected = createHash("sha256");
+  let visited = 0;
+  const result = await readPayloadEntries(async visit => {
+    await visit({ path: "large", type: "0", size: chunk.length * 1025, body: (async function* () {
+      for (let index = 0; index < 1025; index++) {
+        visited++;
+        expected.update(chunk);
+        yield chunk;
+      }
+    })() });
+  }, { canonical: name => name === "large", retain: () => false });
+  assert.equal(visited, 1025);
+  assert.equal(result.payload.size, 0);
+  assert.equal(result.digests.get("large"), expected.digest("hex"));
+  let bodyRead = false;
+  await assert.rejects(readPayloadEntries(visit => visit({
+    path: "../outside", type: "0", size: 1,
+    body: (async function* () { bodyRead = true; yield Buffer.from("x"); })(),
+  }), { canonical: () => false }), /unsafe or duplicate/);
+  assert.equal(bodyRead, false);
+});
 
 function header(path, size) {
   const result = Buffer.alloc(512);
