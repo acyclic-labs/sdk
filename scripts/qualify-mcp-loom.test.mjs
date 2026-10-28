@@ -142,16 +142,16 @@ test("ownership qualification requires every dedicated real-lock model and compi
 });
 
 test("progress qualification requires the cleanup and runnable-wake models and controls", () => {
-  const names = ["registration_reporting_and_cancel_or_panic_cleanup_are_atomic",
-    "forgotten_cleanup_is_detected_on_the_real_registration",
-    "polling_wake_and_reporting_never_lose_runnability",
-    "an_unobserved_wake_fails_the_same_runnability_oracle"];
+  const names = ["e2e_progress_model::registration_reporting_and_cancel_or_panic_cleanup_are_atomic",
+    "e2e_progress_model::forgotten_cleanup_is_detected_on_the_real_registration",
+    "e2e_progress_model::polling_wake_and_reporting_never_lose_runnability",
+    "e2e_progress_model::an_unobserved_wake_fails_the_same_runnability_oracle"];
   for (const missing of [null, 1, 2, 3, 4]) {
     let models = 0;
     const run = (command, args) => {
       if (command === "cargo") {
         assert.deepEqual(args.slice(-3), ["--", "--cfg", "loom"]);
-        return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "e2e-progress-model"}})};
+        return {status: 0, stdout: JSON.stringify({...artifact, target: {name: "main"}})};
       }
       assert.equal(args[0], names[models++]);
       return {status: 0, stdout: summary(models === missing ? 0 : 1, 0, 1)};

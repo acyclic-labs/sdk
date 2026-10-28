@@ -13,24 +13,12 @@ description = "Generic durable substrate and fully composable agent runtime"
 readme = "README.md"
 documentation = "https://docs.rs/acyclic-harness"
 
-[[test]]
-name = "dst"
-path = "tests/dst/main.rs"
-required-features = ["filesystem-local", "native-execution", "test-support"]
 
 [[test]]
 name = "main"
 path = "tests/main.rs"
 
-[[test]]
-name = "e2e-progress-model"
-path = "tests/e2e_progress_model.rs"
-required-features = ["model-checking"]
 
-[[test]]
-name = "filesystem_access"
-path = "tests/filesystem_access.rs"
-required-features = ["filesystem", "test-support"]
 
 [lib]
 crate-type = ["rlib", "cdylib"]
@@ -40,10 +28,6 @@ name = "acyclic-virtiofsd"
 path = "src/bin/virtiofsd.rs"
 required-features = ["filesystem-local", "native-execution"]
 
-[[test]]
-name = "virtiofs"
-path = "tests/virtiofs.rs"
-required-features = ["filesystem-local", "native-execution", "test-support"]
 
 [[example]]
 name = "native-process-approval"

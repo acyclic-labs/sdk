@@ -14,7 +14,7 @@ RUSTC_WORKSPACE_WRAPPER="$PWD/scripts/loom-rustc.sh" cargo test --locked -p acyc
   python3 scripts/qualify-graphcoder-artifact.py testing::model:: testing::entropy::models:: testing::executor::models:: testing::queue_model:: testing::durability::models:: testing::host::models:: health::owners::model:: claim::model:: descriptor::model::
 cargo test --locked -p acyclic-harness-core --features filesystem-local,native-execution,grpc,test-support --lib --no-run --message-format=json |
   python3 scripts/qualify-graphcoder-artifact.py filesystem::native_process::capture::tests::
-cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,grpc,test-support --test dst --no-run --message-format=json |
+cargo test --locked -p acyclic-harness --features filesystem-local,native-execution,grpc,test-support --test main --no-run --message-format=json |
   python3 scripts/qualify-graphcoder-artifact.py --runner scripts/qualify-dst-replay.py
 
 # Keep transitive native features identical across the touched packages' tests.

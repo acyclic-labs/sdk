@@ -10,7 +10,7 @@ import tempfile
 import time
 
 executable, = sys.argv[1:]
-second_test = "digest::cross_process_seeded_replay_digest"
+second_test = "dst::digest::cross_process_seeded_replay_digest"
 started = time.monotonic()
 # Each process saves the canonical trace its digest hashed, so a mismatch can
 # name the first differing poll, boundary, write or 32-byte chunk.
@@ -20,7 +20,7 @@ environment = {**os.environ, "DST_TRACE_DIR": trace_directory}
 # Exercise the same in-process concurrency as the main gate before splitting
 # independent trace peers. Shared registries must not make another runtime's
 # wake delivery look like elapsed simulated time.
-parallel = subprocess.run([executable, "--nocapture"], env=environment,
+parallel = subprocess.run([executable, "dst::", "--nocapture"], env=environment,
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                           timeout=max(0, 9 - (time.monotonic() - started)))
 sys.stdout.buffer.write(parallel.stdout)
@@ -34,8 +34,8 @@ if not re.search(rb"test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored;",
 
 def run_pair():
     commands = [
-        ["--skip", second_test, "--skip", "sources::", "--nocapture"],
-        [second_test, "sources::", "--nocapture"],
+        ["dst::", "--skip", second_test, "--skip", "dst::sources::", "--nocapture"],
+        [second_test, "dst::sources::", "--nocapture"],
     ]
     processes = []
     try:
