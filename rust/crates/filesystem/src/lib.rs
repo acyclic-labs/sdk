@@ -101,6 +101,9 @@ mod heap_future;
 pub mod hosted;
 #[doc(hidden)]
 pub mod hosted_contract;
+#[cfg(feature = "tooling")]
+#[doc(hidden)]
+pub mod tooling_contracts;
 mod identity;
 pub mod kernel;
 pub mod lazy_workspace;

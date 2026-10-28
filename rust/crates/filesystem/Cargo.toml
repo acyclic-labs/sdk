@@ -156,6 +156,7 @@ windows = { version = "0.62.2", features = [
 
 
 [features]
+tooling = []
 conformance = ["distributed", "acyclic-stream/conformance", "acyclic-objects/conformance", "dep:tempfile"]
 session = ["distributed", "acyclic-stream/session"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support", "acyclic-objects?/test-support"]
@@ -227,3 +228,7 @@ required-features = ["memory"]
 name = "object_batches_alloc"
 harness = false
 required-features = ["memory"]
+
+[[example]]
+name = "filesystem-contracts"
+required-features = ["tooling"]
