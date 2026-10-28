@@ -22,8 +22,7 @@
 //! and `acyclic-test-support` names it without depending on any crate whose
 //! tests use it, so no dev-dependency cycle forms.
 //! `scripts/publish-cargo-crates.mjs check` enforces the dependency half of
-//! this rule in CI, and `scripts/check-dev-dependency-cycles.mjs` the cycle
-//! half.
+//! this rule during publication qualification.
 
 use std::{any::Any, cell::RefCell};
 
