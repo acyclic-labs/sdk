@@ -64,15 +64,7 @@ impl StreamProvider for LocalStream {
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
         self.accepted(async {
             let mut head = self.inner.provider.head(path.clone()).await?;
-            let synced = self.inner.synced.borrow().flushed
-                .is_some_and(|cut| cut >= *self.inner.revision.borrow());
-            let mut tails = self.inner.durable_tails.lock()
-                .map_err(|_| StreamError::Unavailable)?;
-            let durable = tails.entry(path).or_default();
-            if synced {
-                *durable = (*durable).max(head.tail);
-            }
-            head.durable = *durable;
+            head.durable = self.durable_tail_for_accepted(path, head.tail)?;
             Ok(head)
         }).await?
     }
@@ -85,26 +77,9 @@ impl StreamProvider for LocalStream {
     async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
         self.accepted(async {
             let accepted = self.inner.provider.tail(path.clone()).await?;
-            // Both frame counters are published before publication is released.
-            // Do not borrow the journal: compaction may hold it during device I/O.
-            let synced = self
-                .inner
-                .synced
-                .borrow()
-                .flushed
-                .is_some_and(|cut| cut >= *self.inner.revision.borrow());
-            let mut tails = self
-                .inner
-                .durable_tails
-                .lock()
-                .map_err(|_| StreamError::Unavailable)?;
-            let durable = tails.entry(path).or_default();
-            if synced {
-                *durable = (*durable).max(accepted);
-            }
             Ok(crate::StreamWatermarks {
                 accepted,
-                durable: *durable,
+                durable: self.durable_tail_for_accepted(path, accepted)?,
             })
         })
         .await?
@@ -380,6 +355,32 @@ fn describe_commit(request: &CommitRequest) {
 }
 
 impl LocalStream {
+    // Called under accepted's publication guard after observing this path's tail.
+    fn durable_tail_for_accepted(
+        &self,
+        path: StreamPath,
+        accepted: u64,
+    ) -> Result<u64, StreamError> {
+        // Both frame counters are published before publication is released.
+        // Do not borrow the journal: compaction may hold it during device I/O.
+        let synced = self
+            .inner
+            .synced
+            .borrow()
+            .flushed
+            .is_some_and(|cut| cut >= *self.inner.revision.borrow());
+        let mut tails = self
+            .inner
+            .durable_tails
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?;
+        let durable = tails.entry(path).or_default();
+        if synced {
+            *durable = (*durable).max(accepted);
+        }
+        Ok(*durable)
+    }
+
     fn receipt_for_flushed_snapshot(
         &self,
         path: StreamPath,
