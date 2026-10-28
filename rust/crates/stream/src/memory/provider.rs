@@ -437,8 +437,7 @@ impl StreamProvider for MemoryStream {
         F: FnMut() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), E>> + Send + 'static,
     {
-        crate::NativeProviderFuture::new(&Arc::clone(&meter), async move {
-            let work = Work::new(meter)?;
+        Work::start(meter, |work| async move {
             let provider = self.with_context(Arc::clone(&work));
             let result = async {
                 let _input = provider.request_claim(&request).map_err(E::from)?;
@@ -500,9 +499,7 @@ impl StreamProvider for MemoryStream {
         maximum_record_bytes: usize,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
-        let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(&original, async move {
-            let work = Work::new(meter)?;
+        Work::start(meter, |work| async move {
             let provider = self.with_context(Arc::clone(&work));
             let result = async {
                 let (plan, recovery) = provider.prepare(request, maximum_record_bytes).await?;
@@ -536,9 +533,7 @@ impl StreamProvider for MemoryStream {
         request: AppendRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, AppendOutcome> {
-        let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(&original, async move {
-            let work = Work::new(meter)?;
+        Work::start(meter, |work| async move {
             let provider = self.with_context(Arc::clone(&work));
             let existing = match &request.idempotency_key {
                 Some(key) => provider.has_replay(key).await,

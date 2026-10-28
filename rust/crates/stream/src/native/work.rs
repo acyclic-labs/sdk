@@ -21,6 +21,20 @@ pub(crate) struct Work {
 }
 
 impl Work {
+    pub(crate) fn start<'a, T, E, F>(
+        meter: Arc<dyn NativeReadMeter>,
+        operation: impl FnOnce(Arc<Self>) -> F,
+    ) -> crate::NativeProviderFuture<'a, T, E>
+    where
+        F: std::future::Future<Output = crate::NativeStreamResult<T, E>> + Send + 'a,
+    {
+        let work = match Self::new(meter) {
+            Ok(work) => work,
+            Err(error) => return crate::NativeProviderFuture::ready(Err(error)),
+        };
+        crate::NativeProviderFuture::new(&Arc::clone(&work.meter), operation(work))
+    }
+
     pub(crate) fn new(meter: Arc<dyn NativeReadMeter>) -> std::io::Result<Arc<Self>> {
         let allocation = ReadAllocation::new(
             &meter,

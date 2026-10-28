@@ -20,8 +20,7 @@ impl StreamProvider for LocalStream {
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> crate::NativeProviderFuture<'_, ()> {
         let stream = self.clone();
-        crate::NativeProviderFuture::new(&Arc::clone(&meter), async move {
-            let work = crate::native::Work::new(meter)?;
+        crate::native::Work::start(meter, |work| async move {
             let stream = Self {
                 work: Some(Arc::clone(&work)),
                 ..stream

@@ -15,8 +15,7 @@ impl LocalStream {
         describe_commit(&request);
         let original = Arc::clone(&meter);
         let stream = self.clone();
-        crate::NativeProviderFuture::new(&Arc::clone(&original), async move {
-            let work = crate::native::Work::new(meter)?;
+        crate::native::Work::start(meter, |work| async move {
             let mut stream = Self {
                 work: Some(Arc::clone(&work)),
                 ..stream
@@ -124,10 +123,8 @@ impl LocalStream {
                 request.path, request.idempotency_key
             )
         });
-        let original = Arc::clone(&meter);
         let stream = self.clone();
-        crate::NativeProviderFuture::new(&original, async move {
-            let work = crate::native::Work::new(meter)?;
+        crate::native::Work::start(meter, |work| async move {
             let stream = Self {
                 work: Some(Arc::clone(&work)),
                 ..stream
