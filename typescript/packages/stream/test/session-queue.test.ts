@@ -60,12 +60,18 @@ test("unbounded ingress preserves bursts, wrapped growth and detached disposal",
   queue.push(undefined);
   for (let value = 37; value < 3073; value += 1) expect((await reader.next()).value).toBe(value);
   expect((await reader.next()).value).toBeUndefined();
-  queue.push(7); queue.push(8);
+  for (let value = 0; value < 1025; value += 1) queue.push(value);
   const discarded: (number | undefined)[] = [];
-  queue.discard(value => { discarded.push(value); queue.push(9); });
-  expect(discarded).toEqual([7, 8]);
-  expect((await reader.next()).value).toBe(9);
-  expect((await reader.next()).value).toBe(9);
+  queue.discard(value => {
+    discarded.push(value);
+    // Reentrant production grows the NEW buffer while the wrapped old one
+    // is still retiring. Its original geometry must stay immutable.
+    for (let copy = 0; copy < 4; copy += 1) queue.push(value);
+  });
+  expect(discarded).toEqual(Array.from({ length: 1025 }, (_, value) => value));
+  for (let value = 0; value < 1025; value += 1) {
+    for (let copy = 0; copy < 4; copy += 1) expect((await reader.next()).value).toBe(value);
+  }
   queue.end();
   expect((await reader.next()).done).toBe(true);
 });
