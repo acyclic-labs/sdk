@@ -59,8 +59,8 @@ pub struct Limits {
     pub attachments: usize,
     /// Maximum bytes rendered directly into one model context part.
     pub render_bytes: u64,
-    /// Maximum model round trips in the stock agent loop.
-    pub model_steps: usize,
+    /// Optional maximum model round trips in the stock agent loop.
+    pub model_steps: Option<usize>,
     /// Maximum streamed observations admitted in one model round trip.
     pub model_events_per_step: usize,
     /// Maximum distinct tool calls admitted in one model round trip.
@@ -76,7 +76,7 @@ impl Default for Limits {
             path_bytes: u32::MAX as usize,
             attachments: u32::MAX as usize,
             render_bytes: MAX_EXACT_JS_INTEGER,
-            model_steps: u32::MAX as usize,
+            model_steps: None,
             model_events_per_step: u32::MAX as usize,
             tool_calls_per_step: u32::MAX as usize,
             context_messages: u32::MAX as usize,
@@ -99,12 +99,12 @@ impl Limits {
             || [
                 self.path_bytes,
                 self.attachments,
-                self.model_steps,
                 self.model_events_per_step,
                 self.tool_calls_per_step,
                 self.context_messages,
             ]
             .into_iter()
+            .chain(self.model_steps)
             .any(|limit| limit == 0 || limit as u64 > MAX_PORTABLE_COUNT as u64)
         {
             return Err(conversation_error(

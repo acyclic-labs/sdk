@@ -112,7 +112,7 @@ async fn admitted_replay_does_not_reload_or_transform_sources() -> Result<()> {
         operation_id: OperationId::new(),
         input: ModelContent::Text("exact ÃƒÂ©\0\r\n".into()),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     assert!(executor.model_step(&journal, &input, 1, &[]).await.is_err());
     let first = executor.model_step(&journal, &input, 0, &[]).await?;
@@ -184,7 +184,7 @@ async fn stock_prefix_reaches_provider_and_is_pinned_by_replay() -> Result<()> {
         operation_id: OperationId::from_bytes([67; 16]),
         input: ModelContent::Text("child task; fresh scratch".into()),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     executor.execute(input.clone(), journal.as_ref()).await?;
     executor.execute(input.clone(), journal.as_ref()).await?;
@@ -243,10 +243,10 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
         operation_id: OperationId::from_bytes([14; 16]),
         input: ModelContent::Text("bounded".into()),
         selected_context: None,
-        max_steps: 2,
+        max_steps: Some(2),
     };
     let narrow = Limits {
-        model_steps: 1,
+        model_steps: Some(1),
         ..Limits::default()
     };
     assert!(matches!(
@@ -265,7 +265,7 @@ async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
             .all(|request| request.max_output_tokens.is_none())
     );
     let changed = Limits {
-        model_steps: 3,
+        model_steps: Some(3),
         ..Limits::default()
     };
     assert!(matches!(
@@ -582,7 +582,7 @@ mod prepared_request_reuse_properties {
             operation_id: OperationId::new(),
             input: current.clone(),
             selected_context: None,
-            max_steps: 1,
+            max_steps: Some(1),
         };
         StockExecution::ordinary(&executor)
             .ensure_started(&journal, &input)
@@ -750,7 +750,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
             operation_id: OperationId::from_bytes([83; 16]),
             input: ModelContent::Text("child task".into()),
             selected_context: None,
-            max_steps: 1,
+            max_steps: Some(1),
         };
         executor.execute(input.clone(), journal.as_ref()).await?;
         executor.execute(input, journal.as_ref()).await?;
@@ -823,5 +823,73 @@ async fn a_retried_settlement_is_one_record() -> Result<()> {
             .await?
     );
     assert_eq!(journal.replay(operation, 0, 8, None)?.await?.len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn optional_step_policy_preserves_unbounded_execution_and_finite_authority() -> Result<()> {
+    let limits = Limits::default();
+    assert_eq!(limits.model_steps, None);
+    let scope = RuntimeScope::new(Capabilities::default(), limits)?;
+    let finite = Limits {
+        model_steps: Some(1),
+        ..limits
+    };
+    let narrowed = scope.narrow(Capabilities::default(), finite)?;
+    assert!(matches!(
+        narrowed.narrow(Capabilities::default(), limits),
+        Err(Error::Unauthorized(_))
+    ));
+    assert!(narrowed.narrow(Capabilities::default(), finite).is_ok());
+    for maximum in [None, Some(1)] {
+        let model = Arc::new(scripted_model());
+        let executor = uncompacted_executor(
+            Model::new("example".into(), "model".into(), "1".into(), Value::Null)?,
+            model.clone(),
+            ContextPipeline::default(),
+            echo_tools(
+                Arc::new(FakeTool(AtomicUsize::new(0))),
+                json!(true),
+                json!(true),
+                json!(true),
+            )?,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["model:generate", "tool:call:example.echo"]),
+                limits,
+            )?,
+            allowed()?,
+        )?;
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("input".into()),
+            selected_context: None,
+            max_steps: maximum,
+        };
+        let journal = Journal::default();
+        if maximum.is_none() {
+            // A finite host policy must reject an unbounded turn before dispatch.
+            assert!(matches!(
+                executor
+                    .clone()
+                    .with_limits(finite)
+                    .execute(input.clone(), &journal)
+                    .await,
+                Err(Error::Invalid(_))
+            ));
+            assert_eq!(model.requests().len(), 0);
+            let output = executor.execute(input, &journal).await?;
+            assert_eq!(output.text, "done");
+            assert_eq!(output.steps, 2);
+            assert_eq!(model.requests().len(), 2);
+        } else {
+            assert!(matches!(
+                executor.execute(input, &journal).await,
+                Err(Error::Conflict(_))
+            ));
+            assert_eq!(model.requests().len(), 1);
+        }
+    }
     Ok(())
 }
