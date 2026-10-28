@@ -172,6 +172,9 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                             next: resume.next,
                             preceding,
                             until,
+                            bootstrap_head: follow.bootstrap_head && resume.next == 0,
+                            bootstrap: None,
+                            when_absent: crate::WhenAbsent::from_wire(follow.when_absent)?,
                             end: None,
                             filter,
                             at_least,
@@ -283,11 +286,9 @@ fn follow_parameters(
     follow: &wire::SessionFollow,
     resume: &wire::SessionCursor,
 ) -> Result<(Option<crate::CommitId>, bool, Option<u64>), StreamError> {
+    wire_codec::session::validate_follow(follow, resume)?;
     let preceding = wire_codec::session::preceding_follow(follow, resume)?;
     let until = wire_codec::session::follow_bound(follow)?;
-    if !resume.opaque.is_empty() {
-        return Err(StreamError::InvalidArgument);
-    }
     let latest = match wire::SessionDelivery::try_from(follow.delivery) {
         Ok(wire::SessionDelivery::All) => false,
         Ok(wire::SessionDelivery::Latest) => true,
@@ -334,7 +335,10 @@ struct Follow<P: ?Sized> {
     filter: crate::FollowFilter,
     /// The subscription's floor; every reopen keeps it.
     at_least: crate::RevisionCut,
+    when_absent: crate::WhenAbsent,
     records: Option<crate::FollowStream>,
+    bootstrap_head: bool,
+    bootstrap: Option<crate::Record>,
     opened: bool,
     ended: u8,
 }
@@ -363,6 +367,7 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
     async fn event(&mut self) -> Result<Event, StreamError> {
         loop {
             if self.records.is_none() {
+                let confirmation = self.preceding;
                 // The first open waits for the floor before a bounded read pins
                 // its tail, so the pinned range covers the caller's own writes.
                 let applied = if self.opened {
@@ -379,9 +384,27 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
                     }
                     self.end = Some(until.min(tail));
                 }
+                if self.bootstrap_head {
+                    match self.provider.head(self.path.clone()).await {
+                        Ok(head) => {
+                            self.next = head.tail;
+                            self.preceding = head.last.as_ref().map(|record| record.commit_id);
+                            self.bootstrap = head
+                                .last
+                                .map(|record| self.filter.project(record))
+                                .transpose()?
+                                .flatten();
+                        }
+                        Err(StreamError::NotFound)
+                            if self.when_absent == crate::WhenAbsent::Wait => {}
+                        Err(error) => return Err(error),
+                    }
+                    self.bootstrap_head = false;
+                }
                 self.records = Some(
                     self.provider
                         .follow(crate::FollowRequest {
+                            when_absent: self.when_absent,
                             path: self.path.clone(),
                             from: self.next,
                             preceding: self.preceding,
@@ -395,10 +418,13 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
                     self.opened = true;
                     let applied = crate::revision::captured(&*self.provider, applied).await?;
                     return Ok(Event::Opened(
-                        self.preceding,
+                        confirmation,
                         applied.as_ref().map(wire_codec::revision_to_wire),
                     ));
                 }
+            }
+            if let Some(record) = self.bootstrap.take() {
+                return Ok(Event::Record(record));
             }
             if self.end.is_some_and(|end| self.next >= end) {
                 return Ok(Event::End);

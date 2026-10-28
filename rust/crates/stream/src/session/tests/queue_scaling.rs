@@ -4,15 +4,11 @@ use std::time::Instant;
 
 fn record(sequence: u64) -> Event {
     Event::Record(crate::Record {
-        headers: Default::default(),
+        headers: crate::AppendRecord::latest("running", "status", false)
+            .unwrap()
+            .headers,
         sequence,
-        value: wire::SessionLatestValue {
-            key: Bytes::from_static(b"status"),
-            value: Bytes::from_static(b"running"),
-            attention: false,
-        }
-        .encode_to_vec()
-        .into(),
+        value: OwnedBytes::from_static(b"running"),
         commit_id: crate::CommitId::from_bytes([1; 32]),
         committed_at_micros: 0,
     })

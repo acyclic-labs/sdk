@@ -603,7 +603,56 @@ fn publish(
         state.hierarchy_version = envelope.commit_id;
     }
     state.path_bytes = next.bytes();
-    state.paths = next;
+    let previous = std::mem::replace(&mut state.paths, next);
+    // Only missing subscriptions beneath a published destination can be
+    // created. Range over subscribers, never over the inherited subtree.
+    for fact in &envelope.mutations {
+        let path = match fact {
+            CommittedMutation::Append(append) => &append.path,
+            CommittedMutation::Fork(fork) => &fork.destination,
+        };
+        if previous.get(path).is_some() {
+            continue;
+        }
+        let mut ancestor = Some(path.clone());
+        while let Some(path) = ancestor {
+            if previous.get(&path).is_some() {
+                break;
+            }
+            ancestor = path.parent();
+            if let Some(signals) = state.signals.get(&path)? {
+                let tail = state.paths.get(&path).map_or(0, |path| path.tail);
+                signals.changed.send_replace(tail);
+                signals
+                    .follows
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .created(tail);
+            }
+        }
+        if matches!(fact, CommittedMutation::Fork(_)) {
+            let prefix = format!("{}/", path.as_str());
+            let upper = format!("{}0", path.as_str());
+            let created = state.signals.keys_in::<str, _>((
+                std::ops::Bound::Included(prefix.as_str()),
+                std::ops::Bound::Excluded(upper.as_str()),
+            ))?;
+            for path in created {
+                let Some(stream) = state.paths.get(&path) else {
+                    continue;
+                };
+                if let Some(signals) = state.signals.get(&path)? {
+                    let tail = stream.tail;
+                    signals.changed.send_replace(tail);
+                    signals
+                        .follows
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .created(tail);
+                }
+            }
+        }
+    }
     for fact in &envelope.mutations {
         let (path, tail) = match fact {
             CommittedMutation::Append(append) => (&append.path, append.tail),
@@ -613,7 +662,7 @@ fn publish(
         let notify = !crate::verification::fault_is(crate::verification::Fault::OmitAppendWake);
         #[cfg(not(all(loom, feature = "local")))]
         let notify = true;
-        if notify && let Some(signals) = state.signals.get(path) {
+        if notify && let Some(signals) = state.signals.get(path)? {
             signals.changed.send_replace(tail);
             signals
                 .follows

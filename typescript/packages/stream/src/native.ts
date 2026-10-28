@@ -1,3 +1,4 @@
+import { wireWhenAbsent } from "./contract.js";
 import { Buffer } from "node:buffer";
 import { credentialProvider, validateCredential, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { createRequire } from "node:module";
@@ -212,7 +213,7 @@ export class NativeStreamProvider implements StreamProvider {
 
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     const request = { kind: "follow" as const, path, from: options.from };
-    const encoded = toBinary(wire.FollowRequestSchema, create(wire.FollowRequestSchema, {
+    const encoded = toBinary(wire.FollowRequestSchema, create(wire.FollowRequestSchema, { whenAbsent: wireWhenAbsent(options.whenAbsent),
       path, from: options.from, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }),
     }));
     await validateWireRequest(request);

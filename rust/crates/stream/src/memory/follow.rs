@@ -4,20 +4,20 @@ impl MemoryStream {
         path: &StreamPath,
         from: u64,
         anchor: Option<CommitId>,
+        when_absent: crate::WhenAbsent,
         filter: crate::FollowFilter,
     ) -> Result<(crate::follow_index::FollowInterest, HistoryCursor), StreamError> {
-        let mut state = self.state.write().await;
-        let stream = state.paths.get(path).ok_or(StreamError::NotFound)?;
-        let cursor = HistoryCursor::prepare(stream, from, anchor)?;
-        let tail = stream.tail;
-        let signals = state
+        let state = self.state.write().await;
+        let stream = state.paths.get(path);
+        let mut cursor = HistoryCursor::initial(stream, from, anchor, when_absent)?;
+        let tail = stream.map_or(0, |path| path.tail);
+        let registration = state
             .signals
-            .entry(path.clone())
-            .or_insert_with(|| Signals::new(tail));
-        Ok((
-            crate::follow_index::FollowIndex::subscribe(&signals.follows, filter, tail)?,
-            cursor,
-        ))
+            .subscribe_with(path.clone(), || Signals::new(tail))?;
+        let signals = registration.value();
+        let interest = crate::follow_index::FollowIndex::subscribe(&signals.follows, filter, tail)?;
+        cursor.registration = Some(registration);
+        Ok((interest, cursor))
     }
 
     pub(crate) async fn next_checked_record(
@@ -28,7 +28,15 @@ impl MemoryStream {
         filter: &crate::FollowFilter,
     ) -> Result<Option<Record>, StreamError> {
         let state = self.state.read().await;
-        let path = state.paths.get(path).ok_or(StreamError::NotFound)?;
+        let path = state.paths.get(path);
+        if !cursor.observe_creation(path, *anchor)? {
+            return Ok(None);
+        }
+        let path = path.ok_or(if anchor.is_some() {
+            StreamError::PrefixNotRetained
+        } else {
+            StreamError::NotFound
+        })?;
         if cursor.next > path.tail {
             return Err(StreamError::OutOfRange);
         }
@@ -52,10 +60,11 @@ impl MemoryStream {
         path: StreamPath,
         from: u64,
         anchor: Option<CommitId>,
+        when_absent: crate::WhenAbsent,
         filter: crate::FollowFilter,
     ) -> Result<crate::FollowStream, StreamError> {
         let (interest, cursor) = self
-            .prepare_follow(&path, from, anchor, filter.clone())
+            .prepare_follow(&path, from, anchor, when_absent, filter.clone())
             .await?;
         let state = Box::new(MemoryFollow {
             provider: self.clone(),

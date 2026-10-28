@@ -50,6 +50,7 @@ pub(crate) fn registration(omit_wake: bool) {
         block_on(async {
             let mut follow = provider
                 .follow(crate::FollowRequest {
+                    when_absent: Default::default(),
                     path: path,
                     from: 1,
                     preceding: Some(seed.commit_id),
@@ -188,6 +189,7 @@ pub(crate) fn failure_lock_order(hold_borrow: bool) {
             block_on(async {
                 match provider
                     .follow(crate::FollowRequest {
+                        when_absent: Default::default(),
                         path: path,
                         from: 1,
                         preceding: Some(seed.commit_id),

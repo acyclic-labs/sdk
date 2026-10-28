@@ -83,7 +83,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
         // One poll at a known held device cut establishes progress without a
         // timer or guessed number of idle polls. Drain/release before failing.
         let record = futures::poll!(records.next());
-        let opened = futures::poll!(provider.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false, at_least: Default::default() }).map_ok(crate::records_only));
+        let opened = futures::poll!(provider.follow(crate::FollowRequest { when_absent: Default::default(), path: path.clone(), from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false, at_least: Default::default() }).map_ok(crate::records_only));
         let ready = [record.is_ready(), opened.is_ready()].into_iter().filter(|ready| *ready).count();
         eprintln!("accepted_compaction_probes ready_before_device_release={ready}/2");
         if ready != 2 {
@@ -110,7 +110,7 @@ fn accepted_follow_discovery_and_relay_watermarks_progress_while_compaction_is_h
                 {
                     let relay = crate::grpc::tests::client(provider.clone())?;
                     assert_eq!(relay.watermarks(path.clone()).await?, marks);
-                    let mut followed = relay.follow(crate::FollowRequest { path: path, from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false, at_least: Default::default() }).map_ok(crate::records_only).await?;
+                    let mut followed = relay.follow(crate::FollowRequest { when_absent: Default::default(), path: path, from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false, at_least: Default::default() }).map_ok(crate::records_only).await?;
                     assert_eq!(followed.next().await.ok_or("relay ended")??, record);
                 }
                 Ok::<_, Box<dyn std::error::Error + Send + Sync>>(started.elapsed())

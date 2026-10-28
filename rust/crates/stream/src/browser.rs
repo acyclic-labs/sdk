@@ -279,7 +279,14 @@ impl BrowserStream {
             self.inner.clock.set(millis);
             let command = decode_command(encoded)?;
             let before = if cache.cursor >= cache.announced {
-                Some(publication::Before::capture(&cache.provider, &command).await?)
+                Some(
+                    publication::Before::capture(
+                        &cache.provider,
+                        &command,
+                        &self.inner.publications,
+                    )
+                    .await?,
+                )
             } else {
                 None
             };
@@ -334,7 +341,9 @@ impl BrowserStream {
         dispatch.repair = false;
         dispatch.failed = result.is_err();
         let (count, bytes) = result?;
-        let before = publication::Before::capture(&cache.provider, &command).await?;
+        let before =
+            publication::Before::capture(&cache.provider, &command, &self.inner.publications)
+                .await?;
         let existing = command.has_replay(&cache.provider).await?;
         let millis = BrowserClock.now_unix_millis();
         self.inner.clock.set(millis);
@@ -538,15 +547,18 @@ impl StreamProvider for BrowserStream {
             preceding,
             filter,
             progress,
+            when_absent,
             at_least,
         } = request;
         if !at_least.is_empty() {
             self.wait_applied(&at_least).await?;
         }
         if progress {
-            self.progress_from(path, from, preceding, filter).await
+            self.progress_from(path, from, preceding, when_absent, filter)
+                .await
         } else {
-            self.follow_from(path, from, preceding, filter).await
+            self.follow_from(path, from, preceding, when_absent, filter)
+                .await
         }
     }
 }

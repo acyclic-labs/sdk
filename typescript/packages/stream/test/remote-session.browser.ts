@@ -1,7 +1,7 @@
 import init, { WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
 import { create, toBinary, fromBinary } from "@bufbuild/protobuf";
 import { AppendRequestSchema, AppendResponseSchema, FollowRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
-import { SessionDelivery, SessionFrameSchema, SessionSubscriptionSchema, SessionLatestValueSchema } from "../generated/proto/stream/v1/session_pb.js";
+import { SessionDelivery, SessionFrameSchema, SessionSubscriptionSchema } from "../generated/proto/stream/v1/session_pb.js";
 import { verifyHistoryTimeoutPolicy } from "./remote-history.browser.js";
 
 export async function test(endpoint: string) {
@@ -35,8 +35,8 @@ export async function test(endpoint: string) {
   const open = (delivery: SessionDelivery) => stream.openData(toBinary(SessionSubscriptionSchema, create(SessionSubscriptionSchema, {
     resume: { next: 0n }, kind: { case: "follow", value: { path: "browser/status", delivery } },
   })));
-  const value = toBinary(SessionLatestValueSchema, create(SessionLatestValueSchema, { key: new Uint8Array([1]), value: new Uint8Array([7]), attention: true }));
-  await stream.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "browser/status", records: [value] })));
+  const value = new TextEncoder().encode('{"phase":"done"}');
+  await stream.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "browser/status", records: [{ value, keys: [new Uint8Array([1])], attributes: [{ name: "attention", value: new TextEncoder().encode("true") }] }] })));
   const latest = await open(SessionDelivery.LATEST), all = await open(SessionDelivery.ALL);
   const latestFrame = fromBinary(SessionFrameSchema, (await latest.next())!);
   const allFrame = fromBinary(SessionFrameSchema, (await all.next())!);

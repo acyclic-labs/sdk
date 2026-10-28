@@ -68,7 +68,6 @@ mod change;
 ))]
 mod http_codec;
 mod http_validation;
-#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), loom))]
 mod interest;
 #[cfg(any(
     feature = "local",

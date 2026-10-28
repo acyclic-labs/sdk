@@ -8,6 +8,10 @@ use acyclic_harness_core::agent::{AgentPath, AgentRecord, ConversationEntry, Sta
 use acyclic_stream::{StreamPath, session::Client, wire, wire_codec};
 use std::task::{Context, Poll};
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "agents_tests.rs"]
+mod tests;
+
 /// A provider refusal retains its original machine-readable classification.
 #[derive(Debug, thiserror::Error)]
 pub enum AgentClientError {
@@ -206,7 +210,10 @@ impl AgentClient {
                 ),
                 (true, selection.agent.status()?, selection.status_from),
             ] {
-                subscriptions.push((path.clone(), subscription(&path, from, self.credential)));
+                subscriptions.push((
+                    path.clone(),
+                    subscription(&path, from, self.credential, is_status),
+                ));
                 streams.push((selection.agent.clone(), is_status, path));
             }
         }
@@ -318,13 +325,8 @@ impl AgentClient {
             .session
             .view(path)
             .expect("selected status owns a view");
-        let record = view
-            .records()
-            .len()
-            .checked_sub(1)
-            .and_then(|index| view.record(index));
-        record
-            .map(|record| StatusRecord::decode(&record.value).map_err(AgentClientError::Record))
+        view.latest_value(b"status")
+            .map(|value| StatusRecord::decode(&value.value).map_err(AgentClientError::Record))
             .transpose()
     }
 
@@ -445,23 +447,27 @@ impl AgentClient {
             };
             let event = match frame.body {
                 Some(wire::session_frame::Body::Data(data)) => {
+                    if *status {
+                        let Some(wire::session_data::Item::LatestValue(value)) = data.item else {
+                            return Poll::Ready(Err(WireSessionError::InvalidSubscription.into()));
+                        };
+                        return Poll::Ready(
+                            StatusRecord::decode(&value.value)
+                                .map(|status| AgentEvent::Status {
+                                    agent: agent.clone(),
+                                    status,
+                                })
+                                .map_err(AgentClientError::Record),
+                        );
+                    }
                     let Some(wire::session_data::Item::Record(record)) = data.item else {
                         return Poll::Ready(Err(WireSessionError::InvalidSubscription.into()));
                     };
-                    if *status {
-                        StatusRecord::decode(&record.value).map(|status| AgentEvent::Status {
-                            agent: agent.clone(),
-                            status,
-                        })
-                    } else {
-                        ConversationEntry::decode(&record.value).map(|entry| {
-                            AgentEvent::Conversation {
-                                agent: agent.clone(),
-                                sequence: record.sequence,
-                                entry,
-                            }
-                        })
-                    }
+                    ConversationEntry::decode(&record.value).map(|entry| AgentEvent::Conversation {
+                        agent: agent.clone(),
+                        sequence: record.sequence,
+                        entry,
+                    })
                 }
                 Some(wire::session_frame::Body::Closed(_)) => {
                     return Poll::Ready(Err(AgentClientError::Closed(path.clone())));
@@ -485,11 +491,22 @@ impl AgentClient {
     }
 }
 
-fn subscription(path: &StreamPath, from: u64, credential: u32) -> wire::SessionSubscription {
+fn subscription(
+    path: &StreamPath,
+    from: u64,
+    credential: u32,
+    status: bool,
+) -> wire::SessionSubscription {
     wire::SessionSubscription {
         credential,
         channel: None,
-        filter: None,
+        filter: status.then(|| wire::SessionFilter {
+            keys: vec![wire::KeyRange {
+                start: bytes::Bytes::from_static(b"status"),
+                end: bytes::Bytes::from_static(b"status\0"),
+            }],
+            ..Default::default()
+        }),
         resume: Some(wire::SessionCursor {
             next: from,
             opaque: bytes::Bytes::new(),
@@ -497,7 +514,12 @@ fn subscription(path: &StreamPath, from: u64, credential: u32) -> wire::SessionS
         kind: Some(wire::session_subscription::Kind::Follow(
             wire::SessionFollow {
                 resource: wire_codec::session::stream_resource(path.as_str()),
-                delivery: wire::SessionDelivery::All as i32,
+                delivery: if status {
+                    wire::SessionDelivery::Latest
+                } else {
+                    wire::SessionDelivery::All
+                } as i32,
+                bootstrap_head: status,
                 ..Default::default()
             },
         )),

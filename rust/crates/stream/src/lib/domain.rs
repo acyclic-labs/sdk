@@ -84,6 +84,28 @@ pub struct AppendRecord {
     pub headers: RecordHeaders,
 }
 
+impl AppendRecord {
+    /// An opaque keyed value eligible for LATEST delivery. Attention records
+    /// retain their order and are never conflated. Payloads keep their native
+    /// application encoding; Streams indexes only these authenticated headers.
+    pub fn latest(
+        value: impl Into<Bytes>,
+        key: impl Into<Bytes>,
+        attention: bool,
+    ) -> Result<Self, StreamError> {
+        Ok(Self {
+            value: value.into(),
+            headers: RecordHeaders::new(
+                vec![key.into()],
+                vec![Attribute {
+                    name: "attention".into(),
+                    value: Bytes::from_static(if attention { b"true" } else { b"false" }),
+                }],
+            )?,
+        })
+    }
+}
+
 impl From<Bytes> for AppendRecord {
     fn from(value: Bytes) -> Self {
         Self {
@@ -210,6 +232,33 @@ pub struct ReadRequest {
     pub at_least: RevisionCut,
 }
 
+/// Policy for a path absent at follow registration.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum WhenAbsent {
+    /// Refuse an initially absent stream.
+    #[default]
+    NotFound,
+    /// Observe creation without a gap, retaining the requested sequence.
+    /// A missing checked-history anchor still refuses immediately.
+    Wait,
+}
+
+impl WhenAbsent {
+    pub(crate) fn from_wire(value: i32) -> Result<Self, StreamError> {
+        match value {
+            0 => Ok(Self::NotFound),
+            1 => Ok(Self::Wait),
+            _ => Err(StreamError::InvalidArgument),
+        }
+    }
+    pub(crate) fn to_wire(self) -> i32 {
+        match self {
+            Self::NotFound => 0,
+            Self::Wait => 1,
+        }
+    }
+}
+
 /// One atomic replay-to-live subscription, including its history fence.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FollowRequest {
@@ -223,6 +272,8 @@ pub struct FollowRequest {
     pub filter: crate::FollowFilter,
     /// Emit contiguous skipped-prefix progress. False retains indexed record-only wakes.
     pub progress: bool,
+    /// Initial absence policy; deletion after observation remains an error.
+    pub when_absent: WhenAbsent,
     /// Minimum applied cut, kept as the floor across every reconnect.
     pub at_least: RevisionCut,
 }
@@ -237,6 +288,7 @@ impl FollowRequest {
             preceding: None,
             filter: crate::FollowFilter::default(),
             progress: false,
+            when_absent: WhenAbsent::NotFound,
             at_least: RevisionCut::default(),
         }
     }

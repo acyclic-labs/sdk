@@ -1,3 +1,4 @@
+import { wireWhenAbsent } from "./contract.js";
 import { streamError } from "./wasm-error.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
@@ -94,7 +95,7 @@ class RustStreamProvider implements StreamProvider {
     const filter = options.filter === undefined ? undefined : structuredClone(options.filter);
     await validateWireRequest({ kind: "follow", path, from });
     if (signal?.aborted) return;
-    const request = toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from,
+    const request = toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from, whenAbsent: wireWhenAbsent(options.whenAbsent),
       ...(filter === undefined ? {} : { filter }),
     }));
     let handle: Awaited<ReturnType<WasmStream["open_follow"]>>;

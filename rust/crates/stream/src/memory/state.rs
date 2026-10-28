@@ -1,7 +1,7 @@
 #[derive(Default)]
 struct State {
     paths: Namespace,
-    signals: BTreeMap<StreamPath, Signals>,
+    signals: crate::interest::Interests<StreamPath, Signals>,
     replay_root: Option<usize>,
     commit_root: Option<CommitLink>,
     replay_count: usize,

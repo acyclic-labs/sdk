@@ -384,6 +384,7 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             Buffer::from(acyclic_stream::session::testing::credential().to_vec()),
         )?;
         let request = wire::FollowRequest {
+            when_absent: Default::default(),
             filter: None,
             path: "accounts/events".to_owned(),
             from: 0,

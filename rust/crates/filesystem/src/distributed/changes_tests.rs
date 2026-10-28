@@ -220,6 +220,7 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
     let mut follow = acyclic_stream::records_only(
         streams
             .follow(acyclic_stream::FollowRequest {
+                when_absent: Default::default(),
                 path: path.clone(),
                 from: 1,
                 preceding: None,

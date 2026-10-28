@@ -29,6 +29,8 @@ async fn sequences(
 }
 fn bounded(path: &str, until: u64) -> wire::SessionFollow {
     wire::SessionFollow {
+        bootstrap_head: false,
+        when_absent: Default::default(),
         resource: wire_codec::session::stream_resource(path),
         delivery: wire::SessionDelivery::All as i32,
         preceding_commit_id: Bytes::new(),

@@ -36,6 +36,7 @@ impl Default for StreamViewPolicy {
 pub struct StreamView {
     policy: StreamViewPolicy,
     records: VecDeque<(wire::Record, usize)>,
+    latest: VecDeque<(wire::SessionLatestValue, usize)>,
     bytes: usize,
     next: u64,
     revision: u64,
@@ -51,6 +52,7 @@ impl StreamView {
         Self {
             policy,
             records: VecDeque::new(),
+            latest: VecDeque::new(),
             bytes: 0,
             next,
             revision,
@@ -65,6 +67,14 @@ impl StreamView {
     /// Borrows only the retained visible records; no joined history allocation.
     pub fn records(&self) -> impl ExactSizeIterator<Item = &wire::Record> {
         self.records.iter().map(|(record, _)| record)
+    }
+
+    /// Last delivered opaque value for a key, under this view's ordinary budget.
+    pub fn latest_value(&self, key: &[u8]) -> Option<&wire::SessionLatestValue> {
+        self.latest
+            .iter()
+            .find(|(value, _)| value.key.as_ref() == key)
+            .map(|(value, _)| value)
     }
 
     /// Borrows one displayed record without copying its siblings.
@@ -128,9 +138,57 @@ impl StreamView {
         match frame.body.as_ref() {
             Some(wire::session_frame::Body::Data(data)) => {
                 self.check_watermarks(data.accepted, data.durable)?;
+                if let Some(wire::session_data::Item::LatestValue(value)) = data.item.as_ref() {
+                    let after = data.after.as_ref().ok_or(StreamError::InvalidResponse)?;
+                    if !self.filtered
+                        || !self.records.is_empty()
+                        || value.key.is_empty()
+                        || after.next <= self.next
+                        || after.next > data.accepted
+                    {
+                        return Err(StreamError::InvalidResponse);
+                    }
+                    let charge = size_of::<(wire::SessionLatestValue, usize)>()
+                        .checked_add(value.key.len())
+                        .and_then(|n| n.checked_add(value.value.len()))
+                        .ok_or(StreamError::LimitExceeded)?;
+                    if charge > self.policy.bytes {
+                        return Err(StreamError::LimitExceeded);
+                    }
+                    if let Some(index) =
+                        self.latest.iter().position(|(old, _)| old.key == value.key)
+                    {
+                        if let Some((_, old_charge)) = self.latest.remove(index) {
+                            self.bytes -= old_charge;
+                        }
+                    }
+                    while self.latest.len() >= self.policy.records
+                        || self.bytes > self.policy.bytes - charge
+                    {
+                        if let Some((_, old_charge)) = self.latest.pop_front() {
+                            self.bytes -= old_charge;
+                        }
+                    }
+                    self.latest.push_back((
+                        wire::SessionLatestValue {
+                            key: Bytes::copy_from_slice(&value.key),
+                            value: Bytes::copy_from_slice(&value.value),
+                            attention: value.attention,
+                        },
+                        charge,
+                    ));
+                    self.bytes += charge;
+                    self.next = after.next;
+                    self.revision = revision;
+                    self.advance_watermarks(data.accepted, data.durable);
+                    return Ok(());
+                }
                 let Some(wire::session_data::Item::Record(record)) = data.item.as_ref() else {
                     return Err(StreamError::InvalidResponse);
                 };
+                if !self.latest.is_empty() {
+                    return Err(StreamError::InvalidResponse);
+                }
                 let next = record
                     .sequence
                     .checked_add(1)

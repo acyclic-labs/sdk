@@ -4,6 +4,7 @@ impl LocalStream {
         path: StreamPath,
         from: u64,
         anchor: Option<crate::CommitId>,
+        when_absent: crate::WhenAbsent,
         filter: crate::FollowFilter,
     ) -> Result<crate::FollowStream, StreamError> {
         let span = obs::OperationSpan::new(tracing::info_span!(
@@ -21,6 +22,7 @@ impl LocalStream {
                         &path,
                         from,
                         anchor,
+                        when_absent,
                         filter.clone(),
                     ))
                     .await

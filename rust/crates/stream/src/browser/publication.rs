@@ -5,12 +5,20 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) enum Key {
     Records(StreamPath),
 }
+impl std::borrow::Borrow<str> for Key {
+    fn borrow(&self) -> &str {
+        match self {
+            Self::Records(path) => path.as_str(),
+        }
+    }
+}
 
 /// Retained outside the replaceable replay cache, dispatched after durability.
 #[derive(Default)]
 pub(super) struct Changes {
     keys: BTreeSet<Key>,
     records: BTreeMap<StreamPath, (Vec<Record>, u64)>,
+    created: BTreeMap<StreamPath, u64>,
 }
 
 // Declared before the cache guard, so early return/cancellation drops that guard
@@ -40,15 +48,31 @@ impl Drop for Dispatch {
             for key in &self.keys.keys {
                 let _ = self.provider.inner.publications.interests.notify(key);
             }
+            for (path, tail) in &self.keys.created {
+                let index = self
+                    .provider
+                    .inner
+                    .publications
+                    .follows
+                    .get(path)
+                    .ok()
+                    .flatten();
+                if let Some(index) = index {
+                    index
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .created(*tail);
+                }
+            }
             for (path, (records, tail)) in &self.keys.records {
                 let index = self
                     .provider
                     .inner
                     .publications
                     .follows
-                    .borrow()
                     .get(path)
-                    .cloned();
+                    .ok()
+                    .flatten();
                 if let Some(index) = index {
                     index
                         .lock()
@@ -68,21 +92,36 @@ impl Before {
     pub(super) async fn capture(
         provider: &MemoryStream,
         command: &Command,
+        publications: &notifications::Publications,
     ) -> Result<Self, StreamError> {
         let destinations = match command {
-            Command::Append(request) => vec![request.path.clone()],
-            Command::Fork(request) => vec![request.destination.clone()],
+            Command::Append(request) => vec![(request.path.clone(), false)],
+            Command::Fork(request) => vec![(request.destination.clone(), true)],
             Command::Commit(request) => request
                 .mutations
                 .iter()
                 .map(|mutation| match mutation {
-                    CommitMutation::Append { path, .. } => path.clone(),
-                    CommitMutation::Fork { destination, .. } => destination.clone(),
+                    CommitMutation::Append { path, .. } => (path.clone(), false),
+                    CommitMutation::Fork { destination, .. } => (destination.clone(), true),
                 })
                 .collect(),
         };
         let mut paths = BTreeSet::new();
-        for path in destinations {
+        for (path, fork) in destinations {
+            // A fork can create a followed descendant without appending to it.
+            // Consult active subscriptions, never enumerate the forked subtree.
+            if fork {
+                let lower = format!("{}/", path.as_str());
+                let upper = format!("{}0", path.as_str());
+                let range = (
+                    std::ops::Bound::Included(lower.as_str()),
+                    std::ops::Bound::Excluded(upper.as_str()),
+                );
+                for Key::Records(path) in publications.interests.keys_in::<str, _>(range)? {
+                    paths.insert(path);
+                }
+                paths.extend(publications.follows.keys_in::<str, _>(range)?);
+            }
             let mut next = Some(path);
             while let Some(path) = next {
                 next = path.parent();
@@ -105,7 +144,13 @@ impl Before {
             let after = tail(provider, path.clone()).await?;
             if after != before {
                 keys.keys.insert(Key::Records(path.clone()));
-                let followed = publications.follows.borrow().contains_key(&path);
+                let followed = publications.follows.get(&path)?.is_some();
+                if before.is_none()
+                    && let Some(after) = after
+                    && followed
+                {
+                    keys.created.insert(path.clone(), after);
+                }
                 if let Some(after) = after
                     && followed
                 {

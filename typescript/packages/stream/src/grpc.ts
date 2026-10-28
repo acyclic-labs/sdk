@@ -40,12 +40,13 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
   const { client, sessions } = streamGrpc(options);
   const follow: Follow = async function* (request, callOptions) {
     const { signal, timeoutMs } = callOptions ?? {};
-    const { path, from, filter } = create(wire.FollowRequestSchema, structuredClone(request));
+    const { path, from, filter, whenAbsent } = create(wire.FollowRequestSchema, structuredClone(request));
     await validateWireRequest({ kind: "follow", path, from });
     const deadline = createDeadlineSignal(timeoutMs === undefined || timeoutMs <= 0 ? undefined : timeoutMs);
     const controller = createLinkedAbortController(deadline.signal, signal);
     try {
-      for await (const record of sessions.follow(path, { from, signal: controller.signal,
+      if (whenAbsent !== wire.WhenAbsent.NOT_FOUND && whenAbsent !== wire.WhenAbsent.WAIT) throw new StreamError("invalid_argument", "invalid absence policy");
+      for await (const record of sessions.follow(path, { from, signal: controller.signal, whenAbsent: whenAbsent === wire.WhenAbsent.WAIT ? "wait" : "not_found",
         ...(filter === undefined ? {} : { filter }) })) {
         const data = toBinary(wire.RecordBatchSchema, create(wire.RecordBatchSchema, { records: [record] }));
         yield create(wire.ReadResponseSchema, { codec: wire.Codec.NONE, data, decodedLength: BigInt(data.length) });

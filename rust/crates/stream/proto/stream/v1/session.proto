@@ -99,6 +99,13 @@ message SessionFollow {
   uint64 until = 4;
   // Minimum cut, one entry per authority; every resume carries the same floor.
   repeated Revision at_least = 5;
+  // Initial absence only; preserved across resumes and placement changes.
+  // Bounded reads require NOT_FOUND. Missing checked anchors never wait.
+  WhenAbsent when_absent = 6;
+  // LATEST only: on an initial cursor (next=0), bootstrap the last record from
+  // one Head snapshot, then follow its checked prefix. Resumes replay normally
+  // so attention records after an acknowledged cut cannot be skipped.
+  bool bootstrap_head = 7;
 }
 message SessionCursor {
   uint64 next = 1; // exclusive, next record / actor frame offset
@@ -176,6 +183,9 @@ message SessionWatermark {
   bytes preceding_commit_id = 4; // commit at after.next - 1
 }
 message SessionLatestValue {
+  // Projected from the opaque record's sole indexed key. The record's
+  // "attention" attribute is ASCII "true" or "false" (absent means false).
+  // The value is the original application bytes, never a nested protobuf.
   bytes key = 1;
   bytes value = 2;
   bool attention = 3;

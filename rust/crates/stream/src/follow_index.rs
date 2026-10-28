@@ -104,6 +104,13 @@ impl FollowIndex {
         }
     }
 
+    /// Creation may expose inherited history even without appended records.
+    pub(crate) fn created(&mut self, tail: u64) {
+        for entry in self.entries.values_mut() {
+            entry.changed.send_replace(tail);
+        }
+    }
+
     /// A failed durable refresh must wake readers to observe the failure.
     #[cfg(all(target_arch = "wasm32", feature = "wasm"))]
     pub(crate) fn invalidate(&self) {

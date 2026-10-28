@@ -299,26 +299,12 @@ impl WasmStream {
     #[wasm_bindgen]
     pub async fn open_follow(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
         check_command_size(input)?;
-        let mut request = decode::<wire::FollowRequest>(input)?;
+        let request = wire_codec::follow_from_wire(decode::<wire::FollowRequest>(input)?)
+            .map_err(js_error)?;
         if request.progress {
             return Err(js_error(StreamError::InvalidArgument));
         }
-        let at_least =
-            wire_codec::cut_from_wire(std::mem::take(&mut request.at_least)).map_err(js_error)?;
-        let (path, from, filter) = wire_codec::follow_from_wire(request).map_err(js_error)?;
-        let stream = crate::records_only(
-            self.provider
-                .follow(crate::FollowRequest {
-                    path,
-                    from,
-                    preceding: None,
-                    filter,
-                    progress: false,
-                    at_least,
-                })
-                .await
-                .map_err(js_error)?,
-        );
+        let stream = crate::records_only(self.provider.follow(request).await.map_err(js_error)?);
         Ok(WasmFollow {
             state: Rc::new(FollowState::new(
                 stream

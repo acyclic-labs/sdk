@@ -167,6 +167,7 @@ fn subscription_and_append(omit_wake: bool) {
         block_on(async {
             let mut stream = provider
                 .follow(crate::FollowRequest {
+                    when_absent: Default::default(),
                     path: path,
                     from: 1,
                     preceding: Some(anchor),
@@ -209,6 +210,7 @@ fn subscription_and_recovery(retain_old: bool) {
         block_on(async {
             match provider
                 .follow(crate::FollowRequest {
+                    when_absent: Default::default(),
                     path: path,
                     from: 1,
                     preceding: Some(anchor),

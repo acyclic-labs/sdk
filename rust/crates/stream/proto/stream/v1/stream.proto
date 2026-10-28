@@ -162,6 +162,11 @@ message ReadRequest {
   repeated Revision at_least = 4;
 }
 
+enum WhenAbsent {
+  WHEN_ABSENT_NOT_FOUND = 0;
+  WHEN_ABSENT_WAIT = 1;
+}
+
 message FollowRequest {
   string path = 1;
   uint64 from = 2;
@@ -169,6 +174,8 @@ message FollowRequest {
   bool progress = 4;
   // Minimum cut, kept as the floor across every reconnect.
   repeated Revision at_least = 5;
+  // Initial absence only. A missing history anchor never waits.
+  WhenAbsent when_absent = 6;
 }
 
 // Ranges are OR; named attribute clauses are AND. Empty end is unbounded.

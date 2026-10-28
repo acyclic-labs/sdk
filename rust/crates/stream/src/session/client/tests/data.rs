@@ -41,6 +41,8 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         filter: None,
         resume: data.after,
         kind: Some(Kind::Follow(wire::SessionFollow {
+            bootstrap_head: false,
+            when_absent: Default::default(),
             resource: crate::wire_codec::session::stream_resource("events"),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: value.commit_id,
@@ -79,15 +81,9 @@ async fn latest_follows_keep_attention_and_resume_the_consumed_cut() -> TestResu
     let provider = Arc::new(MemoryStream::default());
     let values = (0..8)
         .map(|sequence| {
-            wire::SessionLatestValue {
-                key: Bytes::from_static(b"agent"),
-                value: Bytes::copy_from_slice(&[sequence]),
-                attention: sequence == 3,
-            }
-            .encode_to_vec()
-            .into()
+            crate::AppendRecord::latest(OwnedBytes::from(vec![sequence]), "agent", sequence == 3)
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
     provider
         .append(AppendRequest {
             path: StreamPath::new("status")?,

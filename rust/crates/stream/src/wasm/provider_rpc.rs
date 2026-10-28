@@ -366,6 +366,7 @@ impl StreamProvider for InjectedStream {
         self.cursor(
             "follow",
             wire::FollowRequest {
+                when_absent: request.when_absent.to_wire(),
                 path: request.path.to_string(),
                 from: request.from,
                 filter: Some(request.filter.transport_filter()?),
@@ -402,28 +403,16 @@ impl super::WasmStream {
                     .boxed_local()
             }
             "follow" => {
-                let mut input = super::decode::<wire::FollowRequest>(input)?;
-                let progress = input.progress;
-                let at_least = wire_codec::cut_from_wire(std::mem::take(&mut input.at_least))
-                    .map_err(super::js_error)?;
-                let (path, from, filter) =
-                    wire_codec::follow_from_wire(input).map_err(super::js_error)?;
+                let mut request =
+                    wire_codec::follow_from_wire(super::decode::<wire::FollowRequest>(input)?)
+                        .map_err(super::js_error)?;
                 let anchor = if preceding.is_empty() {
                     None
                 } else {
                     Some(wire_codec::commit_id(preceding).map_err(super::js_error)?)
                 };
-                provider
-                    .follow(crate::FollowRequest {
-                        path,
-                        from,
-                        preceding: anchor,
-                        filter,
-                        progress,
-                        at_least,
-                    })
-                    .await
-                    .map_err(super::js_error)?
+                request.preceding = anchor;
+                provider.follow(request).await.map_err(super::js_error)?
             }
             _ => return Err(super::js_error(StreamError::InvalidArgument)),
         };

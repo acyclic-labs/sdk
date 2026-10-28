@@ -32,6 +32,7 @@ async fn checked_browser_follow_validates_then_retains_the_yielded_anchor_across
     assert!(matches!(
         reader
             .follow(crate::FollowRequest {
+                when_absent: Default::default(),
                 path: path.clone(),
                 from: 1,
                 preceding: Some(CommitId::from_bytes([42; 32])),
@@ -45,6 +46,7 @@ async fn checked_browser_follow_validates_then_retains_the_yielded_anchor_across
     ));
     let mut records = reader
         .follow(crate::FollowRequest {
+            when_absent: Default::default(),
             path: path,
             from: 1,
             preceding: Some(seed.commit_id),
@@ -315,6 +317,7 @@ async fn filtered_publications_survive_cache_rebuild_without_waking_unrelated_fo
     .unwrap();
     let mut follow = reader
         .follow(crate::FollowRequest {
+            when_absent: Default::default(),
             path: StreamPath::new("events").unwrap(),
             from: 1,
             preceding: None,
@@ -381,6 +384,24 @@ async fn browser_wave1_conformance() {
     crate::conformance::verify(&crate::conformance::Fixture::new(provider.clone()))
         .await
         .unwrap();
+    assert!(
+        provider
+            .inner
+            .publications
+            .follows
+            .keys_in::<StreamPath, _>(..)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        provider
+            .inner
+            .publications
+            .interests
+            .keys_in::<publication::Key, _>(..)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[wasm_bindgen_test]

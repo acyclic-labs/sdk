@@ -4,11 +4,16 @@ impl LocalStream {
         path: StreamPath,
         from: u64,
         anchor: Option<crate::CommitId>,
+        when_absent: crate::WhenAbsent,
         filter: crate::FollowFilter,
     ) -> Result<crate::FollowStream, StreamError> {
         let failed = self.inner.failed.subscribe();
         let (changed, cursor) = self
-            .accepted(self.inner.provider.prepare_progress(&path, from, anchor))
+            .accepted(
+                self.inner
+                    .provider
+                    .prepare_progress(&path, from, anchor, when_absent),
+            )
             .await??;
         let state = Box::new(LocalProgress {
             provider: self.clone(),

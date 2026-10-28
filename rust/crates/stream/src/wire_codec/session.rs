@@ -86,7 +86,13 @@ pub fn validate_follow(
     resume: &wire::SessionCursor,
 ) -> Result<(), StreamError> {
     validate_resource(&follow.resource)?;
+    let when_absent = crate::WhenAbsent::from_wire(follow.when_absent)?;
     if !resume.opaque.is_empty()
+        || (when_absent != crate::WhenAbsent::NotFound
+            && (follow.until != 0 || !tracks_revisions(follow)))
+        || (follow.bootstrap_head
+            && (follow.delivery != wire::SessionDelivery::Latest as i32
+                || !tracks_revisions(follow)))
         || !matches!(
             wire::SessionDelivery::try_from(follow.delivery),
             Ok(wire::SessionDelivery::All | wire::SessionDelivery::Latest)
@@ -201,6 +207,7 @@ pub async fn follow_records<P: StreamProvider + ?Sized>(
     Ok(crate::records_only(
         provider
             .follow(crate::FollowRequest {
+                when_absent: crate::WhenAbsent::from_wire(follow.when_absent)?,
                 path,
                 from: if preceding.is_some() { cursor.next } else { 0 },
                 preceding,

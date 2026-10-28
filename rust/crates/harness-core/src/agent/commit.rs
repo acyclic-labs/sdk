@@ -210,8 +210,7 @@ fn first_status(agent: &AgentPath, forked_at: u64) -> Result<CommitMutation, Err
                 phase: Phase::Idle,
                 cursor: forked_at,
             }
-            .encode()?
-            .into(),
+            .append_record()?,
         ],
     })
 }

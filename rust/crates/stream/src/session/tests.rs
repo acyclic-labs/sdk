@@ -67,11 +67,15 @@ fn window(channel: u64) -> wire::SessionFrame {
         }),
     )
 }
-async fn append(provider: &MemoryStream, path: &str, value: Bytes) -> Result<(), StreamError> {
+async fn append(
+    provider: &MemoryStream,
+    path: &str,
+    value: impl Into<crate::AppendRecord>,
+) -> Result<(), StreamError> {
     provider
         .append(AppendRequest {
             path: StreamPath::new(path)?,
-            records: vec![(OwnedBytes::from(value)).into()],
+            records: vec![value.into()],
             if_tail: None,
             idempotency_key: crate::IdempotencyKey::unique(),
         })
@@ -216,14 +220,8 @@ async fn checked_follow_confirms_the_provider_guard_and_refuses_only_a_bad_chann
 async fn backpressure_keeps_one_value_per_key_and_preserves_attention() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let status = |value: &'static [u8], attention| {
-        Bytes::from(
-            wire::SessionLatestValue {
-                key: Bytes::from_static(b"agent"),
-                value: Bytes::from_static(value),
-                attention,
-            }
-            .encode_to_vec(),
-        )
+        crate::AppendRecord::latest(OwnedBytes::from_static(value), "agent", attention)
+            .expect("valid metadata")
     };
     append(&provider, "status", status(b"seed", false)).await?;
     let (sender, receiver) = mpsc::unbounded();
