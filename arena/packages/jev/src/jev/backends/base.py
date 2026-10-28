@@ -23,7 +23,7 @@ class Backend(ABC):
 
     def decide(self, state: str, questions: Sequence[Question]) -> DecideResult:
         questions = list(questions)
-        fmt.validate(questions, self.token_len)
+        fmt.validate(questions)
         state = str(state or "")
         parts = [self._decide(state, chunk) for chunk in fmt.chunk_questions(questions, self.max_questions)]
         out = parts[0]
