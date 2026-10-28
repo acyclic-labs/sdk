@@ -1302,3 +1302,8 @@ Check164 on signed7268fc2e75 passed frozen package installation, actual Auth/Act
 Review P1 PRRT_kwDOUMoiI86xQeb3 found the storage-backends-only conformance endpoint still initialized optional history policy as scalar8. Its selected finite8-turn fixture now uses Some(8); no history default or negative control is removed. The required-feature target must compile separately because default workspace all-target checks do not enable it.
 
 Check165 passed native whole-workspace all-target compilation on signed2e1ce69f5c before the bb2 SSH interruption at18:54:25 UTC. No test or chained WASM outcome is yet known. Check166 did not acquire a private bb2 checkout: the relay reported InsufficientInstanceCapacity at19:05:08 UTC. Its local waiting relay was stopped to refresh the branch and include the new required-feature P1 repair in the next compilation; no source qualification is inferred.
+
+
+The branch is rebased onto main#1747 bf7956ffcc. The overlapping Objects gRPC conflict preserves its canonical RevisionTracker, request floors, reply revisions and stale/foreign refusal controls while removing default deadlines. No read-your-writes mechanism or source credit is counted twice.
+
+Physical source quiescence now retires accepted native work, allocation and owner fields before decrementing the producer count or waking the joiner, outside the gate lock. A deterministic real original-meter control holds the accepted owner's destructor and verifies the source cannot publish completion early. Existing finite caller refusal/poll-bank and last-alias physical join controls remain unchanged. The10ms caller-poll mechanism is still pending a funded event replacement; this custody repair does not claim to remove it. Qualification pending.
