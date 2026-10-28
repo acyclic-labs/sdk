@@ -64,6 +64,10 @@ pub struct RevocationCheckpoint {
     /// Complete unexpired targeted block revocations.
     #[wire(tag = 6, message)]
     pub blocks: Vec<Revocation>,
+    /// Monotone publication time, independent of the historical retirement floor.
+    /// Reloading this checkpoint retains the same publication ordering.
+    #[wire(tag = 7, uint64)]
+    pub issued_at_unix_seconds: u64,
 }
 
 /// Canonical signed publication. Verify against an independently authenticated

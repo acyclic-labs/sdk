@@ -15,11 +15,17 @@ fn signed(publication: RevocationPublication) -> SignedRevocation {
     }
 }
 
-fn checkpoint(sequence: u64, retired: u64, keys: Vec<KeyRevocation>) -> SignedRevocation {
+fn checkpoint(
+    sequence: u64,
+    published: u64,
+    retired: u64,
+    keys: Vec<KeyRevocation>,
+) -> SignedRevocation {
     signed(RevocationPublication::Checkpoint(RevocationCheckpoint {
         account_id: "account".into(),
         sequence,
         retired_before_unix_seconds: retired,
+        issued_at_unix_seconds: published,
         minimum_key_epoch: 0,
         keys,
         blocks: vec![],
@@ -69,7 +75,7 @@ fn delta(
 #[test]
 fn targeted_growth_never_revokes_unrelated_keys_and_revoke_all_is_explicit() {
     let mut state =
-        RevocationState::from_checkpoint(&checkpoint(1, 10, vec![]), "account", &issuer(), 10)
+        RevocationState::from_checkpoint(&checkpoint(1, 10, 10, vec![]), "account", &issuer(), 10)
             .unwrap();
     // Cross the old downstream 4096-entry rollover threshold. Retained targets
     // grow while each incremental proof still carries just one changed identity.
@@ -138,7 +144,7 @@ fn targeted_growth_never_revokes_unrelated_keys_and_revoke_all_is_explicit() {
     // Even after all targets expire, a checkpoint cannot remove revoke-all.
     assert!(
         state
-            .apply(&checkpoint(before.0 + 1, 100, vec![]), &issuer(), 100)
+            .apply(&checkpoint(before.0 + 1, 100, 100, vec![]), &issuer(), 100)
             .is_err()
     );
     assert_eq!(state.frontier(), before);
@@ -146,21 +152,21 @@ fn targeted_growth_never_revokes_unrelated_keys_and_revoke_all_is_explicit() {
 
 #[test]
 fn checkpoints_cannot_resurrect_revocations_or_roll_back_epoch_or_time() {
-    let initial = checkpoint(1, 10, vec![]);
+    let initial = checkpoint(1, 10, 10, vec![]);
     let mut state = RevocationState::from_checkpoint(&initial, "account", &issuer(), 10).unwrap();
     let proof = delta(&state, vec![key("target", 100)], None);
     state.apply(&proof, &issuer(), 10).unwrap();
     let before = state.frontier();
     for bad in [
         initial,
-        checkpoint(3, 20, vec![]),
-        checkpoint(3, 20, vec![key("target", 99)]),
+        checkpoint(3, 20, 20, vec![]),
+        checkpoint(3, 20, 20, vec![key("target", 99)]),
     ] {
         assert!(state.apply(&bad, &issuer(), 100).is_err());
         assert_eq!(state.frontier(), before);
     }
     state
-        .apply(&checkpoint(3, 100, vec![]), &issuer(), 100)
+        .apply(&checkpoint(3, 100, 100, vec![]), &issuer(), 100)
         .unwrap();
     assert!(matches!(state.trust(&owner(), 99), Err(VerifyError::Time)));
     let before = state.frontier();
@@ -178,7 +184,7 @@ fn checkpoints_cannot_resurrect_revocations_or_roll_back_epoch_or_time() {
     });
     let verified = verify(&bytes, &owner, 99).unwrap();
     let mut state = RevocationState::from_checkpoint(
-        &checkpoint(1, 10, vec![key("key", 100)]),
+        &checkpoint(1, 10, 10, vec![key("key", 100)]),
         "account",
         &issuer(),
         10,
@@ -189,7 +195,7 @@ fn checkpoints_cannot_resurrect_revocations_or_roll_back_epoch_or_time() {
         Err(VerifyError::Revoked)
     ));
     state
-        .apply(&checkpoint(2, 100, vec![]), &issuer(), 100)
+        .apply(&checkpoint(2, 100, 100, vec![]), &issuer(), 100)
         .unwrap();
     assert!(matches!(
         verify(&bytes, &state.trust(&owner, 100).unwrap(), 99),
@@ -216,7 +222,7 @@ fn targeted_publication_does_not_retire_unrelated_historical_admissions() {
     let bytes = capability::root(|_| {});
     let verified = verify(&bytes, &owner, 5).unwrap();
     let mut state =
-        RevocationState::from_checkpoint(&checkpoint(1, 1, vec![]), "account", &issuer(), 1)
+        RevocationState::from_checkpoint(&checkpoint(1, 1, 1, vec![]), "account", &issuer(), 1)
             .unwrap();
     state
         .apply(
@@ -228,39 +234,34 @@ fn targeted_publication_does_not_retire_unrelated_historical_admissions() {
     // A complete checkpoint can preserve the historical floor after a newer
     // publication; compaction alone must not retire unrelated admissions.
     let before = state.frontier();
-    state
-        .apply(
-            &checkpoint(before.0 + 1, 1, vec![key("unrelated", 100)]),
-            &issuer(),
-            10,
-        )
-        .unwrap();
-    assert!(matches!(state.trust(&owner, 9), Err(VerifyError::Time)));
+    let compact = checkpoint(before.0 + 1, 10, 1, vec![key("unrelated", 100)]);
+    state.apply(&compact, &issuer(), 10).unwrap();
+    let mut restored =
+        RevocationState::from_checkpoint(&compact, "account", &issuer(), 10).unwrap();
+    for state in [&mut state, &mut restored] {
+        assert!(matches!(state.trust(&owner, 9), Err(VerifyError::Time)));
+    }
     let before = state.frontier();
-    assert!(
-        state
-            .apply(
-                &checkpoint(before.0 + 1, 0, vec![key("unrelated", 100)]),
-                &issuer(),
-                10
-            )
-            .is_err()
-    );
+    for bad in [
+        checkpoint(before.0 + 1, 10, 0, vec![key("unrelated", 100)]),
+        checkpoint(before.0 + 1, 9, 1, vec![key("unrelated", 100)]),
+        checkpoint(before.0 + 1, 11, 1, vec![key("unrelated", 100)]),
+    ] {
+        for state in [&mut state, &mut restored] {
+            assert!(state.apply(&bad, &issuer(), 10).is_err());
+            assert_eq!(state.frontier(), before);
+        }
+    }
     let RevocationPublication::Delta(mut backdated) = delta(&state, vec![], None).publication
     else {
         unreachable!()
     };
     backdated.issued_at_unix_seconds = 9;
-    assert!(
-        state
-            .apply(
-                &signed(RevocationPublication::Delta(backdated)),
-                &issuer(),
-                10
-            )
-            .is_err()
-    );
-    assert_eq!(state.frontier(), before);
+    let backdated = signed(RevocationPublication::Delta(backdated));
+    for state in [&mut state, &mut restored] {
+        assert!(state.apply(&backdated, &issuer(), 10).is_err());
+        assert_eq!(state.frontier(), before);
+    }
     let trust = state.trust(&owner, 10).unwrap();
     assert!(verify(&bytes, &trust, 5).is_ok());
     let attributes = RecordAttributes::default();
@@ -279,19 +280,21 @@ fn targeted_publication_does_not_retire_unrelated_historical_admissions() {
     );
 
     // The same historical request still observes current targeted revocation.
-    state
-        .apply(&delta(&state, vec![key("key", 100)], None), &issuer(), 10)
-        .unwrap();
-    assert!(matches!(
-        verify(&bytes, &state.trust(&owner, 10).unwrap(), 5),
-        Err(VerifyError::Revoked)
-    ));
+    let next = delta(&state, vec![key("key", 100)], None);
+    for state in [&mut state, &mut restored] {
+        state.apply(&next, &issuer(), 10).unwrap();
+        assert!(matches!(
+            verify(&bytes, &state.trust(&owner, 10).unwrap(), 5),
+            Err(VerifyError::Revoked)
+        ));
+    }
+    assert_eq!(state.frontier(), restored.frontier());
 }
 
 #[test]
 fn malformed_forged_gapped_and_wrong_account_updates_are_atomic() {
     let mut state =
-        RevocationState::from_checkpoint(&checkpoint(1, 10, vec![]), "account", &issuer(), 10)
+        RevocationState::from_checkpoint(&checkpoint(1, 10, 10, vec![]), "account", &issuer(), 10)
             .unwrap();
     let before = state.frontier();
     let base = match delta(&state, vec![key("target", 100)], None).publication {

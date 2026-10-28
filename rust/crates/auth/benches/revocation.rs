@@ -32,6 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     account_id: "synthetic".into(),
                     sequence,
                     retired_before_unix_seconds: retired,
+                    issued_at_unix_seconds: retired,
                     minimum_key_epoch: 0,
                     keys,
                     blocks: vec![],

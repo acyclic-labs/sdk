@@ -297,7 +297,7 @@ impl Client {
                 .await?;
             let status = response.status();
             if status.as_u16() == 401 {
-                if let Some(lease) = lease {
+                if let Some(lease) = &lease {
                     lease.reject()?;
                 }
             }
@@ -323,7 +323,14 @@ impl Client {
                     raw_details: bytes,
                 });
             }
-            decode(&self.descriptors, output, &bytes)
+            if let Some(lease) = &lease {
+                lease.check()?;
+            }
+            let decoded = decode(&self.descriptors, output, &bytes)?;
+            if let Some(lease) = &lease {
+                lease.check()?;
+            }
+            Ok(decoded)
         };
         let result = self.stage(operation).await;
         let span = tracing::Span::current();

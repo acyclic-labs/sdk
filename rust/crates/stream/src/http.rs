@@ -198,7 +198,7 @@ impl HttpStream {
             .await
             .map_err(|_| StreamError::Unavailable)?;
         if response.status().as_u16() == 401 {
-            if let Some(lease) = lease {
+            if let Some(lease) = &lease {
                 lease.reject().map_err(|_| StreamError::AccessDenied)?;
             }
         }
@@ -222,6 +222,9 @@ impl HttpStream {
             body.extend_from_slice(&chunk);
         }
         span.record("bytes", body.len());
+        if success && let Some(lease) = &lease {
+            lease.check().map_err(|_| StreamError::AccessDenied)?;
+        }
         let value: Value = serde_json::from_slice(&body).map_err(|_| StreamError::Unavailable)?;
         if !success {
             let code = value
@@ -237,6 +240,9 @@ impl HttpStream {
         }
         // A well-formed body that breaks the response contract is the peer's fault.
         http_validation::validate(route, &value).map_err(|_| StreamError::InvalidResponse)?;
+        if let Some(lease) = &lease {
+            lease.check().map_err(|_| StreamError::AccessDenied)?;
+        }
         Ok(value)
     }
     fn commit_response(value: &Value) -> Result<CommitOutcome, StreamError> {

@@ -283,6 +283,7 @@ message RevocationCheckpoint {
   uint64 minimum_key_epoch = 4;
   repeated KeyRevocation keys = 5;
   repeated Revocation blocks = 6;
+  uint64 issued_at_unix_seconds = 7;
 }
 
 message RevocationDelta {

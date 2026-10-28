@@ -147,10 +147,13 @@ impl RevocationState {
         now: u64,
     ) -> Result<(), VerifyError> {
         let retired = checkpoint.retired_before_unix_seconds;
+        let published = checkpoint.issued_at_unix_seconds;
         if checkpoint.account_id != self.account
             || checkpoint.sequence <= self.sequence
             || retired < self.retired_before
-            || retired > now
+            || published < self.published_at
+            || published < retired
+            || published > now
             || checkpoint.minimum_key_epoch < self.minimum_key_epoch
         {
             return Err(VerifyError::Trust);
@@ -163,7 +166,7 @@ impl RevocationState {
         self.blocks = blocks;
         self.minimum_key_epoch = checkpoint.minimum_key_epoch;
         self.sequence = checkpoint.sequence;
-        self.published_at = self.published_at.max(retired);
+        self.published_at = published;
         self.retired_before = retired;
         Ok(())
     }

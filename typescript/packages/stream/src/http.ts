@@ -155,7 +155,13 @@ export class HttpStreamProvider implements StreamProvider {
       const error = await hostedError(route, text, response.status);
       throw error;
     }
-    try { await ensureStreamWasm(); return decodeHttpResponseFor(route, text); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
+    lease.check();
+    try { await ensureStreamWasm(); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
+    lease.check();
+    let decoded: HttpResponseFor<Route>;
+    try { decoded = decodeHttpResponseFor(route, text); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
+    lease.check();
+    return decoded;
   }
 }
 

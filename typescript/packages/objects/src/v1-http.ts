@@ -1,4 +1,4 @@
-import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
+import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider, type CredentialRequest } from "@acyclic-labs/actors/credential";
 import { fromBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v1/objects_pb.js";
 import { encode_objects_v1_json, decode_objects_v1_json, objects_v1_http_type } from "../generated/wasm/acyclic_objects_wasm.js";
@@ -51,9 +51,10 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let admitted: CredentialRequest | undefined;
     try {
-      const lease = await resolveCredential(this.credential, controller.signal);
-      lease.check();
+      const lease = await resolveCredential(this.credential, controller.signal).catch(() => { throw new ObjectsV1Error(wire.ErrorCode.ACCESS_DENIED); });
+      checkCredential(lease);
       const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: controller.signal, headers: { authorization: `Bearer ${lease.token()}`, "content-type": "application/json" }, body: request as Uint8Array<ArrayBuffer> });
       if (response.status === 401) lease.reject();
       const declared = Number(response.headers.get("content-length") ?? 0);
@@ -63,6 +64,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       reader = response.body?.getReader();
       if (reader !== undefined) while (true) {
         const { done, value } = await reader.read();
+        if (response.status === 200) checkCredential(lease);
         if (done) break;
         size += value.byteLength;
         if (size > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
@@ -77,8 +79,13 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
         try { detail = fromBinary(wire.ErrorDetailSchema, decode_objects_v1_json("ErrorDetail", data, this.maximumResponse)); } catch { /* the status classifies it */ }
         throw new ObjectsV1Error(detail !== undefined && detail.code in wire.ErrorCode && detail.code !== wire.ErrorCode.UNSPECIFIED ? detail.code : STATUS[response.status] ?? wire.ErrorCode.UNAVAILABLE);
       }
-      try { return decode_objects_v1_json(objects_v1_http_type(route, true), data, this.maximumResponse); }
+      checkCredential(lease);
+      let decoded: Uint8Array;
+      try { decoded = decode_objects_v1_json(objects_v1_http_type(route, true), data, this.maximumResponse); }
       catch { throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE); }
+      checkCredential(lease);
+      admitted = lease;
+      return decoded;
     } catch (error) {
       // The caller's deadline, whichever layer reported the abort.
       throw controller.signal.aborted ? new ObjectsV1Error(wire.ErrorCode.DEADLINE_ELAPSED) : error;
@@ -86,6 +93,12 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       clearTimeout(timeout);
       await reader?.cancel().catch(() => {});
       reader?.releaseLock();
+      if (admitted) checkCredential(admitted);
     }
   }
+}
+
+function checkCredential(lease: CredentialRequest): void {
+  try { lease.check(); }
+  catch { throw new ObjectsV1Error(wire.ErrorCode.ACCESS_DENIED); }
 }

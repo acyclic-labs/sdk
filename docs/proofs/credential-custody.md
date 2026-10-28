@@ -104,6 +104,10 @@ later remote receive or replace the server's admission check.
 
 Successful Actors replies, shared Auth channel calls, Stream unary replies and
 native session records recheck their retained lease before admitting the result.
+HTTP Actors, Objects and Stream retain that same lease through the complete
+body read and check before decoding and before successful return. JavaScript
+Objects checks each NDJSON body chunk and final completion. Local freshness
+refusals remain separate from malformed responses and remote rejection.
 JavaScript Actors checks before decoding its returned bytes; shared JavaScript
 credential streams check each record and completion and retire their iterator
 on refusal. Tonic and Connect may decode wire messages before this check;
@@ -127,9 +131,9 @@ updates. No bearer or signing material is emitted.
 
 | Starting targets | Mean delta bytes | Initial checkpoint bytes | Full checkpoint after 128 changes | Retired checkpoint bytes | Mean delta apply (us) | Full checkpoint apply (us) |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 133.15625 | 100 | 2,168 | 84 | 37.81 | 79.58 |
-| 4,096 | 133.15625 | 80,895 | 82,962 | 84 | 37.86 | 1,477.58 |
-| 16,384 | 133.15625 | 333,039 | 335,106 | 84 | 37.64 | 6,036.51 |
+| 1 | 133.15625 | 102 | 2,170 | 86 | 36.30 | 72.83 |
+| 4,096 | 133.15625 | 80,897 | 82,964 | 86 | 36.29 | 1,397.06 |
+| 16,384 | 133.15625 | 333,041 | 335,108 | 86 | 36.45 | 5,559.59 |
 
 Each delta affects exactly one identity. The full checkpoint is the population
 control: its bytes and work grow with retained entries. No deployed latency or
@@ -145,6 +149,14 @@ total. They also cover old rejection/new lease, account-context revision
 changes, failed refresh, unavailable source, reused rejected bearer, independent
 and last-waiter cancellation, abort-ignoring completion, and streaming rejection
 versus policy denial/cancellation.
+
+Checkpoints sign publication time independently of the retirement floor. A
+live verifier and one reloaded from the same accepted checkpoint reject the
+same backdated next delta and accept the same monotone successor. Compaction
+can retain older history without weakening publication order on restart.
+Real loopback HTTP controls hold successful bodies while the source changes
+account, becomes unavailable, expires or invalidates. The unchanged source
+succeeds; local refusal and cancellation preserve its cached snapshot.
 
 The native Stream gRPC test also sends real tonic requests through a duplex
 transport and the production service adapter. Remote credential rejection

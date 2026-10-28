@@ -158,7 +158,7 @@ impl HttpObjects {
             .await
             .map_err(|_| unavailable())?;
         if response.status().as_u16() == 401 {
-            if let Some(lease) = lease {
+            if let Some(lease) = &lease {
                 lease
                     .reject()
                     .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
@@ -167,8 +167,19 @@ impl HttpObjects {
         if response.status().as_u16() != 200 {
             return Err(self.failure(response).await);
         }
-        json::decode(output_name, &self.bytes(response).await?, self.maximum)
-            .map_err(|_| unavailable())
+        let bytes = self.bytes(response).await?;
+        if let Some(lease) = &lease {
+            lease
+                .check()
+                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+        }
+        let decoded = json::decode(output_name, &bytes, self.maximum).map_err(|_| unavailable())?;
+        if let Some(lease) = &lease {
+            lease
+                .check()
+                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+        }
+        Ok(decoded)
     }
 
     async fn bytes(&self, mut response: Response) -> Result<Vec<u8>, Error> {
