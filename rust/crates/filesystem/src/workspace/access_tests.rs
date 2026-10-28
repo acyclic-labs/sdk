@@ -16,9 +16,11 @@ async fn retained_content_comparisons_recheck_current_read_authority()
         .bind_coarse_access(&Action::ALL, &cancel)
         .await?;
     let original = bound.head(WorkBudget::UNBOUNDED, &cancel).await?.value;
+    owner.write_text("/unrelated", "journal").await?;
+    let unrelated = bound.head(WorkBudget::UNBOUNDED, &cancel).await?.value;
     owner.write_text("/entry", "after").await?;
     let changed = bound.head(WorkBudget::UNBOUNDED, &cancel).await?.value;
-    for (selected, expected) in [(&original, true), (&changed, false)] {
+    for (selected, expected) in [(&original, true), (&unrelated, true), (&changed, false)] {
         assert_eq!(
             selected
                 .matches_content(&original, "/entry", WorkBudget::UNBOUNDED, &cancel)
@@ -26,12 +28,48 @@ async fn retained_content_comparisons_recheck_current_read_authority()
                 .value,
             expected
         );
+        assert_eq!(
+            selected
+                .matches_file_payload(&original, "/entry", WorkBudget::UNBOUNDED, &cancel)
+                .await?
+                .value,
+            expected
+        );
     }
+    assert!(
+        !original
+            .matches_file_payload(&original, "/absent", WorkBudget::UNBOUNDED, &cancel)
+            .await?
+            .value
+    );
+    let foreign = workspace()
+        .await?
+        .head(WorkBudget::UNBOUNDED, &cancel)
+        .await?
+        .value;
+    assert!(matches!(
+        original
+            .matches_file_payload(&foreign, "/entry", WorkBudget::UNBOUNDED, &cancel)
+            .await,
+        Err(crate::OperationFailure {
+            error: WorkspaceError::ForeignGeneration,
+            ..
+        })
+    ));
     fixtures::publish_policy(&owner, &fixtures::denied(Action::Read, "entry")).await?;
     for selected in [&original, &changed] {
         assert!(matches!(
             selected
                 .matches_content(&original, "/entry", WorkBudget::UNBOUNDED, &cancel)
+                .await,
+            Err(crate::OperationFailure {
+                error: WorkspaceError::AccessDenied,
+                ..
+            })
+        ));
+        assert!(matches!(
+            selected
+                .matches_file_payload(&original, "/entry", WorkBudget::UNBOUNDED, &cancel)
                 .await,
             Err(crate::OperationFailure {
                 error: WorkspaceError::AccessDenied,

@@ -122,6 +122,7 @@ pub(super) async fn matches_content<
     selected: GenerationId,
     original: GenerationId,
     path: &str,
+    exact_payload: bool,
     work: W,
     cancellation: &CancellationToken,
 ) -> W::Output<bool, WorkspaceError> {
@@ -156,6 +157,9 @@ pub(super) async fn matches_content<
             .0
             .record;
         let matches = match (record, expected) {
+            (Some(record), Some(expected)) if exact_payload => {
+                record.kind == expected.kind && record.payload == expected.payload
+            }
             (Some(record), Some(expected)) => {
                 crate::kernel::records_match_content(
                     workspace.volume.fs.objects(),

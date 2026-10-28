@@ -29,6 +29,7 @@ use std::{collections::BTreeMap, future::Future, sync::Arc};
 mod content_input;
 use content_input::ContentInput;
 mod content_publisher;
+mod content_replacement;
 pub use content_publisher::FilesystemContentPublisher;
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
@@ -356,21 +357,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 grant.recheck(io)?;
                 return self.seal_publication(reference, io);
             }
-            if expected_generation.is_some_and(|expected| expected != &authorized_generation.0) {
-                return Err(stock_boundary(
+            let absolute = crate::executor::with_history_io(io, |work| {
+                crate::executor::preparation_format(format_args!("/{}", provisional.path()), work)
+            })?;
+            if let Some(expected) = expected_generation
+                && expected != &authorized_generation.0
+            {
+                self.require_unchanged_content(
+                    &opened,
+                    expected,
+                    &authorized_generation.0,
+                    [&metadata_path, &absolute],
                     io,
-                    crate::wire::ErrorCode::Conflict,
-                    "workspace generation changed before content authorization",
-                ));
+                )?
+                .await?;
             }
             let policy_fence = if expected_generation.is_some() {
                 policy_fence.pin_generation()
             } else {
                 policy_fence
             };
-            let absolute = crate::executor::with_history_io(io, |work| {
-                crate::executor::preparation_format(format_args!("/{}", provisional.path()), work)
-            })?;
             let mut mutations = crate::model::vec_with_capacity(6, io)?;
             if let Some((parent, _)) = absolute.rsplit_once('/')
                 && !parent.is_empty()
