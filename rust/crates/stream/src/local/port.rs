@@ -118,9 +118,7 @@ impl CommandJournal for LocalPort {
                 return Err(StreamError::Capacity);
             }
         }
-        for frame in prepared {
-            self.stream.persist(frame).await?;
-        }
+        self.stream.persist_frames(prepared.into_iter()).await?;
         let sequence = self
             .stream
             .inner
