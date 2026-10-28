@@ -436,7 +436,7 @@ case "$lane" in
       cargo test -p acyclic-agent-host-conformance --features browser \
       --target wasm32-unknown-unknown --locked
     web_warning_closures
-    for suite in filesystem::default_tools::tests:: memory_store::tests::; do
+    for suite in filesystem::default_tools::tests::; do
       CHROMEDRIVER="$(command -v chromedriver)" \
         RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }-Dwarnings" \
         harness_tests -p acyclic-harness-core --features browser,test-support --target wasm32-unknown-unknown --lib "$suite"

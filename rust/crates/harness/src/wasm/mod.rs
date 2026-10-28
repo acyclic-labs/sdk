@@ -77,9 +77,3 @@ mod mcp;
 pub struct WasmReducer {
     issuer: AuthorityRoot,
 }
-
-/// Bounded Rust-owned content state for the WASM `MemoryConversation` adapter.
-#[wasm_bindgen]
-pub struct WasmContentStore {
-    store: crate::memory_store::MemoryStore,
-}

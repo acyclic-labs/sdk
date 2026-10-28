@@ -58,9 +58,6 @@ mod json_literal;
 #[cfg(feature = "machines")]
 pub mod machines;
 pub mod mcp;
-#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
-#[doc(hidden)]
-pub mod memory_store;
 pub mod model;
 #[cfg(any(
     test,
