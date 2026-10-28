@@ -145,7 +145,7 @@ async fn conformance_suite_against_linux_vms() {
         "DAYTONA_SNAPSHOT must name a registered Linux VM snapshot"
     );
     let provider = DaytonaProvider::new(config).expect("provider builds from configuration");
-    acyclic_conformance::machines(&provider)
+    acyclic_conformance::machines(&acyclic_machines::conformance::Fixture::new(provider))
         .await
         .expect("machines conformance suite passes");
 }
