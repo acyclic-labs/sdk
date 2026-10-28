@@ -49,6 +49,8 @@ mod compaction;
 mod composition;
 mod content;
 mod dispatch;
+mod live_reply;
+pub use live_reply::LiveReply;
 mod model_observation;
 pub(crate) mod phase;
 #[cfg(test)]
@@ -543,6 +545,7 @@ pub struct StockExecutor {
     // verified at turn entry.
     compaction: Option<crate::context::CompactionPolicy>,
     reconciliation_only: bool,
+    live_reply: Option<LiveReply>,
 }
 
 /// Journal payload separating canonical history from the exact transformed request.

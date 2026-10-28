@@ -61,6 +61,12 @@ impl Conversation {
         self.connection.root()
     }
 
+    /// The root agent's id in operation form: the task its failures name.
+    #[must_use]
+    pub fn task(&self) -> crate::OperationId {
+        crate::OperationId::from_bytes(self.agent().id().to_bytes())
+    }
+
     async fn delivered(&self, command: &AgentCommand) -> Result<Delivered> {
         match self.connection.execute(command).await? {
             AgentReply::Delivered { delivery } => Ok(delivery),
@@ -129,8 +135,8 @@ impl Conversation {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The binding of `request`, which `agent` waits on.
-    async fn pending_binding(&self, request: &IntentId) -> Result<ApprovalBinding> {
+    /// The approval `request` that `agent` waits on, if it is still pending.
+    async fn pending_approval(&self, request: &IntentId) -> Result<Option<Interaction>> {
         let AgentReply::Approvals { items, .. } = self
             .connection
             .execute(&AgentCommand::Approvals {
@@ -141,21 +147,38 @@ impl Conversation {
         else {
             return Err(unexpected());
         };
-        items
+        Ok(items
             .into_iter()
             .find(|pending| &pending.id == request)
-            .and_then(|pending| match pending.request {
-                Interaction::Approval {
-                    operation_id,
-                    action_digest,
-                    ..
-                } => Some(ApprovalBinding {
-                    operation_id,
-                    action_digest,
-                }),
-                _ => None,
-            })
-            .ok_or_else(|| Error::Conflict("no such approval is pending".into()))
+            .map(|pending| pending.request)
+            .filter(|request| matches!(request, Interaction::Approval { .. })))
+    }
+
+    /// The explanation approval `request` shows its approver, or `None` once
+    /// it is no longer pending.
+    ///
+    /// # Errors
+    /// Session, host or decoding failures.
+    pub async fn approval_prompt(&self, request: &IntentId) -> Result<Option<String>> {
+        Ok(match self.pending_approval(request).await? {
+            Some(Interaction::Approval { prompt, .. }) => Some(prompt),
+            _ => None,
+        })
+    }
+
+    /// The binding of `request`, which `agent` waits on.
+    async fn pending_binding(&self, request: &IntentId) -> Result<ApprovalBinding> {
+        match self.pending_approval(request).await? {
+            Some(Interaction::Approval {
+                operation_id,
+                action_digest,
+                ..
+            }) => Ok(ApprovalBinding {
+                operation_id,
+                action_digest,
+            }),
+            _ => Err(Error::Conflict("no such approval is pending".into())),
+        }
     }
 
     /// Reads all of `target` on `agent`, at most `maximum` bytes.

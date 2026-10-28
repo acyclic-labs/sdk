@@ -44,6 +44,9 @@ pub struct Args {
     /// instead of sending its prompts again.
     #[arg(long)]
     pub operation: Option<String>,
+    /// Reopen the last interactive conversation, including after a normal quit.
+    #[arg(long, conflicts_with_all = ["prompt", "input_format", "host_workspace"])]
+    pub resume: bool,
     #[arg(long)]
     pub inline: bool,
     /// Drive the agent tree an endpoint serves instead of this machine's

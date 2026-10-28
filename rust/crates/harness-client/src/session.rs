@@ -265,7 +265,7 @@ impl WireSession {
         let opening = opening_resources
             + requested
                 .keys()
-                .filter(|path| !self.views.contains_key(*path))
+                .filter(|path| !self.follows.contains_key(*path))
                 .count();
         // A replacement can change composition (for example focus) while its
         // stream membership is unchanged. Fence renderer caches in that case too.
@@ -292,8 +292,10 @@ impl WireSession {
                 staged_resources.push((resource.clone(), view, follow));
             }
         }
+        // A requested stream whose follow ended (one that did not exist yet,
+        // say) opens again; only a live follow keeps its cursor.
         for (path, subscription) in requested {
-            if self.views.contains_key(&path) {
+            if self.follows.contains_key(&path) {
                 continue;
             }
             revision += 1;

@@ -1,0 +1,3 @@
+$x^2$ and :file[src/lib.rs#L1-L2]
+
+::file[src/lib.rs#L1-2]{lines=1-2 symbol=ignored}

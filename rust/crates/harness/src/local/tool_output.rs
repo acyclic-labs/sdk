@@ -1,5 +1,6 @@
-//! The live display of an agent's newest tool call, folded from the change
-//! records of its `tools/` directory.
+//! The live display of an agent's newest tool call or streaming answer,
+//! folded from the change records of its `tools/` directory: a call's
+//! `stdout/` and `stderr/` chunks, or a model dispatch's `reply/` chunks.
 
 /// Bytes of the newest call's output a [`OutputTail`] retains.
 const TAIL_BYTES: usize = 16 * 1024;
@@ -15,8 +16,10 @@ pub(super) struct OutputTail {
     /// The opened follow's replayed history ends here; nothing is chosen
     /// before it is drained, so a reopen reads only the newest call.
     replayed: Option<u64>,
-    /// `tools/{turn}/{operation}` of the newest call.
+    /// `tools/{turn}/{operation}` of the newest call or dispatch.
     call: Option<String>,
+    /// Whether the newest is a model dispatch's answer text.
+    reply: bool,
     text: String,
     /// Bytes of a character a chunk split, for stdout and stderr.
     split: [Vec<u8>; 2],
@@ -26,6 +29,7 @@ pub(super) struct OutputTail {
 pub(super) struct Plan {
     end: u64,
     call: Option<String>,
+    reply: bool,
     /// Each chunk's path and whether it is stderr.
     pub(super) reads: Vec<(String, bool)>,
 }
@@ -50,22 +54,32 @@ impl OutputTail {
             return None;
         }
         let mut call = None;
+        let mut reply = false;
         let mut chunks = Vec::new();
         for (sequence, paths) in records {
             if sequence < self.next {
                 continue;
             }
             for path in paths {
-                if let Some((owner, stderr)) = path
+                if let Some((owner, stderr, answer)) = path
                     .split_once("/stdout/")
-                    .map(|(owner, _)| (owner, false))
-                    .or_else(|| path.split_once("/stderr/").map(|(owner, _)| (owner, true)))
+                    .map(|(owner, _)| (owner, false, false))
+                    .or_else(|| {
+                        path.split_once("/stderr/")
+                            .map(|(owner, _)| (owner, true, false))
+                    })
+                    .or_else(|| {
+                        path.split_once("/reply/")
+                            .map(|(owner, _)| (owner, false, true))
+                    })
                 {
                     call = Some(owner.to_owned());
+                    reply = answer;
                     chunks.push((owner.to_owned(), path.clone(), stderr));
                 } else if let Some(owner) = path.strip_suffix("/request.json") {
                     // A new call starts its display even before it writes.
                     call = Some(owner.to_owned());
+                    reply = false;
                 }
             }
         }
@@ -74,7 +88,12 @@ impl OutputTail {
             .filter(|(owner, _, _)| call.as_deref() == Some(owner))
             .map(|(_, path, stderr)| (path, stderr))
             .collect();
-        Some(Plan { end, call, reads })
+        Some(Plan {
+            end,
+            call,
+            reply,
+            reads,
+        })
     }
 
     /// Commits `plan` once every one of its reads, `bytes` in order, settled:
@@ -83,6 +102,7 @@ impl OutputTail {
     pub(super) fn apply(&mut self, plan: Plan, bytes: Vec<Vec<u8>>) {
         if plan.call.is_some() && plan.call != self.call {
             self.call = plan.call;
+            self.reply = plan.reply;
             self.text.clear();
             self.split = Default::default();
         }
@@ -102,12 +122,18 @@ impl OutputTail {
     pub(super) fn reset(&mut self, end: u64) {
         self.next = self.next.max(end);
         self.call = None;
+        self.reply = false;
         self.text.clear();
         self.split = Default::default();
     }
 
     pub(super) fn text(&self) -> &str {
         &self.text
+    }
+
+    /// Whether [`Self::text`] is a streaming answer rather than tool output.
+    pub(super) const fn reply(&self) -> bool {
+        self.reply
     }
 }
 

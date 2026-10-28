@@ -1,0 +1,10 @@
+```rust
+let x = 1;
+```
+
+  ```text
+	foo
+  ```
+
+```rust
+/* open

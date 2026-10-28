@@ -9,6 +9,7 @@ use crate::{
 mod checkout;
 #[cfg(any(test, feature = "native-execution"))]
 mod environment;
+mod commands;
 mod guidance;
 pub(super) mod skills;
 

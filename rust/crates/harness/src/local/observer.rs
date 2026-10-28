@@ -138,7 +138,16 @@ impl Observer {
             };
             match event {
                 Ok(AgentEvent::Status { status, .. }) => {
-                    if self.missing {
+                    // Only a settled step creates the conversation: reopen
+                    // there, never while a turn runs or waits.
+                    if self.missing
+                        && status.cursor > 0
+                        && matches!(
+                            status.phase,
+                            crate::agent::Phase::Idle | crate::agent::Phase::Done { .. }
+                        )
+                    {
+                        tracing::debug!(from = self.next_turn, "conversation reopen");
                         self.missing = false;
                         self.client
                             .set_view(
@@ -152,28 +161,49 @@ impl Observer {
                             .map_err(storage)?;
                     }
                     tracing::debug!(phase = ?status.phase, cursor = status.cursor, "agent status");
+                    // An idle or finished agent runs no turn: an interrupted
+                    // one's output is done too.
+                    if matches!(
+                        status.phase,
+                        crate::agent::Phase::Idle | crate::agent::Phase::Done { .. }
+                    ) {
+                        self.reset_output()?;
+                    }
                     return Ok(Event::Status(status));
                 }
                 Ok(AgentEvent::Conversation {
                     sequence, entry, ..
                 }) => {
+                    tracing::debug!(sequence, "conversation entry");
                     self.next_turn = sequence + 1;
                     // The turn's output is complete; the next turn starts
                     // its own display.
-                    let end = self
-                        .client
-                        .resource_view(&self.resource)
-                        .map_err(storage)?
-                        .next_sequence();
-                    self.tail.reset(end);
+                    self.reset_output()?;
                     return Ok(Event::Turn(entry));
                 }
                 Ok(AgentEvent::Resource { .. }) => return Ok(Event::Output),
                 Ok(AgentEvent::Progress) => {}
-                Err(error) if self.conversation_missing(&error) => self.missing = true,
-                Err(error) => return Err(storage(error)),
+                Err(error) if self.conversation_missing(&error) => {
+                    tracing::debug!(%error, "conversation missing");
+                    self.missing = true;
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "observer follow failed");
+                    return Err(storage(error));
+                }
             }
         }
+    }
+
+    /// Ends the displayed output: records announced so far are never shown.
+    fn reset_output(&mut self) -> Result<()> {
+        let end = self
+            .client
+            .resource_view(&self.resource)
+            .map_err(storage)?
+            .next_sequence();
+        self.tail.reset(end);
+        Ok(())
     }
 
     /// Whether `error` only reports that the conversation stream does not
@@ -235,6 +265,21 @@ impl Observer {
     /// The newest call's output, its last 16 KiB at most.
     #[must_use]
     pub fn output(&self) -> &str {
-        self.tail.text()
+        if self.tail.reply() {
+            ""
+        } else {
+            self.tail.text()
+        }
+    }
+
+    /// The running turn's answer text while it streams, its last 16 KiB at
+    /// most; empty once a tool call runs or the turn settles.
+    #[must_use]
+    pub fn reply(&self) -> &str {
+        if self.tail.reply() {
+            self.tail.text()
+        } else {
+            ""
+        }
     }
 }

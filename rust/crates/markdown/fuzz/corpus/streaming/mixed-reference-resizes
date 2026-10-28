@@ -1,0 +1,12 @@
+[outer [x][ref]](u&#10;v)
+
+[x][a&#10;b]
+
+[keep]
+
+[ref]: /r
+
+[a&#10;b]: /a
+
+[keep]: /k
+

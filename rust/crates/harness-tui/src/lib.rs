@@ -35,6 +35,8 @@ mod key_decode;
 pub mod key_event;
 mod keymap;
 mod layout;
+#[cfg(feature = "tui")]
+mod markdown;
 mod settings;
 pub use settings::{DEFAULT_SETTINGS, NotificationPolicy, UiSettings};
 #[cfg(feature = "tui")]

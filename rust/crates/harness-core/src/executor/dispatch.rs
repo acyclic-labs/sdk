@@ -1,7 +1,7 @@
 use super::*;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 use crate::wire::ErrorCode::Unsupported;
-use futures::future::Either;
+use futures::{FutureExt as _, future::Either};
 
 struct PreparedDispatchStep {
     request: crate::model::PreparedModelRequest,
@@ -84,6 +84,8 @@ impl StockExecution<'_> {
         } else {
             None
         };
+        // Only a fresh provider generation streams; a continuation replays.
+        let live = continuation.is_none() && purpose == ModelPurpose::Response;
         let stream = if let Some(continuation) = continuation {
             #[cfg(feature = "filesystem")]
             {
@@ -130,7 +132,7 @@ impl StockExecution<'_> {
                 (step, purpose, purpose_key),
                 replayed,
                 &mut admission,
-                stream,
+                (stream, live),
             )
             .await?;
         if purpose == ModelPurpose::Response && admission.completed {
@@ -393,14 +395,33 @@ impl StockExecution<'_> {
         turn: (u32, ModelPurpose, &str),
         mut observed: Vec<ModelEvent>,
         admission: &mut ModelEventAdmission,
-        stream: impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
+        (stream, live): (
+            impl futures::Stream<Item = Result<ModelEvent>> + Unpin,
+            bool,
+        ),
     ) -> Result<Vec<ModelEvent>> {
         let (step, purpose, purpose_key) = turn;
         let io = self.io;
+        let mut text = self
+            .stock
+            .live_reply
+            .as_ref()
+            .filter(|_| live)
+            .map(LiveReply::dispatch);
         {
             let mut stream = stream;
             loop {
-                let next = crate::obs::waiting("provider-event", operation_id, stream.next()).await;
+                // Stage the text so far whenever the provider pauses.
+                let next = match (stream.next().now_or_never(), text.as_mut()) {
+                    (Some(next), _) => next,
+                    (None, Some(text)) => {
+                        text.flush().await?;
+                        crate::obs::waiting("provider-event", operation_id, stream.next()).await
+                    }
+                    (None, None) => {
+                        crate::obs::waiting("provider-event", operation_id, stream.next()).await
+                    }
+                };
                 let Some(event) = next else {
                     break;
                 };
@@ -418,6 +439,9 @@ impl StockExecution<'_> {
                     )
                 })?;
                 admission.observe(event, self.stock.limits, io)?;
+                if let Some(text) = text.as_mut() {
+                    text.observe(event);
+                }
                 crate::obs::waiting(
                     "journal-commit",
                     operation_id,

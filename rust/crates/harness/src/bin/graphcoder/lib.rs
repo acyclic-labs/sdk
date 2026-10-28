@@ -238,5 +238,5 @@ async fn drive(
         return phase(|| headless::jsonl(&conversation, &operation, &mut output)).await;
     }
     drop(output);
-    phase(|| view::run(conversation, args.inline)).await
+    phase(|| view::run(conversation, args.inline, args.resume)).await
 }
