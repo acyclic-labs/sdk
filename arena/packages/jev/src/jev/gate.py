@@ -62,7 +62,7 @@ GATE_QUESTIONS = [
 
 class Gate:
     def __init__(self, backend: Backend, log: Optional[DecisionLog] = None, *, task: Optional[str] = None,
-                 deny_at: float = 1.01, ask_at: float = 0.6, timeout_s: float = 8.0, agent: str = "gate"):
+                 deny_at: float = 1.01, ask_at: float = 0.6, timeout_s: Optional[float] = None, agent: str = "gate"):
         """deny_at / ask_at: P(destructive) thresholds. Defaults never deny; ask above 0.6."""
         self.backend = backend
         self.log = log if log is not None else DecisionLog()
