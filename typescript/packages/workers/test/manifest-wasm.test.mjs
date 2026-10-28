@@ -21,12 +21,12 @@ test("Node calls the Rust cross-reference, secret and hostname rules", () => {
   assert.throws(() => validate(JSON.stringify(manifest)));
 });
 test("standalone secret projection uses the same bounded Rust grammar", () => {
-  for (const reference of ["secrets:/a", "secrets:/Scope/deep/NAME", `secrets:/${"a".repeat(63)}/${"b".repeat(63)}/${"c".repeat(63)}/${"d".repeat(56)}`]) {
+  for (const reference of ["secrets:/a", "secrets:/Scope/deep/NAME", `secrets:/${"a".repeat(63)}/${"b".repeat(63)}/${"c".repeat(63)}/${"d".repeat(55)}`]) {
     assert.equal(formatSecretReference(parseSecretReference(reference)), reference);
     assert.deepEqual(JSON.parse(selectSecretReference("MODEL_KEY", reference)), { name: "MODEL_KEY", reference });
   }
   for (const reference of ["secrets:/", "secrets://a", "secrets:/a/", "secrets:/a//b", "secrets:/a%2Fb", "secrets:/a:b", "secrets:/a?q", "secrets:/a#f", "secrets:/é", "secrets:/.",
-    `secrets:/${"x".repeat(64)}`, `secrets:/${"a".repeat(63)}/${"b".repeat(63)}/${"c".repeat(63)}/${"d".repeat(57)}`]) assert.throws(() => parseSecretReference(reference));
+    `secrets:/${"x".repeat(64)}`, `secrets:/${"a".repeat(63)}/${"b".repeat(63)}/${"c".repeat(63)}/${"d".repeat(56)}`]) assert.throws(() => parseSecretReference(reference));
   assert.throws(() => formatSecretReference(["a/b"]));
   assert.throws(() => selectSecretReference("NOT-AN-ENV-NAME", "secrets:/a"));
   const refusal = error => error instanceof Error && error.name === "SecretReferenceError"

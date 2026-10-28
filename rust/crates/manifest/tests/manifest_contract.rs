@@ -924,7 +924,7 @@ fn secret_reference_segments_preserve_canonical_bytes_and_original_bounds() {
             "a".repeat(63),
             "b".repeat(63),
             "c".repeat(63),
-            "d".repeat(56)
+            "d".repeat(55)
         ),
     ] {
         let reference = SecretReference::new(value.to_owned()).unwrap();
@@ -951,7 +951,7 @@ fn secret_reference_segments_preserve_canonical_bytes_and_original_bounds() {
             "a".repeat(63),
             "b".repeat(63),
             "c".repeat(63),
-            "d".repeat(57)
+            "d".repeat(56)
         ),
     ] {
         assert!(SecretReference::new(value.to_owned()).is_err(), "{value}");
