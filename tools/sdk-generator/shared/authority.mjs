@@ -28,14 +28,14 @@ export function verifyPackageOutputs(outputs, digests, required, unexpectedMessa
     || digestNames.some(name => !required.has(name) || !/^[a-f0-9]{64}$/.test(digests[name]))) throw new Error("package digest inventory differs");
 }
 
-export function runCli(url, execute, names, missingMessage) {
+export async function runCli(url, execute, names, missingMessage) {
   if (!process.argv[1] || resolve(process.argv[1]) !== fileURLToPath(url)) return;
   const options = Object.fromEntries(names.map(name => [name, { type: "string" }]));
   const { values } = parseArgs({ options });
   if (names.some(name => !values[name])) {
     throw new Error(missingMessage ?? names.slice(0, -1).map(name => "--" + name).join(", ") + " and --" + names.at(-1) + " are required");
   }
-  console.log(JSON.stringify(execute(values), null, 2));
+  console.log(JSON.stringify(await execute(values), null, 2));
 }
 
 // Shared output checks remain covered by the existing authority-reader receipt digest.
