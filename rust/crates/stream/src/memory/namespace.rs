@@ -149,7 +149,6 @@ struct Branch {
     height: u8,
     count: usize,
     bytes: usize,
-    max_suffix: usize,
     depth: usize,
     _allocation: Allocation,
 }
@@ -163,9 +162,6 @@ impl NamespaceNode {
     }
     fn suffix_bytes(&self) -> usize {
         self.children.as_ref().map_or(0, |n| n.bytes + n.count)
-    }
-    fn max_suffix(&self) -> usize {
-        self.children.as_ref().map_or(0, |n| n.max_suffix + 1)
     }
     fn depth(&self) -> usize {
         1 + self.children.as_ref().map_or(0, |n| n.depth)
@@ -187,9 +183,6 @@ fn branch(
         + node.suffix_bytes()
         + left.as_ref().map_or(0, |n| n.bytes)
         + right.as_ref().map_or(0, |n| n.bytes);
-    let max_suffix = (name.len() + node.max_suffix())
-        .max(left.as_ref().map_or(0, |n| n.max_suffix))
-        .max(right.as_ref().map_or(0, |n| n.max_suffix));
     let depth = node
         .depth()
         .max(left.as_ref().map_or(0, |n| n.depth))
@@ -215,7 +208,6 @@ fn branch(
         right,
         count,
         bytes,
-        max_suffix,
         depth,
         _allocation: allocation,
     };
