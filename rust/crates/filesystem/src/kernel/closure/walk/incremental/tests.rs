@@ -150,10 +150,7 @@ fn ordered_child_matching_is_metered_and_linear() -> TestResult<()> {
                 first: index * 2,
                 page: ObjectId {
                     kind: ObjectKind::FileTablePage,
-                    digest: crate::storage::object_digest(
-                        ObjectKind::FileTablePage,
-                        &index.to_be_bytes(),
-                    ),
+                    digest: crate::storage::object_digest(&index.to_be_bytes()),
                 },
             })
             .collect::<Vec<_>>();

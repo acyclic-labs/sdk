@@ -184,16 +184,14 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedStore<O> {
         if !matches!(fault, Some(SimulationFault::DelayObjectVisibility)) {
             return self.inner.put(object_id, bytes, work).await;
         }
-        let hashed = (bytes.len() as u64)
-            .checked_add(crate::OBJECT_DIGEST_ENVELOPE_BYTES)
-            .ok_or(crate::WorkError::Overflow)?;
+        let hashed = (bytes.len() as u64);
         work.accounting()
             .charge(WorkCounters {
                 bytes_hashed: hashed,
                 ..WorkCounters::UNCHARGED
             })
             .map_err(crate::async_storage::object_error)?;
-        if object_digest(object_id.kind, &bytes) != object_id.digest {
+        if object_digest(&bytes) != object_id.digest {
             return Err(ObjectStoreError::DigestMismatch);
         }
         self.delay_object(object_id, bytes, work)

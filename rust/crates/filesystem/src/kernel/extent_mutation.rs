@@ -10,9 +10,7 @@ use crate::FsError;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
-use crate::storage::{
-    HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
-};
+use crate::storage::{HashedObject, ObjectId, ObjectKind, ObjectStoreError};
 use std::mem::size_of;
 use thiserror::Error;
 
@@ -459,9 +457,7 @@ pub(crate) async fn put_encoded_with_accounting<S: crate::AsyncObjectStore>(
         return Ok(object);
     }
     let hashing = WorkCounters {
-        bytes_hashed: usize_to_u64(encoded.value.len())
-            .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
-            .ok_or(WorkError::Overflow)?,
+        bytes_hashed: usize_to_u64(encoded.value.len()),
         ..WorkCounters::UNCHARGED
     };
     accounting.admit(hashing)?;

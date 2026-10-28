@@ -6,7 +6,7 @@ async fn object_store_verifies_identity_and_bounds_reads() -> Result<(), Box<dyn
     let store = MemoryObjectStore::default();
     let object_id = ObjectId {
         kind: crate::storage::ObjectKind::BlobChunk,
-        digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"abcdef"),
+        digest: object_digest(b"abcdef"),
     };
     provider_receipt!(
         store,
@@ -35,11 +35,11 @@ async fn object_batch_preserves_order_and_duplicates() -> Result<(), Box<dyn std
     let store = MemoryObjectStore::default();
     let first = ObjectId {
         kind: crate::storage::ObjectKind::BlobChunk,
-        digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"first"),
+        digest: object_digest(b"first"),
     };
     let second = ObjectId {
         kind: crate::storage::ObjectKind::BlobChunk,
-        digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"second"),
+        digest: object_digest(b"second"),
     };
     provider_receipt!(
         store,
@@ -98,7 +98,7 @@ async fn object_store_reauthenticates_shared_bytes_after_memory_corruption()
     let store = MemoryObjectStore::default();
     let object_id = ObjectId {
         kind: crate::storage::ObjectKind::BlobChunk,
-        digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"authentic"),
+        digest: object_digest(b"authentic"),
     };
     provider_receipt!(
         store,
@@ -157,7 +157,7 @@ async fn object_admission_rejects_size_identity_absence_and_batch_bounds()
     let store = MemoryObjectStore::new(4)?;
     let object_id = ObjectId {
         kind: crate::storage::ObjectKind::BlobChunk,
-        digest: object_digest(crate::storage::ObjectKind::BlobChunk, b"data"),
+        digest: object_digest(b"data"),
     };
     assert!(matches!(
         provider_receipt!(

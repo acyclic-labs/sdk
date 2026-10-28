@@ -8,7 +8,7 @@ fn object(value: &'static [u8]) -> (ObjectId, OwnedBytes) {
     (
         ObjectId {
             kind: ObjectKind::BlobChunk,
-            digest: object_digest(ObjectKind::BlobChunk, &bytes),
+            digest: object_digest(&bytes),
         },
         bytes,
     )

@@ -94,7 +94,7 @@ async fn native_regular_copy_denial_and_written_prefix_use_original_custody()
     assert_eq!(original.receipt().backend_write_operations, 2);
     let chunk = ObjectId {
         kind: ObjectKind::BlobChunk,
-        digest: object_digest(ObjectKind::BlobChunk, b"prefix!"),
+        digest: object_digest(b"prefix!"),
     };
     assert_eq!(
         {

@@ -512,7 +512,7 @@ pub fn attribute_page_id(
     )?;
     Ok(ObjectId {
         kind: ObjectKind::AttributePage,
-        digest: object_digest(ObjectKind::AttributePage, &bytes),
+        digest: object_digest(&bytes),
     })
 }
 

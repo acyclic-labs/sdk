@@ -21,8 +21,8 @@ impl Fixture {
 
     async fn with_publication(bytes: &[u8], published: bool) -> TestResult<Self> {
         let stream = Arc::new(acyclic_stream::MemoryStream::default());
-        let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-        let filesystem = Fs::from_memory_providers(stream.clone(), Arc::new(objects), bucket);
+        let objects = acyclic_objects::MemoryObjects::memory();
+        let filesystem = Fs::from_memory_providers(stream.clone(), Arc::new(objects));
         let authority = acyclic_fs::distributed::StreamAuthorityStore::new(stream);
         let provider = ProviderRef::new(
             "retention".into(),

@@ -62,10 +62,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Backend fo
 /// Compose the real public Stream and Objects providers, instrumenting both
 /// before type erasure with one shared Counted ledger. All original native work,
 /// guard, error and custody forwarding remains in those primitive adapters.
-pub fn from_providers<S: StreamProvider, O: acyclic_objects::v1::ObjectsProvider>(
+pub fn from_providers<S: StreamProvider, O: acyclic_objects::Blobs>(
     stream: S,
     objects: O,
-    bucket: acyclic_objects::v1::wire::BucketRef,
     capabilities: EmbeddedCapabilities,
 ) -> Fixture<
     crate::distributed::StreamAuthorityStore<Counted<S>>,
@@ -76,10 +75,8 @@ pub fn from_providers<S: StreamProvider, O: acyclic_objects::v1::ObjectsProvider
         stream,
         requests.clone(),
     )));
-    let objects = crate::LogicalObjectStore::new(
-        Arc::new(Counted::with_ledger(objects, requests.clone())),
-        bucket,
-    );
+    let objects =
+        crate::LogicalObjectStore::new(Arc::new(Counted::with_ledger(objects, requests.clone())));
     Fixture::new(Fs::new(authority, objects, capabilities), requests)
 }
 

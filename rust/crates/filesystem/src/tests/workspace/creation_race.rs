@@ -151,7 +151,7 @@ impl acyclic_stream::StreamProvider for YieldStream {
 
 type RaceFs = Fs<
     crate::distributed::StreamAuthorityStore<YieldStream>,
-    crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
+    crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
 >;
 
 /// Races two forks of one pinned generation into the same destination.
@@ -162,10 +162,10 @@ async fn race(seed: u64, keys: [IdempotencyKey; 2]) -> Result<(usize, bool), Box
         seed,
         calls: Mutex::new(Vec::new()),
     });
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = acyclic_objects::MemoryObjects::memory();
     let fs: RaceFs = Fs::new(
         crate::distributed::StreamAuthorityStore::new(Arc::clone(&stream)),
-        crate::LogicalObjectStore::new(Arc::new(objects), bucket),
+        crate::LogicalObjectStore::new(Arc::new(objects)),
         crate::EmbeddedCapabilities::MEMORY,
     );
     let parent = unbounded!(fs, create_workspace("race-parent"))?;

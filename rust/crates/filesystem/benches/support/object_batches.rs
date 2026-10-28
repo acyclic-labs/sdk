@@ -2,7 +2,7 @@ use acyclic_fs::{
     AsyncObjectStore, AuthorityWork, CancellationToken, HashedObject, LogicalObjectStore,
     NativeMaterializationWork, ObjectKind, WorkCounters, storage::ObjectWrite,
 };
-use acyclic_objects::v1::MemoryObjects;
+use acyclic_objects::MemoryObjects;
 use acyclic_stream::OwnedBytes;
 use divan::Bencher;
 use std::sync::Arc;
@@ -63,8 +63,8 @@ fn authenticated_batch(bencher: Bencher, (native, size): (bool, usize)) {
             NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                 .unwrap()
         });
-        let (provider, bucket) = MemoryObjects::with_default_bucket();
-        let store = LogicalObjectStore::new(Arc::new(provider), bucket);
+        let provider = MemoryObjects::memory();
+        let store = LogicalObjectStore::new(Arc::new(provider));
         (store, cancellation, original)
     };
     if std::env::var_os("ACYCLIC_BENCH_WORK").is_some() {

@@ -41,13 +41,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         work.accounting()
             .check()
             .map_err(crate::async_storage::object_error)?;
-        let hashed = byte_length(&bytes)
-            .checked_add(if work.is_native() {
-                crate::OBJECT_DIGEST_ENVELOPE_BYTES
-            } else {
-                0
-            })
-            .ok_or(crate::WorkError::Overflow)?;
+        let hashed = byte_length(&bytes);
         work.accounting()
             .charge(WorkCounters {
                 bytes_hashed: hashed,

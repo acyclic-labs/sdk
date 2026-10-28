@@ -144,7 +144,6 @@ fn filesystem_code(error: &FsError) -> Code {
         #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
         E::LocalObjects(error) => local_objects_code(error),
         #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
-        E::LocalObjectsBucket(error) => objects_service_code(error),
         #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
         E::LocalRoot(error) => io_code(error),
         #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
@@ -390,16 +389,16 @@ fn native_code(error: &crate::NativeTreeMaterializationError) -> Code {
 }
 
 #[cfg(any(test, feature = "distributed", feature = "local"))]
-fn objects_service_code(error: &acyclic_objects::v1::Error) -> Code {
-    use acyclic_objects::v1::wire::ErrorCode as E;
+fn objects_service_code(error: &acyclic_objects::Error) -> Code {
+    use acyclic_objects::wire::ErrorCode as E;
     match error.code {
-        E::InvalidArgument => Code::InvalidArgument,
+        E::InvalidArgument | E::DigestMismatch => Code::InvalidArgument,
         E::NotFound => Code::NotFound,
-        E::AlreadyExists => Code::AlreadyExists,
-        E::PreconditionFailed | E::IdempotencyMismatch | E::NotModified => Code::FailedPrecondition,
+        E::MissingReference | E::Conflict => Code::FailedPrecondition,
         E::AccessDenied => Code::PermissionDenied,
         E::QuotaExceeded => Code::ResourceExhausted,
-        E::Unavailable => Code::Unavailable,
+        E::Unavailable | E::Suspended | E::OutcomeUnknown => Code::Unavailable,
+        E::Corrupt => Code::DataLoss,
         E::Unspecified => Code::Internal,
         E::Unsupported => Code::Unimplemented,
         E::RangeNotSatisfiable => Code::OutOfRange,
@@ -407,13 +406,12 @@ fn objects_service_code(error: &acyclic_objects::v1::Error) -> Code {
 }
 
 #[cfg(all(any(test, feature = "distributed"), not(target_arch = "wasm32")))]
-fn native_objects_code(error: &acyclic_objects::v1::NativeObjectsError) -> Code {
-    use acyclic_objects::v1::NativeObjectsCause as E;
+fn native_objects_code(error: &acyclic_objects::NativeObjectsError) -> Code {
+    use acyclic_objects::NativeObjectsCause as E;
     match &error.cause {
         E::Service(error) => objects_service_code(error),
         E::Admission(error) => io_code(error),
         E::Unsupported => Code::Unimplemented,
-        E::SharedFailure(error) => native_objects_code(error.error()),
     }
 }
 
@@ -431,8 +429,8 @@ fn local_stream_code(error: &acyclic_stream::LocalStreamError) -> Code {
 }
 
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
-fn local_objects_code(error: &acyclic_objects::v1::local::LocalOpenError) -> Code {
-    use acyclic_objects::v1::local::LocalOpenError as E;
+fn local_objects_code(error: &acyclic_objects::local::LocalOpenError) -> Code {
+    use acyclic_objects::local::LocalOpenError as E;
     match error {
         E::Invalid => Code::InvalidArgument,
         E::Corrupt => Code::DataLoss,

@@ -30,7 +30,6 @@ pub enum ScenarioKind {
     StreamTypescriptConsumer,
     FilesystemEmbedded,
     MachinesTypescriptConsumer,
-    ObjectsTypescriptConsumer,
     InferenceContractDefaults,
     PluginCliHelp,
     NativeRuntimePositionalIo,
@@ -51,7 +50,6 @@ impl ScenarioKind {
             Self::MachinesTypescriptConsumer
                 | Self::ActorsTypescriptConsumer
                 | Self::StreamTypescriptConsumer
-                | Self::ObjectsTypescriptConsumer
                 | Self::InferenceContractDefaults
         )
     }
@@ -145,18 +143,6 @@ pub const SCENARIOS: &[Scenario] = &[
         source_path: "rust/crates/machines/examples/machines-typescript-consumer.rs",
         operation: "create-list-consumer",
         kind: ScenarioKind::MachinesTypescriptConsumer,
-        mode: ScenarioMode::ExecuteLocal,
-        features: &[],
-        fixture_script: None,
-    },
-    Scenario {
-        id: "objects/typescript-consumer",
-        family: "objects",
-        package: "acyclic-objects",
-        example: "objects-typescript-consumer",
-        source_path: "rust/crates/objects/examples/objects-typescript-consumer.rs",
-        operation: "memory-put-get-consumer",
-        kind: ScenarioKind::ObjectsTypescriptConsumer,
         mode: ScenarioMode::ExecuteLocal,
         features: &[],
         fixture_script: None,
@@ -614,9 +600,6 @@ mod tests {
         assert!(SCENARIOS
             .iter()
             .any(|scenario| scenario.id == "machines/typescript-consumer"));
-        assert!(SCENARIOS
-            .iter()
-            .any(|scenario| scenario.id == "objects/typescript-consumer"));
         assert!(SCENARIOS
             .iter()
             .any(|scenario| scenario.id == "inference/typescript-consumer"));

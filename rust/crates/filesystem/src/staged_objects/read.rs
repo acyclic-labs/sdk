@@ -65,9 +65,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 bytes_hashed: observed,
                 ..WorkCounters::UNCHARGED
             })?;
-            if observed != length
-                || object_id.digest != crate::storage::object_digest(object_id.kind, &bytes)
-            {
+            if observed != length || object_id.digest != crate::storage::object_digest(&bytes) {
                 return Err(ObjectStoreError::Corrupt);
             }
             bytes

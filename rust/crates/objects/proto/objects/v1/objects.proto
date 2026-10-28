@@ -4,286 +4,170 @@ package acyclic.objects.v1;
 
 import "validation/v1/options.proto";
 
-import "google/protobuf/timestamp.proto";
-
 option go_package = "github.com/acyclic-labs/sdk/go/gen/objects/v1;objectsv1";
 
-// Tenant-scoped logical bucket name. Placement and storage identities are private.
-message BucketRef {
-  string name = 1;
-}
-message Bucket {
-  BucketRef bucket = 1;
-  google.protobuf.Timestamp created_at = 2;
-}
-message ObjectMetadata {
-  string content_type = 1;
-  map<string, string> user = 2;
-  string content_encoding = 3;
-  string cache_control = 4;
-  string content_disposition = 5;
-  string content_language = 6;
-  optional int64 expires_unix_seconds = 7;
-}
-// Evaluated atomically with single-object publication against the current value.
-// An eventual HEAD/GET may be stale and cause a safe precondition failure.
-message Preconditions {
-  oneof condition {
-    bool if_absent = 1;
-    string if_match = 2;
-  }
-}
-message MutationIdentity {
-  string idempotency_key = 1;
-}
-enum ObjectsLimit {
-  OBJECTS_LIMIT_UNSPECIFIED = 0;
-  OBJECTS_LIMIT_MAX_IDEMPOTENCY_KEY_BYTES = 256;
-  OBJECTS_LIMIT_MAX_KEY_BYTES = 1024;
-  OBJECTS_LIMIT_MAX_USER_METADATA_BYTES = 2048;
-  OBJECTS_LIMIT_MAX_PAGE_ENTRIES = 1000;
-  OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES = 65536;
-  OBJECTS_LIMIT_MAX_MULTIPART_PARTS = 10000;
-  // Bound on one compressed Body's decoded_length: one whole stored block.
-  OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES = 8388608;
-}
-// One complete current representation, with an opaque ETag rather than history identity.
-message ObjectInfo {
-  string etag = 1;
-  uint64 size = 2;
-  ObjectMetadata metadata = 3;
-  google.protobuf.Timestamp last_modified = 4;
-}
-message CreateBucketRequest {
-  string name = 1;
-  MutationIdentity mutation = 2;
-}
-message HeadBucketRequest {
-  BucketRef bucket = 1;
-}
-message DeleteBucketRequest {
-  BucketRef bucket = 1;
-  MutationIdentity mutation = 2;
-}
-message DeleteBucketResponse {
-  bool existed = 1;
-}
-service BucketsService {
-  rpc CreateBucket(CreateBucketRequest) returns (Bucket) { option (acyclic.validation.v1.auth) = { action: "objects/create-bucket" resource: "objects:/{name}" }; }
-  rpc HeadBucket(HeadBucketRequest) returns (Bucket) { option (acyclic.validation.v1.auth) = { action: "objects/head-bucket" resource: "objects:/{bucket.name}" }; }
-  rpc DeleteBucket(DeleteBucketRequest) returns (DeleteBucketResponse) { option (acyclic.validation.v1.auth) = { action: "objects/delete-bucket" resource: "objects:/{bucket.name}" }; }
-}
+// Account-scoped, content-addressed blobs. The caller's verified account is the
+// whole namespace: equal bytes in two accounts are two blobs, and no operation
+// discloses existence outside the caller's account.
 
-message PutObjectHeader {
-  BucketRef bucket = 1;
-  string object_key = 2;
-  ObjectMetadata metadata = 3;
-  Preconditions preconditions = 4;
-  MutationIdentity mutation = 5;
+// BLAKE3-256 of a blob's stored bytes. For a manifest those bytes are its
+// canonical encoding; for a plain blob they are the logical bytes themselves.
+message Digest {
+  bytes blake3 = 1 [(acyclic.validation.v1.nonzero_fixed_bytes) = 32];
 }
-// Header first, bounded body frames, then complete=true and EOF. Missing completion
-// never publishes bytes, even if transport cancellation appears as a clean EOF.
-message PutObjectRequest {
-  oneof frame {
-    PutObjectHeader header = 1;
-    bytes body = 2;
-    bool complete = 3;
+enum Kind {
+  KIND_UNSPECIFIED = 0;
+  KIND_BLOB = 1;
+  KIND_MANIFEST = 2;
+}
+// The envelope: everything the store knows besides the payload. Outgoing
+// references live here, outside the payload, so collection never decodes it.
+message BlobInfo {
+  Digest digest = 1;
+  Kind kind = 2;
+  // Logical length: the payload for a blob, the sum of parts for a manifest.
+  uint64 length = 3;
+  repeated Digest references = 4;
+}
+// A verified acknowledgement. Its length was compared with the stored envelope
+// in the caller's own account under the caller's current grant.
+message Verified {
+  Digest digest = 1;
+  uint64 length = 2;
+}
+// Created and AlreadyExists are durable. Unknown means the outcome could not be
+// determined; repeating the identical put is always safe.
+message PutResponse {
+  oneof outcome {
+    Verified created = 1;
+    Verified already_exists = 2;
+    bool unknown = 3;
   }
 }
-message InclusiveRange {
+message PutBlobRequest {
+  // Expected digest; the service rejects a body hashing to anything else.
+  Digest digest = 1;
+  bytes body = 2;
+  // Typed edges recorded in the envelope. Every target must already exist.
+  repeated Digest references = 3;
+}
+message Part {
+  Digest digest = 1;
+  uint64 length = 2;
+}
+// Ordered parts concatenate to the logical bytes. Edges are extra references
+// the manifest keeps alive without contributing bytes.
+message Manifest {
+  repeated Part parts = 1 [(acyclic.validation.v1.min_items) = 1];
+  repeated Digest edges = 2;
+}
+message PutManifestRequest {
+  Manifest manifest = 1;
+}
+// Half-open logical range [start, end). An absent end selects to the last byte.
+message ByteRange {
   uint64 start = 1;
   optional uint64 end = 2;
 }
-message ByteRange {
-  oneof selection {
-    InclusiveRange bytes = 1;
-    uint64 suffix_length = 2;
-  }
+message GetBlobRequest {
+  Digest digest = 1;
+  ByteRange range = 2;
+  // Largest selection the caller accepts; larger is QUOTA_EXCEEDED.
+  uint64 maximum_bytes = 3;
 }
-message GetObjectRequest {
-  BucketRef bucket = 1;
-  string object_key = 2;
-  ByteRange range = 3;
-  string if_match = 4;
-  string if_none_match = 5;
+message GetBlobResponse {
+  BlobInfo info = 1;
+  uint64 start = 2;
+  bytes body = 3;
 }
-message ContentRange {
-  uint64 start = 1;
-  uint64 end = 2;
-  uint64 total = 3;
+message HeadBlobRequest {
+  Digest digest = 1;
 }
-message GetObjectHeader {
-  ObjectInfo object = 1;
-  ContentRange content_range = 2;
+message DeleteBlobRequest {
+  Digest digest = 1;
 }
-// Encoding of one body frame's data.
-enum Codec {
-  // A body frame must explicitly select an encoding; unspecified and unknown codecs are invalid.
-  CODEC_UNSPECIFIED = 0;
-  // data is the decoded bytes themselves.
-  CODEC_NONE = 2;
-  // data is one or more complete Zstandard frames.
-  CODEC_ZSTD = 1;
+enum DeleteStatus {
+  DELETE_STATUS_UNSPECIFIED = 0;
+  DELETE_STATUS_DELETED = 1;
+  DELETE_STATUS_ABSENT = 2;
+  // A retained root or another blob still references it; nothing changed.
+  DELETE_STATUS_REFERENCED = 3;
 }
-// One body frame. data decodes under codec to exactly decoded_length bytes, which
-// follow the previous frame's bytes in the selected representation. Before it
-// allocates or decompresses, a client rejects decoded_length above the bytes
-// still selected, above OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES for CODEC_NONE, and
-// above OBJECTS_LIMIT_MAX_BODY_DECODED_BYTES for CODEC_ZSTD. It rejects any
-// other decoded length and an unknown codec. A server chooses the codec
-// independently for every frame.
-message Body {
-  Codec codec = 1;
-  bytes data = 2;
-  uint64 decoded_length = 3;
+message DeleteBlobResponse {
+  DeleteStatus status = 1;
 }
-// Exactly one metadata header first. The body belongs to that complete representation.
-// A terminal semantic error can follow the header when an HTTP stream is already open.
-message GetObjectResponse {
-  oneof frame {
-    GetObjectHeader header = 1;
-    Body body = 2;
-    ErrorDetail error = 3;
-  }
+// Ascending digest order strictly after `after`. A blob present for the whole
+// traversal is returned exactly once; one put or deleted meanwhile may or may
+// not appear. A short page is not the end: only an absent `next` is.
+message ListBlobsRequest {
+  Digest after = 1;
+  uint32 limit = 2;
 }
-message HeadObjectRequest {
-  BucketRef bucket = 1;
-  string object_key = 2;
-  string if_match = 3;
-  string if_none_match = 4;
+message ListBlobsResponse {
+  repeated Digest digests = 1;
+  Digest next = 2;
 }
-message HeadObjectResponse {
-  ObjectInfo object = 1;
+// A retained root, typically one stream's retained records. Retaining appends
+// one exact reference batch atomically; releasing drops every batch.
+message RetainRequest {
+  bytes root = 1 [(acyclic.validation.v1.nonempty_max_bytes) = 1024];
+  repeated Digest references = 2 [(acyclic.validation.v1.min_items) = 1];
 }
-message DeleteObjectRequest {
-  BucketRef bucket = 1;
-  string object_key = 2;
-  Preconditions preconditions = 3;
-  MutationIdentity mutation = 4;
+message RetainResponse {
+  uint64 references = 1;
 }
-message DeleteObjectResponse {
+message ReleaseRequest {
+  bytes root = 1 [(acyclic.validation.v1.nonempty_max_bytes) = 1024];
+}
+message ReleaseResponse {
   bool existed = 1;
 }
-// Restores the contents covered by prefix at one retained instant. An empty
-// prefix selects the bucket. Retention does not expose public version IDs.
-// The bucket itself is not created or restored by this operation.
-message RestoreObjectsRequest {
-  BucketRef bucket = 1;
-  string prefix = 2;
-  google.protobuf.Timestamp at = 3;
-  MutationIdentity mutation = 4;
+message CollectRequest {}
+message CollectResponse {
+  uint64 epoch = 1;
+  uint64 marked = 2;
+  uint64 swept = 3;
+  uint64 swept_bytes = 4;
 }
-message RestoreObjectsResponse {
-  uint64 restored_objects = 1;
+message UsageRequest {}
+// Unique stored bytes in the caller's account; each digest counts once.
+message UsageResponse {
+  uint64 blobs = 1;
+  uint64 unique_bytes = 2;
 }
-// Lexicographic S3 ListObjectsV2 traversal of an eventual listing, never a captured view.
-// Concurrent insertions before the cursor can be missed. Tokens are opaque and query-bound.
-message ListObjectsRequest {
-  BucketRef bucket = 1;
-  string prefix = 2;
-  string delimiter = 3;
-  uint32 page_size = 4;
-  string continuation_token = 5;
-}
-message ListEntry {
-  string object_key = 1;
-  ObjectInfo object = 2;
-}
-message ListObjectsResponse {
-  repeated ListEntry entries = 1;
-  repeated string common_prefixes = 2;
-  string continuation_token = 3;
-  bool is_truncated = 4;
-}
-service ObjectsService {
-  rpc RestoreObjects(RestoreObjectsRequest) returns (RestoreObjectsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/restore" resource: "objects:/{bucket.name}/{prefix}" }; }
-  rpc PutObject(stream PutObjectRequest) returns (ObjectInfo) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/{header.bucket.name}/{header.object_key}" }; }
-  rpc GetObject(GetObjectRequest) returns (stream GetObjectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/get" resource: "objects:/{bucket.name}/{object_key}" }; }
-  rpc HeadObject(HeadObjectRequest) returns (HeadObjectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/head" resource: "objects:/{bucket.name}/{object_key}" }; }
-  rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/delete" resource: "objects:/{bucket.name}/{object_key}" }; }
-  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/list" extractor: "objects.list-visible-prefix" }; }
-}
-
-message CreateMultipartRequest {
-  BucketRef bucket = 1;
-  string object_key = 2;
-  ObjectMetadata metadata = 3;
-  MutationIdentity mutation = 4;
-}
-message MultipartUpload {
-  string upload_id = 1;
-}
-message UploadPartHeader {
-  BucketRef bucket = 1;
-  string object_key = 2;
-  string upload_id = 3;
-  uint32 part_number = 4;
-  MutationIdentity mutation = 5;
-}
-message UploadPartRequest {
-  // Same header/body/complete=true/EOF discipline as PutObjectRequest.
-  oneof frame {
-    UploadPartHeader header = 1;
-    bytes body = 2;
-    bool complete = 3;
-  }
-}
-message UploadedPart {
-  uint32 part_number = 1;
-  string etag = 2;
-  uint64 size = 3;
-}
-message ListPartsRequest {
-  BucketRef bucket = 1;
-  string object_key = 2;
-  string upload_id = 3;
-  uint32 after_part_number = 4;
-  uint32 page_size = 5;
-}
-message ListPartsResponse {
-  repeated UploadedPart parts = 1;
-  uint32 next_part_number = 2;
-  bool is_truncated = 3;
-}
-// Ordered part numbers and exact part ETags select the staged bytes.
-// Non-final parts are at least 5 MiB. Publication and preconditions are atomic for this key.
-message CompleteMultipartRequest {
-  BucketRef bucket = 1;
-  string object_key = 2;
-  string upload_id = 3;
-  repeated UploadedPart parts = 4;
-  Preconditions preconditions = 5;
-  MutationIdentity mutation = 6;
-}
-message AbortMultipartRequest {
-  BucketRef bucket = 1;
-  string object_key = 2;
-  string upload_id = 3;
-  MutationIdentity mutation = 4;
-}
-message AbortMultipartResponse {
-  bool existed = 1;
-}
-service MultipartService {
-  rpc CreateMultipart(CreateMultipartRequest) returns (MultipartUpload) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/{bucket.name}/{object_key}" }; }
-  rpc UploadPart(stream UploadPartRequest) returns (UploadedPart) { option (acyclic.validation.v1.auth) = { action: "objects/put" extractor: "objects.multipart-put" }; }
-  rpc ListParts(ListPartsRequest) returns (ListPartsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/list-parts" extractor: "objects.multipart-list" }; }
-  rpc CompleteMultipart(CompleteMultipartRequest) returns (ObjectInfo) { option (acyclic.validation.v1.auth) = { action: "objects/put" extractor: "objects.multipart-put" }; }
-  rpc AbortMultipart(AbortMultipartRequest) returns (AbortMultipartResponse) { option (acyclic.validation.v1.auth) = { action: "objects/delete" extractor: "objects.multipart-delete" }; }
+service BlobsService {
+  rpc PutBlob(PutBlobRequest) returns (PutResponse) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/blobs" }; }
+  rpc PutManifest(PutManifestRequest) returns (PutResponse) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/blobs" }; }
+  rpc GetBlob(GetBlobRequest) returns (GetBlobResponse) { option (acyclic.validation.v1.auth) = { action: "objects/get" resource: "objects:/blobs" }; }
+  rpc HeadBlob(HeadBlobRequest) returns (BlobInfo) { option (acyclic.validation.v1.auth) = { action: "objects/head" resource: "objects:/blobs" }; }
+  rpc DeleteBlob(DeleteBlobRequest) returns (DeleteBlobResponse) { option (acyclic.validation.v1.auth) = { action: "objects/delete" resource: "objects:/blobs" }; }
+  rpc ListBlobs(ListBlobsRequest) returns (ListBlobsResponse) { option (acyclic.validation.v1.auth) = { action: "objects/list" resource: "objects:/blobs" }; }
+  rpc Retain(RetainRequest) returns (RetainResponse) { option (acyclic.validation.v1.auth) = { action: "objects/retain" resource: "objects:/blobs" }; }
+  rpc Release(ReleaseRequest) returns (ReleaseResponse) { option (acyclic.validation.v1.auth) = { action: "objects/retain" resource: "objects:/blobs" }; }
+  rpc Collect(CollectRequest) returns (CollectResponse) { option (acyclic.validation.v1.auth) = { action: "objects/collect" resource: "objects:/blobs" }; }
+  rpc Usage(UsageRequest) returns (UsageResponse) { option (acyclic.validation.v1.auth) = { action: "objects/list" resource: "objects:/blobs" }; }
 }
 enum ErrorCode {
   ERROR_CODE_UNSPECIFIED = 0;
   ERROR_CODE_INVALID_ARGUMENT = 1;
   ERROR_CODE_NOT_FOUND = 2;
-  ERROR_CODE_ALREADY_EXISTS = 3;
-  ERROR_CODE_PRECONDITION_FAILED = 4;
-  ERROR_CODE_IDEMPOTENCY_MISMATCH = 5;
+  // A body hashed to another digest than the one supplied.
+  ERROR_CODE_DIGEST_MISMATCH = 3;
+  // A reference, part or retained digest does not exist in this account.
+  ERROR_CODE_MISSING_REFERENCE = 4;
+  // An existing blob has other envelope references than this put.
+  ERROR_CODE_CONFLICT = 5;
   ERROR_CODE_QUOTA_EXCEEDED = 6;
   ERROR_CODE_UNSUPPORTED = 7;
   ERROR_CODE_UNAVAILABLE = 8;
   ERROR_CODE_ACCESS_DENIED = 9;
   ERROR_CODE_RANGE_NOT_SATISFIABLE = 10;
-  ERROR_CODE_NOT_MODIFIED = 11;
+  // Stored bytes no longer hash to their digest.
+  ERROR_CODE_CORRUPT = 11;
+  // A retained-root scan was incomplete; nothing was swept.
+  ERROR_CODE_SUSPENDED = 12;
+  // A retain or release could not be confirmed; repeating it is safe.
+  ERROR_CODE_OUTCOME_UNKNOWN = 13;
 }
 // Customer diagnostic identity; operator topology stays in protected evidence.
 message ErrorDetail {

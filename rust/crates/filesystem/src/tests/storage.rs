@@ -26,14 +26,8 @@ fn object_kinds_digests_and_read_views_are_canonical() {
         ObjectKind::from_canonical_tag(9),
         Err(ObjectKindError::Unknown(9))
     );
-    assert_ne!(
-        object_digest(ObjectKind::Blob, b"bytes"),
-        object_digest(ObjectKind::BlobChunk, b"bytes")
-    );
-    assert_ne!(
-        object_digest(ObjectKind::Blob, b"bytes"),
-        object_digest(ObjectKind::Blob, b"other")
-    );
+    assert_eq!(object_digest(b"bytes"), object_digest(b"bytes"));
+    assert_ne!(object_digest(b"bytes"), object_digest(b"other"));
     let read = ObjectRead {
         bytes: OwnedBytes::from_static(b"view"),
         retention: ObjectReadRetention::Owned { logical_bytes: 4 },

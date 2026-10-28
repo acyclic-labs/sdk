@@ -101,7 +101,7 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
     let bytes = OwnedBytes::from(input);
     let object_id = ObjectId {
         kind: ObjectKind::BlobChunk,
-        digest: object_digest(ObjectKind::BlobChunk, &bytes),
+        digest: object_digest(&bytes),
     };
     let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     store
@@ -179,7 +179,7 @@ fn blob_write(bytes: &'static [u8]) -> ObjectWrite {
     ObjectWrite {
         object_id: ObjectId {
             kind: ObjectKind::BlobChunk,
-            digest: object_digest(ObjectKind::BlobChunk, &bytes),
+            digest: object_digest(&bytes),
         },
         bytes,
     }

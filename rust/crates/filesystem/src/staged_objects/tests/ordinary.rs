@@ -477,9 +477,9 @@ async fn each_publication_writes_only_what_is_not_already_durable()
     let directory = tempfile::tempdir()?;
     let (store, provider) = open_staged(directory.path()).await?;
     let token = CancellationToken::new();
-    // Every new file restages the same default metadata; each
-    // publication must write only its new objects, so the work per
-    // publication stays constant however many came before.
+    // Every new file restages the same default metadata; the blob store
+    // dedupes it by digest, so the work per publication stays constant
+    // however many came before.
     let (shared, shared_bytes) = blob(OwnedBytes::from_static(b"shared metadata"));
     let publish = |index: usize| {
         let store = &store;
@@ -528,23 +528,19 @@ async fn each_publication_writes_only_what_is_not_already_durable()
         let (fresh, work) = publish(index).await?;
         assert_eq!(work.backend_write_operations, 1);
         assert_eq!(work.backend_read_operations, 0);
-        assert_eq!(work.object_bytes_written, 14);
+        assert_eq!(work.object_bytes_written, 15 + 14);
         assert!(store.index().objects.is_empty());
         published.push(fresh);
     }
 
     // A sweep may have removed it, so the next publication writes it.
     let collecting = store.collection.begin().await;
-    let (gate, _) = collecting.sweepable(vec![shared]).await;
-    collecting.sweeping(shared);
+    let (gate, _) = collecting.sweepable(vec![shared.digest]).await;
+    collecting.sweeping(shared.digest);
     provider
-        .delete(acyclic_objects::v1::wire::DeleteObjectRequest {
-            bucket: Some(acyclic_objects::v1::wire::BucketRef {
-                name: "staged-test".to_owned(),
-            }),
-            object_key: crate::distributed::object_key(shared),
-            ..Default::default()
-        })
+        .delete(acyclic_objects::Digest::from_bytes(
+            *shared.digest.as_bytes(),
+        ))
         .await?;
     drop(gate);
     drop(collecting);

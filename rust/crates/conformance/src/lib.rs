@@ -14,13 +14,12 @@ pub mod inference;
 pub mod runner;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs};
-#[cfg(test)]
-use acyclic_objects::v1::ObjectsProvider;
+use acyclic_objects::Blobs;
 #[cfg(test)]
 use acyclic_stream::StreamProvider;
 
 /// Canonical language-neutral Objects conformance inventory.
-pub const OBJECTS_SUITE: &[u8] = acyclic_objects::v1::conformance::SUITE;
+pub const OBJECTS_SUITE: &[u8] = acyclic_objects::conformance::SUITE;
 
 /// Canonical language-neutral harness conformance inventory.
 pub const HARNESS_SUITE: &[u8] = acyclic_harness::conformance::LEGACY_MARKER_INVENTORY;
@@ -73,13 +72,11 @@ pub async fn stream(backend: &dyn acyclic_stream::conformance::Backend) -> Resul
         .map_err(|error| error.to_string())
 }
 
-/// Runs the canonical Objects suite against a fresh, disposable provider.
+/// Runs the canonical Objects suite against two disposable accounts of one service.
 ///
-/// The suite retains state and idempotency keys under the `conformance` namespace.
-pub async fn objects(
-    backend: &dyn acyclic_objects::v1::conformance::Backend,
-) -> Result<(), String> {
-    acyclic_objects::v1::conformance::verify(backend)
+/// The suite keeps its content under the `conformance` namespace.
+pub async fn objects(first: &dyn Blobs, second: &dyn Blobs) -> Result<(), String> {
+    acyclic_objects::conformance::verify(first, second, "conformance")
         .await
         .map_err(|error| error.to_string())
 }
@@ -99,12 +96,15 @@ mod tests {
     #[tokio::test]
     async fn family_memory_providers_conform() -> Result<(), String> {
         let stream_provider = MemoryStream::default();
-        let (objects_provider, filesystem_bucket) =
-            acyclic_objects::v1::MemoryObjects::with_default_bucket();
+        let store = acyclic_objects::Store::new(acyclic_objects::MemoryMedium::default());
+        let objects_provider = Arc::new(
+            store
+                .account(b"filesystem")
+                .map_err(|error| error.to_string())?,
+        );
         let filesystem = acyclic_fs::Fs::from_memory_providers(
             Arc::new(stream_provider.clone()),
-            Arc::new(objects_provider.clone()),
-            filesystem_bucket.clone(),
+            Arc::clone(&objects_provider),
         );
         filesystem_smoke(&filesystem).await?;
 
@@ -126,15 +126,10 @@ mod tests {
             return Err("filesystem did not publish through the profile's public Stream".into());
         }
         let filesystem_objects = objects_provider
-            .list(acyclic_objects::v1::wire::ListObjectsRequest {
-                bucket: Some(filesystem_bucket),
-                prefix: "fs/v1/".to_owned(),
-                page_size: 128,
-                ..Default::default()
-            })
+            .list(None, 128)
             .await
             .map_err(|error| error.to_string())?;
-        if filesystem_objects.entries.is_empty() {
+        if filesystem_objects.digests.is_empty() {
             return Err(
                 "filesystem did not admit objects through the profile's public Objects".into(),
             );
@@ -144,10 +139,12 @@ mod tests {
             stream_provider.clone(),
         ))
         .await?;
-        objects(&acyclic_objects::v1::conformance::Fixture::new(
-            objects_provider.clone(),
-            "conformance",
-        ))
+        objects(
+            &*objects_provider,
+            &store
+                .account(b"second")
+                .map_err(|error| error.to_string())?,
+        )
         .await?;
         machines(&acyclic_machines::conformance::Fixture::new(
             SimulatedMachines::default(),

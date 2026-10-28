@@ -189,7 +189,7 @@ async fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries
     let malformed = OwnedBytes::from_static(b"not a canonical attribute page");
     let malformed_id = ObjectId {
         kind: ObjectKind::AttributePage,
-        digest: object_digest(ObjectKind::AttributePage, &malformed),
+        digest: object_digest(&malformed),
     };
     AsyncObjectStore::put(
         &store,

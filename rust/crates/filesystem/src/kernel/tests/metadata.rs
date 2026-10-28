@@ -150,7 +150,7 @@ fn every_metadata_field_round_trips_and_identity_is_exact() -> Result<(), Box<dy
         file_metadata_id(value)?,
         ObjectId {
             kind: ObjectKind::Metadata,
-            digest: object_digest(ObjectKind::Metadata, &encoded),
+            digest: object_digest(&encoded),
         }
     );
     Ok(())

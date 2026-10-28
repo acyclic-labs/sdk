@@ -1,5 +1,5 @@
 //! The real Objects Edge and MemoryObjects satisfy the same harness oracle.
-use acyclic_objects::v1::{MemoryObjects, MemoryOptions};
+use acyclic_objects::MemoryObjects;
 use serde::Deserialize;
 use std::{path::PathBuf, sync::Arc};
 
@@ -10,6 +10,8 @@ type TestResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 struct Remote {
     endpoint: String,
     bearer: String,
+    /// A second account's bearer, for the cross-account negative probes.
+    second_bearer: String,
     ca_file: PathBuf,
 }
 
@@ -19,7 +21,7 @@ struct Endpoints {
 }
 
 fn memory() -> TestResult<Arc<MemoryObjects>> {
-    Ok(Arc::new(MemoryObjects::new(MemoryOptions::default())?))
+    Ok(Arc::new(MemoryObjects::memory()))
 }
 
 proptest::proptest! {
@@ -72,11 +74,8 @@ async fn objects_and_harness_content_match_the_local_cloud() -> TestResult {
         .ok_or("ACYCLIC_LOCAL_CLOUD must name the local cloud endpoints file")?;
     let endpoints: Endpoints = serde_json::from_slice(&std::fs::read(file)?)?;
     let objects = endpoints.objects.objects().await?;
-    acyclic_objects::v1::conformance::verify(&acyclic_objects::v1::conformance::Fixture::new(
-        objects.as_ref().clone(),
-        "conformance",
-    ))
-    .await?;
+    let second = endpoints.objects.second().await?;
+    acyclic_objects::conformance::verify(objects.as_ref(), second.as_ref(), "conformance").await?;
     let bytes = content::Content::exact(b"owner bytes");
     let cloud = content::run(objects, "harness-content", &bytes).await?;
     let local = content::run(memory()?, "harness-content", &bytes).await?;

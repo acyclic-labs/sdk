@@ -15,7 +15,7 @@ use acyclic_harness::{
     objects::ObjectContentStore,
     resources::ProviderRef,
 };
-use acyclic_objects::v1::{ObjectsProvider, grpc::GrpcObjects, wire};
+use acyclic_objects::{Blobs, grpc::GrpcObjects};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -42,9 +42,18 @@ const MAXIMUM: u64 = 4_096;
 impl Remote {
     /// An Objects client for this endpoint, trusting only its CA.
     pub(super) async fn objects(&self) -> TestResult<Arc<GrpcObjects>> {
+        self.account(&self.bearer).await
+    }
+
+    /// The second account's client, for the cross-account probes.
+    pub(super) async fn second(&self) -> TestResult<Arc<GrpcObjects>> {
+        self.account(&self.second_bearer).await
+    }
+
+    async fn account(&self, bearer: &str) -> TestResult<Arc<GrpcObjects>> {
         let ca = std::fs::read(&self.ca_file)?;
         Ok(Arc::new(
-            GrpcObjects::connect(&self.endpoint, &self.bearer, Some(&ca), None).await?,
+            GrpcObjects::connect(&self.endpoint, bearer, Some(&ca), None).await?,
         ))
     }
 }
@@ -90,21 +99,13 @@ async fn read(
     store.read(file, maximum, None, None)?.await
 }
 
-/// Runs the content scenario in a new `bucket` on `objects`, checks its oracle
+/// Runs the content scenario in volume `bucket` over `objects`, checks its oracle
 /// against `content`, and returns the trace every provider must reproduce.
 pub(super) async fn run(
-    objects: Arc<dyn ObjectsProvider>,
+    objects: Arc<dyn Blobs>,
     bucket: &str,
     content: &Content<'_>,
 ) -> TestResult<Value> {
-    let bucket = objects
-        .create_bucket(wire::CreateBucketRequest {
-            name: bucket.into(),
-            mutation: None,
-        })
-        .await?
-        .bucket
-        .ok_or("the created bucket has no identity")?;
     let owner = AgentId::from_bytes([7; 16]);
     let reader = AgentId::from_bytes([8; 16]);
     let provider = ProviderRef::new(
@@ -115,7 +116,7 @@ pub(super) async fn run(
     )?;
     let volume = VolumeRef::new(
         provider.clone(),
-        bucket.name.clone(),
+        bucket.into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(owner),
         &mut None,
@@ -140,14 +141,12 @@ pub(super) async fn run(
     let store = async |scope| {
         ObjectContentStore::new(
             objects.clone(),
-            bucket.clone(),
             provider.clone(),
             volume.clone(),
             (issuer.verifier(&mut None)?, owner_scope.clone()),
             scope,
             MAXIMUM,
         )
-        .await
     };
     let owner_store = store(owner_scope.clone()).await?;
     let staged = content.staged;
@@ -169,7 +168,7 @@ pub(super) async fn run(
         content.expected.get(1..4).unwrap_or_default(),
     )?;
     owner_store.verify(&file, MAXIMUM, None)?.await?;
-    // An attachment manifest round-trips through the same bucket.
+    // An attachment manifest round-trips through the same volume.
     let items = vec![Attachment {
         file: file.clone(),
         label: None,
@@ -233,8 +232,8 @@ pub(super) async fn run(
             "name": file.display_name(),
             "descriptor": file.descriptor(),
         },
-        // Serialized references contain the backend's bucket identity and
-        // object version. Their bytes were checked above within each provider;
+        // Serialized references contain the backend's volume identity and
+        // content digest. Their bytes were checked above within each provider;
         // compare the referenced content across providers instead.
         "manifest": {
             "media_type": "application/vnd.acyclic.harness.attachments+json",

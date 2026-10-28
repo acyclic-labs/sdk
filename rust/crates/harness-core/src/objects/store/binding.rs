@@ -1,9 +1,8 @@
 use super::*;
 impl ObjectContentStore {
-    /// Checks the bucket and original owner before binding it.
-    pub async fn new(
-        objects: Arc<dyn ObjectsProvider>,
-        bucket: wire::BucketRef,
+    /// Checks the original owner before binding the account's blobs.
+    pub fn new(
+        objects: Arc<dyn Blobs>,
         expected_provider: ProviderRef,
         volume: VolumeRef,
         authorization: (AuthorityVerifier, Scope),
@@ -25,21 +24,8 @@ impl ObjectContentStore {
         if maximum_bytes == 0
             || expected_provider.family() != "objects"
             || volume.provider() != &expected_provider
-            || volume.id() != bucket.name
-            || bucket.name.is_empty()
         {
             return Err(Error::Invalid("Objects content binding is invalid".into()));
-        }
-        let resolved = objects
-            .head_bucket(wire::HeadBucketRequest {
-                bucket: Some(bucket.clone()),
-            })
-            .await
-            .map_err(storage)?;
-        if resolved.bucket.as_ref() != Some(&bucket) {
-            return Err(Error::Storage(
-                "Objects provider resolved another bucket".into(),
-            ));
         }
         let write_capability = volume.capability(VolumeOperation::Write, &mut None)?;
         let writer = if scope.capabilities().contains(&write_capability) {
@@ -56,7 +42,6 @@ impl ObjectContentStore {
         };
         Ok(Arc::new(Self {
             objects,
-            bucket,
             volume,
             verifier,
             scope,

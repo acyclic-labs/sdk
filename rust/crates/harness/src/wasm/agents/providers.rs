@@ -25,7 +25,7 @@ use acyclic_fs::{
     browser::IndexedDbObjectStore,
     storage::ObjectWrite,
 };
-use acyclic_objects::v1::{MemoryObjects, MemoryOptions, ObjectsProvider};
+use acyclic_objects::{Blobs, MemoryObjects};
 use acyclic_stream::{
     BrowserStream, BrowserStreamLimits, MemoryLimits, MemoryStream, OwnedBytes, StreamError,
     StreamProvider,
@@ -38,7 +38,7 @@ pub(super) enum Objects {
     /// The browser profile's IndexedDB objects.
     IndexedDb(IndexedDbObjectStore),
     /// Any Rust objects provider.
-    Provider(LogicalObjectStore<dyn ObjectsProvider>),
+    Provider(LogicalObjectStore<dyn Blobs>),
     /// Any JavaScript immutable-object provider.
     Injected(acyclic_fs::InjectedObjectStore),
 }
@@ -237,29 +237,24 @@ impl Providers {
     /// nothing outlives the providers, and no browser storage is touched.
     /// The database names in `options` are unused.
     pub(super) fn memory(options: &WasmBrowserAgentOptions) -> Result<Self, JsValue> {
-        let storage = |error: String| js_error(Error::Storage(error));
-        let (objects, bucket) = MemoryObjects::with_bucket("agents", MemoryOptions::default())
-            .map_err(|error| storage(error.to_string()))?;
         Self::over(
             Arc::new(MemoryStream::new(Self::memory_limits(options))),
-            Arc::new(objects),
-            bucket,
+            Arc::new(MemoryObjects::memory()),
             false,
             options,
         )
     }
 
     /// A host's own stream and objects providers: the stream carries the
-    /// agents and their volumes' authority, `bucket` of `objects` the
-    /// volumes' objects, and `durable` says whether both outlive the host.
+    /// agents and their volumes' authority, `objects` the volumes' blobs,
+    /// and `durable` says whether both outlive the host.
     pub(super) fn over(
         stream: Arc<dyn StreamProvider>,
-        objects: Arc<dyn ObjectsProvider>,
-        bucket: acyclic_objects::v1::wire::BucketRef,
+        objects: Arc<dyn Blobs>,
         durable: bool,
         options: &WasmBrowserAgentOptions,
     ) -> Result<Self, JsValue> {
-        let objects = LogicalObjectStore::new(objects, bucket)
+        let objects = LogicalObjectStore::new(objects)
             .with_object_limit(options.maximum_object_bytes)
             .map_err(|error| js_error(Error::Storage(error.to_string())))?;
         Self::new(
@@ -356,7 +351,7 @@ pub struct WasmAgentProviders {
 impl WasmAgentProviders {
     /// A host's own storage, for a host that builds its artifact over this
     /// crate: any stream provider (the agents and their volumes' authority)
-    /// and any objects provider, whose `bucket` holds the volumes' objects;
+    /// and any objects provider, which holds the volumes' blobs;
     /// `durable` says whether both outlive the host. The handle serves
     /// [`AgentGuest::open`](super::guest::AgentGuest::open) and
     /// [`WasmAgents::open_hosting`](super::WasmAgents::open_hosting) like
@@ -366,14 +361,13 @@ impl WasmAgentProviders {
     /// When `options` or the object limit are invalid.
     pub fn over(
         stream: Arc<dyn StreamProvider>,
-        objects: Arc<dyn ObjectsProvider>,
-        bucket: acyclic_objects::v1::wire::BucketRef,
+        objects: Arc<dyn Blobs>,
         durable: bool,
         options: JsValue,
     ) -> Result<Self, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
         Ok(Self {
-            providers: Providers::over(stream, objects, bucket, durable, &options)?,
+            providers: Providers::over(stream, objects, durable, &options)?,
         })
     }
 }

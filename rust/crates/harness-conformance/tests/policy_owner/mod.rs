@@ -10,8 +10,8 @@ use std::{collections::BTreeSet, path::PathBuf, sync::Arc};
 struct Session(Arc<LocalStream>, OperationClaims);
 
 fn object_store() -> acyclic_fs::MemoryObjectBackend {
-    let (provider, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-    acyclic_fs::LogicalObjectStore::new(Arc::new(provider), bucket)
+    let provider = acyclic_objects::MemoryObjects::memory();
+    acyclic_fs::LogicalObjectStore::new(Arc::new(provider))
 }
 
 #[async_trait::async_trait]

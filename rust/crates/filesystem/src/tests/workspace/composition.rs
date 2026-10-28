@@ -21,10 +21,10 @@ fn placed(stream: &Arc<MemoryStream>) -> Result<PlacedFs, Box<dyn Error>> {
 }
 
 fn placed_at(stream: &Arc<MemoryStream>, root: &str) -> Result<PlacedFs, Box<dyn Error>> {
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = acyclic_objects::MemoryObjects::memory();
     Ok(Fs::new(
         StreamAuthorityStore::with_placement(Arc::clone(stream), AuthorityPlacement::new(root)?),
-        crate::LogicalObjectStore::new(Arc::new(objects), bucket),
+        crate::LogicalObjectStore::new(Arc::new(objects)),
         crate::EmbeddedCapabilities::MEMORY,
     ))
 }

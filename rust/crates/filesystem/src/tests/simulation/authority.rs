@@ -229,10 +229,7 @@ async fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
         })?;
     }
     let corrupt = (work!(objects, read_many(&requests), B, &cancellation)).await?;
-    assert_ne!(
-        object_digest(object_id.kind, &corrupt.value[0].bytes),
-        object_id.digest
-    );
+    assert_ne!(object_digest(&corrupt.value[0].bytes), object_id.digest);
     let partial = (work!(objects, read_many(&requests), B, &cancellation)).await?;
     assert_eq!(partial.value[0].bytes.len(), b"batch-fault".len() - 1);
     Ok(())

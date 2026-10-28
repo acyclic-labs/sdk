@@ -225,7 +225,7 @@ pub fn extent_page_id(
     )?;
     Ok(ObjectId {
         kind: ObjectKind::ExtentPage,
-        digest: object_digest(ObjectKind::ExtentPage, &bytes),
+        digest: object_digest(&bytes),
     })
 }
 

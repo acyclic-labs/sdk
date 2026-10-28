@@ -77,8 +77,8 @@ fn lookup_cold(bencher: Bencher, count: u8) {
 }
 
 fn lookup_store(bencher: Bencher, count: u8, cold: bool) {
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-    let store = LogicalObjectStore::new(Arc::new(objects), bucket);
+    let objects = acyclic_objects::MemoryObjects::memory();
+    let store = LogicalObjectStore::new(Arc::new(objects));
     let name = if cold { "lookup_cold" } else { "lookup" };
     let page = page(count);
     let id = file_table_page_id(&page, 64).unwrap_or_else(fail);

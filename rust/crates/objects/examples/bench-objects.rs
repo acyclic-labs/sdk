@@ -1,89 +1,53 @@
-//! Measure current-key publication and bounded logical Objects v1 pagination.
+//! Measure blob publication and bounded `list(after)` pagination.
 
-use acyclic_objects::v1::{MemoryObjects, ObjectsProvider, wire};
+use acyclic_objects::{Blobs, MemoryObjects};
 use acyclic_stream::OwnedBytes;
+use std::collections::BTreeSet;
 use std::time::Instant;
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     if arguments.len() > 2 {
-        return Err("usage: bench-objects [object-count] [page-size]".into());
+        return Err("usage: bench-objects [blob-count] [page-size]".into());
     }
     let count = arguments
         .first()
-        .map_or(Ok(2000), |value| value.parse::<usize>())?;
+        .map_or(Ok(2000), |value| value.parse::<u64>())?;
     let page_size = arguments
         .get(1)
         .map_or(Ok(1), |value| value.parse::<u32>())?;
-    if !(1..=20_000).contains(&count) || !(1..=1000).contains(&page_size) {
-        return Err("object count must be 1..20000 and page size 1..1000".into());
+    if count == 0 || page_size == 0 {
+        return Err("blob count and page size must be positive".into());
     }
-    let (provider, bucket) = MemoryObjects::with_default_bucket();
+    let blobs = MemoryObjects::memory();
     let started = Instant::now();
-    let mut expected = Vec::with_capacity(count);
+    let mut expected = BTreeSet::new();
     for index in 0..count {
-        let key = format!("group/{index:08}");
-        let info = provider
-            .put(
-                wire::PutObjectHeader {
-                    bucket: Some(bucket.clone()),
-                    object_key: key.clone(),
-                    ..Default::default()
-                },
-                OwnedBytes::from_static(b"x"),
-            )
+        let put = blobs
+            .put(OwnedBytes::from(index.to_le_bytes().to_vec()), Vec::new())
             .await?;
-        expected.push((key, info));
+        expected.insert(put.verified().ok_or("publication outcome unknown")?.digest);
     }
     let put_ms = started.elapsed().as_secs_f64() * 1000.0;
     let started = Instant::now();
-    let query = wire::ListObjectsRequest {
-        bucket: Some(bucket),
-        prefix: "group/".into(),
-        page_size,
-        ..Default::default()
-    };
-    let first = provider.list(query.clone()).await?;
-    let first_page_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let started = Instant::now();
-    let mut page = first;
-    let mut seen = 0;
-    let mut pages = 0;
+    let (mut after, mut listed, mut pages) = (None, Vec::new(), 0u64);
     loop {
+        let page = blobs.list(after, page_size).await?;
         pages += 1;
-        if page.entries.len() != (count - seen).min(page_size as usize) {
-            return Err("page length mismatch".into());
+        listed.extend(page.digests);
+        match page.next {
+            Some(next) => after = Some(next),
+            None => break,
         }
-        for entry in page.entries {
-            if expected.get(seen).is_none_or(|(key, info)| {
-                entry.object_key != *key || entry.object.as_ref() != Some(info)
-            }) {
-                return Err("current-key page order or metadata mismatch".into());
-            }
-            seen += 1;
-        }
-        if page.continuation_token.is_empty() {
-            break;
-        }
-        page = provider
-            .list(wire::ListObjectsRequest {
-                continuation_token: page.continuation_token,
-                ..query.clone()
-            })
-            .await?;
     }
-    if seen != count || pages != count.div_ceil(page_size as usize) {
-        return Err("pagination mismatch".into());
+    let list_ms = started.elapsed().as_secs_f64() * 1000.0;
+    if listed.iter().copied().collect::<BTreeSet<_>>() != expected || listed.len() != expected.len()
+    {
+        return Err("pagination duplicated or skipped a blob".into());
     }
     println!(
-        "{}",
-        serde_json::json!({
-            "schema": 2, "contract": "acyclic.objects.v1", "os": std::env::consts::OS,
-            "arch": std::env::consts::ARCH, "objects": count, "mode": "keys",
-            "page_size": page_size, "put_ms": put_ms, "first_page_ms": first_page_ms,
-            "remaining_pages_ms": started.elapsed().as_secs_f64() * 1000.0,
-        })
+        "blobs={count} page_size={page_size} pages={pages} put_ms={put_ms:.1} list_ms={list_ms:.1}"
     );
     Ok(())
 }

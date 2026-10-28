@@ -17,7 +17,7 @@ use acyclic_fs::{
     WorkBudget, WorkspaceDelete, object_digest,
 };
 use acyclic_fs::{LogicalObjectStore, StreamAuthorityStore};
-use acyclic_objects::v1::{MemoryObjects, ObjectsProvider, wire};
+use acyclic_objects::MemoryObjects;
 use acyclic_stream::OwnedBytes;
 use acyclic_stream::{
     AppendRequest, MemoryStream, ReadRequest, StreamError, StreamPath, StreamProvider,
@@ -345,19 +345,11 @@ async fn authority_lifecycle_is_native_stream_backed_and_exactly_idempotent()
 async fn deleting_workspace_preserves_committed_stream_history()
 -> Result<(), Box<dyn std::error::Error>> {
     let streams = Arc::new(MemoryStream::default());
-    let objects = Arc::new(MemoryObjects::new(Default::default())?);
-    let bucket = objects
-        .create_bucket(wire::CreateBucketRequest {
-            name: "delete-history".to_owned(),
-            mutation: None,
-        })
-        .await?
-        .bucket
-        .ok_or("bucket identity missing")?;
+    let objects = Arc::new(MemoryObjects::memory());
     let authority_store = StreamAuthorityStore::new(Arc::clone(&streams));
     let fs = Fs::new(
         authority_store.clone(),
-        LogicalObjectStore::new(objects, bucket),
+        LogicalObjectStore::new(objects),
         EmbeddedCapabilities::MEMORY,
     );
     let workspace = unbounded!(fs, create_workspace("history"))?;
@@ -465,20 +457,12 @@ async fn retirement_fences_an_inflight_authority_append() -> Result<(), Box<dyn 
 #[tokio::test]
 async fn immutable_objects_use_the_exact_public_objects_provider()
 -> Result<(), Box<dyn std::error::Error>> {
-    let provider = Arc::new(MemoryObjects::new(Default::default())?);
-    let bucket = provider
-        .create_bucket(wire::CreateBucketRequest {
-            name: "adapter".to_owned(),
-            mutation: None,
-        })
-        .await?
-        .bucket
-        .ok_or("bucket identity missing")?;
-    let store = LogicalObjectStore::new(provider, bucket);
+    let provider = Arc::new(MemoryObjects::memory());
+    let store = LogicalObjectStore::new(provider);
     let bytes = OwnedBytes::from_static(b"authenticated");
     let object_id = ObjectId {
         kind: ObjectKind::BlobChunk,
-        digest: object_digest(ObjectKind::BlobChunk, &bytes),
+        digest: object_digest(&bytes),
     };
     let cancellation = CancellationToken::new();
     provider_receipt!(
@@ -522,18 +506,10 @@ async fn immutable_objects_use_the_exact_public_objects_provider()
 async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
 -> Result<(), Box<dyn std::error::Error>> {
     let streams = Arc::new(MemoryStream::default());
-    let objects = Arc::new(MemoryObjects::new(Default::default())?);
-    let bucket = objects
-        .create_bucket(wire::CreateBucketRequest {
-            name: "filesystem".to_owned(),
-            mutation: None,
-        })
-        .await?
-        .bucket
-        .ok_or("bucket identity missing")?;
+    let objects = Arc::new(MemoryObjects::memory());
     let fs = Fs::new(
         StreamAuthorityStore::new(Arc::clone(&streams)),
-        LogicalObjectStore::new(objects, bucket),
+        LogicalObjectStore::new(objects),
         EmbeddedCapabilities::MEMORY,
     );
     let source = unbounded!(fs, create_workspace("source"))?;
@@ -623,18 +599,10 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
 async fn distributed_facade_leases_authorize_workspace_publication()
 -> Result<(), Box<dyn std::error::Error>> {
     let streams = Arc::new(MemoryStream::default());
-    let objects = Arc::new(MemoryObjects::new(Default::default())?);
-    let bucket = objects
-        .create_bucket(wire::CreateBucketRequest {
-            name: "distributed-leases".to_owned(),
-            mutation: None,
-        })
-        .await?
-        .bucket
-        .ok_or("bucket identity missing")?;
+    let objects = Arc::new(MemoryObjects::memory());
     let fs = Fs::new(
         StreamAuthorityStore::new(streams),
-        LogicalObjectStore::new(objects, bucket),
+        LogicalObjectStore::new(objects),
         EmbeddedCapabilities::MEMORY,
     );
     let workspace = unbounded!(fs, create_workspace("leased"))?;
@@ -737,19 +705,11 @@ async fn generation_fork_rejects_an_authority_without_lineage_locators()
 async fn failed_atomic_generation_fork_leaves_no_destination_lineage()
 -> Result<(), Box<dyn std::error::Error>> {
     let streams = Arc::new(MemoryStream::default());
-    let objects = Arc::new(MemoryObjects::new(Default::default())?);
-    let bucket = objects
-        .create_bucket(wire::CreateBucketRequest {
-            name: "atomic-fork".to_owned(),
-            mutation: None,
-        })
-        .await?
-        .bucket
-        .ok_or("bucket identity missing")?;
+    let objects = Arc::new(MemoryObjects::memory());
     let store = StreamAuthorityStore::new(Arc::clone(&streams));
     let fs = Fs::new(
         store.clone(),
-        LogicalObjectStore::new(objects, bucket),
+        LogicalObjectStore::new(objects),
         EmbeddedCapabilities::MEMORY,
     );
     let source = unbounded!(fs, create_workspace("atomic-source"))?;

@@ -13,7 +13,7 @@ use divan::Bencher;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-type Store = LogicalObjectStore<acyclic_objects::v1::MemoryObjects>;
+type Store = LogicalObjectStore<acyclic_objects::MemoryObjects>;
 
 fn fail<T>(error: impl std::fmt::Debug) -> T {
     eprintln!("merge-diff benchmark failed: {error:?}");
@@ -88,7 +88,7 @@ async fn generation(store: &Store, root: &GenerationRoot) -> ObjectId {
     .unwrap_or_else(fail);
     let id = ObjectId {
         kind: ObjectKind::GenerationRoot,
-        digest: acyclic_fs::storage::object_digest(ObjectKind::GenerationRoot, &bytes),
+        digest: acyclic_fs::storage::object_digest(&bytes),
     };
     put(store, id, bytes).await;
     id
@@ -96,8 +96,8 @@ async fn generation(store: &Store, root: &GenerationRoot) -> ObjectId {
 
 impl Fixture {
     async fn new(count: u8, workload: Workload) -> Self {
-        let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-        let store = Store::new(Arc::new(objects), bucket);
+        let objects = acyclic_objects::MemoryObjects::memory();
+        let store = Store::new(Arc::new(objects));
         let metadata = FileMetadata::default();
         let original_metadata = file_metadata_id(metadata).unwrap_or_else(fail);
         let changed_metadata = FileMetadata {

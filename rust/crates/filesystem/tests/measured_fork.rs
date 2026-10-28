@@ -296,13 +296,13 @@ impl AsyncObjectStore for CancelAfterPut {
 #[tokio::test]
 async fn public_measured_fork_cancels_after_real_staging_and_retries_exactly()
 -> Result<(), Box<dyn Error>> {
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = acyclic_objects::MemoryObjects::memory();
     let armed = Arc::new(AtomicBool::new(false));
     let observed = Arc::new(AtomicBool::new(false));
     let fs = Fs::new(
         MemoryAuthorityBackend::new(Arc::new(acyclic_stream::MemoryStream::default())),
         CancelAfterPut {
-            inner: MemoryObjectBackend::new(Arc::new(objects), bucket),
+            inner: MemoryObjectBackend::new(Arc::new(objects)),
             armed: armed.clone(),
             observed: observed.clone(),
         },

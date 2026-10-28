@@ -9,8 +9,10 @@ pub struct LocalOptions {
     pub root: PathBuf,
     /// Durable hierarchical Stream provider limits.
     pub stream: acyclic_stream::LocalStreamLimits,
-    /// Durable immutable Objects provider limits.
-    pub objects: acyclic_objects::LocalObjectsLimits,
+    /// Durable immutable Objects provider options.
+    pub objects: acyclic_objects::local::LocalObjectsLimits,
+    /// Largest immutable object admitted.
+    pub maximum_object_bytes: u64,
     /// Bounded disposable immutable-object accelerator shared by every handle.
     pub object_cache: crate::cache::ObjectCacheOptions,
 }
@@ -23,7 +25,8 @@ impl LocalOptions {
         Self {
             root: root.into(),
             stream: acyclic_stream::LocalStreamLimits::default(),
-            objects: acyclic_objects::LocalObjectsLimits::default(),
+            objects: acyclic_objects::local::LocalObjectsLimits::default(),
+            maximum_object_bytes: 64 * 1024 * 1024,
             object_cache: crate::cache::ObjectCacheOptions::default(),
         }
     }
@@ -230,6 +233,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             root,
             stream,
             objects,
+            maximum_object_bytes,
             object_cache,
         } = options;
         let open_stream = async {
@@ -246,39 +250,16 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             }))
         };
         let open_objects = async {
-            let maximum_object_bytes = objects.maximum_object_bytes;
             let objects = Arc::new(
-                acyclic_objects::v1::local::LocalObjects::open(
+                acyclic_objects::LocalObjects::open(
                     root.join("objects"),
                     objects,
                     lifecycle.clone(),
                 )
                 .await?,
             );
-            let bucket = acyclic_objects::v1::wire::BucketRef {
-                name: "filesystem-objects".to_owned(),
-            };
-            match objects
-                .head_bucket(acyclic_objects::v1::wire::HeadBucketRequest {
-                    bucket: Some(bucket.clone()),
-                })
-                .await
-            {
-                Ok(_) => {}
-                Err(error) if error.code == acyclic_objects::v1::wire::ErrorCode::NotFound => {
-                    objects
-                        .create_bucket(acyclic_objects::v1::wire::CreateBucketRequest {
-                            name: bucket.name.clone(),
-                            mutation: None,
-                        })
-                        .await
-                        .map_err(FsError::LocalObjectsBucket)?;
-                }
-                Err(error) => return Err(FsError::LocalObjectsBucket(error)),
-            }
             let objects = crate::cache::CachedObjectStore::new(
-                crate::LogicalObjectStore::new(objects, bucket)
-                    .with_object_limit(maximum_object_bytes)?,
+                crate::LogicalObjectStore::new(objects).with_object_limit(maximum_object_bytes)?,
                 object_cache,
             )?;
             Ok::<_, FsError>(crate::staged_objects::StagedObjects::open(

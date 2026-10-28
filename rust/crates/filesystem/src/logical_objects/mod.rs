@@ -1,29 +1,29 @@
-//! Filesystem immutable content over canonical logical Objects v1.
+//! Filesystem immutable content over account-scoped content-addressed blobs.
+//!
+//! An object's digest is the BLAKE3 of its bytes, so it is its blob digest.
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
 use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectStoreError, ObjectWrite,
     object_digest,
 };
 use crate::{AsyncObjectStore, AuthorityWork, WorkCounters, WorkError};
-use acyclic_objects::v1::{Error, Object, ObjectsProvider, wire};
+use acyclic_objects::{Blobs, ByteRange, Error, Object, Put, wire};
 use acyclic_stream::OwnedBytes;
-use std::{fmt::Write as _, sync::Arc};
+use std::sync::Arc;
 
-/// Immutable filesystem-object storage over one exact public Objects bucket.
+/// Immutable filesystem-object storage over one account's blobs.
 #[derive(Clone)]
 pub struct LogicalObjectStore<P: ?Sized> {
     provider: Arc<P>,
-    bucket: wire::BucketRef,
     maximum_object_bytes: u64,
     decoded: Arc<crate::cache::CachedObjectStore<()>>,
 }
 
 impl<P: ?Sized> LogicalObjectStore<P> {
-    /// Binds an authenticated provider to the account's dedicated filesystem bucket.
-    pub fn new(provider: Arc<P>, bucket: wire::BucketRef) -> Self {
+    /// Binds an account-scoped blob provider.
+    pub fn new(provider: Arc<P>) -> Self {
         Self {
             provider,
-            bucket,
             maximum_object_bytes: 5 * 1024 * 1024 * 1024,
             decoded: Arc::new(crate::cache::CachedObjectStore::with_default_options(())),
         }
@@ -42,11 +42,6 @@ impl<P: ?Sized> LogicalObjectStore<P> {
         }
         self.maximum_object_bytes = maximum;
         Ok(self)
-    }
-
-    /// Returns the exact backing bucket identity used by this adapter.
-    pub fn bucket(&self) -> &wire::BucketRef {
-        &self.bucket
     }
 
     /// Returns the exact public provider used by this stateless adapter.
@@ -84,7 +79,7 @@ macro_rules! operate {
         result.map_err(crate::async_storage::object_error)
     }};
 }
-impl<P: ObjectsProvider + ?Sized> AsyncObjectStore for LogicalObjectStore<P> {
+impl<P: Blobs + ?Sized> AsyncObjectStore for LogicalObjectStore<P> {
     fn decoded_cache_get(
         &self,
         key: crate::async_storage::DecodedCacheKey,
@@ -206,16 +201,27 @@ impl<P: ObjectsProvider + ?Sized> AsyncObjectStore for LogicalObjectStore<P> {
         id: ObjectId,
         context: &mut AuthorityWork<'_>,
     ) -> Result<bool, ObjectStoreError> {
-        let maximum = accounting(context)?
-            .remaining()
-            .map_err(crate::async_storage::object_error)?
-            .object_bytes_read;
-        match self.read(id, maximum, context).await {
-            Ok(_) => Ok(true),
-            Err(ObjectStoreError::Missing) => Ok(false),
-            Err(error) => Err(error),
-        }
+        operate!(
+            context,
+            work,
+            async {
+                work.charge(WorkCounters {
+                    object_probes: 1,
+                    backend_read_operations: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                match self.provider.head(blob(id)).await {
+                    Ok(_) => Ok(true),
+                    Err(error) if error.code == wire::ErrorCode::NotFound => Ok(false),
+                    Err(error) => Err(ObjectStoreError::LogicalObjects(error).into()),
+                }
+            }
+            .await
+        )
     }
+}
+pub(super) fn blob(id: ObjectId) -> acyclic_objects::Digest {
+    acyclic_objects::Digest::from_bytes(*id.digest.as_bytes())
 }
 fn service_error(error: Error) -> ObjectStoreError {
     match error.code {
@@ -224,8 +230,8 @@ fn service_error(error: Error) -> ObjectStoreError {
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn native_error(error: acyclic_objects::v1::NativeObjectsError) -> ObjectStoreError {
-    use acyclic_objects::v1::NativeObjectsCause;
+fn native_error(error: acyclic_objects::NativeObjectsError) -> ObjectStoreError {
+    use acyclic_objects::NativeObjectsCause;
     match &error.cause {
         NativeObjectsCause::Service(service) if !error.has_payload() => service_error(*service),
         NativeObjectsCause::Unsupported if !error.has_payload() => {
@@ -234,33 +240,11 @@ fn native_error(error: acyclic_objects::v1::NativeObjectsError) -> ObjectStoreEr
         _ => ObjectStoreError::NativeObjects(error),
     }
 }
-fn precondition(error: &ObjectStoreError) -> bool {
-    match error {
-        ObjectStoreError::LogicalObjects(error) => {
-            error.code == wire::ErrorCode::PreconditionFailed
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        ObjectStoreError::NativeObjects(error) => {
-            use acyclic_objects::v1::NativeObjectsCause;
-            let mut error = error;
-            while let NativeObjectsCause::SharedFailure(inner) = &error.cause {
-                error = inner.error();
-            }
-            matches!(&error.cause, NativeObjectsCause::Service(service) if service.code == wire::ErrorCode::PreconditionFailed)
-        }
-        _ => false,
-    }
-}
 mod requests;
 use requests::*;
-mod index;
 mod read;
 mod write;
 
 #[cfg(test)]
 #[cfg(feature = "memory")]
 mod tests;
-
-#[cfg(test)]
-#[cfg(feature = "memory")]
-pub(crate) use tests::restore_eager_index;

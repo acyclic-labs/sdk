@@ -525,7 +525,7 @@ async fn diff_preserves_storage_and_decode_failures_after_admitted_work()
     let malformed_bytes = OwnedBytes::from_static(b"not a canonical tree page");
     let malformed = ObjectId {
         kind: ObjectKind::TreePage,
-        digest: crate::storage::object_digest(ObjectKind::TreePage, &malformed_bytes),
+        digest: crate::storage::object_digest(&malformed_bytes),
     };
     AsyncObjectStore::put(
         &store,

@@ -81,7 +81,6 @@ dependencies = [
  "acyclic-actors",
  "acyclic-objects",
  "libfuzzer-sys",
- "prost",
  "serde_json",
 ]
 

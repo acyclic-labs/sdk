@@ -2,12 +2,12 @@ use super::*;
 
 pub(super) type TestVolume = Volume<
     crate::StreamAuthorityStore<acyclic_stream::MemoryStream>,
-    crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
+    crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
 >;
 
 pub(super) type TestCheckout = Checkout<
     crate::StreamAuthorityStore<acyclic_stream::MemoryStream>,
-    crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
+    crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
 >;
 
 pub(super) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;

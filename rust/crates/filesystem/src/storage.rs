@@ -8,9 +8,6 @@ use acyclic_stream::OwnedBytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Canonical bytes hashed in addition to one object's body.
-pub const OBJECT_DIGEST_ENVELOPE_BYTES: u64 = b"acyclic-fs-object-v1\0".len() as u64 + 1 + 8;
-
 /// Bounds one replay request before storage allocates or returns bytes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReplayLimit {
@@ -364,15 +361,11 @@ pub enum ObjectIdError {
     Kind(#[from] ObjectKindError),
 }
 
-/// Computes the canonical digest for one typed immutable object.
+/// Computes the canonical digest for one immutable object: the BLAKE3 of its
+/// bytes, which is also its blob digest. The kind is part of [`ObjectId`].
 #[must_use]
-pub fn object_digest(kind: ObjectKind, bytes: &[u8]) -> Digest {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(b"acyclic-fs-object-v1\0");
-    hasher.update(&[kind.canonical_tag()]);
-    hasher.update(&u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_le_bytes());
-    hasher.update(bytes);
-    Digest::from_bytes(*hasher.finalize().as_bytes())
+pub fn object_digest(bytes: &[u8]) -> Digest {
+    Digest::from_bytes(*blake3::hash(bytes).as_bytes())
 }
 
 /// Canonical immutable object bytes and the identity their hash proves.
@@ -389,7 +382,7 @@ impl HashedObject {
         Self {
             object_id: ObjectId {
                 kind,
-                digest: object_digest(kind, &bytes),
+                digest: object_digest(&bytes),
             },
             bytes,
         }
@@ -407,16 +400,13 @@ impl HashedObject {
             .check()
             .map_err(|_| ObjectStoreError::Cancelled)?;
         let hash = crate::WorkCounters {
-            bytes_hashed: u64::try_from(bytes.len())
-                .map_err(|_| crate::WorkError::Overflow)?
-                .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
-                .ok_or(crate::WorkError::Overflow)?,
+            bytes_hashed: u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?,
             ..crate::WorkCounters::default()
         };
         work.admit(hash)?;
         let object_id = ObjectId {
             kind,
-            digest: object_digest(kind, &bytes),
+            digest: object_digest(&bytes),
         };
         work.record_admitted(hash)?;
         work.admit(crate::WorkCounters::default())?;
@@ -443,16 +433,13 @@ impl HashedObject {
             return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout.into());
         }
         let hash = crate::WorkCounters {
-            bytes_hashed: u64::try_from(bytes.len())
-                .map_err(|_| crate::WorkError::Overflow)?
-                .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
-                .ok_or(crate::WorkError::Overflow)?,
+            bytes_hashed: u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?,
             ..crate::WorkCounters::default()
         };
         work.admit(hash)?;
         let object_id = ObjectId {
             kind,
-            digest: object_digest(kind, bytes),
+            digest: object_digest(bytes),
         };
         work.record_admitted(hash)?;
         work.admit(crate::WorkCounters::default())?;
@@ -483,8 +470,7 @@ impl HashedObject {
         not(target_arch = "wasm32")
     ))]
     pub(crate) fn verify(object_id: ObjectId, bytes: acyclic_stream::OwnedBytes) -> Option<Self> {
-        (object_digest(object_id.kind, &bytes) == object_id.digest)
-            .then_some(Self { object_id, bytes })
+        (object_digest(&bytes) == object_id.digest).then_some(Self { object_id, bytes })
     }
 
     /// The identity the bytes hash to.
@@ -638,11 +624,11 @@ pub enum ObjectStoreError {
     /// The original Objects failure, including every acknowledged prefix and intrinsically owned diagnostic or failed request packet.
     #[cfg(all(any(test, feature = "distributed"), not(target_arch = "wasm32")))]
     #[error(transparent)]
-    NativeObjects(#[from] acyclic_objects::v1::NativeObjectsError),
+    NativeObjects(#[from] acyclic_objects::NativeObjectsError),
     /// The logical Objects provider returned its canonical typed category.
     #[cfg(any(test, feature = "distributed"))]
     #[error(transparent)]
-    LogicalObjects(#[from] acyclic_objects::v1::Error),
+    LogicalObjects(#[from] acyclic_objects::Error),
 }
 
 #[cfg(test)]

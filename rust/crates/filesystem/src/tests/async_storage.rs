@@ -74,7 +74,7 @@ async fn sequential_batch_preserves_cancellation_and_nested_overflow_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let object_id = ObjectId {
         kind: ObjectKind::BlobChunk,
-        digest: object_digest(ObjectKind::BlobChunk, b"owned"),
+        digest: object_digest(b"owned"),
     };
     let requests = [ObjectReadRequest {
         object_id,
@@ -125,7 +125,7 @@ async fn memory_stores_expose_the_complete_async_contract() -> Result<(), Box<dy
     for bytes in [b"first".as_slice(), b"second".as_slice()] {
         let id = ObjectId {
             kind: ObjectKind::BlobChunk,
-            digest: object_digest(ObjectKind::BlobChunk, bytes),
+            digest: object_digest(bytes),
         };
         objects
             .put(id, OwnedBytes::copy_from_slice(bytes), &mut work)
@@ -275,7 +275,7 @@ async fn adapters_reject_cancellation_and_sequential_read_failures()
     let objects = MemoryObjectStore::default();
     let object_id = ObjectId {
         kind: ObjectKind::BlobChunk,
-        digest: object_digest(ObjectKind::BlobChunk, b"cancelled"),
+        digest: object_digest(b"cancelled"),
     };
     let requests = [ObjectReadRequest {
         object_id,

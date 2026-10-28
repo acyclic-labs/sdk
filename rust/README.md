@@ -8,10 +8,10 @@ From this checkout, `cargo test -p sdk-service-examples --doc --locked` compiles
 
 ## Objects
 
-Logical buckets and objects, with conditional writes and multipart uploads. This example reads an existing bucket through the hosted HTTP provider.
+Account-scoped content-addressed blobs (BLAKE3-256 digests), with logical range reads, manifests and retained references. This example stores a blob through the hosted HTTP provider and reads it back.
 
 ```rust,no_run
-use acyclic_objects::{HttpObjects, ObjectsProvider, wire};
+use acyclic_objects::{Blobs, ByteRange, HttpObjects};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -20,10 +20,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         &std::env::var("ACYCLIC_API_KEY")?,
         1024 * 1024, None,
     )?;
-    let bucket = objects.head_bucket(wire::HeadBucketRequest {
-        bucket: Some(wire::BucketRef { name: std::env::var("OBJECTS_BUCKET")? }),
-    }).await?;
-    println!("{bucket:?}");
+    let put = objects.put(b"hello".to_vec().into(), Vec::new()).await?;
+    let digest = put.verified().ok_or("outcome unknown; retrying is safe")?.digest;
+    let object = objects.get(digest, ByteRange::FULL, 1024).await?;
+    println!("{digest}: {:?}", object.body());
     Ok(())
 }
 ```

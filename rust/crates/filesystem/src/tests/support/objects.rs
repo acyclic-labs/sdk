@@ -106,7 +106,7 @@ pub(crate) async fn put_object<S: AsyncObjectStore>(
     let bytes = bytes.into();
     let id = ObjectId {
         kind,
-        digest: object_digest(kind, &bytes),
+        digest: object_digest(&bytes),
     };
     store
         .put(

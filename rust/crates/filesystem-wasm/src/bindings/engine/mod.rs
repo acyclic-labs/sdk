@@ -469,23 +469,12 @@ pub(in crate::bindings) fn memory_engine(
     {
         return Err(js_error("invalid memory object limit"));
     }
-    let maximum_bytes = usize::try_from(maximum_memory_bytes).map_err(js_error)?;
-    if maximum_bytes == 0 {
-        return Err(js_error("invalid memory byte limit"));
-    }
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_bucket(
-        "acyclic-fs-wasm-memory",
-        acyclic_objects::v1::MemoryOptions {
-            maximum_bytes,
-            maximum_entries: usize::MAX,
-        },
-    )
-    .map_err(js_error)?;
+    let objects = acyclic_objects::MemoryObjects::bounded(maximum_memory_bytes);
     Ok(Fs::new(
         StreamAuthorityStore::new(streams),
         CachedObjectStore::new(
             BrowserObjects::Memory(
-                LogicalObjectStore::new(Arc::new(objects), bucket)
+                LogicalObjectStore::new(Arc::new(objects))
                     .with_object_limit(maximum_object_bytes)
                     .map_err(js_error)?,
             ),

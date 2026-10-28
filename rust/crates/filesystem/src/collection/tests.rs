@@ -157,11 +157,11 @@ async fn prepared_generation_pin_hands_sweep_admission_to_the_root_registry()
         );
         // Registering an ordinary root must not retain the global sweep gate.
         let (gate, sweepable) = collecting
-            .sweepable(vec![object(1), object(2), object(3)])
+            .sweepable(vec![object(1).digest, object(2).digest, object(3).digest])
             .await;
         assert_eq!(
             sweepable,
-            vec![object(3)],
+            vec![object(3).digest],
             "new root pin lost its active-collection admission"
         );
         drop(gate);
@@ -367,8 +367,10 @@ async fn a_closure_proven_before_a_sweep_of_its_object_is_refused()
     let collection = Arc::new(Collection::default());
     let proven_at = collection.sweeps();
     let collecting = collection.begin().await;
-    let (gate, sweepable) = collecting.sweepable(vec![object(1), object(2)]).await;
-    assert_eq!(sweepable, vec![object(1), object(2)]);
+    let (gate, sweepable) = collecting
+        .sweepable(vec![object(1).digest, object(2).digest])
+        .await;
+    assert_eq!(sweepable, vec![object(1).digest, object(2).digest]);
     for swept in sweepable {
         collecting.sweeping(swept);
     }
@@ -400,8 +402,10 @@ async fn a_closure_admitted_while_collecting_is_kept() -> Result<(), Box<dyn std
             .admit(&[object(1)], |_| false, collection.sweeps())
             .await?,
     );
-    let (_gate, sweepable) = collecting.sweepable(vec![object(1), object(2)]).await;
-    assert_eq!(sweepable, vec![object(2)]);
+    let (_gate, sweepable) = collecting
+        .sweepable(vec![object(1).digest, object(2).digest])
+        .await;
+    assert_eq!(sweepable, vec![object(2).digest]);
     Ok(())
 }
 
@@ -429,7 +433,7 @@ async fn a_proof_older_than_every_remembered_collection_is_refused()
     for round in 0..=REMEMBERED_COLLECTIONS {
         let collecting = collection.begin().await;
         let (_gate, _) = collecting.sweepable(Vec::new()).await;
-        collecting.sweeping(object(u8::try_from(round)? + 10));
+        collecting.sweeping(object(u8::try_from(round)? + 10).digest);
     }
     assert!(
         collection

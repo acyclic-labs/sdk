@@ -44,10 +44,7 @@ async fn corrupt_and_partial_reads_are_exactly_scheduled() -> Result<(), Box<dyn
     let (object_id, bytes) = object(b"authenticated");
     (work!(objects, put(object_id, bytes), B, &cancellation)).await?;
     let corrupt = (work!(objects, read(object_id, 64), B, &cancellation)).await?;
-    assert_ne!(
-        object_digest(object_id.kind, &corrupt.value.bytes),
-        object_id.digest
-    );
+    assert_ne!(object_digest(&corrupt.value.bytes), object_id.digest);
     let partial = (work!(objects, read(object_id, 64), B, &cancellation)).await?;
     assert_eq!(partial.value.bytes.len(), b"authenticated".len() - 1);
     Ok(())

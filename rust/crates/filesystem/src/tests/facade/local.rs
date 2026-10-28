@@ -291,9 +291,9 @@ async fn a_rejected_open_leaves_no_provider_opening_behind_it()
         );
         drop(fs);
         drop(
-            acyclic_objects::v1::local::LocalObjects::open(
+            acyclic_objects::local::LocalObjects::open(
                 directory.path().join("objects"),
-                acyclic_objects::LocalObjectsLimits::default(),
+                acyclic_objects::local::LocalObjectsLimits::default(),
                 None,
             )
             .await
@@ -390,47 +390,17 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
     drop(fs);
 
     let orphan_bytes = OwnedBytes::from(vec![b'o'; 64 * 1_024 + 1]);
-    let orphan = ObjectId {
-        kind: ObjectKind::Blob,
-        digest: object_digest(ObjectKind::Blob, &orphan_bytes),
-    };
-    let objects = acyclic_objects::v1::local::LocalObjects::open(
+    let objects = acyclic_objects::local::LocalObjects::open(
         directory.path().join("objects"),
-        acyclic_objects::LocalObjectsLimits::default(),
+        acyclic_objects::local::LocalObjectsLimits::default(),
         None,
     )
     .await?;
-    let bucket = acyclic_objects::v1::wire::BucketRef {
-        name: "filesystem-objects".to_owned(),
-    };
-    acyclic_objects::v1::ObjectsProvider::head_bucket(
-        &objects,
-        acyclic_objects::v1::wire::HeadBucketRequest {
-            bucket: Some(bucket.clone()),
-        },
-    )
-    .await?;
-    acyclic_objects::v1::ObjectsProvider::put(
-        &objects,
-        acyclic_objects::v1::wire::PutObjectHeader {
-            bucket: Some(bucket),
-            object_key: crate::distributed::object_key(orphan),
-            metadata: Some(acyclic_objects::v1::wire::ObjectMetadata::default()),
-            preconditions: Some(acyclic_objects::v1::wire::Preconditions {
-                condition: Some(
-                    acyclic_objects::v1::wire::preconditions::Condition::IfAbsent(true),
-                ),
-            }),
-            mutation: None,
-        },
-        orphan_bytes,
-    )
-    .await?;
+    acyclic_objects::Blobs::put(&objects, orphan_bytes, Vec::new()).await?;
     drop(objects);
     let reopened = Fs::local(options).await?;
     let collected = reopened.collect_local_garbage(None, &cancellation).await?;
     assert!(collected.removed >= 1);
-    assert!(collected.segments_removed >= 1);
 
     let volume = reopened
         .open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation)

@@ -6,10 +6,10 @@ async fn workspace_creation_recovers_at_every_provider_cut() -> Result<(), Box<d
         for fail_at in 1.. {
             let stream = Arc::new(acyclic_stream::MemoryStream::default());
             let cutting = Arc::new(CutStream::new(Arc::clone(&stream)));
-            let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+            let objects = acyclic_objects::MemoryObjects::memory();
             let fs: CutFs = Fs::new(
                 crate::distributed::StreamAuthorityStore::new(Arc::clone(&cutting)),
-                crate::LogicalObjectStore::new(Arc::new(objects), bucket),
+                crate::LogicalObjectStore::new(Arc::new(objects)),
                 crate::EmbeddedCapabilities::MEMORY,
             );
             cutting.arm(fail_at, cut);

@@ -9,7 +9,7 @@ fn object(bytes: &'static [u8]) -> (ObjectId, OwnedBytes) {
     (
         ObjectId {
             kind: ObjectKind::BlobChunk,
-            digest: object_digest(ObjectKind::BlobChunk, &bytes),
+            digest: object_digest(&bytes),
         },
         bytes,
     )
@@ -148,7 +148,7 @@ async fn opfs_batch_admits_retained_carriers_before_materializing_next_window() 
             ObjectWrite {
                 object_id: ObjectId {
                     kind: ObjectKind::BlobChunk,
-                    digest: object_digest(ObjectKind::BlobChunk, &bytes),
+                    digest: object_digest(&bytes),
                 },
                 bytes,
             }

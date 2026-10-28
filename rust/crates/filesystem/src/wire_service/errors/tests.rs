@@ -116,7 +116,7 @@ cases! {
     object_io: object(ObjectStoreError::Io(io(std::io::ErrorKind::TimedOut))) => DeadlineExceeded;
     object_rejected: object(ObjectStoreError::Rejected("rejected".into())) => FailedPrecondition;
     object_work: object(ObjectStoreError::Work(WorkError::Overflow)) => ResourceExhausted;
-    object_logical: object(ObjectStoreError::LogicalObjects(acyclic_objects::v1::wire::ErrorCode::AccessDenied.into())) => PermissionDenied;
+    object_logical: object(ObjectStoreError::LogicalObjects(acyclic_objects::wire::ErrorCode::AccessDenied.into())) => PermissionDenied;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -125,7 +125,7 @@ cases! {
     authority_native: authority(AuthorityStoreError::NativeOriginal(crate::NativeTreeMaterializationError::MissingEntry)) => NotFound;
     object_native_unsupported: object(ObjectStoreError::NativeUnavailable) => Unimplemented;
     object_native: object(ObjectStoreError::Native(crate::NativeTreeMaterializationError::Cancelled)) => Cancelled;
-    object_native_objects: object(ObjectStoreError::NativeObjects(acyclic_objects::v1::NativeObjectsCause::Service(acyclic_objects::v1::wire::ErrorCode::QuotaExceeded.into()).into())) => ResourceExhausted;
+    object_native_objects: object(ObjectStoreError::NativeObjects(acyclic_objects::NativeObjectsCause::Service(acyclic_objects::wire::ErrorCode::QuotaExceeded.into()).into())) => ResourceExhausted;
 }
 
 #[test]
@@ -158,20 +158,22 @@ fn every_stream_category_survives_the_authority_wrapper() {
 
 #[test]
 fn every_objects_service_category_survives_logical_and_native_wrappers() {
-    use acyclic_objects::v1::wire::ErrorCode as E;
+    use acyclic_objects::wire::ErrorCode as E;
     for (error, expected) in [
         (E::Unspecified, Code::Internal),
         (E::InvalidArgument, Code::InvalidArgument),
         (E::NotFound, Code::NotFound),
-        (E::AlreadyExists, Code::AlreadyExists),
-        (E::PreconditionFailed, Code::FailedPrecondition),
-        (E::IdempotencyMismatch, Code::FailedPrecondition),
+        (E::DigestMismatch, Code::InvalidArgument),
+        (E::MissingReference, Code::FailedPrecondition),
+        (E::Conflict, Code::FailedPrecondition),
         (E::QuotaExceeded, Code::ResourceExhausted),
         (E::Unsupported, Code::Unimplemented),
         (E::Unavailable, Code::Unavailable),
         (E::AccessDenied, Code::PermissionDenied),
         (E::RangeNotSatisfiable, Code::OutOfRange),
-        (E::NotModified, Code::FailedPrecondition),
+        (E::Corrupt, Code::DataLoss),
+        (E::Suspended, Code::Unavailable),
+        (E::OutcomeUnknown, Code::Unavailable),
     ] {
         assert_eq!(
             status(&object(ObjectStoreError::LogicalObjects(error.into()))).code(),
@@ -180,7 +182,7 @@ fn every_objects_service_category_survives_logical_and_native_wrappers() {
         #[cfg(not(target_arch = "wasm32"))]
         assert_eq!(
             status(&object(ObjectStoreError::NativeObjects(
-                acyclic_objects::v1::Error::from(error).into()
+                acyclic_objects::Error::from(error).into()
             )))
             .code(),
             expected
@@ -204,7 +206,7 @@ fn transparent_kernel_wrappers_preserve_missing_denied_and_capacity_causes() {
         (
             FsError::Path(PathLookupError::Tree(TreeReadError::Storage(
                 ObjectStoreError::LogicalObjects(
-                    acyclic_objects::v1::wire::ErrorCode::AccessDenied.into(),
+                    acyclic_objects::wire::ErrorCode::AccessDenied.into(),
                 ),
             ))),
             Code::PermissionDenied,
@@ -314,8 +316,7 @@ cases! {
             .map_err(|(error, _)| error)?.claim(1, 1, WorkCounters::UNCHARGED)?,
     }) => Aborted;
     fs_local_stream: fs(FsError::LocalStream(acyclic_stream::LocalStreamError::Corrupt)) => DataLoss;
-    fs_local_objects: fs(FsError::LocalObjects(acyclic_objects::v1::local::LocalOpenError::AlreadyOwned)) => FailedPrecondition;
-    fs_local_bucket: fs(FsError::LocalObjectsBucket(acyclic_objects::v1::wire::ErrorCode::QuotaExceeded.into())) => ResourceExhausted;
+    fs_local_objects: fs(FsError::LocalObjects(acyclic_objects::local::LocalOpenError::AlreadyOwned)) => FailedPrecondition;
     fs_local_root: fs(FsError::LocalRoot(io(std::io::ErrorKind::PermissionDenied))) => PermissionDenied;
     fs_local_options: fs(FsError::LocalOptionsConflict) => FailedPrecondition;
     fs_local_worker: fs(FsError::LocalInitializationWorker) => Unavailable;

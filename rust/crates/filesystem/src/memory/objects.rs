@@ -62,9 +62,7 @@ impl MemoryObjectStore {
         accounting.check()?;
         for write in writes {
             let hash = WorkCounters {
-                bytes_hashed: (write.bytes.len() as u64)
-                    .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
-                    .ok_or(WorkError::Overflow)?,
+                bytes_hashed: (write.bytes.len() as u64),
                 ..WorkCounters::UNCHARGED
             };
             // Size admission also applies to already hashed objects in insert.
@@ -76,7 +74,7 @@ impl MemoryObjectStore {
                 .into());
             }
             accounting.admit(hash)?;
-            let digest = object_digest(write.object_id.kind, &write.bytes);
+            let digest = object_digest(&write.bytes);
             accounting.record_completed(hash)?;
             if digest != write.object_id.digest {
                 return Err(ObjectStoreError::DigestMismatch.into());
@@ -247,13 +245,11 @@ impl MemoryObjectStore {
         }
         let read = WorkCounters {
             object_bytes_read: length,
-            bytes_hashed: length
-                .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
-                .ok_or(WorkError::Overflow)?,
+            bytes_hashed: length,
             ..WorkCounters::UNCHARGED
         };
         accounting.admit(read)?;
-        let digest = object_digest(object_id.kind, bytes);
+        let digest = object_digest(bytes);
         accounting.record_completed(read)?;
         if digest != object_id.digest {
             return Err(ObjectStoreError::Corrupt.into());

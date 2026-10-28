@@ -432,40 +432,9 @@ async fn hosted_and_generated_clients_match_cloud_filesystem_roundtrip() -> Test
     Ok(())
 }
 
-/// Creates the Objects bucket the Filesystem Hosts store into, as activation does
-/// in a deployed cloud, through the fabric's Objects Edge.
-async fn provision_storage(endpoints: &Value, bucket: &str, ca: &[u8]) -> TestResult {
-    use acyclic_objects::{GrpcObjects, ObjectsProvider, wire};
-    let objects = GrpcObjects::connect(
-        endpoints["objects"]["endpoint"]
-            .as_str()
-            .ok_or("endpoints file has no objects.endpoint")?,
-        endpoints["objects"]["bearer"]
-            .as_str()
-            .ok_or("endpoints file has no objects.bearer")?,
-        Some(ca),
-        None,
-    )
-    .await?;
-    let created = objects
-        .create_bucket(wire::CreateBucketRequest {
-            name: bucket.into(),
-            mutation: Some(wire::MutationIdentity {
-                idempotency_key: format!("local-cloud-storage-{bucket}"),
-            }),
-        })
-        .await;
-    match created {
-        Err(error) if error.code != wire::ErrorCode::AlreadyExists => {
-            Err(format!("create storage bucket {bucket}: {error}").into())
-        }
-        _ => Ok(()),
-    }
-}
-
 /// The same roundtrip against the real Filesystem service through its Edge, from
 /// `node scripts/local-cloud.mjs --topology full`, which names the Edge, its CA,
-/// a locally minted Filesystem bearer and the Hosts' storage bucket in
+/// and a locally minted Filesystem bearer in
 /// `ACYCLIC_LOCAL_CLOUD`.
 #[tokio::test]
 #[ignore = "needs a local cloud: node scripts/local-cloud.mjs --topology full"]
@@ -481,7 +450,6 @@ async fn hosted_roundtrip_matches_cloud_handlers_on_a_local_cloud() -> TestResul
             .ok_or(format!("endpoints file has no fs.{name}"))
     };
     let ca = std::fs::read(field("ca_file")?)?;
-    provision_storage(&endpoints, &field("storage_bucket")?, &ca).await?;
     let hosted = HostedFs::connect(
         HostedFsOptions::new(field("endpoint")?, field("bearer")?).with_ca_certificate(ca),
     )

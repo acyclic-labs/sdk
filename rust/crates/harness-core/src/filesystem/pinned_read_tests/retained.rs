@@ -89,8 +89,8 @@ async fn initialize_with_stream(prefix: usize, bytes: &[u8]) -> Result<Initializ
         acyclic_stream::MemoryLimits::default(),
         Arc::new(Clock),
     ));
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-    let filesystem = Fs::from_memory_providers(stream.clone(), Arc::new(objects), bucket);
+    let objects = acyclic_objects::MemoryObjects::memory();
+    let filesystem = Fs::from_memory_providers(stream.clone(), Arc::new(objects));
     let (host, file) = fixture_with_filesystem(b"seed", filesystem).await?;
     let grant = grant(&file)?;
     let workspace = workspace_ref(

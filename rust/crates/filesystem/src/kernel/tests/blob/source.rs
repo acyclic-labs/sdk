@@ -457,8 +457,8 @@ async fn oversized_source_consumes_only_one_detection_byte_past_bound() {
 #[tokio::test]
 async fn streaming_index_memory_is_logarithmic_in_chunk_count()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-    let store = crate::LogicalObjectStore::new(std::sync::Arc::new(objects), bucket);
+    let objects = acyclic_objects::MemoryObjects::memory();
+    let store = crate::LogicalObjectStore::new(std::sync::Arc::new(objects));
     let content = vec![3_u8; 4_096];
     let mut source = std::io::Cursor::new(&content);
     let built = build_blob(

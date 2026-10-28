@@ -2,33 +2,24 @@ use super::*;
 use crate::LogicalObjectStore;
 use crate::kernel::DecodeLimits;
 use crate::storage::{ObjectKind, object_digest};
-use acyclic_objects::v1::ObjectsProvider as _;
+use acyclic_objects::Blobs as _;
 use std::sync::Arc;
 
-type LocalStaged = StagedObjects<LogicalObjectStore<acyclic_objects::v1::local::LocalObjects>>;
+type LocalStaged = StagedObjects<LogicalObjectStore<acyclic_objects::local::LocalObjects>>;
 
 async fn open_staged(
     directory: &Path,
-) -> Result<(LocalStaged, Arc<acyclic_objects::v1::local::LocalObjects>), Box<dyn std::error::Error>>
-{
+) -> Result<(LocalStaged, Arc<acyclic_objects::local::LocalObjects>), Box<dyn std::error::Error>> {
     let provider = Arc::new(
-        acyclic_objects::v1::local::LocalObjects::open(
+        acyclic_objects::local::LocalObjects::open(
             directory.join("objects"),
-            acyclic_objects::LocalObjectsLimits::default(),
+            acyclic_objects::local::LocalObjectsLimits::default(),
             None,
         )
         .await?,
     );
-    let bucket = provider
-        .create_bucket(acyclic_objects::v1::wire::CreateBucketRequest {
-            name: "staged-test".to_owned(),
-            mutation: None,
-        })
-        .await?
-        .bucket
-        .ok_or("bucket creation returned no bucket")?;
     let store = StagedObjects::open(
-        LogicalObjectStore::new(Arc::clone(&provider), bucket),
+        LogicalObjectStore::new(Arc::clone(&provider)),
         directory.to_path_buf(),
     );
     Ok((store, provider))
@@ -38,21 +29,13 @@ async fn reopen_contains(
     directory: &Path,
     objects: &[ObjectId],
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let reopened = acyclic_objects::v1::local::LocalObjects::open(
+    let reopened = acyclic_objects::local::LocalObjects::open(
         directory.join("objects"),
-        acyclic_objects::LocalObjectsLimits::default(),
+        acyclic_objects::local::LocalObjectsLimits::default(),
         None,
     )
     .await?;
-    let bucket = acyclic_objects::v1::wire::BucketRef {
-        name: "staged-test".to_owned(),
-    };
-    reopened
-        .head_bucket(acyclic_objects::v1::wire::HeadBucketRequest {
-            bucket: Some(bucket.clone()),
-        })
-        .await?;
-    let reopened = LogicalObjectStore::new(Arc::new(reopened), bucket);
+    let reopened = LogicalObjectStore::new(Arc::new(reopened));
     let token = CancellationToken::new();
     for &object_id in objects {
         if !{
@@ -72,7 +55,7 @@ async fn reopen_contains(
 fn blob(bytes: OwnedBytes) -> (ObjectId, OwnedBytes) {
     let object_id = ObjectId {
         kind: ObjectKind::Blob,
-        digest: object_digest(ObjectKind::Blob, &bytes),
+        digest: object_digest(&bytes),
     };
     (object_id, bytes)
 }

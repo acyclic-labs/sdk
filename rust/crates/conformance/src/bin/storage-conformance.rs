@@ -7,11 +7,7 @@ mod filesystem;
 mod host;
 #[path = "storage_conformance/s3.rs"]
 mod s3;
-use acyclic_objects::{
-    ObjectsProvider,
-    s3::{Capabilities, S3Objects},
-    wire,
-};
+use acyclic_objects::{Store, s3::S3Medium};
 use acyclic_stream::postgres::PostgresStream;
 use object_store::{
     aws::{AmazonS3Builder, S3ConditionalPut},
@@ -45,13 +41,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .build()?,
     );
     let prefix = Path::from(format!("conformance/{}", uuid::Uuid::new_v4()));
-    let capabilities = Capabilities {
-        conditional_put: true,
-        read_after_write: true,
-        multipart: true,
-        range_reads: true,
-    };
-    let objects = Arc::new(S3Objects::open(store.clone(), prefix.clone(), capabilities).await?);
+    let objects = Store::new(S3Medium::new(store.clone(), prefix.as_ref()));
+    let filesystem_objects = Arc::new(objects.account(b"filesystem")?);
     let step = Instant::now();
     acyclic_conformance::stream(&acyclic_stream::conformance::Fixture::new(
         streams.as_ref().clone(),
@@ -59,25 +50,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
     println!("Stream unchanged suite: {:?}", step.elapsed());
     let step = Instant::now();
-    acyclic_conformance::objects(&acyclic_objects::v1::conformance::Fixture::new(
-        objects.as_ref().clone(),
-        "conformance",
-    ))
-    .await?;
+    acyclic_conformance::objects(&objects.account(b"first")?, &objects.account(b"second")?).await?;
     println!("Objects unchanged suite: {:?}", step.elapsed());
-    s3::verify(store.clone(), prefix.clone(), capabilities).await?;
-    let bucket = objects
-        .create_bucket(wire::CreateBucketRequest {
-            name: "filesystem".into(),
-            mutation: None,
-        })
-        .await?
-        .bucket
-        .ok_or("created bucket missing identity")?;
+    s3::verify(store.clone(), prefix.clone()).await?;
     let backend = acyclic_fs::conformance::from_providers(
         streams.as_ref().clone(),
-        objects.as_ref().clone(),
-        bucket.clone(),
+        filesystem_objects,
         acyclic_fs::EmbeddedCapabilities { durable: true },
     );
     let step = Instant::now();
@@ -93,16 +71,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 acyclic_fs::StreamAuthorityStore::new(Arc::new(
                     PostgresStream::connect(&database, &namespace).await?,
                 )),
-                acyclic_fs::LogicalObjectStore::new(
-                    Arc::new(S3Objects::open(store.clone(), prefix, capabilities).await?),
-                    bucket,
-                ),
+                acyclic_fs::LogicalObjectStore::new(Arc::new(
+                    Store::new(S3Medium::new(store.clone(), prefix.as_ref()))
+                        .account(b"filesystem")?,
+                )),
                 acyclic_fs::EmbeddedCapabilities { durable: true },
             ))
         },
     )
     .await?;
-    host::verify(&database, store, capabilities).await?;
+    host::verify(&database, store).await?;
     println!("All storage suites: {:?}", start.elapsed());
     Ok(())
 }

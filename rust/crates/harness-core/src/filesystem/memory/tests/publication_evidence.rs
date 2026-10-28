@@ -17,8 +17,6 @@ fn publication_evidence_is_local_to_its_host_and_complete_identity() -> Result<(
     assert_eq!(wire, file);
     let mut reset_version = file.clone();
     reset_version.pin_version(file.version().to_owned(), &mut None)?;
-    #[cfg(feature = "objects")]
-    let object_reset_version = file.clone().with_version(file.version().to_owned())?;
     let reconstructed = FileRef::new(
         file.volume().clone(),
         file.path().to_owned(),
@@ -55,13 +53,6 @@ fn publication_evidence_is_local_to_its_host_and_complete_identity() -> Result<(
             1,
         ),
         ("different_host", &file, other_reader.as_ref(), 1),
-        #[cfg(feature = "objects")]
-        (
-            "object_reset_version",
-            &object_reset_version,
-            storage.content_verifier.as_ref(),
-            1,
-        ),
     ] {
         let (result, trace) = acyclic_test_support::differential::observe::<
             _,

@@ -98,10 +98,7 @@ async fn public_checkouts_batch_disjoint_edits_and_recover_each_original_operati
     let base = seed.authority_head.ok_or("missing base")?;
     let independent_fs = Fs::new(
         crate::StreamAuthorityStore::new(volume.fs.inner.authority.provider()),
-        crate::LogicalObjectStore::new(
-            Arc::clone(volume.fs.inner.objects.provider()),
-            volume.fs.inner.objects.bucket().clone(),
-        ),
+        crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
     );
     let independent = independent_fs
