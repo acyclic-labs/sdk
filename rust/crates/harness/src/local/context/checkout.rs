@@ -104,6 +104,61 @@ impl LocalHarness {
     }
 }
 
+impl LocalHarness {
+    /// Copies each file `text` mentions, at one snapshot of the selected
+    /// checkout view, onto the root's private volume under the checkout
+    /// context's read authority and the harness's file byte bound. Returns
+    /// their directory below `base`: it is addressed by every copied path and
+    /// its bytes, so it only ever holds one consistent set of copies.
+    pub(super) async fn capture_checkout_mentions(
+        &self,
+        workspace: &LocalWorkspace,
+        text: &str,
+        base: &str,
+    ) -> Result<String> {
+        let (selected, pending) = workspace.selected_view().await?;
+        if let Some((operation, _)) = pending {
+            return Err(Error::Indeterminate(OperationId::from_bytes(
+                operation.into_bytes(),
+            )));
+        }
+        let view = selected.as_ref().unwrap_or_else(|| workspace.view());
+        let cancellation = acyclic_fs::CancellationToken::new();
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            acyclic_fs::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work: &work,
+            cancellation: &cancellation,
+        };
+        let io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        self.authorize_checkout_context(view.workspace(), &io)
+            .await?;
+        let cut = view.snapshot(&mut accounting).await?;
+        let mut remaining = self.limits.file_bytes;
+        let mut copies = std::collections::BTreeMap::new();
+        for (_, _, path) in crate::client::file_mention_paths(text)? {
+            if copies.contains_key(path) {
+                continue;
+            }
+            let (chunk, _allocation) = view
+                .read_at_snapshot(cut, &format!("/{path}"), None, remaining, &mut accounting)
+                .await?;
+            remaining = remaining
+                .checked_sub(chunk.bytes.as_ref().len() as u64)
+                .ok_or_else(|| Error::Invalid("mentioned files exceed the byte bound".into()))?;
+            copies.insert(path.to_owned(), chunk.bytes);
+        }
+        let directory = self.publish_mention_copies(base, copies).await?;
+        // The copies disclose only what the authority still admits.
+        self.authorize_checkout_context(view.workspace(), &io)
+            .await?;
+        Ok(directory)
+    }
+}
+
 struct CheckoutInstructions<'a> {
     harness: &'a LocalHarness,
     publisher: &'a dyn ContentPublisher,

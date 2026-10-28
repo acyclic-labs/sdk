@@ -80,8 +80,9 @@ impl Drop for Hosted {
 }
 
 /// The local user owns the whole tree: its policy admits every command its
-/// own session credential carries.
-struct LocalUser;
+/// own session credential carries, and its prompts attach the checkout files
+/// they mention.
+struct LocalUser(Weak<LocalHarness>);
 
 impl crate::hosting::Platform for LocalUser {
     fn policy<'a>(
@@ -90,6 +91,20 @@ impl crate::hosting::Platform for LocalUser {
         _: &'a AgentCommand,
     ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>> {
         Box::pin(async { Ok(PolicyDecision::Allow) })
+    }
+
+    fn attachments<'a>(
+        &'a self,
+        key: &'a [u8],
+        text: &'a str,
+    ) -> BoxProviderFuture<'a, Result<Option<crate::conversation::FileRef>>> {
+        Box::pin(async move {
+            self.0
+                .upgrade()
+                .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?
+                .prompt_attachments(key, text)
+                .await
+        })
     }
 }
 
@@ -310,7 +325,7 @@ impl LocalHarness {
             Bound::local_host(authority, Arc::clone(&self.files), within, turns, configure)
         }
         .map_err(storage)?;
-        let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser);
+        let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser(Arc::downgrade(self)));
         // A reopened root keeps the policy it was created with: the agent
         // model has no policy-update record, and replaying a creation with
         // another policy would refuse the reopen.

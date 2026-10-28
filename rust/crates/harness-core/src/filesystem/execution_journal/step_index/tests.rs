@@ -59,7 +59,6 @@ async fn check_selection(native: bool) -> Result<()> {
                 volume: &journal.volume,
                 verifier: &journal.verifier,
                 scope: &journal.scope,
-                maximum_bytes: journal.maximum_payload_bytes,
                 io: None,
             },
         )?;

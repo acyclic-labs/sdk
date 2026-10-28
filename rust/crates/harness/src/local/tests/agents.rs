@@ -10,7 +10,6 @@ use crate::{
 };
 use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProvider};
 use futures::TryStreamExt;
-use serde_json::json;
 use std::sync::Arc;
 
 /// The root conversation `harness` serves to its own in-process session.
@@ -367,9 +366,11 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
     let hook = format!("cat >/dev/null; curl -sS http://127.0.0.1:{port}/");
     std::fs::write(
         home.join(".claude/settings.json"),
-        serde_json::to_vec(&json!({"hooks": {"UserPromptSubmit": [{"hooks": [
-            {"type": "command", "shell": "sh", "command": hook}
-        ]}]}}))
+        serde_json::to_vec(
+            &serde_json::json!({"hooks": {"UserPromptSubmit": [{"hooks": [
+                {"type": "command", "shell": "sh", "command": hook}
+            ]}]}}),
+        )
         .map_err(agent)?,
     )
     .map_err(agent)?;
@@ -417,10 +418,10 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
                 orphan: true,
                 observed: Vec::new(),
                 continuation: Some(vec![
-                    serde_json::from_value(json!({"kind": "content", "delta": "done"}))
+                    serde_json::from_value(serde_json::json!({"kind": "content", "delta": "done"}))
                         .map_err(agent)?,
                     serde_json::from_value(
-                        json!({"kind": "completed", "metadata": {"finish": "stop"}}),
+                        serde_json::json!({"kind": "completed", "metadata": {"finish": "stop"}}),
                     )
                     .map_err(agent)?,
                 ]),
@@ -462,5 +463,406 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         outcome.strip_suffix(".json"),
         marker.strip_suffix(".started")
     );
+    Ok(())
+}
+
+/// The files an attachment manifest lists, read through `harness`'s reader.
+async fn listed(
+    harness: &LocalHarness,
+    manifest: &crate::conversation::FileRef,
+) -> Result<Vec<crate::conversation::FileRef>> {
+    let reader = harness.client_reader()?;
+    let bytes = reader
+        .read(manifest, manifest.descriptor().byte_length(), None, None)?
+        .await?;
+    Ok(
+        crate::conversation::decode_attachment_manifest(manifest, bytes.as_ref(), None, None)?
+            .into_iter()
+            .map(|item| item.file)
+            .collect(),
+    )
+}
+
+/// A harness over a fresh checkout holding `files`, written after it opens.
+async fn checkout_with(
+    files: &[(String, Vec<u8>)],
+) -> Result<(
+    tempfile::TempDir,
+    Arc<LocalHarness>,
+    Arc<ScriptedModelProvider>,
+)> {
+    let directory = tempfile::tempdir().map_err(agent)?;
+    std::fs::create_dir(directory.path().join(".git")).map_err(agent)?;
+    let provider = text();
+    let harness = Arc::new(
+        LocalHarness::open(super::checkout_config(
+            directory.path(),
+            (super::model()?, provider.clone()),
+        )?)
+        .await?,
+    );
+    let checkout = &harness.workspace.as_ref().expect("checkout").path;
+    for (path, bytes) in files {
+        let path = checkout.join(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(agent)?;
+        }
+        std::fs::write(path, bytes).map_err(agent)?;
+    }
+    Ok((directory, harness, provider))
+}
+
+#[tokio::test]
+async fn a_prompt_attaches_the_checkout_files_it_mentions_once_each() -> Result<()> {
+    use crate::model::{FileProjectionPolicy, ModelContent, ModelContentPart};
+    const PIXEL: &[u8] = &[
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52, 0,
+        0, 0, 1, 0, 0, 0, 1, 8, 4, 0, 0, 0, 0xb5, 0x1c, 0x0c, 0x02, 0, 0, 0, 0x0b, 0x49, 0x44,
+        0x41, 0x54, 0x78, 0xda, 0x63, 0xfc, 0xff, 0x1f, 0, 0x03, 0x03, 0x02, 0, 0xef, 0x9a, 0x5e,
+        0x4f, 0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    let (_directory, harness, provider) = checkout_with(&[
+        ("mention.txt".into(), b"MENTIONED\n".to_vec()),
+        ("pixel.png".into(), PIXEL.to_vec()),
+    ])
+    .await?;
+    let checkout = harness.workspace.as_ref().expect("checkout").path.clone();
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let client = conversation(&harness).await?;
+    let prompt = "inspect @mention.txt and @pixel.png then @mention.txt again";
+    // A capture for one message replays its pinned manifest exactly.
+    let first = harness.prompt_attachments(b"direct", prompt).await?;
+    assert_eq!(harness.prompt_attachments(b"direct", prompt).await?, first);
+    let inbox = client.send("mention", prompt).await?;
+    let entries = settled(&agents, &root).await?;
+    // Later publications on the private volume leave a replay unchanged.
+    assert_eq!(harness.prompt_attachments(b"direct", prompt).await?, first);
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let TurnInput::Message {
+        attachments: Some(manifest),
+        ..
+    } = &entry.input
+    else {
+        return Err(Error::Conflict(
+            "the prompt started no attached message turn".into(),
+        ));
+    };
+    // Each mentioned file attaches once, in first-mention order, pinned.
+    let reader = harness.client_reader()?;
+    let mut read = Vec::new();
+    for file in listed(&harness, manifest).await? {
+        read.push((
+            file.path()
+                .rsplit('/')
+                .next()
+                .unwrap_or_default()
+                .to_owned(),
+            file.descriptor().media_type().to_owned(),
+            reader.read(&file, 1 << 20, None, None)?.await?.to_vec(),
+        ));
+    }
+    assert_eq!(
+        read,
+        [
+            (
+                "mention.txt".into(),
+                "text/plain".into(),
+                b"MENTIONED\n".to_vec()
+            ),
+            ("pixel.png".into(), "image/png".into(), PIXEL.to_vec()),
+        ]
+    );
+    // The model sees the prompt, then the text file as text and the image natively.
+    let request = provider.last_request().expect("one model request");
+    let Some(ModelContent::Parts(parts)) = request.messages.last().map(|message| &message.content)
+    else {
+        return Err(Error::Conflict("the turn input has no attachments".into()));
+    };
+    let policies = parts
+        .iter()
+        .map(|part| match part {
+            ModelContentPart::File { policy, .. } => {
+                Some(matches!(policy, FileProjectionPolicy::Native(_)))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(policies, [Some(false), Some(false), Some(true)]);
+    // A resend after its files changed or vanished replays the pinned
+    // manifest, so it still matches the delivered message exactly.
+    std::fs::write(checkout.join("mention.txt"), "CHANGED\n").map_err(agent)?;
+    std::fs::remove_file(checkout.join("pixel.png")).map_err(agent)?;
+    assert_eq!(harness.prompt_attachments(b"direct", prompt).await?, first);
+    assert_eq!(client.send("mention", prompt).await?, inbox);
+    // A new message sees the files as they are now.
+    let fresh = harness
+        .prompt_attachments(b"fresh", "inspect @mention.txt")
+        .await?
+        .expect("a manifest");
+    let fresh = listed(&harness, &fresh).await?;
+    assert_eq!(
+        reader.read(&fresh[0], 1 << 20, None, None)?.await?.to_vec(),
+        b"CHANGED\n"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_prompt_carries_a_thousand_mentions_as_one_reference() -> Result<()> {
+    use crate::model::{ModelContent, ModelContentPart};
+    const MENTIONS: usize = 1_000;
+    let files = (0..MENTIONS)
+        .map(|index| {
+            (
+                format!("m/f{index}.txt"),
+                format!("F{index}\n").into_bytes(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let (_directory, harness, provider) = checkout_with(&files).await?;
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let client = conversation(&harness).await?;
+    let prompt = files
+        .iter()
+        .map(|(path, _)| format!("@{path}"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    client.send("many", &prompt).await?;
+    let entries = settled(&agents, &root).await?;
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let TurnInput::Message {
+        attachments: Some(manifest),
+        ..
+    } = &entry.input
+    else {
+        return Err(Error::Conflict(
+            "the prompt started no attached message turn".into(),
+        ));
+    };
+    let listed = listed(&harness, manifest).await?;
+    // Negative control: the same files listed inline in the record, as the
+    // message carried them before, exceed the stream's record bound.
+    let inline = serde_json::to_vec(&listed).map_err(agent)?;
+    assert!(
+        inline.len() > crate::agent::MAX_RECORD_BYTES,
+        "{} inline bytes fit a record",
+        inline.len()
+    );
+    // The records stay one reference: as small as a one-file prompt's.
+    let inbox = records(&**agents.provider(), root.inbox().map_err(agent)?).await?;
+    for record in inbox.iter().chain(&entries) {
+        assert!(record.len() < 4096, "{} record bytes", record.len());
+    }
+    assert_eq!(listed.len(), MENTIONS);
+    // The model sees the prompt and every file, in mention order.
+    let request = provider.last_request().expect("one model request");
+    let Some(ModelContent::Parts(parts)) = request.messages.last().map(|message| &message.content)
+    else {
+        return Err(Error::Conflict("the turn input has no attachments".into()));
+    };
+    assert_eq!(parts.len(), MENTIONS + 1);
+    for (index, part) in parts[1..].iter().enumerate() {
+        let ModelContentPart::File { file, .. } = part else {
+            return Err(Error::Conflict("an attachment is not a file".into()));
+        };
+        assert_eq!(
+            file.path().rsplit('/').next(),
+            Some(format!("f{index}.txt").as_str())
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_volume_project_mention_is_copied_beside_its_manifest() -> Result<()> {
+    use crate::model::ModelContent;
+    const MENTIONS: usize = 32;
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = text();
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project.clone(), provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled),
+        )
+        .await?,
+    );
+    let workspace = crate::filesystem::workspace_ref(
+        project.provider().clone(),
+        &project.storage_name(&mut None)?,
+    )?;
+    let mutations = std::iter::once(crate::filesystem::WorkspaceMutation::CreateDirectory {
+        path: "/d".into(),
+    })
+    .chain(
+        (0..MENTIONS).map(|index| crate::filesystem::WorkspaceMutation::PutFile {
+            path: format!("/d/n{index}.txt"),
+            bytes: acyclic_stream::OwnedBytes::from(format!("{index}\n").into_bytes()),
+        }),
+    )
+    .collect::<Vec<_>>();
+    harness
+        .files
+        .apply(
+            &workspace,
+            None,
+            &mutations,
+            &crate::contract::IdempotencyKey::new("project-files")?,
+        )
+        .await?;
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let client = conversation(&harness).await?;
+    let prompt = (0..MENTIONS)
+        .map(|index| format!("@d/n{index}.txt"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    client.send("project", &prompt).await?;
+    let entries = settled(&agents, &root).await?;
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let TurnInput::Message {
+        attachments: Some(manifest),
+        ..
+    } = &entry.input
+    else {
+        return Err(Error::Conflict(
+            "the prompt started no attached message turn".into(),
+        ));
+    };
+    // Every member lives beside its manifest on the private volume, inside
+    // the directory a forked child is granted with the manifest; none stays
+    // on the project volume a child does not inherit.
+    let (base, _) = manifest
+        .path()
+        .rsplit_once('/')
+        .expect("manifest directory");
+    let listed = listed(&harness, manifest).await?;
+    assert_eq!(listed.len(), MENTIONS);
+    for file in &listed {
+        assert_eq!(file.volume(), manifest.volume());
+        assert_ne!(file.volume(), &project);
+        assert!(
+            file.path().starts_with(&format!("{base}/")),
+            "{}",
+            file.path()
+        );
+    }
+    // The turn reached the model with every file.
+    let request = provider.last_request().expect("one model request");
+    let Some(ModelContent::Parts(parts)) = request.messages.last().map(|message| &message.content)
+    else {
+        return Err(Error::Conflict("the turn input has no attachments".into()));
+    };
+    assert_eq!(parts.len(), MENTIONS + 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
+    use crate::model::{ModelContent, ModelRole};
+    const MENTIONS: usize = 32;
+    // Each mentioned file and all of them together fit this bound; the
+    // attachment manifest, the turn's context manifest and its journaled
+    // input do not.
+    const FILE_BYTES: u64 = 1024;
+    let directory = tempfile::tempdir().map_err(agent)?;
+    let project = volume(directory.path()).await?;
+    let provider = super::scripted([
+        crate::test_support::ScriptedTurn::Text("done".into()),
+        crate::test_support::ScriptedTurn::Text("done".into()),
+    ]);
+    let harness = Arc::new(
+        LocalHarness::open(
+            volume_config(directory.path(), project.clone(), provider.clone())?
+                .compaction(crate::context::CompactionPolicy::Disabled)
+                .limits(crate::conversation::Limits {
+                    file_bytes: FILE_BYTES,
+                    ..Default::default()
+                }),
+        )
+        .await?,
+    );
+    let workspace = crate::filesystem::workspace_ref(
+        project.provider().clone(),
+        &project.storage_name(&mut None)?,
+    )?;
+    let mutations = std::iter::once(crate::filesystem::WorkspaceMutation::CreateDirectory {
+        path: "/d".into(),
+    })
+    .chain(
+        (0..MENTIONS).map(|index| crate::filesystem::WorkspaceMutation::PutFile {
+            path: format!("/d/n{index}.txt"),
+            bytes: acyclic_stream::OwnedBytes::from(format!("{index}\n").into_bytes()),
+        }),
+    )
+    .collect::<Vec<_>>();
+    harness
+        .files
+        .apply(
+            &workspace,
+            None,
+            &mutations,
+            &crate::contract::IdempotencyKey::new("project-files")?,
+        )
+        .await?;
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let client = conversation(&harness).await?;
+    let prompt = (0..MENTIONS)
+        .map(|index| format!("@d/n{index}.txt"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    client.send("small", &prompt).await?;
+    let entries = settled(&agents, &root).await?;
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let TurnInput::Message {
+        attachments: Some(manifest),
+        ..
+    } = &entry.input
+    else {
+        return Err(Error::Conflict(
+            "the prompt started no attached message turn".into(),
+        ));
+    };
+    // Control: the list alone exceeds the configured file bound.
+    assert!(manifest.descriptor().byte_length() > FILE_BYTES);
+    let attached = |content: &ModelContent| match content {
+        ModelContent::Parts(parts) => parts.len(),
+        _ => 1,
+    };
+    let request = provider.last_request().expect("one model request");
+    assert_eq!(
+        request
+            .messages
+            .last()
+            .map(|message| attached(&message.content)),
+        Some(MENTIONS + 1)
+    );
+    // The next turn replays that message, attachments expanded, under the
+    // same bound.
+    client.send("next", "next").await?;
+    let conversation = root.conversation().map_err(agent)?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while records(&**agents.provider(), conversation.clone())
+        .await?
+        .len()
+        < 2
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the second turn did not settle"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let request = provider.last_request().expect("a second model request");
+    let replayed = request
+        .messages
+        .iter()
+        .filter(|message| message.role == ModelRole::User)
+        .map(|message| attached(&message.content))
+        .collect::<Vec<_>>();
+    assert_eq!(replayed, vec![MENTIONS + 1, 1]);
     Ok(())
 }

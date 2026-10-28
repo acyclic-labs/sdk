@@ -516,7 +516,12 @@ fn selected_reference<'a>(
                 volume.copy(work)?,
                 stock_string_copy(path, Some(io))?,
                 version,
-                FileDescriptor::from_bytes(bytes, media_type::classify(bytes), work)?,
+                FileDescriptor::from_bytes(
+                    bytes,
+                    crate::model::image_media_type(bytes)
+                        .unwrap_or_else(|| media_type::classify(bytes)),
+                    work,
+                )?,
                 stock_string_copy(path.rsplit('/').next().unwrap_or(path), Some(io))?,
                 work,
             )

@@ -44,6 +44,56 @@ pub struct OpenTurn {
     pub goal: Option<Arc<dyn super::TurnGoal>>,
     /// Where the turn's settled output is staged.
     pub outputs: Arc<dyn TurnOutputs>,
+    /// The input the executor runs, with its attachment manifests expanded
+    /// ([`expand_attachments`]); `None` runs the input as given.
+    pub input: Option<ModelContent>,
+}
+
+fn is_manifest(part: &ModelContentPart) -> bool {
+    matches!(
+        part,
+        ModelContentPart::File {
+            file,
+            policy: FileProjectionPolicy::Reference,
+        } if file.descriptor().media_type() == crate::conversation::ATTACHMENT_MANIFEST_MEDIA_TYPE
+    )
+}
+
+/// `content` with each attachment manifest [`model_input`] names replaced by
+/// the files it lists, in order, each as it projects
+/// ([`FileProjectionPolicy::for_attachment`]), read through `reader`, whose
+/// grant holds the manifest and its directory.
+pub async fn expand_attachments(
+    content: ModelContent,
+    reader: &dyn crate::conversation::ContentResidencyVerifier,
+) -> crate::Result<ModelContent> {
+    let ModelContent::Parts(parts) = content else {
+        return Ok(content);
+    };
+    if !parts.iter().any(is_manifest) {
+        return Ok(ModelContent::Parts(parts));
+    }
+    let mut expanded = Vec::with_capacity(parts.len());
+    for part in parts {
+        if !is_manifest(&part) {
+            expanded.push(part);
+            continue;
+        }
+        let ModelContentPart::File { file, .. } = part else {
+            continue;
+        };
+        let bytes = reader
+            .read(&file, file.descriptor().byte_length(), None, None)?
+            .await?;
+        let items =
+            crate::conversation::decode_attachment_manifest(&file, bytes.as_ref(), None, None)?;
+        expanded.reserve(items.len());
+        expanded.extend(items.into_iter().map(|item| ModelContentPart::File {
+            policy: FileProjectionPolicy::for_attachment(&item.file),
+            file: item.file,
+        }));
+    }
+    Ok(ModelContent::Parts(expanded))
 }
 
 /// Settled turn outputs: conversation content, which every fork of the agent
@@ -152,15 +202,29 @@ fn starting(agent: &AgentState, input: Option<Queued>) -> Result<Queued, Error> 
 }
 
 /// Model-visible content of a turn input: a message or event file as a file
-/// part, every other input as its canonical record text.
+/// part, followed by a message's attachment manifest by its exact version
+/// (which [`expand_attachments`] replaces with the files it lists), every
+/// other input as its canonical record text.
 pub fn model_input(input: &TurnInput) -> Result<ModelContent, Error> {
+    let body = |file: &FileRef| ModelContentPart::File {
+        file: file.clone(),
+        policy: FileProjectionPolicy::BoundedFull,
+    };
     Ok(match input {
+        TurnInput::Message {
+            body: file,
+            attachments: Some(manifest),
+            ..
+        } => ModelContent::Parts(vec![
+            body(file),
+            ModelContentPart::File {
+                file: FileRef::clone(manifest),
+                policy: FileProjectionPolicy::Reference,
+            },
+        ]),
         TurnInput::Brief { brief: file }
         | TurnInput::Message { body: file, .. }
-        | TurnInput::Hook { event: file, .. } => ModelContent::Part(ModelContentPart::File {
-            file: FileRef::clone(file),
-            policy: FileProjectionPolicy::BoundedFull,
-        }),
+        | TurnInput::Hook { event: file, .. } => ModelContent::Part(body(file)),
         other => {
             let text = String::from_utf8(encode(other)?)
                 .map_err(|_| Error::Record("turn input is not text"))?;
@@ -243,7 +307,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 .execute_progress(
                     ExecutorInput {
                         operation_id: turn,
-                        input: content,
+                        input: open.input.clone().unwrap_or(content),
                         selected_context: open.selected.clone(),
                         max_steps: open.max_steps,
                     },

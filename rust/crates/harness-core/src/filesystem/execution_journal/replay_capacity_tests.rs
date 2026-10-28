@@ -44,7 +44,6 @@ async fn journal() -> Result<(Journal, AuthorityRoot)> {
             volume: &volume,
             verifier: &issuer.verifier(&mut None)?,
             scope: &scope,
-            maximum_bytes: 4096,
             io: None,
         },
     )?;

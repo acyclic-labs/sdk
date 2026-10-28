@@ -12,6 +12,7 @@ fn message(name: &str) -> Result<TurnInput> {
         from: user(),
         id: intent(name),
         body: Box::new(file(name)?),
+        attachments: None,
     })
 }
 

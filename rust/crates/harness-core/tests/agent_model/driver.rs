@@ -194,6 +194,7 @@ impl TurnHost for Host {
             approvals: None,
             effects: Some(self.0.clone()),
             outputs: Arc::new(Unused),
+            input: None,
             goal: self
                 .1
                 .clone()
@@ -566,6 +567,7 @@ async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_bloc
         from: super::user(),
         id: intent("m1"),
         body: Box::new(file("prompt.md")?),
+        attachments: None,
     });
     let mut next = Some(user.clone());
     let mut sent = Vec::new();

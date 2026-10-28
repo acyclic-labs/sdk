@@ -148,7 +148,6 @@ async fn journal<P: StreamProvider + 'static>(
             volume: &volume,
             verifier: &verifier,
             scope: &scope,
-            maximum_bytes: MAXIMUM_FILE_BYTES,
             io: None,
         },
     )?

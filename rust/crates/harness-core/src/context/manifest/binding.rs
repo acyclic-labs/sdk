@@ -16,7 +16,7 @@ impl ContextManifest {
         limits: Limits,
         io: Option<&PreparationIo>,
     ) -> Result<(ToolRegistry, Arc<dyn ContextStage>)> {
-        crate::executor::with_history_io(io, |work| limits.validate_file(&reference, work))?;
+        crate::executor::with_history_io(io, |work| limits.validate_record(&reference, work))?;
         if reference.descriptor().media_type() != "application/json"
             || reference.descriptor().byte_length() > limits.render_bytes
         {

@@ -175,7 +175,6 @@ impl Fixture {
                 volume: &private,
                 verifier: &self.issuer.verifier(&mut None).expect("verifier copy"),
                 scope: &scope,
-                maximum_bytes: 32_768,
                 io: None,
             },
         )?

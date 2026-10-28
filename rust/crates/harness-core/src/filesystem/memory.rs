@@ -267,7 +267,6 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
                     volume: &volume,
                     verifier: &verifier,
                     scope: &scope,
-                    maximum_bytes: maximum_file_bytes,
                     io: None,
                 },
             )?

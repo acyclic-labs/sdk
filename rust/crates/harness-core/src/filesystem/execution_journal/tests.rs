@@ -56,7 +56,6 @@ async fn observation_reopen_preserves_original_turn_and_rejects_header_substitut
                 volume: &volume,
                 verifier: &issuer.verifier(&mut None).expect("verifier copy"),
                 scope: &scope,
-                maximum_bytes: 4096,
                 io: None,
             },
         )

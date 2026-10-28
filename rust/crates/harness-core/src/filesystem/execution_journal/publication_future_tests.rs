@@ -55,7 +55,6 @@ async fn fixture_with_filesystem(
             volume: &volume,
             verifier: &issuer.verifier(&mut None)?,
             scope: &scope,
-            maximum_bytes: 4096,
             io: None,
         },
     )?;
@@ -78,7 +77,6 @@ async fn separately_composed_journals_exclude_the_same_live_operation() -> Resul
             volume: &first.volume,
             verifier: &first.verifier,
             scope: &first.scope,
-            maximum_bytes: first.maximum_payload_bytes,
             io: None,
         },
     )?;

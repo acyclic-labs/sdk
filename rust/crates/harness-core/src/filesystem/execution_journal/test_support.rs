@@ -48,7 +48,6 @@ pub(in crate::filesystem::execution_journal) async fn journal() -> Result<(
             volume: &volume,
             verifier: &issuer.verifier(&mut None)?,
             scope: &scope,
-            maximum_bytes: 65_536,
             io: None,
         },
     )?;

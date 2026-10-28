@@ -546,6 +546,7 @@ impl WasmAgents {
             from: self.sender.clone(),
             id: IntentId::try_from(intent).map_err(agent_error)?,
             body: Box::new(body),
+            attachments: None,
         });
         self.deliver(self.agents.send(&path, &self.sender, &record).await)
     }

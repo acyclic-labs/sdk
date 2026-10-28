@@ -38,19 +38,7 @@ impl CommandResolution {
         for (index, mention) in mentions.into_iter().enumerate() {
             if selected.peek() == Some(&index) {
                 selected.next();
-                let policy = match mention.file.descriptor().media_type() {
-                    "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
-                        FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
-                            intent: crate::model::NativeMediaIntent::Image {
-                                detail: crate::model::ImageDetail::Auto,
-                            },
-                            maximum_bytes: crate::conversation::Limits::default().render_bytes,
-                            maximum_work: crate::conversation::Limits::default().render_bytes,
-                            configuration: None,
-                        }))
-                    }
-                    _ => FileProjectionPolicy::BoundedFull,
-                };
+                let policy = FileProjectionPolicy::for_attachment(&mention.file);
                 parts.push(ModelContentPart::File {
                     file: mention.file,
                     policy,

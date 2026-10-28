@@ -88,7 +88,7 @@ pub(crate) fn validate_projected_messages(
             message.content.validate_limits(limits, work)?;
         }
         for file in context.metadata.values() {
-            limits.validate_file(file, work)?;
+            limits.validate_record(file, work)?;
         }
         let borrowed = BorrowedContext {
             messages: ContextMessages {
