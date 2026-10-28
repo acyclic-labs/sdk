@@ -277,9 +277,16 @@ impl StockExecution<'_> {
             }) {
                 return Err(Error::Indeterminate(operation_id));
             }
+            // A claim acquires the dispatch: its key names this attempt, so a
+            // racer at the same tail is refused instead of recognised as a
+            // retry and running the tool twice. Settlements stay stable.
             let key = with_history_io(self.io, |work| {
                 preparation_format(
-                    format_args!("tool:{step}:{}:claim", invocation.call_id),
+                    format_args!(
+                        "tool:{step}:{}:claim:{}",
+                        invocation.call_id,
+                        OperationId::new()
+                    ),
                     work,
                 )
             })?;
