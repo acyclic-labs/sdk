@@ -1,4 +1,6 @@
-import init, { AgentGuest, WasmAgentProviders, WasmAgentRegistry, WasmAgents, WasmAgentAuthority } from "../generated/wasm/acyclic_harness_wasm.js";
+import { fromBinary } from "@bufbuild/protobuf";
+import { ReadResponseSchema, RecordBatchSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
+import init, { AgentGuest, WasmAgentProviders, WasmAgentRegistry, WasmAgents, WasmAgentAuthority, decodeClientJson } from "../generated/wasm/acyclic_harness_wasm.js";
 
 // Test composition only: the real Rust agent host over IndexedDB providers.
 // The model is a scripted host callback; scheduling and recovery stay in Rust.
@@ -24,7 +26,7 @@ export async function agentsFixture(id, reply, initialize = init) {
       model_steps: 16n, model_events_per_step: 64n, tool_calls_per_step: 16n, context_messages: 128n },
     principal: "browser-user",
     // The fixture host explicitly accepts every action its agents take.
-    preset: { model: null, prompt: null, tools: [], web_tools: false, max_steps: null, max_children: 8, approval_policy: { approvers: [{ kind: "rules", principal: "browser-user", rules: [], fallback: "allow" }] } },
+    preset: { model: null, prompt: null, tools: [], web_tools: false, max_steps: null, max_children: null, approval_policy: { approvers: [{ kind: "rules", principal: "browser-user", rules: [], fallback: "allow" }] } },
   };
   const failures = [];
   return { owner, registry, requests, failures,
@@ -47,13 +49,27 @@ export const modelTokenCount = (bytes, request_digest) => ({
   message_tokens: JSON.parse(new TextDecoder().decode(bytes)).messages.map(() => 0),
 });
 
-// Waits on durable state the page observes; the page deadline bounds it.
-export async function until(read, test, phase) {
-  for (;;) {
-    const value = await read();
-    if (test(value)) return value;
-    phase?.();
-    await new Promise(resolve => setTimeout(resolve, 20));
+// One atomic replay-to-live subscription; no state rechecks or timer.
+// The shared Rust cursor produces uncompressed canonical record batches.
+export async function until(agents, agent, stream, test) {
+  const cursor = await agents.follow(agent, stream, 0n);
+  const records = [];
+  try {
+    for (;;) {
+      const bytes = await cursor.next();
+      if (bytes === null) throw new Error(`${stream} ended before its condition`);
+      const frame = fromBinary(ReadResponseSchema, bytes);
+      if (frame.codec !== 0 || frame.decodedLength !== BigInt(frame.data.length)) {
+        throw new Error("agent follow returned a malformed canonical frame");
+      }
+      for (const record of fromBinary(RecordBatchSchema, frame.data).records) {
+        records.push({ sequence: record.sequence, value: decodeClientJson(record.value) });
+        if (test(records)) return records;
+      }
+    }
+  } finally {
+    cursor.close();
+    cursor.free();
   }
 }
 
