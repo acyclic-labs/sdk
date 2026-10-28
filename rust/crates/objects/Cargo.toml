@@ -73,7 +73,9 @@ workspace = true
 
 [dev-dependencies]
 divan.workspace = true
-tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt"] }
+hyper-util.workspace = true
+tokio = { version = "1.48.0", default-features = false, features = ["io-util", "macros", "rt", "time"] }
+tower = { workspace = true, features = ["util"] }
 
 [build-dependencies]
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }

@@ -895,6 +895,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.3",
  "hex",
+ "hyper-util",
  "libc",
  "object_store",
  "pin-project-lite",
@@ -911,6 +912,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-prost",
+ "tower",
  "tracing",
  "wasm-bindgen-test",
 ]

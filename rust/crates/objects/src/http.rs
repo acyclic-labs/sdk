@@ -1,7 +1,7 @@
 //! Authenticated blob client for the Protobuf-JSON HTTP gateway.
 use crate::{
-    Blobs, ByteRange, Collection, Delete, Digest, Error, Head, Manifest, Object, Page, Put,
-    Retained, RootId, Usage, convert, json, wire,
+    Blobs, ByteRange, Collection, Digest, Error, Head, Manifest, Object, Page, Put, Retained,
+    RootId, Usage, convert, json, wire,
 };
 pub use acyclic_auth::credential::CredentialProvider;
 use acyclic_stream::OwnedBytes;
@@ -271,7 +271,7 @@ impl Blobs for HttpObjects {
         Ok(head)
     }
 
-    async fn delete(&self, digest: Digest) -> Result<Delete, Error> {
+    async fn delete(&self, digest: Digest) -> Result<crate::Deletion, Error> {
         let reply: wire::DeleteBlobResponse = self
             .call(
                 "blobs/delete",
@@ -280,7 +280,10 @@ impl Blobs for HttpObjects {
                 },
             )
             .await?;
-        convert::delete(&reply)
+        Ok(crate::Deletion {
+            outcome: convert::delete(&reply)?,
+            revision: None,
+        })
     }
 
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
@@ -315,7 +318,7 @@ impl Blobs for HttpObjects {
         Ok(convert::retained(&reply))
     }
 
-    async fn release(&self, root: &RootId) -> Result<bool, Error> {
+    async fn release(&self, root: &RootId) -> Result<crate::Released, Error> {
         let reply: wire::ReleaseResponse = self
             .call(
                 "blobs/release",
@@ -324,7 +327,10 @@ impl Blobs for HttpObjects {
                 },
             )
             .await?;
-        Ok(reply.existed)
+        Ok(crate::Released {
+            existed: reply.existed,
+            revision: None,
+        })
     }
 
     async fn collect(&self) -> Result<Collection, Error> {

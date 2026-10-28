@@ -395,7 +395,8 @@ fn objects_service_code(error: &acyclic_objects::Error) -> Code {
     match error.code {
         E::InvalidArgument | E::DigestMismatch => Code::InvalidArgument,
         E::NotFound => Code::NotFound,
-        E::MissingReference | E::Conflict => Code::FailedPrecondition,
+        E::MissingReference | E::Conflict | E::RevisionForeign => Code::FailedPrecondition,
+        E::DeadlineElapsed => Code::DeadlineExceeded,
         E::AccessDenied => Code::PermissionDenied,
         E::QuotaExceeded => Code::ResourceExhausted,
         E::Unavailable | E::Suspended | E::OutcomeUnknown => Code::Unavailable,

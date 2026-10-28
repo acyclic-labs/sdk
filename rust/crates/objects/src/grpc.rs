@@ -1,18 +1,25 @@
 //! Authenticated gRPC client and account-resolving service adapter.
 use crate::convert;
 use crate::{
-    Blobs, ByteRange, Collection, Delete, Digest, Error, Head, Manifest, Object, Page, Put,
+    Blobs, ByteRange, Collection, Deletion, Digest, Error, Head, Manifest, Object, Page, Put,
     Retained, RootId, Usage, wire,
 };
 pub use acyclic_auth::credential::CredentialProvider;
-use acyclic_stream::OwnedBytes;
+use acyclic_stream::wire_codec::{cut_from_wire, revision_from_wire, revision_to_wire};
+use acyclic_stream::{OwnedBytes, Revision, RevisionCut, RevisionTracker, StreamError};
 use prost::Message;
 use std::sync::Arc;
 use tonic::{
     Request,
-    metadata::{Ascii, MetadataMap, MetadataValue},
+    metadata::{Ascii, Binary, MetadataMap, MetadataValue},
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity},
 };
+
+/// Request metadata: one minimum revision per authority, as the protobuf bytes
+/// of the shared `acyclic.stream.v1.Revision`.
+pub const MINIMUM_REVISION: &str = "acyclic-min-revision-bin";
+/// Response metadata: the revision committing a write or serving a read.
+pub const REVISION: &str = "acyclic-revision-bin";
 
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const MAX_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
@@ -50,9 +57,18 @@ pub struct GrpcObjects {
     authorization: Option<MetadataValue<Ascii>>,
     credential: Option<CredentialProvider>,
     transfer_timeout: std::time::Duration,
+    revisions: Arc<RevisionTracker>,
 }
 
 impl GrpcObjects {
+    /// The last revision observed per authority, shared by every clone and
+    /// forwarded as the minimum of each GET, HEAD and LIST. Observing a
+    /// revision another client returned makes later reads cover it.
+    #[must_use]
+    pub fn revisions(&self) -> &RevisionTracker {
+        &self.revisions
+    }
+
     /// Sets the finite deadline for body-carrying calls.
     pub fn with_transfer_timeout(
         mut self,
@@ -141,18 +157,28 @@ impl GrpcObjects {
             .timeout(MAX_TRANSFER_TIMEOUT)
             .connect()
             .await?;
-        Ok(Self {
+        Ok(Self::over(channel, authorization, credential))
+    }
+
+    fn over(
+        channel: Channel,
+        authorization: Option<MetadataValue<Ascii>>,
+        credential: Option<CredentialProvider>,
+    ) -> Self {
+        Self {
             channel,
             authorization,
             credential,
             transfer_timeout: REQUEST_TIMEOUT,
-        })
+            revisions: Arc::default(),
+        }
     }
 
     async fn request<T>(
         &self,
         value: T,
         timeout: std::time::Duration,
+        floor: Option<&RevisionCut>,
     ) -> Result<Request<T>, Error> {
         let authorization = if let Some(provider) = &self.credential {
             let token = provider
@@ -170,7 +196,56 @@ impl GrpcObjects {
         request
             .metadata_mut()
             .insert("authorization", authorization);
+        for minimum in floor.into_iter().flat_map(RevisionCut::iter) {
+            request.metadata_mut().append_bin(
+                MINIMUM_REVISION,
+                MetadataValue::from_bytes(&revision_to_wire(minimum).encode_to_vec()),
+            );
+        }
         Ok(request)
+    }
+
+    /// Observes the revision a reply carries. A read served below the minimum
+    /// it forwarded for that authority, or without any revision, is refused,
+    /// never exposed.
+    fn observed<T>(
+        &self,
+        reply: Result<tonic::Response<T>, tonic::Status>,
+        floor: Option<&RevisionCut>,
+    ) -> Result<(T, Option<Revision>), Error> {
+        let (metadata, outcome) = match reply {
+            Ok(response) => {
+                let (metadata, value, _) = response.into_parts();
+                (metadata, Ok(value))
+            }
+            Err(status) => (status.metadata().clone(), Err(error_from_status(&status))),
+        };
+        if let Err(error) = &outcome
+            && error.code == wire::ErrorCode::RevisionForeign
+        {
+            self.revisions.refused(&StreamError::RevisionForeign);
+        }
+        let revision = issued(&metadata)?;
+        // A server that ignored the minimum reports no revision; its read
+        // proves nothing about the floor.
+        if outcome.is_ok() && revision.is_none() && floor.is_some_and(|floor| !floor.is_empty()) {
+            return Err(wire::ErrorCode::Unavailable.into());
+        }
+        if let Some(revision) = &revision {
+            // Only a reply that served a read can be stale; a refused wait
+            // reports its own failure.
+            if outcome.is_ok()
+                && floor
+                    .and_then(|floor| floor.get(&revision.scope))
+                    .is_some_and(|minimum| {
+                        minimum.same_authority(revision) && minimum.index > revision.index
+                    })
+            {
+                return Err(wire::ErrorCode::Unavailable.into());
+            }
+            self.revisions.observe(revision);
+        }
+        outcome.map(|value| (value, revision))
     }
 
     fn client(&self) -> wire::blobs_service_client::BlobsServiceClient<Channel> {
@@ -198,6 +273,7 @@ fn error_from_status(status: &tonic::Status) -> Error {
         tonic::Code::OutOfRange => wire::ErrorCode::RangeNotSatisfiable,
         tonic::Code::Unimplemented => wire::ErrorCode::Unsupported,
         tonic::Code::DataLoss => wire::ErrorCode::Corrupt,
+        tonic::Code::DeadlineExceeded => wire::ErrorCode::DeadlineElapsed,
         _ => wire::ErrorCode::Unavailable,
     }
     .into()
@@ -211,7 +287,9 @@ fn status(error: Error) -> tonic::Status {
         wire::ErrorCode::NotFound => tonic::Code::NotFound,
         wire::ErrorCode::MissingReference
         | wire::ErrorCode::Conflict
-        | wire::ErrorCode::Suspended => tonic::Code::FailedPrecondition,
+        | wire::ErrorCode::Suspended
+        | wire::ErrorCode::RevisionForeign => tonic::Code::FailedPrecondition,
+        wire::ErrorCode::DeadlineElapsed => tonic::Code::DeadlineExceeded,
         wire::ErrorCode::QuotaExceeded => tonic::Code::ResourceExhausted,
         wire::ErrorCode::Unsupported => tonic::Code::Unimplemented,
         wire::ErrorCode::AccessDenied => tonic::Code::PermissionDenied,
@@ -230,15 +308,45 @@ fn status(error: Error) -> tonic::Status {
     )
 }
 
+/// The revision a response carries, if any; a malformed one is unavailable.
+fn issued(metadata: &MetadataMap) -> Result<Option<Revision>, Error> {
+    metadata
+        .get_bin(REVISION)
+        .map(|value| {
+            let bytes = value
+                .to_bytes()
+                .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?;
+            acyclic_stream::wire::Revision::decode(bytes)
+                .ok()
+                .and_then(|revision| revision_from_wire(revision).ok())
+                .ok_or_else(|| wire::ErrorCode::Unavailable.into())
+        })
+        .transpose()
+}
+
+/// Writes carry no minimum; GET, HEAD and LIST forward the tracked floor.
 macro_rules! call {
     ($self:ident, $rpc:ident, $value:expr, $timeout:expr) => {
-        $self
-            .client()
-            .$rpc($self.request($value, $timeout).await?)
-            .await
-            .map(tonic::Response::into_inner)
-            .map_err(|status| error_from_status(&status))
+        call!($self, $rpc, $value, $timeout, None)
     };
+    ($self:ident, $rpc:ident, $value:expr, $timeout:expr, read) => {{
+        let floor = $self.revisions.floor(&RevisionCut::default());
+        call!($self, $rpc, $value, $timeout, Some(&floor))
+    }};
+    ($self:ident, $rpc:ident, $value:expr, $timeout:expr, $floor:expr) => {{
+        let floor: Option<&RevisionCut> = $floor;
+        let request = $self.request($value, $timeout, floor).await?;
+        // The client owns its deadline: a failure once it elapsed is the
+        // deadline, whichever side's cancellation reported it first.
+        let started = tokio::time::Instant::now();
+        match tokio::time::timeout($timeout, $self.client().$rpc(request)).await {
+            Ok(Err(_)) if started.elapsed() >= $timeout => {
+                Err(wire::ErrorCode::DeadlineElapsed.into())
+            }
+            Ok(reply) => $self.observed(reply, floor),
+            Err(_) => Err(wire::ErrorCode::DeadlineElapsed.into()),
+        }
+    }};
 }
 
 #[async_trait::async_trait]
@@ -255,7 +363,7 @@ impl Blobs for GrpcObjects {
             },
             self.transfer_timeout
         )?;
-        let put = convert::put(&reply)?;
+        let put = committed(convert::put(&reply.0)?, reply.1);
         if put.verified().is_some_and(|verified| {
             verified.digest != digest || verified.length != body.len() as u64
         }) {
@@ -275,7 +383,7 @@ impl Blobs for GrpcObjects {
             },
             REQUEST_TIMEOUT
         )?;
-        let put = convert::put(&reply)?;
+        let put = committed(convert::put(&reply.0)?, reply.1);
         if put
             .verified()
             .is_some_and(|verified| verified.digest != digest || verified.length != length)
@@ -299,9 +407,10 @@ impl Blobs for GrpcObjects {
                 range: Some(convert::range(range)),
                 maximum_bytes,
             },
-            self.transfer_timeout
+            self.transfer_timeout,
+            read
         )?;
-        convert::object(reply, digest, range, maximum_bytes)
+        Ok(convert::object(reply.0, digest, range, maximum_bytes)?.served_at(reply.1))
     }
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
@@ -311,16 +420,18 @@ impl Blobs for GrpcObjects {
             wire::HeadBlobRequest {
                 digest: Some(digest.into()),
             },
-            REQUEST_TIMEOUT
+            REQUEST_TIMEOUT,
+            read
         )?;
-        let head = convert::head(&reply)?;
+        let mut head = convert::head(&reply.0)?;
         if head.digest != digest {
             return Err(wire::ErrorCode::Unavailable.into());
         }
+        head.revision = reply.1;
         Ok(head)
     }
 
-    async fn delete(&self, digest: Digest) -> Result<Delete, Error> {
+    async fn delete(&self, digest: Digest) -> Result<Deletion, Error> {
         let reply = call!(
             self,
             delete_blob,
@@ -329,7 +440,10 @@ impl Blobs for GrpcObjects {
             },
             REQUEST_TIMEOUT
         )?;
-        convert::delete(&reply)
+        Ok(Deletion {
+            outcome: convert::delete(&reply.0)?,
+            revision: reply.1,
+        })
     }
 
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
@@ -340,9 +454,11 @@ impl Blobs for GrpcObjects {
                 after: after.map(Into::into),
                 limit,
             },
-            REQUEST_TIMEOUT
+            REQUEST_TIMEOUT,
+            read
         )?;
-        let page = convert::page(&reply)?;
+        let mut page = convert::page(&reply.0)?;
+        page.revision = reply.1;
         if page.digests.len() > limit as usize
             || after.is_some_and(|after| page.digests.first().is_some_and(|first| *first <= after))
         {
@@ -361,10 +477,12 @@ impl Blobs for GrpcObjects {
             },
             REQUEST_TIMEOUT
         )?;
-        Ok(convert::retained(&reply))
+        let mut retained = convert::retained(&reply.0);
+        retained.revision = reply.1;
+        Ok(retained)
     }
 
-    async fn release(&self, root: &RootId) -> Result<bool, Error> {
+    async fn release(&self, root: &RootId) -> Result<crate::Released, Error> {
         let reply = call!(
             self,
             release,
@@ -373,7 +491,10 @@ impl Blobs for GrpcObjects {
             },
             REQUEST_TIMEOUT
         )?;
-        Ok(reply.existed)
+        Ok(crate::Released {
+            existed: reply.0.existed,
+            revision: reply.1,
+        })
     }
 
     async fn collect(&self) -> Result<Collection, Error> {
@@ -383,12 +504,29 @@ impl Blobs for GrpcObjects {
             wire::CollectRequest {},
             self.transfer_timeout
         )?;
-        Ok(convert::collection(&reply))
+        let mut collection = convert::collection(&reply.0);
+        collection.revision = reply.1;
+        Ok(collection)
     }
 
     async fn usage(&self) -> Result<Usage, Error> {
         let reply = call!(self, usage, wire::UsageRequest {}, REQUEST_TIMEOUT)?;
-        Ok(convert::usage(&reply))
+        Ok(convert::usage(&reply.0))
+    }
+}
+
+/// Stamps a durable put with the revision its reply committed.
+fn committed(put: Put, revision: Option<Revision>) -> Put {
+    match put {
+        Put::Created { mut verified } => {
+            verified.revision = revision;
+            Put::Created { verified }
+        }
+        Put::AlreadyExists { mut verified } => {
+            verified.revision = revision;
+            Put::AlreadyExists { verified }
+        }
+        Put::Unknown => Put::Unknown,
     }
 }
 
@@ -424,68 +562,183 @@ impl BlobsServer {
 
 type Reply<T> = Result<tonic::Response<T>, tonic::Status>;
 
-fn reply<T>(value: Result<T, Error>) -> Reply<T> {
-    value.map(tonic::Response::new).map_err(status)
+/// Waits until `blobs` applies the request's minimum, bounded by its call
+/// deadline. A minimum the account cannot prove is foreign.
+async fn applied(blobs: &dyn Blobs, metadata: &MetadataMap) -> Result<(), Error> {
+    let minimum = cut_from_wire(
+        metadata
+            .get_all_bin(MINIMUM_REVISION)
+            .iter()
+            .map(|value| {
+                let bytes = value
+                    .to_bytes()
+                    .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+                acyclic_stream::wire::Revision::decode(bytes)
+                    .map_err(|_| wire::ErrorCode::InvalidArgument.into())
+            })
+            .collect::<Result<Vec<_>, Error>>()?,
+    )
+    .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+    let minimum = blobs.admitted(minimum).await?;
+    if minimum.is_empty() {
+        return Ok(());
+    }
+    let revisions = blobs
+        .revisions()
+        .await?
+        .ok_or(Error::from(wire::ErrorCode::RevisionForeign))?;
+    let wait = std::pin::pin!(revisions.wait(&minimum));
+    let deadline = std::pin::pin!(deadline(metadata));
+    match futures::future::select(wait, deadline).await {
+        futures::future::Either::Left((Ok(_), _)) => Ok(()),
+        futures::future::Either::Left((Err(StreamError::RevisionForeign), _)) => {
+            Err(wire::ErrorCode::RevisionForeign.into())
+        }
+        futures::future::Either::Left((Err(_), _)) => Err(wire::ErrorCode::Unavailable.into()),
+        futures::future::Either::Right(((), _)) => Err(wire::ErrorCode::DeadlineElapsed.into()),
+    }
+}
+
+/// Resolves at the call's `grpc-timeout`; a call without one waits as long as
+/// its transport keeps it.
+async fn deadline(metadata: &MetadataMap) {
+    match metadata
+        .get("grpc-timeout")
+        .and_then(|value| value.to_str().ok())
+        .and_then(grpc_timeout)
+    {
+        Some(timeout) => tokio::time::sleep(timeout).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Parses the gRPC `TimeoutValue TimeoutUnit` spelling.
+fn grpc_timeout(value: &str) -> Option<std::time::Duration> {
+    let (amount, unit) = value.split_at(value.len().checked_sub(1)?);
+    if amount.is_empty() || amount.len() > 8 || !amount.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let amount: u64 = amount.parse().ok()?;
+    Some(match unit {
+        "H" => std::time::Duration::from_secs(amount.checked_mul(3600)?),
+        "M" => std::time::Duration::from_secs(amount.checked_mul(60)?),
+        "S" => std::time::Duration::from_secs(amount),
+        "m" => std::time::Duration::from_millis(amount),
+        "u" => std::time::Duration::from_micros(amount),
+        "n" => std::time::Duration::from_nanos(amount),
+        _ => return None,
+    })
+}
+
+fn stamp(metadata: &mut MetadataMap, revision: Option<&Revision>) {
+    if let Some(revision) = revision {
+        metadata.insert_bin(
+            REVISION,
+            MetadataValue::<Binary>::from_bytes(&revision_to_wire(revision).encode_to_vec()),
+        );
+    }
+}
+
+/// Serves one route: a read first waits for its minimum; every reply carries
+/// its revision, and a failure the account's current one.
+async fn serve<T, F>(blobs: &dyn Blobs, metadata: &MetadataMap, read: bool, route: F) -> Reply<T>
+where
+    F: Future<Output = Result<crate::route::Served<T>, Error>>,
+{
+    let outcome = if read {
+        match applied(blobs, metadata).await {
+            Ok(()) => route.await,
+            Err(error) => Err(error),
+        }
+    } else {
+        route.await
+    };
+    match outcome {
+        Ok((value, revision)) => {
+            let mut response = tonic::Response::new(value);
+            stamp(response.metadata_mut(), revision.as_ref());
+            Ok(response)
+        }
+        Err(error) => {
+            let mut status = status(error);
+            let current = blobs
+                .revisions()
+                .await
+                .ok()
+                .flatten()
+                .map(acyclic_stream::AppliedRevisions::current);
+            stamp(status.metadata_mut(), current.as_ref());
+            Err(status)
+        }
+    }
+}
+
+macro_rules! serve {
+    ($self:ident, $request:ident, $route:ident, $read:expr) => {{
+        let blobs = $self.account(&$request)?;
+        let (metadata, _, message) = $request.into_parts();
+        serve(
+            &*blobs,
+            &metadata,
+            $read,
+            crate::route::$route(&*blobs, message),
+        )
+        .await
+    }};
 }
 
 #[tonic::async_trait]
 impl wire::blobs_service_server::BlobsService for BlobsServer {
     async fn put_blob(&self, request: Request<wire::PutBlobRequest>) -> Reply<wire::PutResponse> {
-        let blobs = self.account(&request)?;
-        reply(crate::route::put_blob(&*blobs, request.into_inner()).await)
+        serve!(self, request, put_blob, false)
     }
     async fn put_manifest(
         &self,
         request: Request<wire::PutManifestRequest>,
     ) -> Reply<wire::PutResponse> {
-        let blobs = self.account(&request)?;
-        reply(crate::route::put_manifest(&*blobs, request.into_inner()).await)
+        serve!(self, request, put_manifest, false)
     }
     async fn get_blob(
         &self,
         request: Request<wire::GetBlobRequest>,
     ) -> Reply<wire::GetBlobResponse> {
-        let blobs = self.account(&request)?;
-        reply(crate::route::get_blob(&*blobs, request.into_inner()).await)
+        serve!(self, request, get_blob, true)
     }
     async fn head_blob(&self, request: Request<wire::HeadBlobRequest>) -> Reply<wire::BlobInfo> {
-        let blobs = self.account(&request)?;
-        reply(crate::route::head_blob(&*blobs, request.into_inner()).await)
+        serve!(self, request, head_blob, true)
     }
     async fn delete_blob(
         &self,
         request: Request<wire::DeleteBlobRequest>,
     ) -> Reply<wire::DeleteBlobResponse> {
-        let blobs = self.account(&request)?;
-        reply(crate::route::delete_blob(&*blobs, request.into_inner()).await)
+        serve!(self, request, delete_blob, false)
     }
     async fn list_blobs(
         &self,
         request: Request<wire::ListBlobsRequest>,
     ) -> Reply<wire::ListBlobsResponse> {
-        let blobs = self.account(&request)?;
-        reply(crate::route::list_blobs(&*blobs, request.into_inner()).await)
+        serve!(self, request, list_blobs, true)
     }
     async fn retain(&self, request: Request<wire::RetainRequest>) -> Reply<wire::RetainResponse> {
-        let blobs = self.account(&request)?;
-        reply(crate::route::retain(&*blobs, request.into_inner()).await)
+        serve!(self, request, retain, false)
     }
     async fn release(
         &self,
         request: Request<wire::ReleaseRequest>,
     ) -> Reply<wire::ReleaseResponse> {
-        let blobs = self.account(&request)?;
-        reply(crate::route::release(&*blobs, request.into_inner()).await)
+        serve!(self, request, release, false)
     }
     async fn collect(
         &self,
         request: Request<wire::CollectRequest>,
     ) -> Reply<wire::CollectResponse> {
-        let blobs = self.account(&request)?;
-        reply(crate::route::collect(&*blobs, request.into_inner()).await)
+        serve!(self, request, collect, false)
     }
     async fn usage(&self, request: Request<wire::UsageRequest>) -> Reply<wire::UsageResponse> {
-        let blobs = self.account(&request)?;
-        reply(crate::route::usage(&*blobs, request.into_inner()).await)
+        serve!(self, request, usage, false)
     }
 }
+
+#[cfg(test)]
+#[path = "grpc_tests.rs"]
+mod tests;

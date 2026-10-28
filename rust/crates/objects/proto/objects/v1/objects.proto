@@ -135,6 +135,13 @@ message UsageResponse {
   uint64 blobs = 1;
   uint64 unique_bytes = 2;
 }
+// Read-your-writes rides gRPC binary metadata as the shared Streams token
+// acyclic.stream.v1.Revision (protobuf bytes). Requests may repeat
+// `acyclic-min-revision-bin`, one value per authority: GET, HEAD and LIST wait,
+// bounded by the call deadline, until the account applies it, and refuse a
+// foreign scope or incarnation with ERROR_CODE_REVISION_FOREIGN. Every
+// response, including failures, may carry `acyclic-revision-bin`: a write's
+// committed revision, or the applied revision a read was served at.
 service BlobsService {
   rpc PutBlob(PutBlobRequest) returns (PutResponse) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/blobs" }; }
   rpc PutManifest(PutManifestRequest) returns (PutResponse) { option (acyclic.validation.v1.auth) = { action: "objects/put" resource: "objects:/blobs" }; }
@@ -168,6 +175,10 @@ enum ErrorCode {
   ERROR_CODE_SUSPENDED = 12;
   // A retain or release could not be confirmed; repeating it is safe.
   ERROR_CODE_OUTCOME_UNKNOWN = 13;
+  // A minimum revision names another account scope or catalog incarnation.
+  ERROR_CODE_REVISION_FOREIGN = 14;
+  // The call deadline elapsed before its minimum revision applied.
+  ERROR_CODE_DEADLINE_ELAPSED = 15;
 }
 // Customer diagnostic identity; operator topology stays in protected evidence.
 message ErrorDetail {
