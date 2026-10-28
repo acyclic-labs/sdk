@@ -32,6 +32,8 @@ impl Drop for Abort {
 
 struct Owner(Option<Mutex<Option<CommandGate>>>);
 struct CommandGate {
+    command: &'static str,
+    skip: usize,
     entered: oneshot::Sender<()>,
     decision: oneshot::Receiver<()>,
 }
@@ -41,11 +43,27 @@ impl acyclic_harness::hosting::Platform for Owner {
         _: &'a Principal,
         command: &'a AgentCommand,
     ) -> BoxProviderFuture<'a, Result<PolicyDecision, StreamError>> {
-        let gate = if matches!(command, AgentCommand::Root {}) {
-            self.0.as_ref().and_then(|gate| gate.lock().unwrap().take())
-        } else {
-            None
+        let kind = match command {
+            AgentCommand::Bind {} => "bind",
+            AgentCommand::Root {} => "root",
+            AgentCommand::Children { .. } => "children",
+            AgentCommand::Approvals { .. } => "approvals",
+            AgentCommand::Settlement { .. } => "settlement",
+            AgentCommand::Prompt { .. } => "prompt",
+            AgentCommand::Reply { .. } => "reply",
+            AgentCommand::Read { .. } => "read",
+            _ => "other",
         };
+        let gate = self.0.as_ref().and_then(|gate| {
+            let mut gate = gate.lock().unwrap();
+            let pending = gate.as_mut().filter(|gate| gate.command == kind)?;
+            if pending.skip != 0 {
+                pending.skip -= 1;
+                None
+            } else {
+                gate.take()
+            }
+        });
         Box::pin(async move {
             if let Some(gate) = gate {
                 let _ = gate.entered.send(());
@@ -181,13 +199,17 @@ fn composition(
 enum Producer {
     Complete,
     Model,
-    Command,
+    Command {
+        command: &'static str,
+        skip: usize,
+        case: &'static str,
+    },
     Host,
 }
 
 async fn run(producer: Producer) -> Outcome {
     let drop_model = matches!(producer, Producer::Model);
-    let drop_command = matches!(producer, Producer::Command | Producer::Host);
+    let drop_command = matches!(producer, Producer::Command { .. } | Producer::Host);
     eprintln!(
         "STEP endpoint-vector start; closed-model={drop_model}; closed-command={drop_command}"
     );
@@ -201,6 +223,14 @@ async fn run(producer: Producer) -> Outcome {
     let (command, commanding) = oneshot::channel();
     let owner = Owner(drop_command.then(|| {
         Mutex::new(Some(CommandGate {
+            command: match producer {
+                Producer::Command { command, .. } => command,
+                _ => "root",
+            },
+            skip: match producer {
+                Producer::Command { skip, .. } => skip,
+                _ => 0,
+            },
             entered: command,
             decision,
         }))
@@ -243,6 +273,12 @@ async fn run(producer: Producer) -> Outcome {
             let _ = waiting.send(());
         }
     });
+    // Command vectors keep the model producer alive and ready. A refusal of
+    // a later command must not manufacture a second, unrelated model failure.
+    let mut output = Some(output);
+    if matches!(producer, Producer::Command { .. }) {
+        let _ = output.take().unwrap().send(());
+    }
     tokio::pin!(qualification);
     let result = tokio::select! {
         result = &mut qualification => result,
@@ -254,7 +290,8 @@ async fn run(producer: Producer) -> Outcome {
             eprintln!("STEP producer wait armed; closed-model={drop_model}; closed-command={drop_command}");
             if matches!(producer, Producer::Host) { drop(stop.take()); }
             else if drop_command { drop(deciding); }
-            if drop_model || drop_command { drop(output); } else { let _ = output.send(()); }
+            if drop_model || drop_command { drop(output.take()); }
+            else if let Some(output) = output.take() { let _ = output.send(()); }
             qualification.await
         }
     };
@@ -274,7 +311,13 @@ async fn run(producer: Producer) -> Outcome {
             ))
         ));
         if drop_command {
-            assert_eq!(failure.case, "root");
+            assert_eq!(
+                failure.case,
+                match producer {
+                    Producer::Command { case, .. } => case,
+                    _ => "root",
+                }
+            );
             serving?;
         } else {
             assert!(serving.is_err());
@@ -291,7 +334,26 @@ async fn graphcoder_on_actors_and_closed_producer_liveness() -> Outcome {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         run(Producer::Complete).await?;
         run(Producer::Model).await?;
-        run(Producer::Command).await?;
+        for (command, skip, case) in [
+            ("bind", 0, "bind"),
+            ("root", 0, "root"),
+            ("children", 0, "discovery_pages"),
+            ("approvals", 0, "discovery_pages"),
+            ("prompt", 0, "prompt"),
+            ("prompt", 1, "prompt_retry"),
+            ("prompt", 2, "changed_prompt"),
+            ("settlement", 0, "tree_admission"),
+            ("settlement", 1, "reply_cut"),
+            ("reply", 0, "reply"),
+            ("read", 0, "output"),
+        ] {
+            run(Producer::Command {
+                command,
+                skip,
+                case,
+            })
+            .await?;
+        }
         run(Producer::Host).await?;
         // The connection producer is a real listening socket, not a scripted
         // HTTP response. Closing it must retain the original typed dial error.

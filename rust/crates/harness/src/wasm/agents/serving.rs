@@ -45,10 +45,10 @@ impl hosting::Platform for Policy {
                     &js_sys::Uint8Array::from(principal.as_slice()),
                     &command,
                 )
-                .map_err(|_| StreamError::AccessDenied)?;
+                .map_err(|_| StreamError::Unavailable)?;
             let result = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&result))
                 .await
-                .map_err(|_| StreamError::AccessDenied)?;
+                .map_err(|_| StreamError::Unavailable)?;
             match result.as_bool() {
                 Some(true) => Ok(PolicyDecision::Allow),
                 Some(false) => Ok(PolicyDecision::Deny),

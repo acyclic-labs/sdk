@@ -130,10 +130,10 @@ pub async fn verify_with_reply_wait(
             &acyclic_harness_client::AgentId::from_bytes([1; 16]),
         );
     }
-    if !matches!(execute(&controls, &AgentCommand::Settlement { agent: foreign }).await,
-        Err(AgentExchangeError::Control(error)) if error.code() == "no_such_agent")
-    {
-        return Err(failure("tree_admission", "endpoint exposed a foreign tree"));
+    match execute(&controls, &AgentCommand::Settlement { agent: foreign }).await {
+        Err(AgentExchangeError::Control(error)) if error.code() == "no_such_agent" => {}
+        Err(error) => return Err(exchange_failure("tree_admission", error)),
+        Ok(_) => return Err(failure("tree_admission", "endpoint exposed a foreign tree")),
     }
     let command = AgentCommand::Prompt {
         agent: agent.clone(),
@@ -170,6 +170,7 @@ pub async fn verify_with_reply_wait(
     };
     match execute(&controls, &changed).await {
         Err(AgentExchangeError::Control(error)) if error.code() == "agent_conflict" => {}
+        Err(error) => return Err(exchange_failure("changed_prompt", error)),
         result => {
             return Err(failure(
                 "changed_prompt",

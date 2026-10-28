@@ -50,8 +50,10 @@ cargo test -p acyclic-conformance --features actors-hosting --test hosted_actors
 
 It runs the public endpoint vectors through the GraphCoder composition and a
 controlled model producer, then drops that producer while a reply is pending.
-It also drops the current authorization decision's producer during an in-flight
-command and the owning server during that wait. These waits must end with typed
+It also drops the current authorization decision's producer at each public
+command wait: binding, root, children, approvals, foreign-tree refusal, initial
+prompt, exact retry, conflicting retry, settlement, reply and output read. The
+owning server is dropped during an in-flight root command. These waits must end with typed
 `Unavailable`; a closed listener retains its original typed connection error.
 It checks the GraphCoder
 prompt at model dispatch. This check does not qualify a live inference

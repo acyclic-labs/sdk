@@ -3,7 +3,19 @@ use acyclic_conformance::client::endpoint::{Scenario, connect, verify};
 use acyclic_harness_client::ConnectionOptions;
 
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> std::process::ExitCode {
+    match run().await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!(
+                "STEP client-conformance failed: {error}; recovery: cargo run -p acyclic-conformance --features client-session --bin client-conformance -- [--endpoint URL] --scenario FILE"
+            );
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut endpoint = None;
     let mut scenario = None;
     let mut arguments = std::env::args().skip(1);
