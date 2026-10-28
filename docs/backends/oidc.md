@@ -19,6 +19,11 @@ attenuates that parent through the existing issuer and returns
 existing agent, volume, audience, revocation and expiry checks still apply.
 Claims cannot select grants, agents, roots or a local-root fallback.
 
+The issuer and JWKS URI are host-pinned identity configuration. The managed
+harness client's `ConnectionOptions` resolves its endpoint and account
+credential separately; `ACYCLIC_ENDPOINT` and `ACYCLIC_API_KEY` do not select an
+issuer, change the JWKS URI or become credentials on a JWKS request.
+
 The minted scope expires at the earliest of token expiry, parent expiry and the
 host's maximum lifetime. The default maximum is 900 seconds; hosts may narrow it
 to 1–900 seconds. Token expiry is strict. Issuer, subject, audience, multiple-
