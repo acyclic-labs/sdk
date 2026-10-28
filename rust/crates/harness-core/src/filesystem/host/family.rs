@@ -1,11 +1,19 @@
 //! Immutable project refs remain readable across selected branch views.
 use super::*;
-use acyclic_fs::{WorkspaceGraph, WorkspaceId, WorkspaceLineageStore};
+use acyclic_fs::{
+    GitCompatRepository, GitCompatStore, WorkspaceGraph, WorkspaceId, WorkspaceLineageStore,
+};
 
 pub(super) trait ProjectFamily<A: 'static, O: 'static>:
     acyclic_stream::ProviderPlatform
 {
     fn applies(&self, root: WorkspaceId) -> bool;
+    fn current<'a>(
+        &'a self,
+        host: &'a FilesystemHost<A, O>,
+        root: &'a Workspace<A, O>,
+        io: &'a PreparationIo,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, Workspace<A, O>>>>;
     fn generation<'a>(
         &'a self,
         host: &'a FilesystemHost<A, O>,
@@ -23,11 +31,63 @@ struct Family<S> {
 impl<
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
-    S: WorkspaceLineageStore + Clone,
+    S: WorkspaceLineageStore + GitCompatStore + Clone,
 > ProjectFamily<A, O> for Family<S>
 {
     fn applies(&self, root: WorkspaceId) -> bool {
         self.root.is_none_or(|bound| bound == root)
+    }
+
+    fn current<'a>(
+        &'a self,
+        host: &'a FilesystemHost<A, O>,
+        root: &'a Workspace<A, O>,
+        io: &'a PreparationIo,
+    ) -> Result<Option<crate::conversation::BoundedContentFuture<'a, Workspace<A, O>>>> {
+        // Physical hosts already bind their selected workspace. Only provider
+        // clients obtain the current view from the shared durable repository.
+        if self.root.is_some() {
+            return Ok(None);
+        }
+        Ok(Some(crate::conversation::BoundedContentFuture::new(
+            Some(io),
+            || async move {
+                io.check_cancellation()?;
+                if io.original_native_work().is_some() {
+                    return Err(stock_boundary(
+                        Some(io),
+                        crate::wire::ErrorCode::Unsupported,
+                        "project selection requires ordinary workspace execution",
+                    ));
+                }
+                let repository = GitCompatRepository::new(root.id(), self.store.clone());
+                let (selected, pending) = repository
+                    .checkout_selection()
+                    .await
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+                io.check_cancellation()?;
+                if pending.is_some() {
+                    return Err(Error::Conflict(
+                        "filesystem checkout requires its original publication reconciliation"
+                            .into(),
+                    ));
+                }
+                if selected == root.id() {
+                    return Ok(root.clone());
+                }
+                let graph = WorkspaceGraph::new(self.store.clone());
+                authorize(&graph, root.id(), selected).await?;
+                io.check_cancellation()?;
+                let selected = acyclic_fs::WorkspaceResolver::resolve(
+                    &(host.filesystem.clone(), graph),
+                    selected,
+                )
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?;
+                io.check_cancellation()?;
+                Ok(selected)
+            },
+        )?))
     }
 
     fn generation<'a>(
@@ -46,7 +106,7 @@ impl<
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Binds the original project's durable ancestry before sharing its host.
     #[doc(hidden)]
-    pub fn with_project_family<S: WorkspaceLineageStore + Clone + 'static>(
+    pub fn with_project_family<S: WorkspaceLineageStore + GitCompatStore + Clone + 'static>(
         mut self: Arc<Self>,
         root: WorkspaceId,
         store: S,
@@ -61,7 +121,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 
     pub(in crate::filesystem) fn with_project_families<
-        S: WorkspaceLineageStore + Clone + 'static,
+        S: WorkspaceLineageStore + GitCompatStore + Clone + 'static,
     >(
         mut self: Arc<Self>,
         store: S,
@@ -88,6 +148,29 @@ async fn authorize<S: WorkspaceLineageStore>(
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    pub(in crate::filesystem) async fn select_current_workspace(
+        &self,
+        root: &Workspace<A, O>,
+        io: &PreparationIo,
+    ) -> Result<Workspace<A, O>> {
+        if let Some(family) = &self.project_family
+            && family.applies(root.id())
+            && let Some(selected) = family.current(self, root, io)?
+        {
+            return selected.await;
+        }
+        Ok(root.clone())
+    }
+
+    pub(in crate::filesystem) async fn current_generation(
+        &self,
+        root: &Workspace<A, O>,
+        io: &PreparationIo,
+    ) -> Result<Generation<A, O>> {
+        let workspace = self.select_current_workspace(root, io).await?;
+        io.sdk(workspace.head(io, io.cancellation()).await)
+    }
+
     async fn project_generation<S: WorkspaceLineageStore + Clone>(
         &self,
         workspace: &Workspace<A, O>,
@@ -176,9 +259,25 @@ mod tests {
             .value;
         let provider =
             ProviderRef::new("memory".into(), "filesystem".into(), "2".into(), &mut None)?;
+        let repository = GitCompatRepository::new(root.id(), store.clone());
         let host =
             FilesystemHost::new(filesystem, &provider, None)?.with_project_families(store)?;
         let io = PreparationIo::for_unmeasured(&cancellation)?;
+        assert_eq!(
+            host.current_generation(&root, &io).await?.workspace_id(),
+            root.id()
+        );
+        repository
+            .register_branch_workspace("topic", child.id(), None, true)
+            .await?;
+        assert_eq!(host.current_generation(&root, &io).await?.id(), pinned.id());
+        repository
+            .register_branch_workspace("main", root.id(), None, true)
+            .await?;
+        assert_eq!(
+            host.current_generation(&root, &io).await?.workspace_id(),
+            root.id()
+        );
         let reopened = host.select_generation(&root, pinned.id(), &io).await?;
         assert_eq!(reopened.workspace_id(), child.id());
         assert_eq!(reopened.id(), pinned.id());
@@ -187,7 +286,18 @@ mod tests {
                 .await,
             Err(Error::Unauthorized(_))
         ));
+        repository
+            .register_branch_workspace("foreign", unrelated.id(), None, true)
+            .await?;
+        assert!(
+            matches!(
+                host.current_generation(&root, &io).await,
+                Err(Error::Unauthorized(_))
+            ),
+            "a durable branch name cannot grant foreign project authority"
+        );
         cancellation.cancel();
+        assert!(host.current_generation(&root, &io).await.is_err());
         assert!(
             host.select_generation(&root, pinned.id(), &io)
                 .await

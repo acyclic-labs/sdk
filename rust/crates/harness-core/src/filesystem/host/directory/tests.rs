@@ -24,7 +24,11 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         .await?
         .value;
     let generation = host.generation_ref_id(pinned.id(), None)?;
-    let host = host.with_project_family(root.id(), store)?;
+    let repository = acyclic_fs::GitCompatRepository::new(root.id(), store.clone());
+    repository
+        .register_branch_workspace("directory-branch", child.id(), None, true)
+        .await?;
+    let host = host.with_project_families(store)?;
     let options = DirectoryOptions {
         generation: Some(&generation),
         after: None,
@@ -35,6 +39,18 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
         .list_private_directory(&volume, &grant, "rows", options)
         .await?;
     assert_eq!(before.entries.len(), 8);
+    let (current, _) = host
+        .list_private_directory(
+            &volume,
+            &grant,
+            "rows",
+            DirectoryOptions {
+                generation: None,
+                ..options
+            },
+        )
+        .await?;
+    assert_eq!(current, generation);
     for (workspace, hidden) in [(&child, "rows/00"), (&root, "rows/01")] {
         let mut policy: acyclic_fs::access::Policy =
             serde_json::from_slice(access::INITIAL_POLICY)?;
@@ -90,7 +106,38 @@ async fn inherited_directory_intersects_current_root_and_data_policy()
                 .any(|entry| entry.name.as_bytes() == b"00"),
             "a root policy update must not restore names hidden by the data owner"
         );
+        let (_, current) = host
+            .list_private_directory(
+                &volume,
+                &grant,
+                "rows",
+                DirectoryOptions {
+                    generation: None,
+                    ..options
+                },
+            )
+            .await?;
+        assert_eq!(current.entries.len(), page.entries.len());
     }
+    repository
+        .register_branch_workspace("main", root.id(), None, true)
+        .await?;
+    let (_, current) = host
+        .list_private_directory(
+            &volume,
+            &grant,
+            "rows",
+            DirectoryOptions {
+                generation: None,
+                ..options
+            },
+        )
+        .await?;
+    assert_eq!(
+        current.entries.len(),
+        7,
+        "current reads must follow the durable branch switch"
+    );
     let (selected, page) = host
         .list_private_directory(&volume, &grant, "rows", options)
         .await?;
