@@ -1,4 +1,5 @@
 //! Span helpers for `docs/observability.md`.
+use acyclic_stream::BoxProviderStream;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use acyclic_native_runtime::obs::OperationSpan;
@@ -74,16 +75,16 @@ pub struct BodyStream {
     #[cfg(not(target_arch = "wasm32"))]
     inner: Scoped<BodyState>,
     #[cfg(target_arch = "wasm32")]
-    inner: futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>>,
+    inner: BoxProviderStream<'static, Result<bytes::Bytes, crate::Error>>,
 }
 #[cfg(not(target_arch = "wasm32"))]
 struct BodyState {
-    body: futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>>,
+    body: BoxProviderStream<'static, Result<bytes::Bytes, crate::Error>>,
     lifetime: Lifetime,
     context: Option<Span>,
 }
-impl From<futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>>> for BodyStream {
-    fn from(body: futures::stream::BoxStream<'static, Result<bytes::Bytes, crate::Error>>) -> Self {
+impl From<BoxProviderStream<'static, Result<bytes::Bytes, crate::Error>>> for BodyStream {
+    fn from(body: BoxProviderStream<'static, Result<bytes::Bytes, crate::Error>>) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         return Self {
             inner: Scoped::new(

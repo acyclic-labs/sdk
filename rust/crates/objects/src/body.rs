@@ -1,5 +1,5 @@
 //! Private immutable body storage for the logical Objects recovery engine.
-use futures::future::BoxFuture;
+use acyclic_stream::{BoxProviderFuture, ProviderTask};
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -99,11 +99,11 @@ fn box_body_read<'a, F>(
     mode: BodyReadMode,
     future: impl FnOnce(BodyReadMode) -> F,
 ) -> Result<
-    crate::v1::Guarded<BoxFuture<'a, Result<acyclic_stream::OwnedBytes, BodyReadError>>>,
+    crate::v1::Guarded<BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes, BodyReadError>>>,
     BodyReadError,
 >
 where
-    F: Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + Send + 'a,
+    F: Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + ProviderTask + 'a,
 {
     #[cfg(not(target_arch = "wasm32"))]
     let allocation = match &mode {
@@ -224,7 +224,8 @@ impl StoredBody {
         start: usize,
         end: usize,
         mode: BodyReadMode,
-    ) -> impl Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + Send {
+    ) -> impl Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + ProviderTask
+    {
         let span = crate::obs::span!(
             TRACE,
             "acyclic.objects.body.read",
@@ -255,7 +256,8 @@ impl StoredBody {
         start: usize,
         end: usize,
         mode: BodyReadMode,
-    ) -> impl Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + Send {
+    ) -> impl Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + ProviderTask
+    {
         if let Self::Memory(body) = self {
             return futures::future::Either::Left(async move {
                 #[cfg(not(target_arch = "wasm32"))]

@@ -2,7 +2,7 @@
 
 `acyclic_conformance::agent_host::verify` drives the public `AgentHost` API over a fresh backend. The implementation lives in a small independent crate so browser wasm does not pull the native qualification CLI and its process dependencies into the build.
 
-A backend implements two setup traits. `Backend::fresh` returns disposable storage, and `Storage::open` opens a new session on that same retained data. `Backend::handler` installs its actual handler transport. `Backend::serving` opens its production hosting endpoint with the requested preset approval policy and the shared `protocol` model/tool fixtures. Its endpoint supplies canonical binding/exchange, explicit delivery and observations; it cannot replace a vector. The suite owns all fault injection and assertions.
+A backend implements two setup traits. `Backend::fresh` returns disposable storage, and `Storage::open` opens a new session on that same retained data. `Storage::objects` provisions the Objects provider, an empty logical bucket and its declared durability for filesystem-backed root and approval vectors. Native fixtures also supply a private staging directory and retain it for the fixture lifetime. The suite composes the existing immutable cache and native publication staging. Stream-only fixtures explicitly use `Objects::memory()`. `Backend::handler` installs its actual handler transport. `Backend::serving` opens its production hosting endpoint with the requested preset approval policy and shared `protocol` model/tool fixtures. Its endpoint supplies canonical binding/exchange, explicit delivery and observations; it cannot replace a vector. The suite owns all fault injection and assertions.
 
 The native adapter opens a real `LocalStream` directory. It runs twice: direct handlers and handlers carried through `acyclic_actors::guest::wire::Remote`. The browser adapter opens real `BrowserStream` IndexedDB databases and uses the same wire boundary.
 
@@ -26,6 +26,14 @@ Run from the repository root on the build box:
 ```sh
 bash scripts/qualify-agent-host.sh
 ```
+
+`scripts/backends/storage-conformance.sh` additionally runs the same complete
+host export over Postgres + memory Objects, local Stream + MinIO, and Postgres +
+MinIO. Each case retains its storage across independently opened sessions and
+uses the canonical guest wire boundary. The driver binds disposable emulators
+to loopback ports 15400 and 15401 and stops both when the run ends. These host
+vectors exercise storage composition; they do not establish an OSS endpoint or
+real GraphCoder binary qualification.
 
 To execute browser tests after compiling them, use the workspace's pinned `wasm-bindgen-test-runner` and Chrome driver:
 

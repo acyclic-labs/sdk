@@ -2,9 +2,13 @@
 use super::durable::{self, packing::Pending, protocol::*, snapshot};
 use super::*;
 use crate::body::{ImmutableBodies, RemoteBody};
-use futures::future::BoxFuture;
+use acyclic_stream::BoxProviderFuture;
 
 pub(in crate::v1) use super::durable::RECORD_LIMIT as RECORD_BYTES;
+
+// Independent immutable leaves have no publication order. Keep physical IO
+// bounded while avoiding one network round trip per leaf in a logical batch.
+const MAXIMUM_IN_FLIGHT_BODIES: usize = 8;
 
 fn unavailable(_: impl std::fmt::Debug) -> Error {
     Unavailable.into()
@@ -13,7 +17,7 @@ fn unavailable(_: impl std::fmt::Debug) -> Error {
 fn externalize<'a>(
     body: &'a StoredBody,
     source: &'a Arc<dyn ImmutableBodies>,
-) -> BoxFuture<'a, Result<StoredBody, Error>> {
+) -> BoxProviderFuture<'a, Result<StoredBody, Error>> {
     Box::pin(async move {
         match body {
             StoredBody::Memory(bytes) => {
@@ -43,6 +47,30 @@ fn externalize<'a>(
             StoredBody::Local { .. } => Err(Unavailable.into()),
         }
     })
+}
+
+async fn externalize_batch<'a, K>(
+    bodies: &mut impl Iterator<Item = (K, &'a StoredBody)>,
+    source: &Arc<dyn ImmutableBodies>,
+) -> Result<Vec<(K, &'a StoredBody, StoredBody)>, Error> {
+    futures::future::try_join_all(
+        bodies
+            .by_ref()
+            .filter(|(_, body)| needs_externalization(body))
+            .take(MAXIMUM_IN_FLIGHT_BODIES)
+            .map(|(key, body)| async move { Ok((key, body, externalize(body, source).await?)) }),
+    )
+    .await
+}
+
+fn needs_externalization(body: &StoredBody) -> bool {
+    match body {
+        StoredBody::Memory(_) => true,
+        StoredBody::Remote(_) => false,
+        StoredBody::Composite { parts, .. } => parts.value.iter().any(needs_externalization),
+        #[cfg(feature = "local")]
+        StoredBody::Local { .. } => true,
+    }
 }
 
 fn restore(
@@ -108,32 +136,50 @@ impl MemoryObjects {
     ) -> Result<(u64, Vec<Vec<u8>>), Error> {
         let mut state = self.lock_state()?.clone();
         for (name, bucket) in &state.buckets.clone() {
-            for (key, object) in &bucket.objects {
-                let body = externalize(&object.body, &source).await?;
-                if body != object.body {
-                    state
-                        .buckets
-                        .get_mut(name)
-                        .ok_or(Error::from(Unavailable))?
-                        .objects
-                        .get_mut(key)
-                        .ok_or(Error::from(Unavailable))?
-                        .body = body;
+            let mut bodies = bucket
+                .objects
+                .iter()
+                .map(|(key, object)| (key, &object.body));
+            loop {
+                let batch = externalize_batch(&mut bodies, &source).await?;
+                if batch.is_empty() {
+                    break;
+                }
+                for (key, previous, body) in batch {
+                    if &body != previous {
+                        state
+                            .buckets
+                            .get_mut(name)
+                            .ok_or(Error::from(Unavailable))?
+                            .objects
+                            .get_mut(key)
+                            .ok_or(Error::from(Unavailable))?
+                            .body = body;
+                    }
                 }
             }
         }
         for (id, upload) in &state.uploads.clone() {
-            for (number, (_, part)) in &upload.parts {
-                let body = externalize(part, &source).await?;
-                if &body != part {
-                    state
-                        .uploads
-                        .get_mut(id)
-                        .ok_or(Error::from(Unavailable))?
-                        .parts
-                        .get_mut(number)
-                        .ok_or(Error::from(Unavailable))?
-                        .1 = body;
+            let mut bodies = upload
+                .parts
+                .iter()
+                .map(|(number, (_, body))| (number, body));
+            loop {
+                let batch = externalize_batch(&mut bodies, &source).await?;
+                if batch.is_empty() {
+                    break;
+                }
+                for (number, previous, body) in batch {
+                    if &body != previous {
+                        state
+                            .uploads
+                            .get_mut(id)
+                            .ok_or(Error::from(Unavailable))?
+                            .parts
+                            .get_mut(number)
+                            .ok_or(Error::from(Unavailable))?
+                            .1 = body;
+                    }
                 }
             }
         }
@@ -204,3 +250,5 @@ impl MemoryObjects {
         Ok(core)
     }
 }
+
+pub(in crate::v1) mod publication;

@@ -179,7 +179,9 @@ dependencies = [
 name = "acyclic-conformance"
 version = "0.2.0"
 dependencies = [
+ "acyclic-actors",
  "acyclic-agent-host-conformance",
+ "acyclic-auth",
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-harness-client",

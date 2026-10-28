@@ -127,17 +127,19 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                         Ok(binding) => binding,
                         Err(reason) => return Ok(Admission::Denied(identity, reason)),
                     };
-                    let prepared = self
-                        .resources
-                        .as_ref()
-                        .ok_or(StreamError::Unsupported)?
-                        .follow(ResourceFollowRequest {
-                            resource: follow.resource,
-                            from: resume.next,
-                            preceding,
-                            filter,
-                            authorization: context,
-                        })?;
+                    let Some(provider) = self.resources.as_ref() else {
+                        return Ok(Admission::Failed(identity, StreamError::Unsupported));
+                    };
+                    let prepared = match provider.follow(ResourceFollowRequest {
+                        resource: follow.resource,
+                        from: resume.next,
+                        preceding,
+                        filter,
+                        authorization: context,
+                    }) {
+                        Ok(prepared) => prepared,
+                        Err(error) => return Ok(Admission::Failed(identity, error)),
+                    };
                     binding = Some(authorization);
                     terminal = Some(resources::terminal(prepared.terminal, identity));
                     (

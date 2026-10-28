@@ -4,7 +4,6 @@
 //! before any provider read or write.
 use crate::{Backend, Result, observe::Observed, vectors};
 use acyclic_actors::{addressing::ActorReference, local::SystemClock};
-use acyclic_fs::{EmbeddedCapabilities, LogicalObjectStore};
 use acyclic_harness_core::{
     Capabilities, OperationId,
     agent::*,
@@ -161,17 +160,17 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         }
         _ => {}
     }
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-    let objects = Arc::new(objects);
-    let observed = (objects.clone(), bucket.clone());
+    let objects = storage.objects().await?;
+    let observed = (objects.provider.clone(), objects.bucket.clone());
+    let capabilities = objects.capabilities;
     let bound = Bound::admitted(
         issuer,
         VerifiedCaller { audience, scope },
         Placement {
             filesystem: acyclic_fs::Fs::new(
                 acyclic_fs::StreamAuthorityStore::new(stream.clone()),
-                LogicalObjectStore::new(objects, bucket),
-                EmbeddedCapabilities::MEMORY,
+                objects.into_store(storage.as_ref())?,
+                capabilities,
             ),
             provider: private.volume.provider().clone(),
             within: ActorReference::new(b"conformance", b"agents", b"host")?,
@@ -234,7 +233,6 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         (_, Ok(_)) => Err(format!("{case:?}: admission prepared a root it does not cover").into()),
         (_, Err(_)) => {
             // A refusal writes no volume object either.
-            use acyclic_objects::v1::ObjectsProvider as _;
             let (objects, bucket) = observed;
             let written = objects
                 .list(acyclic_objects::v1::wire::ListObjectsRequest {

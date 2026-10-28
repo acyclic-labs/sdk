@@ -3,7 +3,7 @@ use super::*;
 use crate::{Storage, observe::Observed};
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock, wire};
 use acyclic_auth::{authority::PolicyDecision, contract::Principal};
-use acyclic_fs::{EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore};
+use acyclic_fs::{Fs, StreamAuthorityStore};
 use acyclic_harness::hosting::{
     self, Bound, Placement, RootRequest, Server, Serving, Turns, VerifiedCaller,
 };
@@ -20,7 +20,7 @@ use acyclic_harness_core::{
 use acyclic_stream::{BoxProviderStream, FollowFilter, session::Client};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-type Objects = LogicalObjectStore<acyclic_objects::v1::MemoryObjects>;
+type Objects = crate::ObjectStore;
 struct Owner;
 impl hosting::Platform for Owner {
     fn policy<'a>(
@@ -85,7 +85,9 @@ pub async fn open<B: Backend + ?Sized>(
 ) -> Result<Box<dyn Endpoint>> {
     let storage = backend.fresh().await?;
     let stream = Arc::new(Observed::new(storage.open().await?));
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = storage.objects().await?;
+    let capabilities = objects.capabilities;
+    let objects = objects.into_store(storage.as_ref())?;
     let audience = Authority {
         kind: AggregateKind::Task,
         id: "protocol".into(),
@@ -145,11 +147,7 @@ pub async fn open<B: Backend + ?Sized>(
         issuer,
         VerifiedCaller { audience, scope },
         Placement {
-            filesystem: Fs::new(
-                StreamAuthorityStore::new(stream),
-                LogicalObjectStore::new(Arc::new(objects), bucket),
-                EmbeddedCapabilities::MEMORY,
-            ),
+            filesystem: Fs::new(StreamAuthorityStore::new(stream), objects, capabilities),
             provider: crate::roots::volume(PRIVATE_VOLUME, crate::fixtures::adopted().agent)?
                 .volume
                 .provider()

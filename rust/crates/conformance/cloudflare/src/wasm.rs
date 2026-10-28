@@ -103,6 +103,10 @@ struct Rpc(js_sys::Function, js_sys::Function);
 struct Port(JsValue);
 
 impl Storage for Port {
+    fn objects(&self) -> BoxProviderFuture<'_, Result<acyclic_agent_host_conformance::Objects>> {
+        Box::pin(async { Ok(acyclic_agent_host_conformance::Objects::memory()) })
+    }
+
     fn open(&self) -> BoxProviderFuture<'_, Result<Arc<dyn StreamProvider>>> {
         Box::pin(async move {
             Ok(acyclic_stream::WasmStream::connect_provider(self.0.clone())
@@ -135,6 +139,10 @@ impl Backend for Rpc {
 }
 
 impl Storage for Domain {
+    fn objects(&self) -> BoxProviderFuture<'_, Result<acyclic_agent_host_conformance::Objects>> {
+        Box::pin(async { Ok(acyclic_agent_host_conformance::Objects::memory()) })
+    }
+
     fn open(&self) -> BoxProviderFuture<'_, Result<Arc<dyn StreamProvider>>> {
         Box::pin(async move {
             Ok(

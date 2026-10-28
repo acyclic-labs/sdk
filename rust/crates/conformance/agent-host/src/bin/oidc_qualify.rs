@@ -9,6 +9,13 @@ use std::{path::PathBuf, sync::Arc};
 struct Local;
 struct Directory(tempfile::TempDir);
 impl Storage for Directory {
+    fn staging_directory(&self) -> &std::path::Path {
+        self.0.path()
+    }
+    fn objects(&self) -> BoxProviderFuture<'_, Result<acyclic_agent_host_conformance::Objects>> {
+        Box::pin(async { Ok(acyclic_agent_host_conformance::Objects::memory()) })
+    }
+
     fn open(&self) -> BoxProviderFuture<'_, Result<Arc<dyn StreamProvider>>> {
         Box::pin(async move {
             Ok(
