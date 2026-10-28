@@ -600,3 +600,55 @@ fn metered_task_receipts_do_not_depend_on_queue_capacity() -> io::Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn native_future_wait_retains_original_wake_funding_through_saved_wakers() -> io::Result<()> {
+    let observed = Arc::new(ReadBudgetMeter::new(0, 0));
+    let meter: Arc<dyn NativeReadMeter> = observed.clone();
+    let retained = std::sync::Mutex::new(None);
+    let mut polls = 0;
+    let task = std::future::poll_fn(|context| {
+        assert!(observed.memory.load(Ordering::Acquire) > 0);
+        polls += 1;
+        if polls == 1 {
+            // Delivery before parking must remain observable without a timer.
+            context.waker().wake_by_ref();
+            Poll::Pending
+        } else {
+            *retained.lock().unwrap() = Some(context.waker().clone());
+            Poll::Ready(37)
+        }
+    });
+    assert_eq!(
+        wait_native_future(task, &meter, std::future::pending())?,
+        37
+    );
+    assert_eq!(polls, 2);
+    assert_eq!(observed.used_allocations.load(Ordering::Acquire), 1);
+    assert!(observed.memory.load(Ordering::Acquire) > 0);
+    drop(retained.into_inner().unwrap());
+    assert_eq!(observed.memory.load(Ordering::Acquire), 0);
+
+    let denied = Arc::new(ReadBudgetMeter::new(0, 0));
+    denied.deny_allocations.store(true, Ordering::Release);
+    let meter: Arc<dyn NativeReadMeter> = denied.clone();
+    let mut polled = false;
+    assert!(
+        wait_native_future(
+            std::future::poll_fn(|_| {
+                polled = true;
+                Poll::Ready(())
+            }),
+            &meter,
+            std::future::pending()
+        )
+        .is_err()
+    );
+    assert!(
+        !polled,
+        "funding refusal must precede the future's first poll"
+    );
+    assert_eq!(denied.used_allocations.load(Ordering::Acquire), 0);
+    assert_eq!(denied.memory.load(Ordering::Acquire), 0);
+    Ok(())
+}
