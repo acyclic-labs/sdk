@@ -680,6 +680,35 @@ fn intent_prefetch_hides_latency() {
 }
 
 #[test]
+fn offscreen_expansion_intent_survives_more_than_256_expansions() {
+    let mut client = Client::new(policy(), RTT);
+    let root = agent(0, None);
+    let first = agent(0, Some(0));
+    for child in 0..300 {
+        client.explorer.expand(&agent(0, Some(child)));
+    }
+    client.explorer.expand(&root);
+    let expanded = |client: &Client| {
+        client.rows().iter().any(|(_, row)| {
+            matches!(
+                row, Row::Agent { path, expanded: true, .. } if path == &first
+            )
+        })
+    };
+    client
+        .run_until(5_000, expanded)
+        .expect("first expansion still renders expanded");
+    assert_eq!(client.explorer.expanded(), 301);
+    assert!(bounded(&client.peak, &policy()), "{:?}", client.peak);
+    client.explorer.collapse(&first);
+    client.frame();
+    assert!(client.rows().iter().any(|(_, row)| matches!(
+        row, Row::Agent { path, expanded: false, .. } if path == &first
+    )));
+    assert_eq!(client.explorer.expanded(), 300);
+}
+
+#[test]
 fn swarm_scroll_and_history_stay_bounded() {
     let mut client = Client::new(policy(), RTT);
     client.net.drop_every = Some(25);
@@ -725,7 +754,7 @@ fn swarm_scroll_and_history_stay_bounded() {
     }
     assert!(expanded >= 50, "expanded {expanded} roots");
     assert!(deepest >= 50, "scrolled to root {deepest}");
-    assert!(client.explorer.expanded() <= 256);
+    assert_eq!(client.explorer.expanded(), expanded);
     assert!(bounded(&client.peak, &policy()), "{:?}", client.peak);
 
     // Huge history: jump to the end and seek anywhere with one read each.

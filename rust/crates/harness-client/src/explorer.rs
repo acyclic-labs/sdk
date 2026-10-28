@@ -17,8 +17,6 @@ use acyclic_stream::{StreamError, StreamPath};
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-/// Expanded nodes retained; the least recently used collapse beyond this.
-const MAX_EXPANDED: usize = 256;
 /// Rows of lookahead in the scroll direction, at most.
 const MAX_LOOKAHEAD: usize = 256;
 /// Agents remembered as recently active, for prefetch.
@@ -100,9 +98,9 @@ pub struct Explorer {
     overscan: usize,
     velocity: i64,
     frame_ms: u64,
-    /// Expanded agents: last use and the listing page they were seen on.
-    expanded: BTreeMap<AgentPath, (u64, u32)>,
-    clock: u64,
+    /// Logical expansion intent and the page each agent was seen on. Only
+    /// the viewport requests data; cache pressure never collapses intent.
+    expanded: BTreeMap<AgentPath, u32>,
     hover: Option<AgentPath>,
     focus: Option<AgentPath>,
     recent: VecDeque<AgentPath>,
@@ -155,7 +153,6 @@ impl Explorer {
             velocity: 0,
             frame_ms: 16,
             expanded: BTreeMap::new(),
-            clock: 0,
             hover: None,
             focus: None,
             recent: VecDeque::new(),
@@ -212,37 +209,11 @@ impl Explorer {
 
     /// Show an agent's children.
     pub fn expand(&mut self, agent: &AgentPath) {
-        self.clock += 1;
         let page = match self.locate(agent) {
             Some(Pos::Row { page, .. }) => page,
             _ => 0,
         };
-        self.expanded.insert(agent.clone(), (self.clock, page));
-        if self.expanded.len() > MAX_EXPANDED {
-            let visible: Vec<&AgentPath> = self
-                .rows
-                .iter()
-                .filter_map(|(_, row)| match row {
-                    Row::Agent { path, .. } => Some(path),
-                    Row::Loading { .. } => None,
-                })
-                .collect();
-            let anchor = self.anchor_agent();
-            let victim = self
-                .expanded
-                .iter()
-                .filter(|(path, _)| {
-                    !visible.contains(path)
-                        && !anchor
-                            .as_ref()
-                            .is_some_and(|anchor| anchor.as_str().starts_with(path.as_str()))
-                })
-                .min_by_key(|(_, (used, _))| *used)
-                .map(|(path, _)| path.clone());
-            if let Some(victim) = victim {
-                self.expanded.remove(&victim);
-            }
-        }
+        self.expanded.insert(agent.clone(), page);
     }
 
     /// Hide an agent's children; the anchor moves out of them if inside.
@@ -321,7 +292,7 @@ impl Explorer {
     /// Where `agent` is listed, searching cached pages of its parent.
     fn locate(&self, agent: &AgentPath) -> Option<Pos> {
         let parent = parent_listing(agent)?;
-        let hint = self.expanded.get(agent).map(|(_, page)| *page);
+        let hint = self.expanded.get(agent).copied();
         // Pages are sorted, so each cached page is one binary search.
         for page in hint.into_iter().chain(0..MAX_SCAN_PAGES) {
             let Some(listing) = self.reader.cache().listing(&parent, page) else {
@@ -809,7 +780,7 @@ impl Explorer {
         for parent in owners {
             let mut agent = owner(&parent);
             while let Some(current) = agent {
-                let Some((_, page)) = self.expanded.get(&current) else {
+                let Some(page) = self.expanded.get(&current) else {
                     break;
                 };
                 let Some(listing) = parent_listing(&current) else {
