@@ -89,7 +89,7 @@ struct Connection {
 pub struct Inference(Arc<Connection>);
 
 impl Inference {
-    /// Connect using an explicit trusted CA, ambient `WebPKI` roots, and bounded TLS/RPC deadlines.
+    /// Connect using an explicit trusted CA and ambient `WebPKI` roots.
     pub async fn connect(endpoint: &str, api_key: &str, ca_pem: &[u8]) -> Result<Self, Error> {
         Self::connect_inner(endpoint, Some(api_key), None, ca_pem).await
     }
@@ -125,8 +125,6 @@ impl Inference {
                 }
                 let authorization = api_key.map(authorization).transpose()?;
                 let channel = endpoint
-                    .connect_timeout(Duration::from_secs(10))
-                    .timeout(Duration::from_secs(60))
                     .http2_keep_alive_interval(Duration::from_secs(30))
                     .keep_alive_timeout(Duration::from_secs(10))
                     .tls_config(
@@ -704,7 +702,6 @@ impl Inference {
         request
             .metadata_mut()
             .insert("authorization", authorization);
-        request.set_timeout(Duration::from_secs(60));
         Ok(request)
     }
 }
