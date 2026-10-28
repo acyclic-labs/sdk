@@ -198,7 +198,24 @@ where
         let expected_crc32 = parse_crc32(request.input.checksum_crc32.as_deref())?;
         let part_number = u32::try_from(request.input.part_number)
             .map_err(|_| s3s::s3_error!(InvalidArgument))?;
-        if part_number == 0 || part_number > self.limits.maximum_multipart_parts {
+        if part_number == 0
+            || self
+                .limits
+                .maximum_multipart_parts
+                .is_some_and(|maximum| part_number > maximum)
+        {
+            return Err(s3s::s3_error!(InvalidArgument));
+        }
+        let mut snapshot = self
+            .multipart_snapshot(&workspace, &request.input.upload_id)
+            .await?;
+        if snapshot.key != request.input.key || snapshot.terminal.is_some() {
+            return Err(s3s::s3_error!(NoSuchUpload));
+        }
+        if snapshot
+            .maximum_parts
+            .is_some_and(|maximum| part_number > maximum)
+        {
             return Err(s3s::s3_error!(InvalidArgument));
         }
         let operation = request_operation(&request)?;
@@ -212,7 +229,7 @@ where
         let staged = transaction
             .stage_content(
                 &mut source,
-                self.limits.maximum_multipart_part_bytes,
+                snapshot.maximum_part_bytes,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
@@ -229,9 +246,6 @@ where
         verify_crc32(&source, expected_crc32)?;
         let etag_value = format!("\"{}\"", hex::encode(staged.root().digest.as_bytes()));
         loop {
-            let snapshot = self
-                .multipart_snapshot(&workspace, &request.input.upload_id)
-                .await?;
             if snapshot.key != request.input.key || snapshot.terminal.is_some() {
                 return Err(s3s::s3_error!(NoSuchUpload));
             }
@@ -271,6 +285,9 @@ where
             acyclic_stream::runtime::yield_now()
                 .await
                 .map_err(|error| stream_write_error(&error))?;
+            snapshot = self
+                .multipart_snapshot(&workspace, &request.input.upload_id)
+                .await?;
         }
     }
 
@@ -293,7 +310,7 @@ where
         let marker = request.input.part_number_marker.unwrap_or(0);
         let maximum = request.input.max_parts.unwrap_or(1_000).clamp(
             0,
-            i32::try_from(self.limits.maximum_multipart_parts).unwrap_or(i32::MAX),
+            i32::try_from(self.limits.maximum_list_keys).unwrap_or(i32::MAX),
         );
         let maximum = usize::try_from(maximum).map_err(|_| s3s::s3_error!(InvalidArgument))?;
         let mut selected = snapshot.parts.iter().filter(|(number, _)| {
