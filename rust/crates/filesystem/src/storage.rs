@@ -400,8 +400,7 @@ impl HashedObject {
             .check()
             .map_err(|_| ObjectStoreError::Cancelled)?;
         let hash = crate::WorkCounters {
-            bytes_hashed: u64::try_from(bytes.len())
-                .map_err(|_| crate::WorkError::Overflow)?,
+            bytes_hashed: u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?,
             ..crate::WorkCounters::default()
         };
         work.admit(hash)?;
@@ -434,8 +433,7 @@ impl HashedObject {
             return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout.into());
         }
         let hash = crate::WorkCounters {
-            bytes_hashed: u64::try_from(bytes.len())
-                .map_err(|_| crate::WorkError::Overflow)?,
+            bytes_hashed: u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?,
             ..crate::WorkCounters::default()
         };
         work.admit(hash)?;
@@ -472,8 +470,7 @@ impl HashedObject {
         not(target_arch = "wasm32")
     ))]
     pub(crate) fn verify(object_id: ObjectId, bytes: acyclic_stream::OwnedBytes) -> Option<Self> {
-        (object_digest(&bytes) == object_id.digest)
-            .then_some(Self { object_id, bytes })
+        (object_digest(&bytes) == object_id.digest).then_some(Self { object_id, bytes })
     }
 
     /// The identity the bytes hash to.

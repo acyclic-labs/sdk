@@ -4,10 +4,10 @@ pub use acyclic_auth::addressing;
 
 mod blob;
 pub mod conformance;
-#[cfg(feature = "conformance")]
-mod counted;
 #[cfg(any(objects_client, objects_server))]
 mod convert;
+#[cfg(feature = "conformance")]
+mod counted;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub mod grpc;
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]

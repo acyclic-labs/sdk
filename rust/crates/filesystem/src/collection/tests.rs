@@ -367,7 +367,9 @@ async fn a_closure_proven_before_a_sweep_of_its_object_is_refused()
     let collection = Arc::new(Collection::default());
     let proven_at = collection.sweeps();
     let collecting = collection.begin().await;
-    let (gate, sweepable) = collecting.sweepable(vec![object(1).digest, object(2).digest]).await;
+    let (gate, sweepable) = collecting
+        .sweepable(vec![object(1).digest, object(2).digest])
+        .await;
     assert_eq!(sweepable, vec![object(1).digest, object(2).digest]);
     for swept in sweepable {
         collecting.sweeping(swept);
@@ -400,7 +402,9 @@ async fn a_closure_admitted_while_collecting_is_kept() -> Result<(), Box<dyn std
             .admit(&[object(1)], |_| false, collection.sweeps())
             .await?,
     );
-    let (_gate, sweepable) = collecting.sweepable(vec![object(1).digest, object(2).digest]).await;
+    let (_gate, sweepable) = collecting
+        .sweepable(vec![object(1).digest, object(2).digest])
+        .await;
     assert_eq!(sweepable, vec![object(2).digest]);
     Ok(())
 }

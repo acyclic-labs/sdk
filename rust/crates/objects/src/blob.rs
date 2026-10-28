@@ -264,16 +264,24 @@ impl<'a> Reader<'a> {
         Ok(head)
     }
     fn u32(&mut self) -> Result<u32, Error> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().map_err(|_| corrupt())?))
+        Ok(u32::from_le_bytes(
+            self.take(4)?.try_into().map_err(|_| corrupt())?,
+        ))
     }
     fn u64(&mut self) -> Result<u64, Error> {
-        Ok(u64::from_le_bytes(self.take(8)?.try_into().map_err(|_| corrupt())?))
+        Ok(u64::from_le_bytes(
+            self.take(8)?.try_into().map_err(|_| corrupt())?,
+        ))
     }
     fn digest(&mut self) -> Result<Digest, Error> {
         Digest::from_slice(self.take(32)?)
     }
     fn finish(self) -> Result<(), Error> {
-        if self.0.is_empty() { Ok(()) } else { Err(corrupt()) }
+        if self.0.is_empty() {
+            Ok(())
+        } else {
+            Err(corrupt())
+        }
     }
 }
 

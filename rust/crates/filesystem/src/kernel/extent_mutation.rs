@@ -10,9 +10,7 @@ use crate::FsError;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
-use crate::storage::{
-    HashedObject, ObjectId, ObjectKind, ObjectStoreError,
-};
+use crate::storage::{HashedObject, ObjectId, ObjectKind, ObjectStoreError};
 use std::mem::size_of;
 use thiserror::Error;
 

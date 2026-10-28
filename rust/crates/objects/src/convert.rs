@@ -1,12 +1,12 @@
 //! Exact conversions between the public Rust types and their wire messages.
-use crate::blob::invalid;
 #[cfg(objects_server)]
 use crate::Part;
-#[cfg(objects_client)]
-use crate::{Retained, Usage};
+use crate::blob::invalid;
 use crate::{
     ByteRange, Collection, Delete, Digest, Error, Head, Kind, Manifest, Page, Put, Verified, wire,
 };
+#[cfg(objects_client)]
+use crate::{Retained, Usage};
 
 impl From<Digest> for wire::Digest {
     fn from(digest: Digest) -> Self {
@@ -172,13 +172,16 @@ pub(crate) fn wire_delete(value: Delete) -> wire::DeleteBlobResponse {
 pub(crate) fn page(value: &wire::ListBlobsResponse) -> Result<Page, Error> {
     let page = Page {
         digests: digests(&value.digests)?,
-        next: value.next.as_ref().map(|next| digest(Some(next))).transpose()?,
+        next: value
+            .next
+            .as_ref()
+            .map(|next| digest(Some(next)))
+            .transpose()?,
     };
-    if page
-        .digests
-        .windows(2)
-        .any(|pair| pair[0] >= pair[1])
-        || page.next.is_some_and(|next| page.digests.last() != Some(&next))
+    if page.digests.windows(2).any(|pair| pair[0] >= pair[1])
+        || page
+            .next
+            .is_some_and(|next| page.digests.last() != Some(&next))
     {
         return Err(invalid());
     }

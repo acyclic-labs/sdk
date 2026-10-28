@@ -2,7 +2,8 @@
 
 use crate::storage::ObjectWrite;
 use crate::{
-    AsyncObjectStore, AuthorityStoreError, CancellationToken, ObjectId, ObjectRead, ObjectReadRetention, ObjectStoreError, WorkCounters, object_digest,
+    AsyncObjectStore, AuthorityStoreError, CancellationToken, ObjectId, ObjectRead,
+    ObjectReadRetention, ObjectStoreError, WorkCounters, object_digest,
 };
 use acyclic_stream::OwnedBytes;
 use indexed_db_futures::database::Database;

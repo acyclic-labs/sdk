@@ -3,7 +3,9 @@ pub(super) type GetRequest = (acyclic_objects::Digest, ByteRange, u64);
 pub(super) type PutRequest = (OwnedBytes, Vec<acyclic_objects::Digest>);
 
 /// Original custody for a request whose data owns no heap storage.
-pub(super) fn guard(work: &mut KernelAccounting<'_>) -> Result<KernelOwnedAllocation, crate::FsError> {
+pub(super) fn guard(
+    work: &mut KernelAccounting<'_>,
+) -> Result<KernelOwnedAllocation, crate::FsError> {
     work.claim_owned(0, 0)
 }
 pub(super) fn vector<T>(

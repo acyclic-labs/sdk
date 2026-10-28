@@ -30,8 +30,8 @@ impl ObjectStore for ObservedStore {
         opts: PutOptions,
     ) -> Result<PutResult> {
         // Envelopes live at `<account>/e/...`; creating one is a blob's commit point.
-        let commit = path.parts().any(|part| part.as_ref() == "e")
-            && matches!(&opts.mode, PutMode::Create);
+        let commit =
+            path.parts().any(|part| part.as_ref() == "e") && matches!(&opts.mode, PutMode::Create);
         let started = std::time::Instant::now();
         let result = self.inner.put_opts(path, payload, opts).await;
         if std::env::var_os("STORAGE_IO_TRACE").is_some() {

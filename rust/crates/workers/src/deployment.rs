@@ -63,7 +63,13 @@ impl<P: Blobs> Client<P> {
     /// store could not confirm it; repeating the call is safe.
     pub async fn publish(&self, code: bytes::Bytes) -> Result<[u8; 32], Error> {
         let digest: [u8; 32] = Sha256::digest(&code).into();
-        if self.objects.put(code.into(), Vec::new()).await?.verified().is_none() {
+        if self
+            .objects
+            .put(code.into(), Vec::new())
+            .await?
+            .verified()
+            .is_none()
+        {
             return Err(acyclic_objects::Error::from(
                 acyclic_objects::wire::ErrorCode::OutcomeUnknown,
             )

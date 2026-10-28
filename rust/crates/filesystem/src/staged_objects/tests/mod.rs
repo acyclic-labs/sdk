@@ -9,8 +9,7 @@ type LocalStaged = StagedObjects<LogicalObjectStore<acyclic_objects::local::Loca
 
 async fn open_staged(
     directory: &Path,
-) -> Result<(LocalStaged, Arc<acyclic_objects::local::LocalObjects>), Box<dyn std::error::Error>>
-{
+) -> Result<(LocalStaged, Arc<acyclic_objects::local::LocalObjects>), Box<dyn std::error::Error>> {
     let provider = Arc::new(
         acyclic_objects::local::LocalObjects::open(
             directory.join("objects"),

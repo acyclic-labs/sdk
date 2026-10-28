@@ -66,7 +66,6 @@ impl NativeObjectsError {
 
     /// Reports whether this failure retains physical data or metadata custody.
     pub fn has_payload(&self) -> bool {
-        self.object.is_some()
-            || self.receipt.is_some()
+        self.object.is_some() || self.receipt.is_some()
     }
 }

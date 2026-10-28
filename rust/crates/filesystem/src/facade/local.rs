@@ -251,8 +251,12 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         };
         let open_objects = async {
             let objects = Arc::new(
-                acyclic_objects::LocalObjects::open(root.join("objects"), objects, lifecycle.clone())
-                    .await?,
+                acyclic_objects::LocalObjects::open(
+                    root.join("objects"),
+                    objects,
+                    lifecycle.clone(),
+                )
+                .await?,
             );
             let objects = crate::cache::CachedObjectStore::new(
                 crate::LogicalObjectStore::new(objects).with_object_limit(maximum_object_bytes)?,

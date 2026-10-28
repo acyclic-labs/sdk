@@ -88,10 +88,16 @@ pub(super) async fn objects_sparse_first_put(root: &Path) -> Result<(), String> 
         .await
         .map_err(open_error)?;
     let put = provider
-        .put(acyclic_stream::OwnedBytes::from_static(b"sparse body"), Vec::new())
+        .put(
+            acyclic_stream::OwnedBytes::from_static(b"sparse body"),
+            Vec::new(),
+        )
         .await
         .map_err(open_error)?;
-    let digest = put.verified().ok_or("sparse put outcome is unknown")?.digest;
+    let digest = put
+        .verified()
+        .ok_or("sparse put outcome is unknown")?
+        .digest;
     let root_id = acyclic_objects::RootId::new(*b"sparse").map_err(open_error)?;
     provider
         .retain(&root_id, vec![digest])
@@ -149,7 +155,9 @@ pub(super) async fn verify_objects_current(
         }
     }
     if !observed.iter().eq(expected.keys()) {
-        return Err(format!("step {step}: listing differs from model or repeats"));
+        return Err(format!(
+            "step {step}: listing differs from model or repeats"
+        ));
     }
     match (
         expected.get(&selected),

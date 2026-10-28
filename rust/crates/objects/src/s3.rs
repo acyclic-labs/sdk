@@ -52,7 +52,9 @@ impl Medium for S3Medium {
             Ok(_) => Ok(true),
             Err(object_store::Error::AlreadyExists { .. }) => Ok(false),
             // The request may have reached the bucket.
-            Err(error) => Err(MediumError::Ambiguous(std::io::Error::other(error.to_string()))),
+            Err(error) => Err(MediumError::Ambiguous(std::io::Error::other(
+                error.to_string(),
+            ))),
         }
     }
 
@@ -90,7 +92,9 @@ impl Medium for S3Medium {
         }
         match self.store.delete(&path).await {
             Ok(()) | Err(object_store::Error::NotFound { .. }) => Ok(true),
-            Err(error) => Err(MediumError::Ambiguous(std::io::Error::other(error.to_string()))),
+            Err(error) => Err(MediumError::Ambiguous(std::io::Error::other(
+                error.to_string(),
+            ))),
         }
     }
 
@@ -123,7 +127,9 @@ impl Medium for S3Medium {
         let mut previous: Option<String> = None;
         let mut ordered = true;
         while let Some((key, size)) = listing.try_next().await.map_err(failed)? {
-            ordered &= previous.as_deref().is_none_or(|previous| previous < key.as_str());
+            ordered &= previous
+                .as_deref()
+                .is_none_or(|previous| previous < key.as_str());
             previous = Some(key.clone());
             if !key.starts_with(prefix) || after.is_some_and(|after| key.as_str() <= after) {
                 continue;

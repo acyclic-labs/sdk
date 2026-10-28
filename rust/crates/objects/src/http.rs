@@ -120,7 +120,11 @@ impl HttpObjects {
     }
 
     /// Posts one route's input and decodes its canonical output.
-    async fn call<I: Message, O: Message + Default>(&self, route: &str, input: &I) -> Result<O, Error> {
+    async fn call<I: Message, O: Message + Default>(
+        &self,
+        route: &str,
+        input: &I,
+    ) -> Result<O, Error> {
         let (_, input_name, output_name) = crate::HTTP_ROUTES
             .iter()
             .find(|(path, _, _)| *path == route)
@@ -203,7 +207,9 @@ impl Blobs for HttpObjects {
             )
             .await?;
         let put = convert::put(&reply)?;
-        if put.verified().is_some_and(|verified| verified.digest != digest || verified.length != body.len() as u64) {
+        if put.verified().is_some_and(|verified| {
+            verified.digest != digest || verified.length != body.len() as u64
+        }) {
             return Err(unavailable());
         }
         Ok(put)
@@ -221,7 +227,10 @@ impl Blobs for HttpObjects {
             )
             .await?;
         let put = convert::put(&reply)?;
-        if put.verified().is_some_and(|verified| verified.digest != digest || verified.length != length) {
+        if put
+            .verified()
+            .is_some_and(|verified| verified.digest != digest || verified.length != length)
+        {
             return Err(unavailable());
         }
         Ok(put)
@@ -319,7 +328,8 @@ impl Blobs for HttpObjects {
     }
 
     async fn collect(&self) -> Result<Collection, Error> {
-        let reply: wire::CollectResponse = self.call("blobs/collect", &wire::CollectRequest {}).await?;
+        let reply: wire::CollectResponse =
+            self.call("blobs/collect", &wire::CollectRequest {}).await?;
         Ok(convert::collection(&reply))
     }
 

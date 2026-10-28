@@ -46,11 +46,7 @@ mod local {
         )
         .account(b"filesystem-conformance")?;
         Ok(DurableBackend {
-            fixture: from_providers(
-                stream,
-                objects,
-                EmbeddedCapabilities { durable: true },
-            ),
+            fixture: from_providers(stream, objects, EmbeddedCapabilities { durable: true }),
             _directory: directory,
         })
     }

@@ -73,7 +73,9 @@ impl ObjectContentStore {
 
     pub(super) fn verify_length(&self, file: &FileRef, length: u64) -> Result<()> {
         if length != file.descriptor().byte_length() {
-            return Err(Error::Storage("Objects returned another file length".into()));
+            return Err(Error::Storage(
+                "Objects returned another file length".into(),
+            ));
         }
         Ok(())
     }

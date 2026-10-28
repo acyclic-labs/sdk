@@ -67,9 +67,8 @@ async fn separately_composed_journals_exclude_the_same_live_operation() -> Resul
     let provider = acyclic_stream::MemoryStream::default();
     let objects = acyclic_objects::MemoryObjects::memory();
     let objects = Arc::new(objects);
-    let first_fs = acyclic_fs::Fs::from_memory_providers(
-        Arc::new(provider.clone()),
-        objects.clone());
+    let first_fs =
+        acyclic_fs::Fs::from_memory_providers(Arc::new(provider.clone()), objects.clone());
     let second_fs = acyclic_fs::Fs::from_memory_providers(Arc::new(provider), objects);
     let (first, _runtime) = fixture_with_filesystem(first_fs).await?;
     let second = FilesystemExecutionJournal::new(

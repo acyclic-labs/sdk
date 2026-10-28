@@ -1,7 +1,11 @@
 use super::*;
 impl ObjectContentStore {
     /// Stores `body` and returns its verified digest.
-    async fn publish(&self, body: acyclic_stream::OwnedBytes, references: Vec<Digest>) -> Result<Digest> {
+    async fn publish(
+        &self,
+        body: acyclic_stream::OwnedBytes,
+        references: Vec<Digest>,
+    ) -> Result<Digest> {
         let length = body.len() as u64;
         let digest = Digest::of(&body);
         match self.objects.put(body, references).await.map_err(storage)? {
@@ -66,7 +70,10 @@ impl ContentPublisher for ObjectContentStore {
             validate_content_path(path, &mut None)?;
             // Staging is idempotent by content, so no per-operation intent is kept.
             let content = self
-                .publish(acyclic_stream::OwnedBytes::copy_from_slice(bytes), Vec::new())
+                .publish(
+                    acyclic_stream::OwnedBytes::copy_from_slice(bytes),
+                    Vec::new(),
+                )
                 .await?;
             let reference = FileRef::new(
                 self.volume.clone(),

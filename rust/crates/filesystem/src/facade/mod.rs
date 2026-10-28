@@ -87,9 +87,8 @@ use crate::performance::{
 };
 
 use crate::storage::{
-    AppendOutcome, AuthorityStoreError, ByteRange, FenceOutcome, HashedObject,
-    ObjectId, ObjectKind, ObjectReadRequest, ObjectStoreError,
-    PublicationPermit, ReplayLimit, object_digest,
+    AppendOutcome, AuthorityStoreError, ByteRange, FenceOutcome, HashedObject, ObjectId,
+    ObjectKind, ObjectReadRequest, ObjectStoreError, PublicationPermit, ReplayLimit, object_digest,
 };
 
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]

@@ -7,9 +7,9 @@ use crate::foundation::{
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::storage::{
-    AppendOutcome, AuthorityFailure, AuthorityStoreError, CreateAuthorityOutcome,
-    ObjectFailure, ObjectId, ObjectRead, ObjectReadRetention,
-    ObjectStoreError, ObjectWrite, ReplayLimit, object_digest,
+    AppendOutcome, AuthorityFailure, AuthorityStoreError, CreateAuthorityOutcome, ObjectFailure,
+    ObjectId, ObjectRead, ObjectReadRetention, ObjectStoreError, ObjectWrite, ReplayLimit,
+    object_digest,
 };
 use crate::sync::Mutex;
 use crate::{AuthorityWork, FsError, WorkError};

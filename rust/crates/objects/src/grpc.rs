@@ -149,7 +149,11 @@ impl GrpcObjects {
         })
     }
 
-    async fn request<T>(&self, value: T, timeout: std::time::Duration) -> Result<Request<T>, Error> {
+    async fn request<T>(
+        &self,
+        value: T,
+        timeout: std::time::Duration,
+    ) -> Result<Request<T>, Error> {
         let authorization = if let Some(provider) = &self.credential {
             let token = provider
                 .resolve()
@@ -219,7 +223,11 @@ fn status(error: Error) -> tonic::Status {
         code: error.code as i32,
         request_id: String::new(),
     };
-    tonic::Status::with_details(code, "objects operation failed", detail.encode_to_vec().into())
+    tonic::Status::with_details(
+        code,
+        "objects operation failed",
+        detail.encode_to_vec().into(),
+    )
 }
 
 macro_rules! call {
@@ -248,7 +256,9 @@ impl Blobs for GrpcObjects {
             self.transfer_timeout
         )?;
         let put = convert::put(&reply)?;
-        if put.verified().is_some_and(|verified| verified.digest != digest || verified.length != body.len() as u64) {
+        if put.verified().is_some_and(|verified| {
+            verified.digest != digest || verified.length != body.len() as u64
+        }) {
             return Err(wire::ErrorCode::Unavailable.into());
         }
         Ok(put)
@@ -266,7 +276,10 @@ impl Blobs for GrpcObjects {
             REQUEST_TIMEOUT
         )?;
         let put = convert::put(&reply)?;
-        if put.verified().is_some_and(|verified| verified.digest != digest || verified.length != length) {
+        if put
+            .verified()
+            .is_some_and(|verified| verified.digest != digest || verified.length != length)
+        {
             return Err(wire::ErrorCode::Unavailable.into());
         }
         Ok(put)
@@ -364,7 +377,12 @@ impl Blobs for GrpcObjects {
     }
 
     async fn collect(&self) -> Result<Collection, Error> {
-        let reply = call!(self, collect, wire::CollectRequest {}, self.transfer_timeout)?;
+        let reply = call!(
+            self,
+            collect,
+            wire::CollectRequest {},
+            self.transfer_timeout
+        )?;
         Ok(convert::collection(&reply))
     }
 
@@ -375,8 +393,7 @@ impl Blobs for GrpcObjects {
 }
 
 /// Resolves the verified caller's account namespace from request metadata.
-pub type AccountResolver =
-    Arc<dyn Fn(&MetadataMap) -> Result<Arc<dyn Blobs>, Error> + Send + Sync>;
+pub type AccountResolver = Arc<dyn Fn(&MetadataMap) -> Result<Arc<dyn Blobs>, Error> + Send + Sync>;
 
 /// Serves [`wire::blobs_service_server::BlobsService`] over any [`Blobs`]
 /// provider, one account per authenticated request.
@@ -417,11 +434,17 @@ impl wire::blobs_service_server::BlobsService for BlobsServer {
         let blobs = self.account(&request)?;
         reply(crate::route::put_blob(&*blobs, request.into_inner()).await)
     }
-    async fn put_manifest(&self, request: Request<wire::PutManifestRequest>) -> Reply<wire::PutResponse> {
+    async fn put_manifest(
+        &self,
+        request: Request<wire::PutManifestRequest>,
+    ) -> Reply<wire::PutResponse> {
         let blobs = self.account(&request)?;
         reply(crate::route::put_manifest(&*blobs, request.into_inner()).await)
     }
-    async fn get_blob(&self, request: Request<wire::GetBlobRequest>) -> Reply<wire::GetBlobResponse> {
+    async fn get_blob(
+        &self,
+        request: Request<wire::GetBlobRequest>,
+    ) -> Reply<wire::GetBlobResponse> {
         let blobs = self.account(&request)?;
         reply(crate::route::get_blob(&*blobs, request.into_inner()).await)
     }
@@ -429,11 +452,17 @@ impl wire::blobs_service_server::BlobsService for BlobsServer {
         let blobs = self.account(&request)?;
         reply(crate::route::head_blob(&*blobs, request.into_inner()).await)
     }
-    async fn delete_blob(&self, request: Request<wire::DeleteBlobRequest>) -> Reply<wire::DeleteBlobResponse> {
+    async fn delete_blob(
+        &self,
+        request: Request<wire::DeleteBlobRequest>,
+    ) -> Reply<wire::DeleteBlobResponse> {
         let blobs = self.account(&request)?;
         reply(crate::route::delete_blob(&*blobs, request.into_inner()).await)
     }
-    async fn list_blobs(&self, request: Request<wire::ListBlobsRequest>) -> Reply<wire::ListBlobsResponse> {
+    async fn list_blobs(
+        &self,
+        request: Request<wire::ListBlobsRequest>,
+    ) -> Reply<wire::ListBlobsResponse> {
         let blobs = self.account(&request)?;
         reply(crate::route::list_blobs(&*blobs, request.into_inner()).await)
     }
@@ -441,11 +470,17 @@ impl wire::blobs_service_server::BlobsService for BlobsServer {
         let blobs = self.account(&request)?;
         reply(crate::route::retain(&*blobs, request.into_inner()).await)
     }
-    async fn release(&self, request: Request<wire::ReleaseRequest>) -> Reply<wire::ReleaseResponse> {
+    async fn release(
+        &self,
+        request: Request<wire::ReleaseRequest>,
+    ) -> Reply<wire::ReleaseResponse> {
         let blobs = self.account(&request)?;
         reply(crate::route::release(&*blobs, request.into_inner()).await)
     }
-    async fn collect(&self, request: Request<wire::CollectRequest>) -> Reply<wire::CollectResponse> {
+    async fn collect(
+        &self,
+        request: Request<wire::CollectRequest>,
+    ) -> Reply<wire::CollectResponse> {
         let blobs = self.account(&request)?;
         reply(crate::route::collect(&*blobs, request.into_inner()).await)
     }

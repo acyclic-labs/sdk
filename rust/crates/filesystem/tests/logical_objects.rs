@@ -28,8 +28,7 @@ fn write(bytes: &'static [u8]) -> ObjectWrite {
 async fn v2_batches_preserve_filesystem_content_identity_and_backend_accounting()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = Arc::new(MemoryObjects::memory());
-    let store =
-        LogicalObjectStore::new(Arc::clone(&provider)).with_object_limit(8)?;
+    let store = LogicalObjectStore::new(Arc::clone(&provider)).with_object_limit(8)?;
     let writes = [write(b"first"), write(b"second"), write(b"first")];
     let cancel = CancellationToken::new();
     let result = {
@@ -121,8 +120,7 @@ async fn v2_batches_preserve_filesystem_content_identity_and_backend_accounting(
 async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publication()
 -> Result<(), Box<dyn std::error::Error>> {
     let provider = Arc::new(MemoryObjects::memory());
-    let store =
-        LogicalObjectStore::new(Arc::clone(&provider)).with_object_limit(4)?;
+    let store = LogicalObjectStore::new(Arc::clone(&provider)).with_object_limit(4)?;
     let cancel = CancellationToken::new();
     let oversized = write(b"oversized");
     let failure = provider_receipt!(
@@ -175,8 +173,7 @@ async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publicati
 }
 
 #[tokio::test]
-async fn v2_fs_republishes_collected_bytes()
--> Result<(), Box<dyn std::error::Error>> {
+async fn v2_fs_republishes_collected_bytes() -> Result<(), Box<dyn std::error::Error>> {
     let provider = Arc::new(MemoryObjects::memory());
     let store = LogicalObjectStore::new(Arc::clone(&provider));
     let wanted = write(b"real");

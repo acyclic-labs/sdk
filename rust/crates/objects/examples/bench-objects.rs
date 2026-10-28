@@ -11,8 +11,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if arguments.len() > 2 {
         return Err("usage: bench-objects [blob-count] [page-size]".into());
     }
-    let count = arguments.first().map_or(Ok(2000), |value| value.parse::<u64>())?;
-    let page_size = arguments.get(1).map_or(Ok(1), |value| value.parse::<u32>())?;
+    let count = arguments
+        .first()
+        .map_or(Ok(2000), |value| value.parse::<u64>())?;
+    let page_size = arguments
+        .get(1)
+        .map_or(Ok(1), |value| value.parse::<u32>())?;
     if count == 0 || page_size == 0 {
         return Err("blob count and page size must be positive".into());
     }
@@ -20,7 +24,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let started = Instant::now();
     let mut expected = BTreeSet::new();
     for index in 0..count {
-        let put = blobs.put(OwnedBytes::from(index.to_le_bytes().to_vec()), Vec::new()).await?;
+        let put = blobs
+            .put(OwnedBytes::from(index.to_le_bytes().to_vec()), Vec::new())
+            .await?;
         expected.insert(put.verified().ok_or("publication outcome unknown")?.digest);
     }
     let put_ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -36,9 +42,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let list_ms = started.elapsed().as_secs_f64() * 1000.0;
-    if listed.iter().copied().collect::<BTreeSet<_>>() != expected || listed.len() != expected.len() {
+    if listed.iter().copied().collect::<BTreeSet<_>>() != expected || listed.len() != expected.len()
+    {
         return Err("pagination duplicated or skipped a blob".into());
     }
-    println!("blobs={count} page_size={page_size} pages={pages} put_ms={put_ms:.1} list_ms={list_ms:.1}");
+    println!(
+        "blobs={count} page_size={page_size} pages={pages} put_ms={put_ms:.1} list_ms={list_ms:.1}"
+    );
     Ok(())
 }

@@ -2,9 +2,8 @@
 
 use acyclic_fs::storage::ObjectWrite;
 use acyclic_fs::{
-    AsyncObjectStore, CancellationToken, ObjectFailure, ObjectId,
-    ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError, WorkBudget,
-    WorkCounters, object_digest,
+    AsyncObjectStore, CancellationToken, ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest,
+    ObjectReadRetention, ObjectResult, ObjectStoreError, WorkBudget, WorkCounters, object_digest,
 };
 use acyclic_stream::OwnedBytes;
 use futures::future::join_all;

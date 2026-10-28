@@ -8,7 +8,10 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-pub async fn verify(store: Arc<dyn ObjectStore>, prefix: Path) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn verify(
+    store: Arc<dyn ObjectStore>,
+    prefix: Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let observed = Arc::new(ObservedStore {
         inner: store,
         body_bytes: AtomicUsize::new(0),

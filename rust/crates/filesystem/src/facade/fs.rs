@@ -265,9 +265,7 @@ pub type LocalAuthorityBackend =
 /// Durable local immutable-object backend with nonblocking native storage dispatch.
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub type LocalObjectBackend = crate::staged_objects::StagedObjects<
-    crate::cache::CachedObjectStore<
-        crate::LogicalObjectStore<acyclic_objects::LocalObjects>,
-    >,
+    crate::cache::CachedObjectStore<crate::LogicalObjectStore<acyclic_objects::LocalObjects>>,
 >;
 
 /// Durable local filesystem composition with nonblocking native storage dispatch.

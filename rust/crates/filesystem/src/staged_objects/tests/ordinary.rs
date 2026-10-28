@@ -538,7 +538,9 @@ async fn each_publication_writes_only_what_is_not_already_durable()
     let (gate, _) = collecting.sweepable(vec![shared.digest]).await;
     collecting.sweeping(shared.digest);
     provider
-        .delete(acyclic_objects::Digest::from_bytes(*shared.digest.as_bytes()))
+        .delete(acyclic_objects::Digest::from_bytes(
+            *shared.digest.as_bytes(),
+        ))
         .await?;
     drop(gate);
     drop(collecting);

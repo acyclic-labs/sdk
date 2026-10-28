@@ -8,20 +8,28 @@ use prost::Message;
 ///
 /// # Errors
 /// The provider's semantic failure.
-pub async fn put_blob(blobs: &dyn Blobs, request: wire::PutBlobRequest) -> Result<wire::PutResponse, Error> {
+pub async fn put_blob(
+    blobs: &dyn Blobs,
+    request: wire::PutBlobRequest,
+) -> Result<wire::PutResponse, Error> {
     let expected = convert::digest(request.digest.as_ref())?;
     if Digest::of(&request.body) != expected {
         return Err(wire::ErrorCode::DigestMismatch.into());
     }
     let references = convert::digests(&request.references)?;
-    Ok(convert::wire_put(&blobs.put(request.body.into(), references).await?))
+    Ok(convert::wire_put(
+        &blobs.put(request.body.into(), references).await?,
+    ))
 }
 
 /// Publishes a manifest of existing parts.
 ///
 /// # Errors
 /// The provider's semantic failure.
-pub async fn put_manifest(blobs: &dyn Blobs, request: wire::PutManifestRequest) -> Result<wire::PutResponse, Error> {
+pub async fn put_manifest(
+    blobs: &dyn Blobs,
+    request: wire::PutManifestRequest,
+) -> Result<wire::PutResponse, Error> {
     let manifest = convert::from_manifest(request.manifest.as_ref())?;
     Ok(convert::wire_put(&blobs.put_manifest(manifest).await?))
 }
@@ -30,7 +38,10 @@ pub async fn put_manifest(blobs: &dyn Blobs, request: wire::PutManifestRequest) 
 ///
 /// # Errors
 /// The provider's semantic failure.
-pub async fn get_blob(blobs: &dyn Blobs, request: wire::GetBlobRequest) -> Result<wire::GetBlobResponse, Error> {
+pub async fn get_blob(
+    blobs: &dyn Blobs,
+    request: wire::GetBlobRequest,
+) -> Result<wire::GetBlobResponse, Error> {
     let digest = convert::digest(request.digest.as_ref())?;
     let range = convert::from_range(request.range.as_ref());
     let object = blobs.get(digest, range, request.maximum_bytes).await?;
@@ -45,7 +56,10 @@ pub async fn get_blob(blobs: &dyn Blobs, request: wire::GetBlobRequest) -> Resul
 ///
 /// # Errors
 /// The provider's semantic failure.
-pub async fn head_blob(blobs: &dyn Blobs, request: wire::HeadBlobRequest) -> Result<wire::BlobInfo, Error> {
+pub async fn head_blob(
+    blobs: &dyn Blobs,
+    request: wire::HeadBlobRequest,
+) -> Result<wire::BlobInfo, Error> {
     let digest = convert::digest(request.digest.as_ref())?;
     Ok(convert::wire_head(&blobs.head(digest).await?))
 }
@@ -54,7 +68,10 @@ pub async fn head_blob(blobs: &dyn Blobs, request: wire::HeadBlobRequest) -> Res
 ///
 /// # Errors
 /// The provider's semantic failure.
-pub async fn delete_blob(blobs: &dyn Blobs, request: wire::DeleteBlobRequest) -> Result<wire::DeleteBlobResponse, Error> {
+pub async fn delete_blob(
+    blobs: &dyn Blobs,
+    request: wire::DeleteBlobRequest,
+) -> Result<wire::DeleteBlobResponse, Error> {
     let digest = convert::digest(request.digest.as_ref())?;
     Ok(convert::wire_delete(blobs.delete(digest).await?))
 }
@@ -63,7 +80,10 @@ pub async fn delete_blob(blobs: &dyn Blobs, request: wire::DeleteBlobRequest) ->
 ///
 /// # Errors
 /// The provider's semantic failure.
-pub async fn list_blobs(blobs: &dyn Blobs, request: wire::ListBlobsRequest) -> Result<wire::ListBlobsResponse, Error> {
+pub async fn list_blobs(
+    blobs: &dyn Blobs,
+    request: wire::ListBlobsRequest,
+) -> Result<wire::ListBlobsResponse, Error> {
     let after = request
         .after
         .as_ref()
@@ -76,9 +96,14 @@ pub async fn list_blobs(blobs: &dyn Blobs, request: wire::ListBlobsRequest) -> R
 ///
 /// # Errors
 /// The provider's semantic failure.
-pub async fn retain(blobs: &dyn Blobs, request: wire::RetainRequest) -> Result<wire::RetainResponse, Error> {
+pub async fn retain(
+    blobs: &dyn Blobs,
+    request: wire::RetainRequest,
+) -> Result<wire::RetainResponse, Error> {
     let references = convert::digests(&request.references)?;
-    let retained = blobs.retain(&RootId::new(request.root)?, references).await?;
+    let retained = blobs
+        .retain(&RootId::new(request.root)?, references)
+        .await?;
     Ok(wire::RetainResponse {
         references: retained.references,
     })
@@ -88,7 +113,10 @@ pub async fn retain(blobs: &dyn Blobs, request: wire::RetainRequest) -> Result<w
 ///
 /// # Errors
 /// The provider's semantic failure.
-pub async fn release(blobs: &dyn Blobs, request: wire::ReleaseRequest) -> Result<wire::ReleaseResponse, Error> {
+pub async fn release(
+    blobs: &dyn Blobs,
+    request: wire::ReleaseRequest,
+) -> Result<wire::ReleaseResponse, Error> {
     let existed = blobs.release(&RootId::new(request.root)?).await?;
     Ok(wire::ReleaseResponse { existed })
 }
@@ -97,7 +125,10 @@ pub async fn release(blobs: &dyn Blobs, request: wire::ReleaseRequest) -> Result
 ///
 /// # Errors
 /// The provider's semantic failure.
-pub async fn collect(blobs: &dyn Blobs, _request: wire::CollectRequest) -> Result<wire::CollectResponse, Error> {
+pub async fn collect(
+    blobs: &dyn Blobs,
+    _request: wire::CollectRequest,
+) -> Result<wire::CollectResponse, Error> {
     Ok(convert::wire_collection(&blobs.collect().await?))
 }
 
@@ -105,7 +136,10 @@ pub async fn collect(blobs: &dyn Blobs, _request: wire::CollectRequest) -> Resul
 ///
 /// # Errors
 /// The provider's semantic failure.
-pub async fn usage(blobs: &dyn Blobs, _request: wire::UsageRequest) -> Result<wire::UsageResponse, Error> {
+pub async fn usage(
+    blobs: &dyn Blobs,
+    _request: wire::UsageRequest,
+) -> Result<wire::UsageResponse, Error> {
     let usage = blobs.usage().await?;
     Ok(wire::UsageResponse {
         blobs: usage.blobs,

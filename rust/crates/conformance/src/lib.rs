@@ -97,7 +97,11 @@ mod tests {
     async fn family_memory_providers_conform() -> Result<(), String> {
         let stream_provider = MemoryStream::default();
         let store = acyclic_objects::Store::new(acyclic_objects::MemoryMedium::default());
-        let objects_provider = Arc::new(store.account(b"filesystem").map_err(|error| error.to_string())?);
+        let objects_provider = Arc::new(
+            store
+                .account(b"filesystem")
+                .map_err(|error| error.to_string())?,
+        );
         let filesystem = acyclic_fs::Fs::from_memory_providers(
             Arc::new(stream_provider.clone()),
             Arc::clone(&objects_provider),
@@ -137,7 +141,9 @@ mod tests {
         .await?;
         objects(
             &*objects_provider,
-            &store.account(b"second").map_err(|error| error.to_string())?,
+            &store
+                .account(b"second")
+                .map_err(|error| error.to_string())?,
         )
         .await?;
         machines(&acyclic_machines::conformance::Fixture::new(

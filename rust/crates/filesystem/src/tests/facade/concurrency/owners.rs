@@ -266,9 +266,7 @@ async fn check_rejected_group_reply(native: bool) -> TestResult {
             forbid_replay: Default::default(),
             dispatch_gate: None,
         },
-        crate::LogicalObjectStore::new(
-            Arc::clone(volume.fs.inner.objects.provider()),
-        ),
+        crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
     );
     let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
@@ -452,9 +450,7 @@ async fn check_committed_volume_witness(native: bool, overlapping_read: bool) ->
             forbid_replay: Default::default(),
             dispatch_gate: None,
         },
-        crate::LogicalObjectStore::new(
-            Arc::clone(volume.fs.inner.objects.provider()),
-        ),
+        crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
     );
     let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
@@ -620,9 +616,7 @@ async fn check_successor_intake(
             forbid_replay: Default::default(),
             dispatch_gate: Some(Arc::clone(&gate)),
         },
-        crate::LogicalObjectStore::new(
-            Arc::clone(volume.fs.inner.objects.provider()),
-        ),
+        crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
     );
     let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
@@ -809,9 +803,7 @@ async fn check_owned_append_client_drop(native: bool, explicit_cancellation: boo
                 forbid_replay: Default::default(),
                 dispatch_gate: Some(Arc::clone(&gate)),
             },
-            crate::LogicalObjectStore::new(
-                Arc::clone(volume.fs.inner.objects.provider()),
-            ),
+            crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
             EmbeddedCapabilities::MEMORY,
         );
         let observed = observer.open_volume(volume.id(), B, &cancel).await?.value;
@@ -931,9 +923,7 @@ async fn check_composition_custody(native: bool) -> TestResult {
             forbid_replay: Default::default(),
             dispatch_gate: Some(Arc::clone(&gate)),
         },
-        crate::LogicalObjectStore::new(
-            Arc::clone(volume.fs.inner.objects.provider()),
-        ),
+        crate::LogicalObjectStore::new(Arc::clone(volume.fs.inner.objects.provider())),
         EmbeddedCapabilities::MEMORY,
     );
     let actual = Arc::downgrade(&observer.inner);

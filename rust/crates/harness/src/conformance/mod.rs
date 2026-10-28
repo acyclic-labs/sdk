@@ -66,9 +66,8 @@ pub struct Objects {
     pub capabilities: acyclic_fs::EmbeddedCapabilities,
 }
 
-type CachedObjects = acyclic_fs::CachedObjectStore<
-    acyclic_fs::LogicalObjectStore<dyn acyclic_objects::Blobs>,
->;
+type CachedObjects =
+    acyclic_fs::CachedObjectStore<acyclic_fs::LogicalObjectStore<dyn acyclic_objects::Blobs>>;
 /// The canonical native publication staging and immutable cache.
 #[cfg(not(target_arch = "wasm32"))]
 pub type ObjectStore = acyclic_fs::staged_objects::StagedObjects<CachedObjects>;

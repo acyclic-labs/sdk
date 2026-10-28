@@ -12,7 +12,9 @@ fn main() {
 }
 
 fn runtime() -> Runtime {
-    tokio::runtime::Builder::new_current_thread().build().unwrap()
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
 }
 
 /// Opens a fresh local account.
@@ -32,7 +34,9 @@ fn body(index: u64) -> OwnedBytes {
 }
 
 fn put(runtime: &Runtime, blobs: &LocalObjects, index: u64) -> Digest {
-    let put = runtime.block_on(blobs.put(body(index), Vec::new())).unwrap();
+    let put = runtime
+        .block_on(blobs.put(body(index), Vec::new()))
+        .unwrap();
     put.verified().unwrap().digest
 }
 

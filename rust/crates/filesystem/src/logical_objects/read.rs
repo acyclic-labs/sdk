@@ -26,7 +26,10 @@ fn completed_bytes(error: &ObjectStoreError) -> Result<u64, WorkError> {
 }
 #[cfg(not(target_arch = "wasm32"))]
 fn native_payload_bytes(error: &acyclic_objects::NativeObjectsError) -> Result<u64, WorkError> {
-    Ok(error.object.as_ref().map_or(0, |object| object.body().len() as u64))
+    Ok(error
+        .object
+        .as_ref()
+        .map_or(0, |object| object.body().len() as u64))
 }
 impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
     pub(super) async fn fetch(

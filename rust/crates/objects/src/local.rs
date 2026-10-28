@@ -121,7 +121,9 @@ fn create_directories(directory: &Path, durability: LocalDurability) -> std::io:
     create_directories(parent, durability)?;
     match std::fs::create_dir(directory) {
         Ok(()) => sync_directory(parent, durability),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => sync_directory(parent, durability),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            sync_directory(parent, durability)
+        }
         Err(error) => Err(error),
     }
 }

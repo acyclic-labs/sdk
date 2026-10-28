@@ -6,8 +6,7 @@ fn main() {
     let stream = Arc::new(acyclic_stream::MemoryStream::default());
     let objects = acyclic_objects::MemoryObjects::memory();
     let authority = Arc::new(acyclic_fs::StreamAuthorityStore::new(stream.clone()));
-    let objects = Arc::new(acyclic_fs::LogicalObjectStore::new(
-        Arc::new(objects)));
+    let objects = Arc::new(acyclic_fs::LogicalObjectStore::new(Arc::new(objects)));
     let filesystem =
         acyclic_fs::Fs::new(authority, objects, acyclic_fs::EmbeddedCapabilities::MEMORY);
     let future = acyclic_harness_conformance::collect_on(

@@ -5,7 +5,9 @@ use crate::{
     Retained, RootId, Usage,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use crate::{NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt};
+use crate::{
+    NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt,
+};
 use acyclic_stream::OwnedBytes;
 use acyclic_stream::testing::{Counted, RequestClass};
 
@@ -60,7 +62,10 @@ impl<P: Blobs> Blobs for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().put_batch(requests).await
     }
-    async fn get_batch(&self, requests: Vec<(Digest, ByteRange, u64)>) -> Vec<Result<Object, Error>> {
+    async fn get_batch(
+        &self,
+        requests: Vec<(Digest, ByteRange, u64)>,
+    ) -> Vec<Result<Object, Error>> {
         self.record(RequestClass::Data);
         self.inner().get_batch(requests).await
     }

@@ -380,10 +380,9 @@ pub use speculation::{
 };
 pub use storage::{
     AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStoreError, ByteRange,
-    CreateAuthorityOutcome, FenceOutcome, GuardedAppend, HashedObject,
-    ObjectFailure, ObjectId, ObjectKind, ObjectRead,
-    ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError, PublicationPermit,
-    PublicationReservation, ReplayLimit, ReservationOutcome, object_digest,
+    CreateAuthorityOutcome, FenceOutcome, GuardedAppend, HashedObject, ObjectFailure, ObjectId,
+    ObjectKind, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError,
+    PublicationPermit, PublicationReservation, ReplayLimit, ReservationOutcome, object_digest,
 };
 pub use streams_record::{
     STREAMS_AUTHORITY_RECORD_HEADER_BYTES, StreamsAuthorityRecord, StreamsAuthorityRecordError,

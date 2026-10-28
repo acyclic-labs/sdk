@@ -11,9 +11,7 @@ use super::{CanonicalDecodeError, DecodeLimits};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
 use crate::performance::{OperationReceipt, WorkCounters, WorkError};
-use crate::storage::{
-    HashedObject, ObjectId, ObjectKind, ObjectStoreError,
-};
+use crate::storage::{HashedObject, ObjectId, ObjectKind, ObjectStoreError};
 use std::marker::PhantomData;
 use std::ops::Range;
 

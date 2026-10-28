@@ -1,8 +1,8 @@
 //! Original-meter producers over the same engine paths as ordinary calls.
 use crate::{
-    Account, ByteRange, Digest, Medium, MediumError, NativeObjectsCause, NativeObjectsError, Object,
-    ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt, native_future,
-    native_input_meter,
+    Account, ByteRange, Digest, Medium, MediumError, NativeObjectsCause, NativeObjectsError,
+    Object, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt,
+    native_future, native_input_meter,
 };
 use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
 use acyclic_stream::OwnedBytes;
@@ -45,13 +45,22 @@ impl<M> Metered<M> {
     }
 
     fn hold(&self, bytes: usize) -> Result<(), MediumError> {
-        let grown = self.held.lock().unwrap_or_else(PoisonError::into_inner).grow(bytes);
+        let grown = self
+            .held
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .grow(bytes);
         self.charge(grown)
     }
 
     /// The meter's refusal behind `error`, else the engine's error.
     fn cause(&self, error: crate::Error) -> NativeObjectsError {
-        match self.refusal.lock().unwrap_or_else(PoisonError::into_inner).take() {
+        match self
+            .refusal
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+        {
             Some(refusal) => refusal.into(),
             None => NativeObjectsError::from(NativeObjectsCause::Service(error)),
         }
@@ -63,14 +72,27 @@ impl<M: Medium> Medium for Metered<M> {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
         self.charge(self.meter.admit_write(bytes.len()))?;
         let created = self.inner.create(key, bytes.clone()).await;
-        let written = if matches!(created, Ok(true)) { bytes.len() } else { 0 };
+        let written = if matches!(created, Ok(true)) {
+            bytes.len()
+        } else {
+            0
+        };
         self.charge(self.meter.record_write(written))?;
         created
     }
 
-    async fn read(&self, key: &str, range: Option<Range<u64>>) -> Result<Option<OwnedBytes>, MediumError> {
-        let maximum = range.as_ref().map_or(0, |range| range.end.saturating_sub(range.start));
-        self.charge(self.meter.admit_read(usize::try_from(maximum).unwrap_or(usize::MAX)))?;
+    async fn read(
+        &self,
+        key: &str,
+        range: Option<Range<u64>>,
+    ) -> Result<Option<OwnedBytes>, MediumError> {
+        let maximum = range
+            .as_ref()
+            .map_or(0, |range| range.end.saturating_sub(range.start));
+        self.charge(
+            self.meter
+                .admit_read(usize::try_from(maximum).unwrap_or(usize::MAX)),
+        )?;
         let read = self.inner.read(key, range).await?;
         let length = read.as_ref().map_or(0, OwnedBytes::len);
         self.charge(self.meter.record_read(length))?;
@@ -85,7 +107,12 @@ impl<M: Medium> Medium for Metered<M> {
         removed
     }
 
-    async fn list(&self, prefix: &str, after: Option<&str>, limit: usize) -> Result<Vec<(String, u64)>, MediumError> {
+    async fn list(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>, MediumError> {
         self.charge(self.meter.admit_read(0))?;
         let listed = self.inner.list(prefix, after, limit).await?;
         let bytes = listed
@@ -103,14 +130,20 @@ impl<M: Medium> Medium for Metered<M> {
 }
 
 /// `account` over the caller's meter.
-fn metered<M: Medium>(account: &Account<M>, meter: &Meter) -> (Arc<Metered<M>>, Account<Metered<M>>) {
+fn metered<M: Medium>(
+    account: &Account<M>,
+    meter: &Meter,
+) -> (Arc<Metered<M>>, Account<Metered<M>>) {
     let medium = Arc::new(Metered::new(account.shared_medium(), Arc::clone(meter)));
     let metered = account.over(Arc::clone(&medium));
     (medium, metered)
 }
 
 /// Reserves the exact result vector a genuine batch returns.
-fn results<T>(count: usize, meter: &Meter) -> Result<(Vec<Result<T, NativeObjectsError>>, ReadAllocation), NativeObjectsError> {
+fn results<T>(
+    count: usize,
+    meter: &Meter,
+) -> Result<(Vec<Result<T, NativeObjectsError>>, ReadAllocation), NativeObjectsError> {
     let bytes = count
         .checked_mul(std::mem::size_of::<Result<T, NativeObjectsError>>())
         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
@@ -119,11 +152,16 @@ fn results<T>(count: usize, meter: &Meter) -> Result<(Vec<Result<T, NativeObject
     values
         .try_reserve_exact(count)
         .map_err(|error| meter.allocation_failed(error))?;
-    allocation.reconcile_capacity(values.capacity() * std::mem::size_of::<Result<T, NativeObjectsError>>())?;
+    allocation.reconcile_capacity(
+        values.capacity() * std::mem::size_of::<Result<T, NativeObjectsError>>(),
+    )?;
     Ok((values, allocation))
 }
 
-fn checked<T, M>(medium: &Metered<M>, value: Result<T, crate::Error>) -> Result<T, NativeObjectsError> {
+fn checked<T, M>(
+    medium: &Metered<M>,
+    value: Result<T, crate::Error>,
+) -> Result<T, NativeObjectsError> {
     medium.meter.check()?;
     value.map_err(|error| medium.cause(error))
 }
@@ -155,7 +193,10 @@ pub(crate) fn get_batch<'a, M: Medium>(
         let _custody = custody;
         let (mut values, allocation) = results(requests.len(), &future_meter)?;
         for (digest, range, maximum) in requests {
-            values.push(checked(&medium, account.get_inner(digest, range, maximum).await));
+            values.push(checked(
+                &medium,
+                account.get_inner(digest, range, maximum).await,
+            ));
         }
         ObjectsBatch::new(values, allocation)
     })

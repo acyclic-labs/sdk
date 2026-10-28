@@ -132,11 +132,7 @@ async fn worker_publication_and_named_deployment_contract() {
             .expect("valid Cloud fixture")
     );
     let published = objects
-        .get(
-            acyclic_objects::Digest::of(&code),
-            ByteRange::FULL,
-            4096,
-        )
+        .get(acyclic_objects::Digest::of(&code), ByteRange::FULL, 4096)
         .await
         .expect("valid Cloud fixture");
     assert_eq!(published.body().as_ref(), code.as_ref());

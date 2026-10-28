@@ -71,8 +71,14 @@ mod tests {
         let encoded = encode("PutBlobRequest", &value)?;
         let json: serde_json::Value = serde_json::from_slice(&encoded)
             .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?;
-        assert_eq!(json.get("body").and_then(serde_json::Value::as_str), Some("AP8="));
-        assert_eq!(decode::<wire::PutBlobRequest>("PutBlobRequest", &encoded, 1024)?, value);
+        assert_eq!(
+            json.get("body").and_then(serde_json::Value::as_str),
+            Some("AP8=")
+        );
+        assert_eq!(
+            decode::<wire::PutBlobRequest>("PutBlobRequest", &encoded, 1024)?,
+            value
+        );
         let usage = wire::UsageResponse {
             blobs: 1,
             unique_bytes: 9_007_199_254_740_993,

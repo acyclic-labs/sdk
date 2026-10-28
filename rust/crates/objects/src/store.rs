@@ -217,7 +217,12 @@ impl<M: Medium> Account<M> {
 
     /// Whether any key exists under `prefix`.
     async fn any(&self, prefix: &str) -> Result<bool, Error> {
-        Ok(!self.medium.list(prefix, None, 1).await.map_err(medium)?.is_empty())
+        Ok(!self
+            .medium
+            .list(prefix, None, 1)
+            .await
+            .map_err(medium)?
+            .is_empty())
     }
 
     /// The `i/` holder tag of an envelope.
@@ -237,7 +242,10 @@ impl<M: Medium> Account<M> {
         for child in children {
             match self
                 .medium
-                .create(&format!("{}{tag}", self.index_prefix(child)), OwnedBytes::new())
+                .create(
+                    &format!("{}{tag}", self.index_prefix(child)),
+                    OwnedBytes::new(),
+                )
                 .await
             {
                 Ok(_) => {}
@@ -334,7 +342,13 @@ impl<M: Medium> Account<M> {
     async fn admitted(&self, digest: &Digest, from: u64) -> Result<bool, Error> {
         for revision in from..=self.revision().await? {
             let key = format!("{}{}", self.admission_prefix(revision), digest.to_hex());
-            if self.medium.read(&key, Some(0..0)).await.map_err(medium)?.is_some() {
+            if self
+                .medium
+                .read(&key, Some(0..0))
+                .await
+                .map_err(medium)?
+                .is_some()
+            {
                 return Ok(true);
             }
         }
@@ -361,7 +375,8 @@ impl<M: Medium> Account<M> {
                 return Ok(Delete::Referenced);
             }
         }
-        let held = self.any(&self.index_prefix(&digest)).await? || self.any(&self.intent_prefix(&digest)).await?;
+        let held = self.any(&self.index_prefix(&digest)).await?
+            || self.any(&self.intent_prefix(&digest)).await?;
         let Some(envelope) = self.envelope(&digest).await? else {
             if fence.is_some() && !held {
                 self.medium
@@ -410,7 +425,11 @@ impl<M: Medium> Account<M> {
         loop {
             let page = self
                 .medium
-                .list(prefix, keys.last().map(|(key, _): &(String, u64)| key.as_str()), PAGE)
+                .list(
+                    prefix,
+                    keys.last().map(|(key, _): &(String, u64)| key.as_str()),
+                    PAGE,
+                )
                 .await
                 .map_err(medium)?;
             let done = page.len() < PAGE;
@@ -422,7 +441,12 @@ impl<M: Medium> Account<M> {
     }
 
     /// Publishes payload then envelope; the envelope is the commit point.
-    async fn publish(&self, digest: Digest, stored: OwnedBytes, envelope: Envelope) -> Result<Put, Error> {
+    async fn publish(
+        &self,
+        digest: Digest,
+        stored: OwnedBytes,
+        envelope: Envelope,
+    ) -> Result<Put, Error> {
         if let Some(existing) = self.envelope(&digest).await? {
             return self.existing(digest, &existing, &envelope).await;
         }
@@ -438,7 +462,12 @@ impl<M: Medium> Account<M> {
 
     /// Writes payload, child keys and envelope under this put's intent: past
     /// its tombstone check no deleter removes the blob or its children.
-    async fn commit(&self, digest: Digest, stored: OwnedBytes, envelope: Envelope) -> Result<Put, Error> {
+    async fn commit(
+        &self,
+        digest: Digest,
+        stored: OwnedBytes,
+        envelope: Envelope,
+    ) -> Result<Put, Error> {
         if self.doomed(&digest).await? {
             return Ok(Put::Unknown);
         }
@@ -478,8 +507,16 @@ impl<M: Medium> Account<M> {
     }
 
     /// An envelope observed present is durable unless a deleter holds it.
-    async fn existing(&self, digest: Digest, existing: &Envelope, wanted: &Envelope) -> Result<Put, Error> {
-        if existing.kind != wanted.kind || existing.length != wanted.length || existing.stored != wanted.stored {
+    async fn existing(
+        &self,
+        digest: Digest,
+        existing: &Envelope,
+        wanted: &Envelope,
+    ) -> Result<Put, Error> {
+        if existing.kind != wanted.kind
+            || existing.length != wanted.length
+            || existing.stored != wanted.stored
+        {
             return Err(corrupt());
         }
         if existing.references != wanted.references {
@@ -570,7 +607,11 @@ impl<M: Medium> Account<M> {
     async fn rooted(&self) -> Result<Vec<Digest>, Error> {
         let suspended = |_| Error::from(ErrorCode::Suspended);
         let mut references = Vec::new();
-        for (key, _) in self.list_all(&format!("{}r/", self.prefix)).await.map_err(suspended)? {
+        for (key, _) in self
+            .list_all(&format!("{}r/", self.prefix))
+            .await
+            .map_err(suspended)?
+        {
             let batch = self
                 .medium
                 .read(&key, None)
@@ -598,7 +639,10 @@ impl<M: Medium> Account<M> {
         range: ByteRange,
         maximum_bytes: u64,
     ) -> Result<Object, Error> {
-        let envelope = self.envelope(&digest).await?.ok_or(Error::from(ErrorCode::NotFound))?;
+        let envelope = self
+            .envelope(&digest)
+            .await?
+            .ok_or(Error::from(ErrorCode::NotFound))?;
         let selected = range.resolve(envelope.length)?;
         if selected.end - selected.start > maximum_bytes {
             return Err(ErrorCode::QuotaExceeded.into());
@@ -615,7 +659,10 @@ impl<M: Medium> Account<M> {
                     .map_err(medium)?;
                 let mut bytes = Vec::new();
                 bytes
-                    .try_reserve_exact(usize::try_from(selected.end - selected.start).map_err(|_| Error::from(ErrorCode::QuotaExceeded))?)
+                    .try_reserve_exact(
+                        usize::try_from(selected.end - selected.start)
+                            .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?,
+                    )
                     .map_err(|_| Error::from(ErrorCode::QuotaExceeded))?;
                 for part in &parts {
                     bytes.extend_from_slice(part);
@@ -626,10 +673,18 @@ impl<M: Medium> Account<M> {
         if body.len() as u64 != selected.end - selected.start {
             return Err(corrupt());
         }
-        Ok(Object::new(Self::head_of(digest, envelope), selected.start, body))
+        Ok(Object::new(
+            Self::head_of(digest, envelope),
+            selected.start,
+            body,
+        ))
     }
 
-    pub(crate) async fn put_inner(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
+    pub(crate) async fn put_inner(
+        &self,
+        body: OwnedBytes,
+        references: Vec<Digest>,
+    ) -> Result<Put, Error> {
         let references = canonical(references);
         let _gate = self.state.gate.read().await;
         let digest = Digest::of(&body);
@@ -695,7 +750,10 @@ impl<M: Medium> crate::Blobs for Account<M> {
     }
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
-        let envelope = self.envelope(&digest).await?.ok_or(Error::from(ErrorCode::NotFound))?;
+        let envelope = self
+            .envelope(&digest)
+            .await?
+            .ok_or(Error::from(ErrorCode::NotFound))?;
         Ok(Self::head_of(digest, envelope))
     }
 
@@ -719,7 +777,9 @@ impl<M: Medium> crate::Blobs for Account<M> {
             .iter()
             .map(|(key, _)| self.digest_from_key(key))
             .collect::<Result<Vec<_>, _>>()?;
-        let next = (digests.len() == limit).then(|| digests.last().copied()).flatten();
+        let next = (digests.len() == limit)
+            .then(|| digests.last().copied())
+            .flatten();
         Ok(Page { digests, next })
     }
 
@@ -777,7 +837,11 @@ impl<M: Medium> crate::Blobs for Account<M> {
         let fence = self.revision().await?;
         let epoch = fence + 1;
         // One collector wins each revision, across processes.
-        match self.medium.create(&self.revision_key(epoch), OwnedBytes::new()).await {
+        match self
+            .medium
+            .create(&self.revision_key(epoch), OwnedBytes::new())
+            .await
+        {
             Ok(true) => {}
             Ok(false) => return Err(ErrorCode::Conflict.into()),
             Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
@@ -816,7 +880,10 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 collection.marked += 1;
                 continue;
             }
-            let stored = self.envelope(&digest).await?.map_or(0, |envelope| envelope.stored);
+            let stored = self
+                .envelope(&digest)
+                .await?
+                .map_or(0, |envelope| envelope.stored);
             if self.remove_blob(digest, Some(fence)).await? == Delete::Deleted {
                 collection.swept += 1;
                 collection.swept_bytes += stored;
@@ -893,8 +960,10 @@ impl<M: Medium> crate::Blobs for Account<M> {
         &self,
         requests: crate::ObjectsNativeRequest<Vec<(Digest, ByteRange, u64)>>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> Result<crate::ObjectsNativeFuture<'_, crate::ObjectsBatch<Object>>, crate::NativeObjectsError>
-    {
+    ) -> Result<
+        crate::ObjectsNativeFuture<'_, crate::ObjectsBatch<Object>>,
+        crate::NativeObjectsError,
+    > {
         crate::native::get_batch(self, requests, meter)
     }
 

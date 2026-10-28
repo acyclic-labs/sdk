@@ -1,9 +1,7 @@
 use super::*;
 use crate::kernel::{InlineFileData, LogicalName, NameEncoding};
 use crate::model::{CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy};
-use crate::storage::{
-    CreateAuthorityOutcome, ObjectRead, ObjectReadRequest, ObjectWrite,
-};
+use crate::storage::{CreateAuthorityOutcome, ObjectRead, ObjectReadRequest, ObjectWrite};
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

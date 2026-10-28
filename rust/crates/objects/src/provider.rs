@@ -1,10 +1,10 @@
 //! The account-scoped blob contract every provider implements.
 use crate::{ByteRange, Digest, Error, Kind, Manifest, wire};
-use acyclic_stream::OwnedBytes;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{ObjectsNativeRequest, ObjectsPutReceipt};
+use acyclic_stream::OwnedBytes;
 
 /// A digest and length compared with the stored envelope in the caller's own
 /// account, under the grant that admitted the call.
@@ -256,7 +256,10 @@ pub trait Blobs: Send + Sync {
     }
 
     /// Ordered, individually bounded reads.
-    async fn get_batch(&self, requests: Vec<(Digest, ByteRange, u64)>) -> Vec<Result<Object, Error>> {
+    async fn get_batch(
+        &self,
+        requests: Vec<(Digest, ByteRange, u64)>,
+    ) -> Vec<Result<Object, Error>> {
         let mut results = Vec::with_capacity(requests.len());
         for (digest, range, maximum) in requests {
             results.push(self.get(digest, range, maximum).await);
@@ -345,7 +348,10 @@ impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
     async fn put_batch(&self, requests: Vec<(OwnedBytes, Vec<Digest>)>) -> Vec<Result<Put, Error>> {
         (**self).put_batch(requests).await
     }
-    async fn get_batch(&self, requests: Vec<(Digest, ByteRange, u64)>) -> Vec<Result<Object, Error>> {
+    async fn get_batch(
+        &self,
+        requests: Vec<(Digest, ByteRange, u64)>,
+    ) -> Vec<Result<Object, Error>> {
         (**self).get_batch(requests).await
     }
     #[cfg(not(target_arch = "wasm32"))]

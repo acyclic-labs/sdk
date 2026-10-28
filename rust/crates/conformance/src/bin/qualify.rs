@@ -88,7 +88,9 @@ async fn qualify_objects_local(root: PathBuf) -> Result<(), String> {
             .map_err(|error| error.to_string())?,
     );
     let first = store.account(b"first").map_err(|error| error.to_string())?;
-    let second = store.account(b"second").map_err(|error| error.to_string())?;
+    let second = store
+        .account(b"second")
+        .map_err(|error| error.to_string())?;
     acyclic_objects::conformance::verify(&first, &second, "conformance")
         .await
         .map_err(|error| error.to_string())

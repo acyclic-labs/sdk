@@ -11,16 +11,25 @@ use std::{
 #[path = "observed_store.rs"]
 pub(super) mod observed_store;
 
-fn account(store: Arc<dyn ObjectStore>, prefix: &Path) -> Result<acyclic_objects::Account<S3Medium>, acyclic_objects::Error> {
+fn account(
+    store: Arc<dyn ObjectStore>,
+    prefix: &Path,
+) -> Result<acyclic_objects::Account<S3Medium>, acyclic_objects::Error> {
     Store::new(S3Medium::new(store, prefix.as_ref())).account(b"storage-conformance")
 }
 
-pub async fn verify(store: Arc<dyn ObjectStore>, prefix: Path) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn verify(
+    store: Arc<dyn ObjectStore>,
+    prefix: Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let left = account(store.clone(), &prefix)?;
     let right = account(store.clone(), &prefix)?;
     let body = OwnedBytes::from_static(b"race");
-    let (a, b) = tokio::join!(left.put(body.clone(), Vec::new()), right.put(body.clone(), Vec::new()));
+    let (a, b) = tokio::join!(
+        left.put(body.clone(), Vec::new()),
+        right.put(body.clone(), Vec::new())
+    );
     one_creator(a?, b?)?;
 
     // This exceeds the physical multipart threshold, not merely small fixture bodies.
@@ -32,16 +41,29 @@ pub async fn verify(store: Arc<dyn ObjectStore>, prefix: Path) -> Result<(), Box
         reopened.put(body.clone(), Vec::new()).await?,
         Put::AlreadyExists { verified } if verified.digest == digest
     ));
-    assert_eq!(reopened.get(digest, ByteRange::FULL, body.len() as u64).await?.body(), &body);
+    assert_eq!(
+        reopened
+            .get(digest, ByteRange::FULL, body.len() as u64)
+            .await?
+            .body(),
+        &body
+    );
     let length = body.len() as u64;
     assert_eq!(
-        right.get(digest, ByteRange::new(length - 17, length), 17).await?.body().as_ref(),
+        right
+            .get(digest, ByteRange::new(length - 17, length), 17)
+            .await?
+            .body()
+            .as_ref(),
         &[0x5a; 17]
     );
     assert_eq!(left.delete(digest).await?, Delete::Deleted);
     assert!(matches!(
         right.head(digest).await,
-        Err(acyclic_objects::Error { code: wire::ErrorCode::NotFound, .. })
+        Err(acyclic_objects::Error {
+            code: wire::ErrorCode::NotFound,
+            ..
+        })
     ));
     println!(
         "S3 independent clients: create race, immediate create/delete visibility, physical multipart, ranges and reopen: {:?}",
@@ -61,7 +83,10 @@ fn one_creator(a: Put, b: Put) -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-async fn cold_ranges(store: Arc<dyn ObjectStore>, prefix: Path) -> Result<(), Box<dyn std::error::Error>> {
+async fn cold_ranges(
+    store: Arc<dyn ObjectStore>,
+    prefix: Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     let observed = Arc::new(observed_store::ObservedStore {
         inner: store,
         body_bytes: AtomicUsize::new(0),
@@ -82,7 +107,9 @@ async fn cold_ranges(store: Arc<dyn ObjectStore>, prefix: Path) -> Result<(), Bo
         observed.metadata_bytes.store(0, Ordering::Relaxed);
         let fresh = account(observed.clone(), &prefix)?;
         let length = 1024 * 1024;
-        let response = fresh.get(digest, ByteRange::new(length - 1, length), 1).await?;
+        let response = fresh
+            .get(digest, ByteRange::new(length - 1, length), 1)
+            .await?;
         assert_eq!(response.body().as_ref(), &[generation]);
         assert_eq!(
             observed.body_bytes.load(Ordering::Relaxed),
@@ -91,7 +118,10 @@ async fn cold_ranges(store: Arc<dyn ObjectStore>, prefix: Path) -> Result<(), Bo
         );
         assert_eq!(observed.body_gets.load(Ordering::Relaxed), 1);
         let metadata = observed.metadata_bytes.load(Ordering::Relaxed);
-        assert!(metadata < 4096, "one blob required unbounded metadata: {metadata}");
+        assert!(
+            metadata < 4096,
+            "one blob required unbounded metadata: {metadata}"
+        );
         println!(
             "MinIO cold suffix among {generation} x 1 MiB blobs: body GETs=1, received body bytes=1, received envelope bytes={metadata}"
         );

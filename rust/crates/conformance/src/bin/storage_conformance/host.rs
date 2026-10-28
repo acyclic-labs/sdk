@@ -109,10 +109,7 @@ pub async fn verify(
         ("Postgres + MinIO", Some(database.to_owned()), Some(store)),
     ] {
         let started = Instant::now();
-        let providers = Providers {
-            database,
-            objects,
-        };
+        let providers = Providers { database, objects };
         acyclic_agent_host_conformance::verify(&providers)
             .await
             .map_err(|error| error as Box<dyn std::error::Error>)?;
