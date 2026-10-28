@@ -64,11 +64,12 @@ export class SessionQueue<T> implements AsyncIterable<T> {
     const discarded = this.#values;
     const head = this.#head;
     const length = this.#length;
+    const capacity = this.#capacity;
     this.#values = [];
     this.#head = 0;
     this.#length = 0;
     this.#wakeWriters();
-    for (let index = 0; index < length; index += 1) dispose(discarded[(head + index) % this.#capacity] as T);
+    for (let index = 0; index < length; index += 1) dispose(discarded[(head + index) % capacity] as T);
   }
   #wake(waiters: Set<() => void>): void {
     for (const wake of waiters) wake();
