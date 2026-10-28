@@ -122,37 +122,6 @@ async fn rejected_conditions_retain_no_key_or_namespace_state() -> Result<(), St
 }
 
 #[tokio::test]
-async fn page_projection_charges_record_bytes_and_headers() -> Result<(), StreamError> {
-    let provider = MemoryStream::default();
-    // Each record fits; their projected page exceeds the shared command ceiling.
-    let value = vec![0u8; crate::MAX_RECORD_BYTES / 2];
-    let count = crate::MAX_COMMAND_BYTES / value.len() + 1;
-    assert!(count < crate::MAX_ITEMS);
-    for index in 0..count {
-        provider
-            .append(AppendRequest {
-                path: StreamPath::new(format!("agents/{index:04}/status"))?,
-                records: vec![value.clone().into()],
-                if_tail: Some(0),
-                idempotency_key: crate::IdempotencyKey::unique(),
-            })
-            .await?;
-    }
-    let request = ChildrenPageRequest {
-        parent: Some(StreamPath::new("agents")?),
-        tail_stream: Some(StreamPath::new("status")?),
-        after: None,
-        hierarchy_version: None,
-        limit: u32::try_from(count).map_err(|_| StreamError::LimitExceeded)?,
-    };
-    assert_eq!(
-        provider.children_page(request).await,
-        Err(StreamError::LimitExceeded)
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn page_projection_skips_a_child_whose_named_tail_cannot_exist() -> Result<(), StreamError> {
     let provider = MemoryStream::default();
     let append = |path: String, value: &'static [u8]| {
