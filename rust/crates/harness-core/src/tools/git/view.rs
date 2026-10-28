@@ -55,8 +55,9 @@ impl<'a> View<'a> {
     pub(super) async fn read(
         self,
         path: &str,
-        maximum: u64,
+        maximum: impl Into<Option<u64>>,
     ) -> crate::Result<acyclic_stream::OwnedBytes> {
+        let maximum = maximum.into();
         let cancellation = CancellationToken::new();
         match self {
             Self::Checkout(view) => view
