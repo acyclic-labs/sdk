@@ -35,6 +35,10 @@ stream completes at its terminal event; no inspection or reopen occurs during
 silence. Dropping exec cancels that RPC. Physical command termination and reaping
 belong to the service producer; only its cleanup receipt confirms completion.
 Interrupted execution remains indeterminate and is never automatically retried.
+The TypeScript client shares cancellation ownership for exec and operation
+watches. Returning an iterator interrupts a pending pull, and terminal events
+complete without waiting for transport EOF. Watches have no implicit timeout;
+an explicit caller deadline or cancellation still applies.
 
 Run the shared lifecycle and protocol checks with:
 

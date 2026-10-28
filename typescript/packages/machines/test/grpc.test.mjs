@@ -364,6 +364,7 @@ test("watch delivers before completion and cancellation reaches the server", asy
     async *watchOperation(query, context) {
       authenticate(context);
       assert.deepEqual(query.operation, create(wire.OperationIdSchema, operation));
+      assert.equal(context.requestHeader.get("grpc-timeout"), null);
       context.signal.addEventListener("abort", cancelled, { once: true });
       yield { operation, status: wire.OperationStatus.PENDING };
       await cancellation;
@@ -375,6 +376,58 @@ test("watch delivers before completion and cancellation reaches the server", asy
   controller.abort();
   await assert.rejects(iterator.next(), error => error instanceof ConnectError && error.code === Code.Canceled);
   await cancellation;
+});
+
+test("return interrupts a pending stream pull and terminal watch needs no EOF", { timeout: 5000 }, async t => {
+  const execCancelled = Promise.withResolvers();
+  const watchCancelled = Promise.withResolvers();
+  const { machines } = await fixture(t, {
+    async *exec(_query, context) {
+      context.signal.addEventListener("abort", execCancelled.resolve, { once: true });
+      yield { machine, output: { case: "data", value: new Uint8Array([1]) } };
+      await execCancelled.promise;
+    },
+    async *watchOperation(_query, context) {
+      authenticate(context);
+      assert.equal(context.requestHeader.get("grpc-timeout"), null);
+      context.signal.addEventListener("abort", watchCancelled.resolve, { once: true });
+      yield { operation, status: wire.OperationStatus.FAILED };
+      await watchCancelled.promise;
+    },
+  });
+  const stream = machines.exec({ protocol, machine, argv: ["sleep"], timeoutMs: 300000 });
+  assert.equal((await stream.next()).value.output.case, "data");
+  const pending = assert.rejects(stream.next(), error => error.code === Code.Canceled);
+  await stream.return();
+  await pending;
+  await execCancelled.promise;
+  const watch = machines.watchOperation({ protocol, operation });
+  assert.equal((await watch.next()).value.status, wire.OperationStatus.FAILED);
+  assert.equal((await watch.next()).done, true);
+  await watchCancelled.promise;
+});
+
+test("watch refuses substituted identities, invalid status and incomplete EOF without reopening", async t => {
+  let attempts = 0;
+  const { machines } = await fixture(t, {
+    async *watchOperation(query) {
+      attempts++;
+      const mode = query.operation.value[0];
+      if (mode === 1) yield { operation: identity(99), status: wire.OperationStatus.SUCCEEDED };
+      else if (mode === 2) yield { operation: query.operation };
+      else if (mode === 3) yield { operation: query.operation, status: wire.OperationStatus.PENDING };
+      else yield { operation: query.operation, status: wire.OperationStatus.INDETERMINATE };
+    },
+  });
+  for (const mode of [1, 2, 3]) {
+    await assert.rejects(async () => {
+      for await (const _frame of machines.watchOperation({ protocol, operation: identity(mode) })) {}
+    }, error => error.code === Code.DataLoss);
+  }
+  const stream = machines.watchOperation({ protocol, operation: identity(4) });
+  assert.equal((await stream.next()).value.status, wire.OperationStatus.INDETERMINATE);
+  assert.equal((await stream.next()).done, true);
+  assert.equal(attempts, 4);
 });
 
 test("authentication failures preserve gRPC status and requests are not retried", async t => {
