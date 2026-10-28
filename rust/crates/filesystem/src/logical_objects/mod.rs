@@ -230,16 +230,33 @@ fn service_error(error: Error) -> ObjectStoreError {
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn native_error(error: acyclic_objects::NativeObjectsError) -> ObjectStoreError {
-    use acyclic_objects::NativeObjectsCause;
-    match &error.cause {
-        NativeObjectsCause::Service(service) if !error.has_payload() => service_error(*service),
-        NativeObjectsCause::Unsupported if !error.has_payload() => {
-            ObjectStoreError::NativeUnavailable
-        }
-        _ => ObjectStoreError::NativeObjects(error),
+fn native_error(
+    error: acyclic_objects::NativeObjectsError,
+    original: &crate::NativeMaterializationWork,
+) -> ObjectStoreError {
+    use acyclic_objects::{NativeObjectsCause as Cause, NativeObjectsError as Native};
+    // Only payload-free refusals may shed their native envelope. Completed
+    // physical data and its custody stay together on every other error.
+    match error {
+        Native {
+            cause: Cause::Admission(cause),
+            object: None,
+            receipt: None,
+        } => ObjectStoreError::Native(original.runtime_error(cause)),
+        Native {
+            cause: Cause::Service(service),
+            object: None,
+            receipt: None,
+        } => service_error(service),
+        Native {
+            cause: Cause::Unsupported,
+            object: None,
+            receipt: None,
+        } => ObjectStoreError::NativeUnavailable,
+        error => ObjectStoreError::NativeObjects(error),
     }
 }
+
 mod requests;
 use requests::*;
 mod read;
