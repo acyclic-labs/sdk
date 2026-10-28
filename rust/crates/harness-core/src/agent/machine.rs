@@ -760,7 +760,7 @@ pub fn requested_child(parent: &AgentPath, sequence: u64) -> Result<(IntentId, A
     Ok((intent, child))
 }
 
-fn requested_intent(sequence: u64) -> Result<IntentId, Error> {
+pub(super) fn requested_intent(sequence: u64) -> Result<IntentId, Error> {
     IntentId::try_from(format!("request:{sequence}"))
 }
 

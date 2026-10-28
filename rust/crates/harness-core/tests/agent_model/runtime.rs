@@ -223,6 +223,17 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
         return Err("spawn request was not committed".into());
     };
     let (spawn, child) = requested_child(&root, inbox)?;
+    let (another, _) = requested_child(&root, inbox + 1)?;
+    // Neither a caller's send id nor another inbox record's spawn intent
+    // identifies this result. Refuse both before waiting for the step.
+    for unrelated in [intent("s"), another] {
+        let reply = host.spawned(&root, inbox, &unrelated);
+        futures::pin_mut!(reply);
+        assert!(matches!(
+            futures::poll!(reply.as_mut()),
+            std::task::Poll::Ready(Err(Error::Conflict(_)))
+        ));
+    }
     // Until the parent's step commits, the reply waits rather than guessing.
     let reply = host.spawned(&root, inbox, &spawn);
     futures::pin_mut!(reply);
@@ -236,6 +247,10 @@ async fn a_spawn_reply_is_the_outcome_the_parent_step_committed() -> Result {
         }
     );
     assert_eq!(host.state(&child).await?.parent.as_ref(), Some(&root));
+    assert!(matches!(
+        host.spawned(&root, inbox, &intent("s")).await,
+        Err(Error::Conflict(_))
+    ));
     Ok(())
 }
 

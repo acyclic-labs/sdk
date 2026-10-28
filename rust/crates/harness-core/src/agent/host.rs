@@ -170,12 +170,18 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
     /// record `sequence` requested: the outcome that step committed, never a
     /// guess from an earlier state, however many steps later it is asked.
     /// Waits, on the parent's actor state stream, for that step to commit.
+    /// An intent not named by `sequence` is a conflict, refused before IO.
     pub async fn spawned(
         &self,
         parent: &AgentPath,
         sequence: u64,
         intent: &IntentId,
     ) -> Result<SpawnOutcome, Error> {
+        if super::machine::requested_intent(sequence)? != *intent {
+            return Err(Error::Conflict(
+                "spawn intent differs from its inbox sequence",
+            ));
+        }
         let actor = self.actor(parent)?;
         let store = self.runtime.store();
         let path = store.path(&actor).map_err(actor_error)?;
