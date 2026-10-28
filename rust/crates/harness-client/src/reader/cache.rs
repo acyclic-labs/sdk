@@ -692,6 +692,13 @@ impl RecordCache {
         protect: Option<u64>,
     ) -> bool {
         let key = self.resolve(stream, sequence);
+        if let Key::Record(path, _) = &key
+            && !self.meta.contains_key(path)
+        {
+            // Even a caller inserting bytes before a Head observation needs a
+            // residency identity. Evicting that identity must evict its bytes.
+            self.meta_mut(path);
+        }
         if self.entries.contains_key(&key) {
             // Immutable: an existing entry is already this record.
             self.touch(&key);
