@@ -677,7 +677,7 @@ fn original_publication_head(
 ) -> Result<Head, FsError> {
     let decoded = crate::kernel::decode_publication_evidence_with_accounting(
         &record.payload,
-        MAXIMUM_VOLUME_EVENT_BYTES,
+        record.payload.len() as u64,
         accounting,
     )?;
     Ok(decoded.origin.map_or(

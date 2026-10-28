@@ -23,9 +23,6 @@ mod objects;
 pub use authority::MemoryAuthorityStore;
 pub use objects::MemoryObjectStore;
 
-/// Default maximum immutable object size.
-pub const DEFAULT_MAX_OBJECT_BYTES: u64 = 64 * 1024 * 1024;
-
 fn allocate<T>(
     capacity: usize,
     accounting: &mut KernelAccounting<'_>,

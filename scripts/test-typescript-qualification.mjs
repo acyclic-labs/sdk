@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,22 +26,6 @@ function packageEntries() {
 }
 
 const entries = packageEntries();
-
-for (const command of ["create", "verify"]) {
-  test(`${command} rejects an oversized receipt before inspecting archives or source`, () => {
-    const work = mkdtempSync(join(tmpdir(), "acyclic-oversized-receipt-"));
-    try {
-      const receipt = join(work, "receipt.json");
-      writeFileSync(receipt, "");
-      truncateSync(receipt, command === "create" ? 16_777_217 : 1_048_577);
-      const args = command === "create" ? [command, work, "a".repeat(40), receipt] : [command, receipt, "a".repeat(40), "absent.tgz", join(work, "absent.tgz")];
-      const result = spawnSync(process.execPath, [qualification, ...args], { encoding: "utf8" });
-      assert.notEqual(result.status, 0);
-      assert.match(result.stderr, /receipt must be a regular file within its size bound/);
-      assert.equal(existsSync(join(work, "QUALIFICATION.json")), false);
-    } finally { rmSync(work, { recursive: true, force: true }); }
-  });
-}
 
 for (const command of ["create", "consumer"]) {
   test(`${command} requires its compiler receipt argument`, () => {

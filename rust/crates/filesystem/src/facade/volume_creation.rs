@@ -380,6 +380,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<(VolumeCreated, OperationId), FsError> {
         accounting.check()?;
         let mut work = authority_work(accounting, cancellation)?;
+        let maximum_payload_bytes = work.accounting().remaining()?.authority_bytes_read;
         let result = self
             .inner
             .authority
@@ -388,7 +389,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 Sequence::GENESIS,
                 ReplayLimit {
                     records: 1,
-                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
+                    payload_bytes: maximum_payload_bytes,
                 },
                 &mut work,
             )

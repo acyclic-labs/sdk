@@ -15,7 +15,7 @@ pub(super) fn hash_state() -> RandomState {
 
 // One exact slot allocation, with no insertion-time growth or hidden metadata.
 // Keep backing storage before its original allocation custody in drop order.
-pub(super) struct Index<'a, T> {
+pub(crate) struct Index<'a, T> {
     slots: Vec<Option<(ObjectId, &'a T)>>,
     hashes: RandomState,
     allocation: KernelOwnedAllocation,
@@ -23,7 +23,7 @@ pub(super) struct Index<'a, T> {
 }
 
 impl<'a, T> Index<'a, T> {
-    pub(super) fn new(
+    pub(crate) fn new(
         count: usize,
         work: &mut KernelAccounting<'_>,
     ) -> Result<Self, crate::FsError> {
@@ -57,7 +57,7 @@ impl<'a, T> Index<'a, T> {
         })
     }
 
-    pub(super) fn insert(
+    pub(crate) fn insert(
         &mut self,
         id: ObjectId,
         value: &'a T,
@@ -102,7 +102,7 @@ impl<'a, T> Index<'a, T> {
         Err(WorkError::Overflow.into())
     }
 
-    pub(super) fn release(self, work: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
+    pub(crate) fn release(self, work: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
         let Self {
             slots,
             allocation,

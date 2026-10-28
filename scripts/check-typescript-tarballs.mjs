@@ -208,7 +208,7 @@ const main = async () => {
       if (assembledDirectory) {
         const entry = publishedPackageEntries[i];
         const archive = join(assembledDirectory, "acyclic-labs-" + entry.slug + "-" + manifest.version + ".tgz");
-        validateArchive(archive, manifest.name, manifest.version, "typescript/packages/" + entry.directory);
+        await validateArchive(archive, manifest.name, manifest.version, "typescript/packages/" + entry.directory);
         tarballs.set(manifest.name, archive);
         continue;
       }
@@ -225,7 +225,7 @@ const main = async () => {
       const packedPath = run("bun", ["pm", "pack", "--destination", packDirectory, "--ignore-scripts", "--quiet"], { cwd: packageDirectory }).trim();
       if (!packedPath) throw new Error(`${manifest.name} did not produce a tarball path`);
       if (publishedPackageEntries.some(entry => entry.name === manifest.name)) {
-        validateArchive(resolve(packedPath), manifest.name, manifest.version, `typescript/packages/${packageDirectories[i]}`);
+        await validateArchive(resolve(packedPath), manifest.name, manifest.version, `typescript/packages/${packageDirectories[i]}`);
       }
       tarballs.set(manifest.name, resolve(packedPath));
     }

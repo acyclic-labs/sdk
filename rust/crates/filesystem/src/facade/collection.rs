@@ -275,7 +275,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         );
         if let Ok((created, _allocation)) =
             crate::kernel::decode_owned(&mut accounting, |observe| {
-                decode_volume_created(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut |step| {
+                decode_volume_created(&first.payload, first.payload.len() as u64, &mut |step| {
                     observe(step)
                 })
             })
@@ -291,14 +291,14 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             return Ok(());
         }
         #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-        if let Ok(source_volume) = decode_source_volume(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES)
+        if let Ok(source_volume) = decode_source_volume(&first.payload, first.payload.len() as u64)
         {
             if source_authority_id(source_volume) != authority_id {
                 return Err(FsError::VolumeMismatch);
             }
             return Ok(());
         }
-        let retained = decode_retention_created(&first.payload, MAXIMUM_VOLUME_EVENT_BYTES)?;
+        let retained = decode_retention_created(&first.payload, first.payload.len() as u64)?;
         let owner = match retained.kind {
             RetentionKind::ForkBase => hex::decode(&retained.label)
                 .ok()
@@ -341,7 +341,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             .await?;
         if let Some(latest) = latest.first()
             && let Ok(deleted) =
-                decode_workspace_deleted(&latest.payload, MAXIMUM_VOLUME_EVENT_BYTES)
+                decode_workspace_deleted(&latest.payload, latest.payload.len() as u64)
         {
             if deleted != volume_id {
                 return Err(FsError::VolumeMismatch);
@@ -384,30 +384,26 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         count: u32,
         cancellation: &CancellationToken,
     ) -> Result<Vec<crate::foundation::DurableCommit>, FsError> {
-        Ok({
-            let sdk_args = (
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
+        let maximum_payload_bytes = work.accounting().remaining()?.authority_bytes_read;
+        let result = self
+            .inner
+            .authority
+            .replay(
                 authority_id,
                 after,
                 ReplayLimit {
                     records: count,
-                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES.saturating_mul(u64::from(count)),
+                    payload_bytes: maximum_payload_bytes,
                 },
-                WorkBudget::UNBOUNDED,
-                cancellation,
-            );
-            let sdk_store = &self.inner.authority;
-            async move {
-                let mut sdk_work = crate::AuthorityWork::new(sdk_args.3, sdk_args.4);
-                let result = sdk_store
-                    .replay(sdk_args.0, sdk_args.1, sdk_args.2, &mut sdk_work)
-                    .await
-                    .map(|(value, _allocation)| value);
-                sdk_work.receipt(result)
-            }
-        }
-        .await
-        .map_err(|failure| FsError::from(failure.error))?
-        .value)
+                &mut work,
+            )
+            .await
+            .map(|(records, _allocation)| records);
+        Ok(work
+            .receipt(result)
+            .map_err(|failure| FsError::from(failure.error))?
+            .value)
     }
 
     /// Whether the workspace `volume_id` ended: deleted, or never created.
@@ -451,7 +447,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             )
             .await?;
         Ok(latest.first().is_some_and(|record| {
-            decode_workspace_deleted(&record.payload, MAXIMUM_VOLUME_EVENT_BYTES)
+            decode_workspace_deleted(&record.payload, record.payload.len() as u64)
                 .is_ok_and(|deleted| deleted == volume_id)
         }))
     }

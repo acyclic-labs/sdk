@@ -170,8 +170,7 @@ pub use file_table_mutation::{
     FileTableMutation, FileTableMutationError, FileTableMutationFailure, apply_file_table_mutations,
 };
 pub use generation::{
-    GenerationRoot, MAXIMUM_GENERATION_ROOT_BYTES, decode_generation_root, encode_generation_root,
-    generation_root_id,
+    GenerationRoot, decode_generation_root, encode_generation_root, generation_root_id,
 };
 pub(crate) use generation::{
     read_generation_root_with_accounting, read_generation_root_with_limits_and_accounting,
