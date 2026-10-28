@@ -224,7 +224,8 @@ impl StoredBody {
         start: usize,
         end: usize,
         mode: BodyReadMode,
-    ) -> impl Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + ProviderTask {
+    ) -> impl Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + ProviderTask
+    {
         let span = crate::obs::span!(
             TRACE,
             "acyclic.objects.body.read",
@@ -255,7 +256,8 @@ impl StoredBody {
         start: usize,
         end: usize,
         mode: BodyReadMode,
-    ) -> impl Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + ProviderTask {
+    ) -> impl Future<Output = Result<acyclic_stream::OwnedBytes, BodyReadError>> + ProviderTask
+    {
         if let Self::Memory(body) = self {
             return futures::future::Either::Left(async move {
                 #[cfg(not(target_arch = "wasm32"))]

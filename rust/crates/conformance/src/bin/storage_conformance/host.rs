@@ -41,6 +41,16 @@ impl Providers {
 }
 
 impl Backend for Providers {
+    fn serving(
+        &self,
+        policy: acyclic_harness_core::approvals::ApprovalPolicy,
+    ) -> BoxProviderFuture<'_, Result<Box<dyn acyclic_agent_host_conformance::protocol::Endpoint>>>
+    {
+        Box::pin(acyclic_agent_host_conformance::protocol::embedded::open(
+            self, policy,
+        ))
+    }
+
     fn fresh(&self) -> BoxProviderFuture<'_, Result<Box<dyn Storage>>> {
         Box::pin(async move { Ok(Box::new(self.domain()?) as Box<dyn Storage>) })
     }

@@ -1,12 +1,10 @@
 # PostgreSQL Stream
 
-The storage-selection draft depends on Streams surface PR #1705 for the
-prepare/durability/install correction described below. Those three signed
-changes were transferred to its sole owner and removed from this branch;
-the rebased storage draft has not been qualified. Historical receipts below
-remain tied to their recorded source. Full endpoint observation also awaits
-the canonical asynchronous policy-revalidation and durable filesystem-watch
-surfaces; this draft must not ship before those dependencies are integrated.
+The OSS Actors server accepts this concrete storage composition. Full endpoint
+observation and reopen remain unqualified and are listed under Live steps;
+missing filesystem resource follows fail closed. Historical emulator receipts
+below remain tied to their recorded source. The prepared-decision correction
+was transferred to Streams surface PR #1705 and is not included here.
 
 Enable `acyclic-stream/postgres` and call
 `postgres::PostgresStream::connect(connection_string, namespace)`. Each namespace
@@ -28,12 +26,11 @@ is REPEATABLE READ. The canonical shared Stream core owns append-if-tail CAS, ex
 idempotency, hierarchical fork/commit, filters and bounded public paging. Commands
 include the database clock sample, so reopening preserves record times and retry
 receipts. Publication survives caller cancellation; only committed commands enter
-the visible core. The core prepares its owned mutation under its state write
-guard before SQL publication, then installs it only after durability. Conditional
-refusals and known retries insert no journal row and send no notification.
-Conflicts leave retry keys available according to the shared contract. Planning
-and recorded admission use the database clock, with a SQL deadline recheck before
-commit. SQL synchronous commit must remain enabled for durable acknowledgements.
+the visible core. The current implementation journals before semantic application,
+so condition refusals can retain journal rows. The separate #1705 correction
+prepares the canonical decision before SQL publication and installs it after
+durability; its source-scoped receipts below do not qualify this source.
+SQL synchronous commit must remain enabled for durable acknowledgements.
 
 Each opened provider owns two connections and three shared async tasks: one
 serialized query connection, one LISTEN connection, and one notification refresh
@@ -125,6 +122,22 @@ routing and synchronous resource refusal now close only their channel. This
 preserves ordinary follows; it does not supply the missing remote policy watch.
 
 ## Live steps
+
+Complete the OSS endpoint qualification separately from compile-only admission:
+
+1. Integrate the canonical async credential-verifier shape from #1715
+   (`CredentialVerifier::verify` and retryable `VerifyError::Unavailable`).
+   This does not by itself make filesystem policy cuts current.
+2. Compose a durable selected filesystem policy-cut provider with asynchronous
+   revalidation immediately before disclosure and independent terminal push at
+   zero credit. Retain Postgres AtomicPublication; no process-owner relabel or
+   polling. Missing resources must keep failing closed.
+3. On bb2 run `scripts/backends/storage-conformance.sh` with its unchanged host
+   vectors and endpoint phases for Postgres/memory, local/MinIO and
+   Postgres/MinIO. Bind emulators to 127.0.0.1:15400-15499 under /mnt/bb and stop
+   them after the run. Prove prompt/retry, follow, reply, settlement and reopen;
+   then run the same GraphCoder binary against each endpoint. Record exact
+   source pins, failures and timings without widening existing limits.
 
 No paid provider account is required. The coordinator can repeat the same runner
 against the target PostgreSQL deployment through its intended TLS/socket boundary,

@@ -150,20 +150,23 @@ pub async fn serve<C: Composition>(
     )
     .with_products(host.resources.clone(), server.clone());
     let mut builder = tonic::transport::Server::builder();
-    let scheme = if let Some(tls) = config.tls {
+    let endpoint = if let Some(tls) = config.tls {
+        if !tls.url.starts_with("https://") {
+            return Err(Error::Invalid("a TLS server's URL is an https URL".into()));
+        }
         builder = builder
             .tls_config(tonic::transport::ServerTlsConfig::new().identity(
                 tonic::transport::Identity::from_pem(tls.certificate, tls.key),
             ))
             .map_err(failed)?;
-        "https"
+        tls.url
     } else {
-        "http"
+        format!("http://{address}")
     };
     use base64::Engine as _;
     ready(&Endpoint {
         server: IDENTITY,
-        endpoint: format!("{scheme}://{address}"),
+        endpoint,
         credential: base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(&observation.credential),
         principal: observation.principal,

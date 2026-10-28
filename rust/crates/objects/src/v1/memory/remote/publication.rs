@@ -239,7 +239,10 @@ impl<T: Store> Publisher<T> {
     async fn transaction<R, F>(&self, operation: F) -> Result<R, Error>
     where
         R: ProviderTask + 'static,
-        F: for<'a> Fn(&'a MemoryObjects, prost_types::Timestamp) -> BoxProviderFuture<'a, Result<R, Error>>
+        F: for<'a> Fn(
+                &'a MemoryObjects,
+                prost_types::Timestamp,
+            ) -> BoxProviderFuture<'a, Result<R, Error>>
             + ProviderPlatform
             + 'static,
     {
@@ -251,7 +254,10 @@ impl<T: Store> Publisher<T> {
     }
     async fn publish<R, F>(&self, operation: F) -> Result<R, Error>
     where
-        F: for<'a> Fn(&'a MemoryObjects, prost_types::Timestamp) -> BoxProviderFuture<'a, Result<R, Error>>,
+        F: for<'a> Fn(
+            &'a MemoryObjects,
+            prost_types::Timestamp,
+        ) -> BoxProviderFuture<'a, Result<R, Error>>,
     {
         let mut cache = self.inner.cache.lock().await;
         for _ in 0..8 {
