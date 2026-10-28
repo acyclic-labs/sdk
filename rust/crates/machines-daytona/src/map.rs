@@ -1,8 +1,8 @@
 //! Conversions between SDK Machines types and Daytona JSON.
 //!
-//! The SDK contract for a machine cannot be reconstructed from Daytona's own fields, so the
-//! provider stores the serialized [`MachineContract`] in a sandbox label at creation and reads
-//! it back on every observation. Everything here is a pure function over wire structs.
+//! Admitted canonical contracts take precedence over inherited provider labels.
+//! Untracked managed sandboxes can expose their creation contract from labels.
+//! Everything here is a pure function over wire structs.
 
 use acyclic_machines::core::{
     ForkSlot, NetworkPolicy, admit_network,
@@ -277,7 +277,7 @@ pub fn endpoint(sandbox: &Sandbox) -> Option<Endpoint> {
 
 /// Converts a sandbox into a machine observation.
 ///
-/// The contract comes from the sandbox label, then `fallback`, in that order. Timestamps that
+/// An admitted canonical contract takes precedence over inherited sandbox labels. Timestamps that
 /// Daytona omits or that fail to parse fall back to `now_unix_ms`.
 ///
 /// # Errors
@@ -285,13 +285,14 @@ pub fn endpoint(sandbox: &Sandbox) -> Option<Endpoint> {
 /// available from either source.
 pub fn sandbox_to_observation(
     sandbox: &Sandbox,
-    fallback: Option<&MachineContract>,
+    admitted: Option<&MachineContract>,
     last_checkpoint: Option<CheckpointId>,
     now_unix_ms: u64,
 ) -> Result<MachineObservation, ProviderError> {
     let id = machine_id(&sandbox.id)?;
-    let mut contract = contract_from_labels(&sandbox.labels)
-        .or_else(|| fallback.cloned())
+    let mut contract = admitted
+        .cloned()
+        .or_else(|| contract_from_labels(&sandbox.labels))
         .ok_or_else(|| {
             ProviderError::Rejected(format!(
                 "sandbox {} carries no {LABEL_CONTRACT} label",
@@ -472,10 +473,19 @@ mod tests {
 
     #[test]
     fn paused_sandbox_uses_fallback_contract_and_maps_to_suspended() {
-        let sandbox: Sandbox = serde_json::from_str(&fixture("sandbox_paused.json")).unwrap();
+        let mut sandbox: Sandbox = serde_json::from_str(&fixture("sandbox_paused.json")).unwrap();
         assert!(sandbox_to_observation(&sandbox, None, None, 0).is_err());
-        let observation = sandbox_to_observation(&sandbox, Some(&contract()), None, 0).unwrap();
+        let admitted = contract();
+        let observation = sandbox_to_observation(&sandbox, Some(&admitted), None, 0).unwrap();
         assert_eq!(observation.state, MachineState::Suspended);
+        // Internal stale-label vector over the unchanged captured response:
+        // inherited metadata cannot replace the canonical image or commitment.
+        let mut stale = admitted.clone();
+        stale.image = Image::custom([42; 32]).unwrap();
+        stale.network_policy_digest = [43; 32];
+        sandbox.labels = labels(key(2), None, None, &stale);
+        let known = sandbox_to_observation(&sandbox, Some(&admitted), None, 0).unwrap();
+        assert_eq!(known.contract, observation.contract);
         assert_eq!(observation.contract.suspension, SuspensionPolicy::Manual);
     }
 
