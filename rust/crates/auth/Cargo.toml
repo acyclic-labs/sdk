@@ -10,6 +10,7 @@ description = "Shared capability chain contract and verification"
 
 
 [features]
+js-credential = ["dep:js-sys", "dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:web-sys"]
 grpc = ["dep:tonic", "dep:rustls", "dep:rustls-platform-verifier", "dep:tokio"]
 test-support = ["dep:acyclic-differential"]
 
@@ -32,6 +33,12 @@ rustls = { workspace = true, optional = true }
 rustls-platform-verifier = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["time"], optional = true }
 arc-swap = "=1.9.2"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = { workspace = true, optional = true }
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Event", "EventTarget"], optional = true }
 
 [dev-dependencies]
 acyclic-differential = { version = "=0.2.0", path = "../differential" }

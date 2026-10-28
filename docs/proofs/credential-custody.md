@@ -80,9 +80,19 @@ check. A revision is freshness metadata, not proof of permission for a target.
 gRPC, HTTP and the counted/attested adapters. Higher-level native and Rust WASM
 readers can use that same source through their provider, register its watch,
 resolve a lease and retain its binding/check around their work. An absent source
-or a raw callback supplies no trusted cache identity. The default browser remote
-callback still lacks this custody across its JavaScript ABI; exposing the source
-on the Rust provider does not qualify that path.
+or a raw callback supplies no trusted cache identity.
+
+`CredentialProvider::from_custodian`, `ResolvedCredential::from_custodian` and
+`CredentialWatch::from_custodian` retain an existing owner's source, exact
+request and drop-owned registration. They introduce no second cache or refresh
+path. The optional JavaScript adapter forwards `resolveRequest`, `check`,
+`reject` and `watch` to the original objects, aborting its resolution interest
+when the Rust future drops. Revisions preserve native bytes or exact UTF-16
+code units, including unpaired surrogates, without hashing or normalization.
+The browser Stream remote uses this source for unary calls and WebSocket
+sessions, retaining checks through replies, frame admission and sends. Opaque
+WebSocket handshake failures still cannot reject a credential. This does not
+qualify the separate JavaScript-to-native Stream ABI.
 
 Rust Actors, Streams and Objects retain leases across their HTTP/gRPC attempts.
 JS gRPC also retains custody through streaming trailers. Browser WebSocket

@@ -161,18 +161,18 @@ async fn wire_rejection_and_owner_denial_keep_exact_credential_custody() -> test
     ] {
         let calls = Arc::new(AtomicUsize::new(0));
         let count = calls.clone();
-        let revision = CredentialRevision([1; 32]);
+        let revision = CredentialRevision::from([1; 32]);
         let cache = CredentialCache::new(
             move |_| {
                 futures::future::ready(CredentialSnapshot::new(
                     format!("synthetic-{}", count.fetch_add(1, Ordering::SeqCst)),
-                    revision,
+                    CredentialRevision::from([1; 32]),
                     100,
                 ))
             },
             move || CredentialValidity {
                 now_unix_seconds: 1,
-                revision: Some(revision),
+                revision: Some(CredentialRevision::from([1; 32])),
             },
         );
         let old = cache.resolve().await?;

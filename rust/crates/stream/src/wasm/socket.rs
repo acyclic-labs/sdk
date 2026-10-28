@@ -11,10 +11,13 @@ use tokio::sync::mpsc;
 #[derive(Clone)]
 pub(super) struct Endpoint {
     pub(super) url: String,
-    pub(super) credential: js_sys::Function,
+    pub(super) credential: acyclic_auth::credential::CredentialProvider,
 }
 impl Endpoint {
-    pub(super) fn new(url: &str, credential: js_sys::Function) -> Result<Self, StreamError> {
+    pub(super) fn new(
+        url: &str,
+        credential: acyclic_auth::credential::CredentialProvider,
+    ) -> Result<Self, StreamError> {
         let parsed = web_sys::Url::new(url).map_err(|_| StreamError::InvalidArgument)?;
         let local = matches!(
             parsed.hostname().as_str(),
@@ -33,21 +36,6 @@ impl Endpoint {
             credential,
         })
     }
-    pub(super) async fn token(&self) -> Result<String, StreamError> {
-        let result = self
-            .credential
-            .call0(&JsValue::UNDEFINED)
-            .map_err(|_| StreamError::AccessDenied)?;
-        let token = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&result))
-            .await
-            .map_err(|_| StreamError::AccessDenied)?
-            .as_string()
-            .ok_or(StreamError::AccessDenied)?;
-        if !acyclic_auth::credential::valid_credential(&token) {
-            return Err(StreamError::AccessDenied);
-        }
-        Ok(token)
-    }
 }
 
 struct Incoming {
@@ -63,6 +51,7 @@ impl Incoming {
 }
 struct Socket {
     socket: web_sys::WebSocket,
+    credential: acyclic_auth::credential::ResolvedCredential,
     _open: Closure<dyn FnMut(web_sys::Event)>,
     _message: Closure<dyn FnMut(web_sys::MessageEvent)>,
     _error: Closure<dyn FnMut(web_sys::Event)>,
@@ -84,8 +73,14 @@ impl Transport for Endpoint {
     ) -> crate::BoxProviderFuture<'_, Result<Responses, StreamError>> {
         Box::pin(async move {
             use base64::Engine as _;
+            let credential = self
+                .credential
+                .resolve()
+                .await
+                .map_err(|_| StreamError::AccessDenied)?;
+            credential.check().map_err(|_| StreamError::AccessDenied)?;
             let token =
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(self.token().await?);
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(credential.as_str());
             let url = format!("{}/v1/stream/session", self.url).replacen("http", "ws", 1);
             let protocols = Array::of2(
                 &"acyclic.session.v1".into(),
@@ -115,8 +110,12 @@ impl Transport for Endpoint {
             });
             let messages = incoming.clone();
             let message_socket = socket.clone();
+            let received_credential = credential.clone();
             let message = Closure::new(move |event: web_sys::MessageEvent| {
-                let result = decode_frame(event.data());
+                let result = received_credential
+                    .check()
+                    .map_err(|_| StreamError::AccessDenied)
+                    .and_then(|()| decode_frame(event.data()));
                 let mut incoming = messages.borrow_mut();
                 match result {
                     Ok(frame) => {
@@ -159,12 +158,17 @@ impl Transport for Endpoint {
             socket.set_onclose(Some(close.as_ref().unchecked_ref()));
             let guard = Socket {
                 socket,
+                credential,
                 _open: open,
                 _message: message,
                 _error: error,
                 _close: close,
             };
             opened.await.map_err(|_| StreamError::Unavailable)??;
+            guard
+                .credential
+                .check()
+                .map_err(|_| StreamError::AccessDenied)?;
             let response = futures::stream::try_unfold(
                 (guard, receiver, source, incoming),
                 |(guard, mut receiver, mut source, incoming)| async move {
@@ -177,6 +181,10 @@ impl Transport for Endpoint {
                                 Either::Right((frame, _)) => Either::Right(frame),
                             }
                         };
+                        guard
+                            .credential
+                            .check()
+                            .map_err(|_| StreamError::AccessDenied)?;
                         match event {
                             Either::Left(Some(frame)) => {
                                 return Ok(Some((frame?, (guard, receiver, source, incoming))));

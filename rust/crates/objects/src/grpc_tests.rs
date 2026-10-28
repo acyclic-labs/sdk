@@ -309,7 +309,7 @@ async fn credential_refresh_keeps_the_original_deadline_and_cancellation() -> Te
                 },
                 || CredentialValidity {
                     now_unix_seconds: 1,
-                    revision: Some(CredentialRevision([1; 32])),
+                    revision: Some(CredentialRevision::from([1; 32])),
                 },
             )
             .into(),

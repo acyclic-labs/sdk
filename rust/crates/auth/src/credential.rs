@@ -1,10 +1,14 @@
 //! Credential callbacks and validity-aware snapshots shared by product transports.
 mod cache;
+mod custodian;
+#[cfg(all(target_arch = "wasm32", feature = "js-credential"))]
+pub mod javascript;
 mod watch;
 pub use cache::{
     CredentialCache, CredentialCacheError, CredentialLease, CredentialRevision, CredentialSnapshot,
     CredentialValidity,
 };
+pub use custodian::{CredentialRequest, CredentialResolution, CredentialSource, CustodianPlatform};
 use std::{future::Future, pin::Pin};
 pub use watch::CredentialWatch;
 use zeroize::Zeroizing;
@@ -16,7 +20,7 @@ use std::sync::Arc as Shared;
 
 /// Non-secret source partition and absolute lifetime of an admitted lease.
 /// This is freshness metadata, never an authenticated permission or policy.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CredentialBinding {
     /// Custodian-supplied account/audience/auth-context revision.
     pub revision: CredentialRevision,
@@ -59,6 +63,7 @@ pub struct CredentialProvider(Source);
 enum Source {
     Raw(Shared<Callback>),
     Cached(CredentialCache),
+    Custodian(Shared<dyn CredentialSource>),
 }
 
 /// Exact credential custody for one transport attempt. Retain through the reply
@@ -74,6 +79,7 @@ enum Resolved {
         cache: CredentialCache,
         lease: CredentialLease,
     },
+    Custodian(Shared<dyn CredentialRequest>),
 }
 
 impl std::fmt::Debug for ResolvedCredential {
@@ -83,6 +89,16 @@ impl std::fmt::Debug for ResolvedCredential {
 }
 
 impl ResolvedCredential {
+    /// Retain an existing owner's exact request, without creating a cache.
+    /// Invalid bytes and already-refused requests fail before transport.
+    pub fn from_custodian(request: impl CredentialRequest) -> Result<Self, CredentialError> {
+        if !valid_credential(request.token()) {
+            return Err(CredentialError::Invalid);
+        }
+        request.check()?;
+        Ok(Self(Resolved::Custodian(Shared::new(request))))
+    }
+
     /// Project trusted source metadata without exposing or decoding bearer bytes.
     /// Raw callbacks have no trusted validity and return None. Retain this exact
     /// request and call check before dispatch or accepting its result.
@@ -93,6 +109,7 @@ impl ResolvedCredential {
                 revision: lease.revision(),
                 expires_at_unix_seconds: lease.expires_at(),
             }),
+            Resolved::Custodian(request) => request.binding(),
         }
     }
 
@@ -101,6 +118,7 @@ impl ResolvedCredential {
         match &self.0 {
             Resolved::Raw(token) => token,
             Resolved::Cached { lease, .. } => lease.token(),
+            Resolved::Custodian(request) => request.token(),
         }
     }
 
@@ -109,6 +127,7 @@ impl ResolvedCredential {
         match &self.0 {
             Resolved::Raw(_) => Ok(()),
             Resolved::Cached { cache, lease } => cache.check(lease).map_err(cache_error),
+            Resolved::Custodian(request) => request.check(),
         }
     }
 
@@ -117,6 +136,7 @@ impl ResolvedCredential {
         match &self.0 {
             Resolved::Raw(_) => Ok(false),
             Resolved::Cached { cache, lease } => cache.reject(lease).map_err(cache_error),
+            Resolved::Custodian(request) => request.reject(),
         }
     }
 }
@@ -145,6 +165,12 @@ impl From<CredentialCache> for CredentialProvider {
 }
 
 impl CredentialProvider {
+    /// Forward an existing source's resolution/watch and exact request custody.
+    /// The source remains the only refresh and cache owner.
+    pub fn from_custodian(source: impl CredentialSource) -> Self {
+        Self(Source::Custodian(Shared::new(source)))
+    }
+
     /// Subscribe before resolving or accepting cached reader state, then check
     /// the admitted request's binding and validity. Custodians must publish a
     /// changed/unavailable revision and call CredentialCache::invalidate on
@@ -153,6 +179,7 @@ impl CredentialProvider {
         match &self.0 {
             Source::Raw(_) => Ok(None),
             Source::Cached(cache) => cache.watch().map(Some).map_err(cache_error),
+            Source::Custodian(source) => source.watch(),
         }
     }
 
@@ -197,6 +224,14 @@ impl CredentialProvider {
                     cache: cache.clone(),
                     lease,
                 }))
+            }
+            Source::Custodian(source) => {
+                let request = source.resolve().await?;
+                if !valid_credential(request.as_str()) {
+                    return Err(CredentialError::Invalid);
+                }
+                request.check()?;
+                Ok(request)
             }
         }
     }

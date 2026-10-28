@@ -18,29 +18,75 @@ pub(super) struct Changes(Mutex<BTreeMap<usize, oneshot::Sender<()>>>);
 /// signal has no timer and does not turn a revision into a permission.
 pub struct CredentialWatch {
     validity: CredentialValidity,
-    changes: Shared<Changes>,
-    id: Shared<()>,
-    receive: oneshot::Receiver<()>,
+    registration: Registration,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+type WatchFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
+#[cfg(target_arch = "wasm32")]
+type WatchFuture = Pin<Box<dyn Future<Output = ()>>>;
+
+enum Registration {
+    Cached {
+        changes: Shared<Changes>,
+        id: Shared<()>,
+        receive: oneshot::Receiver<()>,
+    },
+    Custodian(WatchFuture),
 }
 
 impl CredentialWatch {
     /// Source-owned observation captured while registering this notification.
     pub fn validity(&self) -> CredentialValidity {
-        self.validity
+        self.validity.clone()
+    }
+
+    /// Retain the original custodian's registration. The future must unregister
+    /// on drop and complete on change or loss; no task or expiry timer is added.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_custodian(
+        validity: CredentialValidity,
+        changed: impl Future<Output = ()> + Send + 'static,
+    ) -> Self {
+        Self {
+            validity,
+            registration: Registration::Custodian(Box::pin(changed)),
+        }
+    }
+
+    /// Browser registration may own a JavaScript abort subscription.
+    #[cfg(target_arch = "wasm32")]
+    pub fn from_custodian(
+        validity: CredentialValidity,
+        changed: impl Future<Output = ()> + 'static,
+    ) -> Self {
+        Self {
+            validity,
+            registration: Registration::Custodian(Box::pin(changed)),
+        }
     }
 }
 
 impl Future for CredentialWatch {
     type Output = ();
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        Pin::new(&mut self.receive).poll(cx).map(|_| ())
+        match &mut self.registration {
+            Registration::Cached { receive, .. } => Pin::new(receive).poll(cx).map(|_| ()),
+            Registration::Custodian(changed) => changed.as_mut().poll(cx),
+        }
     }
 }
 
 impl Drop for CredentialWatch {
     fn drop(&mut self) {
-        if let Ok(mut pending) = self.changes.0.lock() {
-            pending.remove(&(Shared::as_ptr(&self.id) as usize));
+        if let Registration::Cached { changes, id, .. } = &self.registration {
+            // Drop the sender outside the lock: waking can reenter the source.
+            let removed = changes
+                .0
+                .lock()
+                .ok()
+                .and_then(|mut pending| pending.remove(&(Shared::as_ptr(id) as usize)));
+            drop(removed);
         }
     }
 }
@@ -60,9 +106,11 @@ impl Changes {
         pending.insert(Shared::as_ptr(&id) as usize, send);
         Ok(CredentialWatch {
             validity,
-            changes: self.clone(),
-            id,
-            receive,
+            registration: Registration::Cached {
+                changes: self.clone(),
+                id,
+                receive,
+            },
         })
     }
 

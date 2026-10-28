@@ -17,7 +17,7 @@ use std::{
 };
 
 fn revision(value: u64) -> CredentialRevision {
-    CredentialRevision([value as u8; 32])
+    CredentialRevision::from([value as u8; 32])
 }
 fn snapshot(value: &str, rev: u64, expires: u64) -> CredentialSnapshot {
     CredentialSnapshot::new(value.into(), revision(rev), expires).unwrap()

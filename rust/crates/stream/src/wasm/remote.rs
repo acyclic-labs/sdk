@@ -19,7 +19,10 @@ impl Remote {
         let response_limits =
             tonic_web_wasm_client::limits::UnaryResponseLimits::new(MAX_COMMAND_BYTES)
                 .ok_or(StreamError::InvalidArgument)?;
-        let endpoint = socket::Endpoint::new(url, credential)?;
+        let endpoint = socket::Endpoint::new(
+            url,
+            acyclic_auth::credential::javascript::provider(credential),
+        )?;
         let sessions = socket::sessions(endpoint.clone());
         Ok(Self {
             endpoint,
@@ -48,22 +51,46 @@ impl Remote {
         .max_decoding_message_size(MAX_COMMAND_BYTES)
         .max_encoding_message_size(MAX_COMMAND_BYTES)
     }
-    async fn request<T>(&self, body: T) -> Result<tonic::Request<T>, StreamError> {
+    async fn call<B, T, F, Fut>(&self, body: B, dispatch: F) -> Result<T, StreamError>
+    where
+        F: FnOnce(Service, tonic::Request<B>) -> Fut,
+        Fut: std::future::Future<Output = Result<tonic::Response<T>, tonic::Status>>,
+    {
+        let lease = self
+            .endpoint
+            .credential
+            .resolve()
+            .await
+            .map_err(|_| StreamError::AccessDenied)?;
         let mut request = tonic::Request::new(body);
-        let mut authorization = format!("Bearer {}", self.endpoint.token().await?)
+        let mut authorization = format!("Bearer {}", lease.as_str())
             .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
             .map_err(|_| StreamError::AccessDenied)?;
         authorization.set_sensitive(true);
         request
             .metadata_mut()
             .insert("authorization", authorization);
-        Ok(request)
+        lease.check().map_err(|_| StreamError::AccessDenied)?;
+        let response = dispatch(self.service(), request).await.map_err(|error| {
+            if error.code() == tonic::Code::Unauthenticated
+                && std::error::Error::source(&error).is_none()
+            {
+                let _ = lease.reject();
+            }
+            wire_codec::status(&error)
+        })?;
+        lease.check().map_err(|_| StreamError::AccessDenied)?;
+        Ok(response.into_inner())
     }
 }
 #[async_trait(?Send)]
 impl StreamProvider for Remote {
     fn context(&self) -> crate::ProviderContext<'_> {
         crate::ProviderContext::new(&self.operation_claims)
+    }
+
+    fn credential_provider(&self) -> Option<&acyclic_auth::credential::CredentialProvider> {
+        Some(&self.endpoint.credential)
     }
 
     async fn inspect_idempotency(
@@ -74,11 +101,10 @@ impl StreamProvider for Remote {
             idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
         };
         let result = self
-            .service()
-            .inspect_idempotency(self.request(body).await?)
-            .await
-            .map_err(|e| wire_codec::status(&e))?
-            .into_inner();
+            .call(body, |mut service, request| async move {
+                service.inspect_idempotency(request).await
+            })
+            .await?;
         let observed = result
             .observation
             .map(wire_codec::observation_from_wire)
@@ -116,11 +142,7 @@ impl StreamProvider for Remote {
                         idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
                     };
                     let result = self
-                        .service()
-                        .append(self.request(body).await?)
-                        .await
-                        .map_err(|e| wire_codec::status(&e))?
-                        .into_inner();
+                        .call(body, |mut service, request| async move { service.append(request).await }).await?;
                     let outcome = wire_codec::append_outcome_from_wire(result)?;
                     self.sessions.revisions().appended(&outcome);
                     Ok(outcome)
@@ -142,11 +164,7 @@ impl StreamProvider for Remote {
                         idempotency_key: bytes::Bytes::copy_from_slice(key.as_bytes()),
                     };
                     let result = self
-                        .service()
-                        .fork(self.request(body).await?)
-                        .await
-                        .map_err(|e| wire_codec::status(&e))?
-                        .into_inner();
+                        .call(body, |mut service, request| async move { service.fork(request).await }).await?;
                     let receipt = wire_codec::fork_receipt_from_wire(result)?;
                     self.sessions.revisions().observe(&receipt.revision);
                     Ok(receipt)
@@ -157,11 +175,7 @@ impl StreamProvider for Remote {
                 async move {
                     let body = wire_codec::commit_to_wire(&request);
                     let response = self
-                        .service()
-                        .commit(self.request(body).await?)
-                        .await
-                        .map_err(|e| wire_codec::status(&e))?
-                        .into_inner();
+                        .call(body, |mut service, request| async move { service.commit(request).await }).await?;
                     let outcome = wire_codec::commit_outcome_from_wire(response)?;
                     self.sessions.revisions().committed(&outcome);
                     Ok(outcome)
@@ -186,11 +200,10 @@ impl StreamProvider for Remote {
             commit_id: bytes::Bytes::copy_from_slice(commit.as_bytes()),
         };
         let result = self
-            .service()
-            .read_commit(self.request(body).await?)
-            .await
-            .map_err(|e| wire_codec::status(&e))?
-            .into_inner();
+            .call(body, |mut service, request| async move {
+                service.read_commit(request).await
+            })
+            .await?;
         wire_codec::envelope_from_wire(result)
     }
 }

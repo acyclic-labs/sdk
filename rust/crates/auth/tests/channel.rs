@@ -17,12 +17,13 @@ async fn local_dispatch_refusal_survives_the_tonic_client_without_remote_rejecti
     use std::sync::atomic::{AtomicU64, Ordering};
     let now = Arc::new(AtomicU64::new(1));
     let observed = now.clone();
-    let revision = CredentialRevision([1; 32]);
     let cache = CredentialCache::new(
-        move |_| async move { CredentialSnapshot::new("synthetic".into(), revision, 100) },
+        move |_| async move {
+            CredentialSnapshot::new("synthetic".into(), CredentialRevision::from([1; 32]), 100)
+        },
         move || CredentialValidity {
             now_unix_seconds: observed.load(Ordering::SeqCst),
-            revision: Some(revision),
+            revision: Some(CredentialRevision::from([1; 32])),
         },
     );
     let lease = cache.resolve().await.unwrap();
@@ -63,15 +64,16 @@ async fn local_dispatch_refusal_survives_the_tonic_client_without_remote_rejecti
 #[tokio::test]
 async fn successful_reply_requires_the_original_credential_to_remain_current() {
     for change in ["account", "expiry", "unavailable", "unchanged"] {
-        let revision = CredentialRevision([1; 32]);
         let validity = Arc::new(Mutex::new(CredentialValidity {
             now_unix_seconds: 1,
-            revision: Some(revision),
+            revision: Some(CredentialRevision::from([1; 32])),
         }));
         let observed = validity.clone();
         let cache = CredentialCache::new(
-            move |_| async move { CredentialSnapshot::new("synthetic".into(), revision, 100) },
-            move || *observed.lock().unwrap(),
+            move |_| async move {
+                CredentialSnapshot::new("synthetic".into(), CredentialRevision::from([1; 32]), 100)
+            },
+            move || observed.lock().unwrap().clone(),
         );
         let lease = cache.resolve().await.unwrap();
         let watch = cache.watch().unwrap();
@@ -97,7 +99,7 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
         {
             let mut validity = validity.lock().unwrap();
             match change {
-                "account" => validity.revision = Some(CredentialRevision([2; 32])),
+                "account" => validity.revision = Some(CredentialRevision::from([2; 32])),
                 "expiry" => validity.now_unix_seconds = 100,
                 "unavailable" => validity.revision = None,
                 _ => {}
@@ -118,7 +120,7 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
         );
         *validity.lock().unwrap() = CredentialValidity {
             now_unix_seconds: 1,
-            revision: Some(revision),
+            revision: Some(CredentialRevision::from([1; 32])),
         };
         cache.check(&lease).unwrap();
     }
