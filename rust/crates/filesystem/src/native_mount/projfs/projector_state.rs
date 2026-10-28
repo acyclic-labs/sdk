@@ -123,6 +123,7 @@ pub(super) struct Projector {
     pub(super) clock: super::super::clock::Clock,
     pub(super) state: Mutex<ProjectorState>,
     pub(super) tree: Mutex<()>,
+    pub(super) progress: tokio::sync::Notify,
     pub(super) paths: KeyedLocks<MountPath>,
     pub(super) changed: Condvar,
     pub(super) worker: Mutex<Option<std::thread::JoinHandle<()>>>,

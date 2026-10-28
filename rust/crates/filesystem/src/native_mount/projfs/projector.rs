@@ -6,6 +6,7 @@ impl Projector {
             clock: super::super::clock::Clock::capture(),
             state: Mutex::new(ProjectorState::default()),
             tree: Mutex::new(()),
+            progress: tokio::sync::Notify::new(),
             paths: KeyedLocks::default(),
             changed: Condvar::new(),
             worker: Mutex::new(None),
@@ -15,10 +16,17 @@ impl Projector {
         }
     }
 
+    /// Publish one projector change to both native worker and future waiters.
+    /// Future registrations are enabled before observing the protected state.
+    pub(super) fn signal_changed(&self) {
+        self.changed.notify_all();
+        self.progress.notify_waiters();
+    }
+
     /// Signals new work: wakes `settle` waiters and this view's runner,
     /// its own lifecycle thread or the shared instance's projector service.
     pub(super) fn wake(&self) {
-        self.changed.notify_all();
+        self.signal_changed();
         if let Some(hook) = self.service.get() {
             hook.schedule();
         }
@@ -490,7 +498,7 @@ impl Projector {
                 state.failure = Some(error.to_string());
                 state.processed = state.notified;
                 state.retry = false;
-                self.changed.notify_all();
+                self.signal_changed();
                 return (state, false);
             }
         };
@@ -551,7 +559,7 @@ impl Projector {
         if let Some(failure) = failure {
             state.failure.get_or_insert(failure);
         }
-        self.changed.notify_all();
+        self.signal_changed();
         (state, true)
     }
 
@@ -631,33 +639,38 @@ impl Projector {
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        let mut state = lock_recover(&self.state);
-        let target = state.notified;
-        let pending = |state: &ProjectorState| {
-            !state.stopping
-                && (state.processed < target
-                    || state.relisting
-                    || !state.stale.is_empty()
-                    || !state.pending.is_empty()
-                    || !state.vacated.is_empty())
-        };
-        while pending(&state) {
-            // A held placeholder delays publication. Poll the original stop
-            // signal without borrowing its ledger under the projector lock.
-            drop(state);
-            work.remaining()?;
-            state = lock_recover(&self.state);
-            if pending(&state) {
-                state = self
-                    .changed
-                    .wait_timeout(state, std::time::Duration::from_millis(100))
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .0;
-            }
-        }
-        state
-            .failure
-            .take()
-            .map_or(Ok(()), |failure| Err(NativeMountError::Driver(failure)))
+        let target = lock_recover(&self.state).notified;
+        let cancellation = work.cancellation_wait()?;
+        acyclic_native_runtime::wait_native_future(
+            async {
+                loop {
+                    let changed = self.progress.notified();
+                    let mut changed = std::pin::pin!(changed);
+                    changed.as_mut().enable();
+                    // No projector lock spans ledger admission or cancellation
+                    // registration. A change before the check remains retained.
+                    work.remaining()?;
+                    {
+                        let mut state = lock_recover(&self.state);
+                        let pending = !state.stopping
+                            && (state.processed < target
+                                || state.relisting
+                                || !state.stale.is_empty()
+                                || !state.pending.is_empty()
+                                || !state.vacated.is_empty());
+                        if !pending {
+                            return state
+                                .failure
+                                .take()
+                                .map_or(Ok(()), |failure| Err(NativeMountError::Driver(failure)));
+                        }
+                    }
+                    changed.await;
+                }
+            },
+            &work.runtime_meter(),
+            cancellation,
+        )
+        .map_err(|error| NativeMountError::from(work.runtime_error(error)))?
     }
 }
