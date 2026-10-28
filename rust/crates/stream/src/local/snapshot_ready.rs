@@ -30,7 +30,10 @@ async fn seed(provider: &impl StreamProvider) {
                 .map(|_| OwnedBytes::from_static(b"record").into())
                 .collect(),
             if_tail: None,
-            idempotency_key: crate::IdempotencyKey::unique(),
+            idempotency_key: crate::IdempotencyKey::new(OwnedBytes::from_static(
+                b"snapshot-ready-seed",
+            ))
+            .unwrap(),
         })
         .await
         .unwrap();

@@ -92,7 +92,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             path: source.clone(),
             records: vec![Bytes::from_static(b"never").into()],
             if_tail: Some(1),
-            idempotency_key: crate::IdempotencyKey::unique(),
+            idempotency_key: key(b"conformance-tail-conflict")?,
         })
         .await?
         != (AppendOutcome::TailConflict { actual_tail: 2 })
@@ -179,7 +179,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             path: path("conformance/paging-new")?,
             records: vec![Bytes::from_static(b"created").into()],
             if_tail: Some(0),
-            idempotency_key: crate::IdempotencyKey::unique(),
+            idempotency_key: key(b"conformance-paging-new")?,
         })
         .await?;
     if provider
@@ -204,7 +204,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
             path: child.clone(),
             records: vec![Bytes::from_static(b"live").into()],
             if_tail: Some(1),
-            idempotency_key: crate::IdempotencyKey::unique(),
+            idempotency_key: key(b"conformance-live-follow")?,
         })
         .await?;
     #[cfg(not(target_arch = "wasm32"))]
@@ -568,7 +568,7 @@ async fn seed_subtree(
                 path: path(name)?,
                 records: vec![Bytes::from_static(b"volume-head").into()],
                 if_tail: Some(0),
-                idempotency_key: crate::IdempotencyKey::unique(),
+                idempotency_key: IdempotencyKey::new(name.as_bytes().to_vec())?,
             })
             .await?;
     }
