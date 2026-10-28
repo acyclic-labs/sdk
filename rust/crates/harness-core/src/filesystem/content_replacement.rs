@@ -9,7 +9,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         paths: [&'a str; 2],
         io: Option<&'a PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        let [metadata_path, content_path] = paths;
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let owned;
             let io = if let Some(io) = io {
@@ -20,13 +19,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             let original = self.generation(workspace, original, Some(io)).await?;
             let authorized = self.generation(workspace, authorized, Some(io)).await?;
-            let metadata = crate::executor::with_history_io(Some(io), |work| {
-                crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
-            })?;
-            let metadata_hold = io.guard_owned(metadata.capacity() as u64)?;
             // The protected metadata distinguishes publications of equal bytes;
             // the file payload also catches writes that bypassed that metadata.
-            for path in [metadata.as_str(), content_path] {
+            for path in paths {
                 if !io.sdk(
                     authorized
                         .matches_file_payload(&original, path, io, io.cancellation())
@@ -39,8 +34,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     ));
                 }
             }
-            drop(metadata);
-            drop(metadata_hold);
             Ok(())
         })
     }

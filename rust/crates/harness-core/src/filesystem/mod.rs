@@ -246,7 +246,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             };
             let receipt_path =
                 content_receipt_path_io(receipt_identity, internal_class.is_some(), false, io)?;
-            let metadata_path = content_metadata_path_io(provisional.path(), false, io)?;
+            let metadata_path = content_metadata_path_io(provisional.path(), true, io)?;
             let receipt_bytes = match io {
                 Some(io) => io.encode(
                     &(&provisional, expected_generation),
@@ -315,11 +315,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     ));
                 }
                 drop(original_receipt);
-                let indexed_path = crate::executor::with_history_io(io, |work| {
-                    crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
-                })?;
                 let indexed =
-                    read_generation(&prior, &indexed_path, receipt_bytes.len() as u64, io).await?;
+                    read_generation(&prior, &metadata_path, receipt_bytes.len() as u64, io).await?;
                 if !content_metadata_matches(&indexed, &provisional, &receipt_bytes, io)? {
                     return Err(stock_boundary(
                         io,
@@ -398,9 +395,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     path: stock_string_copy("/.system/harness-uploads", io)?,
                 });
                 mutations.push(WorkspaceMutation::PutFile {
-                    path: crate::executor::with_history_io(io, |work| {
-                        crate::executor::preparation_format(format_args!("/{metadata_path}"), work)
-                    })?,
+                    path: metadata_path,
                     bytes: receipt_bytes.mutation_bytes(io)?,
                 });
             }

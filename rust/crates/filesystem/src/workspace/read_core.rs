@@ -158,7 +158,9 @@ pub(super) async fn matches_content<
             .record;
         let matches = match (record, expected) {
             (Some(record), Some(expected)) if exact_payload => {
-                record.kind == expected.kind && record.payload == expected.payload
+                record.file_id == expected.file_id
+                    && record.kind == expected.kind
+                    && record.payload == expected.payload
             }
             (Some(record), Some(expected)) => {
                 crate::kernel::records_match_content(

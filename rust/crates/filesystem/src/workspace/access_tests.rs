@@ -36,6 +36,21 @@ async fn retained_content_comparisons_recheck_current_read_authority()
             expected
         );
     }
+    owner.remove("/entry").await?;
+    owner.write_text("/entry", "before").await?;
+    let recreated = bound.head(WorkBudget::UNBOUNDED, &cancel).await?.value;
+    assert!(
+        recreated
+            .matches_content(&original, "/entry", WorkBudget::UNBOUNDED, &cancel)
+            .await?
+            .value
+    );
+    assert!(
+        !recreated
+            .matches_file_payload(&original, "/entry", WorkBudget::UNBOUNDED, &cancel)
+            .await?
+            .value
+    );
     assert!(
         !original
             .matches_file_payload(&original, "/absent", WorkBudget::UNBOUNDED, &cancel)

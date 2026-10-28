@@ -273,7 +273,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
             .await
     }
 
-    /// Compares the exact immutable file kind and payload without reading bodies.
+    /// Compares the exact file identity, kind and payload without reading bodies.
     /// Both paths must exist; unrelated files and metadata do not affect the result.
     pub async fn matches_file_payload<W: crate::facade::FsWork>(
         &self,
