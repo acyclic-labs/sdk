@@ -6,8 +6,9 @@ mod platform_shell;
 #[cfg(all(not(loom), feature = "filesystem-local", feature = "native-execution"))]
 mod git_executor;
 
+pub use acyclic_harness_core::Error;
 #[cfg(all(loom, feature = "model-checking"))]
-pub use acyclic_harness_core::{Error, ProcessError, Result};
+pub use acyclic_harness_core::{ProcessError, Result};
 #[cfg(all(loom, feature = "model-checking"))]
 #[path = "../src/sync/owned.rs"]
 pub(crate) mod owned;
