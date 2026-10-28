@@ -49,9 +49,14 @@ fn decode_input(name: &str, bytes: &[u8]) -> Result<DynamicMessage, Error> {
     DynamicMessage::decode(descriptor, bytes)
         .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))
 }
-/// Decodes one bounded JSON message. Unknown fields, trailing JSON, and invalid wire values fail.
-pub fn decode<T: Message + Default>(name: &str, bytes: &[u8], maximum: usize) -> Result<T, Error> {
-    decode_json(name, bytes, Some(maximum))?
+/// Decodes one JSON message under an optional byte policy.
+/// Unknown fields, trailing JSON, and invalid wire values fail.
+pub fn decode<T: Message + Default>(
+    name: &str,
+    bytes: &[u8],
+    maximum: impl Into<Option<usize>>,
+) -> Result<T, Error> {
+    decode_json(name, bytes, maximum.into())?
         .transcode_to()
         .map_err(|_| wire::ErrorCode::InvalidArgument.into())
 }
