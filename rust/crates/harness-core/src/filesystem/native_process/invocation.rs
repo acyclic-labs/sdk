@@ -48,7 +48,7 @@ pub struct Invocation {
     pub cwd: std::path::PathBuf,
     pub environment: std::collections::BTreeMap<String, String>,
     pub inherit_environment: bool,
-    pub timeout_ms: u32,
+    pub timeout_ms: Option<u64>,
     pub control_timeout_ms: u32,
     pub maximum_output_bytes: usize,
     pub standard_input: Option<Vec<u8>>,
