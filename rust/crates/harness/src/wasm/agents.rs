@@ -710,6 +710,15 @@ impl WasmAgents {
         stream: String,
         from: u64,
     ) -> std::result::Result<acyclic_stream::WasmFollow, JsValue> {
+        if stream == "conversation" {
+            let agent = AgentPath::try_from(agent).map_err(agent_error)?;
+            return Ok(acyclic_stream::WasmFollow::from_records(
+                self.agents
+                    .follow_conversation(&agent, from)
+                    .await
+                    .map_err(agent_error)?,
+            ));
+        }
         let path = agent_stream_path(agent, &stream)?;
         let records = self
             .agents
