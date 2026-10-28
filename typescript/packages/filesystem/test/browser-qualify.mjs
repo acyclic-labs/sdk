@@ -9,6 +9,7 @@
 // Usage: node test/browser-qualify.mjs [page ...]   (default: every page)
 // CHROME selects Chromium. BROWSER=firefox uses GECKODRIVER and optional FIREFOX.
 import { spawn } from "node:child_process";
+import { waitForBrowserResult } from "../../../../scripts/browser-result.mjs";
 import { waitForFileValue } from "../../../../scripts/graphcoder-e2e/wait-path.mjs";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:http";
@@ -109,15 +110,6 @@ async function serve() {
   return server;
 }
 
-async function until(deadline, description, probe) {
-  for (;;) {
-    const value = await probe();
-    if (value !== undefined) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${description}`);
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
-  }
-}
-
 async function launchChrome(profile) {
   const chrome = spawn(
     chromeExecutable(),
@@ -211,7 +203,9 @@ async function launchFirefox(profile) {
     const observer = { events: [] };
     browser.listen(message => {
       if (message.method !== "log.entryAdded" || message.params.level !== "error") return;
-      observer.events.push(`${message.params.type === "javascript" ? "uncaught" : "console.error"}: ${message.params.text}`);
+      const uncaught = message.params.type === "javascript";
+      observer.events.push(`${uncaught ? "uncaught" : "console.error"}: ${message.params.text}`);
+      if (uncaught) observer.fail?.({ status: "failed", text: message.params.text });
     });
     return {
       chrome: driver, exited, browser, observer,
@@ -232,30 +226,25 @@ async function runFirefoxPage(browser, observer, origin, page) {
   const tab = await browser.request("POST", "/window/new", { type: "tab" });
   await browser.request("POST", "/window", { handle: tab.handle });
   let observed;
-  let last;
+  const failure = new Promise(resolveFailure => { observer.fail = resolveFailure; });
   try {
+    await browser.request("POST", "/timeouts", { script: PAGE_DEADLINE_MS });
     await browser.request("POST", "/url", { url: `${origin}/test/${page}` });
-    observed = await until(Date.now() + PAGE_DEADLINE_MS, `${page} result`, async () => {
-      const uncaught = events.find(event => event.startsWith("uncaught:"));
-      if (uncaught !== undefined) return { status: "failed", text: uncaught };
-      const value = await browser.request("POST", "/execute/sync", {
-        script: `return ${RESULT_EXPRESSION}`, args: [],
-      });
-      last = value;
-      return value?.status === "passed" || value?.status === "failed" ? value : undefined;
-    }).catch(error => {
-      throw new Error(`${error.message}; the page was waiting for: ${last?.waiting || "nothing"}`);
-    });
+    observed = await Promise.race([failure, browser.request("POST", "/execute/async", {
+      script: `(${waitForBrowserResult})(${PAGE_DEADLINE_MS}).then(arguments[arguments.length - 1]);`,
+      args: [],
+    })]);
+    const uncaught = events.find(event => event.startsWith("uncaught:"));
+    if (uncaught !== undefined) observed = { status: "failed", text: uncaught };
   } catch (error) {
     return { page, passed: false, text: String(error.stack ?? error), events };
   } finally {
+    observer.fail = undefined;
     await browser.request("DELETE", "/window").catch(() => {});
     await browser.request("POST", "/window", { handle: original }).catch(() => {});
   }
   return { page, passed: observed.status === "passed", text: observed.text, events };
 }
-
-const RESULT_EXPRESSION = "(() => { const node = document.querySelector('#result'); if (node === null) { const result = document.body?.dataset.result; return result ? { status: result.startsWith('failed:') ? 'failed' : result, text: result } : null; } return { status: node.dataset.status ?? null, text: node.textContent, waiting: node.dataset.waiting ?? null }; })()";
 
 async function connect(endpoint) {
   const socket = new WebSocket(endpoint);
@@ -289,6 +278,7 @@ async function connect(endpoint) {
     },
     listen(listener) {
       listeners.add(listener);
+      return () => listeners.delete(listener);
     },
     close() {
       socket.close();
@@ -324,32 +314,33 @@ async function runPage(browser, observer, origin, page) {
   // The page is navigated only once its session is observing it.
   const { targetId } = await browser.send("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
-  await browser.send("Runtime.enable", {}, sessionId);
-  await browser.send("Page.navigate", { url: `${origin}/test/${page}` }, sessionId);
-  const deadline = Date.now() + PAGE_DEADLINE_MS;
+  const binding = "__acyclicQualificationResult";
+  let finish;
+  const result = new Promise(resolveResult => { finish = resolveResult; });
+  const unlisten = browser.listen(message => {
+    if (message.sessionId !== sessionId) return;
+    if (message.method === "Runtime.bindingCalled" && message.params.name === binding) {
+      finish(JSON.parse(message.params.payload));
+    } else if (message.method === "Runtime.exceptionThrown") {
+      finish({ status: "failed", text: describeException(message.params.exceptionDetails) });
+    }
+  });
+  const timeout = setTimeout(() => finish({ status: "failed", text: `timed out waiting for ${page} result` }), PAGE_DEADLINE_MS);
   let observed;
-  let last;
   try {
-    observed = await until(deadline, `${page} result`, async () => {
-      const uncaught = events.find((event) => event.startsWith("uncaught:"));
-      if (uncaught !== undefined) return { status: "failed", text: uncaught };
-      const evaluated = await browser.send(
-        "Runtime.evaluate",
-        {
-          expression: RESULT_EXPRESSION,
-          returnByValue: true,
-        },
-        sessionId,
-      );
-      const value = evaluated.result.value;
-      last = value;
-      return value?.status === "passed" || value?.status === "failed" ? value : undefined;
-    }).catch((error) => {
-      throw new Error(`${error.message}; the page was waiting for: ${last?.waiting || "nothing"}`);
-    });
+    await browser.send("Runtime.enable", {}, sessionId);
+    await browser.send("Runtime.addBinding", { name: binding }, sessionId);
+    await browser.send("Page.addScriptToEvaluateOnNewDocument", {
+      source: `(${waitForBrowserResult})(${PAGE_DEADLINE_MS}).then(value => globalThis.${binding}(JSON.stringify(value)));`,
+    }, sessionId);
+    const navigation = await browser.send("Page.navigate", { url: `${origin}/test/${page}` }, sessionId);
+    if (navigation.errorText) throw new Error(navigation.errorText);
+    observed = await result;
   } catch (error) {
     return { page, passed: false, text: String(error.stack ?? error), events };
   } finally {
+    clearTimeout(timeout);
+    unlisten();
     await browser.send("Target.closeTarget", { targetId }).catch(() => {});
   }
   return { page, passed: observed.status === "passed", text: observed.text, events };
