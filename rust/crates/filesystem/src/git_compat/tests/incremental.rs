@@ -61,15 +61,7 @@ async fn incremental_capture_honors_unchanged_nested_ignore() {
 #[tokio::test]
 async fn newly_ignored_merge_paths_exclude_tracked_changes() {
     let workspace = memory_workspace("git-ignored-merge-paths").await;
-    let mut initial = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x70; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("initial transaction")
-        .value;
+    let mut initial = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x70; 16])).await;
     unbounded!(initial, create_dir_all("/sub")).expect("subdirectory");
     initial
         .write_text("/sub/.gitignore", "*.tmp\n")
@@ -85,15 +77,7 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
         .write_text("/sub/cache.tmp", "child")
         .await
         .expect("nested child change");
-    let mut build = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x71; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("build transaction")
-        .value;
+    let mut build = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x71; 16])).await;
     unbounded!(build, create_dir_all("/build")).expect("build directory");
     build
         .write_text("/build/output.bin", "generated")

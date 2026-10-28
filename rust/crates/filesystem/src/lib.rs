@@ -120,7 +120,6 @@ mod obs;
 pub use acyclic_fs_base::numeric::exact_u32_from_f64;
 #[cfg(kani)]
 mod kani_proofs;
-#[cfg(feature = "native-watch")]
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native_capture;
 #[cfg(not(target_arch = "wasm32"))]
@@ -134,7 +133,6 @@ mod native_identity;
 pub mod native_mount;
 #[cfg(not(target_arch = "wasm32"))]
 mod native_name;
-pub mod notification;
 pub mod operation_window;
 pub mod path;
 mod path_index;
@@ -339,10 +337,6 @@ pub use native_mount::{
 #[cfg(all(feature = "native-mount", target_os = "linux"))]
 pub use native_mount::{
     recover_disconnected_native_mount_destination, recover_disconnected_native_mount_destination_in,
-};
-pub use notification::{
-    AsyncNotificationStore, MemoryNotificationStore, NotificationError, NotificationPoll,
-    NotificationResult,
 };
 pub use operation_window::{
     MemoryOperationWindowStore, OperationLease, OperationLeaseId, OperationReconcileLimits,

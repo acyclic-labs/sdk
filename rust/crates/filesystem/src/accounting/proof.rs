@@ -83,16 +83,7 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
         return Ok(original.logical_file_bytes);
     }
     let limits = ClosureLimits {
-        decode: DecodeLimits {
-            maximum_object_bytes: config.limits.maximum_object_bytes,
-            maximum_name_bytes: config.limits.maximum_component_bytes,
-            maximum_page_items: config.limits.maximum_directory_page_entries,
-            maximum_page_bytes: u32::try_from(config.limits.maximum_object_bytes)
-                .unwrap_or(u32::MAX),
-            maximum_page_height: config.limits.maximum_page_height,
-            maximum_visited_pages: u32::try_from(config.limits.maximum_objects_per_generation)
-                .unwrap_or(u32::MAX),
-        },
+        decode: DecodeLimits::for_volume(config),
         maximum_objects: config.limits.maximum_objects_per_generation,
         maximum_files: config.limits.maximum_files_per_generation,
         maximum_object_bytes: config.limits.maximum_generation_bytes,

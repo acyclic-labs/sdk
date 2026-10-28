@@ -118,7 +118,6 @@ pub(in crate::bindings) fn native_authored_transaction(
         keep_size,
         canonical_bytes,
     } = operation;
-    let limits = config.limits;
     let metadata = FileMetadata::default();
     Ok(match kind.as_str() {
         "create-file" => AuthoredMutation::CreateFile {
@@ -178,7 +177,7 @@ pub(in crate::bindings) fn native_authored_transaction(
             path: native_path(&required(path, "path")?, config)?,
             metadata: decode_file_metadata(
                 &required(canonical_bytes, "canonicalBytes")?,
-                native_decode_limits(limits),
+                DecodeLimits::for_volume(config),
                 &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
             )
             .map_err(napi_error)?,

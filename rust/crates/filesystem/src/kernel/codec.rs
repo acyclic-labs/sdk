@@ -19,6 +19,31 @@ pub(crate) struct DecodedPageShape {
 mod read_step;
 pub use read_step::ReadAllocationStep;
 
+pub(crate) fn copy_bytes<E: From<CanonicalDecodeError>>(
+    source: &[u8],
+    allocation_operations: u64,
+    observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+) -> Result<Vec<u8>, E> {
+    let mut value = Vec::new();
+    let admitted_bytes = usize_to_u64(source.len());
+    observe(ReadAllocationStep::Allocate {
+        bytes: admitted_bytes,
+        operations: allocation_operations,
+    })?;
+    if let Err(error) = value.try_reserve_exact(source.len()) {
+        observe(ReadAllocationStep::ReserveFailed(error))?;
+        return Err(CanonicalDecodeError::AllocationFailed.into());
+    }
+    observe(ReadAllocationStep::Capacity {
+        admitted_bytes,
+        actual_bytes: usize_to_u64(value.capacity()),
+    })?;
+    observe(ReadAllocationStep::BeforeCopy(admitted_bytes))?;
+    value.extend_from_slice(source);
+    observe(ReadAllocationStep::Copied(admitted_bytes))?;
+    Ok(value)
+}
+
 /// Allocation and collection bounds for one canonical object decode.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct DecodeLimits {
@@ -50,7 +75,9 @@ impl Default for DecodeLimits {
 }
 
 impl DecodeLimits {
-    pub(crate) fn for_volume(config: VolumeConfig) -> Self {
+    /// Derives canonical decode bounds from the selected volume's limits.
+    #[must_use]
+    pub fn for_volume(config: VolumeConfig) -> Self {
         Self {
             maximum_object_bytes: config.limits.maximum_object_bytes,
             maximum_name_bytes: config.limits.maximum_component_bytes,
@@ -267,6 +294,23 @@ impl<'a> Decoder<'a> {
         ))
     }
 
+    pub(crate) fn page_header<E: From<CanonicalDecodeError>>(
+        &mut self,
+        maximum_items: u32,
+        observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<(u8, u32), E> {
+        let tag = self.u8(observe)?;
+        let count = self.u32(observe)?;
+        if count > maximum_items {
+            return Err(CanonicalDecodeError::FieldTooLarge {
+                observed: count,
+                maximum: maximum_items,
+            }
+            .into());
+        }
+        Ok((tag, count))
+    }
+
     pub(crate) fn u8<E: From<CanonicalDecodeError>>(
         &mut self,
         observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
@@ -344,25 +388,7 @@ impl<'a> Decoder<'a> {
         observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Vec<u8>, E> {
         let source = self.bounded_slice(maximum, observe)?;
-        let length = source.len();
-        let mut value = Vec::new();
-        let admitted_bytes = usize_to_u64(length);
-        observe(ReadAllocationStep::Allocate {
-            bytes: admitted_bytes,
-            operations: u64::from(length != 0),
-        })?;
-        if let Err(error) = value.try_reserve_exact(length) {
-            observe(ReadAllocationStep::ReserveFailed(error))?;
-            return Err(CanonicalDecodeError::AllocationFailed.into());
-        }
-        observe(ReadAllocationStep::Capacity {
-            admitted_bytes,
-            actual_bytes: usize_to_u64(value.capacity()),
-        })?;
-        observe(ReadAllocationStep::BeforeCopy(admitted_bytes))?;
-        value.extend_from_slice(source);
-        observe(ReadAllocationStep::Copied(admitted_bytes))?;
-        Ok(value)
+        copy_bytes(source, u64::from(!source.is_empty()), observe)
     }
 
     pub(crate) fn skip_bounded_bytes(

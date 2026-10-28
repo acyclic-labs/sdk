@@ -4,12 +4,9 @@ use super::*;
 pub(super) fn shared_control<T>(
     work: &crate::NativeMaterializationWork,
 ) -> Result<crate::NativeAllocation, LocalCoreStateStoreError> {
-    let layout = std::alloc::Layout::new::<[std::sync::atomic::AtomicUsize; 2]>()
-        .extend(std::alloc::Layout::new::<T>())
-        .map_err(|_| crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))?
-        .0
-        .pad_to_align();
-    Ok(work.claim(layout.size() as u64, 1, crate::WorkCounters::UNCHARGED)?)
+    let bytes = crate::arc_layout::allocation_bytes(std::alloc::Layout::new::<T>())
+        .map_err(|_| crate::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))?;
+    Ok(work.claim(bytes as u64, 1, crate::WorkCounters::UNCHARGED)?)
 }
 
 impl Namespace {

@@ -108,10 +108,11 @@ pub enum SourceError {
 }
 
 #[derive(Clone, Copy)]
+#[repr(u8)]
 enum SourceOperation {
-    Reconcile,
-    Rescan,
-    Seal,
+    Reconcile = 1,
+    Rescan = 2,
+    Seal = 3,
 }
 
 #[derive(Clone, Copy)]
@@ -926,42 +927,47 @@ async fn recover_published_operation<A: AsyncAuthorityStore, O: AsyncObjectStore
     .await
 }
 
+async fn replay_source_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    session: &mut SourceSession<A, O>,
+    key: IdempotencyKey,
+    operation: SourceOperation,
+) -> Result<Option<SourceFact>, SourceError> {
+    if let Some(recovered) =
+        find_source_operation(session, key, operation, SourceOperationStage::Terminal).await?
+    {
+        refresh_source_authority(session).await?;
+        return Ok(Some(recovered.fact));
+    }
+    let Some(begin) =
+        find_source_operation(session, key, operation, SourceOperationStage::Begin).await?
+    else {
+        if published_generation_for_key(session, key, operation)
+            .await?
+            .is_some()
+        {
+            return Err(SourceError::IdempotencyConflict);
+        }
+        return Ok(None);
+    };
+    let Some(generation_id) = published_generation_for_key(session, key, operation).await? else {
+        return Ok(None);
+    };
+    let state = match operation {
+        SourceOperation::Reconcile | SourceOperation::Rescan => SourceState::Clean,
+        SourceOperation::Seal => SourceState::Sealed,
+    };
+    recover_published_operation(session, state, generation_id, begin.head, key, operation)
+        .await
+        .map(Some)
+}
+
 async fn replay_reconcile_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     session: &mut SourceSession<A, O>,
     key: IdempotencyKey,
     operation: SourceOperation,
 ) -> Result<Option<ReconcileOutcome<A, O>>, SourceError> {
-    let fact = if let Some(recovered) =
-        find_source_operation(session, key, operation, SourceOperationStage::Terminal).await?
-    {
-        let fact = recovered.fact;
-        refresh_source_authority(session).await?;
-        fact
-    } else {
-        let Some(begin) =
-            find_source_operation(session, key, operation, SourceOperationStage::Begin).await?
-        else {
-            if published_generation_for_key(session, key, operation)
-                .await?
-                .is_some()
-            {
-                return Err(SourceError::IdempotencyConflict);
-            }
-            return Ok(None);
-        };
-        let Some(generation_id) = published_generation_for_key(session, key, operation).await?
-        else {
-            return Ok(None);
-        };
-        recover_published_operation(
-            session,
-            SourceState::Clean,
-            generation_id,
-            begin.head,
-            key,
-            operation,
-        )
-        .await?
+    let Some(fact) = replay_source_operation(session, key, operation).await? else {
+        return Ok(None);
     };
     let outcome = match fact.state {
         DurableSourceState::Clean => ReconcileOutcome::Clean(Generation {
@@ -986,48 +992,8 @@ async fn replay_seal_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     session: &mut SourceSession<A, O>,
     key: IdempotencyKey,
 ) -> Result<Option<Generation<A, O>>, SourceError> {
-    let fact = if let Some(recovered) = find_source_operation(
-        session,
-        key,
-        SourceOperation::Seal,
-        SourceOperationStage::Terminal,
-    )
-    .await?
-    {
-        let fact = recovered.fact;
-        refresh_source_authority(session).await?;
-        fact
-    } else {
-        let Some(begin) = find_source_operation(
-            session,
-            key,
-            SourceOperation::Seal,
-            SourceOperationStage::Begin,
-        )
-        .await?
-        else {
-            if published_generation_for_key(session, key, SourceOperation::Seal)
-                .await?
-                .is_some()
-            {
-                return Err(SourceError::IdempotencyConflict);
-            }
-            return Ok(None);
-        };
-        let Some(generation_id) =
-            published_generation_for_key(session, key, SourceOperation::Seal).await?
-        else {
-            return Ok(None);
-        };
-        recover_published_operation(
-            session,
-            SourceState::Sealed,
-            generation_id,
-            begin.head,
-            key,
-            SourceOperation::Seal,
-        )
-        .await?
+    let Some(fact) = replay_source_operation(session, key, SourceOperation::Seal).await? else {
+        return Ok(None);
     };
     match fact.state {
         DurableSourceState::Sealed => Ok(Some(Generation {
@@ -1390,11 +1356,7 @@ fn source_operation_fingerprint(
 ) -> Result<Digest, SourceError> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic-fs-source-command-v1\0");
-    hasher.update(&[match operation {
-        SourceOperation::Reconcile => 1,
-        SourceOperation::Rescan => 2,
-        SourceOperation::Seal => 3,
-    }]);
+    hasher.update(&[operation as u8]);
     hasher.update(&encode_source_fact(*fact).map_err(engine)?);
     Ok(Digest::from_bytes(*hasher.finalize().as_bytes()))
 }
@@ -1416,11 +1378,7 @@ fn source_volume_operation_id(key: IdempotencyKey, operation: SourceOperation) -
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic-fs-source-volume-publication-v1\0");
     hasher.update(&key.into_bytes());
-    hasher.update(&[match operation {
-        SourceOperation::Reconcile => 1,
-        SourceOperation::Rescan => 2,
-        SourceOperation::Seal => 3,
-    }]);
+    hasher.update(&[operation as u8]);
     let mut bytes = [0_u8; 16];
     bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
     OperationId::from_bytes(bytes)
@@ -1430,11 +1388,7 @@ fn source_volume_operation_context(key: IdempotencyKey, operation: SourceOperati
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic-fs-source-volume-context-v1\0");
     hasher.update(&key.into_bytes());
-    hasher.update(&[match operation {
-        SourceOperation::Reconcile => 1,
-        SourceOperation::Rescan => 2,
-        SourceOperation::Seal => 3,
-    }]);
+    hasher.update(&[operation as u8]);
     Digest::from_bytes(*hasher.finalize().as_bytes())
 }
 

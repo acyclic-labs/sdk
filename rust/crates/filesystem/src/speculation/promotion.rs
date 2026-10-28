@@ -451,9 +451,8 @@ impl PromotionSpeculator {
         metrics: PromotionMetrics,
         generation: Option<GenerationId>,
     ) -> Vec<OperationId> {
-        let operations: Vec<_> = self.active.keys().copied().collect();
+        let operations: Vec<_> = std::mem::take(&mut self.active).into_keys().collect();
         self.metrics = metrics;
-        self.active.clear();
         for _ in &operations {
             self.record_outcome(false);
         }

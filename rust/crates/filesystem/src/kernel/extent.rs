@@ -150,15 +150,7 @@ pub fn decode_extent_page<E: From<CanonicalDecodeError>>(
         limits.maximum_page_object_bytes(),
         observe,
     )?;
-    let page_tag = decoder.u8(observe)?;
-    let item_count = decoder.u32(observe)?;
-    if item_count > limits.maximum_page_items {
-        return Err(CanonicalDecodeError::FieldTooLarge {
-            observed: item_count,
-            maximum: limits.maximum_page_items,
-        }
-        .into());
-    }
+    let (page_tag, item_count) = decoder.page_header(limits.maximum_page_items, observe)?;
     let capacity = usize::try_from(item_count).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
     let page = match page_tag {
         LEAF_TAG => {

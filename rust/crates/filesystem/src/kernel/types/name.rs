@@ -103,24 +103,7 @@ impl LogicalName {
         maximum_bytes: u32,
         steps: &mut impl FnMut(crate::kernel::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self, E> {
-        use crate::kernel::codec::ReadAllocationStep;
-        let length = self.bytes.len();
-        let mut bytes = Vec::new();
-        steps(ReadAllocationStep::Allocate {
-            bytes: length as u64,
-            operations: 1,
-        })?;
-        if let Err(error) = bytes.try_reserve_exact(length) {
-            steps(ReadAllocationStep::ReserveFailed(error))?;
-            return Err(CanonicalDecodeError::AllocationFailed.into());
-        }
-        steps(ReadAllocationStep::Capacity {
-            admitted_bytes: length as u64,
-            actual_bytes: bytes.capacity() as u64,
-        })?;
-        steps(ReadAllocationStep::BeforeCopy(length as u64))?;
-        bytes.extend_from_slice(&self.bytes);
-        steps(ReadAllocationStep::Copied(length as u64))?;
+        let bytes = crate::kernel::codec::copy_bytes(&self.bytes, 1, steps)?;
         Self::new(self.encoding, bytes, maximum_bytes).map_err(|error| {
             E::from(CanonicalDecodeError::Invariant(
                 crate::kernel::codec::CanonicalInvariant::Name(error),

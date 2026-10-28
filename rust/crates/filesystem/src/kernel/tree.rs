@@ -224,14 +224,9 @@ pub(crate) fn tree_page_decode_shape(
         limits.maximum_page_object_bytes(),
         &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
     )?;
-    let tag = decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    let item_count = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    if item_count > limits.maximum_page_items {
-        return Err(CanonicalDecodeError::FieldTooLarge {
-            observed: item_count,
-            maximum: limits.maximum_page_items,
-        });
-    }
+    let (tag, item_count) = decoder.page_header(limits.maximum_page_items, &mut |_| {
+        Ok::<_, CanonicalDecodeError>(())
+    })?;
     let mut nested_bytes = 0_u64;
     let kind = match tag {
         LEAF_TAG => {
@@ -275,10 +270,6 @@ pub(crate) fn tree_page_decode_shape(
 }
 
 /// Decodes one canonical object with before-effect admission.
-#[allow(
-    clippy::too_many_lines,
-    reason = "Leaf and internal variants share one canonical decoder and allocation observer."
-)]
 pub fn decode_tree_page<E>(
     bytes: &[u8],
     limits: DecodeLimits,
@@ -294,36 +285,12 @@ where
         limits.maximum_page_object_bytes(),
         observe,
     )?;
-    let page_tag = decoder.u8(observe)?;
-    let item_count = decoder.u32(observe)?;
-    if item_count > limits.maximum_page_items {
-        return Err(CanonicalDecodeError::FieldTooLarge {
-            observed: item_count,
-            maximum: limits.maximum_page_items,
-        }
-        .into());
-    }
+    let (page_tag, item_count) = decoder.page_header(limits.maximum_page_items, observe)?;
     let capacity = usize::try_from(item_count).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
     match page_tag {
         LEAF_TAG => {
             let mut entries = Vec::new();
-            let admitted_bytes = usize_to_u64(
-                capacity
-                    .checked_mul(std::mem::size_of::<TreeEntry>())
-                    .ok_or(CanonicalDecodeError::LengthOverflow)?,
-            );
-            observe(ReadAllocationStep::Allocate {
-                bytes: admitted_bytes,
-                operations: u64::from(capacity != 0),
-            })?;
-            if let Err(error) = entries.try_reserve_exact(capacity) {
-                observe(ReadAllocationStep::ReserveFailed(error))?;
-                return Err(CanonicalDecodeError::AllocationFailed.into());
-            }
-            observe(ReadAllocationStep::Capacity {
-                admitted_bytes,
-                actual_bytes: usize_to_u64(entries.capacity() * std::mem::size_of::<TreeEntry>()),
-            })?;
+            crate::kernel::file_read::reserve_decoded_items(&mut entries, capacity, observe)?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 let name = decode_name(&mut decoder, limits.maximum_name_bytes, observe)?;
@@ -344,25 +311,7 @@ where
         }
         INTERNAL_TAG => {
             let mut children = Vec::new();
-            let admitted_bytes = usize_to_u64(
-                capacity
-                    .checked_mul(std::mem::size_of::<Child<LogicalName>>())
-                    .ok_or(CanonicalDecodeError::LengthOverflow)?,
-            );
-            observe(ReadAllocationStep::Allocate {
-                bytes: admitted_bytes,
-                operations: u64::from(capacity != 0),
-            })?;
-            if let Err(error) = children.try_reserve_exact(capacity) {
-                observe(ReadAllocationStep::ReserveFailed(error))?;
-                return Err(CanonicalDecodeError::AllocationFailed.into());
-            }
-            observe(ReadAllocationStep::Capacity {
-                admitted_bytes,
-                actual_bytes: usize_to_u64(
-                    children.capacity() * std::mem::size_of::<Child<LogicalName>>(),
-                ),
-            })?;
+            crate::kernel::file_read::reserve_decoded_items(&mut children, capacity, observe)?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 let first = decode_name(&mut decoder, limits.maximum_name_bytes, observe)?;

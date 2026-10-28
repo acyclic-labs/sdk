@@ -106,15 +106,7 @@ pub fn decode_blob_page<E: From<CanonicalDecodeError>>(
     )?;
     let first_offset = decoder.u64(observe)?;
     let end_offset = decoder.u64(observe)?;
-    let tag = decoder.u8(observe)?;
-    let item_count = decoder.u32(observe)?;
-    if item_count > limits.maximum_page_items {
-        return Err(CanonicalDecodeError::FieldTooLarge {
-            observed: item_count,
-            maximum: limits.maximum_page_items,
-        }
-        .into());
-    }
+    let (tag, item_count) = decoder.page_header(limits.maximum_page_items, observe)?;
     let mut leaf = Vec::new();
     let mut internal = Vec::new();
     match tag {

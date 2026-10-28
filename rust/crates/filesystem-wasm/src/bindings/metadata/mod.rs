@@ -86,7 +86,7 @@ impl BrowserCheckout {
         let path = browser_path(&path, self.engine.volume_config())?;
         let metadata = decode_file_metadata(
             &canonical_bytes,
-            browser_decode_limits(self.engine.volume_config().limits),
+            DecodeLimits::for_volume(self.engine.volume_config()),
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(js_error)?;
@@ -109,7 +109,7 @@ impl BrowserCheckout {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let metadata = decode_file_metadata(
             &canonical_bytes,
-            browser_decode_limits(self.engine.volume_config().limits),
+            DecodeLimits::for_volume(self.engine.volume_config()),
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(js_error)?;
@@ -127,7 +127,7 @@ impl BrowserCheckout {
         let path = browser_path(&path, self.engine.volume_config())?;
         let metadata = decode_file_metadata(
             &canonical_bytes,
-            browser_decode_limits(self.engine.volume_config().limits),
+            DecodeLimits::for_volume(self.engine.volume_config()),
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(js_error)?;
@@ -145,7 +145,7 @@ impl BrowserCheckout {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let metadata = decode_file_metadata(
             &canonical_bytes,
-            browser_decode_limits(self.engine.volume_config().limits),
+            DecodeLimits::for_volume(self.engine.volume_config()),
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(js_error)?;

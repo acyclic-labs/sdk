@@ -95,24 +95,7 @@ impl AttributeName {
         maximum_bytes: u32,
         steps: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Self, E> {
-        use super::codec::ReadAllocationStep;
-        let length = self.bytes.len();
-        let mut bytes = Vec::new();
-        steps(ReadAllocationStep::Allocate {
-            bytes: length as u64,
-            operations: 1,
-        })?;
-        if let Err(error) = bytes.try_reserve_exact(length) {
-            steps(ReadAllocationStep::ReserveFailed(error))?;
-            return Err(CanonicalDecodeError::AllocationFailed.into());
-        }
-        steps(ReadAllocationStep::Capacity {
-            admitted_bytes: length as u64,
-            actual_bytes: bytes.capacity() as u64,
-        })?;
-        steps(ReadAllocationStep::BeforeCopy(length as u64))?;
-        bytes.extend_from_slice(&self.bytes);
-        steps(ReadAllocationStep::Copied(length as u64))?;
+        let bytes = super::codec::copy_bytes(&self.bytes, 1, steps)?;
         Self::new(self.class, bytes, maximum_bytes).map_err(|error| E::from(invariant(error)))
     }
 
@@ -410,14 +393,9 @@ pub(crate) fn attribute_page_decode_shape(
         limits.maximum_page_object_bytes(),
         &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
     )?;
-    let tag = decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    let item_count = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    if item_count > limits.maximum_page_items {
-        return Err(CanonicalDecodeError::FieldTooLarge {
-            observed: item_count,
-            maximum: limits.maximum_page_items,
-        });
-    }
+    let (tag, item_count) = decoder.page_header(limits.maximum_page_items, &mut |_| {
+        Ok::<_, CanonicalDecodeError>(())
+    })?;
     let mut nested_bytes = 0_u64;
     let kind = match tag {
         1 | 2 => {
@@ -470,38 +448,12 @@ where
         limits.maximum_page_object_bytes(),
         observe,
     )?;
-    let tag = decoder.u8(observe)?;
-    let item_count = decoder.u32(observe)?;
-    if item_count > limits.maximum_page_items {
-        return Err(CanonicalDecodeError::FieldTooLarge {
-            observed: item_count,
-            maximum: limits.maximum_page_items,
-        }
-        .into());
-    }
+    let (tag, item_count) = decoder.page_header(limits.maximum_page_items, observe)?;
     let capacity = usize::try_from(item_count).map_err(|_| CanonicalDecodeError::LengthOverflow)?;
     match tag {
         1 => {
             let mut entries = Vec::new();
-            let admitted_bytes = usize_to_u64(
-                capacity
-                    .checked_mul(std::mem::size_of::<AttributeEntry>())
-                    .ok_or(CanonicalDecodeError::LengthOverflow)?,
-            );
-            observe(ReadAllocationStep::Allocate {
-                bytes: admitted_bytes,
-                operations: u64::from(capacity != 0),
-            })?;
-            if let Err(error) = entries.try_reserve_exact(capacity) {
-                observe(ReadAllocationStep::ReserveFailed(error))?;
-                return Err(CanonicalDecodeError::AllocationFailed.into());
-            }
-            observe(ReadAllocationStep::Capacity {
-                admitted_bytes,
-                actual_bytes: usize_to_u64(
-                    entries.capacity() * std::mem::size_of::<AttributeEntry>(),
-                ),
-            })?;
+            crate::kernel::file_read::reserve_decoded_items(&mut entries, capacity, observe)?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 entries.push(AttributeEntry {
@@ -519,25 +471,7 @@ where
         }
         2 => {
             let mut children = Vec::new();
-            let admitted_bytes = usize_to_u64(
-                capacity
-                    .checked_mul(std::mem::size_of::<Child<AttributeName>>())
-                    .ok_or(CanonicalDecodeError::LengthOverflow)?,
-            );
-            observe(ReadAllocationStep::Allocate {
-                bytes: admitted_bytes,
-                operations: u64::from(capacity != 0),
-            })?;
-            if let Err(error) = children.try_reserve_exact(capacity) {
-                observe(ReadAllocationStep::ReserveFailed(error))?;
-                return Err(CanonicalDecodeError::AllocationFailed.into());
-            }
-            observe(ReadAllocationStep::Capacity {
-                admitted_bytes,
-                actual_bytes: usize_to_u64(
-                    children.capacity() * std::mem::size_of::<Child<AttributeName>>(),
-                ),
-            })?;
+            crate::kernel::file_read::reserve_decoded_items(&mut children, capacity, observe)?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 let first = decode_name(&mut decoder, limits.maximum_name_bytes, observe)?;

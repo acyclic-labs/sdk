@@ -200,30 +200,11 @@ async fn independent_git_patches_share_one_append_and_recover_each_operation() {
         crate::EmbeddedCapabilities::MEMORY,
     );
     let workspace = unbounded!(fs, create_workspace("git-group")).expect("workspace");
-    let mut seed =
-        unbounded!(workspace, begin_transaction(IdempotencyKey::new())).expect("seed transaction");
+    let mut seed = begin_fixture(&workspace, IdempotencyKey::new()).await;
     for name in ["/a.txt", "/b.txt"] {
         seed.write_text(name, "old\n").await.expect("seed file");
     }
-    let outcome = seed
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                    crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    },
-                ))
-            },
-        )
-        .await
-        .expect("seed commit")
-        .value;
-    assert!(matches!(outcome, TransactionCommit::Committed(_)));
+    publish_fixture(seed).await;
     let records_path = acyclic_stream::StreamPath::new(format!(
         "fs/authorities/{}/records",
         hex::encode(crate::kernel::volume_authority_id(workspace.volume.id()).into_bytes())

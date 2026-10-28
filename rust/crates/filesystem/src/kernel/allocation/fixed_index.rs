@@ -88,12 +88,6 @@ impl Funding {
         };
         Ok(Self { leaf, branch })
     }
-
-    fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
-        let _ = accounting;
-        drop(self);
-        Ok(())
-    }
 }
 
 impl<V, const N: usize> FixedIndex<V, N> {
@@ -151,7 +145,7 @@ impl<V, const N: usize> FixedIndex<V, N> {
         let value = match create(accounting) {
             Ok(value) => value,
             Err(error) => {
-                funding.retire(accounting)?;
+                drop(funding);
                 return Err(error);
             }
         };

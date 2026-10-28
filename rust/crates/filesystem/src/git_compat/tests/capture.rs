@@ -84,29 +84,13 @@ async fn capture_omits_newly_ignored_paths_but_keeps_tracked_descendants() {
 #[tokio::test]
 async fn capture_at_generation_excludes_later_workspace_updates() {
     let workspace = memory_workspace("git-capture-pinned-generation").await;
-    let mut initial = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x35; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("initial transaction")
-        .value;
+    let mut initial = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x35; 16])).await;
     initial
         .write_text("/published.txt", "published")
         .await
         .expect("published file");
     let published = publish_fixture(initial).await;
-    let mut later = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x36; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("later transaction")
-        .value;
+    let mut later = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x36; 16])).await;
     later
         .write_text("/later.txt", "later")
         .await
@@ -260,15 +244,7 @@ async fn diff_uses_nested_ignores_without_creating_a_capture_workspace() {
 #[tokio::test]
 async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
     let workspace = memory_workspace("git-diff-deleted-policy").await;
-    let mut initial = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x4c; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("initial transaction")
-        .value;
+    let mut initial = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x4c; 16])).await;
     initial
         .write_text("/drop.tmp", "old")
         .await
@@ -276,15 +252,7 @@ async fn diff_uses_the_source_ignore_policy_for_deleted_paths() {
     publish_fixture(initial).await;
     let before = unbounded!(workspace, head()).expect("before");
 
-    let mut changed = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x4d; 16]),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .expect("changed transaction")
-        .value;
+    let mut changed = begin_fixture(&workspace, IdempotencyKey::from_bytes([0x4d; 16])).await;
     changed
         .write_text("/.gitignore", "*.tmp\n")
         .await

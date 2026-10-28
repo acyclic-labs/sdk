@@ -203,14 +203,9 @@ pub(crate) fn file_table_page_decode_shape(
         limits.maximum_page_object_bytes(),
         &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()),
     )?;
-    let tag = decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    let item_count = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    if item_count > limits.maximum_page_items {
-        return Err(CanonicalDecodeError::FieldTooLarge {
-            observed: item_count,
-            maximum: limits.maximum_page_items,
-        });
-    }
+    let (tag, item_count) = decoder.page_header(limits.maximum_page_items, &mut |_| {
+        Ok::<_, CanonicalDecodeError>(())
+    })?;
     let kind = match tag {
         1 => {
             for _ in 0..item_count {
@@ -439,36 +434,12 @@ fn decode_page<const CHECK_ORDER: bool, E: From<CanonicalDecodeError>>(
         limits.maximum_page_object_bytes(),
         observe,
     )?;
-    let tag = decoder.u8(observe)?;
-    let item_count = decoder.u32(observe)?;
-    if item_count > limits.maximum_page_items {
-        return Err(CanonicalDecodeError::FieldTooLarge {
-            observed: item_count,
-            maximum: limits.maximum_page_items,
-        }
-        .into());
-    }
+    let (tag, item_count) = decoder.page_header(limits.maximum_page_items, observe)?;
     match tag {
         1 => {
             let mut records = Vec::new();
             let capacity = capacity(item_count)?;
-            let admitted_bytes = usize_to_u64(
-                capacity
-                    .checked_mul(std::mem::size_of::<FileRecord>())
-                    .ok_or(CanonicalDecodeError::LengthOverflow)?,
-            );
-            observe(ReadAllocationStep::Allocate {
-                bytes: admitted_bytes,
-                operations: u64::from(capacity != 0),
-            })?;
-            if let Err(error) = records.try_reserve_exact(capacity) {
-                observe(ReadAllocationStep::ReserveFailed(error))?;
-                return Err(CanonicalDecodeError::AllocationFailed.into());
-            }
-            observe(ReadAllocationStep::Capacity {
-                admitted_bytes,
-                actual_bytes: usize_to_u64(records.capacity() * std::mem::size_of::<FileRecord>()),
-            })?;
+            crate::kernel::file_read::reserve_decoded_items(&mut records, capacity, observe)?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 decode_record(&mut decoder, observe, |record| records.push(record))?;
@@ -491,25 +462,7 @@ fn decode_page<const CHECK_ORDER: bool, E: From<CanonicalDecodeError>>(
         2 => {
             let mut children = Vec::new();
             let capacity = capacity(item_count)?;
-            let admitted_bytes = usize_to_u64(
-                capacity
-                    .checked_mul(std::mem::size_of::<Child<FileId>>())
-                    .ok_or(CanonicalDecodeError::LengthOverflow)?,
-            );
-            observe(ReadAllocationStep::Allocate {
-                bytes: admitted_bytes,
-                operations: u64::from(capacity != 0),
-            })?;
-            if let Err(error) = children.try_reserve_exact(capacity) {
-                observe(ReadAllocationStep::ReserveFailed(error))?;
-                return Err(CanonicalDecodeError::AllocationFailed.into());
-            }
-            observe(ReadAllocationStep::Capacity {
-                admitted_bytes,
-                actual_bytes: usize_to_u64(
-                    children.capacity() * std::mem::size_of::<Child<FileId>>(),
-                ),
-            })?;
+            crate::kernel::file_read::reserve_decoded_items(&mut children, capacity, observe)?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 let first = FileId::from_bytes(decoder.fixed::<16, E>(observe)?);
