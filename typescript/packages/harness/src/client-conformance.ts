@@ -221,7 +221,7 @@ export async function verifyClientControls(stream: WasmStream, credential: numbe
         throw new Error("CLIENT_CONFORMANCE control_fixture: invalid case/order");
       }
       seen.add(vector.case);
-      const commandBytes = bytes(vector.command, PreparedAgentCommand.maximumCommandBytes());
+      const commandBytes = bytes(vector.command, undefined);
       const invocation = bytes(vector.invocation, PreparedAgentCommand.maximumInvocationBytes());
       const encoded = vector.expected.kind === "reply" ? bytes(vector.expected.bytes, undefined) : undefined;
       retained += commandBytes.length + invocation.length + (encoded?.length ?? 0);

@@ -8,12 +8,8 @@ use acyclic_harness_core::{
     model::ModelContent,
 };
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 
-/// Finite encoded command budget, before decoding or starting any host work.
-pub const MAX_COMMAND_BYTES: usize = 64 * 1024;
-/// Most bytes one [`AgentCommand::Read`] returns; its encoded reply stays
-/// within the reply budget.
+/// Bytes in one [`AgentCommand::Read`] chunk; callers continue at its next offset.
 pub const MAX_READ_BYTES: u64 = 32 * 1024;
 
 /// Requested page custody. Both ceilings are enforced by the host before it
@@ -285,29 +281,16 @@ impl PreparedCommand {
         Ok(Self(bytes))
     }
 
-    /// Encode without ever retaining an oversized serialization buffer.
+    /// Encode the complete immutable command retained across transport loss.
     pub fn new(command: &AgentCommand) -> Result<Self, CommandError> {
         command.validate()?;
-        let mut writer = CommandWriter {
-            // One admitted buffer; geometric growth cannot exceed the budget.
-            bytes: Vec::with_capacity(MAX_COMMAND_BYTES),
-            full: false,
-        };
-        if serde_json::to_writer(&mut writer, command).is_err() {
-            return Err(if writer.full {
-                CommandError::Capacity
-            } else {
-                CommandError::Invalid
-            });
-        }
-        Ok(Self(writer.bytes))
+        serde_json::to_vec(command)
+            .map(Self)
+            .map_err(|_| CommandError::Invalid)
     }
 
-    /// Decode only after bounding the entire untrusted envelope.
+    /// Validate the original envelope without truncating or rewriting it.
     pub fn decode(bytes: &[u8]) -> Result<AgentCommand, CommandError> {
-        if bytes.len() > MAX_COMMAND_BYTES {
-            return Err(CommandError::Capacity);
-        }
         let command: AgentCommand =
             serde_json::from_slice(bytes).map_err(|_| CommandError::Invalid)?;
         command.validate()?;
@@ -318,26 +301,6 @@ impl PreparedCommand {
     #[must_use]
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
-    }
-}
-
-struct CommandWriter {
-    bytes: Vec<u8>,
-    full: bool,
-}
-
-impl Write for CommandWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > MAX_COMMAND_BYTES - self.bytes.len() {
-            self.full = true;
-            return Err(std::io::Error::other("client command capacity exceeded"));
-        }
-        self.bytes.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
 
@@ -380,34 +343,13 @@ mod tests {
     }
 
     #[test]
-    fn encoded_expansion_is_bounded_before_dispatch() -> Result<(), Box<dyn std::error::Error>> {
-        let command = AgentCommand::Prompt {
-            agent: AgentPath::try_from(
-                "harness/agents/00000000000000000000000000000001".to_owned(),
-            )?,
-            id: IntentId::try_from("prompt-1")?,
-            // JSON escaping expands each byte; raw text length is insufficient.
-            body: ModelContent::Text("\n".repeat(MAX_COMMAND_BYTES / 2)),
-        };
-        assert!(matches!(
-            PreparedCommand::new(&command),
-            Err(CommandError::Capacity)
-        ));
-        assert!(matches!(
-            PreparedCommand::decode(&vec![b' '; MAX_COMMAND_BYTES + 1]),
-            Err(CommandError::Capacity)
-        ));
-        Ok(())
-    }
-
-    #[test]
     fn prepared_prompt_preserves_the_intent_and_body() -> Result<(), Box<dyn std::error::Error>> {
         let command = AgentCommand::Prompt {
             agent: AgentPath::try_from(
                 "harness/agents/00000000000000000000000000000001".to_owned(),
             )?,
             id: IntentId::try_from("prompt-1")?,
-            body: ModelContent::Text("exact input".into()),
+            body: ModelContent::Text("complete escaped input\n".repeat(100_000)),
         };
         let prepared = PreparedCommand::new(&command)?;
         let AgentCommand::Prompt { id, body, .. } = PreparedCommand::decode(prepared.as_bytes())?
@@ -415,7 +357,10 @@ mod tests {
             return Err("expected prompt command".into());
         };
         assert_eq!(id.as_str(), "prompt-1");
-        assert_eq!(body, ModelContent::Text("exact input".into()));
+        assert_eq!(
+            body,
+            ModelContent::Text("complete escaped input\n".repeat(100_000))
+        );
         Ok(())
     }
 }
