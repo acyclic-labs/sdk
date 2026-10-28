@@ -102,6 +102,8 @@ export async function qualify(args, { command = spawnSync, onProgress = () => {}
   for (const marker of [`PASS archive-installed Erlang clients: ${methodCount} populated native TCP RPC pairs`, "actors_pb differing modeled file descriptor fields: []", "stream_pb differing modeled file descriptor fields: []"]) {
     if (!native.includes(marker)) throw new Error("installed consumer completion marker missing: " + marker);
   }
+  const shapes = native.match(/^PASS RPC shapes: (\d+) unary, (\d+) server streaming$/m);
+  if (!shapes || Number(shapes[1]) + Number(shapes[2]) !== methodCount) throw new Error("RPC shape coverage incomplete");
   if (native.split("PASS installed SDK and loaded-module provenance").length !== 3) throw new Error("loaded-module provenance controls incomplete");
   onProgress("Verify post-execution package, dependency, compiler and consumer bytes");
   await guard(); privateDependencyGuard();
@@ -121,7 +123,7 @@ export async function qualify(args, { command = spawnSync, onProgress = () => {}
     compiled_sdk_sha256: compiled, compiled_consumer_sha256: consumerBeams,
     consumer_source_sha256: Object.fromEntries(inventory(consumer).filter(name => name.endsWith(".erl")).map(name => [name, sha256(readFileSync(join(consumer, name)))])),
     log_sha256: Object.fromEntries(logNames.map(name => [name, sha256(readFileSync(join(output, name)))])),
-    native_rpc_calls_executed: methodCount, unary_rpc_calls: methodCount - 3, server_streaming_rpc_calls: 3, populated_rpc_message_pairs: methodCount, runtime_type_rejections: 2,
+    native_rpc_calls_executed: methodCount, unary_rpc_calls: Number(shapes[1]), server_streaming_rpc_calls: Number(shapes[2]), populated_rpc_message_pairs: methodCount, runtime_type_rejections: 2,
     compiled_sdk_provenance: true, modeled_file_descriptor_semantics: true,
     descriptor_normalization: ["source locations omitted", "source filename basename", "declared protobuf defaults", "default JSON names", "message and enum declaration order", "single-field proto3-optional synthetic oneof names"],
     unknown_descriptor_extensions_qualified: false, rust_backed_rpc_qualified: false, embedded_runtime_qualified: false };
