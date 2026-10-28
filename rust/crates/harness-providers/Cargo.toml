@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "acyclic-harness-providers"
 version.workspace = true
 edition.workspace = true
@@ -78,5 +79,5 @@ proptest.workspace = true
 workspace = true
 
 [[test]]
-name = "harness-integration"
-path = "tests/integration/main.rs"
+name = "main"
+path = "tests/main.rs"

@@ -1,28 +1,43 @@
 //! Harness composition with real model provider adapters.
 #![cfg(not(target_arch = "wasm32"))]
+use acyclic_harness_providers::Adapter;
+#[cfg(loom)]
+#[path = "../src/sync.rs"]
+mod sync;
+#[cfg(not(loom))]
+#[path = "../src/sync/loom.rs"]
+mod sync;
+mod benchmark_catalog;
+mod verification_models;
+
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-#[path = "../../../harness/tests/support/expected_outcome.rs"]
+#[path = "../../harness/tests/support/expected_outcome.rs"]
 mod expected_outcome;
-#[path = "../../../harness/tests/e2e/local_workspace.rs"]
+#[path = "../../harness/tests/e2e/local_workspace.rs"]
 mod local_workspace;
-#[path = "../../../harness/tests/support/scenario_matchers.rs"]
+#[path = "../../harness/tests/support/scenario_matchers.rs"]
 mod matchers;
+#[path = "integration/mcp_identity.rs"]
 mod mcp_identity;
-#[path = "../../../harness/tests/support/ordered_matcher.rs"]
+#[path = "../../harness/tests/support/ordered_matcher.rs"]
 mod ordered_matcher;
-#[path = "../../../harness/tests/support/progress_guard.rs"]
+#[path = "../../harness/tests/support/progress_guard.rs"]
 mod progress_guard;
-#[path = "../../../harness/tests/support/progress_registry.rs"]
+#[path = "../../harness/tests/support/progress_registry.rs"]
 mod progress_registry;
+#[path = "integration/provider_case.rs"]
 mod provider_case;
+#[path = "integration/provider_http.rs"]
 mod provider_http;
+#[path = "integration/provider_tests.rs"]
 mod provider_tests;
+#[path = "integration/providers.rs"]
 mod providers;
-#[path = "../../../harness/tests/support/quiescent.rs"]
+#[path = "../../harness/tests/support/quiescent.rs"]
 mod quiescent;
-#[path = "../../../harness/tests/support/scenario_data.rs"]
+#[path = "../../harness/tests/support/scenario_data.rs"]
 mod scenario_data;
-#[path = "../../../harness/tests/e2e/stall.rs"]
+#[path = "../../harness/tests/e2e/stall.rs"]
 mod stall;
 
 #[tokio::test]

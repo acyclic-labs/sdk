@@ -1,7 +1,7 @@
 //! Instrument Stream's actual append/recovery locks with the workspace wrapper.
 #![cfg(loom)]
 use acyclic_actors::timers::{TimerRecord, fire};
-use acyclic_stream::{AppendRequest, MemoryStream, StreamPath, StreamProvider};
+use acyclic_stream::{AppendRequest, FollowFilter, MemoryStream, StreamPath, StreamProvider};
 use futures::StreamExt as _;
 use loom::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -35,7 +35,7 @@ fn lost_ack_restart_and_append(broken: bool) -> Result {
     // write lock. A reopened handle is published only after recovery completes.
     block_on(acyclic_stream::verification::recover(&restarted, &retained))?;
     drop(retained);
-    let mut follow = block_on(restarted.follow(inbox.clone(), 1))?;
+    let mut follow = block_on(restarted.follow(inbox.clone(), 1, FollowFilter::default()))?;
     let pushed = Arc::new(Pushed(AtomicBool::new(false)));
     let waker = Waker::from(pushed.clone());
     assert!(
@@ -82,7 +82,7 @@ fn lost_ack_restart_and_append(broken: bool) -> Result {
         2,
         "timer delivered twice after restart"
     );
-    let mut history = block_on(restarted.follow(inbox, 0))?;
+    let mut history = block_on(restarted.follow(inbox, 0, FollowFilter::default()))?;
     let original = block_on(history.next()).ok_or("restored timer missing")??;
     assert_eq!(original.sequence, 0);
     assert_eq!(

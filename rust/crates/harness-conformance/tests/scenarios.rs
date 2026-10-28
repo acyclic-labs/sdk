@@ -1,4 +1,5 @@
 //! Corpus parity, oracle fault injection and executable report qualification.
+#[path = "policy_owner.rs"]
 mod policy_owner;
 use acyclic_harness_conformance::{
     check_local,

@@ -1,12 +1,6 @@
 //! Exhaustive model of the production usage calibration.
 #![cfg(not(target_arch = "wasm32"))]
-use acyclic_harness_providers::Adapter;
-#[cfg(loom)]
-#[path = "../src/sync.rs"]
-mod sync;
-#[cfg(not(loom))]
-#[path = "../src/sync/loom.rs"]
-mod sync;
+use crate::sync;
 use sync::Arc;
 mod accounting {
     include!("../src/accounting.rs");
