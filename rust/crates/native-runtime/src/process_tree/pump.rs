@@ -14,15 +14,17 @@ use std::process::{ChildStderr, ChildStdout};
 /// The absolute lifetime policy of a capture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureSchedule {
-    /// The capture fails with `TimedOut` once this much time has passed.
-    pub timeout: Duration,
+    /// Optional caller deadline; absence waits for exit or owner cancellation.
+    pub timeout: Option<Duration>,
 }
 
 impl CaptureSchedule {
-    /// A capture bounded by `timeout` that checks only on its own events.
+    /// Selects a caller deadline, checking only on capture events.
     #[must_use]
-    pub const fn new(timeout: Duration) -> Self {
-        Self { timeout }
+    pub fn new(timeout: impl Into<Option<Duration>>) -> Self {
+        Self {
+            timeout: timeout.into(),
+        }
     }
 }
 
@@ -69,7 +71,7 @@ pub struct CaptureOutcome<H> {
 }
 
 pub(super) struct Pump<'a> {
-    deadline: Instant,
+    deadline: Option<Instant>,
     remaining: usize,
     output: [Vec<u8>; 2],
     input: Option<PendingStdin<'a>>,
@@ -124,12 +126,17 @@ impl<'a> Pump<'a> {
             )));
         }
         let now = capture_now();
-        let deadline = now.checked_add(schedule.timeout).ok_or_else(|| {
-            ProcessCaptureFailure::before_capture(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "process deadline overflow",
-            ))
-        })?;
+        let deadline = schedule
+            .timeout
+            .map(|timeout| {
+                now.checked_add(timeout).ok_or_else(|| {
+                    ProcessCaptureFailure::before_capture(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "process deadline overflow",
+                    ))
+                })
+            })
+            .transpose()?;
         if input.is_none() {
             tree.capture_close_stdin(meter)
                 .map_err(ProcessCaptureFailure::before_capture)?;
@@ -259,7 +266,10 @@ impl<'a> Pump<'a> {
                 }
                 return Ok(true);
             }
-            if capture_now() >= self.deadline {
+            if self
+                .deadline
+                .is_some_and(|deadline| capture_now() >= deadline)
+            {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     "process output deadline exceeded; effects may have occurred",
@@ -277,10 +287,18 @@ impl<'a> Pump<'a> {
         tree: &mut ProcessTree,
         wakes: Option<&[ProcessWake]>,
     ) -> io::Result<events::Wait> {
-        let wake_at = self.deadline;
-        // The capture clock is frozen in some tests; the hub runs on wall
-        // time, so arm the same remaining interval from now.
-        let wake_at = Instant::now() + wake_at.saturating_duration_since(capture_now());
+        // The capture clock may be frozen; arm its remaining interval on the
+        // hub clock. An unbounded capture has no timer registration.
+        let wake_at = self
+            .deadline
+            .map(|deadline| {
+                Instant::now()
+                    .checked_add(deadline.saturating_duration_since(capture_now()))
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "process deadline overflow")
+                    })
+            })
+            .transpose()?;
         let writing = self.input.as_ref().is_some_and(PendingStdin::writing);
         #[cfg(unix)]
         {
@@ -319,7 +337,7 @@ impl<'a> Pump<'a> {
                     std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
                 }));
             }
-            events::arm(&sources, Some(wake_at))
+            events::arm(&sources, wake_at)
         }
         #[cfg(windows)]
         {
@@ -356,7 +374,7 @@ impl<'a> Pump<'a> {
                     std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw())
                 }));
             }
-            events::arm(&sources, Some(wake_at))
+            events::arm(&sources, wake_at)
         }
     }
 
