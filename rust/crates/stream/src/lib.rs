@@ -154,6 +154,11 @@ pub const MIN_IDEMPOTENCY_RETENTION_SECS: u64 = 24 * 60 * 60;
 /// Maximum canonical path text accepted by the single-command wire format.
 pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
 
+/// Bytes indexed from a filesystem resource path. The complete lossless path
+/// remains in change metadata and is authorized after coarse indexed selection.
+/// This controls index granularity; generic record keys have no width ceiling.
+pub const RESOURCE_INDEX_PREFIX_BYTES: usize = 1024;
+
 /// Route-to-response families for the hosted HTTP projection.
 pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
     ("head", "head"),
@@ -191,8 +196,8 @@ pub use changes::{
     decode_changes, is_changes,
 };
 pub use record_headers::{
-    MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEY_BYTES, MAX_RECORD_KEYS, RecordAttribute,
-    RecordAttributeIter, RecordAttributes, RecordHeaders,
+    MAX_RECORD_ATTRIBUTES, MAX_RECORD_KEYS, RecordAttribute, RecordAttributeIter, RecordAttributes,
+    RecordHeaders,
 };
 
 include!("lib/provider.rs");

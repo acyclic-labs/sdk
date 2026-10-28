@@ -87,12 +87,18 @@ mod tests {
     #[test]
     fn native_encoding_matches_the_contract_and_keeps_key_views_paid()
     -> Result<(), Box<dyn std::error::Error>> {
+        let long_key = vec![b'n'; 4097];
+        let mut next_key = long_key.clone();
+        next_key[4096] = b'o';
+        let mut entries: [ChangeEntryRef<'_>; 2] = entries();
+        entries[0].key = &long_key;
+        entries[1].key = &next_key;
         let observed = Arc::new(Meter::default());
         let meter = observed.original();
-        let record = AppendRecord::changes_native(b"generation", &entries(), &meter)??;
+        let record = AppendRecord::changes_native(b"generation", &entries, &meter)??;
         let expected = AppendRecord::changes(
             b"generation",
-            &entries()
+            &entries
                 .iter()
                 .map(|entry| wire::ChangeEntry {
                     key: entry.key.into(),
@@ -103,6 +109,14 @@ mod tests {
             vec![],
         )?;
         assert_eq!(record, expected);
+        let decoded = decode_changes(&record.value)?;
+        assert_eq!(decoded.entries[1].key.as_ref(), next_key.as_slice());
+        assert_eq!(
+            crate::wire_codec::append_record(crate::wire_codec::append_record_wire(
+                record.clone()
+            ))?,
+            record,
+        );
         assert!(record.value.matches_meter(&meter));
         assert!(
             record
@@ -119,7 +133,7 @@ mod tests {
         drop(headers);
         assert_eq!(
             aliases.last().ok_or("missing key")?.as_ref(),
-            b"nested/file"
+            next_key.as_slice()
         );
         assert!(observed.held.load(Ordering::SeqCst) > 0);
         drop(aliases);
