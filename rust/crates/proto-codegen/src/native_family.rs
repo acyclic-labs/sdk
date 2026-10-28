@@ -231,6 +231,7 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         "scripts/build-native-family.mjs",
         "scripts/assemble-native-family.mjs",
         "scripts/archive-utils.mjs",
+        "scripts/process-capture.mjs",
         "scripts/contract-targets.mjs",
         "scripts/filesystem-napi-types.mjs",
         "scripts/build-wasm.mjs",

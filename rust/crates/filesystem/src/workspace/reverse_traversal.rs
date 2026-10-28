@@ -7,16 +7,25 @@ pub(super) fn sorted_changed_file_ids(
     let mut ids = (Vec::<FileId>::new(), accounting.claim_owned(0, 0)?);
     for file_id in file_ids {
         accounting.charge_items(1)?;
-        let Err(low) = binary_search_with_accounting(&ids.0, accounting, |id| id.cmp(&file_id))?
-        else {
-            continue;
-        };
         reverse_grow(&mut ids.0, &mut ids.1, accounting)?;
-        let copied = copy_work(((ids.0.len() - low + 1) * std::mem::size_of::<FileId>()) as u64);
-        accounting.admit(copied)?;
-        ids.0.insert(low, file_id);
-        accounting.record_completed(copied)?;
+        accounting.charge(copy_work(std::mem::size_of::<FileId>() as u64))?;
+        ids.0.push(file_id);
     }
+    crate::kernel::sort_by_with_accounting(&mut ids.0, accounting, |left, right| left.cmp(right))?;
+    let mut retained = 0_usize;
+    for index in 0..ids.0.len() {
+        accounting.charge_items(1)?;
+        let id = *ids.0.get(index).ok_or(FsError::InvalidDiff)?;
+        if retained > 0 && ids.0.get(retained - 1) == Some(&id) {
+            continue;
+        }
+        if retained != index {
+            accounting.charge(copy_work((2 * std::mem::size_of::<FileId>()) as u64))?;
+            ids.0.swap(retained, index);
+        }
+        retained += 1;
+    }
+    ids.0.truncate(retained);
     Ok(ids)
 }
 
@@ -157,7 +166,7 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
     root: &crate::kernel::GenerationRoot,
     generation_root: crate::ObjectId,
     ids: &[FileId],
-    maximum_entries: u32,
+    maximum_entries: Option<u32>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &crate::CancellationToken,
 ) -> Result<(NamespaceRecordSearch, KernelOwnedAllocation), FsError> {
@@ -170,7 +179,7 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
         },
         allocation,
     );
-    if ids.is_empty() || maximum_entries == 0 {
+    if ids.is_empty() || maximum_entries == Some(0) {
         return Ok(matches);
     }
     let limits = volume.config.limits;
@@ -242,7 +251,7 @@ pub(crate) async fn namespace_records_to_file_root_with_accounting<
 async fn answer_from_cache<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>(
     volume: &Volume<A, O>,
     root: &crate::kernel::GenerationRoot,
-    maximum_entries: u32,
+    maximum_entries: Option<u32>,
     mut cached: crate::kernel::Owned<Option<Vec<(FileId, NamespacePath)>>>,
     matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
     accounting: &mut KernelAccounting<'_>,
@@ -258,7 +267,7 @@ async fn answer_from_cache<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
     if let Some(paths) = cached
         .value
         .as_ref()
-        .filter(|paths| paths.len() <= maximum_entries as usize)
+        .filter(|paths| maximum_entries.is_none_or(|maximum| paths.len() <= maximum as usize))
     {
         let allocation = accounting.claim_owned(0, 0)?;
         let mut copied = (Vec::new(), allocation);
@@ -331,7 +340,7 @@ async fn answer_from_cache<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
 pub(crate) async fn collect_namespace<O: AsyncObjectStore>(
     view: &super::namespace_view::NamespaceView<'_, O>,
     ids: Option<&[FileId]>,
-    maximum_entries: u32,
+    maximum_entries: Option<u32>,
     matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -421,16 +430,17 @@ pub(crate) async fn collect_namespace<O: AsyncObjectStore>(
 pub(super) async fn collect_descendants<O: AsyncObjectStore>(
     view: &super::namespace_view::NamespaceView<'_, O>,
     path: &NamespacePath,
-    maximum_entries: u32,
+    maximum_entries: Option<u32>,
     matches: &mut (NamespaceRecordSearch, KernelOwnedAllocation),
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<bool, FsError> {
-    let mut pending = (Vec::new(), accounting.claim_owned(0, 0)?);
-    reverse_grow(&mut pending.0, &mut pending.1, accounting)?;
-    pending
-        .0
-        .push(path.clone_with_accounting(accounting, cancellation)?);
+    let mut pending = PendingDirectories::new(accounting)?;
+    pending.push(
+        path.clone_with_accounting(accounting, cancellation)?,
+        false,
+        accounting,
+    )?;
     walk_namespace(
         view,
         WalkSelection {
@@ -449,7 +459,7 @@ pub(super) async fn collect_descendants<O: AsyncObjectStore>(
 struct WalkSelection<'a> {
     ids: Option<&'a [FileId]>,
     remaining: Option<u64>,
-    maximum_entries: u32,
+    maximum_entries: Option<u32>,
 }
 
 /// Walks only the supplied pending subtrees. Returns false if the entry bound
@@ -468,8 +478,8 @@ async fn walk_namespace<O: AsyncObjectStore>(
         mut remaining,
         maximum_entries,
     } = selection;
-    let mut examined = 0_u32;
-    while let Some(directory) = pending.0.pop() {
+    let mut remaining_entries = maximum_entries;
+    while let Some(directory) = pending.pop(accounting)? {
         let mut after: Option<(LogicalName, KernelOwnedAllocation)> = None;
         loop {
             let (page, allocation) = view
@@ -477,10 +487,8 @@ async fn walk_namespace<O: AsyncObjectStore>(
                     &directory.0,
                     after.as_ref().map(|name| &name.0),
                     ids,
-                    maximum_entries
-                        .saturating_sub(examined)
-                        .saturating_add(1)
-                        .min(1_024),
+                    remaining_entries
+                        .map_or(1_024, |remaining| remaining.saturating_add(1).min(1_024)),
                     accounting,
                     cancellation,
                 )
@@ -488,12 +496,14 @@ async fn walk_namespace<O: AsyncObjectStore>(
             let page = (page, allocation);
             for entry in &page.0.entries {
                 accounting.charge_items(1)?;
-                if examined == maximum_entries {
+                if remaining_entries == Some(0) {
                     finish_walk_page(matches, page, accounting)?;
                     abandon_walk(after, directory, pending, accounting)?;
                     return Ok(false);
                 }
-                examined += 1;
+                if let Some(remaining) = &mut remaining_entries {
+                    *remaining -= 1;
+                }
                 let Some(record) = entry.record else {
                     continue;
                 };
@@ -544,7 +554,7 @@ async fn walk_namespace<O: AsyncObjectStore>(
                     abandon_walk(after, directory, pending, accounting)?;
                     return Ok(true);
                 }
-                enqueue_directory(&mut pending, path, found && ids.is_some(), accounting)?;
+                pending.push(path, found && ids.is_some(), accounting)?;
             }
             after = advance_walk_page(page, after, accounting)?;
             if after.is_none() {
@@ -554,8 +564,7 @@ async fn walk_namespace<O: AsyncObjectStore>(
         let bytes = directory.0.retained_bytes();
         reverse_drop(directory, bytes, accounting)?;
     }
-    let pending_bytes = workspace_vec_bytes(&pending.0);
-    reverse_drop(pending, pending_bytes, accounting)?;
+    pending.retire(accounting)?;
     reverse_sort(&mut matches.0.records, &mut matches.1, accounting)?;
     Ok(true)
 }
@@ -569,34 +578,6 @@ fn finish_walk_page(
 ) -> Result<(), FsError> {
     reverse_sort(&mut matches.0.records, &mut matches.1, accounting)?;
     drop_page(page, accounting)
-}
-
-// Already located directory identities remain eligible for descendant matches,
-// but unresolved sibling directories are searched first. Otherwise finding a
-// large retained subtree can force a complete walk before a nearby sibling.
-fn enqueue_directory(
-    pending: &mut (
-        Vec<(NamespacePath, KernelOwnedAllocation)>,
-        KernelOwnedAllocation,
-    ),
-    path: (NamespacePath, KernelOwnedAllocation),
-    defer: bool,
-    accounting: &mut KernelAccounting<'_>,
-) -> Result<(), FsError> {
-    reverse_grow(&mut pending.0, &mut pending.1, accounting)?;
-    if defer {
-        let bytes = pending
-            .0
-            .len()
-            .checked_mul(std::mem::size_of::<(NamespacePath, KernelOwnedAllocation)>())
-            .and_then(|bytes| u64::try_from(bytes).ok())
-            .ok_or(crate::WorkError::Overflow)?;
-        accounting.charge(copy_work(bytes))?;
-        pending.0.insert(0, path);
-    } else {
-        pending.0.push(path);
-    }
-    Ok(())
 }
 
 fn namespace_selected(
@@ -631,10 +612,7 @@ fn drop_page(
 fn abandon_walk(
     after: Option<(LogicalName, KernelOwnedAllocation)>,
     directory: (NamespacePath, KernelOwnedAllocation),
-    mut pending: (
-        Vec<(NamespacePath, KernelOwnedAllocation)>,
-        KernelOwnedAllocation,
-    ),
+    pending: PendingDirectories,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
     if let Some(name) = after {
@@ -643,12 +621,7 @@ fn abandon_walk(
     }
     let bytes = directory.0.retained_bytes();
     reverse_drop(directory, bytes, accounting)?;
-    while let Some(path) = pending.0.pop() {
-        let bytes = path.0.retained_bytes();
-        reverse_drop(path, bytes, accounting)?;
-    }
-    let bytes = workspace_vec_bytes(&pending.0);
-    reverse_drop(pending, bytes, accounting)
+    pending.retire(accounting)
 }
 
 pub(crate) struct NamespaceRecordSearch {
@@ -693,10 +666,77 @@ fn advance_walk_page(
     Ok(next)
 }
 
-type PendingDirectories = (
+type DirectoryStack = (
     Vec<(NamespacePath, KernelOwnedAllocation)>,
     KernelOwnedAllocation,
 );
+
+struct PendingDirectories {
+    active: DirectoryStack,
+    deferred: DirectoryStack,
+}
+
+impl PendingDirectories {
+    fn new(accounting: &mut KernelAccounting<'_>) -> Result<Self, FsError> {
+        Ok(Self {
+            active: (Vec::new(), accounting.claim_owned(0, 0)?),
+            deferred: (Vec::new(), accounting.claim_owned(0, 0)?),
+        })
+    }
+
+    fn push(
+        &mut self,
+        path: (NamespacePath, KernelOwnedAllocation),
+        defer: bool,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<(), FsError> {
+        let stack = if defer {
+            &mut self.deferred
+        } else {
+            &mut self.active
+        };
+        reverse_grow(&mut stack.0, &mut stack.1, accounting)?;
+        accounting.charge(copy_work(
+            std::mem::size_of::<(NamespacePath, KernelOwnedAllocation)>() as u64,
+        ))?;
+        stack.0.push(path);
+        Ok(())
+    }
+
+    fn pop(
+        &mut self,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Option<(NamespacePath, KernelOwnedAllocation)>, FsError> {
+        if self.active.0.is_empty() && !self.deferred.0.is_empty() {
+            // Unresolved subtrees have priority. Deferred identities retain
+            // arrival order, without inserting at the front of a growing Vec.
+            accounting.charge(copy_work(
+                (2 * std::mem::size_of::<DirectoryStack>()) as u64,
+            ))?;
+            std::mem::swap(&mut self.active, &mut self.deferred);
+            let count = self.active.0.len();
+            for left in 0..count / 2 {
+                accounting.charge(copy_work(
+                    (2 * std::mem::size_of::<(NamespacePath, KernelOwnedAllocation)>()) as u64,
+                ))?;
+                self.active.0.swap(left, count - left - 1);
+            }
+        }
+        Ok(self.active.0.pop())
+    }
+
+    fn retire(self, accounting: &mut KernelAccounting<'_>) -> Result<(), FsError> {
+        for mut stack in [self.active, self.deferred] {
+            while let Some(path) = stack.0.pop() {
+                let bytes = path.0.retained_bytes();
+                reverse_drop(path, bytes, accounting)?;
+            }
+            let bytes = workspace_vec_bytes(&stack.0);
+            reverse_drop(stack, bytes, accounting)?;
+        }
+        Ok(())
+    }
+}
 
 fn initial_walk(
     limits: crate::model::VolumeLimits,
@@ -704,9 +744,7 @@ fn initial_walk(
 ) -> Result<PendingDirectories, FsError> {
     let namespace_root = NamespacePath::new(Vec::new(), limits).map_err(FsError::from)?;
     let allocation = accounting.claim_owned(0, 0)?;
-    let mut pending = (Vec::new(), allocation);
-    reverse_grow(&mut pending.0, &mut pending.1, accounting)?;
-    let allocation = accounting.claim_owned(0, 0)?;
-    pending.0.push((namespace_root, allocation));
+    let mut pending = PendingDirectories::new(accounting)?;
+    pending.push((namespace_root, allocation), false, accounting)?;
     Ok(pending)
 }

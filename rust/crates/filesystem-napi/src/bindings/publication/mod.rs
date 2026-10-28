@@ -124,10 +124,10 @@ impl NativeCheckout {
         operations: Vec<NativeTransactionOperation>,
         operation_id: Buffer,
         maximum_attempts: NapiU32,
-        maximum_conflicts: NapiU32,
+        maximum_conflicts: Option<NapiU32>,
     ) -> Result<NativeAuthoredLiveMutationResult> {
         let maximum_attempts = maximum_attempts.into_inner();
-        let maximum_conflicts = maximum_conflicts.into_inner();
+        let maximum_conflicts = maximum_conflicts.map(NapiU32::into_inner);
 
         let authored = operations
             .into_iter()
@@ -188,10 +188,10 @@ impl NativeCheckout {
         &self,
         operation_id: Buffer,
         maximum_attempts: NapiU32,
-        maximum_conflicts: NapiU32,
+        maximum_conflicts: Option<NapiU32>,
     ) -> Result<NativeLiveMutationResult> {
         let maximum_attempts = maximum_attempts.into_inner();
-        let maximum_conflicts = maximum_conflicts.into_inner();
+        let maximum_conflicts = maximum_conflicts.map(NapiU32::into_inner);
 
         let operation_id = OperationId::from_bytes(fixed_16(&operation_id)?);
         let mut checkout = Box::pin(self.inner.lock()).await;
@@ -220,8 +220,11 @@ impl NativeCheckout {
     }
 
     #[napi]
-    pub async fn rebase_head(&self, maximum_conflicts: NapiU32) -> Result<NativeRebaseResult> {
-        let maximum_conflicts = maximum_conflicts.into_inner();
+    pub async fn rebase_head(
+        &self,
+        maximum_conflicts: Option<NapiU32>,
+    ) -> Result<NativeRebaseResult> {
+        let maximum_conflicts = maximum_conflicts.map(NapiU32::into_inner);
 
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
