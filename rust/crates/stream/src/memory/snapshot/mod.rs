@@ -291,17 +291,6 @@ fn reconstruct(
     Some(state)
 }
 
-fn retained_fact_bound() -> Option<usize> {
-    crate::MAX_COMMAND_BYTES
-        .checked_mul(64)?
-        .checked_add(
-            crate::MAX_ITEMS
-                .checked_mul(crate::MAX_PATH_BYTES.checked_mul(2)?.checked_add(128)?)?,
-        )?
-        .checked_add(crate::MAX_IDEMPOTENCY_KEY_BYTES)?
-        .checked_add(128)
-}
-
 fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Result<(), RestoreError> {
     for _ in 0..input.len().ok_or_else(invalid)? {
         let flags = input.u8().ok_or_else(invalid)?;
@@ -311,10 +300,8 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Result<(), Resto
         let observation = if flags & RETAINS_REPLAY == 0 {
             None
         } else {
-            let wire = crate::persistence::decode::<crate::wire::IdempotencyObservation>(
-                input.bytes().ok_or_else(invalid)?,
-                retained_fact_bound().ok_or_else(invalid)?,
-            )?;
+            let bytes = input.bytes().ok_or_else(invalid)?;
+            let wire = crate::persistence::decode::<crate::wire::IdempotencyObservation>(bytes, bytes.len())?;
             use crate::wire::{append_response, idempotency_observation::Outcome};
             let pre_revision = match &wire.outcome {
                 Some(Outcome::Append(response)) => matches!(&response.outcome,
@@ -330,10 +317,8 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Result<(), Resto
         let envelope = if flags & RETAINS_COMMIT == 0 {
             None
         } else {
-            Some(crate::persistence::decode_envelope(
-                input.bytes().ok_or_else(invalid)?,
-                retained_fact_bound().ok_or_else(invalid)?,
-            )?)
+            let bytes = input.bytes().ok_or_else(invalid)?;
+            Some(crate::persistence::decode_envelope(bytes, bytes.len())?)
         };
         restore_retained(state, observation, envelope).ok_or_else(invalid)?;
     }
