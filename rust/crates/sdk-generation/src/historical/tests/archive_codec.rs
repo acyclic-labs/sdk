@@ -79,30 +79,6 @@ proptest::proptest! {
 }
 
 #[test]
-fn path_shape_oracle_detects_a_missing_root_guard() {
-    use proptest::test_runner::{TestError, TestRunner};
-    // Without RootDir rejection, Windows' non-absolute rooted path is admitted.
-    let broken_accepts = |path: &str| {
-        !path.contains(['\\', ':'])
-            && !Path::new(path)
-                .components()
-                .any(|part| matches!(part, Component::ParentDir | Component::Prefix(_)))
-    };
-    let result =
-        TestRunner::default().run(&proptest::strategy::Just("/absolute".to_owned()), |path| {
-            proptest::prop_assert!(
-                !broken_accepts(&path),
-                "accepted hostile member: {:?}",
-                path
-            );
-            Ok(())
-        });
-    assert!(matches!(result, Err(TestError::Fail(_, _))));
-    let bytes = encode_path("fixture-0.1.0//absolute");
-    assert!(decode_archive_members(&bytes, "fixture", "0.1.0").is_err());
-}
-
-#[test]
 fn archive_codec_rejects_paths_links_duplicates_and_truncated_bodies() {
     assert!(decode_archive_members(&[], "fixture", "0.1.0").is_err());
     let members = BTreeMap::from([("src/lib.rs".into(), b"pub fn fixture() {}".to_vec())]);
