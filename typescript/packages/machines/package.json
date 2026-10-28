@@ -28,6 +28,10 @@
       "types": "./dist/grpc.d.ts",
       "default": "./dist/grpc.js"
     },
+    "./transport": {
+      "types": "./dist/transport.d.ts",
+      "default": "./dist/transport.js"
+    },
     "./addressing": {
       "types": "./dist/addressing.d.ts",
       "default": "./dist/addressing.js"

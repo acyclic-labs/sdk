@@ -11,6 +11,12 @@ the public bearer-authenticated service. `ca: None` selects public trust roots;
 self-hosted services can add a private CA. Mutual TLS and owner-confined local
 socket constructors remain available for those deployments.
 
+JavaScript hosts can import `createMachinesClient` from
+`@acyclic-labs/machines/transport` with their authenticated Connect transport.
+It must support bidirectional streaming, input backpressure and `AbortSignal`.
+The Node/Bun `@acyclic-labs/machines/grpc` entry point uses this same client core
+and owns its HTTP/2 connection; the portable entry point imports no Node APIs.
+
 `GrpcProvider::qualify_default_image()` obtains the service's installed immutable
 image identity. Use the returned image in `CreateMachine`; explicit qualification
 continues to reject substituted identities. No upstream distribution digest is
