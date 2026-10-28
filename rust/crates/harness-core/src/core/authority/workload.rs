@@ -514,6 +514,7 @@ fn authorize_scope(
                 memory_bytes: 0,
             },
             PolicyDecision::Allow,
+            acyclic_auth::authority::Scope::Exact,
         )
         .map_err(unauthorized)?;
     Ok(capability.clone())

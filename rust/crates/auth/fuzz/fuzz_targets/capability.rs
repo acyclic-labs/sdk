@@ -75,7 +75,12 @@ fuzz_target!(|bytes: &[u8]| {
         };
         if !valid_resource(text) {
             assert_eq!(
-                permits(&[], &request, PolicyDecision::Allow),
+                permits(
+                    &[],
+                    &request,
+                    PolicyDecision::Allow,
+                    acyclic_auth::authority::Scope::Exact
+                ),
                 Err(Deny::NonCanonicalResource)
             );
             request.target = Target::Resource {
@@ -84,7 +89,12 @@ fuzz_target!(|bytes: &[u8]| {
             };
             request.audience = text;
             assert_eq!(
-                permits(&[], &request, PolicyDecision::Allow),
+                permits(
+                    &[],
+                    &request,
+                    PolicyDecision::Allow,
+                    acyclic_auth::authority::Scope::Exact
+                ),
                 Err(Deny::NonCanonicalAudience)
             );
         }

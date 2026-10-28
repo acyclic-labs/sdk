@@ -18,13 +18,13 @@ proptest! {
 
     #[test]
     fn noncanonical_resources_and_audiences_never_match(name in invalid_name(), child in any::<bool>()) {
-        request_properties::request_property(&name, child, permits)?;
+        request_properties::request_property(&name, child, |blocks, request, policy| permits(blocks, request, policy, Scope::Exact))?;
     }
 
     #[test]
     fn arbitrary_noncanonical_request_facts_are_typed_denials(resource in any::<String>(), audience in any::<String>()) {
         let blocks = vec![root()]; let attributes = RecordAttributes::default(); let usage = limits(None);
-        let result = permits(&blocks, &request(&resource, &audience, &attributes, &usage), PolicyDecision::Allow);
+        let result = permits(&blocks, &request(&resource, &audience, &attributes, &usage), PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact);
         if !valid_resource(&resource) { prop_assert_eq!(result, Err(Deny::NonCanonicalResource)); }
         else if !valid_resource(&audience) { prop_assert_eq!(result, Err(Deny::NonCanonicalAudience)); }
     }
@@ -106,7 +106,8 @@ fn large_component_lists_validate_without_decoding_buffers() {
         permits(
             &[root()],
             &request(&resource, "workers:/app", &attributes, &usage),
-            PolicyDecision::Deny
+            PolicyDecision::Deny,
+            acyclic_auth::authority::Scope::Exact
         ),
         Err(Deny::OwnerPolicy)
     );
@@ -115,7 +116,8 @@ fn large_component_lists_validate_without_decoding_buffers() {
         permits(
             &[root()],
             &request(&invalid, "workers:/app", &attributes, &usage),
-            PolicyDecision::Allow
+            PolicyDecision::Allow,
+            acyclic_auth::authority::Scope::Exact
         ),
         Err(Deny::NonCanonicalResource)
     );

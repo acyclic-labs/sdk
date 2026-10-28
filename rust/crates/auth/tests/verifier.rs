@@ -139,12 +139,12 @@ proptest! {
         let resource = format!("fs:/{name}/../secret");
         let mut request = request(&resource, &attributes, &usage);
         for policy in [PolicyDecision::Allow, PolicyDecision::Deny] {
-            prop_assert_eq!(capability.authorize(&trust, &request, policy), Err(VerifyError::Denied(acyclic_auth::authority::Deny::NonCanonicalResource)));
+            prop_assert_eq!(capability.authorize(&trust, &request, policy, acyclic_auth::authority::Scope::Exact), Err(VerifyError::Denied(acyclic_auth::authority::Deny::NonCanonicalResource)));
         }
         request.target = acyclic_auth::authority::Target::Resource { action: "fs/read", resource: "fs:/public" };
         request.audience = &resource;
         for policy in [PolicyDecision::Allow, PolicyDecision::Deny] {
-            prop_assert_eq!(capability.authorize(&trust, &request, policy), Err(VerifyError::Denied(acyclic_auth::authority::Deny::NonCanonicalAudience)));
+            prop_assert_eq!(capability.authorize(&trust, &request, policy, acyclic_auth::authority::Scope::Exact), Err(VerifyError::Denied(acyclic_auth::authority::Deny::NonCanonicalAudience)));
         }
     }
     #[test]
@@ -160,16 +160,16 @@ proptest! {
         let usage = limits(Some(used));
         let resource = format!("fs:/{name}");
         let request = request(&resource, &attrs, &usage);
-        let parent_allows = parent.authorize(&trust, &request, PolicyDecision::Allow).is_ok();
-        let child_allows = child.authorize(&trust, &request, PolicyDecision::Allow).is_ok();
+        let parent_allows = parent.authorize(&trust, &request, PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok();
+        let child_allows = child.authorize(&trust, &request, PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok();
         prop_assert!(!child_allows || parent_allows);
-        prop_assert!(child.authorize(&trust, &request, PolicyDecision::Deny).is_err());
+        prop_assert!(child.authorize(&trust, &request, PolicyDecision::Deny, acyclic_auth::authority::Scope::Exact).is_err());
         let encoded = child.encode();
         match verify(&encoded, &trust, NOW) {
             Ok(decoded) => {
                 let reencoded = decoded.encode();
                 prop_assert_eq!(reencoded.as_slice(), encoded.as_slice());
-                prop_assert_eq!(decoded.authorize(&trust, &request, PolicyDecision::Allow).is_ok(), child_allows);
+                prop_assert_eq!(decoded.authorize(&trust, &request, PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(), child_allows);
             }
             Err(VerifyError::Time) => prop_assert!(!child_allows),
             Err(error) => prop_assert!(false, "unexpected error: {error}"),
@@ -236,7 +236,7 @@ proptest! {
         prop_assert_eq!(decoded.block_ids(), child.block_ids());
         prop_assert!(matches!(decoded.attenuate(vec![], &[6;32]), Err(VerifyError::Sealed)));
         let attrs = RecordAttributes::try_new(vec![]).unwrap(); let usage = limits(None);
-        prop_assert!(decoded.authorize(&trust, &request("fs:/public", &attrs, &usage), PolicyDecision::Allow).is_ok());
+        prop_assert!(decoded.authorize(&trust, &request("fs:/public", &attrs, &usage), PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
     }
     #[test]
     fn ancestor_or_trusted_root_key_cannot_be_reused(seed in 1..6u8) {
@@ -270,7 +270,7 @@ proptest! {
         let attributes = RecordAttributes::try_new(vec![Attribute { name: "author".into(), value: b"issuer".to_vec() }]).unwrap();
         let usage = limits(None); let request = request("fs:/public", &attributes, &usage);
         let mut admitted = false;
-        let measured = acyclic_test_support::measure(|| { admitted = capability.authorize(&trust, &request, PolicyDecision::Allow).is_ok(); });
+        let measured = acyclic_test_support::measure(|| { admitted = capability.authorize(&trust, &request, PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(); });
         prop_assert!(admitted);
         prop_assert_eq!(measured.count_total, 0);
         // Negative control for the measurement itself: the former resource
@@ -356,6 +356,7 @@ fn effective_filters_keep_the_declaring_subject() {
             &trust,
             &request("fs:/public", &attributes, &usage),
             PolicyDecision::Allow,
+            acyclic_auth::authority::Scope::Exact,
         )
         .unwrap();
 }

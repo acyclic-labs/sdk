@@ -70,7 +70,12 @@ fn runtime_receipts_share_one_restricted_certificate_until_its_expiry() -> Resul
                 &trust,
                 101,
             )?
-            .authorize(&trust, &request, PolicyDecision::Allow)
+            .authorize(
+                &trust,
+                &request,
+                PolicyDecision::Allow,
+                acyclic_auth::authority::Scope::Exact,
+            )
     };
     assert!(execution(&first).is_err());
     assert!(execution(&signer("owner", &keys, 100, Some(name), None)?).is_ok());

@@ -13,6 +13,21 @@ pub enum PolicyDecision {
     Deny,
 }
 
+/// Which record facts an operation can check at admission. Deferred facts must
+/// be checked by the owning provider before it exposes each record or child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// Check every grant, filter and pin against the exact request facts.
+    Exact,
+    /// Admit only `streams/follow`, deferring record filters and pins.
+    Follow,
+    /// Admit only `streams/list`, including discovery above a granted prefix.
+    Children,
+    /// Admit only `fs/list` on `fs:/`; each full metadata path still needs an
+    /// exact check intersected with the current filesystem owner policy.
+    ResourceFollow,
+}
+
 /// Fail-closed authorization outcome, including malformed request facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Deny {
@@ -255,70 +270,41 @@ fn filter_allows(f: &Filter, r: &Request<'_>, p: &Principal, blocks: &[Block], i
 /// Conjunction is the contract's monotonicity rule. Subject references are
 /// frozen at the declaring block; later lineage cannot expand an older filter.
 /// All online ancestor certificates and all offline blocks restrict authority.
-pub fn permits(blocks: &[Block], r: &Request<'_>, policy: PolicyDecision) -> Result<(), Deny> {
-    permits_operation(blocks, r, policy, true)
-}
-
-/// Admits a Streams follow before any records exist. The owning provider must
-/// compile every filter and pin into its mandatory subscription predicate.
-/// This cannot admit writes or general operations without their record facts.
-pub(crate) fn permits_follow(
+/// Deferred scopes cannot admit writes, socket operations or general reads.
+pub fn permits(
     blocks: &[Block],
     r: &Request<'_>,
     policy: PolicyDecision,
+    scope: Scope,
 ) -> Result<(), Deny> {
-    if !matches!(
-        r.target,
-        Target::Resource {
-            action: "streams/follow",
-            ..
-        }
-    ) {
+    let admitted = match (scope, r.target) {
+        (Scope::Exact, _) => true,
+        (
+            Scope::Follow,
+            Target::Resource {
+                action: "streams/follow",
+                ..
+            },
+        )
+        | (
+            Scope::Children,
+            Target::Resource {
+                action: "streams/list",
+                ..
+            },
+        ) => true,
+        (
+            Scope::ResourceFollow,
+            Target::Resource {
+                action: "fs/list",
+                resource,
+            },
+        ) => resource.starts_with("fs:/"),
+        _ => false,
+    };
+    if !admitted {
         return Err(Deny::Capability);
     }
-    permits_operation(blocks, r, policy, false)
-}
-
-/// A children discovery may start above a granted descendant. Each returned
-/// name still requires the provider's grant and record predicate check.
-pub(crate) fn permits_children(
-    blocks: &[Block],
-    r: &Request<'_>,
-    policy: PolicyDecision,
-) -> Result<(), Deny> {
-    if !matches!(
-        r.target,
-        Target::Resource {
-            action: "streams/list",
-            ..
-        }
-    ) {
-        return Err(Deny::Capability);
-    }
-    permits_operation(blocks, r, policy, false)
-}
-
-/// Filesystem change discovery admits an ancestor resource only for `fs/list`.
-/// Its owning provider must check every full metadata path with `permits` and
-/// intersect the volume policy before exposing the corresponding change entry.
-pub(crate) fn permits_resource_follow(
-    blocks: &[Block],
-    r: &Request<'_>,
-    policy: PolicyDecision,
-) -> Result<(), Deny> {
-    if !matches!(r.target, Target::Resource { action: "fs/list", resource } if resource.starts_with("fs:/"))
-    {
-        return Err(Deny::Capability);
-    }
-    permits_operation(blocks, r, policy, false)
-}
-
-fn permits_operation(
-    blocks: &[Block],
-    r: &Request<'_>,
-    policy: PolicyDecision,
-    record_facts: bool,
-) -> Result<(), Deny> {
     if matches!(r.target, Target::Resource { resource, .. } if !crate::valid_resource(resource)) {
         return Err(Deny::NonCanonicalResource);
     }
@@ -328,7 +314,7 @@ fn permits_operation(
     if policy == PolicyDecision::Deny {
         return Err(Deny::OwnerPolicy);
     }
-    if permits_canonical(blocks, r, record_facts) {
+    if permits_canonical(blocks, r, scope == Scope::Exact) {
         Ok(())
     } else {
         Err(Deny::Capability)

@@ -98,6 +98,7 @@ impl ResourceAuthorization {
                     memory_bytes: 0,
                 },
                 policy,
+                acyclic_auth::authority::Scope::Exact,
             )
             .map_err(|_| StreamError::AccessDenied)
     }

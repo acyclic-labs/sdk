@@ -30,7 +30,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let verify_micros = start.elapsed().as_secs_f64() * 1e6 / 128.;
         let start = Instant::now();
         for _ in 0..16384 {
-            capability.authorize(&trust, black_box(&request), PolicyDecision::Allow)?;
+            capability.authorize(
+                &trust,
+                black_box(&request),
+                PolicyDecision::Allow,
+                acyclic_auth::authority::Scope::Exact,
+            )?;
             black_box(());
         }
         let admission_micros = start.elapsed().as_secs_f64() * 1e6 / 16384.;
