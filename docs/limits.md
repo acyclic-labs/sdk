@@ -1353,3 +1353,6 @@ Check169 acquired signedc077200c2a at19:52:24 UTC and ran in actual source job17
 
 
 The Objects gRPC call macro now binds Option<Duration> once. Some uses the existing Tokio timeout and preserves the elapsed-error precedence; None awaits the same RPC without a timer. Both paths still use the canonical observed reply handler, forward the original minimum revision and retain RevisionForeign/error-detail handling. The existing replica deadline test and its positive floor-application control are unchanged. Latest compilation/runtime qualification is pending.
+
+
+Check170 canonical descriptor generation PASS on actual signedc077200c2a source job1793217559446-577630-dce03596 (final relay1793217529349-577630-ee070826,20:00:17 UTC,rc0,88.2s). All7 real artifacts copied back at20:01:15 UTC. Stream descriptor is sha256:9b30beeff26e10245f8eb9988b657441147238c2682b7b7323d5696832de155e; Objects is sha256:b188950797893f9d63c517abed1b5479eef9dc0e8c4cacbffafc33c26751143f. Only those2 byte sequences changed; the manifest now hashes actual produced bytes. No packaged Actors copy changed. The latest global baseline and native compile remain pending; the descriptor P1 remains open until baseline verification.
