@@ -49,9 +49,6 @@ where
             .resolver
             .list_buckets(access_key, request_session_token(&request))
             .await?;
-        if names.len() > self.limits.maximum_list_entries_examined as usize {
-            return Err(s3s::s3_error!(SlowDown));
-        }
         for name in &names {
             self.scoped_principal(&request, name, false).await?;
         }
@@ -105,7 +102,7 @@ where
             .scoped_principal(&request, &request.input.bucket, true)
             .await?
             .workspace;
-        validate_http_key(&request.input.key, self.limits.maximum_key_bytes)?;
+        validate_http_key(&request.input.key)?;
         reject_create_multipart_extensions(&request.input)?;
         let operation = request_operation(&request)?;
         let upload_id = Self::multipart_upload_id(&workspace, operation);
@@ -521,7 +518,6 @@ where
             delimiter,
             start_after: request.input.marker.clone(),
             maximum_keys,
-            maximum_entries_examined: self.limits.maximum_list_entries_examined,
             ..S3ListOptions::default()
         };
         let view = principal.workspace.s3();
