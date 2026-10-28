@@ -385,7 +385,10 @@ impl Client {
     pub async fn follow(
         &self,
         request: crate::FollowRequest,
-    ) -> Result<crate::FollowStream, StreamError> {
+    ) -> Result<
+        impl futures::Stream<Item = Result<crate::FollowUpdate, StreamError>> + 'static + use<>,
+        StreamError,
+    > {
         self.follow_with_ack(request, true).await
     }
     /// Reads `[from, min(from + limit, tail at open))` as one bounded follow
@@ -443,41 +446,14 @@ impl Client {
         &self,
         request: crate::FollowRequest,
         acknowledge: bool,
-    ) -> Result<crate::FollowStream, StreamError> {
-        Ok(super::runtime::boxed(
-            self.follow_updates(request, acknowledge).await?,
-        ))
-    }
-    /// Follows only records, boxed once and carrying no state beyond the
-    /// subscription: the typed form of [`Self::follow`] without progress.
-    pub async fn follow_records(
-        &self,
-        request: crate::FollowRequest,
-    ) -> Result<RecordStream, StreamError> {
-        let filter = Some(request.filter.transport_filter()?);
-        let from = request.from;
-        Ok(super::runtime::boxed(
-            self.open_subscription(follow_kind(request), cursor(from), true, false, filter, 0)
-                .await?
-                .map(|item| match item? {
-                    Received::Data(data) => match data.item {
-                        Some(Item::Record(record)) => wire_codec::record(record),
-                        _ => Err(StreamError::Unavailable),
-                    },
-                    _ => Err(StreamError::Unavailable),
-                }),
-        ))
-    }
-    async fn follow_updates(
-        &self,
-        request: crate::FollowRequest,
-        acknowledge: bool,
+
     ) -> Result<
         impl futures::Stream<Item = Result<crate::FollowUpdate, StreamError>> + 'static + use<>,
         StreamError,
     > {
         let filter = Some(request.filter.transport_filter()?);
         let (from, progress) = (request.from, request.progress);
+
         let source = self
             .open_subscription(
                 follow_kind(request),
@@ -519,6 +495,26 @@ impl Client {
                 Err(error) => Some(Err(error)),
             })
         }))
+    }
+    /// Follows only records, boxed once and carrying no state beyond the
+    /// subscription: the typed form of [`Self::follow`] without progress.
+    pub async fn follow_records(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<RecordStream, StreamError> {
+        let filter = Some(request.filter.transport_filter()?);
+        let from = request.from;
+        Ok(super::runtime::boxed(
+            self.open_subscription(follow_kind(request), cursor(from), true, false, filter, 0)
+                .await?
+                .map(|item| match item? {
+                    Received::Data(data) => match data.item {
+                        Some(Item::Record(record)) => wire_codec::record(record),
+                        _ => Err(StreamError::Unavailable),
+                    },
+                    _ => Err(StreamError::Unavailable),
+                }),
+        ))
     }
     /// Follows ALL records or LATEST values on the shared per-node session,
     /// retaining the exact data cursor and accepted/durable watermarks.

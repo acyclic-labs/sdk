@@ -402,7 +402,7 @@ impl StreamProvider for HttpStream {
         &self,
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.session_client()?.follow(request).await
+        Ok(Box::pin(self.session_client()?.follow(request).await?))
     }
 
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {

@@ -664,7 +664,10 @@ pub enum FollowUpdate {
 pub type FollowStream = BoxProviderStream<'static, Result<FollowUpdate, StreamError>>;
 
 /// Projects records from an existing follow without subscribing again.
-pub fn records_only(updates: FollowStream) -> RecordStream {
+pub fn records_only<S>(updates: S) -> RecordStream
+where
+    S: futures::Stream<Item = Result<FollowUpdate, StreamError>> + ProviderTask + 'static,
+{
     use futures::StreamExt as _;
     Box::pin(updates.filter_map(|update| {
         futures::future::ready(match update {

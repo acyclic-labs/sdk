@@ -50,7 +50,7 @@
     "inference": {
       "version": "0.2.0",
       "schemaDigest": "sha256:e3cfe892678ae33b6df0c93b6aab4acb575f6dc6b28dc960d5462e33e7a59a32",
-      "descriptorDigest": "sha256:24376f293115a327f7111cf363619cffed6cf2b1462dcb9efeb75e571ca29135",
+      "descriptorDigest": "sha256:5ace4676c445191702665f43ba2fc2c3a7a00ab78a4b8bfc2f179f8ab61bf45a",
       "conformanceDigest": "sha256:9eb850dd6cbd5fa53745a00fe19800fc3a2773ed4fa5f70c5d7be84a33b9948c"
     }
   }
