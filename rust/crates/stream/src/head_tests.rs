@@ -253,7 +253,7 @@ async fn wire_tail_uses_one_head_view_for_offsets_receipt_and_revision() -> Resu
         limit: 1,
         at_least: Default::default(),
     };
-    let mut view = provider.heads(request.clone()).await?;
+    let mut view = StreamProvider::heads(&provider, request.clone()).await?;
     view.validate_for(&request)?;
     let mut unsolicited = request.clone();
     unsolicited.durable_through = None;
