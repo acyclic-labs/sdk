@@ -16,6 +16,7 @@ use crate::model::{CaseSensitivity, FilesystemProfile, VolumeConfig, VolumeLimit
 use crate::native_capture::{
     NativeViewBaseline, capture_paths_batched, capture_subtrees_with_native_work,
 };
+#[cfg(test)]
 use crate::performance::BOUNDARY_BUDGET;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, ByteRange, CancellationToken,
