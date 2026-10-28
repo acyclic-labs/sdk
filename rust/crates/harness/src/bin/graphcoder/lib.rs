@@ -161,6 +161,7 @@ async fn run(
             acyclic_harness::local::host_files::serve_until(local, async {
                 shutdown
                     .await
+                    .map(|_| ())
                     .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))
             })
         })
