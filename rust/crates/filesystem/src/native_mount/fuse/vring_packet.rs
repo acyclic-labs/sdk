@@ -312,8 +312,14 @@ pub(super) fn serve_vring_packet(
         let response = buffers.output.get_mut(..capacity).ok_or(libc::ENOBUFS)?;
         let running = session
             .publish(&request, response, |reply| {
-                let reply = IoSlice::new(reply.unwrap_or_default());
-                packet.complete(vring, memory.as_ref(), &[reply], work, features.event_idx)
+                let slices = reply.slices();
+                packet.complete(
+                    vring,
+                    memory.as_ref(),
+                    slices.as_ref().map_or(&[], |slices| slices.as_slice()),
+                    work,
+                    features.event_idx,
+                )
             })
             .map_err(super::packet_dispatch::PacketFailure::into_native_error)?;
         Ok(if running {

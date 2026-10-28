@@ -4,11 +4,11 @@ use super::host_io::{HostIo, Received};
 use super::notification::{CacheNotifier, PacketSink};
 use super::packet::PacketRequest;
 use super::packet_buffers::{PacketBufferPool, maximum_write};
+use super::packet_response::PacketResponse;
 use super::packet_router::PacketRouter;
 use super::packet_session::PacketSession;
 use super::*;
 use crate::NativeMaterializationWork;
-use std::io::IoSlice;
 
 pub(super) struct HostSession {
     protocol: PacketSession,
@@ -85,13 +85,13 @@ impl HostSession {
         let request = PacketRequest::parse(packet)?;
         #[cfg(test)]
         let sequence = self.capture.as_ref().map(|capture| capture.begin());
-        let publish = |bytes: Option<&[u8]>| {
-            if let Some(bytes) = bytes {
-                self.io.publish(&[IoSlice::new(bytes)])?;
+        let publish = |reply: PacketResponse<'_>| {
+            if let Some(slices) = reply.slices() {
+                self.io.publish(&slices)?;
             }
             #[cfg(test)]
             if let Some((capture, sequence)) = self.capture.as_ref().zip(sequence) {
-                capture.completed(sequence, packet, bytes);
+                capture.completed(sequence, packet, reply.contiguous());
             }
             Ok(())
         };

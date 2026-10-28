@@ -118,7 +118,7 @@ impl GuestSessionAdmission {
     ) -> Result<bool, NativeMountError> {
         let request = PacketRequest::parse(packet)?;
         self.protocol
-            .publish(&request, response, publish)
+            .publish(&request, response, |reply| publish(reply.contiguous()))
             .map_err(|error| error.into_native_error())
     }
 

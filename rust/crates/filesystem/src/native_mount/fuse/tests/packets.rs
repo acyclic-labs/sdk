@@ -115,7 +115,7 @@ fn terminal_view_refuses_later_kernel_packets_without_readmitting_source()
                 .map_err(std::io::Error::from_raw_os_error)?,
             &mut response,
             |bytes| {
-                let mut reply = PacketInput::new(bytes.ok_or(libc::EPROTO)?);
+                let mut reply = PacketInput::new(bytes.contiguous().ok_or(libc::EPROTO)?);
                 reply.u32()?;
                 assert_eq!(reply.u32()? as i32, -expected);
                 Ok(())
@@ -351,7 +351,15 @@ fn replay(packets: &[CapturedPacket]) -> Result<(), Box<dyn std::error::Error>> 
         seen.insert(request.opcode);
         protocol
             .publish(&request, &mut response, |actual| {
-                match (actual, packet.response.as_deref()) {
+                if request.opcode == 15
+                    && let Some(expected) = packet.response.as_deref()
+                    && expected.len() > OUTPUT_HEADER
+                {
+                    let slices = actual.slices().ok_or(libc::EPROTO)?;
+                    assert_eq!(slices[0].len(), OUTPUT_HEADER);
+                    assert_eq!(&*slices[1], &expected[OUTPUT_HEADER..]);
+                }
+                match (actual.contiguous(), packet.response.as_deref()) {
                     (None, None) => {}
                     (Some(actual), Some(expected)) => {
                         let mut actual_header = PacketInput::new(actual);

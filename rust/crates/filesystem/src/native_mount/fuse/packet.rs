@@ -92,6 +92,7 @@ pub(super) struct PacketOutput<'a> {
     bytes: &'a mut [u8],
     length: usize,
     capacity: usize,
+    pub(super) payload: Option<FuseOwned<crate::kernel::OwnedSourceChunk>>,
     pub(super) complete: bool,
     pub(super) plus: bool,
 }
@@ -112,6 +113,7 @@ impl<'a> PacketOutput<'a> {
             bytes,
             length: OUTPUT_HEADER,
             capacity,
+            payload: None,
             complete: false,
             plus: false,
         })
@@ -128,6 +130,9 @@ impl<'a> PacketOutput<'a> {
         Ok(())
     }
     pub(super) fn bytes(&mut self, value: &[u8]) -> Result<(), i32> {
+        if self.payload.is_some() {
+            return Err(libc::EPROTO);
+        }
         let end = self
             .length
             .checked_add(value.len())
@@ -142,6 +147,23 @@ impl<'a> PacketOutput<'a> {
         self.length = end;
         Ok(())
     }
+    pub(super) fn retain(
+        &mut self,
+        payload: FuseOwned<crate::kernel::OwnedSourceChunk>,
+    ) -> Result<(), i32> {
+        if self.length != OUTPUT_HEADER || self.payload.is_some() {
+            return Err(libc::EPROTO);
+        }
+        let length = OUTPUT_HEADER
+            .checked_add(payload.bytes.len())
+            .ok_or(libc::EOVERFLOW)?;
+        if length > self.capacity {
+            return Err(libc::ENOBUFS);
+        }
+        self.length = length;
+        self.payload = Some(payload);
+        Ok(())
+    }
     pub(super) fn u32(&mut self, value: u32) -> Result<(), i32> {
         self.bytes(&value.to_ne_bytes())
     }
@@ -154,6 +176,7 @@ impl<'a> PacketOutput<'a> {
                 return Err(libc::EINVAL);
             }
             self.length = OUTPUT_HEADER;
+            self.payload = None;
             self.bytes
                 .get_mut(4..8)
                 .ok_or(libc::ENOBUFS)?
