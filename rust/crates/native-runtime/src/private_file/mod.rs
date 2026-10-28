@@ -108,7 +108,9 @@ pub fn open_or_create(path: &Path) -> io::Result<File> {
 
 /// One stable lock inode in the selected custody store's own namespace.
 /// Production uses OS account data; fixture children borrow their parent's
-/// isolated store directory. Never unlink a live store's lock inodes.
+/// isolated store directory. Never unlink a live store's lock inodes. Only an
+/// import of an existing seed needs it; generated custody is exclusive by
+/// entropy, so ordinary startup never writes the account profile.
 pub(crate) fn credential_lock(identity: &str) -> io::Result<File> {
     #[cfg(any(test, feature = "test-support"))]
     let shared = crate::signing_key::fixture::lock_directory()?;

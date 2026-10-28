@@ -1,6 +1,12 @@
 //! One credential entry owns a signing seed; persisted host metadata contains
 //! only its public opaque reference. Production uses OS custody; test and fixture
 //! builds use process-local custody, without opening an OS credential store.
+//!
+//! Custody never consults HOME, XDG or any other caller-selected location. A
+//! freshly generated seed needs no filesystem namespace at all: its identity is
+//! new entropy that no other process can name before publication. Only an
+//! import of an existing seed, whose identity other owners may already hold,
+//! serializes on the OS account's own lock namespace (`credential_lock`).
 use crate::owner_record::{SecretBytes, new_key};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -29,9 +35,10 @@ pub struct ProvisionalSigningKey {
     reference: SigningKeyReference,
     cleanup: AtomicBool,
     entry: keyring::Entry,
-    // Declared after the entry: Drop deletes abandoned custody while the
-    // actual credential identity remains exclusively held across processes.
-    _transaction: crate::FileLock,
+    // Declared after the entry: Drop deletes abandoned imported custody while
+    // its shared credential identity remains exclusively held across processes.
+    // A generated identity is exclusive by construction and holds no lock.
+    _transaction: Option<crate::FileLock>,
 }
 
 #[cfg(test)]
@@ -73,9 +80,12 @@ fn unavailable() -> io::Error {
 impl SigningKeyReference {
     /// Generate a root seed once using the shared entropy seam and retain it in
     /// the OS credential store before the host publishes its reference.
+    /// The fresh identity is unknown to every other process until this owner
+    /// publishes its reference, so no cross-process lock or account-data path
+    /// is touched: only the OS credential store is written.
     pub fn create() -> io::Result<ProvisionalSigningKey> {
         let seed = Zeroizing::new(new_key()?);
-        Self::retain(&seed)
+        Self::admit(&seed, None)
     }
 
     /// Migrate an original seed read from an authenticated private descriptor.
@@ -86,8 +96,9 @@ impl SigningKeyReference {
         if bool::from(seed.ct_eq(&[0; 32])) {
             return Err(io::ErrorKind::InvalidData.into());
         }
-        let reference = Self(*blake3::hash(seed).as_bytes());
-        let name = blake3::Hash::from_bytes(reference.0).to_hex();
+        // Copied owner records can carry one seed into independent state
+        // directories, so an import locks in the OS account's namespace.
+        let name = blake3::hash(seed).to_hex();
         let file = crate::private_file::credential_lock(name.as_str())?;
         let acquire: fn(std::fs::File, crate::FileLockMode) -> io::Result<crate::FileLock> =
             crate::FileLock::acquire;
@@ -98,6 +109,16 @@ impl SigningKeyReference {
             acquire
         };
         let transaction = acquire(file, crate::FileLockMode::Exclusive)?;
+        Self::admit(seed, Some(transaction))
+    }
+
+    /// Store `seed`, or adopt its identical existing entry, and observe the
+    /// stored value before any reference can be published.
+    fn admit(
+        seed: &[u8; 32],
+        transaction: Option<crate::FileLock>,
+    ) -> io::Result<ProvisionalSigningKey> {
+        let reference = Self(*blake3::hash(seed).as_bytes());
         let entry = reference.entry()?;
         let key = ProvisionalSigningKey {
             reference,
@@ -213,7 +234,11 @@ mod tests {
             if former_unlocked {
                 // Actual former transaction: its cleanup guard outlived the
                 // acquisition, so another independently located owner entered.
-                first._transaction.unlock()?;
+                first
+                    ._transaction
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("an import holds its identity lock"))?
+                    .unlock()?;
             }
             TRY_TRANSACTION.set(true);
             let contender = SigningKeyReference::retain(&seed);
@@ -269,6 +294,31 @@ mod tests {
                     .map_err(|_| unavailable())?;
             }
         }
+        Ok(())
+    }
+
+    /// GraphCoder startup creates custody under a read-only account profile.
+    /// A generated identity opens no lock path; an import of that same seed,
+    /// the negative control, still creates its account-namespace lock.
+    #[test]
+    fn generated_custody_opens_no_identity_lock_namespace() -> io::Result<()> {
+        let key = SigningKeyReference::create()?;
+        let suffix = format!(
+            "-{}.lock",
+            blake3::Hash::from_bytes(key.reference().0).to_hex()
+        );
+        let locks = || -> io::Result<usize> {
+            let mut count = 0;
+            for entry in std::fs::read_dir(std::env::temp_dir())? {
+                count += usize::from(entry?.file_name().to_string_lossy().ends_with(&suffix));
+            }
+            Ok(count)
+        };
+        assert_eq!(locks()?, 0, "generated custody opened an identity lock");
+        let imported = key.reference().with_seed(SigningKeyReference::retain)??;
+        assert_eq!(locks()?, 1, "an import must serialize on its identity lock");
+        drop(imported);
+        drop(key);
         Ok(())
     }
 
