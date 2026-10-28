@@ -20,7 +20,10 @@ const operation = identity(2);
 async function fixture(t, implementation) {
   const server = createSecureServer({ cert: caCertificate, key }, connectNodeAdapter({
     routes(router) {
-      router.service(wire.MachinesService, implementation);
+      router.service(wire.MachinesService, implementation.exec === undefined ? implementation : {
+        ...implementation,
+        async *exec(input, context) { yield* implementation.exec(await receiveCommand(input), context); },
+      });
     },
   }));
   const closeServer = ownFixtureServer(server);
@@ -34,6 +37,39 @@ async function fixture(t, implementation) {
 
 function authenticate(context) {
   if (context.requestHeader.get("authorization") !== "Bearer fixture") throw new ConnectError("missing bearer", Code.Unauthenticated);
+}
+
+function commandRequest(request) {
+  const { argv, stdin = new Uint8Array(), ...start } = request;
+  return { ...create(wire.ExecStartSchema, start), argv, stdin };
+}
+
+// Internal service vectors, not a provider capture or a production command engine.
+async function receiveCommand(input) {
+  let start;
+  let complete = false;
+  let eof = false;
+  let argument = [];
+  const argv = [], stdin = [];
+  for await (const frame of input) {
+    const { case: kind, value } = frame.input;
+    if (kind === "start" && start === undefined) start = value;
+    else if (start && kind === "argument" && !complete) {
+      assert.ok(value.data.byteLength <= 65_536);
+      argument.push(value.data);
+      if (value.end) {
+        argv.push(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(argument)));
+        argument = [];
+      }
+    } else if (start && kind === "commandComplete" && !complete && argument.length === 0 && argv.length > 0) complete = true;
+    else if (kind === "stdin" && complete && !eof) {
+      assert.ok(value.byteLength > 0 && value.byteLength <= 65_536);
+      stdin.push(value);
+    } else if (kind === "stdinEof" && complete && !eof) eof = true;
+    else assert.fail("invalid command frame order");
+  }
+  assert.ok(complete && eof);
+  return { ...start, argv, stdin: new Uint8Array(Buffer.concat(stdin)) };
 }
 
 test("native binary file IO preserves ranges, short writes, errno and original identity", async t => {
@@ -106,7 +142,7 @@ test("Cloud create, exec, console read and destroy retain exact identities", asy
     },
     async *exec(query, context) {
       authenticate(context);
-      assert.deepEqual(query, create(wire.ExecRequestSchema, { protocol, machine, argv: ["/bin/echo", "sdk-token"], timeoutMs: 60000 }));
+      assert.deepEqual(query, commandRequest({ protocol, machine, argv: ["/bin/echo", "sdk-token"], timeoutMs: 60000 }));
       assert.ok(context.timeoutMs() > 30000);
       calls.push("exec");
       yield { machine, output: { case: "data", value: new TextEncoder().encode("sdk-token\n") } };
@@ -197,15 +233,15 @@ test("exec carries binary stdin, cwd and authority and separates stderr before i
   let cancelled;
   const cancellation = new Promise(resolve => { cancelled = resolve; });
   const request = {
-    protocol, machine, argv: ["bash", "--noprofile", "--norc", "-c", "command"],
-    timeoutMs: 300000, stdin: new Uint8Array([0, 255, 10]), cwd: "/workspace/sub directory",
+    protocol, machine, argv: ["bash", "--noprofile", "--norc", "-c", `read -r line; printf '%s' "$line"; #${"é😀".repeat(16000)}`, "", ...Array(65).fill("argument")],
+    timeoutMs: 300000, stdin: Uint8Array.from({ length: 150000 }, (_, index) => index % 3 === 0 ? 0 : index % 3 === 1 ? 255 : 10), cwd: "/workspace/sub directory",
     expiryUnixMs: 4102444800000n, maximumOutputBytes: 4n,
   };
   const stopped = { kind: wire.ExecStopKind.EXPIRED, message: "scope elapsed", cleanupCompleted: true };
   const { machines } = await fixture(t, {
     async *exec(query, context) {
       authenticate(context);
-      assert.deepEqual(query, create(wire.ExecRequestSchema, request));
+      assert.deepEqual(query, commandRequest(request));
       context.signal.addEventListener("abort", cancelled, { once: true });
       yield { machine, output: { case: "data", value: new Uint8Array([0, 255]) } };
       yield { machine, output: { case: "stderr", value: new Uint8Array([254, 10]) } };
@@ -333,7 +369,7 @@ test("exec and console request bounds fail before reaching the server", async t 
     readOutput() { attempts++; return { machine }; },
   });
   const request = { protocol, machine, argv: ["echo"], timeoutMs: 1 };
-  for (const argv of [[], [""], ["a\0b"], ["echo", "a\0b"], Array(65).fill("a"), ["é".repeat(2049)], Array(9).fill("a".repeat(4096))]) {
+  for (const argv of [[], [""], ["a\0b"], ["echo", "a\0b"]]) {
     await assert.rejects(exec(machines, { ...request, argv }), RangeError);
   }
   for (const timeoutMs of [0, 0x100000000, 1.5]) await assert.rejects(exec(machines, { ...request, timeoutMs }), RangeError);

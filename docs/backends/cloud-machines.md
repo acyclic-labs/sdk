@@ -40,6 +40,15 @@ watches. Returning an iterator interrupts a pending pull, and terminal events
 complete without waiting for transport EOF. Watches have no implicit timeout;
 an explicit caller deadline or cancellation still applies.
 
+Exec uses one bidirectional RPC: its first `ExecStart` fixes admission, followed
+by argument byte chunks with explicit argument boundaries. `command_complete`
+alone permits execution; incomplete input cannot launch a process. Separate
+stdin chunks and `stdin_eof` preserve the shared `bash -c SOURCE` behavior.
+Chunks are at most 64 KiB; arguments and command input have no aggregate SDK
+limit. Native OS exec reports actual capacity errors. The native producer must
+propagate consumed-input credit through the original stream; the clients keep
+no background input queue and never replay interrupted input.
+
 Run the shared lifecycle and protocol checks with:
 
 ```sh

@@ -63,19 +63,7 @@ machine_mutations! {
                 let deadline = GuestDeadline::new(timeout, command.expiry_unix_ms)?;
                 let mut client = deadline.run(self.client()).await
                     .ok_or_else(|| ProviderError::Rejected("exec deadline expired during credential admission; recovery: obtain fresh authority before dispatch".into()))??;
-                let mut request = Request::new(wire::ExecRequest {
-                    protocol: Some(protocol()),
-                    machine: Some(encode_machine(machine)),
-                    argv: command.argv,
-                    timeout_ms: command.timeout_ms,
-                    expiry_unix_ms: command.expiry_unix_ms,
-                    maximum_output_bytes: command.maximum_output_bytes,
-                    cwd: command.cwd,
-                    stdin: command.stdin,
-                });
-                if prost::Message::encoded_len(request.get_ref()) > MAX_MESSAGE_BYTES {
-                    return Err(ProviderError::Invalid("exec request exceeds the transport frame; recovery: stream or split the input before dispatch".into()));
-                }
+                let mut request = Request::new(stream::iter(input::encode(machine, command)));
                 request.set_timeout(deadline.remaining());
                 let output = deadline.run(client.exec(request)).await
                     .ok_or(ProviderError::CommandIndeterminate(machine))?

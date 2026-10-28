@@ -369,12 +369,11 @@ message UsageReceipt {
 
 // Executes once in the current admitted guest. A lost reply, cancellation or
 // timeout does not prove the command did not run; clients must not redispatch.
-message ExecRequest {
+message ExecStart {
   ProtocolVersion protocol = 1;
   MachineId machine = 2;
-  // 1..64 entries, no NUL, at most 4096 UTF-8 bytes each and 32768 total.
-  // argv[0] is nonempty. Shell evaluation requires an explicit shell program.
-  repeated string argv = 3;
+  reserved 3, 8;
+  reserved "argv", "stdin";
   // Positive command deadline in milliseconds. The caller authority's expiry
   // remains an independent upper bound, even while no output is produced.
   uint32 timeout_ms = 4;
@@ -383,9 +382,34 @@ message ExecRequest {
   optional uint64 maximum_output_bytes = 6;
   // Guest working directory, never a path on the client host.
   optional string cwd = 7;
-  // Exact binary standard input. EOF follows these bytes.
-  bytes stdin = 8;
 }
+// One original ordered RPC, without replay or replacement after uncertain delivery.
+// Start occurs exactly once, first, and fixes account/incarnation/deadline admission.
+// One or more arguments follow, then command_complete permits execution. Native
+// OS exec, not a transport envelope, determines the command's argument capacity.
+// Incomplete command input can never launch a process. EOF before command_complete
+// cancels assembly; input loss afterwards retains uncertainty until original cleanup.
+// After command_complete, stdin frames and stdin_eof are distinct process input.
+// Pull input only as original guest consumed-input credit permits; transport flow
+// control must propagate backpressure, never accumulate a whole-command queue.
+message ExecInput {
+  oneof input {
+    ExecStart start = 1;
+    ExecArgument argument = 2;
+    ExecMarker command_complete = 3;
+    // 1..65536 exact binary bytes, followed by exactly one stdin_eof marker.
+    bytes stdin = 4;
+    ExecMarker stdin_eof = 5;
+  }
+}
+message ExecArgument {
+  // At most 65536 bytes; empty data requires end=true. UTF-8 code points may span
+  // frames. Validate the complete
+  // argument as NUL-free UTF-8; argv[0] is nonempty. Empty later arguments survive.
+  bytes data = 1;
+  bool end = 2;
+}
+message ExecMarker {}
 enum ExecStopKind {
   EXEC_STOP_KIND_UNSPECIFIED = 0;
   EXEC_STOP_KIND_TIMEOUT = 1;
@@ -477,7 +501,7 @@ message WriteFileResponse {
 service MachinesService {
   rpc ReadFile(ReadFileRequest) returns (ReadFileResponse) { option (acyclic.validation.v1.auth) = { action: "machines/read-file" extractor: "machines.read-file" }; }
   rpc WriteFile(WriteFileRequest) returns (WriteFileResponse) { option (acyclic.validation.v1.auth) = { action: "machines/write-file" extractor: "machines.write-file" }; }
-  rpc Exec(ExecRequest) returns (stream ExecOutput) { option (acyclic.validation.v1.auth) = { action: "machines/exec" extractor: "machines.exec" }; }
+  rpc Exec(stream ExecInput) returns (stream ExecOutput) { option (acyclic.validation.v1.auth) = { action: "machines/exec" extractor: "machines.exec" }; }
   rpc ReadOutput(ReadOutputRequest) returns (MachineOutput) { option (acyclic.validation.v1.auth) = { action: "machines/read-output" extractor: "machines.read-output" }; }
   rpc QualifyImage(QualifyImageRequest) returns (ImageQualification) { option (acyclic.validation.v1.auth) = { action: "machines/qualify" extractor: "machines.qualify-image" }; }
   rpc Create(CreateMachineRequest) returns (MachineAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/create" extractor: "machines.create" }; }

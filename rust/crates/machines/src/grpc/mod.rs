@@ -279,6 +279,7 @@ impl GrpcProvider {
 
 mod guest;
 use guest::*;
+mod input;
 mod deadline;
 use deadline::GuestDeadline;
 mod files;

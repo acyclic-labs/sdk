@@ -150,7 +150,7 @@ pub struct OperationObservation {
 pub type OperationStream =
     Pin<Box<dyn Stream<Item = Result<OperationObservation, ProviderError>> + Send + 'static>>;
 
-/// One bounded guest command, dispatched once without an idempotency key.
+/// One guest command, dispatched once without an idempotency key.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExecCommand {
     pub(crate) argv: Vec<String>,
@@ -165,12 +165,10 @@ impl ExecCommand {
     /// Checks argv admission and a positive command deadline.
     pub fn new(argv: Vec<String>, timeout_ms: u32) -> Result<Self, ProviderError> {
         if argv.is_empty()
-            || argv.len() > 64
             || argv.first().is_none_or(String::is_empty)
             || argv
                 .iter()
-                .any(|value| value.len() > 4096 || value.contains('\0'))
-            || argv.iter().map(String::len).sum::<usize>() > 32768
+                .any(|value| value.contains('\0'))
             || timeout_ms == 0
         {
             return Err(ProviderError::Invalid("invalid guest command".into()));

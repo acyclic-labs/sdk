@@ -16,7 +16,7 @@ type ServerTask = tokio::task::JoinHandle<Result<(), tonic::transport::Error>>;
 #[derive(Default)]
 pub(super) struct GuestIo {
     senders: Mutex<VecDeque<Sender>>,
-    commands: Mutex<Vec<wire::ExecRequest>>,
+    commands: Mutex<Vec<ReceivedCommand>>,
     reads: Mutex<Vec<wire::ReadOutputRequest>>,
     output: Mutex<wire::MachineOutput>,
     file_reads: Mutex<Vec<wire::ReadFileRequest>>,
@@ -44,11 +44,59 @@ impl GuestIo {
         }
         Ok(Response::new(self.file_write.lock().unwrap().clone()))
     }
-    pub(super) fn exec(&self, request: Request<wire::ExecRequest>) -> Response<ExecStreamWire> {
-        self.commands.lock().unwrap().push(request.into_inner());
+    pub(super) async fn exec(
+        &self,
+        request: Request<tonic::Streaming<wire::ExecInput>>,
+    ) -> Result<Response<ExecStreamWire>, Status> {
+        use wire::exec_input::Input;
+        let mut input = request.into_inner();
+        let Some(Input::Start(start)) = input.message().await?.and_then(|frame| frame.input) else {
+            return Err(Status::invalid_argument("missing command admission"));
+        };
+        let mut command = ReceivedCommand {
+            start,
+            argv: vec![],
+            stdin: vec![],
+        };
+        let mut argument = Vec::new();
+        let mut complete = false;
+        let mut eof = false;
+        while let Some(frame) = input.message().await? {
+            match frame.input {
+                Some(Input::Argument(chunk)) if !complete && chunk.data.len() <= 65_536 => {
+                    argument.extend(chunk.data);
+                    if chunk.end {
+                        command.argv.push(
+                            String::from_utf8(std::mem::take(&mut argument))
+                                .map_err(|_| Status::invalid_argument("argument is not UTF-8"))?,
+                        );
+                    }
+                }
+                Some(Input::CommandComplete(_))
+                    if !complete && argument.is_empty() && !command.argv.is_empty() =>
+                {
+                    complete = true
+                }
+                Some(Input::Stdin(data))
+                    if complete && !eof && !data.is_empty() && data.len() <= 65_536 =>
+                {
+                    command.stdin.extend(data)
+                }
+                Some(Input::StdinEof(_)) if complete && !eof => eof = true,
+                _ => {
+                    return Err(Status::invalid_argument(
+                        "invalid command input order or chunk",
+                    ));
+                }
+            }
+        }
+        if !complete || !eof {
+            return Err(Status::invalid_argument("incomplete command input"));
+        }
+        self.commands.lock().unwrap().push(command);
         let (sender, receiver) = mpsc::channel(4);
         self.senders.lock().unwrap().push_back(sender);
-        Response::new(Box::pin(ReceiverStream::new(receiver)))
+        Ok(Response::new(Box::pin(ReceiverStream::new(receiver))))
     }
 
     pub(super) fn read_output(
@@ -65,6 +113,13 @@ impl GuestIo {
 }
 
 type ExecStreamWire = Pin<Box<dyn Stream<Item = Result<wire::ExecOutput, Status>> + Send>>;
+
+#[derive(Clone)]
+struct ReceivedCommand {
+    start: wire::ExecStart,
+    argv: Vec<String>,
+    stdin: Vec<u8>,
+}
 
 async fn fixture() -> (
     Machine,
@@ -118,9 +173,6 @@ fn command_bounds_are_checked_before_dispatch() {
         (vec![], 1),
         (vec!["".into()], 1),
         (vec!["a\0b".into()], 1),
-        (vec!["a".repeat(4097)], 1),
-        (vec!["a".into(); 65], 1),
-        (vec!["a".repeat(4096); 9], 1),
         (vec!["a".into()], 0),
     ] {
         assert!(matches!(
@@ -140,8 +192,23 @@ fn command_bounds_are_checked_before_dispatch() {
 #[tokio::test]
 async fn exec_preserves_stdin_cwd_authority_and_both_output_channels() {
     let (machine, io, shutdown, task) = fixture().await;
-    let command = command(300_000)
-        .with_stdin(vec![0, 255, 10])
+    let source = format!(
+        "read -r line; printf '%s' \"$line\"; #{}",
+        "é😀".repeat(16_000)
+    );
+    let mut argv = vec![
+        "bash".into(),
+        "--noprofile".into(),
+        "--norc".into(),
+        "-c".into(),
+        source,
+        String::new(),
+    ];
+    argv.extend(std::iter::repeat_n("argument".into(), 65));
+    let stdin = [0, 255, 10].repeat(50_000);
+    let command = ExecCommand::new(argv.clone(), 300_000)
+        .unwrap()
+        .with_stdin(stdin.clone())
         .with_cwd("/workspace/sub directory".into())
         .unwrap()
         .with_expiry(4_102_444_800_000)
@@ -162,11 +229,15 @@ async fn exec_preserves_stdin_cwd_authority_and_both_output_channels() {
     assert_eq!(captured.exit_code, Some(7));
     assert!(captured.stop.is_none());
     let request = io.commands.lock().unwrap().first().unwrap().clone();
-    assert_eq!(request.stdin, [0, 255, 10]);
-    assert_eq!(request.cwd.as_deref(), Some("/workspace/sub directory"));
-    assert_eq!(request.expiry_unix_ms, Some(4_102_444_800_000));
-    assert_eq!(request.maximum_output_bytes, Some(4));
-    assert_eq!(request.timeout_ms, 300_000);
+    assert_eq!(request.argv, argv);
+    assert_eq!(request.stdin, stdin);
+    assert_eq!(
+        request.start.cwd.as_deref(),
+        Some("/workspace/sub directory")
+    );
+    assert_eq!(request.start.expiry_unix_ms, Some(4_102_444_800_000));
+    assert_eq!(request.start.maximum_output_bytes, Some(4));
+    assert_eq!(request.start.timeout_ms, 300_000);
     stop(shutdown, task).await;
 }
 
@@ -392,10 +463,10 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
         let commands = io.commands.lock().unwrap();
         assert_eq!(commands.len(), 1);
         let command = commands.first().unwrap();
-        assert_eq!(command.machine, Some(encode_machine(machine.id())));
+        assert_eq!(command.start.machine, Some(encode_machine(machine.id())));
         assert_eq!(command.argv, ["printf", "hello"]);
-        assert_eq!(command.timeout_ms, 1);
-        assert_eq!(command.protocol, Some(protocol()));
+        assert_eq!(command.start.timeout_ms, 1);
+        assert_eq!(command.start.protocol, Some(protocol()));
     }
     drop(output);
     stop(shutdown, task).await;

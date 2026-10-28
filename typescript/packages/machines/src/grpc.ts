@@ -14,6 +14,11 @@ export interface MachinesGrpcOptions extends CredentialOptions {
   readonly maximumMessageBytes?: number;
 }
 
+export type MachinesExecRequest = MessageInitShape<typeof wire.ExecStartSchema> & {
+  readonly argv: readonly string[];
+  readonly stdin?: Uint8Array;
+};
+
 /** Node/Bun client for the Cloud product API's protobuf admissions and observations. */
 export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
   const endpoint = new URL(options.endpoint);
@@ -58,10 +63,10 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
         } else if (result.result.case !== "errno" || result.result.value === 0) throw new ConnectError("file write terminal result is invalid", Code.DataLoss);
         return result;
       },
-      exec(request: MessageInitShape<typeof wire.ExecRequestSchema>, callOptions?: CallOptions) {
-        const query = create(wire.ExecRequestSchema, request);
-        const lengths = query.argv.map(value => new TextEncoder().encode(value).byteLength);
-        if (query.argv.length < 1 || query.argv.length > 64 || !query.argv[0] || query.argv.some(value => value.includes("\0")) || lengths.some(length => length > 4096) || lengths.reduce((sum, length) => sum + length, 0) > 32768) throw new RangeError("invalid exec argv");
+      exec(request: MachinesExecRequest, callOptions?: CallOptions) {
+        const { argv, stdin = new Uint8Array(), ...admission } = request;
+        const query = create(wire.ExecStartSchema, admission);
+        if (!argv.length || !argv[0] || argv.some(value => value.includes("\0"))) throw new RangeError("invalid exec argv");
         if (!Number.isInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 0xffffffff) throw new RangeError("timeoutMs must be a positive uint32");
         if (query.cwd !== undefined && (!query.cwd || query.cwd.includes("\0"))) throw new RangeError("cwd must be nonempty and NUL-free");
         return ownedStream(async function* (signal) {
@@ -70,7 +75,7 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
             const expiry = query.expiryUnixMs - BigInt(Date.now());
             if (expiry < remaining) remaining = expiry;
           }
-          for await (const frame of machines.exec(query, { ...deadlineOptions(remaining, callOptions), signal })) {
+          for await (const frame of machines.exec(execInput(query, argv, stdin), { ...deadlineOptions(remaining, callOptions), signal })) {
             checkIdentity(query.machine, frame.machine, "machine");
             if (frame.output.case === "stopped") {
               if (![wire.ExecStopKind.TIMEOUT, wire.ExecStopKind.EXPIRED, wire.ExecStopKind.OUTPUT_LIMIT, wire.ExecStopKind.CONTROL_STOPPED, wire.ExecStopKind.CAPTURE_FAILED].includes(frame.output.value.kind)) throw new ConnectError("invalid exec stop kind", Code.DataLoss);
@@ -103,6 +108,28 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
     },
     close: () => session.abort(),
   };
+}
+
+// Transport pulls only the current frame. Argument boundaries and process stdin
+// are separate; commandComplete alone authorizes launch on the original session.
+async function* execInput(start: wire.ExecStart, argv: readonly string[], stdin: Uint8Array): AsyncIterable<wire.ExecInput> {
+  const frame = (input: MessageInitShape<typeof wire.ExecInputSchema>["input"]) => create(wire.ExecInputSchema, { input });
+  yield frame({ case: "start", value: start });
+  const encoder = new TextEncoder();
+  for (const argument of argv) {
+    let offset = 0;
+    do {
+      let end = Math.min(argument.length, offset + 65_536);
+      if (end < argument.length && argument.charCodeAt(end - 1) >= 0xd800 && argument.charCodeAt(end - 1) <= 0xdbff) end--;
+      const bytes = new Uint8Array(Math.min(65_536, (end - offset) * 3));
+      const { read, written } = encoder.encodeInto(argument.slice(offset, end), bytes);
+      offset += read;
+      yield frame({ case: "argument", value: { data: bytes.subarray(0, written), end: offset === argument.length } });
+    } while (offset < argument.length);
+  }
+  yield frame({ case: "commandComplete", value: {} });
+  for (let offset = 0; offset < stdin.byteLength; offset += 65_536) yield frame({ case: "stdin", value: stdin.subarray(offset, offset + 65_536) });
+  yield frame({ case: "stdinEof", value: {} });
 }
 
 function checkIdentity(request: { value: Uint8Array } | undefined, response: { value: Uint8Array } | undefined, kind: string): void {

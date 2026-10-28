@@ -145,10 +145,10 @@ operation_service! {
 
         async fn exec(
             &self,
-            request: Request<wire::ExecRequest>,
+            request: Request<tonic::Streaming<wire::ExecInput>>,
         ) -> Result<Response<Self::ExecStream>, Status> {
             if let Some(guest) = &self.guest {
-                return Ok(guest.exec(request));
+                return guest.exec(request).await;
             }
             Err(Status::unimplemented("exec"))
         }
