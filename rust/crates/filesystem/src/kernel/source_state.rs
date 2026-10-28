@@ -43,7 +43,6 @@ pub(crate) struct SourceFact {
     pub(crate) mode: DurableSourceMode,
     pub(crate) maximum_paths: Option<u32>,
     pub(crate) maximum_extent_spans: u32,
-    pub(crate) maximum_queued_changes: u32,
     pub(crate) capture_policy: Digest,
     pub(crate) state: DurableSourceState,
     pub(crate) generation_id: GenerationId,
@@ -84,7 +83,6 @@ pub(crate) fn encode_source_fact(value: SourceFact) -> Result<Vec<u8>, SourceFac
         }
     }
     encoder.u32(value.maximum_extent_spans);
-    encoder.u32(value.maximum_queued_changes);
     encoder.fixed(value.capture_policy.as_bytes());
     match value.state {
         DurableSourceState::Clean => encoder.u8(1),
@@ -126,8 +124,6 @@ pub(crate) fn decode_source_fact(
         },
         maximum_extent_spans: decoder
             .u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
-        maximum_queued_changes: decoder
-            .u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         capture_policy: Digest::from_bytes(
             decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         ),
@@ -159,10 +155,7 @@ pub(crate) fn decode_source_volume(
 }
 
 fn validate(value: SourceFact) -> Result<(), SourceFactError> {
-    if value.maximum_paths == Some(0)
-        || value.maximum_extent_spans == 0
-        || value.maximum_queued_changes == 0
-    {
+    if value.maximum_paths == Some(0) || value.maximum_extent_spans == 0 {
         return Err(SourceFactError::ZeroBound);
     }
     Ok(())
@@ -212,7 +205,6 @@ mod tests {
             mode: DurableSourceMode::Tracking,
             maximum_paths: Some(10),
             maximum_extent_spans: 11,
-            maximum_queued_changes: 12,
             capture_policy: Digest::from_bytes([4; 32]),
             state: DurableSourceState::NeedsRescan(SourceInvalidation::RootChanged),
             generation_id: GenerationId::new(Digest::from_bytes([9; 32])),
@@ -243,7 +235,6 @@ mod tests {
             mode: DurableSourceMode::Pinned,
             maximum_paths: Some(0),
             maximum_extent_spans: 1,
-            maximum_queued_changes: 1,
             capture_policy: Digest::from_bytes([4; 32]),
             state: DurableSourceState::Clean,
             generation_id: GenerationId::new(Digest::from_bytes([3; 32])),

@@ -153,7 +153,6 @@ async fn attached_workspace_rescans_and_seals_one_source()
         mode: "tracking".to_owned(),
         maximum_paths: Some(NapiU32(128)),
         maximum_extent_spans: NapiU32(128),
-        maximum_queued_changes: NapiU32(128),
         excluded_paths: None,
     };
     let source_path = source.path().to_string_lossy().into_owned();
@@ -228,7 +227,6 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
 
     let watch_options = NativeWatchOptions {
         limits: test_config().limits,
-        maximum_queued_changes: 64,
         recursive: true,
     };
     let watch =
@@ -347,7 +345,6 @@ async fn attachment_never_invents_policy_for_an_existing_workspace()
                 mode: "pinned".into(),
                 maximum_paths: Some(NapiU32(128)),
                 maximum_extent_spans: NapiU32(128),
-                maximum_queued_changes: NapiU32(128),
                 excluded_paths: None,
             },
         )

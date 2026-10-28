@@ -588,7 +588,6 @@ fn overlapping_native_watches_charge_only_occupied_queue_storage()
     .map_err(|(error, _)| error)?;
     let baseline = work.live_allocation_bytes();
     let options = crate::watch::NativeWatchOptions {
-        maximum_queued_changes: 65_536,
         recursive: false,
         ..crate::watch::NativeWatchOptions::new(crate::VolumeLimits::default())
     };
