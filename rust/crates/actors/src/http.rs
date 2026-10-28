@@ -236,6 +236,17 @@ impl Client {
         }
     }
 
+    async fn stage<T>(
+        &self,
+        operation: impl std::future::Future<Output = Result<T, Error>>,
+    ) -> Result<T, Error> {
+        if let Some(context) = &self.context {
+            context.run(operation).await?
+        } else {
+            operation.await
+        }
+    }
+
     #[tracing::instrument(
             name = "acyclic.actors.http.call",
             level = "info",
@@ -256,23 +267,31 @@ impl Client {
     ) -> Result<O, Error> {
         let operation = async {
             let body = encode(&self.descriptors, input, request)?;
+            let request = self.transport.post(
+                self.endpoint
+                    .join(route)
+                    .map_err(|_| Error::InvalidArgument)?,
+            );
+            let authorization = self.stage(self.authorization()).await?;
             let mut response = self
-                .transport
-                .post(
-                    self.endpoint
-                        .join(route)
-                        .map_err(|_| Error::InvalidArgument)?,
-                )
-                .header(AUTHORIZATION, self.authorization().await?)
-                .header("content-type", "application/json")
-                .body(body)
-                .send()
+                .stage(async {
+                    Ok(request
+                        .header(AUTHORIZATION, authorization)
+                        .header("content-type", "application/json")
+                        .body(body)
+                        .send()
+                        .await?)
+                })
                 .await?;
             let status = response.status();
             tracing::Span::current().record("http.status", status.as_u16());
-            let bytes = response_body(&mut response, self.maximum)
-                .await?
-                .ok_or(Error::ResponseTooLarge)?;
+            let bytes = self
+                .stage(async {
+                    response_body(&mut response, self.maximum)
+                        .await?
+                        .ok_or(Error::ResponseTooLarge)
+                })
+                .await?;
             if !status.is_success() {
                 let detail =
                     decode::<wire::Error>(&self.descriptors, "acyclic.actors.v1.Error", &bytes)
@@ -289,14 +308,7 @@ impl Client {
             }
             decode(&self.descriptors, output, &bytes)
         };
-        let result = if let Some(context) = &self.context {
-            match context.run(operation).await {
-                Ok(result) => result,
-                Err(reason) => Err(Error::Stopped(reason)),
-            }
-        } else {
-            operation.await
-        };
+        let result = self.stage(operation).await;
         let span = tracing::Span::current();
         match &result {
             Ok(_) => span.record("outcome", "ok"),

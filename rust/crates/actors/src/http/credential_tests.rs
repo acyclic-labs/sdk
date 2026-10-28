@@ -143,3 +143,46 @@ async fn expired_context_refuses_before_the_actual_credential_callback()
     assert_eq!(calls.load(Ordering::Relaxed), 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn credential_cancellation_with_a_ready_token_stops_before_sending()
+-> Result<(), Box<dyn std::error::Error>> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let cancel = cancellation.clone();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let client = Client::with_credential_provider(
+        &format!("http://{}", listener.local_addr()?),
+        CredentialProvider::new(move || {
+            seen.fetch_add(1, Ordering::Relaxed);
+            cancel.cancel();
+            std::future::ready(Ok("current-token".to_owned()))
+        }),
+        1024,
+    )?
+    .with_context(acyclic_auth::operation::Context::new(
+        u64::MAX,
+        std::future::pending(),
+        cancellation.cancelled_owned(),
+    ));
+    let request = wire::InspectActorRequest {
+        actor_id: "actor-a".into(),
+        ..Default::default()
+    };
+    for client in [client.clone(), client] {
+        let operation = client.inspect_actor(&request);
+        futures::pin_mut!(operation);
+        assert!(matches!(
+            futures::poll!(operation),
+            std::task::Poll::Ready(Err(Error::Stopped(
+                acyclic_auth::operation::Stopped::Cancelled
+            )))
+        ));
+    }
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    let accepted =
+        std::future::poll_fn(|cx| std::task::Poll::Ready(listener.poll_accept(cx))).await;
+    assert!(accepted.is_pending());
+    Ok(())
+}
