@@ -291,7 +291,11 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
             .is_err()
     );
     owner.0.store(true, Ordering::SeqCst);
-    assert!(call(&client, "agents", &AgentCommand::Root {}).await.is_err());
+    assert!(
+        call(&client, "agents", &AgentCommand::Root {})
+            .await
+            .is_err()
+    );
     runner.abort();
     Ok(())
 }
