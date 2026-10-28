@@ -338,7 +338,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
                     .arguments
                     .get(key)
                     .and_then(Value::as_str)
-                    .is_some_and(|path| path.len() > context.effective_scope().limits().path_bytes)
+                    .is_some_and(|path| {
+                        context
+                            .effective_scope()
+                            .limits()
+                            .path_bytes
+                            .is_some_and(|maximum| path.len() > maximum.get())
+                    })
                 {
                     return Err(Error::Unauthorized(
                         "list_files path exceeds its effective scope".into(),
@@ -447,7 +453,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
                         .arguments
                         .get(key)
                         .and_then(Value::as_str)
-                        .is_some_and(|path| path.len() > maximum_path_bytes)
+                        .is_some_and(|path| {
+                            maximum_path_bytes.is_some_and(|maximum| path.len() > maximum.get())
+                        })
                     {
                         return Err(Error::NativeBoundary {
                             code: crate::wire::ErrorCode::Unauthorized,
