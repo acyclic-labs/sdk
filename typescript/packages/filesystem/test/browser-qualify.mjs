@@ -278,12 +278,6 @@ async function runPage(browser, observer, origin, page) {
   } catch (error) {
     return { page, passed: false, text: String(error.stack ?? error), events };
   }
-  return { page, passed: false, text: String(error.stack ?? error), events };
-  } finally {
-    clearTimeout(timeout);
-    unlisten();
-    await browser.send("Target.closeTarget", { targetId }).catch(() => {});
-  }
   return { page, passed: observed.status === "passed", text: observed.text, events };
 }
 
