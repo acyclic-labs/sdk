@@ -325,12 +325,19 @@ macro_rules! call {
     }};
     ($self:ident, $rpc:ident, $value:expr, $timeout:expr, $floor:expr) => {{
         let floor: Option<&RevisionCut> = $floor;
-        let request = $self.request($value, $timeout, floor).await?;
+        let timeout: Option<std::time::Duration> = $timeout;
+        let request = $self.request($value, timeout, floor).await?;
         // The client owns its deadline: a failure once it elapsed is the
         // deadline, whichever side's cancellation reported it first.
         let started = tokio::time::Instant::now();
-        match tokio::time::timeout($timeout, $self.client().$rpc(request)).await {
-            Ok(Err(_)) if started.elapsed() >= $timeout => {
+        let mut client = $self.client();
+        let rpc = client.$rpc(request);
+        let reply = match timeout {
+            Some(timeout) => tokio::time::timeout(timeout, rpc).await,
+            None => Ok(rpc.await),
+        };
+        match reply {
+            Ok(Err(_)) if timeout.is_some_and(|timeout| started.elapsed() >= timeout) => {
                 Err(wire::ErrorCode::DeadlineElapsed.into())
             }
             Ok(reply) => $self.observed(reply, floor),
