@@ -33,4 +33,3 @@ test("reject unsafe, duplicate, case-colliding and incomplete receipt inventorie
     f => { f.receipt.outputs = f.receipt.outputs.filter(name => !name.endsWith("actors.proto.bin")); },
   ]) { const f = fixture(t); mutate(f); f.saveReceipt(); await assert.rejects(async () => await readPackage(f.args)); }
 });
-
