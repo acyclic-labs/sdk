@@ -409,12 +409,8 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         match event {
             Some(Ok(verdict)) => {
                 if let Some(verifying) = self.verifying.take() {
-                    self.authority.settle(
-                        &mut self.slots,
-                        verifying.slot,
-                        verifying.length(),
-                        verdict,
-                    )?;
+                    self.authority
+                        .settle(&mut self.slots, verifying.slot, verdict)?;
                     self.revalidate(Some(verifying.slot))?;
                 }
                 Ok(())
@@ -461,15 +457,6 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 || (!hello.destination_node.is_empty() && hello.destination_node != self.node)
             {
                 return Err(StreamError::InvalidArgument);
-            }
-            for (slot, credential) in hello.credentials.iter().enumerate() {
-                self.authority
-                    .register(
-                        &mut self.slots,
-                        u32::try_from(slot).map_err(|_| StreamError::Capacity)?,
-                        credential,
-                    )
-                    .await?;
             }
             self.deadline = self.authority.deadline(&mut self.slots);
             self.hello = true;

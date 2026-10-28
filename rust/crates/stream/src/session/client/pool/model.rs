@@ -20,7 +20,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
             let (mut pool, _) = fixture(&channel);
             pool.routes.clear();
             let mut links = std::mem::take(&mut pool.links);
-            let (commands, _) = mpsc::channel(2);
+            let (commands, _) = commands::channel(2);
             let client = Client {
                 registration_timeout: None,
                 connections: super::super::super::Connections::new(),
@@ -131,7 +131,7 @@ pub fn verify_pool_lifetime(fault: u8) {
         let (mut pool, _) = fixture(&channel);
         pool.routes.clear();
         let links = std::mem::take(&mut pool.links);
-        let (commands, _) = mpsc::channel(2);
+        let (commands, _) = commands::channel(2);
         let client = Client {
             registration_timeout: None,
             connections: super::super::super::Connections::new(),
@@ -240,7 +240,7 @@ pub fn verify_pool_lifetime(fault: u8) {
 /// Checks real cursor reservation/drop against an arbitrary live-cursor fold.
 pub fn verify_interest_accounting(operations: Vec<(u8, bool)>) {
     loom::model(move || {
-        let (commands, _) = mpsc::channel(2);
+        let (commands, _) = commands::channel(2);
         let client = Client {
             registration_timeout: None,
             connections: super::super::super::Connections::new(),
@@ -425,7 +425,7 @@ pub fn verify_registration_deadline(broken: bool) {
     use std::future::Future as _;
     for (complete, cancel) in [(false, false), (true, false), (false, true), (true, true)] {
         loom::model(move || {
-            let (commands, _commands) = mpsc::channel(1);
+            let (commands, _commands) = commands::channel(1);
             let client = Client {
                 registration_timeout: None,
                 connections: super::super::super::Connections::new(),
@@ -531,7 +531,7 @@ pub fn verify_node_dials(fault: u8) {
                 registration_timeout: None,
                 connections: super::super::super::Connections::new(),
                 executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
-                commands: mpsc::channel(2).0,
+                commands: commands::channel(2).0,
                 removed: Arc::clone(&pool.removed),
                 next_id: Arc::new(AtomicU64::new(5)),
                 active: Arc::clone(&pool.active),
@@ -645,7 +645,7 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
             registration_timeout: None,
             connections: super::super::super::Connections::new(),
             executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
-            commands: mpsc::channel(2).0,
+            commands: commands::channel(2).0,
             removed: Arc::clone(&pool.removed),
             next_id: Arc::new(AtomicU64::new(5)),
             active: Arc::clone(&pool.active),
