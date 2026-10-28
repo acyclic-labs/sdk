@@ -16,7 +16,6 @@ use transport::Endpoint;
 mod admissions;
 mod application;
 mod call;
-mod data;
 use admissions::Admissions;
 pub use application::{ApplicationDelivery, ApplicationSubscription};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
@@ -478,36 +477,30 @@ impl Client {
                 0,
             )
             .await?;
-        Ok(source.filter_map(move |item| {
-            future::ready(match item {
-                Ok(Received::Data(data))
-                | Ok(Received::Frame(wire::SessionFrame {
-                    body: Some(Body::Data(data)),
-                    ..
-                })) => Some(match data.item {
-                    Some(Item::Record(record)) => {
-                        wire_codec::record(record).map(crate::FollowUpdate::Record)
+        Ok(crate::projection::filter_map(source, |item| match item {
+            Ok(Received::Data(data))
+            | Ok(Received::Frame(wire::SessionFrame {
+                body: Some(Body::Data(data)),
+                ..
+            })) => Some(match data.item {
+                Some(Item::Record(record)) => {
+                    wire_codec::record(record).map(crate::FollowUpdate::Record)
+                }
+                _ => Err(StreamError::Unavailable),
+            }),
+            Ok(Received::Frame(wire::SessionFrame {
+                body: Some(Body::Watermark(mark)),
+                ..
+            })) => mark.after.map(|after| {
+                wire_codec::commit_id(&mark.preceding_commit_id).map(|preceding| {
+                    crate::FollowUpdate::Progress {
+                        next: after.next,
+                        preceding,
                     }
-                    _ => Err(StreamError::Unavailable),
-                }),
-                Ok(Received::Frame(wire::SessionFrame {
-                    body: Some(Body::Watermark(mark)),
-                    ..
-                })) if progress => mark.after.map(|after| {
-                    wire_codec::commit_id(&mark.preceding_commit_id).map(|preceding| {
-                        crate::FollowUpdate::Progress {
-                            next: after.next,
-                            preceding,
-                        }
-                    })
-                }),
-                Ok(Received::Frame(wire::SessionFrame {
-                    body: Some(Body::Watermark(_)),
-                    ..
-                })) => None,
-                Ok(_) => Some(Err(StreamError::Unavailable)),
-                Err(error) => Some(Err(error)),
-            })
+                })
+            }),
+            Ok(_) => Some(Err(StreamError::Unavailable)),
+            Err(error) => Some(Err(error)),
         }))
     }
     /// Follows only records, boxed once and carrying no state beyond the
@@ -561,7 +554,7 @@ impl Client {
         ) {
             return Err(StreamError::InvalidArgument);
         }
-        Ok(data::Data::new(
+        Ok(crate::projection::filter_map(
             self.open_kind(
                 Kind::Follow(follow),
                 from,
@@ -569,6 +562,15 @@ impl Client {
                 Some(filter.transport_filter()?),
             )
             .await?,
+            |item| match item {
+                Ok(Received::Data(data)) => Some(Ok(data)),
+                Ok(Received::Frame(wire::SessionFrame {
+                    body: Some(Body::Watermark(_)),
+                    ..
+                })) => None,
+                Ok(_) => Some(Err(StreamError::Unavailable)),
+                Err(error) => Some(Err(error)),
+            },
         ))
     }
 
