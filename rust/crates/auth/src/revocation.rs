@@ -149,7 +149,7 @@ impl RevocationState {
         let retired = checkpoint.retired_before_unix_seconds;
         if checkpoint.account_id != self.account
             || checkpoint.sequence <= self.sequence
-            || retired < self.published_at
+            || retired < self.retired_before
             || retired > now
             || checkpoint.minimum_key_epoch < self.minimum_key_epoch
         {
@@ -163,7 +163,7 @@ impl RevocationState {
         self.blocks = blocks;
         self.minimum_key_epoch = checkpoint.minimum_key_epoch;
         self.sequence = checkpoint.sequence;
-        self.published_at = retired;
+        self.published_at = self.published_at.max(retired);
         self.retired_before = retired;
         Ok(())
     }

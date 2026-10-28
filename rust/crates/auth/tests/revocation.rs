@@ -225,6 +225,19 @@ fn targeted_publication_does_not_retire_unrelated_historical_admissions() {
             10,
         )
         .unwrap();
+    // A complete checkpoint can preserve the historical floor after a newer
+    // publication; compaction alone must not retire unrelated admissions.
+    let before = state.frontier();
+    state
+        .apply(&checkpoint(before.0 + 1, 1, vec![key("unrelated", 100)]), &issuer(), 10)
+        .unwrap();
+    assert!(matches!(state.trust(&owner, 9), Err(VerifyError::Time)));
+    let before = state.frontier();
+    assert!(state.apply(&checkpoint(before.0 + 1, 0, vec![key("unrelated", 100)]), &issuer(), 10).is_err());
+    let RevocationPublication::Delta(mut backdated) = delta(&state, vec![], None).publication else { unreachable!() };
+    backdated.issued_at_unix_seconds = 9;
+    assert!(state.apply(&signed(RevocationPublication::Delta(backdated)), &issuer(), 10).is_err());
+    assert_eq!(state.frontier(), before);
     let trust = state.trust(&owner, 10).unwrap();
     assert!(verify(&bytes, &trust, 5).is_ok());
     let attributes = RecordAttributes::default();

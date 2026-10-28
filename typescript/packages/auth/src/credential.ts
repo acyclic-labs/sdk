@@ -134,7 +134,7 @@ export class CredentialCache {
       const rejected = this.#rejected;
       const flight: Flight = {
         controller, waiters: 0, published: false,
-        promise: Promise.resolve().then(() => {
+        promise: abortable(Promise.resolve().then(() => {
           controller.signal.throwIfAborted();
           return this.#refresh(rejected, controller.signal);
         }).then(snapshot => {
@@ -145,7 +145,7 @@ export class CredentialCache {
           this.#rejected = undefined;
           flight.published = true;
           return snapshot;
-        }),
+        }), controller.signal),
       };
       this.#flight = flight;
     }
@@ -199,7 +199,7 @@ export class CredentialCache {
     this.#flight = undefined;
     this.#current = undefined;
     this.#rejected = undefined;
-    flight?.controller.abort();
+    flight?.controller.abort(new Error("credential source changed or unavailable"));
     this.#notify();
   }
 }

@@ -127,6 +127,27 @@ test("source failures and server rejected bearer cannot fall back", async () => 
   await expect(cache.resolve()).rejects.toThrow("unavailable");
 });
 
+test("source invalidation settles the whole cohort even when renewal ignores abort", async () => {
+  const entered = deferred<void>();
+  const held = deferred<CredentialSnapshot>();
+  let revision = "first";
+  let calls = 0;
+  const cache = new CredentialCache(async () => {
+    if (++calls === 1) { entered.resolve(); return held.promise; }
+    return new CredentialSnapshot("synthetic-current", revision, 100);
+  }, () => ({ nowUnixSeconds: 1, revision }));
+  const cohort = [cache.resolve(), cache.resolve()];
+  await entered.promise;
+  revision = "second";
+  cache.invalidate();
+  const results = await Promise.allSettled(cohort);
+  expect(results.every(result => result.status === "rejected")).toBe(true);
+  const current = await cache.resolve();
+  held.resolve(new CredentialSnapshot("synthetic-abandoned", "first", 100));
+  expect(await cache.resolve()).toBe(current);
+  expect(calls).toBe(2);
+});
+
 test("stream trailers reject only their exact lease; denial and cancellation preserve it", async () => {
   let generation = 0;
   const cache = new CredentialCache(async () => new CredentialSnapshot(`synthetic-${generation++}`, "r", 100),
