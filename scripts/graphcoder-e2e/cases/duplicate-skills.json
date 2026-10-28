@@ -19,7 +19,7 @@
       "mode": "jsonl",
       "operation": "00000000-0000-0000-0000-000000000002",
       "text": "hello again",
-      "exit": 1,
+      "exit": 0,
       "outcome": { "completion": "failed", "error": "conflict: discovered skill names are repeated" }
     }
   ],
