@@ -60,26 +60,60 @@ pub trait Medium: Send + Sync + 'static {
     }
 }
 
-/// The deterministic in-process medium.
+/// The deterministic in-process medium, optionally bounded to a caller's
+/// total byte budget.
 #[derive(Clone, Default)]
 pub struct MemoryMedium {
-    keys: Arc<RwLock<BTreeMap<String, OwnedBytes>>>,
+    keys: Arc<RwLock<Keys>>,
+    budget: Option<u64>,
+}
+
+#[derive(Default)]
+struct Keys {
+    keys: BTreeMap<String, OwnedBytes>,
+    bytes: u64,
 }
 
 impl MemoryMedium {
-    fn keys(&self) -> std::sync::RwLockReadGuard<'_, BTreeMap<String, OwnedBytes>> {
+    /// A medium that refuses writes taking its stored bytes past `budget`.
+    #[must_use]
+    pub fn bounded(budget: u64) -> Self {
+        Self {
+            keys: Arc::default(),
+            budget: Some(budget),
+        }
+    }
+
+    fn keys(&self) -> std::sync::RwLockReadGuard<'_, Keys> {
         self.keys.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn write(&self) -> std::sync::RwLockWriteGuard<'_, Keys> {
+        self.keys.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The stored total after `added` bytes replace `freed` ones, or the
+    /// quota refusal; checked under the write lock so it is exact.
+    fn admit(&self, keys: &Keys, added: usize, freed: usize) -> Result<u64, MediumError> {
+        let total = keys.bytes - freed as u64 + added as u64;
+        if self.budget.is_some_and(|budget| total > budget) {
+            return Err(MediumError::Failed(
+                std::io::ErrorKind::QuotaExceeded.into(),
+            ));
+        }
+        Ok(total)
     }
 }
 
 #[async_trait::async_trait]
 impl Medium for MemoryMedium {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
-        let mut keys = self.keys.write().unwrap_or_else(PoisonError::into_inner);
-        if keys.contains_key(key) {
+        let mut keys = self.write();
+        if keys.keys.contains_key(key) {
             return Ok(false);
         }
-        keys.insert(key.to_owned(), bytes);
+        keys.bytes = self.admit(&keys, bytes.len(), 0)?;
+        keys.keys.insert(key.to_owned(), bytes);
         Ok(true)
     }
 
@@ -89,7 +123,7 @@ impl Medium for MemoryMedium {
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError> {
         let keys = self.keys();
-        let Some(bytes) = keys.get(key) else {
+        let Some(bytes) = keys.keys.get(key) else {
             return Ok(None);
         };
         let Some(range) = range else {
@@ -106,12 +140,12 @@ impl Medium for MemoryMedium {
     }
 
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
-        Ok(self
-            .keys
-            .write()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(key)
-            .is_some())
+        let mut keys = self.write();
+        let Some(bytes) = keys.keys.remove(key) else {
+            return Ok(false);
+        };
+        keys.bytes -= bytes.len() as u64;
+        Ok(true)
     }
 
     async fn replace(
@@ -120,23 +154,28 @@ impl Medium for MemoryMedium {
         expected: &[u8],
         bytes: OwnedBytes,
     ) -> Result<bool, MediumError> {
-        let mut keys = self.keys.write().unwrap_or_else(PoisonError::into_inner);
-        match keys.get_mut(key) {
-            Some(current) if current.as_ref() == expected => {
-                *current = bytes;
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
-    }
-
-    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
-        let mut keys = self.keys.write().unwrap_or_else(PoisonError::into_inner);
-        if keys
+        let mut keys = self.write();
+        if !keys
+            .keys
             .get(key)
             .is_some_and(|current| current.as_ref() == expected)
         {
-            keys.remove(key);
+            return Ok(false);
+        }
+        keys.bytes = self.admit(&keys, bytes.len(), expected.len())?;
+        keys.keys.insert(key.to_owned(), bytes);
+        Ok(true)
+    }
+
+    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+        let mut keys = self.write();
+        if keys
+            .keys
+            .get(key)
+            .is_some_and(|current| current.as_ref() == expected)
+        {
+            keys.keys.remove(key);
+            keys.bytes -= expected.len() as u64;
             return Ok(true);
         }
         Ok(false)
@@ -155,6 +194,7 @@ impl Medium for MemoryMedium {
         };
         Ok(self
             .keys()
+            .keys
             .range::<str, _>((start, Bound::Unbounded))
             .take_while(|(key, _)| key.starts_with(prefix))
             .take(limit)

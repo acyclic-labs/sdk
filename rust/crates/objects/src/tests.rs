@@ -19,6 +19,34 @@ async fn memory_store_passes_the_shared_suite() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
+#[tokio::test]
+async fn a_bounded_memory_medium_holds_its_budget_exactly() -> Result<(), MediumError> {
+    let medium = MemoryMedium::bounded(4);
+    assert!(medium.create("a", OwnedBytes::from(vec![1; 3])).await?);
+    assert!(
+        medium
+            .create("b", OwnedBytes::from(vec![2; 2]))
+            .await
+            .is_err()
+    );
+    assert!(
+        medium
+            .replace("a", &[1; 3], OwnedBytes::from(vec![3; 5]))
+            .await
+            .is_err()
+    );
+    assert!(
+        medium
+            .replace("a", &[1; 3], OwnedBytes::from(vec![3; 4]))
+            .await?
+    );
+    assert!(medium.remove_if("a", &[3; 4]).await?);
+    assert!(medium.create("b", OwnedBytes::from(vec![2; 4])).await?);
+    assert!(medium.remove("b").await?);
+    assert!(medium.create("c", OwnedBytes::from(vec![4; 4])).await?);
+    Ok(())
+}
+
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test]
 async fn local_store_passes_the_shared_suite_and_reopens() -> Result<(), Box<dyn std::error::Error>>

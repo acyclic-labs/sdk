@@ -148,7 +148,11 @@ async fn transaction_results_preserve_commits_and_conflicting_rebases() -> Resul
         maximum_in_flight: 2,
         maximum_waiters_per_object: 2,
     };
-    let fs = browser_fs(memory_engine(1024, cache)?, "memory", "memory");
+    let fs = browser_fs(
+        memory_engine(1024, 64 * 1024 * 1024, cache)?,
+        "memory",
+        "memory",
+    );
     let workspace = fs.create_workspace("transactions".to_owned()).await?;
     workspace.write("/file".to_owned(), vec![1]).await?;
     let mut winner = workspace.begin_transaction(Some(vec![31; 16])).await?;

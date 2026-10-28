@@ -126,8 +126,18 @@ impl MemoryObjects {
     /// A fresh in-memory account.
     #[must_use]
     pub fn memory() -> Self {
+        Self::over_memory(MemoryMedium::default())
+    }
+
+    /// A fresh in-memory account whose stored bytes never exceed `budget`.
+    #[must_use]
+    pub fn bounded(budget: u64) -> Self {
+        Self::over_memory(MemoryMedium::bounded(budget))
+    }
+
+    fn over_memory(medium: MemoryMedium) -> Self {
         Self {
-            medium: Arc::new(MemoryMedium::default()),
+            medium: Arc::new(medium),
             prefix: format!("{}/", Digest::of(b"memory").to_hex()),
             state: Arc::default(),
         }
