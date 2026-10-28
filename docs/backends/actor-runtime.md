@@ -6,7 +6,7 @@ Objects delivery. No backend owns discovery, interruption or checkpoint rules.
 
 G40 stores the dispatcher's next activation sequence in its own actor state,
 under `<state-root>/_dispatcher`, separately for each claimed namespace. Reopen
-loads the last state record (one tail observation and one cursor-record read),
+loads the last state record from one canonical Stream head observation,
 then follows the saved sequence. The opening append has a stable key. Actor
 slots use 64 independently locked shards; this is not an actor capacity limit.
 
@@ -101,3 +101,19 @@ This factory supplies a production binding for the unchanged hosted Actors
 Package suite; compilation of the binding or a native strict-wire control is
 not a hosted DO conformance result. Workerd qualification remains with the
 conformance owner and has not been run for this milestone.
+
+G59/G62 add [committed invocation, explicit-cut observation and fenced
+reservations](../actors-operations.md) at the same Store/Handler publication
+boundary. Native and strict-wire guests use the same request and response
+contract; the adapter adds no turn, retry or reservation logic. The common
+verifier drives these vectors through the same Backend interface for every host.
+Dispatcher cursor checkpoints retain their state and anchor from the canonical
+commit receipt, using the same publication path as actor delivery. Opening
+observes state once; successful progress does not reload its own publication.
+A conflicting writer still forces an authoritative reload before retrying.
+The checkpoint key also binds the proposed activation cursor: competing hosts
+with different observed suffixes receive a CAS conflict rather than an
+idempotency mismatch, while an uncertain request retains its exact key/bytes.
+The counted real-provider control compares both paths and checks the retained
+anchor against committed storage; execution and scale qualification remain
+separate from source compilation.

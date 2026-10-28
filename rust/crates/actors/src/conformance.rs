@@ -10,7 +10,7 @@ use crate::guest::{
     AlarmChange, Checkpoint, CodecIdentity, Delivery, Effect, GuestError, GuestFuture, Handler,
     Manifest, Transition, Trigger,
 };
-use crate::local::{Clock, Error, PreparedPublish, Store, Subscription};
+use crate::local::{AppliedCut, Clock, Error, PreparedPublish, Store, Subscription};
 use acyclic_stream::testing::{RequestLedger, Requests};
 use acyclic_stream::{
     AppendRecord, BoxProviderFuture, CommitCondition, CommitMutation, IdempotencyKey,
@@ -89,6 +89,8 @@ pub fn codec() -> CodecIdentity {
 struct Ledger {
     outbox: StreamPath,
     published: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reservations: Option<crate::reservation::Book>,
 }
 
 /// Reference package. Inbox commands: `emit` appends `r<seq>`; `set <ms>`
@@ -110,7 +112,7 @@ impl Package {
                     subscription: "inbox".into(),
                     value_prefix: Bytes::from_static(b"cancel"),
                 }],
-                subscriptions: vec!["inbox".into()],
+                subscriptions: vec!["inbox".into(), "mirror".into()],
                 bindings: Vec::new(),
                 limits: crate::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
             },
@@ -136,12 +138,49 @@ impl Handler for Package {
         Box::pin(async move {
             let checkpoint = checkpoint.ok_or_else(|| guest("missing ledger"))?;
             let mut ledger: Ledger = serde_json::from_slice(&checkpoint.bytes).map_err(guest)?;
+            let invocation = delivery.invocation()?;
+            if invocation.is_none()
+                && delivery
+                    .record
+                    .as_ref()
+                    .map(crate::invocation::Invocation::decode)
+                    .transpose()?
+                    .flatten()
+                    .is_some()
+            {
+                return Ok(Transition {
+                    response: None,
+                    checkpoint: checkpoint.clone(),
+                    alarm: AlarmChange::Keep,
+                    effects: Vec::new(),
+                    participant: None,
+                });
+            }
+            if let Some(book) = &mut ledger.reservations {
+                book.validate()?;
+                let step = book.step(&delivery)?;
+                return Ok(Transition {
+                    response: step.response,
+                    participant: None,
+                    checkpoint: Checkpoint {
+                        codec: codec(),
+                        bytes: serde_json::to_vec(&ledger).map_err(guest)?.into(),
+                    },
+                    alarm: step.alarm,
+                    effects: Vec::new(),
+                });
+            }
             let (alarm, output) = match (&delivery.trigger, &delivery.record) {
                 (Trigger::Alarm { generation, .. }, _) => {
                     (AlarmChange::Keep, Some(format!("a{generation}")))
                 }
                 (Trigger::Record { sequence, .. }, Some(record)) => {
-                    let command = std::str::from_utf8(&record.value).map_err(guest)?;
+                    let command = std::str::from_utf8(
+                        invocation
+                            .as_ref()
+                            .map_or(record.value.as_ref(), |call| call.request().as_ref()),
+                    )
+                    .map_err(guest)?;
                     match command.split_once(' ') {
                         None if command == "emit" => {
                             (AlarmChange::Keep, Some(format!("r{sequence}")))
@@ -160,6 +199,12 @@ impl Handler for Package {
                             },
                             None,
                         ),
+                        Some(("pool", capacity)) => {
+                            ledger.reservations = Some(crate::reservation::Book::new(
+                                capacity.parse::<u64>().map_err(guest)?,
+                            )?);
+                            (AlarmChange::Keep, None)
+                        }
                         _ => return Err(guest("unknown command")),
                     }
                 }
@@ -189,6 +234,7 @@ impl Handler for Package {
                 ledger.published += 1;
             }
             Ok(Transition {
+                response: invocation.map(|call| call.request().clone()),
                 participant: None,
                 checkpoint: Checkpoint {
                     codec: codec(),
@@ -246,6 +292,7 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
         let ledger = Ledger {
             outbox: outbox.clone(),
             published: 0,
+            reservations: None,
         };
         let creation = target.store().create(
             &actor,
@@ -397,10 +444,537 @@ fn idempotency(value: &str) -> Result<IdempotencyKey, Error> {
 pub async fn verify<T: Backend + ?Sized>(target: &T) -> Result<(), Failure> {
     let run = target.namespace();
     ordered(target, run).await?;
+    applied(target, run).await?;
+    bounded_case(target, "invoked", BUDGET_MS, invoked(target, run)).await?;
+    bounded_case(
+        target,
+        "shared-invocation",
+        BUDGET_MS,
+        shared_invocation(target, run),
+    )
+    .await?;
+    bounded_case(target, "reserved", 2 * BUDGET_MS, reserved(target, run)).await?;
     alarms(target, run).await?;
     paused(target, run).await?;
     interrupted(target, run).await?;
     restarted(target, run).await
+}
+
+/// A backend that never publishes a response must fail the verifier, rather
+/// than retaining an unbounded public invocation wait in the suite. The
+/// reservation case includes its deliberate lease-expiry wait in this budget.
+async fn bounded_case<T: Target + ?Sized>(
+    target: &T,
+    case: &'static str,
+    budget_ms: u64,
+    future: impl std::future::Future<Output = Result<(), Failure>>,
+) -> Result<(), Failure> {
+    let deadline = target
+        .clock()
+        .sleep_until(target.clock().now_unix_ms().saturating_add(budget_ms));
+    match futures::future::select(Box::pin(future), deadline).await {
+        futures::future::Either::Left((result, _)) => result,
+        futures::future::Either::Right(_) => Err(Failure::Violation {
+            case,
+            detail: "backend did not complete committed operations within the case budget".into(),
+        }),
+    }
+}
+
+/// One operation survives queued retries, pause, restart and a lost response.
+/// Both invocation and ordinary sends run through the original Package.
+async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+    use crate::invocation::Invocation;
+    let mut fixture = Fixture::create(target, run, "invoked").await?;
+    fixture.send("clear").await?;
+    // Observe creation's first command before placing the durable pause fence.
+    let input = target
+        .store()
+        .provider()
+        .read(acyclic_stream::ReadRequest {
+            path: fixture.inbox.clone(),
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await
+        .map_err(Error::from)?
+        .next()
+        .await
+        .ok_or(Error::Invalid("invocation fixture input is missing"))?
+        .map_err(Error::from)?;
+    let cut = AppliedCut::through("inbox".into(), fixture.inbox.clone(), &input)?;
+    let deadline = target
+        .clock()
+        .sleep_until(target.clock().now_unix_ms().saturating_add(BUDGET_MS));
+    match futures::future::select(
+        Box::pin(target.store().wait_applied(&fixture.actor, cut)),
+        deadline,
+    )
+    .await
+    {
+        futures::future::Either::Left((result, _)) => {
+            result?;
+        }
+        futures::future::Either::Right(_) => {
+            return fixture.violation("initial input was not applied".into());
+        }
+    }
+    target.pause(&fixture.actor, true).await?;
+    let invocation = Invocation::new(
+        fixture.actor.clone(),
+        "inbox".into(),
+        Bytes::from_static(b"operation"),
+        Bytes::from_static(b"emit"),
+    )
+    .map_err(Error::from)?;
+    let ticket = target.store().enqueue_invoke(&invocation).await?;
+    if target.store().enqueue_invoke(&invocation).await? != ticket {
+        return fixture.violation("queued retry changed its original input".into());
+    }
+    let changed = Invocation::new(
+        fixture.actor.clone(),
+        "inbox".into(),
+        invocation.operation().clone(),
+        Bytes::from_static(b"clear"),
+    )
+    .map_err(Error::from)?;
+    if !matches!(
+        target.store().enqueue_invoke(&changed).await,
+        Err(Error::Stream(StreamError::IdempotencyMismatch))
+    ) {
+        return fixture.violation("operation accepted changed request bytes".into());
+    }
+    let mut waiting = Box::pin(target.store().wait_invocation(ticket.clone()));
+    if futures::poll!(waiting.as_mut()).is_ready() || fixture.cursor().await? != Some(1) {
+        return fixture.violation("invocation consumed paused input".into());
+    }
+    target.restart().await?;
+    if target.store().enqueue_invoke(&invocation).await? != ticket
+        || futures::poll!(waiting.as_mut()).is_ready()
+    {
+        return fixture.violation("restart lost queued operation or pause".into());
+    }
+    target.pause(&fixture.actor, false).await?;
+    let deadline = target
+        .clock()
+        .sleep_until(target.clock().now_unix_ms().saturating_add(BUDGET_MS));
+    let committed = match futures::future::select(waiting, deadline).await {
+        futures::future::Either::Left((result, _)) => result?,
+        futures::future::Either::Right(_) => {
+            return fixture.violation("committed invocation missed its reply".into());
+        }
+    };
+    let receipt = committed.receipt();
+    if committed.response().as_ref() != b"emit"
+        || receipt.ticket() != &ticket
+        || receipt.state().commit_id != receipt.reply().commit_id
+        || receipt.revision() != receipt.state().sequence + 1
+    {
+        return fixture
+            .violation("invocation changed response or original publication evidence".into());
+    }
+    target.restart().await?;
+    if target.store().invoke(&invocation).await? != committed {
+        return fixture
+            .violation("lost response reconciliation returned another publication".into());
+    }
+    if !matches!(
+        target.store().enqueue_invoke(&changed).await,
+        Err(Error::Stream(StreamError::IdempotencyMismatch))
+    ) {
+        return fixture.violation("completed operation accepted changed bytes".into());
+    }
+    fixture.expect(&["r1"]).await?;
+    Ok(())
+}
+
+/// A targeted call cannot poison another actor or alias sharing its input.
+/// Only the addressed subscription replies; all readers reach later input.
+async fn shared_invocation<T: Backend + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+    use crate::invocation::Invocation;
+    let mut owner = Fixture::create(target, run, "shared-invocation").await?;
+    let observer = Fixture::create(target, run, "shared-observer").await?;
+    let store = target.store();
+    let mut prepared = PreparedPublish::foreign(idempotency(&format!("{run}/shared/create"))?);
+    for effect in owner
+        .creation
+        .take()
+        .ok_or(Error::Invalid("shared creation missing"))?
+    {
+        prepared.join(effect)?;
+    }
+    let subscriptions = ["inbox", "mirror"]
+        .into_iter()
+        .map(|id| {
+            (
+                id.into(),
+                Subscription {
+                    path: owner.inbox.clone(),
+                    cursor: 0,
+                },
+            )
+        })
+        .collect();
+    for effect in store.create(
+        &observer.actor,
+        subscriptions,
+        Some(Checkpoint {
+            codec: codec(),
+            bytes: serde_json::to_vec(&Ledger {
+                outbox: observer.outbox.clone(),
+                published: 0,
+                reservations: None,
+            })
+            .map_err(|_| Error::Invalid("shared ledger does not encode"))?
+            .into(),
+        }),
+    )? {
+        prepared.join(effect)?;
+    }
+    prepared.join(Effect {
+        conditions: vec![CommitCondition::Absent {
+            path: owner.inbox.clone(),
+        }],
+        mutation: CommitMutation::Append {
+            path: owner.inbox.clone(),
+            records: vec![Bytes::from_static(b"clear").into()],
+        },
+    })?;
+    store.submit(prepared).await?;
+    let call = Invocation::new(
+        owner.actor.clone(),
+        "inbox".into(),
+        Bytes::from_static(b"shared-call"),
+        Bytes::from_static(b"emit"),
+    )
+    .map_err(Error::from)?;
+    let committed = store.invoke(&call).await?;
+    let mut send = PreparedPublish::foreign(idempotency(&format!("{run}/shared/after"))?);
+    send.join(Effect {
+        conditions: vec![CommitCondition::Tail {
+            path: owner.inbox.clone(),
+            expected: 2,
+        }],
+        mutation: CommitMutation::Append {
+            path: owner.inbox.clone(),
+            records: vec![Bytes::from_static(b"emit").into()],
+        },
+    })?;
+    for actor in [&owner.actor, &observer.actor] {
+        send.join(store.activation(actor))?;
+    }
+    store.submit(send).await?;
+    owner.expect(&["r1", "r2"]).await?;
+    observer.expect(&["r2", "r2"]).await?;
+    for subscription in ["inbox", "mirror"] {
+        let state = store.load(&observer.actor).await?;
+        if state.state().and_then(|state| state.cursor(subscription)) != Some(3) {
+            return observer.violation("shared input stopped at a foreign invocation".into());
+        }
+    }
+    if store.invoke(&call).await? != committed {
+        return owner.violation("another shared reader replaced the original response".into());
+    }
+    Ok(())
+}
+
+/// Every backend uses the same reservation accounting and generation fences.
+/// Expiry is a logical fence, never an assertion of external execution death.
+async fn reserved<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+    use crate::reservation::{Decision, OwnerEvidence, Pool};
+    let mut fixture = Fixture::create(target, run, "reserved").await?;
+    fixture.send("pool 2").await?;
+    wait_pool_used(&fixture, 0).await?;
+    let pool = Pool::new(target.store(), &fixture.actor, "inbox");
+    let owner = OwnerEvidence::new(
+        Bytes::from_static(b"placement"),
+        Bytes::from_static(b"admitted-owner-proof"),
+    )
+    .map_err(Error::from)?;
+    let deadline = target.clock().now_unix_ms().saturating_add(BUDGET_MS);
+    let first_id = Bytes::from_static(b"first");
+    let first = pool
+        .reserve(2, first_id.clone(), owner.clone(), deadline)
+        .await?;
+    let Decision::Granted(first_grant) = first.decision() else {
+        return fixture.violation("explicit capacity was not granted".into());
+    };
+    let foreign_actor = ActorReference::new(
+        b"conformance",
+        b"actors",
+        format!("{run}-foreign-pool").as_bytes(),
+    )
+    .map_err(|_| Error::Invalid("foreign pool fixture actor"))?;
+    if !matches!(
+        Pool::new(target.store(), &foreign_actor, "inbox")
+            .release(first_grant)
+            .await,
+        Err(Error::Conflict)
+    ) {
+        return fixture.violation("grant released a different pool actor".into());
+    }
+    let another_root = Store::new(
+        std::sync::Arc::clone(target.store().provider()),
+        StreamPath::new(format!("{}/other-root", target.store().root())).map_err(Error::from)?,
+    );
+    if first_grant.state_path() != &target.store().path(&fixture.actor)?
+        || !matches!(
+            Pool::new(&another_root, &fixture.actor, "inbox")
+                .release(first_grant)
+                .await,
+            Err(Error::Conflict)
+        )
+    {
+        return fixture.violation("grant crossed the original Store root".into());
+    }
+    if pool
+        .reserve(2, first_id.clone(), owner.clone(), deadline)
+        .await?
+        != first
+    {
+        return fixture.violation("reserve replay changed its decision or receipt".into());
+    }
+    if !matches!(
+        pool.reserve(1, first_id.clone(), owner.clone(), deadline)
+            .await,
+        Err(Error::Stream(StreamError::IdempotencyMismatch))
+    ) {
+        return fixture.violation("reserve accepted changed units under one request id".into());
+    }
+    let another = OwnerEvidence::new(
+        Bytes::from_static(b"another"),
+        Bytes::from_static(b"another-proof"),
+    )
+    .map_err(Error::from)?;
+    if !matches!(
+        pool.reserve(2, first_id.clone(), another, deadline).await,
+        Err(Error::Stream(StreamError::IdempotencyMismatch))
+    ) {
+        return fixture.violation("reserve accepted changed owner evidence".into());
+    }
+    if pool
+        .reserve(1, Bytes::from_static(b"full"), owner.clone(), deadline)
+        .await?
+        .decision()
+        != &Decision::Exhausted
+    {
+        return fixture.violation("reservation exceeded explicit pool capacity".into());
+    }
+    // Derive the wrong-owner control from the actual returned grant.
+    let mut altered =
+        serde_json::to_value(first_grant).map_err(|_| Error::Invalid("grant control encode"))?;
+    altered["owner"]["identity"] = serde_json::to_value(Bytes::from_static(b"wrong"))
+        .map_err(|_| Error::Invalid("grant owner control encode"))?;
+    let altered =
+        serde_json::from_value(altered).map_err(|_| Error::Invalid("grant control decode"))?;
+    if pool.release(&altered).await?.decision() != &Decision::Stale {
+        return fixture.violation("another owner released the original grant".into());
+    }
+    wait_pool_used(&fixture, 2).await?;
+    let released = pool.release(first_grant).await?;
+    if released.decision() != &Decision::Released || pool.release(first_grant).await? != released {
+        return fixture
+            .violation("release failed or replay changed its original publication".into());
+    }
+    let second = pool
+        .reserve(2, Bytes::from_static(b"second"), owner.clone(), deadline)
+        .await?;
+    let Decision::Granted(second_grant) = second.decision() else {
+        return fixture.violation("released capacity was not reusable".into());
+    };
+    if second_grant.generation() <= first_grant.generation()
+        || pool.release(first_grant).await? != released
+    {
+        return fixture
+            .violation("capacity reuse lost the generation fence or original reply".into());
+    }
+    wait_pool_used(&fixture, 2).await?;
+    target.pause(&fixture.actor, true).await?;
+    target.restart().await?;
+    // A paused owner retains its due cleanup, including across physical reopen.
+    target.clock().sleep_until(deadline).await;
+    wait_pool_used(&fixture, 2).await?;
+    target.pause(&fixture.actor, false).await?;
+    wait_pool_used(&fixture, 0).await?;
+    let third = pool
+        .reserve(
+            2,
+            Bytes::from_static(b"third"),
+            owner.clone(),
+            target.clock().now_unix_ms().saturating_add(BUDGET_MS),
+        )
+        .await?;
+    let Decision::Granted(third_grant) = third.decision() else {
+        return fixture.violation("durable cleanup did not free capacity".into());
+    };
+    if third_grant.generation() <= second_grant.generation()
+        || pool.release(second_grant).await?.decision() != &Decision::Stale
+    {
+        return fixture.violation("expired generation released its replacement".into());
+    }
+    wait_pool_used(&fixture, 2).await?;
+    if pool.reserve(2, first_id, owner, deadline).await? != first {
+        return fixture
+            .violation("cleanup changed a retained original reservation decision".into());
+    }
+    Ok(())
+}
+
+/// Observe only committed checkpoint records; this does not poll or advance work.
+async fn wait_pool_used<T: Target + ?Sized>(
+    fixture: &Fixture<'_, T>,
+    expected: u64,
+) -> Result<(), Failure> {
+    fn used(state: &crate::local::State) -> Result<Option<u64>, Error> {
+        let checkpoint = state
+            .checkpoint()
+            .ok_or(Error::Invalid("reservation checkpoint is missing"))?;
+        let ledger: Ledger = serde_json::from_slice(&checkpoint.bytes)
+            .map_err(|_| Error::Invalid("reservation checkpoint does not decode"))?;
+        Ok(ledger.reservations.map(|book| book.used()))
+    }
+    let store = fixture.target.store();
+    let observed = store
+        .wait_applied(
+            &fixture.actor,
+            AppliedCut::empty("inbox".into(), fixture.inbox.clone())?,
+        )
+        .await?;
+    if used(
+        observed
+            .snapshot()
+            .state()
+            .ok_or(Error::Invalid("reservation actor is missing"))?,
+    )? == Some(expected)
+    {
+        return Ok(());
+    }
+    let records = store
+        .provider()
+        .follow(acyclic_stream::FollowRequest {
+            preceding: Some(observed.commit_id()),
+            ..acyclic_stream::FollowRequest::new(
+                observed.snapshot().path().clone(),
+                observed.revision(),
+            )
+        })
+        .await
+        .map_err(Error::from)?;
+    let mut records = acyclic_stream::records_only(records);
+    let wait = async {
+        while let Some(record) = records.next().await {
+            let state = crate::local::State::decode(&record.map_err(Error::from)?.value)?;
+            if used(&state)? == Some(expected) {
+                return Ok(());
+            }
+        }
+        fixture.violation("reservation state observation closed".into())
+    };
+    let deadline = fixture.target.clock().sleep_until(
+        fixture
+            .target
+            .clock()
+            .now_unix_ms()
+            .saturating_add(BUDGET_MS),
+    );
+    match futures::future::select(Box::pin(wait), deadline).await {
+        futures::future::Either::Left((result, _)) => result,
+        futures::future::Either::Right(_) => {
+            fixture.violation(format!("reservation units did not reach {expected}"))
+        }
+    }
+}
+
+/// A committed input cut is observed through the same original state stream.
+/// Waiting neither executes a paused input nor weakens its source anchor.
+async fn applied<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failure> {
+    let mut fixture = Fixture::create(target, run, "applied").await?;
+    fixture.send("emit").await?;
+    fixture.expect(&["r0"]).await?;
+    target.pause(&fixture.actor, true).await?;
+    fixture.send("emit").await?;
+    let provider = target.store().provider();
+    let input = provider
+        .read(acyclic_stream::ReadRequest {
+            path: fixture.inbox.clone(),
+            from: 1,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await
+        .map_err(Error::from)?
+        .next()
+        .await
+        .ok_or(Error::Invalid("applied fixture input is missing"))?
+        .map_err(Error::from)?;
+    let cut = AppliedCut::through("inbox".into(), fixture.inbox.clone(), &input)?;
+    let mut wait = Box::pin(target.store().wait_applied(&fixture.actor, cut.clone()));
+    if futures::poll!(wait.as_mut()).is_ready() {
+        return fixture
+            .violation("wait applied completed before the paused input was consumed".into());
+    }
+    if fixture.cursor().await? != Some(1) {
+        return fixture.violation("wait applied consumed a paused input".into());
+    }
+    target.pause(&fixture.actor, false).await?;
+    let deadline = target
+        .clock()
+        .sleep_until(target.clock().now_unix_ms().saturating_add(BUDGET_MS));
+    let observed = match futures::future::select(wait, deadline).await {
+        futures::future::Either::Left((observed, _)) => observed?,
+        futures::future::Either::Right(_) => {
+            return fixture.violation("wait applied missed the committed wake".into());
+        }
+    };
+    if observed.cut() != &cut
+        || observed
+            .snapshot()
+            .state()
+            .and_then(|state| state.cursor("inbox"))
+            != Some(2)
+    {
+        return fixture.violation(
+            "wait applied changed its original cut or returned an unconsumed state".into(),
+        );
+    }
+    fixture.expect(&["r0", "r1"]).await?;
+    target.restart().await?;
+    let reopened = target
+        .store()
+        .wait_applied(&fixture.actor, cut.clone())
+        .await?;
+    if reopened.cut() != &cut || reopened.revision() < observed.revision() {
+        return fixture.violation("restart lost the applied cut".into());
+    }
+    let wrong_path = AppliedCut::empty("inbox".into(), fixture.outbox.clone())?;
+    let missing = AppliedCut::empty("missing".into(), fixture.inbox.clone())?;
+    for wrong in [wrong_path, missing] {
+        if !matches!(
+            target.store().wait_applied(&fixture.actor, wrong).await,
+            Err(Error::Conflict)
+        ) {
+            return fixture
+                .violation("an absent or differently bound subscription satisfied the cut".into());
+        }
+    }
+    let mut foreign_input = input;
+    let mut anchor = *foreign_input.commit_id.as_bytes();
+    anchor[0] ^= 1;
+    foreign_input.commit_id = acyclic_stream::CommitId::from_bytes(anchor);
+    if !matches!(
+        target
+            .store()
+            .wait_applied(
+                &fixture.actor,
+                AppliedCut::through("inbox".into(), fixture.inbox.clone(), &foreign_input)?
+            )
+            .await,
+        Err(Error::Stream(StreamError::PrefixNotRetained))
+    ) {
+        return fixture.violation("a consumed cursor accepted a different input history".into());
+    }
+    Ok(())
 }
 
 /// A later control interrupts the current handler without consuming the

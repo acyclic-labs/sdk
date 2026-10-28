@@ -1,7 +1,11 @@
 //! Single-node Actors runtime primitives over the canonical Stream transaction.
+mod applied;
+mod invoke;
+pub use invoke::{CommittedInvocation, InvocationReceipt, InvocationTicket};
 /// Shared readiness registration and hibernation handoff.
 pub mod ready;
 mod record;
+pub use applied::{Applied, AppliedCut};
 pub use record::{STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD};
 mod runtime;
 pub use crate::guest::Subscription;
@@ -140,6 +144,7 @@ impl Snapshot {
 /// submitting it exactly once.
 pub struct PreparedPublish {
     own: Option<StreamPath>,
+    reply: Option<StreamPath>,
     request: CommitRequest,
     composition: Option<Box<dyn Composition>>,
     sealed: bool,
@@ -209,6 +214,7 @@ impl PreparedPublish {
     pub fn foreign(key: IdempotencyKey) -> Self {
         Self {
             own: None,
+            reply: None,
             composition: None,
             sealed: false,
             acknowledgement_unknown: false,
@@ -232,6 +238,16 @@ impl PreparedPublish {
             return Err(Error::Invalid(
                 "sealed actor publication cannot accept effects",
             ));
+        }
+        if self
+            .reply
+            .as_ref()
+            .is_some_and(|reply| match &effect.mutation {
+                CommitMutation::Append { path, .. } => path == reply,
+                CommitMutation::Fork { destination, .. } => covers(destination, reply),
+            })
+        {
+            return Err(Error::Invalid("effect changes the host's invocation reply"));
         }
         let Self { own, request, .. } = self;
         let touches_own = |path: &StreamPath| own.as_ref() == Some(path);
@@ -496,7 +512,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         epoch: u64,
         trigger: &Trigger,
         delivered: Option<&Record>,
-        transition: Transition,
+        mut transition: Transition,
         key: IdempotencyKey,
     ) -> Result<PreparedPublish, Error> {
         let named = match trigger {
@@ -508,6 +524,18 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         {
             return Err(Error::Invalid("delivered record differs from its trigger"));
         }
+        let reply = if let Some((path, reply)) = self.invocation_reply(
+            previous,
+            trigger,
+            delivered,
+            transition.response.as_ref(),
+            &transition.effects,
+        )? {
+            transition.effects.push(reply);
+            Some(path)
+        } else {
+            None
+        };
         let state = next(owned(previous, epoch)?, trigger, &transition)?;
         // The participant is a request from a possibly untrusted handler:
         // the host composer validates it before any custody exists.
@@ -529,6 +557,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             ),
         };
         let mut prepared = self.prepare(previous, &state, transition.effects, key)?;
+        prepared.reply = reply;
         prepared.composition = composition;
         Ok(prepared)
     }
@@ -560,6 +589,13 @@ impl<P: StreamProvider + ?Sized> Store<P> {
                         request.mutations.iter().filter(|mutation| {
                             matches!(mutation, CommitMutation::Append { path, .. } if path == own)
                         }).count() != 1
+                    })
+                    || prepared.reply.as_ref().is_some_and(|reply| {
+                        request.mutations.iter().filter(|mutation| {
+                            matches!(mutation, CommitMutation::Append { path, .. } if path == reply)
+                        }).count() != 1 || request.mutations.iter().any(|mutation| {
+                            matches!(mutation, CommitMutation::Fork { destination, .. } if covers(destination, reply))
+                        })
                     })
                 {
                     return Err(Error::Invalid("composition changed the actor publication"));
@@ -642,6 +678,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         };
         let mut prepared = PreparedPublish {
             own: Some(previous.path.clone()),
+            reply: None,
             composition: None,
             sealed: false,
             acknowledgement_unknown: false,
@@ -660,6 +697,14 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         }
         Ok(prepared)
     }
+}
+
+fn covers(ancestor: &StreamPath, path: &StreamPath) -> bool {
+    ancestor == path
+        || path
+            .as_str()
+            .strip_prefix(ancestor.as_str())
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 fn condition_path(condition: &CommitCondition) -> &StreamPath {

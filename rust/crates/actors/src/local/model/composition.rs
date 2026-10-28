@@ -18,6 +18,7 @@ struct Counts {
 struct Participant {
     counts: Arc<Counts>,
     remove_actor_fence: bool,
+    fork_reply_parent: bool,
 }
 
 impl Drop for Participant {
@@ -32,6 +33,35 @@ impl Composition for Participant {
             self.counts.seals.fetch_add(1, Ordering::SeqCst);
             if self.remove_actor_fence {
                 request.conditions.clear();
+            }
+            if self.fork_reply_parent {
+                let reply = request
+                    .mutations
+                    .iter()
+                    .find_map(|mutation| match mutation {
+                        CommitMutation::Append { path, .. } => {
+                            path.as_str().rsplit_once("/replies/")
+                        }
+                        _ => None,
+                    })
+                    .ok_or_else(|| GuestError::Decode("missing original reply".into()))?;
+                let destination = StreamPath::new(format!("{}/replies", reply.0))
+                    .map_err(|_| GuestError::Decode("invalid original reply parent".into()))?;
+                let source = request
+                    .mutations
+                    .iter()
+                    .find_map(|mutation| match mutation {
+                        CommitMutation::Append { path, .. } => Some(path.clone()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| GuestError::Decode("missing original state".into()))?;
+                request.mutations.push(CommitMutation::Fork {
+                    exclude: Vec::new(),
+                    source,
+                    destination,
+                    at_tail: 0,
+                    records: Vec::new(),
+                });
             }
             Ok(request)
         })
@@ -245,6 +275,7 @@ impl Composer for Participants {
         Ok(Box::new(Participant {
             counts: self.0.clone(),
             remove_actor_fence: participant.plan.as_ref() == [1],
+            fork_reply_parent: participant.plan.as_ref() == [2],
         }))
     }
 }
@@ -277,8 +308,307 @@ async fn placed(
     Ok((store, actor))
 }
 
+#[tokio::test]
+async fn uncertain_invocation_admission_reopens_with_the_original_input_after_control_changes()
+-> Result<(), Failure> {
+    use crate::invocation::Invocation;
+    // Drop before apply or lose the real provider's acknowledgement after apply.
+    // No retained record or successful outcome is synthesized.
+    for fault in [Fault::Drop, Fault::LoseAck] {
+        let provider = Arc::new(Faulty {
+            inner: MemoryStream::default(),
+            plan: vec![
+                Fault::None,
+                Fault::None,
+                fault.clone(),
+                Fault::Refuse(StreamError::AccessDenied),
+            ],
+            calls: AtomicUsize::new(0),
+        });
+        let counts = Arc::new(Counts::default());
+        let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+        let before = store.load(&actor).await?;
+        let invocation = Invocation::new(
+            actor.clone(),
+            "inbox".into(),
+            Bytes::from_static(b"uncertain-admission"),
+            Bytes::from_static(b"original-request"),
+        )?;
+        let operation = IdempotencyKey::new(invocation.identity(before.path.as_str()).to_vec())?;
+        let input = before
+            .state()
+            .and_then(|state| state.subscriptions().get("inbox"))
+            .ok_or("missing original subscription")?
+            .path
+            .clone();
+        assert!(matches!(
+            store.enqueue_invoke(&invocation).await,
+            Err(Error::Stream(StreamError::Unavailable))
+        ));
+        let original = provider.inspect_idempotency(operation.clone()).await?;
+        assert_eq!(original.is_some(), fault == Fault::LoseAck);
+        let retained_input = if original.is_some() {
+            Some(
+                provider
+                    .inner
+                    .read(ReadRequest {
+                        path: input.clone(),
+                        from: 0,
+                        limit: 1,
+                        at_least: Default::default(),
+                    })
+                    .await?
+                    .try_next()
+                    .await?
+                    .ok_or("lost committed input")?,
+            )
+        } else {
+            None
+        };
+        // A separate real owner pauses and replaces the placement while this
+        // caller is down. Retry identity must not include that mutable cut.
+        let controls = Store::new(Arc::new(provider.inner.clone()), store.root().clone());
+        controls
+            .set_paused(&before, 1, true, key("admission-pause")?)
+            .await?;
+        controls
+            .claim(&controls.load(&actor).await?, 2, key("admission-replace")?)
+            .await?;
+        drop(store);
+        let reopened = Store::new(Arc::clone(&provider), controls.root().clone())
+            .with_composer(Arc::new(Participants(Arc::clone(&counts))));
+        assert!(matches!(
+            reopened.enqueue_invoke(&invocation).await,
+            Err(Error::Stream(StreamError::AccessDenied))
+        ));
+        assert_eq!(
+            provider.inspect_idempotency(operation.clone()).await?,
+            original
+        );
+        let ticket = reopened.enqueue_invoke(&invocation).await?;
+        if let Some(original) = retained_input {
+            assert_eq!(ticket.record(), &original);
+        }
+        assert_eq!(provider.inner.tail(input.clone()).await?, 1);
+        let accepted = provider
+            .inspect_idempotency(operation.clone())
+            .await?
+            .ok_or("accepted input lost its retry identity")?;
+        assert_eq!(accepted.idempotency_key, operation);
+        let mut expected = CommitRequest {
+            deadline_unix_millis: None,
+            conditions: Vec::new(),
+            mutations: vec![
+                CommitMutation::Append {
+                    path: input,
+                    records: vec![invocation.record(&reopened.path(&actor)?)?],
+                },
+                reopened.activation(&actor).mutation,
+            ],
+            idempotency_key: operation,
+        };
+        assert_eq!(
+            accepted.request_digest,
+            acyclic_stream::request::commit_digest(&mut expected)?
+        );
+        let changed = Invocation::new(
+            actor.clone(),
+            "inbox".into(),
+            invocation.operation().clone(),
+            Bytes::from_static(b"changed-request"),
+        )?;
+        assert!(matches!(
+            reopened.enqueue_invoke(&changed).await,
+            Err(Error::Stream(StreamError::IdempotencyMismatch))
+        ));
+        // Dropping a response waiter cannot consume a paused input or retract
+        // its original admission, including after an earlier lost reply.
+        let mut wait = Box::pin(reopened.wait_invocation(ticket.clone()));
+        assert!(futures::poll!(wait.as_mut()).is_pending());
+        drop(wait);
+        let paused = controls.load(&actor).await?;
+        assert_eq!(
+            paused.state().and_then(|state| state.cursor("inbox")),
+            Some(0)
+        );
+        controls
+            .set_paused(&paused, 2, false, key("admission-resume")?)
+            .await?;
+        let snapshot = reopened.load(&actor).await?;
+        let mut result = transition(false)?;
+        result.response = Some(Bytes::from_static(b"original-response"));
+        reopened
+            .publish(
+                &snapshot,
+                2,
+                &Trigger::Record {
+                    subscription: "inbox".into(),
+                    sequence: 0,
+                },
+                Some(ticket.record()),
+                result,
+                key("admission-response")?,
+            )
+            .await?;
+        let committed = reopened.wait_invocation(ticket.clone()).await?;
+        assert_eq!(committed.response().as_ref(), b"original-response");
+        assert_eq!(reopened.invoke(&invocation).await?, committed);
+        assert_eq!(reopened.enqueue_invoke(&invocation).await?, ticket);
+        assert_eq!(provider.inner.tail(path("participant/inbox")?).await?, 1);
+        assert_eq!(provider.inner.tail(path("participant/child")?).await?, 1);
+        assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
+        assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
+        assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn invocation_lost_ack_retains_the_original_reply_and_participant_through_a_retry_refusal()
+-> Result<(), Failure> {
+    use crate::invocation::Invocation;
+    let provider = Arc::new(Faulty {
+        inner: MemoryStream::default(),
+        plan: vec![
+            Fault::None,
+            Fault::None,
+            Fault::None,
+            Fault::LoseAck,
+            Fault::Refuse(StreamError::AccessDenied),
+            Fault::None,
+        ],
+        calls: AtomicUsize::new(0),
+    });
+    let counts = Arc::new(Counts::default());
+    let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+    let invocation = Invocation::new(
+        actor.clone(),
+        "inbox".into(),
+        Bytes::from_static(b"op"),
+        Bytes::from_static(b"request"),
+    )?;
+    let ticket = store.enqueue_invoke(&invocation).await?;
+    let snapshot = store.load(&actor).await?;
+    let mut transition = transition(false)?;
+    transition.response = Some(Bytes::from_static(b"response"));
+    let trigger = Trigger::Record {
+        subscription: "inbox".into(),
+        sequence: ticket.record().sequence,
+    };
+    let result = store
+        .publish(
+            &snapshot,
+            1,
+            &trigger,
+            Some(ticket.record()),
+            transition,
+            key("invocation-participant")?,
+        )
+        .await;
+    let Err(Error::Unknown { publication, .. }) = result else {
+        return Err("lost invocation acknowledgement did not retain custody".into());
+    };
+    let original = publication.request().clone();
+    assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
+    assert_eq!(counts.dropped.load(Ordering::SeqCst), 0);
+    let Err(Error::Unknown {
+        publication,
+        source,
+    }) = store.submit(*publication).await
+    else {
+        return Err("retry refusal settled an uncertain invocation".into());
+    };
+    assert_eq!(source, StreamError::AccessDenied);
+    assert_eq!(publication.request(), &original);
+    assert_eq!(counts.refused.load(Ordering::SeqCst), 0);
+    assert_eq!(counts.dropped.load(Ordering::SeqCst), 0);
+    store.submit(*publication).await?;
+    let committed = store.wait_invocation(ticket).await?;
+    assert_eq!(committed.response().as_ref(), b"response");
+    assert_eq!(committed.receipt().revision(), snapshot.tail + 1);
+    assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.committed.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
+    let result = store.invoke(&invocation).await?;
+    assert_eq!(
+        result, committed,
+        "reconciliation must return the original reply"
+    );
+    assert_eq!(provider.tail(path("participant/child")?).await?, 1);
+    assert_eq!(
+        store
+            .load(&actor)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(1)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn composer_cannot_fork_over_the_original_invocation_reply() -> Result<(), Failure> {
+    use crate::invocation::Invocation;
+    let provider = Arc::new(Faulty {
+        inner: MemoryStream::default(),
+        plan: Vec::new(),
+        calls: AtomicUsize::new(0),
+    });
+    let counts = Arc::new(Counts::default());
+    let (store, actor) = placed(provider.clone(), counts.clone()).await?;
+    let invocation = Invocation::new(
+        actor.clone(),
+        "inbox".into(),
+        Bytes::from_static(b"fork-control"),
+        Bytes::new(),
+    )?;
+    let ticket = store.enqueue_invoke(&invocation).await?;
+    let snapshot = store.load(&actor).await?;
+    let mut transition = transition(false)?;
+    transition.response = Some(Bytes::new());
+    transition
+        .participant
+        .as_mut()
+        .ok_or("missing participant request")?
+        .plan = Bytes::from_static(&[2]);
+    let before = provider.calls.load(Ordering::SeqCst);
+    let result = store
+        .publish(
+            &snapshot,
+            1,
+            &Trigger::Record {
+                subscription: "inbox".into(),
+                sequence: ticket.record().sequence,
+            },
+            Some(ticket.record()),
+            transition,
+            key("fork-original-reply")?,
+        )
+        .await;
+    assert!(matches!(
+        result,
+        Err(Error::Invalid("composition changed the actor publication"))
+    ));
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        before,
+        "a tampered publication must not reach the provider"
+    );
+    assert_eq!(counts.seals.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.committed.load(Ordering::SeqCst), 0);
+    assert_eq!(counts.dropped.load(Ordering::SeqCst), 1);
+    assert_eq!(store.load(&actor).await?.tail, snapshot.tail);
+    assert_eq!(
+        provider.inner.tail(path("participant/child")?).await,
+        Err(StreamError::NotFound)
+    );
+    Ok(())
+}
+
 fn transition(remove_actor_fence: bool) -> Result<Transition, StreamError> {
     Ok(Transition {
+        response: None,
         checkpoint: checkpoint(1),
         alarm: AlarmChange::Keep,
         effects: vec![Effect {

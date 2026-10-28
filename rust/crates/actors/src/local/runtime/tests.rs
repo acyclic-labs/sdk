@@ -26,6 +26,65 @@ fn actor(id: &str) -> Result<ActorReference, Box<dyn std::error::Error>> {
     Ok(ActorReference::new(b"account", b"agents", id.as_bytes())?)
 }
 
+/// Retain only confirmed cursor progress; a competing writer still forces an
+/// authoritative reload. The former success reload fails the zero-control cut.
+#[tokio::test]
+async fn dispatcher_uses_receipts_and_reloads_only_after_conflict() -> TestResult {
+    let provider = Arc::new(Counted::new(MemoryStream::default()));
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    );
+    let source = actor("cursor-input")?;
+    let mut inputs = PreparedPublish::foreign(key("dispatcher/inputs")?);
+    for _ in 0..7 {
+        inputs.join(runtime.store().activation(&source))?;
+    }
+    runtime.store().submit(inputs).await?;
+    let (store, actor) = runtime.dispatcher_store()?;
+    let before = provider.requests();
+    let opened = runtime.dispatcher(&store, &actor).await?;
+    assert_eq!(
+        provider.requests().since(before).control(),
+        1,
+        "opening observes absence once, then retains the committed receipt"
+    );
+    let before = provider.requests();
+    let first = runtime.advance_dispatcher(&store, opened, 3).await?;
+    assert_eq!(
+        provider.requests().since(before).control(),
+        0,
+        "confirmed progress must not reload its own publication"
+    );
+    assert_eq!(
+        first.state().and_then(|state| state.cursor("activation")),
+        Some(3)
+    );
+    let stale = store.load(&actor).await?;
+    assert_eq!(first.tail, stale.tail);
+    assert_eq!(first.anchor, stale.anchor);
+    let replaced = runtime.advance_dispatcher(&store, first, 5).await?;
+    let before = provider.requests();
+    let reconciled = runtime.advance_dispatcher(&store, stale, 7).await?;
+    assert_eq!(
+        provider.requests().since(before).control(),
+        1,
+        "a real competing commit requires its original fresh state observation"
+    );
+    assert_eq!(reconciled.tail, replaced.tail + 1);
+    assert_eq!(
+        reconciled
+            .state()
+            .and_then(|state| state.cursor("activation")),
+        Some(7)
+    );
+    let committed = store.load(&actor).await?;
+    assert_eq!(reconciled.tail, committed.tail);
+    assert_eq!(reconciled.anchor, committed.anchor);
+    Ok(())
+}
+
 #[test]
 fn concurrent_sharded_tracking_keeps_one_registration_per_actor() -> TestResult {
     let runtime = Runtime::new(
@@ -276,6 +335,103 @@ impl Clock for Manual {
 struct CapturesCuts {
     package: Package,
     deliveries: std::sync::Mutex<Vec<Delivery>>,
+}
+
+/// The production reservation package uses the original strict wire, Store,
+/// event host, pause/placement fences and alarm generation on physical reopen.
+#[tokio::test]
+async fn reservation_package_commits_over_strict_wire_and_cleans_up_on_reopen() -> TestResult {
+    use crate::{
+        guest::wire,
+        hosting::Host,
+        reservation::{self, Decision, OwnerEvidence, Pool},
+    };
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = actor("reservation-package")?;
+    let mut create = PreparedPublish::foreign(key("create-reservation-package")?);
+    for effect in reservation::create(&store, &address, StreamPath::new("reservation/inbox")?, 2)? {
+        create.join(effect)?;
+    }
+    store.submit(create).await?;
+    let package = Arc::new(reservation::Package::new(
+        crate::domain::CodeSha256::try_from(vec![0x62; 32])?,
+        crate::domain::ActorLimits::new(10_000, 1 << 20, 1 << 16)?,
+    ));
+    let remote = || -> Result<Arc<dyn Handler>, crate::guest::GuestError> {
+        let manifest = wire::decode_manifest(&wire::encode_manifest(package.manifest()))?;
+        let package = Arc::clone(&package);
+        Ok(Arc::new(wire::Remote::new(
+            manifest,
+            move |bytes, cancellation| {
+                let package = Arc::clone(&package);
+                Box::pin(async move {
+                    let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
+                    let transition = package
+                        .on_record(delivery, checkpoint.as_ref(), cancellation)
+                        .await?;
+                    wire::encode_transition(&transition)
+                }) as GuestFuture<'static, Vec<u8>>
+            },
+        )))
+    };
+    let clock = Arc::new(Manual(AtomicU64::new(1)));
+    let open = || -> Result<Host<MemoryStream>, Box<dyn std::error::Error>> {
+        Ok(Host::new(
+            Store::new(Arc::clone(&provider), root()?),
+            address.clone(),
+            remote()?,
+            clock.clone(),
+            RuntimeLimits::new(1, 1)?,
+        ))
+    };
+    let host = open()?;
+    let pool = Pool::new(&store, &address, "inbox");
+    let owner = OwnerEvidence::new(
+        Bytes::from_static(b"owner"),
+        Bytes::from_static(b"original-evidence"),
+    )?;
+    let mut pending = Box::pin(pool.reserve(2, Bytes::from_static(b"first"), owner.clone(), 10));
+    assert!(futures::poll!(pending.as_mut()).is_pending());
+    assert_eq!(host.wake().await?, Some(10));
+    let first = pending.await?;
+    let Decision::Granted(grant) = first.decision() else {
+        return Err("reservation package did not grant capacity".into());
+    };
+    assert_eq!(
+        pool.reserve(2, Bytes::from_static(b"first"), owner.clone(), 10)
+            .await?,
+        first
+    );
+    drop(host);
+    clock.0.store(10, Ordering::SeqCst);
+    let host = open()?;
+    assert_eq!(host.wake().await?, None);
+    let snapshot = store.load(&address).await?;
+    let checkpoint = snapshot
+        .state()
+        .and_then(|state| state.checkpoint())
+        .ok_or("reservation checkpoint")?;
+    let book: reservation::Book = serde_json::from_slice(&checkpoint.bytes)?;
+    book.validate()?;
+    assert_eq!(
+        book.used(),
+        0,
+        "alarm cleanup must be durable without an input"
+    );
+    let mut stale = Box::pin(pool.release(grant));
+    assert!(futures::poll!(stale.as_mut()).is_pending());
+    assert_eq!(host.wake().await?, None);
+    assert_eq!(stale.await?.decision(), &Decision::Stale);
+    let mut next = Box::pin(pool.reserve(2, Bytes::from_static(b"next"), owner, 20));
+    assert!(futures::poll!(next.as_mut()).is_pending());
+    assert_eq!(host.wake().await?, Some(20));
+    let next = next.await?;
+    let Decision::Granted(next_grant) = next.decision() else {
+        return Err("cleanup did not restore capacity".into());
+    };
+    assert!(next_grant.generation() > grant.generation());
+    Ok(())
 }
 
 #[tokio::test]
@@ -923,6 +1079,103 @@ async fn continuous_host_bounds_admission_and_aborted_delivery_releases_it() -> 
 #[tokio::test]
 async fn concurrent_event_hosts_share_admission_and_aborted_delivery_releases_it() -> TestResult {
     bounded_admission_and_abort(true).await
+}
+
+/// Duplicate events waiting for an occupied actor cannot consume the permits
+/// another actor needs. Permit-before-lock is the starvation negative control.
+#[tokio::test]
+async fn duplicate_actor_events_wait_outside_active_admission() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let hot = spawn_with(&store, "duplicate-hot", &[b"emit"]).await?;
+    let cold = spawn_with(&store, "duplicate-cold", &[b"emit"]).await?;
+    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock))
+        .with_limits(RuntimeLimits::new(2, 2)?);
+    runtime.track(hot.clone())?;
+    runtime.track(cold.clone())?;
+    let slot = runtime.slot(&hot).ok_or("missing hot actor")?;
+    let occupied = slot.inner.lock().await;
+    let mut duplicates = FuturesUnordered::new();
+    for _ in 0..8 {
+        duplicates.push(runtime.drain_actor(&hot));
+    }
+    assert!(futures::poll!(duplicates.next()).is_pending());
+    assert_eq!(
+        runtime.admission.available_permits(),
+        2,
+        "queued duplicates cannot occupy active delivery permits"
+    );
+    tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        runtime.drain_actor(&cold),
+    )
+    .await??;
+    assert_eq!(
+        records(&*provider, "out/duplicate-cold").await?,
+        vec![Bytes::from_static(b"r0")]
+    );
+    assert!(records(&*provider, "out/duplicate-hot").await?.is_empty());
+    drop(duplicates);
+    drop(occupied);
+    runtime.drain_actor(&hot).await?;
+    assert_eq!(
+        records(&*provider, "out/duplicate-hot").await?,
+        vec![Bytes::from_static(b"r0")]
+    );
+    assert_eq!(runtime.admission.available_permits(), 2);
+    Ok(())
+}
+
+/// Every ready subscription gets a turn even when the first has a backlog.
+/// Always starting from the lowest key fails on the second committed input.
+#[tokio::test]
+async fn ordinary_inputs_rotate_through_all_subscriptions_across_batches() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = actor("input-rotation")?;
+    let mut create = PreparedPublish::foreign(key("rotation/create")?);
+    let mut subscriptions = BTreeMap::new();
+    for index in 0..64 {
+        let id = format!("input-{index:02}");
+        let path = StreamPath::new(format!("rotation/{id}"))?;
+        subscriptions.insert(
+            id,
+            Subscription {
+                path: path.clone(),
+                cursor: 0,
+            },
+        );
+        create.join(Effect {
+            conditions: vec![CommitCondition::Absent { path: path.clone() }],
+            mutation: CommitMutation::Append {
+                path,
+                records: vec![Bytes::from_static(b"emit").into(); if index == 0 { 128 } else { 1 }],
+            },
+        })?;
+    }
+    for effect in store.create(&address, subscriptions, Some(ledger("out/rotation")?))? {
+        create.join(effect)?;
+    }
+    store.submit(create).await?;
+    let runtime = Runtime::new(store, Arc::new(Package::new()?), Arc::new(SystemClock))
+        .with_limits(RuntimeLimits::new(1, 1)?);
+    runtime.track(address.clone())?;
+    let claim = runtime.ready.take().ok_or("missing initial placement")?;
+    runtime.execute(claim).await.map_err(|(_, error)| error)?;
+    for expected in 0..64 {
+        let work = runtime.ready.take().ok_or("rotation work disappeared")?;
+        runtime.execute(work).await.map_err(|(_, error)| error)?;
+        let snapshot = runtime.store().load(&address).await?;
+        let state = snapshot.state().ok_or("rotation state disappeared")?;
+        assert_eq!(state.cursor(&format!("input-{expected:02}")), Some(1));
+        assert_eq!(
+            state.cursor("input-00"),
+            Some(1),
+            "hot input cannot overtake a ready sibling"
+        );
+    }
+    assert_eq!(records(&*provider, "out/rotation").await?.len(), 64);
+    Ok(())
 }
 
 #[tokio::test]

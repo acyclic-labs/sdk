@@ -106,6 +106,8 @@ struct Inner {
     /// One receipt-backed cut per resident actor; never advances speculatively.
     observed: Option<Arc<Snapshot>>,
     follows: BTreeMap<String, RecordStream>,
+    /// Last selected input; scheduling position only, never a consumed cursor.
+    last_input: Option<String>,
     /// The exact request and participant custody survive an unknown acknowledgement.
     pending: Option<(Arc<Snapshot>, PreparedPublish)>,
 }
@@ -550,22 +552,29 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
 
     /// Deliver one bounded batch. False retains a wake for the next batch.
     async fn deliver(&self, actor: &ActorReference, slot: &Arc<Slot>) -> Result<bool, Error> {
+        self.handler.manifest().validate_interrupts()?;
+        // Duplicate events for one actor wait outside global admission. Only
+        // an actor that can make progress may occupy an active delivery slot.
+        let inner = slot.inner.lock().await;
         let _admission = self
             .admission
             .acquire()
             .await
             .map_err(|_| Error::Invalid("runtime admission is closed"))?;
         let mut refresh = RefreshOnDrop(Some(Arc::clone(slot)), false);
-        let result = self.deliver_retained(actor, slot).await;
+        let result = self.deliver_retained(actor, slot, inner).await;
         // Cancellation can interrupt a committed publication before its receipt
         // is retained. A completed attempt handles its outcome in the loop.
         refresh.0 = None;
         result
     }
 
-    async fn deliver_retained(&self, actor: &ActorReference, slot: &Slot) -> Result<bool, Error> {
-        self.handler.manifest().validate_interrupts()?;
-        let mut inner = slot.inner.lock().await;
+    async fn deliver_retained(
+        &self,
+        actor: &ActorReference,
+        slot: &Slot,
+        mut inner: tokio::sync::MutexGuard<'_, Inner>,
+    ) -> Result<bool, Error> {
         if inner.released {
             return Ok(true);
         }
@@ -668,14 +677,17 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     },
                     None,
                 ),
-                _ => match self.next_record(state).await? {
-                    Some((subscription, record)) => (
-                        Trigger::Record {
-                            subscription,
-                            sequence: record.sequence,
-                        },
-                        Some(record),
-                    ),
+                _ => match self.next_record(state, inner.last_input.as_deref()).await? {
+                    Some((subscription, record)) => {
+                        inner.last_input = Some(subscription.clone());
+                        (
+                            Trigger::Record {
+                                subscription,
+                                sequence: record.sequence,
+                            },
+                            Some(record),
+                        )
+                    }
                     None => return Ok(true),
                 },
             };
@@ -703,6 +715,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     now_unix_ms: now,
                     record: record.clone(),
                     subscriptions: crate::guest::SubscriptionCuts::new(
+                        snapshot.path.clone(),
                         snapshot
                             .anchor
                             .ok_or(Error::Invalid("actor state has no committed anchor"))?,
@@ -823,8 +836,18 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// The next unconsumed record of any subscription, by one bounded finite
     /// read per subscription. No follow is retained: the producer's same-commit
     /// activation entry wakes this actor when new input commits.
-    async fn next_record(&self, state: &State) -> Result<Option<(String, Record)>, Error> {
-        for (id, subscription) in state.subscriptions() {
+    async fn next_record(
+        &self,
+        state: &State,
+        after: Option<&str>,
+    ) -> Result<Option<(String, Record)>, Error> {
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+        let subscriptions = state.subscriptions();
+        let later = subscriptions.range::<str, _>((after.map_or(Unbounded, Excluded), Unbounded));
+        let earlier = after
+            .into_iter()
+            .flat_map(|last| subscriptions.range::<str, _>((Unbounded, Included(last))));
+        for (id, subscription) in later.chain(earlier) {
             let records = self
                 .store
                 .provider()

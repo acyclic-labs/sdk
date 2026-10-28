@@ -373,6 +373,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             );
         }
         Ok(Transition {
+            response: None,
             participant,
             checkpoint: checkpoint::checkpoint(&step.state)?,
             alarm: match step.alarm {
