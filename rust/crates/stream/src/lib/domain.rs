@@ -25,10 +25,10 @@ impl CommitId {
 pub struct IdempotencyKey(pub(crate) Bytes);
 
 impl IdempotencyKey {
-    /// Constructs a nonempty bounded key.
+    /// Constructs a nonempty exact caller key.
     pub fn new(value: impl Into<Bytes>) -> Result<Self, StreamError> {
         let value = value.into();
-        if value.is_empty() || value.len() > MAX_IDEMPOTENCY_KEY_BYTES {
+        if value.is_empty() {
             return Err(StreamError::InvalidArgument);
         }
         Ok(Self(value))
