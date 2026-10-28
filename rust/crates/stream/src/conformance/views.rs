@@ -24,7 +24,9 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         };
         let request = crate::HeadsRequest {
             projection: Default::default(),
-            paths: [paths[0].clone(), paths[1].clone(), path("coherent/absent")?].into(),
+            paths: [paths[0].clone(), paths[1].clone(), path("coherent/absent")?]
+                .into_iter()
+                .collect(),
             children: Some(ChildrenPageRequest {
                 parent: Some(path("coherent")?),
                 tail_stream: Some(path("state")?),

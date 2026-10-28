@@ -5,6 +5,7 @@
 //! companion writes), a closed inbox, inherited follows and fork-of-fork lineage.
 use super::fork::{absent, append, facts, key, path, values};
 use super::{Failure, History, Invariant};
+use crate::StreamProviderExt as _;
 use crate::{
     ChildrenPageRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
     CommittedEnvelope, IdempotencyOutcome, OwnedBytes, ReadRequest, Record, StreamError,

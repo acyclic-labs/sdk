@@ -3,7 +3,7 @@
 use acyclic_harness_core::agent::*;
 use acyclic_stream::{
     CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream, ReadRequest,
-    StreamError, StreamPath, StreamProvider,
+    StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use futures::TryStreamExt;
 use std::{collections::VecDeque, sync::Mutex};

@@ -6,6 +6,7 @@
 //! in that namespace. Keys are deterministic within that namespace, so rerunning
 //! against retained state is a setup failure rather than a new qualification.
 
+use crate::StreamProviderExt as _;
 use crate::{
     AppendOutcome, AppendRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
     IdempotencyKey, IdempotencyOutcome, OwnedBytes, ReadRequest, StreamError, StreamPath,

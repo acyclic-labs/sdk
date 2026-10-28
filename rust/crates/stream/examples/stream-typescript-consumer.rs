@@ -3,7 +3,7 @@
 use acyclic_stream::OwnedBytes as Bytes;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath,
-    StreamProvider,
+    StreamProvider, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use serde_json::json;

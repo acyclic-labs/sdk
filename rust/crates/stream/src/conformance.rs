@@ -18,6 +18,7 @@ pub use backend::injected;
 pub use backend::{Backend, Failure, Fixture, Measurement, bench, suite, verify};
 
 use crate::OwnedBytes as Bytes;
+use crate::StreamProviderExt as _;
 use futures::TryFutureExt as _;
 use futures::{StreamExt as _, TryStreamExt as _};
 

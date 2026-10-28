@@ -1,5 +1,6 @@
 use super::super::HistoryJump;
 use super::*;
+use crate::StreamProviderExt as _;
 use crate::{AppendRequest, MemoryLimits, ReadRequest, StreamProvider, UnixMillisClock};
 use crate::{OwnedBytes as Bytes, StreamPath};
 use futures::StreamExt as _;

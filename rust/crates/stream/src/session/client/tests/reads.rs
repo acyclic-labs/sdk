@@ -221,7 +221,8 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
             StreamPath::new("tree/a/status")?,
             StreamPath::new("tree/absent")?,
         ]
-        .into(),
+        .into_iter()
+        .collect(),
         children: Some(page("tree", 10)?),
         limit: 4,
         at_least: Default::default(),

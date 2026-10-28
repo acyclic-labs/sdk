@@ -4,7 +4,7 @@
 use super::*;
 use acyclic_stream::{
     AppendRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest, IdempotencyKey,
-    OwnedBytes, StreamPath, StreamProvider,
+    OwnedBytes, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 
 /// The default limits, and limits that compact after every second frame:

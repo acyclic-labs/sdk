@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamProviderExt as _;
 use crate::{FollowFilter, MemoryStream, StreamPath, StreamProvider};
 use futures::StreamExt;
 use futures::TryFutureExt as _;

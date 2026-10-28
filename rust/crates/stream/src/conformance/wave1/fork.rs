@@ -1,5 +1,6 @@
 //! Black-box fork histories. Concurrency, GC and authorization need separate proofs.
 use super::{Failure, History, Invariant};
+use crate::StreamProviderExt as _;
 use crate::{
     AppendOutcome, AppendRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
     ForkRequest, IdempotencyKey, IdempotencyOutcome, OwnedBytes, ReadRequest, StreamError,

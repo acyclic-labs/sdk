@@ -1,4 +1,5 @@
 //! Authenticated hosted JSON transport implementing the canonical Stream provider.
+use crate::StreamProviderExt as _;
 use crate::{http_codec, http_validation, wire_codec, *};
 pub use acyclic_auth::credential::CredentialProvider;
 use async_trait::async_trait;

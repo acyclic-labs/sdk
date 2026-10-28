@@ -17,7 +17,9 @@ use acyclic_actors::{
     guest::{Composer, Handler},
     local::{Clock, Runtime, State, Store},
 };
-use acyclic_stream::{CommitRequest, ReadRequest, StreamError, StreamPath, StreamProvider};
+use acyclic_stream::{
+    CommitRequest, ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+};
 use futures::{StreamExt as _, TryStreamExt as _};
 use std::{convert::Infallible, sync::Arc};
 
