@@ -267,13 +267,13 @@ where
         let routed = call.invocation();
         // Discovery names no tree: the endpoint answers it with its own.
         if AgentBinding::is_discovery(routed) {
-            return if matches!(call.command(), AgentCommand::Bind) {
+            return if matches!(call.command(), AgentCommand::Bind {}) {
                 Ok(call)
             } else {
                 Err(StreamError::AccessDenied)
             };
         }
-        if matches!(call.command(), AgentCommand::Bind)
+        if matches!(call.command(), AgentCommand::Bind {})
             || routed.namespace.as_deref() != Some(within.namespace().as_str())
             || routed.account_id.as_slice() != within.account().as_bytes()
         {
@@ -306,11 +306,11 @@ where
     async fn dispatch(&self, command: &AgentCommand, by: &Sender) -> Result<AgentReply, Error> {
         let agents = self.bound.agents();
         match command {
-            AgentCommand::Bind => Ok(AgentBinding::reply(
+            AgentCommand::Bind {} => Ok(AgentBinding::reply(
                 &self.binding(),
                 self.tool_resource().await?,
             )),
-            AgentCommand::Root => Ok(AgentReply::Root {
+            AgentCommand::Root {} => Ok(AgentReply::Root {
                 agent: self.root.clone(),
             }),
             AgentCommand::Settlement { agent } => {

@@ -192,7 +192,7 @@ pub async fn spawned(factory: js_sys::Function) -> Result<JsValue, JsValue> {
     let result: SuiteResult<JsValue> = async {
         let endpoint = open(&factory, ApprovalPolicy::accept_all("conformance")).await?;
         let AgentReply::Root { agent: root } =
-            protocol::call(endpoint.as_ref(), &AgentCommand::Root).await??
+            protocol::call(endpoint.as_ref(), &AgentCommand::Root {}).await??
         else {
             return Err("fixture Root reply differs".into());
         };

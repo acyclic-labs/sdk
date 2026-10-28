@@ -114,10 +114,10 @@ impl Connection {
             .map_err(exchange)?;
         let discovery = AgentControls::new(session.clone(), CREDENTIAL, AgentBinding::discovery());
         let (binding, tools) =
-            AgentBinding::from_reply(&execute(&discovery, &AgentCommand::Bind).await?)
+            AgentBinding::from_reply(&execute(&discovery, &AgentCommand::Bind {}).await?)
                 .map_err(exchange)?;
         let controls = AgentControls::new(session, CREDENTIAL, binding);
-        let AgentReply::Root { agent: root } = execute(&controls, &AgentCommand::Root).await?
+        let AgentReply::Root { agent: root } = execute(&controls, &AgentCommand::Root {}).await?
         else {
             return Err(Error::Conflict("the endpoint named no root".into()));
         };

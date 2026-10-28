@@ -274,7 +274,7 @@ mod tests {
         let encoded = invocation(original.to_vec()).encode_to_vec();
         let call = AgentCall::decode(&encoded)?;
         assert_eq!(call.invocation().body.as_slice(), original);
-        assert!(matches!(call.command(), AgentCommand::Root));
+        assert!(matches!(call.command(), AgentCommand::Root {}));
         let agent = crate::AgentPath::try_from(
             "harness/agents/00000000000000000000000000000001".to_owned(),
         )?;
@@ -285,7 +285,7 @@ mod tests {
         let response = wire::InvokeActorResponse::decode(encoded)?;
         assert_eq!(response.status, 200);
         assert!(matches!(
-            decode_agent_reply(&response.body, &AgentCommand::Root)?,
+            decode_agent_reply(&response.body, &AgentCommand::Root {})?,
             Ok(AgentReply::Root { agent: actual }) if actual == agent
         ));
         assert!(matches!(&result, Ok(AgentReply::Root { agent: actual }) if actual == &agent));
@@ -300,18 +300,22 @@ mod tests {
             AgentCall::decode(&encoded),
             Err(CommandError::Invalid)
         ));
-        let encoded =
-            invocation(b"{\"kind\":\"root\",\"principal\":\"admin\"}".to_vec()).encode_to_vec();
-        assert!(matches!(
-            AgentCall::decode(&encoded),
-            Err(CommandError::Invalid)
-        ));
+        for kind in ["bind", "root"] {
+            let body = format!(r#"{{"kind":"{kind}"}}"#);
+            assert!(AgentCall::decode(&invocation(body.into_bytes()).encode_to_vec()).is_ok());
+            let body = format!(r#"{{"kind":"{kind}","principal":"admin"}}"#);
+            let encoded = invocation(body.into_bytes()).encode_to_vec();
+            assert!(
+                matches!(AgentCall::decode(&encoded), Err(CommandError::Invalid)),
+                "{kind} must reject an asserted principal"
+            );
+        }
     }
 
     #[test]
     fn invocation_retains_exact_command_and_rejects_another_body()
     -> Result<(), Box<dyn std::error::Error>> {
-        let command = PreparedCommand::new(&AgentCommand::Root)?;
+        let command = PreparedCommand::new(&AgentCommand::Root {})?;
         let bytes: Bytes = invocation(command.as_bytes().to_vec())
             .encode_to_vec()
             .into();
@@ -327,7 +331,7 @@ mod tests {
 
     #[test]
     fn invocation_does_not_discard_unknown_wire_fields() -> Result<(), Box<dyn std::error::Error>> {
-        let command = PreparedCommand::new(&AgentCommand::Root)?;
+        let command = PreparedCommand::new(&AgentCommand::Root {})?;
         let mut encoded = invocation(command.as_bytes().to_vec()).encode_to_vec();
         encoded.extend_from_slice(&[0xf8, 0x07, 0x01]); // unknown varint field 127
         assert!(matches!(

@@ -263,8 +263,8 @@ fn validate_reply(
     bytes: usize,
 ) -> Result<(), CommandError> {
     let page = match (reply, command) {
-        (AgentReply::Root { .. }, AgentCommand::Root)
-        | (AgentReply::Bound { .. }, AgentCommand::Bind)
+        (AgentReply::Root { .. }, AgentCommand::Root {})
+        | (AgentReply::Bound { .. }, AgentCommand::Bind {})
         | (AgentReply::Settlement { .. }, AgentCommand::Settlement { .. })
         | (
             AgentReply::Delivered { .. },
@@ -379,9 +379,9 @@ mod tests {
     fn unknown_roundtrip_retains_exact_request() -> Result<(), Box<dyn std::error::Error>> {
         let original = request()?;
         let result = Err(AgentError::Unknown(Box::new(original.clone())));
-        let bytes = encode_agent_reply(&result, &AgentCommand::Root)?;
+        let bytes = encode_agent_reply(&result, &AgentCommand::Root {})?;
         let Err(AgentControlFailure::Unknown(decoded)) =
-            decode_agent_reply(&bytes, &AgentCommand::Root)?
+            decode_agent_reply(&bytes, &AgentCommand::Root {})?
         else {
             return Err("uncertain result lost its request".into());
         };
@@ -400,7 +400,7 @@ mod tests {
         }
         .encode_to_vec();
         assert!(matches!(
-            decode_agent_reply(&bytes, &AgentCommand::Root),
+            decode_agent_reply(&bytes, &AgentCommand::Root {}),
             Err(CommandError::Invalid)
         ));
     }
@@ -414,7 +414,7 @@ mod tests {
         }
         .encode_to_vec();
         assert!(matches!(
-            decode_agent_reply(&bytes, &AgentCommand::Root),
+            decode_agent_reply(&bytes, &AgentCommand::Root {}),
             Err(CommandError::Invalid)
         ));
         Ok(())
@@ -453,7 +453,7 @@ mod tests {
         };
         let bytes = encode_agent_reply(&reply, &command)?;
         assert!(matches!(
-            decode_agent_reply(&bytes, &AgentCommand::Root),
+            decode_agent_reply(&bytes, &AgentCommand::Root {}),
             Err(CommandError::Invalid)
         ));
         Ok(())
@@ -472,7 +472,7 @@ mod tests {
         ]))];
         let result = Err(AgentError::Unknown(Box::new(original)));
         assert!(matches!(
-            encode_agent_reply(&result, &AgentCommand::Root),
+            encode_agent_reply(&result, &AgentCommand::Root {}),
             Err(CommandError::Capacity)
         ));
         assert_eq!(

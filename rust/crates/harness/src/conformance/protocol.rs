@@ -124,7 +124,7 @@ pub async fn verify(backend: &dyn Backend) -> Result {
         };
         let endpoint = backend.serving(policy).await?;
         let endpoint = endpoint.as_ref();
-        let AgentReply::Root { agent: root } = call(endpoint, &AgentCommand::Root).await?? else {
+        let AgentReply::Root { agent: root } = call(endpoint, &AgentCommand::Root {}).await?? else {
             return Err("Root did not reply with the admitted root".into());
         };
         let AgentReply::Children { items, next } = call(
