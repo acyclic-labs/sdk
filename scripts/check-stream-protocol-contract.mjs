@@ -57,9 +57,9 @@ try {
   assertFields("ChildrenPageResponse", [["hierarchy_version", 1], ["children", 2], ["next_after", 3]]);
   assertFields("TailRequest", [["path", 1], ["accepted", 2], ["durable_through", 3], ["at_least", 4]]);
   assertFields("HeadRequest", [["path", 1]]);
-  assertFields("HeadsRequest", [["paths", 1], ["children", 2], ["limit", 3], ["at_least", 4]]);
+  assertFields("HeadsRequest", [["paths", 1], ["children", 2], ["limit", 3], ["at_least", 4], ["projection", 5]]);
   assertFields("HeadObservation", [["head", 1]]);
-  assertFields("HeadsResponse", [["snapshot", 1], ["heads", 2], ["children", 3]]);
+  assertFields("HeadsResponse", [["snapshot", 1], ["heads", 2], ["children", 3], ["projection", 4]]);
   assertFields("FollowRequest", [["path", 1], ["from", 2], ["filter", 3], ["progress", 4], ["at_least", 5], ["when_absent", 6]]);
   assertFields("PathHead", [["tail", 1], ["last", 2], ["durable", 3], ["origin", 4]]);
   assertFields("ForkOrigin", [["source", 1], ["forked_at", 2], ["commit_id", 3]]);

@@ -349,12 +349,13 @@ impl StreamProvider for HttpStream {
                 if head.is_null() {
                     Ok(None)
                 } else {
-                    parse_head(head).map(Some)
+                    parse_head_projection(head, request.projection).map(Some)
                 }
             })
             .collect::<Result<Vec<_>, _>>()?;
 
         let view = crate::Heads {
+            projection: request.projection,
             snapshot: parse_revision(field(&value, "snapshot")?)?,
             heads,
             children: value
@@ -364,6 +365,9 @@ impl StreamProvider for HttpStream {
                 .transpose()?,
         };
         view.validate_for(&request)?;
+        if parse_head_projection_name(field(&value, "projection")?)? != request.projection {
+            return Err(StreamError::InvalidResponse);
+        }
         self.revisions()?.observe(&view.snapshot);
         Ok(view)
     }
@@ -640,7 +644,18 @@ mod http_follow_tests;
 #[cfg(test)]
 mod session_tests;
 
-fn parse_head(value: &Value) -> Result<crate::PathHead, StreamError> {
+fn parse_head_projection_name(value: &Value) -> Result<crate::HeadProjection, StreamError> {
+    match value.as_str() {
+        Some("history") => Ok(crate::HeadProjection::History),
+        Some("watermarks") => Ok(crate::HeadProjection::Watermarks),
+        _ => Err(StreamError::InvalidResponse),
+    }
+}
+
+fn parse_head_projection(
+    value: &Value,
+    projection: crate::HeadProjection,
+) -> Result<crate::PathHead, StreamError> {
     let head = crate::PathHead {
         tail: parse_u64(field(&value, "tail")?)?,
         last: value
@@ -661,7 +676,7 @@ fn parse_head(value: &Value) -> Result<crate::PathHead, StreamError> {
             })
             .transpose()?,
     };
-    head.validate()?;
+    head.validate_projection(projection)?;
     Ok(head)
 }
 

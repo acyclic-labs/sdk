@@ -163,6 +163,7 @@ async fn head_refuses_incoherent_cuts_without_another_provider_request()
 -> Result<(), Box<dyn std::error::Error>> {
     let snapshot = MemoryStream::default()
         .heads(HeadsRequest {
+            projection: Default::default(),
             paths: Vec::new(),
             children: None,
             limit: 1,
@@ -191,6 +192,7 @@ async fn head_refuses_incoherent_cuts_without_another_provider_request()
         });
         let server = Server::new(vec![Reply::ok(json!({
             "snapshot":snapshot,
+            "projection":"history",
             "heads":[{
                 "tail":tail.to_string(), "durable":durable.to_string(),
                 "last":sequence.map(record), "origin":origin,

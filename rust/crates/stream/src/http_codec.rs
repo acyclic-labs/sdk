@@ -233,7 +233,7 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                 .map(|children| request_json("children/page", &children.encode_to_vec()))
                 .transpose()?;
             Ok(with_at_least(
-                json!({ "paths": request.paths.iter().map(ToString::to_string).collect::<Vec<_>>(), "children": children, "limit": request.limit }),
+                json!({ "paths": request.paths.iter().map(ToString::to_string).collect::<Vec<_>>(), "children": children, "limit": request.limit, "projection": match request.projection { crate::HeadProjection::History => "history", crate::HeadProjection::Watermarks => "watermarks" } }),
                 &wire.at_least,
             ))
         }

@@ -666,6 +666,11 @@ mod http {
             Some("heads") => {
                 let item = object(value)?;
                 let result = Object::new();
+                set(
+                    &result,
+                    "projection",
+                    &JsValue::from_str(string(field(item, "projection")?)?),
+                )?;
                 set(&result, "snapshot", &revision_js(field(item, "snapshot")?)?)?;
                 set(
                     &result,

@@ -23,6 +23,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
             return Err(StreamError::Unavailable);
         };
         let request = crate::HeadsRequest {
+            projection: Default::default(),
             paths: vec![paths[0].clone(), paths[1].clone(), path("coherent/absent")?],
             children: Some(ChildrenPageRequest {
                 parent: Some(path("coherent")?),
@@ -47,6 +48,32 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
             if record.value.as_ref() != [generation] || record.commit_id != receipt.commit_id {
                 return Err(StreamError::Unavailable);
             }
+        }
+        let mut offsets = request.clone();
+        offsets.projection = crate::HeadProjection::Watermarks;
+        let projected = provider.heads(offsets.clone()).await?;
+        projected.validate_for(&offsets)?;
+        if projected.snapshot != view.snapshot
+            || projected
+                .heads
+                .iter()
+                .zip(&view.heads)
+                .any(|(offsets, full)| match (offsets, full) {
+                    (None, None) => false,
+                    (Some(offsets), Some(full)) => {
+                        offsets.tail != full.tail
+                            || offsets.durable < full.durable
+                            || offsets.last.is_some()
+                            || offsets.origin.is_some()
+                    }
+                    _ => true,
+                })
+        {
+            return Err(StreamError::Unavailable);
+        }
+        // A response for another projection cannot stand in for this request.
+        if projected.validate_for(&request) != Err(StreamError::InvalidResponse) {
+            return Err(StreamError::Unavailable);
         }
         let children = view.children.ok_or(StreamError::Unavailable)?;
         if children.children.len() != 2

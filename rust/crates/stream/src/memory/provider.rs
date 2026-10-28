@@ -1,13 +1,23 @@
-fn head_at(state: &State, path: &StreamPath) -> Result<Option<crate::PathHead>, StreamError> {
+fn head_at(
+    state: &State,
+    path: &StreamPath,
+    projection: crate::HeadProjection,
+) -> Result<Option<crate::PathHead>, StreamError> {
     state
         .paths
         .get(path)
         .map(|stream| {
             Ok(crate::PathHead {
                 tail: stream.tail,
-                last: last_record(stream),
+                last: (projection == crate::HeadProjection::History)
+                    .then(|| last_record(stream))
+                    .flatten(),
                 durable: 0,
-                origin: state.paths.origin(path)?,
+                origin: if projection == crate::HeadProjection::History {
+                    state.paths.origin(path)?
+                } else {
+                    None
+                },
             })
         })
         .transpose()
@@ -184,7 +194,7 @@ impl StreamProvider for MemoryStream {
         let heads = request
             .paths
             .iter()
-            .map(|path| head_at(&state, path))
+            .map(|path| head_at(&state, path, request.projection))
             .collect::<Result<_, _>>()?;
         if let Some(children) = &mut request.children {
             children.limit = children
@@ -192,6 +202,7 @@ impl StreamProvider for MemoryStream {
                 .min(request.limit - request.paths.len() as u32);
         }
         let view = crate::Heads {
+            projection: request.projection,
             snapshot: self.revisions.at(state.decision),
             heads,
             children: request

@@ -22,13 +22,17 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
     ) -> impl std::future::Future<Output = Result<PathHead, StreamError>> + ProviderTask {
         async move {
             let request = HeadsRequest {
+                projection: Default::default(),
                 paths: vec![path],
                 children: None,
                 limit: 1,
                 at_least: RevisionCut::default(),
             };
             let mut view = self.heads(request).await?;
-            if view.heads.len() != 1 || view.children.is_some() {
+            if view.projection != HeadProjection::History
+                || view.heads.len() != 1
+                || view.children.is_some()
+            {
                 return Err(StreamError::InvalidResponse);
             }
             let head = view.heads.pop().flatten().ok_or(StreamError::NotFound)?;
@@ -44,13 +48,15 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         async move {
             let view = self
                 .heads(HeadsRequest {
+                    projection: Default::default(),
                     paths: Vec::new(),
                     children: None,
                     limit: 1,
                     at_least: at_least.clone(),
                 })
                 .await?;
-            if !view.heads.is_empty()
+            if view.projection != HeadProjection::History
+                || !view.heads.is_empty()
                 || view.children.is_some()
                 || !at_least.proven_by(Some(&view.snapshot))
             {

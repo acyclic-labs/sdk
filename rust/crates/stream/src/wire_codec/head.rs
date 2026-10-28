@@ -3,6 +3,8 @@ use super::*;
 /// Validates the canonical mixed observation request before provider admission.
 pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<crate::HeadsRequest, StreamError> {
     let request = crate::HeadsRequest {
+        projection: projection_from_wire(value.projection)
+            .map_err(|_| StreamError::InvalidArgument)?,
         paths: value
             .paths
             .into_iter()
@@ -19,6 +21,7 @@ pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<crate::HeadsRequest,
 /// Encodes one mixed observation without splitting it into separate requests.
 pub fn heads_request_to_wire(value: crate::HeadsRequest) -> wire::HeadsRequest {
     wire::HeadsRequest {
+        projection: projection_to_wire(value.projection),
         paths: value
             .paths
             .into_iter()
@@ -33,6 +36,7 @@ pub fn heads_request_to_wire(value: crate::HeadsRequest) -> wire::HeadsRequest {
 /// Encodes the exact authority snapshot and its ordered observations.
 pub fn heads_to_wire(value: crate::Heads) -> wire::HeadsResponse {
     wire::HeadsResponse {
+        projection: projection_to_wire(value.projection),
         snapshot: Some(revision_to_wire(&value.snapshot)),
         heads: value
             .heads
@@ -47,12 +51,18 @@ pub fn heads_to_wire(value: crate::Heads) -> wire::HeadsResponse {
 
 /// Validates every head and the shared authority cut before exposing the view.
 pub fn heads_from_response(value: wire::HeadsResponse) -> Result<crate::Heads, StreamError> {
+    let projection = projection_from_wire(value.projection)?;
     Ok(crate::Heads {
+        projection,
         snapshot: issued_from_wire(value.snapshot)?,
         heads: value
             .heads
             .into_iter()
-            .map(|head| head.head.map(head_from_wire).transpose())
+            .map(|head| {
+                head.head
+                    .map(|head| head_observation_from_wire(head, projection))
+                    .transpose()
+            })
             .collect::<Result<_, _>>()?,
         children: value
             .children
@@ -63,6 +73,18 @@ pub fn heads_from_response(value: wire::HeadsResponse) -> Result<crate::Heads, S
 
 /// Validates an atomic head without reconstructing it through other operations.
 pub fn head_from_wire(value: wire::PathHead) -> Result<crate::PathHead, StreamError> {
+    head_observation_from_wire(value, crate::HeadProjection::History)
+}
+
+fn head_observation_from_wire(
+    value: wire::PathHead,
+    projection: crate::HeadProjection,
+) -> Result<crate::PathHead, StreamError> {
+    if projection == crate::HeadProjection::Watermarks
+        && (value.last.is_some() || value.origin.is_some())
+    {
+        return Err(StreamError::InvalidResponse);
+    }
     let mut head = crate::PathHead {
         tail: value.tail,
         last: value.last.map(record).transpose()?,
@@ -70,10 +92,25 @@ pub fn head_from_wire(value: wire::PathHead) -> Result<crate::PathHead, StreamEr
         origin: None,
     };
     // Preserve refusal ordering before decoding an independently malformed origin.
-    head.validate()?;
+    head.validate_projection(projection)?;
     head.origin = value.origin.map(fork_origin_from_wire).transpose()?;
-    head.validate()?;
+    head.validate_projection(projection)?;
     Ok(head)
+}
+
+fn projection_from_wire(value: i32) -> Result<crate::HeadProjection, StreamError> {
+    match wire::HeadProjection::try_from(value) {
+        Ok(wire::HeadProjection::History) => Ok(crate::HeadProjection::History),
+        Ok(wire::HeadProjection::Watermarks) => Ok(crate::HeadProjection::Watermarks),
+        Err(_) => Err(StreamError::InvalidResponse),
+    }
+}
+
+fn projection_to_wire(value: crate::HeadProjection) -> i32 {
+    match value {
+        crate::HeadProjection::History => wire::HeadProjection::History as i32,
+        crate::HeadProjection::Watermarks => wire::HeadProjection::Watermarks as i32,
+    }
 }
 
 /// Projects one provider observation, retaining the original record bytes.

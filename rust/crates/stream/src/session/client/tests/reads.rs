@@ -216,6 +216,7 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
     tree(&provider).await?;
     let client = local(&provider)?;
     let request = crate::HeadsRequest {
+        projection: Default::default(),
         paths: vec![
             StreamPath::new("tree/a/status")?,
             StreamPath::new("tree/absent")?,
@@ -228,6 +229,12 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
     let actual = client.heads(request.clone(), 0).await?;
     assert_eq!(actual, expected);
     assert!(actual.heads[1].is_none());
+    let mut offsets = request.clone();
+    offsets.projection = crate::HeadProjection::Watermarks;
+    assert_eq!(
+        client.heads(offsets.clone(), 0).await?,
+        provider.heads(offsets).await?
+    );
     assert_eq!(
         actual
             .children
@@ -284,6 +291,7 @@ async fn remote_provider_reads_and_pages_never_use_unary_rpcs() -> TestResult {
         provider.children_page(page("tree", 10)?).await?
     );
     let view = crate::HeadsRequest {
+        projection: Default::default(),
         paths: vec![StreamPath::new("tree/a/status")?],
         children: Some(page("tree", 10)?),
         limit: 3,

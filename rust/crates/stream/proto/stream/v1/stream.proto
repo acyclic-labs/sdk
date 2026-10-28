@@ -101,11 +101,18 @@ message HeadRequest {
 }
 
 // All observations, including absence, belong to one authority snapshot.
+enum HeadProjection {
+  HEAD_PROJECTION_HISTORY = 0;
+  // Read accepted/durable offsets without fetching a record or fork descriptor.
+  HEAD_PROJECTION_WATERMARKS = 1;
+}
+
 message HeadsRequest {
   repeated string paths = 1;
   ChildrenPageRequest children = 2;
   uint32 limit = 3;
   repeated Revision at_least = 4;
+  HeadProjection projection = 5;
 }
 
 message HeadObservation {
@@ -118,6 +125,7 @@ message HeadsResponse {
   // In exact request order, including explicit absent observations.
   repeated HeadObservation heads = 2;
   ChildrenPageResponse children = 3;
+  HeadProjection projection = 4;
 }
 
 message ForkOrigin {

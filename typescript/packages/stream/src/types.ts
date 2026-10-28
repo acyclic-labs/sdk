@@ -79,8 +79,9 @@ export type EncodedRecord = Record<Uint8Array>;
 export type ForkOrigin = PublicWire<WireForkOrigin, { readonly commitId: CommitId }>;
 export type PathHead = PublicWire<WirePathHead, { readonly last?: EncodedRecord; readonly origin?: ForkOrigin }>;
 /** Named paths and an optional children page at one authority snapshot. */
-export interface HeadsRequest { readonly paths: readonly string[]; readonly children?: ChildrenPageRequest; readonly limit: number; readonly atLeast?: readonly Revision[] }
-export interface Heads { readonly snapshot: Revision; readonly heads: readonly (PathHead | undefined)[]; readonly children?: ChildrenPage }
+export type HeadProjection = "history" | "watermarks";
+export interface HeadsRequest { readonly paths: readonly string[]; readonly children?: ChildrenPageRequest; readonly limit: number; readonly atLeast?: readonly Revision[]; readonly projection?: HeadProjection }
+export interface Heads { readonly snapshot: Revision; readonly heads: readonly (PathHead | undefined)[]; readonly children?: ChildrenPage; readonly projection: HeadProjection }
 export type AppendResult =
   | (PublicWire<WireAppendReceipt, { readonly commitId: CommitId }> & { readonly ok: true })
   | (PublicWire<WireTailConflict> & { readonly ok: false; readonly code: "tail_conflict" });

@@ -136,6 +136,10 @@ projections of `heads`, with one provider request and the same revision floor
 and response validation. Providers implement `heads` once; a forwarding adapter
 cannot substitute separate head observations for a mixed view. Revision waits
 park outside host write serialization, so later writes can satisfy their cut.
+`HeadProjection::Watermarks` returns accepted and durable offsets at that same
+snapshot without reading the last record or reconstructing inherited origin.
+The response identifies its projection; mismatched or incomplete observations
+are refused before they reach a consumer.
 
 Each handle retains a disposable Rust cache and catches up only new journal commands. Initial recovery and total retention are bounded by `BrowserStreamLimits` (default 65,536 commands and 256 MiB of journal bytes) and `MemoryLimits`. New work fails at capacity while exact retained replay still succeeds. Cancellation or persistence failure invalidates unpublished cached state. Live follow registers before reading and receives publication notifications over `BroadcastChannel`; subscribers catch up new durable commands on notification. Dropping the cursor releases its subscription. The provider does not run or schedule application work. Provider hooks use `BoxProviderFuture`, `BoxProviderStream`, `ProviderTask` and `ProviderPlatform`: native futures remain `Send` and native providers remain `Send + Sync`; WASM hooks retain event-loop ownership.
 
