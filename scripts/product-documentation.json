@@ -151,6 +151,7 @@
   "docs/proofs/wave1-client-contract.md",
   "docs/backends/anthropic.md",
   "docs/backends/bedrock.md",
+  "docs/backends/credentials.md",
   "docs/backends/inference.md",
   "docs/backends/local-inference.md",
   "docs/backends/oidc.md",
