@@ -12,7 +12,7 @@ proptest! {
     #[test]
     fn credential_admission_matches_the_header_syntax(value in prop_oneof![
         any::<String>(),
-        (0..=16 * 1024, any::<bool>()).prop_map(|(length, unicode)|
+        (0_usize..=16 * 1024, any::<bool>()).prop_map(|(length, unicode)|
             if unicode { "é".repeat(length) } else { "a".repeat(length) }),
     ]) {
         let expected = value.chars().any(|c| !c.is_whitespace())
@@ -43,12 +43,8 @@ proptest! {
 
 #[test]
 fn delimiters_and_provider_failure_fail_closed() {
-    for (value, valid) in [
-        ("a\0b".into(), false),
-        ("a\rb".into(), false),
-        ("a\nb".into(), false),
-    ] {
-        assert_eq!(valid_credential(&value), valid);
+    for value in ["a\0b", "a\rb", "a\nb"] {
+        assert!(!valid_credential(value));
     }
     let provider = CredentialProvider::new(|| {
         future::ready(Err(CredentialError::Provider(Box::new(

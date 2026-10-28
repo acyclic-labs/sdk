@@ -44,7 +44,6 @@ test('shared gate rejects codegen-only failures and scopes PR consumers; old che
     }
     writeFileSync(join(cwd, 'scripts/check-consumer-builds.mjs'),
       readFileSync(new URL('./check-consumer-builds.mjs', import.meta.url)));
-    mkdirSync(join(cwd, 'scripts/buildbox'));
     writeFileSync(join(cwd, 'scripts/process-capture.mjs'),
       readFileSync(new URL('./process-capture.mjs', import.meta.url)));
     writeFileSync(join(cwd, 'feature.mjs'), 'process.exit(Number(process.env.FEATURE_RC ?? 0));\n');
