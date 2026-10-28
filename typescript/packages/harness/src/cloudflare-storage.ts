@@ -31,8 +31,11 @@ export class SqliteEventStorage implements EventStorage {
   put(key: string, value: string): void {
     this.storage.sql.exec("INSERT INTO acyclic_host_metadata (domain, key, value) VALUES (?, ?, ?) ON CONFLICT(domain, key) DO UPDATE SET value = excluded.value", this.domain, key, value);
   }
-  entries(): [string, string][] {
-    return Array.from(this.storage.sql.exec("SELECT key, value FROM acyclic_host_metadata WHERE domain = ? ORDER BY key", this.domain), row => {
+  delete(key: string): void {
+    this.storage.sql.exec("DELETE FROM acyclic_host_metadata WHERE domain = ? AND key = ?", this.domain, key);
+  }
+  entries(prefix: string, after: string, limit: number): [string, string][] {
+    return Array.from(this.storage.sql.exec("SELECT key, value FROM acyclic_host_metadata WHERE domain = ? AND key >= ? AND key < ? AND key > ? ORDER BY key LIMIT ?", this.domain, prefix, `${prefix}\uffff`, after, limit), row => {
       if (typeof row.key !== "string" || typeof row.value !== "string") throw new Error("STEP sqlite-metadata-read failed; recovery: restore metadata from a verified SQLite backup");
       return [row.key, row.value];
     });
@@ -76,8 +79,8 @@ export class SqliteJournal {
   private maximumFrameBytes = 0;
   private readonly subscribers = new Set<{ after: number; ready: () => void }>();
   constructor(private readonly storage: SqliteStorage, private readonly domain: string, private readonly appended?: (changes: readonly StreamChange[]) => void) {
-    if (domain.length === 0 || domain.length > 256) {
-      throw new Error("STEP sqlite-open failed: invalid domain; recovery: choose a nonempty domain of at most 256 characters");
+    if (domain.length === 0) {
+      throw new Error("STEP sqlite-open failed: invalid domain; recovery: choose a nonempty domain");
     }
   }
 

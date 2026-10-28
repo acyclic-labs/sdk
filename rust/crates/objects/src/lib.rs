@@ -93,12 +93,6 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
     ("blobs/usage", "UsageRequest", "UsageResponse"),
 ];
 
-/// Largest caller-supplied PEM CA, client certificate, or private key.
-#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
-const MAX_PEM_BYTES: usize = 64 * 1024;
-/// Largest bearer credential, in bytes, that an SDK client accepts.
-pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
-
 /// Canonical semantic failure; infrastructure diagnostics remain operator-only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("Objects operation failed ({code:?})")]

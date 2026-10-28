@@ -21,7 +21,6 @@ pub const MINIMUM_REVISION: &str = "acyclic-min-revision-bin";
 /// Response metadata: the revision committing a write or serving a read.
 pub const REVISION: &str = "acyclic-revision-bin";
 
-const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// The largest deadline `grpc-timeout` can carry: eight digits of hours.
 const MAX_DEADLINE: std::time::Duration = std::time::Duration::from_secs(99_999_999 * 3600);
 
@@ -57,7 +56,7 @@ pub struct GrpcObjects {
     channel: Channel,
     authorization: Option<MetadataValue<Ascii>>,
     credential: Option<CredentialProvider>,
-    transfer_timeout: std::time::Duration,
+    transfer_timeout: Option<std::time::Duration>,
     revisions: Arc<RevisionTracker>,
 }
 
@@ -79,7 +78,7 @@ impl GrpcObjects {
         if timeout.is_zero() || timeout > MAX_DEADLINE {
             return Err(ConnectError::InvalidConfiguration);
         }
-        self.transfer_timeout = timeout;
+        self.transfer_timeout = Some(timeout);
         Ok(self)
     }
 
@@ -112,11 +111,7 @@ impl GrpcObjects {
     ) -> Result<Self, ConnectError> {
         let identity = identity
             .map(|(certificate, key)| {
-                if certificate.is_empty()
-                    || certificate.len() > crate::MAX_PEM_BYTES
-                    || key.is_empty()
-                    || key.len() > crate::MAX_PEM_BYTES
-                {
+                if certificate.is_empty() || key.is_empty() {
                     return Err(ConnectError::InvalidConfiguration);
                 }
                 Ok(Identity::from_pem(certificate, key))
@@ -136,7 +131,7 @@ impl GrpcObjects {
         let authorization = token.map(credential_header).transpose()?;
         let mut tls = ClientTlsConfig::new();
         if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > crate::MAX_PEM_BYTES {
+            if ca.is_empty() {
                 return Err(ConnectError::InvalidConfiguration);
             }
             tls = tls.ca_certificate(Certificate::from_pem(ca));
@@ -153,11 +148,7 @@ impl GrpcObjects {
             .map_err(ConnectError::PlatformVerifier)?;
             endpoint.tls_config_with_verifier(tls, Arc::new(verifier))?
         };
-        let channel = endpoint
-            // Every request carries its own deadline; the channel adds none.
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .connect()
-            .await?;
+        let channel = endpoint.connect().await?;
         Ok(Self::over(channel, authorization, credential))
     }
 
@@ -170,7 +161,7 @@ impl GrpcObjects {
             channel,
             authorization,
             credential,
-            transfer_timeout: REQUEST_TIMEOUT,
+            transfer_timeout: None,
             revisions: Arc::default(),
         }
     }
@@ -178,7 +169,7 @@ impl GrpcObjects {
     async fn request<T>(
         &self,
         value: T,
-        timeout: std::time::Duration,
+        timeout: Option<std::time::Duration>,
         floor: Option<&RevisionCut>,
     ) -> Result<Request<T>, Error> {
         let authorization = if let Some(provider) = &self.credential {
@@ -193,7 +184,9 @@ impl GrpcObjects {
                 .ok_or_else(|| Error::from(wire::ErrorCode::AccessDenied))?
         };
         let mut request = Request::new(value);
-        request.set_timeout(timeout);
+        if let Some(timeout) = timeout {
+            request.set_timeout(timeout);
+        }
         request
             .metadata_mut()
             .insert("authorization", authorization);
@@ -379,7 +372,7 @@ impl Blobs for GrpcObjects {
             wire::PutManifestRequest {
                 manifest: Some(convert::manifest(&manifest)),
             },
-            REQUEST_TIMEOUT
+            None
         )?;
         Ok(committed(
             convert::verified_put(&reply.0, digest, length)?,
@@ -414,7 +407,7 @@ impl Blobs for GrpcObjects {
             wire::HeadBlobRequest {
                 digest: Some(digest.into()),
             },
-            REQUEST_TIMEOUT,
+            None,
             read
         )?;
         let mut head = convert::headed(&reply.0, digest)?;
@@ -429,7 +422,7 @@ impl Blobs for GrpcObjects {
             wire::DeleteBlobRequest {
                 digest: Some(digest.into()),
             },
-            REQUEST_TIMEOUT
+            None
         )?;
         Ok(Deletion {
             outcome: convert::delete(&reply.0)?,
@@ -445,7 +438,7 @@ impl Blobs for GrpcObjects {
                 after: after.map(Into::into),
                 limit,
             },
-            REQUEST_TIMEOUT,
+            None,
             read
         )?;
         let mut page = convert::listed(&reply.0, after, limit)?;
@@ -466,7 +459,7 @@ impl Blobs for GrpcObjects {
                 root: root.as_bytes().to_vec(),
                 references: convert::wire_digests(&references),
             },
-            REQUEST_TIMEOUT
+            None
         )?;
         let mut retained = convert::retained(&reply.0);
         retained.revision = reply.1;
@@ -480,7 +473,7 @@ impl Blobs for GrpcObjects {
             wire::ReleaseRequest {
                 root: root.as_bytes().to_vec(),
             },
-            REQUEST_TIMEOUT
+            None
         )?;
         Ok(crate::Released {
             existed: reply.0.existed,
@@ -501,7 +494,7 @@ impl Blobs for GrpcObjects {
     }
 
     async fn usage(&self) -> Result<Usage, Error> {
-        let reply = call!(self, usage, wire::UsageRequest {}, REQUEST_TIMEOUT)?;
+        let reply = call!(self, usage, wire::UsageRequest {}, None)?;
         Ok(convert::usage(&reply.0))
     }
 }
