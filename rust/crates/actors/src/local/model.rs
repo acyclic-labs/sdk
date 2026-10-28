@@ -9,7 +9,6 @@
 //! The split publication shape (state, then effects) is the negative control.
 use super::*;
 use crate::guest::CodecIdentity;
-use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, ForkReceipt, ForkRequest,
     IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,

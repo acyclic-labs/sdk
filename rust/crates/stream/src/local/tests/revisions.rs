@@ -1,6 +1,5 @@
 //! Read-your-writes revisions: parking, foreign refusal and durable incarnations.
 use super::*;
-use crate::StreamProviderExt as _;
 use futures::StreamExt as _;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;

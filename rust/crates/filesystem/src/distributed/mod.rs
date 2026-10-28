@@ -19,6 +19,7 @@ use crate::{
     AsyncAuthorityStore, AuthorityAllocation, AuthorityError, AuthorityGuard, AuthorityWork,
     WorkspaceForkCommit, WorkspaceForkOutcome,
 };
+use acyclic_stream::StreamProviderExt as _;
 use bytes::Bytes;
 use futures::StreamExt;
 use std::sync::Arc;

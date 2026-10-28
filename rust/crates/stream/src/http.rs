@@ -1,5 +1,4 @@
 //! Authenticated hosted JSON transport implementing the canonical Stream provider.
-use crate::StreamProviderExt as _;
 use crate::{http_codec, http_validation, wire_codec, *};
 pub use acyclic_auth::credential::CredentialProvider;
 use async_trait::async_trait;
@@ -546,7 +545,7 @@ mod tests {
     #[tokio::test]
     async fn filtered_http_failure_does_not_record_on_its_parent()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::{StreamError, StreamPath, StreamProvider};
+        use crate::{StreamError, StreamPath, StreamProviderExt as _};
         use tracing::{Instrument, instrument::WithSubscriber};
         use tracing_subscriber::{Layer, layer::Context, prelude::*};
 

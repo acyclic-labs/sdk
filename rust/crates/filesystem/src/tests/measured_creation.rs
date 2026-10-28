@@ -283,7 +283,6 @@ mod source_bound_lost_ack {
         EmbeddedCapabilities, LazyWorkspace, LazyWorkspaceStore, LogicalObjectStore,
         MemoryLazyWorkspaceStore, StreamAuthorityStore,
     };
-    use acyclic_stream::StreamProviderExt as _;
     use acyclic_stream::{
         AppendRequest, CommitRequest, MemoryStream, ReadRequest, StreamError, StreamPath,
         StreamProvider,

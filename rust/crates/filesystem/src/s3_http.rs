@@ -13,6 +13,7 @@ use crate::{
     StreamAuthorityStore, Workspace,
 };
 use acyclic_stream::StreamProvider;
+use acyclic_stream::StreamProviderExt as _;
 use async_trait::async_trait;
 use base64::Engine as _;
 use bytes::{Buf, Bytes};

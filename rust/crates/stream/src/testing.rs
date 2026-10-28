@@ -6,7 +6,6 @@
 //! transport traffic. Clones share a ledger; use fresh wrappers for concurrent
 //! workloads whose budgets must be measured independently.
 
-use crate::StreamProviderExt as _;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},

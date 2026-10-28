@@ -2,9 +2,9 @@
 //! and generation resolution. These exercise the complete hosted RPC boundary.
 use super::*;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
-    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyObservation,
-    MemoryStream, ReadRequest, RecordStream, StreamError, StreamPath, StreamProvider,
+    AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
+    ForkReceipt, ForkRequest, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
+    StreamError, StreamPath, StreamProvider,
 };
 use std::sync::Mutex;
 use tonic::Code;

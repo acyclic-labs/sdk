@@ -1,5 +1,6 @@
 //! Atomic window and exact-expiry gate transactions on Streams.
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 use futures::StreamExt as _;
 
 /// Operation-window state stored beside generation authority in one Stream
