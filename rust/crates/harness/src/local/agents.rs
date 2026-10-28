@@ -207,7 +207,11 @@ impl LocalHarness {
                 executors: self.executors(),
                 limits: TurnLimits {
                     maximum_bytes: self.limits.file_bytes,
-                    max_steps: u32::try_from(self.limits.model_steps)
+                    max_steps: self
+                        .limits
+                        .model_steps
+                        .map(u32::try_from)
+                        .transpose()
                         .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
                     history_turns: None,
                 },
@@ -275,7 +279,11 @@ impl LocalHarness {
             executors: self.executors(),
             limits: TurnLimits {
                 maximum_bytes: self.limits.file_bytes,
-                max_steps: u32::try_from(self.limits.model_steps)
+                max_steps: self
+                    .limits
+                    .model_steps
+                    .map(u32::try_from)
+                    .transpose()
                     .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
                 history_turns: None,
             },
