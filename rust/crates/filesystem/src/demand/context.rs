@@ -66,9 +66,7 @@ struct CaptureRetirement {
     // The final packet may drop while the original leaf is locked. Keep both
     // control guards with the observer, which retires them outside that lock.
     #[cfg(any(test, feature = "native-watch"))]
-    header: crate::NativeAllocation,
-    #[cfg(any(test, feature = "native-watch"))]
-    _allocation: crate::NativeAllocation,
+    controls: Mutex<Option<[crate::NativeAllocation; 2]>>,
 }
 impl CaptureTransientCustody {
     #[cfg(test)]
@@ -95,8 +93,7 @@ impl CaptureTransientCustody {
         )?;
         let released = acyclic_native_runtime::OwnershipReleaseSignal::new(CaptureRetirement {
             retained: AtomicU64::new(0),
-            header,
-            _allocation: allocation,
+            controls: Mutex::new(Some([header, allocation])),
         });
         Ok(Arc::new(Self { released }))
     }
@@ -104,20 +101,32 @@ impl CaptureTransientCustody {
     pub(crate) fn owns_native_work(&self, work: &crate::NativeMaterializationWork) -> bool {
         self.released
             .state()
-            .header
-            .work()
-            .shares_allocation_context(work)
+            .controls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|controls| controls[0].work().shares_allocation_context(work))
     }
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn take_retained_bytes(&self) -> u64 {
         self.released.state().retained.swap(0, Ordering::AcqRel)
     }
     #[cfg(any(test, feature = "native-watch"))]
-    pub(crate) fn retire(self: Arc<Self>) -> u64 {
+    pub(crate) fn retire(self: Arc<Self>) -> (u64, [crate::NativeAllocation; 2]) {
         let barrier = self.released.release_barrier();
         drop(self);
         barrier.wait();
-        barrier.state().retained.swap(0, Ordering::AcqRel)
+        // Notification can race the signal's final Arc decrement. Move the
+        // guards to this observer, so neither can ever drop on the packet
+        // thread while that thread holds the original leaf lock.
+        let controls = barrier
+            .state()
+            .controls
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .expect("one capture retirement observer");
+        (barrier.state().retained.swap(0, Ordering::AcqRel), controls)
     }
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn transfer_retained_bytes(&self, bytes: u64) -> Result<(), crate::WorkError> {
