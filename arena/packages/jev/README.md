@@ -52,7 +52,7 @@ OpenRouter does not host the System One scorer, so `OpenRouterBackend` reads typ
 ordinary chat model through its next-token logprobs: options are listed as letters, one token is
 requested, and the letter logprobs become the distribution. This is the letter-logit baseline from the
 System One report. It needs a model with `logprobs` and `top_logprobs` (150+ on OpenRouter do), costs
-one request per question, and its calibration is the model's own.
+one request per question with up to26 options, and its calibration is the model's own. Larger option sets use a balanced tree of letter-labelled group choices: conditional probabilities multiply along each path and are normalized over all original options. Every group request is metered; no option is dropped.
 
 ```
 export OPENROUTER_API_KEY=sk-or-...
