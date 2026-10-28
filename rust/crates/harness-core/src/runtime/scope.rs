@@ -157,10 +157,19 @@ impl RuntimeScope {
             && limits.render_bytes <= self.limits.render_bytes
             && narrows(self.limits.model_steps, limits.model_steps)
             && narrows(
-                self.limits.model_events_per_step,
-                limits.model_events_per_step,
+                self.limits
+                    .model_events_per_step
+                    .map(std::num::NonZeroUsize::get),
+                limits
+                    .model_events_per_step
+                    .map(std::num::NonZeroUsize::get),
             )
-            && narrows(self.limits.tool_calls_per_step, limits.tool_calls_per_step)
+            && narrows(
+                self.limits
+                    .tool_calls_per_step
+                    .map(std::num::NonZeroUsize::get),
+                limits.tool_calls_per_step.map(std::num::NonZeroUsize::get),
+            )
             && limits.context_messages <= self.limits.context_messages
     }
 
