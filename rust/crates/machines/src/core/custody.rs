@@ -134,54 +134,99 @@ impl OperationRegistry {
         observation: CheckpointObservation,
         native: NativeBinding,
     ) -> Result<(), ProviderError> {
+        self.claim_projection(
+            driver,
+            operation,
+            CleanupProjection::Checkpoint(observation.id),
+            &native,
+            false,
+            |state: &mut Option<StoredCheckpoint>| {
+                if state.as_ref().is_some_and(|known| {
+                    known.native.as_ref().is_some_and(|known| known != &native)
+                        || known.observation.source != observation.source
+                        || known.observation.contract != observation.contract
+                        || !known.observation.forkable
+                }) {
+                    return Err(ProviderError::Conflict("checkpoint identity or native address has a different canonical binding; recovery: reconcile the original checkpoint before retrying".into()));
+                }
+                if let Some(known) = state {
+                    known.native = Some(native.clone());
+                } else {
+                    *state = Some(StoredCheckpoint { observation: observation.clone(), native: Some(native.clone()) });
+                }
+                Ok(None)
+            },
+        ).await
+    }
+
+    /// One conditional publication for native custody, its public identity and
+    /// optional initial event. Only definite conflicts repeat this pure projection.
+    pub(super) async fn claim_projection<D, T>(
+        &self,
+        driver: &D,
+        operation: OperationId,
+        projection: CleanupProjection,
+        native: &NativeBinding,
+        adopted: bool,
+        project: impl Fn(&mut Option<T>) -> Result<Option<MachineEvent>, ProviderError>,
+    ) -> Result<(), ProviderError>
+    where
+        D: NativeResources + ?Sized,
+        T: Serialize + serde::de::DeserializeOwned,
+    {
         if native.provider != driver.name() || native.handle.is_empty() {
-            return Err(ProviderError::Invalid("native checkpoint binding is invalid; recovery: repair the raw adapter's provider and address mapping".into()));
+            return Err(ProviderError::Invalid("native result binding is invalid; recovery: repair the raw adapter's provider identity and handle mapping".into()));
         }
-        let resource = NativeResource::Checkpoint(native.handle.clone());
+        let (path, resource) = match &projection {
+            CleanupProjection::Machine(id) => (
+                id.to_string(),
+                NativeResource::Machine(native.handle.clone()),
+            ),
+            CleanupProjection::Checkpoint(id) => (
+                format!("checkpoints/{id}"),
+                NativeResource::Checkpoint(native.handle.clone()),
+            ),
+        };
         let link_path = projection_path(operation, &resource)?;
-        let projection = CleanupProjection::Checkpoint(observation.id);
         let pending = loop {
             let suffix = format!("ops/{operation}");
             let op = self.journal.load::<StoredOperation>(&suffix).await?;
-            let checkpoint_path = format!("checkpoints/{}", observation.id);
-            let checkpoint = self
-                .journal
-                .load::<StoredCheckpoint>(&checkpoint_path)
-                .await?;
+            let row = self.journal.load::<T>(&path).await?;
             let link = self.journal.load::<CleanupProjection>(&link_path).await?;
-            let mut conditions = vec![op.condition(), checkpoint.condition(), link.condition()];
+            let mut conditions = vec![op.condition(), row.condition(), link.condition()];
             let mut record = op
                 .value
                 .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
-            if checkpoint.value.as_ref().is_some_and(|known| {
-                known.native.as_ref().is_some_and(|known| known != &native)
-                    || known.observation.source != observation.source
-                    || known.observation.contract != observation.contract
-                    || !known.observation.forkable
-            }) || link
+            let mut state = row.value;
+            let event = match if link
                 .value
                 .as_ref()
                 .is_some_and(|known| known != &projection)
             {
-                self.claim(driver, operation, &resource, false).await?;
-                return Err(ProviderError::Conflict("checkpoint identity or native address has a different canonical binding; recovery: reconcile the original checkpoint before retrying".into()));
-            }
-            let (pending, mut changes) = self
-                .ownership(&mut record, Some(driver.name()), &resource, false)
-                .await?;
-            conditions.append(&mut changes.conditions);
-            let state = if let Some(mut known) = checkpoint.value {
-                known.native = Some(native.clone());
-                known
+                Err(ProviderError::Conflict("native cleanup link has a different public identity; recovery: reconcile the original canonical projection before retrying".into()))
             } else {
-                StoredCheckpoint {
-                    observation: observation.clone(),
-                    native: Some(native.clone()),
+                project(&mut state)
+            } {
+                Ok(event) => event,
+                Err(error) => {
+                    // Acceptance already happened. Identity refusal must retain
+                    // the new address without replacing an existing projection.
+                    if matches!(error, ProviderError::Conflict(_)) {
+                        self.claim(driver, operation, &resource, adopted).await?;
+                    }
+                    return Err(error);
                 }
             };
+            let (pending, mut changes) = self
+                .ownership(&mut record, Some(driver.name()), &resource, adopted)
+                .await?;
+            conditions.append(&mut changes.conditions);
             let mut mutations = changes.mutations;
+            if let Some(event) = event {
+                mutations.push(self.journal.append(&format!("{path}/events"), &event)?);
+            }
             mutations.extend([
-                self.journal.append(&checkpoint_path, &Some(state))?,
+                self.journal.append(&path, &state)?,
                 self.journal.append(&link_path, &projection)?,
                 self.journal.append(&suffix, &Some(record))?,
             ]);

@@ -192,95 +192,22 @@ impl OperationRegistry {
         native: NativeBinding,
         adopted: bool,
     ) -> Result<(), ProviderError> {
-        if native.provider != driver.name() || native.handle.is_empty() {
-            return Err(ProviderError::Invalid(
-                "native result binding is invalid; recovery: repair the raw adapter's provider identity and handle mapping".into(),
-            ));
-        }
-        let pending = loop {
-            let operation_path = format!("ops/{operation}");
-            let machine_path = observation.id.to_string();
-            let op = self
-                .journal
-                .load::<StoredOperation>(&operation_path)
-                .await?;
-            let machine = self.journal.load::<StoredMachine>(&machine_path).await?;
-            let resource = NativeResource::Machine(native.handle.clone());
-            let link_path = super::custody::projection_path(operation, &resource)?;
-            let projection = super::custody::CleanupProjection::Machine(observation.id);
-            let link = self
-                .journal
-                .load::<super::custody::CleanupProjection>(&link_path)
-                .await?;
-            let mut conditions = vec![op.condition(), machine.condition(), link.condition()];
-            let mut record = op
-                .value
-                .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
-            let mut state = machine.value;
-            if state
-                .as_ref()
-                .and_then(|state| state.native.as_ref())
-                .is_some_and(|binding| binding != &native)
-                || link
-                    .value
-                    .as_ref()
-                    .is_some_and(|known| known != &projection)
-            {
-                // The native mutation already accepted a resource. Refusing its
-                // conflicting logical identity must not drop the new handle.
-                self.claim(
-                    driver,
-                    operation,
-                    &NativeResource::Machine(native.handle.clone()),
-                    adopted,
-                )
-                .await?;
-                return Err(ProviderError::Conflict(
-                    "machine identity has a different native binding; recovery: reconcile the original provider resource before retrying".into(),
-                ));
-            }
-            // Full addressing lives once in the machine projection; cleanup
-            // stores compact references to typed canonical native records in this commit.
-            let (pending, mut changes) = self
-                .ownership(
-                    &mut record,
-                    Some(driver.name()),
-                    &NativeResource::Machine(native.handle.clone()),
-                    adopted,
-                )
-                .await?;
-            conditions.append(&mut changes.conditions);
-            let mut mutations = changes.mutations;
-            mutations.push(self.journal.append(&link_path, &projection)?);
-            if let Some(event) = project(
-                &mut state,
-                &observation,
-                observation.changed_at_unix_ms,
-                self.limits.machine_events,
-            )? {
-                mutations.push(
-                    self.journal
-                        .append(&format!("{machine_path}/events"), &event)?,
-                );
-            }
-            if let Some(state) = &mut state {
-                state.native = Some(native.clone());
-            }
-            mutations.push(self.journal.append(&machine_path, &state)?);
-            mutations.push(self.journal.append(&operation_path, &Some(record))?);
-            if self
-                .journal
-                .publish(conditions, mutations, op.path, op.tail + 1)
-                .await?
-            {
-                break pending;
-            }
-        };
-        self.finish_claim(
+        self.claim_projection(
             driver,
             operation,
-            &NativeResource::Machine(native.handle),
-            pending,
+            super::custody::CleanupProjection::Machine(observation.id),
+            &native,
+            adopted,
+            |state: &mut Option<StoredMachine>| {
+                if state.as_ref().and_then(|state| state.native.as_ref()).is_some_and(|binding| binding != &native) {
+                    return Err(ProviderError::Conflict(
+                        "machine identity has a different native binding; recovery: reconcile the original provider resource before retrying".into(),
+                    ));
+                }
+                let event = project(state, &observation, observation.changed_at_unix_ms, self.limits.machine_events)?;
+                if let Some(state) = state { state.native = Some(native.clone()); }
+                Ok(event)
+            },
         )
         .await
     }
