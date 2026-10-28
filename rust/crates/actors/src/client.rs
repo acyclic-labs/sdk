@@ -460,12 +460,9 @@ async fn connect_authorized(
             endpoint.as_str().trim_end_matches('/').to_owned(),
             tonic_web_wasm_client::options::FetchOptions::new()
                 .redirect(tonic_web_wasm_client::options::Redirect::Error)
-                .response_limits(
-                    tonic_web_wasm_client::limits::UnaryResponseLimits::new(MAX_MESSAGE_BYTES)
-                        .ok_or_else(|| {
-                            Error::Configuration("response budget exceeds platform size".into())
-                        })?,
-                ),
+                .response_limits(tonic_web_wasm_client::limits::UnaryResponseLimits::new(
+                    MAX_MESSAGE_BYTES,
+                )),
         );
         let inner = wire::actors_service_client::ActorsServiceClient::with_interceptor(
             transport,
