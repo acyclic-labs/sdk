@@ -18,7 +18,7 @@ const clientConstructors = [
   ["WasmAgentClient", "wasmagentclient_new"],
   ["WasmAgentCommand", "wasmagentcommand_new"],
   ["WasmAgentControls", "wasmagentcontrols_new"],
-  ["WasmPageWindow", "wasmpagewindow_new"],
+  ["WasmExplorer", "wasmexplorer_new"],
 ] as const;
 const browserConstructors = [
   ["WasmReducer", "wasmreducer_new"],

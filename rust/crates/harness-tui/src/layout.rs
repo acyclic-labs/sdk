@@ -3,8 +3,6 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{Editor, buffer::slice};
-#[cfg(test)]
-thread_local! { pub(crate) static BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 /// One displayed grapheme, expanded tab cell, or collapsed paste marker.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,43 +47,9 @@ impl Default for Layout {
 }
 
 impl Layout {
-    /// Rebuild the open tail after appending text. The last two rows include
-    /// the final grapheme and the optional insertion-cursor row, so a joining
-    /// combining mark or emoji can change its preceding grapheme safely.
-    pub(crate) fn append_text(&mut self, text: &str) -> usize {
-        let changed = self.rows.len().saturating_sub(2);
-        let offset = self.rows.get(changed).map_or(0, |row| row.start);
-        // A tab that overflowed into this row was expanded at the preceding
-        // row's column. Preserve that checkpoint as well as the byte offset.
-        let tab_column = changed
-            .checked_sub(1)
-            .and_then(|at| self.rows.get(at))
-            .filter(|row| row.end == offset)
-            .and_then(|row| row.cells.last())
-            .map_or(0, |cell| cell.column + cell.width);
-        let mut tail = Self::from_tail(&Editor::new(slice(text, offset..)), self.width, tab_column);
-        for row in &mut tail.rows {
-            row.start += offset;
-            row.end += offset;
-            for cell in &mut row.cells {
-                cell.source.start += offset;
-                cell.source.end += offset;
-            }
-        }
-        self.rows.truncate(changed);
-        self.rows.extend(tail.rows);
-        changed
-    }
-
     /// Wrap without splitting a grapheme. Oversized glyphs become a one-cell
     /// replacement glyph; the original text and hit-test range are preserved.
     pub fn new(editor: &Editor, width: usize) -> Self {
-        Self::from_tail(editor, width, 0)
-    }
-
-    fn from_tail(editor: &Editor, width: usize, tab_column: usize) -> Self {
-        #[cfg(test)]
-        BUILDS.with(|builds| builds.set(builds.get() + 1));
         let width = width.max(1);
         let mut rows = vec![];
         let mut row = Row::default();
@@ -124,9 +88,8 @@ impl Layout {
                 column = 0;
             } else {
                 let symbol = if symbol == "\t" {
-                    let tab_column = if offset == 0 { tab_column } else { column };
                     " ".repeat(
-                        (editor.settings().tab_width - tab_column % editor.settings().tab_width)
+                        (editor.settings().tab_width - column % editor.settings().tab_width)
                             .min(width),
                     )
                 } else if symbol.chars().any(char::is_control) {

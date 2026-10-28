@@ -30,6 +30,7 @@ export {
   type WasmUnknownAgentError as UnknownAgentError,
   type WasmAgentSessionError as AgentSessionError,
   WasmWireSession as WireSession,
+  WasmExplorer,
   WasmStream,
   WasmSessionAuthority,
 } from "../generated/wasm/acyclic_harness_wasm.js";

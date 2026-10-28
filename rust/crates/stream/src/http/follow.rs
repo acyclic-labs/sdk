@@ -72,25 +72,6 @@ fn parse_records(value: &Value) -> Result<Vec<Record>, StreamError> {
         })
         .collect()
 }
-fn parse_children(value: &Value) -> Result<Vec<Child>, StreamError> {
-    value
-        .as_array()
-        .ok_or(StreamError::Unavailable)?
-        .iter()
-        .map(|value| {
-            Ok(Child {
-                tail_record: value
-                    .get("tailRecord")
-                    .map(|record| {
-                        parse_records(&Value::Array(vec![record.clone()]))
-                            .map(|mut records| records.remove(0))
-                    })
-                    .transpose()?,
-                path: parse_path(field(value, "path")?)?,
-            })
-        })
-        .collect()
-}
 fn parse_append(value: &Value) -> Result<AppendOutcome, StreamError> {
     if value["ok"] == true {
         Ok(AppendOutcome::Committed(AppendReceipt {

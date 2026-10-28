@@ -97,11 +97,6 @@ harness = false
 required-features = ["local-runner"]
 
 [[bench]]
-name = "client_demand"
-harness = false
-required-features = ["local-runner"]
-
-[[bench]]
 name = "write_validation"
 harness = false
 required-features = ["local-runner"]

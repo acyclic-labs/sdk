@@ -304,11 +304,7 @@ pub(crate) fn follow_from_wire(
 
 #[cfg(any(
     feature = "grpc",
-    all(feature = "http", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-#[cfg(any(
-    feature = "grpc",
+    all(feature = "session", not(target_arch = "wasm32")),
     all(feature = "http", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
@@ -331,6 +327,41 @@ pub fn children_page_from_wire(
             })
             .transpose()?,
         limit: value.limit,
+    })
+}
+
+/// Encodes a paginated children request as its generated wire representation.
+pub fn children_page_request_to_wire(
+    value: crate::ChildrenPageRequest,
+) -> wire::ChildrenPageRequest {
+    wire::ChildrenPageRequest {
+        tail_stream: value.tail_stream.map(|path| path.to_string()),
+        parent: value.parent.map(|path| path.to_string()),
+        after: value.after.map(|path| path.to_string()),
+        hierarchy_version: value
+            .hierarchy_version
+            .map(|version| Bytes::copy_from_slice(version.as_bytes())),
+        limit: value.limit,
+    }
+}
+
+/// Decodes a children page from its generated wire representation.
+pub fn children_page_from_response(
+    value: wire::ChildrenPageResponse,
+) -> Result<crate::ChildrenPage, StreamError> {
+    Ok(crate::ChildrenPage {
+        hierarchy_version: commit_id(&value.hierarchy_version)?,
+        children: value
+            .children
+            .into_iter()
+            .map(|child| {
+                Ok(crate::Child {
+                    tail_record: child.tail_record.map(record).transpose()?,
+                    path: path(child.path)?,
+                })
+            })
+            .collect::<Result<_, StreamError>>()?,
+        next_after: value.next_after.map(path).transpose()?,
     })
 }
 

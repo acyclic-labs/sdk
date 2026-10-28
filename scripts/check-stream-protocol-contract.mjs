@@ -85,14 +85,14 @@ try {
   const sessionMessages = new Map(session.messageType.map(message => [message.name, message]));
   const sessionService = session.service.find(item => item.name === "StreamSessionService");
   assert.deepEqual(sessionService.method.map(method => [method.name, method.clientStreaming, method.serverStreaming]), [["Session", true, true]]);
-  assertFields("SessionFollow", [["resource", 1], ["delivery", 2], ["preceding_commit_id", 3]], sessionMessages);
+  assertFields("SessionFollow", [["resource", 1], ["delivery", 2], ["preceding_commit_id", 3], ["until", 4]], sessionMessages);
   assertFields("SessionOpened", [["resume", 1], ["preceding_commit_id", 2]], sessionMessages);
   assertFields("SessionCursor", [["next", 1], ["opaque", 2]], sessionMessages);
   assertFields("SessionSubscription", [
-    ["channel", 1], ["resume", 2], ["credential", 3], ["filter", 4], ["follow", 10], ["actor_socket", 13], ["actor_call", 14],
+    ["channel", 1], ["resume", 2], ["credential", 3], ["filter", 4], ["follow", 10], ["actor_socket", 13], ["actor_call", 14], ["children_page", 15],
   ], sessionMessages);
   assertFields("SessionData", [
-    ["after", 1], ["accepted", 2], ["durable", 3], ["record", 10], ["actor_socket", 13], ["actor_call", 14], ["latest_value", 15],
+    ["after", 1], ["accepted", 2], ["durable", 3], ["record", 10], ["actor_socket", 13], ["actor_call", 14], ["latest_value", 15], ["children_page", 16],
   ], sessionMessages);
   assertReserved("SessionSubscription", [[11, 12], [12, 13]], ["children", "fs_publications"], sessionMessages);
   assertReserved("SessionData", [[11, 12], [12, 13]], ["child", "fs_publication"], sessionMessages);

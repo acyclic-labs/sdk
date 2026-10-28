@@ -29,6 +29,3 @@ pub use watermarks::watermarks_from_wire;
 mod status;
 #[cfg(any(feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]
 pub(crate) use status::status;
-
-#[cfg(any(test, feature = "grpc", all(feature = "wasm", target_arch = "wasm32")))]
-include!("read_at.rs");

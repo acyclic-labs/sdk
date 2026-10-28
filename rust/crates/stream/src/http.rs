@@ -3,7 +3,6 @@ use crate::{http_codec, http_validation, wire_codec, *};
 pub use acyclic_auth::credential::CredentialProvider;
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures::{StreamExt, stream};
 use prost::Message;
 use reqwest::{
     Client, Url,
@@ -223,38 +222,6 @@ impl HttpStream {
         http_validation::validate(route, &value).map_err(|_| StreamError::Unavailable)?;
         Ok(value)
     }
-    async fn read_page(&self, request: ReadRequest) -> Result<Vec<Record>, StreamError> {
-        let from = request.from;
-        let limit = request.limit;
-        let path = request.path.clone();
-        // Streams never shrink. Establish cursor validity before the read,
-        if from > self.tail(path).await? {
-            return Err(StreamError::OutOfRange);
-        }
-        let response = self
-            .request(
-                "read",
-                wire::ReadRequest {
-                    path: request.path.to_string(),
-                    from,
-                    limit,
-                }
-                .encode_to_vec(),
-            )
-            .await?;
-        let records = parse_records(&response)?;
-        if records.len() > limit as usize {
-            return Err(StreamError::Unavailable);
-        }
-        let mut next = from;
-        for record in &records {
-            if record.sequence != next {
-                return Err(StreamError::Unavailable);
-            }
-            next = next.checked_add(1).ok_or(StreamError::Unavailable)?;
-        }
-        Ok(records)
-    }
     async fn commit_response(&self, value: &Value) -> Result<CommitOutcome, StreamError> {
         if value["ok"] == true {
             let id = parse_id(field(value, "commitId")?)?;
@@ -441,7 +408,8 @@ impl StreamProvider for HttpStream {
         Ok(result)
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        Ok(stream::iter(self.read_page(request).await?.into_iter().map(Ok)).boxed())
+        // Reads and pages share the follow session; no JSON round trips.
+        self.session_client()?.read(request).await
     }
     async fn follow(
         &self,
@@ -478,35 +446,7 @@ impl StreamProvider for HttpStream {
         &self,
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
-        let limit = request.limit;
-        let value = self
-            .request(
-                "children/page",
-                wire::ChildrenPageRequest {
-                    tail_stream: request.tail_stream.map(|path| path.to_string()),
-                    parent: request.parent.map(|path| path.to_string()),
-                    after: request.after.map(|path| path.to_string()),
-                    hierarchy_version: request
-                        .hierarchy_version
-                        .map(|id| bytes::Bytes::copy_from_slice(id.as_bytes())),
-                    limit,
-                }
-                .encode_to_vec(),
-            )
-            .await?;
-        let children = parse_children(field(&value, "children")?)?;
-        if children.len() > limit as usize {
-            return Err(StreamError::Unavailable);
-        }
-        Ok(ChildrenPage {
-            hierarchy_version: parse_id(field(&value, "hierarchyVersion")?)?,
-            children,
-            next_after: value
-                .get("nextAfter")
-                .filter(|value| !value.is_null())
-                .map(parse_path)
-                .transpose()?,
-        })
+        self.session_client()?.children_page(request).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.commit_request(request, None).await

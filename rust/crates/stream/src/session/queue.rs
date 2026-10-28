@@ -61,6 +61,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 index,
                 total,
                 bytes,
+                item,
             }) => {
                 let next = index.checked_add(1).ok_or(StreamError::OutOfRange)?;
                 (
@@ -68,9 +69,13 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                         next,
                         opaque: Bytes::copy_from_slice(&total.to_le_bytes()),
                     },
-                    Item::ActorCall(bytes),
+                    item(bytes),
                     None,
                 )
+            }
+            Ok(Event::End) => {
+                self.end(identity.channel_id, wire_codec::session::END_CODE)?;
+                return Ok(());
             }
             Err(error) => {
                 if channel.revalidate.is_some()
@@ -93,13 +98,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     ));
                     return Ok(());
                 }
-                let channel = self
-                    .channels
-                    .get_mut(&identity.channel_id)
-                    .ok_or(StreamError::Unavailable)?;
-                channel.ending = Some(error);
-                self.sources.remove(identity.channel_id);
-                self.finish_if_drained(identity.channel_id)?;
+                self.end(identity.channel_id, error.code())?;
                 return Ok(());
             }
         };
@@ -154,6 +153,14 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         Ok(())
     }
 
+    /// Stops the source; `code` closes the channel after its queued frames.
+    fn end(&mut self, id: u64, code: &'static str) -> Result<(), StreamError> {
+        let channel = self.channels.get_mut(&id).ok_or(StreamError::Unavailable)?;
+        channel.ending = Some(code);
+        self.sources.remove(id);
+        self.finish_if_drained(id)
+    }
+
     fn finish_if_drained(&mut self, id: u64) -> Result<(), StreamError> {
         if self
             .channels
@@ -163,13 +170,13 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             return Ok(());
         }
         if let Some(channel) = self.channels.get(&id)
-            && let Some(error) = &channel.ending
+            && let Some(code) = channel.ending
         {
             self.controls.push_back(frame(
                 id,
                 channel.generation,
                 Body::Closed(wire::SessionClosed {
-                    code: error.code().into(),
+                    code: code.into(),
                     message: String::new(),
                 }),
             ));

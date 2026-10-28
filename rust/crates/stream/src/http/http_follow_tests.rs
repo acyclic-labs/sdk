@@ -40,7 +40,7 @@ impl Server {
         Self::with_body_mode(replies, None).await
     }
     async fn with_body_mode(replies: Vec<Reply>, mode: Option<BodyMode>) -> Self {
-        Self::with_body_mode_at(replies, mode, "/v1/stream/read").await
+        Self::with_body_mode_at(replies, mode, "/v1/stream/tail").await
     }
     async fn with_body_mode_at(
         replies: Vec<Reply>,
@@ -154,12 +154,6 @@ async fn request(socket: &mut TcpStream) -> (String, Value) {
 fn path() -> StreamPath {
     StreamPath::new("follow/test").unwrap()
 }
-fn record(sequence: u64) -> Value {
-    json!({"sequence":sequence.to_string(),"value":"eA==", "commitId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "committedAtMicros":"1"})
-}
-fn page(start: u64, length: u64) -> Value {
-    Value::Array((start..start + length).map(record).collect())
-}
 
 #[tokio::test]
 async fn request_path_typed_append_preserves_json_responses_and_validation_trace() {
@@ -204,24 +198,14 @@ async fn request_path_typed_append_preserves_json_responses_and_validation_trace
 }
 
 #[tokio::test]
-async fn truncated_unary_read_body_fails_without_retry() {
-    let server = Server::with_body_mode(
-        vec![Reply::ok(json!("1")), Reply::ok(page(0, 1))],
-        Some(BodyMode::Truncated),
-    )
-    .await;
+async fn truncated_unary_body_fails_without_retry() {
+    let server =
+        Server::with_body_mode(vec![Reply::ok(json!("1"))], Some(BodyMode::Truncated)).await;
     assert!(matches!(
-        server
-            .client
-            .read(ReadRequest {
-                path: path(),
-                from: 0,
-                limit: 1
-            })
-            .await,
+        server.client.tail(path()).await,
         Err(StreamError::Unavailable)
     ));
-    assert_eq!(server.requests().len(), 2);
+    assert_eq!(server.requests().len(), 1);
 }
 
 #[tokio::test]
@@ -229,7 +213,7 @@ async fn cancelling_a_pending_unary_body_closes_the_connection() {
     let (prefix_written, prefix) = oneshot::channel();
     let (peer_closed, closed) = oneshot::channel();
     let server = Server::with_body_mode(
-        vec![Reply::ok(json!("1")), Reply::ok(page(0, 1))],
+        vec![Reply::ok(json!("1"))],
         Some(BodyMode::Held {
             prefix_written,
             peer_closed,
@@ -237,11 +221,7 @@ async fn cancelling_a_pending_unary_body_closes_the_connection() {
     )
     .await;
     {
-        let reading = server.client.read(ReadRequest {
-            path: path(),
-            from: 0,
-            limit: 1,
-        });
+        let reading = server.client.tail(path());
         tokio::pin!(reading);
         tokio::select! {
             result = &mut reading => panic!("body completed while held: {}", result.is_ok()),
@@ -252,5 +232,5 @@ async fn cancelling_a_pending_unary_body_closes_the_connection() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(server.requests().len(), 2);
+    assert_eq!(server.requests().len(), 1);
 }

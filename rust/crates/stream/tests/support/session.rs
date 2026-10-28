@@ -59,6 +59,8 @@ pub(super) struct Counts {
     // Fixture locks are never nested and never cross an await.
     pub(super) traffic: Mutex<std::collections::BTreeMap<(usize, u64, u64), Traffic>>,
     pub(super) actors: AtomicUsize,
+    /// Calls served by the unary `StreamService` beside the session.
+    pub(super) unary: AtomicUsize,
     pub(super) acknowledgements: AtomicUsize,
     pub(super) windows: AtomicUsize,
     pub(super) changed: tokio::sync::Notify,
@@ -296,6 +298,7 @@ impl Fixture {
         });
         let (controls, _) = tokio::sync::broadcast::channel(16);
         let unary = grpc::Service::new(Arc::clone(&provider));
+        let unary_counts = Arc::clone(&counts);
         let host = Host {
             provider,
             counts: Arc::clone(&counts),
@@ -314,7 +317,15 @@ impl Fixture {
         }
         let server = tokio::spawn(
             builder
-                .add_service(wire::stream_service_server::StreamServiceServer::new(unary))
+                .add_service(
+                    wire::stream_service_server::StreamServiceServer::with_interceptor(
+                        unary,
+                        move |request| {
+                            unary_counts.unary.fetch_add(1, Ordering::Relaxed);
+                            Ok(request)
+                        },
+                    ),
+                )
                 .add_service(StreamSessionServiceServer::new(host))
                 .serve_with_incoming(incoming),
         );

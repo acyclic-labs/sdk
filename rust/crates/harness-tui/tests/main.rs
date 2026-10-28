@@ -36,6 +36,3 @@ mod terminal_regions;
 
 #[path = "cases/terminal_signals.rs"]
 mod terminal_signals;
-
-#[path = "cases/transcript_search.rs"]
-mod transcript_search;

@@ -333,14 +333,6 @@ fn serialize_js<T: serde::Serialize>(value: &T, object_maps: bool) -> Result<JsV
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-/// Generic page entries keep JSON object property access while using the same
-/// exact-integer and descriptor projection as typed contract outputs.
-pub(super) fn to_js_page_value(value: &serde_json::Value) -> Result<JsValue, JsValue> {
-    let js = json_to_js(value)?;
-    normalize_descriptor_lengths(&js, value)?;
-    Ok(js)
-}
-
 // Durable JSON keeps integral literals. Only admitted, ref-only contract
 // outputs pass through this projection: a validated FileDescriptor length is
 // represented as Number and every other 64-bit integer remains BigInt.

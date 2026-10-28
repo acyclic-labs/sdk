@@ -107,6 +107,7 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
             } else {
                 Bytes::new()
             },
+            until: 0,
         }),
         records,
     );

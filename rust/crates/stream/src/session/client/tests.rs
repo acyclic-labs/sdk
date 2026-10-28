@@ -21,6 +21,7 @@ mod latest;
 mod lifecycle;
 mod local;
 mod outbound;
+mod reads;
 mod recovery;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;

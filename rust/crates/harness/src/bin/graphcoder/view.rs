@@ -4,7 +4,7 @@ use acyclic_harness::local::{Event, agent_conversation::Conversation};
 use acyclic_harness::{
     agent::{IntentId, Phase},
     tui::{
-        InputEffect, PromptInput, Screen, Viewport,
+        Action, AppAction, Editor, InputEffect, PromptInput, Screen, TranscriptRows, Viewport,
         key_event::InputEvent,
         ratatui::{
             layout::{Position, Rect, Size},
@@ -24,15 +24,9 @@ const HISTORY: u64 = 64;
 /// Rows of the newest tool call's output shown while the agent works.
 const OUTPUT_ROWS: usize = 8;
 
-/// One transcript block: a prompt or an answer.
-struct Block {
-    prompt: bool,
-    text: String,
-}
-
 #[derive(Default)]
 struct View {
-    blocks: Vec<Block>,
+    transcript: TranscriptRows,
     /// Sent prompts not yet settled, by inbox sequence.
     pending: Vec<(u64, String)>,
     phase: Option<Phase>,
@@ -40,9 +34,9 @@ struct View {
     failure: Option<String>,
     /// Rows scrolled back from the live tail.
     back: usize,
-    lines: Vec<Line<'static>>,
     width: u16,
-    dirty: bool,
+    pending_dirty: bool,
+    search: Option<(String, usize)>,
 }
 
 impl View {
@@ -67,65 +61,36 @@ impl View {
                     .position(|(pending, _)| *pending == entry.inbox)
                     .map(|at| self.pending.remove(at).1);
                 if let Some(text) = sent.or(prompt) {
-                    self.blocks.push(Block { prompt: true, text });
+                    self.transcript.push(true, &text);
                 }
-                self.blocks.push(Block {
-                    prompt: false,
-                    text: answer,
-                });
+                self.transcript.push(false, &answer);
+                self.pending_dirty = true;
             }
             Event::Failed(error) => self.failure = Some(error),
             Event::Output => return Ok(()),
             Event::Status(status) => {
                 self.failure = None;
                 if matches!(status.phase, Phase::Idle | Phase::Done { .. }) {
+                    let before = self.pending.len();
                     self.pending.retain(|(inbox, _)| *inbox >= status.cursor);
+                    self.pending_dirty |= before != self.pending.len();
                 }
                 self.phase = Some(status.phase);
             }
         }
-        self.dirty = true;
         Ok(())
     }
 
-    /// Wrapped transcript rows for `width` columns, rebuilt only on change.
+    /// Append and transient-prompt changes leave settled rows wrapped once.
     fn rows(&mut self, width: u16) -> &[Line<'static>] {
-        if self.dirty || self.width != width {
+        if self.pending_dirty || self.width != width {
             self.width = width;
-            let width = usize::from(width.max(8)) - 2;
-            self.lines.clear();
-            let pending = self.pending.iter().map(|(_, text)| (true, text.as_str()));
-            let blocks = self
-                .blocks
-                .iter()
-                .map(|block| (block.prompt, block.text.as_str()));
-            for (prompt, text) in blocks.chain(pending) {
-                let style = if prompt {
-                    Style::default().add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                let mut first = true;
-                for line in text.lines() {
-                    let characters = line.chars().collect::<Vec<_>>();
-                    for chunk in characters
-                        .chunks(width)
-                        .chain(characters.is_empty().then_some(&[][..]))
-                    {
-                        let marker = match (prompt, first) {
-                            (true, true) => "› ",
-                            _ => "  ",
-                        };
-                        first = false;
-                        let row = format!("{marker}{}", chunk.iter().collect::<String>());
-                        self.lines.push(Line::styled(row, style));
-                    }
-                }
-                self.lines.push(Line::default());
-            }
-            self.dirty = false;
+            self.transcript.rows(width);
+            self.transcript
+                .pending(self.pending.iter().map(|(_, text)| text.as_str()));
+            self.pending_dirty = false;
         }
-        &self.lines
+        self.transcript.rows(width)
     }
 
     fn status(&self) -> String {
@@ -140,7 +105,10 @@ impl View {
                 self.failure.as_deref().unwrap_or_default()
             ),
             _ if self.busy() => "working · Esc or Ctrl+C interrupts".into(),
-            _ => "Enter sends · Ctrl+D quits".into(),
+            _ if self.transcript.truncated() => {
+                "earlier transcript omitted · Ctrl+F finds prompt text".into()
+            }
+            _ => "Enter sends · Ctrl+F finds prompt text · Ctrl+D quits".into(),
         }
     }
 }
@@ -217,11 +185,10 @@ pub async fn run(conversation: Arc<Conversation>, inline: bool) -> Result<u8, Fa
                 }
                 view.apply(&conversation, event).await?;
                 // A settled turn clears the output with its display.
-                let lines = events.output().lines().collect::<Vec<_>>();
-                output_rows = lines[lines.len().saturating_sub(OUTPUT_ROWS)..]
-                    .iter()
-                    .map(|line| Line::raw((*line).to_owned()))
+                output_rows = events.output().lines().rev().take(OUTPUT_ROWS)
+                    .map(|line| Line::raw(line.to_owned()))
                     .collect();
+                output_rows.reverse();
             }
             batch = keys.next() => {
                 for event in batch.ok_or("terminal input ended")?? {
@@ -236,11 +203,18 @@ pub async fn run(conversation: Arc<Conversation>, inline: bool) -> Result<u8, Fa
                                     conversation.decide(&id, approved).await?;
                                     continue;
                                 }
+                                if view.pending.len() >= HISTORY as usize
+                                    || text.len().saturating_add(view.pending.iter().map(|(_, text)| text.len()).sum::<usize>()) > 1024 * 1024
+                                {
+                                    view.failure = Some("pending prompt display is full; wait for a turn to settle".into());
+                                    input.editor = Editor::new(&text);
+                                    continue;
+                                }
                                 let id = acyclic_harness::OperationId::new().to_string();
                                 let inbox = conversation.send(&id, &text).await?;
                                 view.pending.push((inbox, text));
                                 view.back = 0;
-                                view.dirty = true;
+                                view.pending_dirty = true;
                             }
                             InputEffect::Interrupt => conversation.cancel().await?,
                             InputEffect::Quit => return Ok(0),
@@ -248,7 +222,19 @@ pub async fn run(conversation: Arc<Conversation>, inline: bool) -> Result<u8, Fa
                                 view.back = view
                                     .back
                                     .saturating_add_signed(rows)
-                                    .min(view.lines.len().saturating_sub(page));
+                                    .min(view.transcript.len().saturating_sub(page));
+                            }
+                            InputEffect::Host(Action::App(AppAction::Find)) => {
+                                let query = input.editor.text();
+                                let before = view.search.as_ref()
+                                    .filter(|(previous, _)| previous == query)
+                                    .map_or(view.transcript.len(), |(_, row)| *row);
+                                if let Some(row) = view.transcript.find(query, before)
+                                    .or_else(|| view.transcript.find(query, view.transcript.len()))
+                                {
+                                    view.back = view.transcript.len().saturating_sub(row + page);
+                                    view.search = Some((query.to_owned(), row));
+                                }
                             }
                             _ => {}
                         }

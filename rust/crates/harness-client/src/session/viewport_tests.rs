@@ -2,7 +2,7 @@
 //! Transport is deliberately unpolled: these tests measure display admission,
 //! fold memory and cancellation of lazy interests, not network credit.
 use super::*;
-use crate::{AgentId, AgentPath, PageDirection, PageWindow, PageWindowPolicy, WindowPage};
+use crate::{AgentId, AgentPath};
 use acyclic_stream::{runtime::Executor, session::transport};
 use std::sync::{
     Arc, Mutex,
@@ -52,50 +52,10 @@ fn client() -> (WireSession, Arc<Scheduler>) {
     )
 }
 
-struct Page {
-    rows: Vec<usize>,
-    before: Arc<usize>,
-    after: Arc<usize>,
-    total: usize,
-}
-impl WindowPage for Page {
-    type Item = usize;
-    type Key = usize;
-    type Cursor = usize;
-    type Generation = u64;
-    fn items(&self) -> &[usize] {
-        &self.rows
-    }
-    fn key(item: &usize) -> &usize {
-        item
-    }
-    fn before(&self) -> &Arc<usize> {
-        &self.before
-    }
-    fn after(&self) -> &Arc<usize> {
-        &self.after
-    }
-    fn generation(&self) -> &u64 {
-        &1
-    }
-    fn has_more_before(&self) -> bool {
-        *self.before > 0
-    }
-    fn has_more_after(&self) -> bool {
-        *self.after + 1 < self.total
-    }
-    fn retained_bytes(&self) -> u64 {
-        (std::mem::size_of::<Self>()
-            + self.rows.capacity() * std::mem::size_of::<usize>()
-            + 2 * (std::mem::size_of::<usize>() * 3)) as u64
-    }
-}
-
-/// The population lives on the server side of the fixture. Only page() results
-/// enter PageWindow; there is no client-side population/status map.
+/// The population lives on the server side of the fixture; the client keeps
+/// no population/status map.
 struct Tree {
     children: Vec<AgentPath>,
-    fetched: usize,
 }
 impl Tree {
     fn new(total: usize) -> Self {
@@ -107,17 +67,6 @@ impl Tree {
                         .unwrap()
                 })
                 .collect(),
-            fetched: 0,
-        }
-    }
-    fn page(&mut self, start: usize) -> Page {
-        let end = (start + 32).min(self.children.len());
-        self.fetched += 1;
-        Page {
-            rows: (start..end).collect(),
-            before: Arc::new(start),
-            after: Arc::new(end - 1),
-            total: self.children.len(),
         }
     }
     fn visible(
@@ -184,67 +133,6 @@ fn fill(view: &mut StreamView) {
         view.apply(&frame, sequence + 1).unwrap();
     }
     assert_eq!(view.records().len(), 4);
-}
-
-#[test]
-fn hundred_thousand_agent_tree_has_bounded_viewport() {
-    let started = std::time::Instant::now();
-    let mut tree = Tree::new(100_000);
-    let mut pages = PageWindow::new(PageWindowPolicy::new(2, 64, 4096).unwrap());
-    pages.reset(tree.page(0)).unwrap();
-    let (mut session, scheduler) = client();
-    let mut peak_bytes = 0;
-    for start in (0..100_000).step_by(32) {
-        if start > 0 {
-            let mut request = pages.begin(PageDirection::After).unwrap();
-            assert_eq!(request.as_ref().unwrap().cursor().copied(), Some(start - 1));
-            pages.finish(&mut request, Some(tree.page(start))).unwrap();
-        }
-        assert!(
-            pages.len() <= 64 && pages.page_count() <= 2 && pages.retained_page_bytes() <= 4096
-        );
-        let (streams, resources) = tree.visible(start);
-        let expected: Vec<_> = resources
-            .iter()
-            .map(|sub| validate_resource_subscription(sub).unwrap().0)
-            .collect();
-        session.replace_interests(streams, resources).unwrap();
-        assert_eq!(
-            session.retained_bytes(),
-            0,
-            "scroll-out must evict old payloads"
-        );
-        assert_eq!(session.followed_interests(), 12);
-        assert_eq!(session.retained_views(), 12);
-        assert!(session.resources.keys().all(|key| expected.contains(key)));
-        for view in session
-            .views
-            .values_mut()
-            .chain(session.resource_views.values_mut())
-        {
-            fill(&mut view.view);
-        }
-        assert!(session.retained_bytes() <= 12 * 8192);
-        peak_bytes = peak_bytes.max(session.retained_bytes());
-        // Exactly one shared pool task, no work or timers per idle agent.
-        assert_eq!(scheduler.tasks.lock().unwrap().len(), 1);
-        assert_eq!(scheduler.sleeps.load(Ordering::Relaxed), 0);
-    }
-    assert_eq!(tree.fetched, 3125);
-    session.clear().unwrap();
-    assert_eq!(
-        (
-            session.followed_interests(),
-            session.retained_views(),
-            session.retained_bytes()
-        ),
-        (0, 0, 0)
-    );
-    eprintln!(
-        "100000 agents: pages<=2 rows<=64 follows=12 display_bytes_peak={peak_bytes} idle_follows=0 elapsed={:?}",
-        started.elapsed()
-    );
-    scheduler.tasks.lock().unwrap().clear();
 }
 
 #[test]

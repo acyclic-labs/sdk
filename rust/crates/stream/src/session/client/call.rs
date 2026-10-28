@@ -1,4 +1,4 @@
-//! Finite Actors replies on the existing authenticated, credited session pool.
+//! Finite one-shot replies on the existing authenticated, credited session pool.
 use super::*;
 
 impl Client {
@@ -21,18 +21,48 @@ impl Client {
         {
             return Err(StreamError::InvalidArgument);
         }
-        // No acknowledgement/resume cursor is useful for a non-replayable call.
+        self.reply(
+            Kind::ActorCall(invocation.clone()),
+            credential,
+            maximum_reply_bytes,
+        )
+        .await
+    }
+
+    /// Reads one page of direct children on the shared session, with the
+    /// semantics of [`crate::StreamProvider::children_page`]. The host must
+    /// authorize `streams/list` on the parent; each child is returned only
+    /// when the credential may list it, and its tail record only when it may
+    /// follow that stream. A page is a pure read: a lost connection reissues
+    /// it until its first fragment arrives and fails afterwards.
+    pub async fn children_page(
+        &self,
+        request: crate::ChildrenPageRequest,
+        credential: u32,
+    ) -> Result<crate::ChildrenPage, StreamError> {
+        let reply = self
+            .reply(
+                Kind::ChildrenPage(wire_codec::children_page_request_to_wire(request)),
+                credential,
+                wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
+            )
+            .await?;
+        wire_codec::children_page_from_response(
+            wire::ChildrenPageResponse::decode(reply).map_err(|_| StreamError::InvalidResponse)?,
+        )
+    }
+
+    async fn reply(
+        &self,
+        kind: Kind,
+        credential: u32,
+        maximum_reply_bytes: usize,
+    ) -> Result<Bytes, StreamError> {
+        // No acknowledgement/resume cursor is useful for a one-shot reply.
         // Dropping this cursor still returns all queued frame credit and removes
         // the interest through the same cancellation owner as a follow.
         let source = self
-            .open_subscription(
-                Kind::ActorCall(invocation.clone()),
-                cursor(0),
-                false,
-                false,
-                None,
-                credential,
-            )
+            .open_subscription(kind, cursor(0), false, false, None, credential)
             .await?;
         futures::pin_mut!(source);
         let mut reply = Vec::new();
@@ -51,13 +81,12 @@ impl Client {
                     .map_err(|_| StreamError::Capacity)?;
                 total = Some(length);
             }
-            let Some(Item::ActorCall(chunk)) = data.item else {
-                return Err(StreamError::InvalidResponse);
-            };
+            let chunk = wire_codec::session::reply_chunk(data.item.as_ref())
+                .ok_or(StreamError::InvalidResponse)?;
             if chunk.len() > length - reply.len() {
                 return Err(StreamError::InvalidResponse);
             }
-            reply.extend_from_slice(&chunk);
+            reply.extend_from_slice(chunk);
             if reply.len() == length {
                 return Ok(reply.into());
             }

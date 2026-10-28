@@ -12,8 +12,6 @@ mod progress_registry;
 mod stall;
 
 #[cfg(feature = "test-support")]
-mod client_transitions;
-#[cfg(feature = "test-support")]
 mod history_selection;
 #[cfg(feature = "test-support")]
 mod model_tool_call;

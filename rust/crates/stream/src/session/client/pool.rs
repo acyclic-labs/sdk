@@ -405,6 +405,10 @@ impl Pool {
             Some(Body::Data(data)) => self.data(node, id, input.generation, data, length, epoch),
             Some(Body::Closed(closed)) => {
                 let error = Self::closed(route, id, &closed);
+                if route.progress.ended() {
+                    // A finite channel's last skipped-prefix cut precedes its end.
+                    self.flush_watermark(id)?;
+                }
                 let route = self.routes.remove(&id).ok_or(StreamError::Unavailable)?;
                 if let Some(error) = error {
                     self.executor.spawn(Box::pin(async move {
@@ -414,7 +418,7 @@ impl Pool {
                 Ok(())
             }
             Some(Body::Moved(moved)) => {
-                if matches!(route.kind, Kind::ActorCall(_)) {
+                if !route.resumable() {
                     self.reject(id, StreamError::Unavailable);
                     return Ok(());
                 }
@@ -516,6 +520,15 @@ impl Pool {
     }
     /// End a route with the server's status after its earlier records.
     fn closed(route: &mut Route, id: u64, closed: &wire::SessionClosed) -> Option<StreamError> {
+        // Only an opened bounded follow ends cleanly; anywhere else "end" is a
+        // protocol error, and a checked follow never ends unconfirmed.
+        if closed.code == wire_codec::session::END_CODE
+            && route.opened
+            && matches!(&route.kind, Kind::Follow(follow) if follow.until != 0)
+        {
+            route.progress.end();
+            return None;
+        }
         let error = StreamError::from_session_close(&closed.code);
         if matches!(&route.kind, Kind::Follow(follow) if !follow.preceding_commit_id.is_empty())
             && let Some(ready) = route.ready.take()
@@ -567,7 +580,8 @@ impl Pool {
             (Kind::Follow(follow), _) => {
                 wire_codec::session::follow_sequence(follow.delivery, route.received, &data)?
             }
-            (Kind::ActorCall(_), Some(Item::ActorCall(_))) => {
+            (Kind::ActorCall(_), Some(Item::ActorCall(_)))
+            | (Kind::ChildrenPage(_), Some(Item::ChildrenPage(_))) => {
                 wire_codec::session::actor_call_sequence(
                     route.received,
                     &route.received_opaque,
@@ -580,7 +594,10 @@ impl Pool {
         route.received_opaque = after.opaque.clone();
         let item = if route.raw {
             Received::Frame(frame(id, generation, Body::Data(data)))
-        } else if matches!(route.kind, Kind::Follow(_) | Kind::ActorCall(_)) {
+        } else if matches!(
+            route.kind,
+            Kind::Follow(_) | Kind::ActorCall(_) | Kind::ChildrenPage(_)
+        ) {
             Received::Data(data)
         } else {
             return Err(StreamError::Unavailable);

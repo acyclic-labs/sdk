@@ -48,21 +48,15 @@ mod screen;
 #[cfg(feature = "tui")]
 mod scrollbar;
 #[cfg(feature = "tui")]
-mod transcript_search;
-#[cfg(feature = "tui")]
-pub use transcript_search::{TranscriptSearch, transcript_matches};
-#[cfg(feature = "tui")]
 mod thinking;
+#[cfg(feature = "tui")]
+mod transcript;
 #[cfg(feature = "tui")]
 pub use thinking::Thinking;
 #[cfg(feature = "tui")]
-mod transcript_rows;
+pub use transcript::TranscriptRows;
 #[cfg(feature = "tui")]
 mod widget;
-#[cfg(feature = "tui")]
-mod wrapped_lines;
-#[cfg(feature = "tui")]
-pub use transcript_rows::TranscriptRows;
 
 #[cfg(feature = "tui")]
 pub use completion::{
@@ -97,15 +91,11 @@ pub use prompt_input::{InputEffect, PromptInput};
 pub use ratatui;
 #[cfg(feature = "tui")]
 pub use widget::{PromptWidget, Viewport};
-#[cfg(feature = "tui")]
-pub use wrapped_lines::{RowPosition, RowWindow, Top, WrappedLines};
 
 #[cfg(feature = "tui")]
-mod transcript_view;
+mod transcript_anchor;
 #[cfg(feature = "tui")]
-pub use transcript_view::{
-    TranscriptAnchor, TranscriptOrigin, TranscriptPart, move_transcript, view_transcript,
-};
+pub use transcript_anchor::{RowPosition, TranscriptAnchor, TranscriptOrigin, TranscriptPart};
 
 #[cfg(feature = "tui")]
 pub use screen::{Screen, ScreenAreas};

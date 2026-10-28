@@ -67,42 +67,6 @@ impl Client {
         .map_err(|error| status(&error))?;
         Ok(())
     }
-
-    fn records(&self, path: StreamPath, from: u64, limit: Option<u32>) -> RecordStream {
-        let span = if limit.is_some() {
-            tracing::info_span!(
-                "acyclic.stream.grpc.read",
-                rev = from,
-                items = limit,
-                outcome = Empty,
-                error.kind = Empty
-            )
-        } else {
-            tracing::info_span!(
-                "acyclic.stream.grpc.follow",
-                rev = from,
-                outcome = Empty,
-                error.kind = Empty
-            )
-        };
-        let completion = Completion::new(span);
-        let context = completion.span.clone();
-        let cursor = RecordCursor {
-            client: self.clone(),
-            path,
-            next: from,
-            remaining: limit,
-            active: None,
-            buffered: Vec::new().into_iter(),
-            completion,
-        };
-        context
-            .scope(stream::unfold(cursor, |mut cursor| async move {
-                let item = cursor.next().await?;
-                Some((item, cursor))
-            }))
-            .boxed()
-    }
 }
 
 #[async_trait]
@@ -241,14 +205,10 @@ impl StreamProvider for Client {
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        // The first page opens the read, so an absent path or a start beyond the
-        // tail fails here as on every provider; later pages fail in the stream.
-        let mut records = self.records(request.path, request.from, Some(request.limit));
-        let first = records.next().await;
-        if let Some(Err(error)) = first {
-            return Err(error);
-        }
-        Ok(stream::iter(first).chain(records).boxed())
+        // A bounded follow on the shared session: no per-read RPC or deadline.
+        self.session()?
+            .read_with_ack(request, self.acknowledge_deliveries)
+            .await
     }
 
     async fn follow(
@@ -295,39 +255,7 @@ impl StreamProvider for Client {
         &self,
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
-        let body = wire::ChildrenPageRequest {
-            tail_stream: request.tail_stream.map(|path| path.to_string()),
-            parent: request.parent.map(|path| path.to_string()),
-            after: request.after.map(|path| path.to_string()),
-            hierarchy_version: request
-                .hierarchy_version
-                .map(|version| Bytes::copy_from_slice(version.as_bytes())),
-            limit: request.limit,
-        };
-        let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.children_page(request).await })
-            })
-            .await?;
-        decode_response(response, |response| {
-            Ok(ChildrenPage {
-                hierarchy_version: commit_id(&response.hierarchy_version)?,
-                children: response
-                    .children
-                    .into_iter()
-                    .map(|child| {
-                        Ok(Child {
-                            tail_record: child
-                                .tail_record
-                                .map(crate::wire_codec::record)
-                                .transpose()?,
-                            path: path(child.path)?,
-                        })
-                    })
-                    .collect::<Result<_, StreamError>>()?,
-                next_after: response.next_after.map(path).transpose()?,
-            })
-        })
+        self.session()?.children_page(request, 0).await
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
@@ -381,124 +309,3 @@ fn retry_identity(key: Option<IdempotencyKey>) -> Bytes {
         Bytes::copy_from_slice(key.as_bytes())
     })
 }
-
-/// A finite read cursor resumes after retryable transport loss.
-struct RecordCursor {
-    client: Client,
-    path: StreamPath,
-    next: u64,
-    remaining: Option<u32>,
-    active: Option<(
-        obs::Scoped<tonic::Streaming<wire::ReadResponse>>,
-        Completion,
-    )>,
-    buffered: std::vec::IntoIter<Record>,
-    completion: Completion,
-}
-
-impl RecordCursor {
-    async fn next(&mut self) -> Option<Result<Record, StreamError>> {
-        loop {
-            if self.remaining == Some(0) {
-                self.completion.ok();
-                return None;
-            }
-            if let Some(record) = self.buffered.next() {
-                if record.sequence < self.next {
-                    continue;
-                }
-                if record.sequence > self.next {
-                    return self.invalid(StreamError::Unavailable);
-                }
-                self.next = self.next.saturating_add(1);
-                if let Some(remaining) = &mut self.remaining {
-                    *remaining -= 1;
-                    if *remaining == 0 {
-                        self.completion.ok();
-                    }
-                }
-                return Some(Ok(record));
-            }
-            if self.active.is_none() {
-                match self.completion.span.scope(self.open()).await {
-                    Ok(active) => self.active = Some(active),
-                    Err(error) => return self.fail(error),
-                }
-            }
-            let (body, rpc) = self.active.as_mut()?;
-            let response = body.next().await;
-            match &response {
-                Some(Err(error)) => rpc.status(error),
-                None => rpc.ok(),
-                Some(Ok(_)) => {}
-            }
-            match response {
-                Some(Ok(response)) => {
-                    let token = response.delivery_token.clone();
-                    let records = match read_response(response, self.next, self.remaining) {
-                        Ok(records) => records,
-                        Err(error) => return self.invalid(error),
-                    };
-                    if self.client.acknowledge_deliveries && token.len() == 32 {
-                        let _ = self.client.acknowledge_delivery(token).await;
-                    }
-                    self.buffered = records;
-                }
-                Some(Err(error)) if !retryable(&error) => return self.fail(status(&error)),
-                None if self.remaining.is_some() => {
-                    self.completion.ok();
-                    return None;
-                }
-                Some(Err(_)) | None => {
-                    tokio::time::sleep(RETRY_DELAY).await;
-                    self.active = None;
-                }
-            }
-        }
-    }
-
-    fn invalid(&mut self, error: StreamError) -> Option<Result<Record, StreamError>> {
-        if let Some((_, rpc)) = &mut self.active {
-            rpc.invalid_response();
-        }
-        self.completion.invalid_response();
-        self.fail(error)
-    }
-
-    /// Delivered errors terminate the logical cursor.
-    fn fail(&mut self, error: StreamError) -> Option<Result<Record, StreamError>> {
-        self.completion.finish(Some(error.code()), None);
-        self.active = None;
-        self.buffered = Vec::new().into_iter();
-        self.remaining = Some(0);
-        Some(Err(error))
-    }
-
-    async fn open(
-        &self,
-    ) -> Result<
-        (
-            obs::Scoped<tonic::Streaming<wire::ReadResponse>>,
-            Completion,
-        ),
-        StreamError,
-    > {
-        let path = self.path.to_string();
-        let limit = self.remaining.ok_or(StreamError::InvalidArgument)?;
-        let body = wire::ReadRequest {
-            path,
-            from: self.next,
-            limit,
-        };
-        let (body, completion) = self
-            .client
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.read(request).await })
-            })
-            .await?;
-        Ok((completion.span.scope(body), completion))
-    }
-}
-
-/// Decodes one frame, which must be contiguous, not skip ahead, and respect the read limit.
-use crate::wire_codec::read_response_at as read_response;

@@ -67,6 +67,11 @@ message SessionSubscription {
     SessionFollow follow = 10;
     bytes actor_socket = 13; // RESERVED FOR actor-sockets: encoded Actors message
     bytes actor_call = 14; // canonical encoded Actors invocation; never auto-replayed
+    // One finite page of direct children, answered on the session exactly as
+    // StreamService.ChildrenPage answers it. resume is {0, empty} and filter is
+    // absent. A pure read: a client may retry it before any reply fragment
+    // arrives, but never splices fragments of two attempts.
+    ChildrenPageRequest children_page = 15;
   }
 }
 enum SessionDelivery {
@@ -82,6 +87,16 @@ message SessionFollow {
   // reject an absent/changed anchor without waiting for future appends, and
   // reject history replacement during delivery. No read-then-follow fallback.
   bytes preceding_commit_id = 3;
+  // Optional exclusive end sequence; 0 is an unbounded live follow. A bounded
+  // follow is the session read: it requires ALL delivery and a streams:/
+  // resource, resolves the stream like StreamService.Read (absent stream:
+  // not_found; resume.next beyond the tail: out_of_range), delivers records
+  // [resume.next, min(until, tail at open)) with the same credit, credential
+  // and anchor rules as any ALL follow, then closes with SessionClosed code
+  // "end". It never waits for appends. until <= resume.next ends with no data.
+  // Once opened, a bounded read fails on connection loss or placement moves;
+  // it must not resume by re-resolving its end against a different snapshot.
+  uint64 until = 4;
 }
 message SessionCursor {
   uint64 next = 1; // exclusive, next record / actor frame offset
@@ -110,6 +125,10 @@ message SessionData {
     // No reconnect/resume may splice or re-execute a partially returned call.
     bytes actor_call = 14;
     SessionLatestValue latest_value = 15;
+    // Fragments of ONE encoded ChildrenPageResponse, under the actor_call
+    // fragment rules (after.next counts chunks from 1; after.opaque is the
+    // 8-byte little-endian total length).
+    bytes children_page = 16;
   }
 }
 message SessionAck {
@@ -130,6 +149,8 @@ message SessionWindow {
   uint32 frames = 2;
 }
 message SessionClosed {
+  // A StreamError code, or "end" when a finite channel (a bounded follow)
+  // delivered its whole range. "end" is never an error.
   string code = 1;
   string message = 2;
 }
