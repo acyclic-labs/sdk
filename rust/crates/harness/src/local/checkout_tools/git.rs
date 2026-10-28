@@ -28,6 +28,13 @@ impl CheckoutTools {
         state: &mut State,
         workspace: &Arc<LocalWorkspace>,
     ) -> Result<ToolResult> {
+        // A parent names its spawned children as `agents/<name>` branches of
+        // its own checkout.
+        if let Some((agent, volumes)) = context.task().agent() {
+            self.workspace
+                .register_named_children(agent, volumes, &parsed.arguments)
+                .await?;
+        }
         match self
             .commands()
             .fs(

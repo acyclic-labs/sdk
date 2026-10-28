@@ -148,6 +148,19 @@ fn spawned_volume(
     ))
 }
 
+/// The volume spawned child `child` binds in place of its parent's volume
+/// `binding`: the one naming a host resolving a child's forked volume (its
+/// `agents/<name>` branch) shares with the spawn that created it.
+///
+/// # Errors
+/// When the derived volume reference is invalid.
+pub fn spawned_binding(child: &AgentPath, binding: &VolumeBinding) -> Result<VolumeRef, Error> {
+    if binding.volume.class() == VolumeClass::SessionShared {
+        return Ok(binding.volume.clone());
+    }
+    Ok(spawned_volume(child, binding)?.0)
+}
+
 /// The child's binding of `parent`'s volume `binding`, and how it comes to exist.
 fn plan(
     child: &AgentPath,

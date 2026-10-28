@@ -157,6 +157,7 @@ pub struct Bound<P: AuthorityProvider + ?Sized + 'static, O: 'static> {
     volumes: Arc<Host<P, O>>,
     clock: Arc<dyn Clock>,
     handler: Arc<dyn acyclic_actors::guest::Handler>,
+    spawns: Arc<FilesystemSpawnVolumes<P, O>>,
 }
 
 impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
@@ -171,6 +172,7 @@ impl<P: AuthorityProvider + ?Sized + 'static, O> Clone for Bound<P, O> {
             volumes: self.volumes.clone(),
             clock: self.clock.clone(),
             handler: self.handler.clone(),
+            spawns: self.spawns.clone(),
         }
     }
 }
@@ -224,6 +226,7 @@ where
         volumes: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
         within: ActorReference,
         turns: Turns,
+        cuts: Option<Arc<dyn super::ForkCuts>>,
         configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
     ) -> Result<Self, Error> {
         Self::on(
@@ -234,7 +237,7 @@ where
             },
             volumes,
             within,
-            turns,
+            (turns, cuts),
             configure,
         )
     }
@@ -264,6 +267,7 @@ where
         volumes: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
         within: ActorReference,
         turns: Turns,
+        cuts: Option<Arc<dyn super::ForkCuts>>,
         configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
     ) -> Result<Self, Error> {
         Self::on(
@@ -271,7 +275,7 @@ where
             TurnAdmission::LocalRoot,
             volumes,
             within,
-            turns,
+            (turns, cuts),
             configure,
         )
     }
@@ -288,7 +292,14 @@ where
             within,
         } = placement;
         let volumes = FilesystemHost::new(filesystem, &provider, None).map_err(turn)?;
-        Self::on(issuer, admission, volumes, within, turns, |turner| turner)
+        Self::on(
+            issuer,
+            admission,
+            volumes,
+            within,
+            (turns, None),
+            |turner| turner,
+        )
     }
 
     fn on(
@@ -296,7 +307,7 @@ where
         admission: TurnAdmission,
         volumes: Arc<Host<P, O>>,
         within: ActorReference,
-        turns: Turns,
+        (turns, cuts): (Turns, Option<Arc<dyn super::ForkCuts>>),
         configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
     ) -> Result<Self, Error> {
         let stream = volumes.filesystem.stream_provider();
@@ -313,12 +324,18 @@ where
             turns.approval_policy,
         )));
         let driver = ExecutorDriver::new(Arc::clone(&turner));
-        let spawns = Arc::new(FilesystemSpawnVolumes::new(
+        // A host keeping state beside its volumes (a lazy checkout) chooses
+        // each spawn's fork cut, so a child's project is a related fork.
+        let spawns = FilesystemSpawnVolumes::new(
             Arc::clone(&volumes),
             issuer.clone(),
             admission.clone(),
             maximum_bytes,
-        ));
+        );
+        let spawns = Arc::new(match cuts {
+            Some(cuts) => spawns.with_fork_cuts(cuts),
+            None => spawns,
+        });
         let handler = Arc::new(
             AgentHandler::new(crate::agent::actor_store(&stream)?, driver, turns.actors)
                 .map_err(|_| Error::Record("agent handler manifest"))?
@@ -329,7 +346,7 @@ where
             within.clone(),
             handler.clone(),
             turns.clock.clone(),
-            Some(spawns),
+            Some(spawns.clone()),
         )?);
         Ok(Self {
             issuer,
@@ -341,6 +358,7 @@ where
             volumes,
             clock: turns.clock,
             handler,
+            spawns,
         })
     }
 
@@ -351,18 +369,13 @@ where
         mut self,
         handler: Arc<dyn acyclic_actors::guest::Handler>,
     ) -> Result<Self, Error> {
-        let spawns = Arc::new(FilesystemSpawnVolumes::new(
-            self.volumes.clone(),
-            self.issuer.clone(),
-            self.admission.clone(),
-            self.maximum_bytes,
-        ));
+        // The guest composes the same spawns as this binding's own handler.
         self.agents = Arc::new(AgentHost::hosting(
             self.agents.provider().clone(),
             self.within.clone(),
             handler.clone(),
             self.clock.clone(),
-            Some(spawns),
+            Some(self.spawns.clone()),
         )?);
         self.handler = handler;
         Ok(self)

@@ -152,7 +152,8 @@ impl TurnContext for LocalContext {
             let context = local
                 .harness
                 .agent_context(&authority.grants, authority.content.clone())?
-                .with_execution_journal(Arc::clone(&authority.journal));
+                .with_execution_journal(Arc::clone(&authority.journal))
+                .for_agent(agent.path.clone(), agent.volumes.clone());
             let executor = executor
                 .with_context_manifest(manifest, authority.content.reader.clone())
                 .await?
@@ -168,8 +169,6 @@ impl TurnContext for LocalContext {
             let executor = executor
                 .with_agent_hooks(&context, turn, input, session_operation(&agent.path))
                 .await?;
-            #[cfg(not(any(test, feature = "hooks")))]
-            let _ = agent;
             Ok(executor)
         })
     }
@@ -316,6 +315,12 @@ impl LocalHarness {
                 .with_goals(self.goal_continuations)
                 .with_prompt(self.preset.prompt.as_deref())
         };
+        // A checkout's spawned children fork its retained lazy cut, so each
+        // child's project is a related fork the parent can diff and merge.
+        let cuts = self.workspace().map(|workspace| {
+            Arc::new(crate::local::workspace::LazyForkCuts(Arc::clone(workspace)))
+                as Arc<dyn crate::filesystem::ForkCuts>
+        });
         let bound = if let Some(verifier) = &self.served {
             let caller = verifier.caller(
                 &super::Custody {
@@ -330,10 +335,18 @@ impl LocalHarness {
                 Arc::clone(&self.files),
                 within,
                 turns,
+                cuts,
                 configure,
             )
         } else {
-            Bound::local_host(authority, Arc::clone(&self.files), within, turns, configure)
+            Bound::local_host(
+                authority,
+                Arc::clone(&self.files),
+                within,
+                turns,
+                cuts,
+                configure,
+            )
         }
         .map_err(storage)?;
         let platform: Arc<dyn crate::hosting::Platform> = Arc::new(LocalUser(Arc::downgrade(self)));

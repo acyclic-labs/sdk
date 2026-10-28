@@ -175,3 +175,72 @@ impl crate::filesystem::ForkCuts for LazyForkCuts {
         Box::pin(self.0.spawned_fork_cut(source, destination, operation))
     }
 }
+
+impl LocalWorkspace {
+    /// Registers each `agents/<name>` that `arguments` name as the branch of
+    /// `agent`'s spawned child `name`, when `agent` binds this checkout's
+    /// project: that child's project is a prepared lazy fork of this checkout,
+    /// bound into the workspace graph here the first time its parent names
+    /// it, in the same turn that spawned it. A bound fork is never registered
+    /// again, so a discarded branch stays discarded.
+    pub(in crate::local) async fn register_named_children(
+        &self,
+        agent: &crate::agent::AgentPath,
+        volumes: &[crate::agent::VolumeBinding],
+        arguments: &[String],
+    ) -> Result<()> {
+        let names: Vec<&str> = arguments
+            .iter()
+            .filter_map(|argument| argument.strip_prefix("agents/"))
+            .collect();
+        if names.is_empty() {
+            return Ok(());
+        }
+        let repository = self.view().workspace().id();
+        let mut project = None;
+        for binding in volumes {
+            let id = self
+                .filesystem
+                .workspace_id(&binding.volume.storage_name(&mut None)?)
+                .map_err(storage)?;
+            if id == repository {
+                project = Some(binding);
+                break;
+            }
+        }
+        let Some(project) = project else {
+            return Ok(());
+        };
+        let cancellation = acyclic_fs::CancellationToken::new();
+        for name in names {
+            // A name no spawn could carry names no child; git reports it.
+            let Ok(child) = crate::tools::spawned_child(agent, name) else {
+                continue;
+            };
+            let volume = crate::filesystem::spawned_binding(&child, project).map_err(storage)?;
+            let id = self
+                .filesystem
+                .workspace_id(&volume.storage_name(&mut None)?)
+                .map_err(storage)?;
+            let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
+            let prepared = self
+                .store
+                .load_lazy_workspace(id, &mut accounting)
+                .await
+                .map_err(storage)?
+                .and_then(|state| state.fork_origin)
+                .is_some_and(|origin| origin.phase == acyclic_fs::LazyForkPhase::Prepared);
+            if !prepared {
+                continue;
+            }
+            // The branch first: a stop before the binding below registers it
+            // again idempotently, and the bound fork then retires the name.
+            acyclic_fs::GitCompatRepository::new(repository, self.store.clone())
+                .register_branch_workspace(format!("agents/{name}"), id, None, false)
+                .await
+                .map_err(storage)?;
+            self.spawned_project_view(&volume).await?;
+        }
+        Ok(())
+    }
+}
