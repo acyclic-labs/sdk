@@ -180,23 +180,23 @@ enum FinalClose {
     Rebase(GenerationId),
 }
 
-/// Bounds applied when the last tool lease reconciles a fork with its parent.
+/// Optional policies applied when the last tool lease reconciles a fork with its parent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OperationReconcileLimits {
     /// Maximum immutable generations inspected while finding ancestry.
     pub maximum_generations: Option<u32>,
     /// Maximum semantic changes retained during planning.
-    pub maximum_changes: u32,
+    pub maximum_changes: Option<u32>,
     /// Maximum conflicts returned to the caller.
-    pub maximum_conflicts: u32,
+    pub maximum_conflicts: Option<u32>,
 }
 
 impl Default for OperationReconcileLimits {
     fn default() -> Self {
         Self {
             maximum_generations: None,
-            maximum_changes: 65_536,
-            maximum_conflicts: 1_024,
+            maximum_changes: None,
+            maximum_conflicts: None,
         }
     }
 }
@@ -207,8 +207,8 @@ mod kani_reconcile_limits_proof;
 
 fn validate_reconcile_limits(limits: OperationReconcileLimits) -> Result<(), WorkspaceError> {
     if limits.maximum_generations == Some(0)
-        || limits.maximum_changes == 0
-        || limits.maximum_conflicts == 0
+        || limits.maximum_changes == Some(0)
+        || limits.maximum_conflicts == Some(0)
     {
         return Err(WorkspaceError::JoinLimit);
     }
