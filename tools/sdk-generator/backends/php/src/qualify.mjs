@@ -2,8 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { gunzipSync } from "node:zlib";
-import { tarPayload } from "../../../../../scripts/archive-utils.mjs";
+import { readArchivePayload } from "../../../../../scripts/archive-utils.mjs";
 import { canonical, inventory, readGenerationReceipt, qualificationOutput, readInput, sha256, verifyInstalledPayload, runCli } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -18,9 +17,8 @@ const marker = "PASS: installed PHP descriptors, bytes, unsigned bits, optional 
 const nativeMarker = "PASS: native PHP gRPC client creation and shutdown";
 const packageName = "acyclic-sdk-transport-0.2.0-alpha.1.tar.gz";
 
-function archivePayload(bytes) {
-  if (!bytes.length || bytes.length > 32 * 1024 * 1024) throw new Error("archive exceeds size bound");
-  return tarPayload(gunzipSync(bytes, { maxOutputLength: 64 * 1024 * 1024 }), canonical, true);
+async function archivePayload(bytes) {
+  return (await readArchivePayload(bytes, { canonical, caseInsensitive: true })).payload;
 }
 function zipPayload(text) {
   const entries = JSON.parse(text), seen = new Set(), payload = new Map();
@@ -43,7 +41,7 @@ function zipPayload(text) {
 }
 
 // Commands and pins are injectable for offline staging; the CLI uses real tools.
-export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) {
+export async function qualify(args, { command = spawnSync, toolchain = pinned } = {}) {
   if (process.platform !== "win32" && command === spawnSync) throw new Error("PHP qualification requires the admitted Windows runtime");
   const packageRoot = realpathSync(args.package), authorityRoot = realpathSync(args.authority), runtime = realpathSync(args["php-home"]);
   const composer = realpathSync(args.composer), extension = realpathSync(args["grpc-extension"]), archiver = realpathSync(args.archiver), cache = realpathSync(args.cache);
@@ -119,7 +117,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   const archiveOptions = ["--format", "ustar", "--options", "gzip:!timestamp", "--mtime", "@1767225600", "--uid", "0", "--gid", "0", "--uname", "root", "--gname", "root"];
   const built = join(output, "package", packageName); mkdirSync(dirname(built));
   run("build-package", archiver, [...archiveOptions, "-czf", built, "-C", join(output, "package-source"), ...[...payload.keys()].sort()]);
-  const archive = readFileSync(built), builtPayload = archivePayload(archive);
+  const archive = readFileSync(built), builtPayload = await archivePayload(archive);
   if (archive.readUInt32LE(4) !== 0 || JSON.stringify([...builtPayload.keys()].sort()) !== JSON.stringify([...payload.keys()].sort())) throw new Error("built archive metadata or inventory differs");
   for (const [name, bytes] of payload) if (sha256(builtPayload.get(name)) !== sha256(bytes)) throw new Error("built package payload differs");
   const repositories = [{ type: "package", package: { ...sdk, dist: { type: "tar", url: pathToFileURL(built).href } } }];
