@@ -105,6 +105,7 @@ mod packet_cancellation;
 use packet_cache::{ProjectionCache, ProjectionConfig};
 mod packet_dispatch;
 mod packet_publication;
+mod packet_response;
 mod packet_router;
 mod packet_session;
 mod packet_workers;

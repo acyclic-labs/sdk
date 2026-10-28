@@ -25,15 +25,33 @@ struct Segment<'a> {
     writable: bool,
 }
 
-/// The actual queue head and guest ranges stay affine through used publication.
-struct VringPacket<'a> {
-    head: u16,
+/// Reused only while the caller pins this exact guest-memory generation.
+pub(super) struct VringScratch<'a> {
+    memory: &'a GuestRam,
     segments: FuseOwned<Vec<Segment<'a>>>,
+}
+
+impl<'a> VringScratch<'a> {
+    pub(super) fn new(
+        memory: &'a GuestRam,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Self, NativeMountError> {
+        Ok(Self {
+            memory,
+            segments: fuse_vec(0, work)?,
+        })
+    }
+}
+
+/// The actual queue head and guest ranges stay affine through used publication.
+struct VringPacket<'a, 'scratch> {
+    head: u16,
+    segments: &'scratch mut FuseOwned<Vec<Segment<'a>>>,
     readable: usize,
     writable: usize,
 }
 
-impl<'a> VringPacket<'a> {
+impl<'a, 'scratch> VringPacket<'a, 'scratch> {
     fn snapshot(
         memory: &'a GuestMemoryMmap<()>,
         head: u16,
@@ -41,10 +59,12 @@ impl<'a> VringPacket<'a> {
         capacity: usize,
         work: &crate::NativeMaterializationWork,
         indirect_enabled: bool,
+        segments: &'scratch mut FuseOwned<Vec<Segment<'a>>>,
     ) -> Result<Self, NativeMountError> {
+        segments.clear();
         let mut packet = Self {
             head,
-            segments: fuse_vec(capacity, work)?,
+            segments,
             readable: 0,
             writable: 0,
         };
@@ -109,7 +129,7 @@ impl<'a> VringPacket<'a> {
                 work.charge(Items.delta(1))?;
                 // A descriptor can cross several admitted RAM regions. Queue
                 // size bounds descriptors, not the number of mapped slices.
-                fuse_reserve(&mut packet.segments, 1, work)?;
+                fuse_reserve(packet.segments, 1, work)?;
                 packet.segments.push(Segment {
                     bytes: slice.map_err(transport_error)?,
                     writable,
@@ -209,12 +229,13 @@ impl<'a> VringPacket<'a> {
     }
 }
 
-fn pop_packet<'a>(
+fn pop_packet<'a, 'scratch>(
     vring: &mut PacketVring,
     memory: &'a Arc<GuestMemoryMmap<()>>,
     work: &crate::NativeMaterializationWork,
     indirect: bool,
-) -> Result<Option<VringPacket<'a>>, NativeMountError> {
+    segments: &'scratch mut FuseOwned<Vec<Segment<'a>>>,
+) -> Result<Option<VringPacket<'a, 'scratch>>, NativeMountError> {
     work.admit(crate::WorkCounters::UNCHARGED)?;
     // A control operation may have disabled this ring since the kick was read.
     if !vring.running() {
@@ -246,6 +267,7 @@ fn pop_packet<'a>(
         capacity,
         work,
         indirect,
+        segments,
     )
     .map(Some)
 }
@@ -258,15 +280,22 @@ fn pop_packet<'a>(
 pub(super) fn serve_vring_packet(
     session: &PacketSession,
     vring: &mut PacketVring,
-    memory: &GuestRam,
+    scratch: &mut VringScratch<'_>,
     buffers: &mut PacketBuffers,
     work: &crate::NativeMaterializationWork,
     hiprio: bool,
     features: RingFeatures,
 ) -> Result<QueueProgress, NativeMountError> {
     let result = (|| {
-        let memory = memory.memory();
-        let Some(packet) = pop_packet(vring, memory, work, features.indirect)? else {
+        let memory = scratch.memory.memory();
+        let Some(packet) = pop_packet(
+            vring,
+            memory,
+            work,
+            features.indirect,
+            &mut scratch.segments,
+        )?
+        else {
             return Ok(QueueProgress::Empty);
         };
         let input = buffers
@@ -283,8 +312,14 @@ pub(super) fn serve_vring_packet(
         let response = buffers.output.get_mut(..capacity).ok_or(libc::ENOBUFS)?;
         let running = session
             .publish(&request, response, |reply| {
-                let reply = IoSlice::new(reply.unwrap_or_default());
-                packet.complete(vring, memory.as_ref(), &[reply], work, features.event_idx)
+                let slices = reply.slices();
+                packet.complete(
+                    vring,
+                    memory.as_ref(),
+                    slices.as_ref().map_or(&[], |slices| slices.as_slice()),
+                    work,
+                    features.event_idx,
+                )
             })
             .map_err(super::packet_dispatch::PacketFailure::into_native_error)?;
         Ok(if running {

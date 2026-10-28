@@ -39,6 +39,13 @@ impl PacketReply<'_> {
         self.completion.length
     }
 
+    pub(super) fn payload(&self) -> Option<&[u8]> {
+        self.completion
+            .payload
+            .as_ref()
+            .map(|payload| payload.bytes.as_ref())
+    }
+
     pub(super) fn delivered(mut self) {
         if let Some(next) = self.next_phase {
             // A concurrent close must never be undone by late publication.

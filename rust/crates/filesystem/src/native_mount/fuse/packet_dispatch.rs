@@ -122,6 +122,7 @@ impl From<NativeMountError> for PacketFailure {
 /// Retains a shared view through the transport's physical reply publication.
 pub(super) struct PacketCompletion {
     pub(super) length: Option<usize>,
+    pub(super) payload: Option<FuseOwned<crate::kernel::OwnedSourceChunk>>,
     _view: Option<crate::native_mount::shared::view_table::ViewLease<FuseProjection>>,
     _work: Option<crate::NativeMaterializationWork>,
     views: Option<Box<PacketView>>,
@@ -147,6 +148,7 @@ impl PacketCompletion {
     pub(super) fn reply(length: usize) -> Self {
         Self {
             length: Some(length),
+            payload: None,
             _view: None,
             _work: None,
             views: None,
@@ -155,6 +157,7 @@ impl PacketCompletion {
     pub(super) fn no_reply() -> Self {
         Self {
             length: None,
+            payload: None,
             _view: None,
             _work: None,
             views: None,
@@ -165,6 +168,11 @@ impl PacketCompletion {
         view: crate::native_mount::shared::view_table::ViewLease<FuseProjection>,
     ) -> Self {
         self._view = Some(view);
+        self
+    }
+
+    fn retaining_payload(mut self, output: &mut PacketOutput<'_>) -> Self {
+        self.payload = output.payload.take();
         self
     }
 
@@ -233,6 +241,7 @@ impl FuseProjection {
             Ok(true) => Ok(PacketCompletion::no_reply().retaining_optional_work(retained_work)),
             Ok(false) => Ok(
                 PacketCompletion::reply(output.finish(request.unique, None)?)
+                    .retaining_payload(&mut output)
                     .retaining_optional_work(retained_work),
             ),
             Err(failure) if crate::native_mount::shared::outcome::stops_mount(&failure.0) => {
@@ -535,7 +544,7 @@ impl FuseProjection {
                 output.limit_payload(size as usize)?;
                 if request.opcode == 15 {
                     let bytes = self.read_handle(inode, handle, offset, size, work)?;
-                    output.bytes(&bytes.bytes)?;
+                    output.retain(bytes)?;
                 } else {
                     output.plus = request.opcode == 44;
                     let mut listing = Some(&mut *output);
