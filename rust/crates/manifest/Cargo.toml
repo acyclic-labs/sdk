@@ -20,7 +20,7 @@ prost-reflect = { workspace = true, features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-schemars = "=1.2.2"
+schemars = "=1.2.3"
 ts-rs = "=12.0.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

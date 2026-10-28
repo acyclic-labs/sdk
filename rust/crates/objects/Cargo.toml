@@ -67,7 +67,7 @@ acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability
 tracing-subscriber.workspace = true
 tracing-chrome.workspace = true
 axum.workspace = true
-parking_lot = "0.12"
+parking_lot = "0.13"
 rcgen = "0.14.10"
 tempfile = "3.27.0"
 tokio = { workspace = true, features = ["macros", "rt", "test-util"] }
@@ -80,7 +80,7 @@ workspace = true
 [dev-dependencies]
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
-syn = { version = "=3.0.6", features = ["full", "visit"] }
+syn = { version = "=3.0.9", features = ["full", "visit"] }
 tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt"] }
 
 [build-dependencies]

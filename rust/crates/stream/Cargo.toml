@@ -101,7 +101,7 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime", featu
 acyclic-test-support = { path = "../test-support" }
 axum = { workspace = true, features = ["ws"] }
 tonic-web.workspace = true
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 hyper = { version = "1.11.0", default-features = false, features = ["client", "http2"] }
 hyper-util.workspace = true
 rcgen = "0.14.10"
