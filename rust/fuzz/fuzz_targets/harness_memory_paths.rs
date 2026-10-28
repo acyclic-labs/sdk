@@ -3,6 +3,17 @@
 use libfuzzer_sys::fuzz_target;
 #[path = "../../crates/harness-core/src/memory_store/directory/conflicts.rs"]
 mod conflicts;
+
+fn paths_conflict(existing: &str, path: &str) -> bool {
+    existing != path
+        && (existing
+            .strip_prefix(path)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+            || path
+                .strip_prefix(existing)
+                .is_some_and(|suffix| suffix.starts_with('/')))
+}
+
 fuzz_target!(|data: &[u8]| {
     if data.len() > 65_536 {
         return;
@@ -25,8 +36,6 @@ fuzz_target!(|data: &[u8]| {
     }
     let paths: std::collections::BTreeMap<_, _> =
         input.0.into_iter().map(|name| (name, ())).collect();
-    let expected = paths
-        .keys()
-        .any(|name| conflicts::paths_conflict(name, &input.1));
+    let expected = paths.keys().any(|name| paths_conflict(name, &input.1));
     assert_eq!(conflicts::conflicts(&paths, &input.1), expected);
 });
