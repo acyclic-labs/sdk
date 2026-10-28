@@ -546,10 +546,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        let work = match &self.native_original {
-            Some(work) => work.clone(),
-            None => capture_meter(BOUNDARY_BUDGET, &self.cancellation)?,
-        };
+        let work = self.operation_work()?;
         self.checkout
             .publish(
                 permit,
@@ -572,28 +569,22 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
+        let work = self.operation_work()?;
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
         let base = checkout
             .private_candidate(
-                &mut crate::kernel::allocation::KernelAccounting::standalone(
-                    BOUNDARY_BUDGET,
-                    &self.cancellation,
-                ),
+                &mut crate::kernel::allocation::KernelAccounting::native(&work, &self.cancellation),
                 &self.cancellation,
             )
             .map_err(MountSourceError::from)?;
         let decision = checkout
-            .rebase_head(
-                self.config.limits.maximum_directory_page_entries,
-                WorkBudget::UNBOUNDED,
-                &self.cancellation,
-            )
+            .rebase_head(None, &work, &self.cancellation)
             .await
             .map_err(engine_error)?;
-        match decision.value {
+        match decision {
             RebaseDecision::Safe { .. } => {
-                self.record_advance(&mut checkout, &base).await?;
+                self.record_advance(&mut checkout, &base, &work).await?;
                 Ok(())
             }
             RebaseDecision::Conflicted { .. } => Err(MountSourceError::Stale),
@@ -606,28 +597,27 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
+        let work = self.operation_work()?;
         let mut checkout = self.checkout.lock().await;
         checkout.ensure_publication_resolved()?;
         let base = checkout
             .private_candidate(
-                &mut crate::kernel::allocation::KernelAccounting::standalone(
-                    BOUNDARY_BUDGET,
-                    &self.cancellation,
-                ),
+                &mut crate::kernel::allocation::KernelAccounting::native(&work, &self.cancellation),
                 &self.cancellation,
             )
             .map_err(MountSourceError::from)?;
         checkout
-            .refresh_head(WorkBudget::UNBOUNDED, &self.cancellation)
+            .refresh_head(&work, &self.cancellation)
             .await
             .map_err(engine_error)?;
-        self.record_advance(&mut checkout, &base).await
+        self.record_advance(&mut checkout, &base, &work).await
     }
 
     async fn record_advance(
         &self,
         checkout: &mut SharedCheckoutGuard<'_, A, O>,
         base: &Checkout<A, O>,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError>
     where
         A: AsyncAuthorityStore,
@@ -638,12 +628,11 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         }
         let root = NamespacePath::new(Vec::new(), self.config.limits)
             .map_err(MountSourceError::NamespacePath)?;
-        let work = capture_meter(BOUNDARY_BUDGET, &self.cancellation)?;
         let (installed, _allocation) = installed_changes(
             base,
             checkout,
             InstallScope::Subtree(&root),
-            &mut NativeDemandCarrier::Native(&work),
+            &mut NativeDemandCarrier::Native(work),
             &self.cancellation,
         )
         .await?;
