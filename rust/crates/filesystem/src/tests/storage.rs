@@ -26,7 +26,7 @@ fn object_kinds_digests_and_read_views_are_canonical() {
         ObjectKind::from_canonical_tag(9),
         Err(ObjectKindError::Unknown(9))
     );
-    assert_ne!(
+    assert_eq!(
         object_digest(b"bytes"),
         object_digest(b"bytes")
     );

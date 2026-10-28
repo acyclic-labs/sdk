@@ -40,6 +40,11 @@ pub trait Medium: Send + Sync + 'static {
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, u64)>, MediumError>;
+    /// Accounts for a `bytes` buffer the engine allocates on this medium's
+    /// behalf; free unless the medium meters its caller.
+    fn allocate(&self, _bytes: u64) -> Result<(), MediumError> {
+        Ok(())
+    }
 }
 
 /// The deterministic in-process medium.

@@ -145,6 +145,39 @@ async fn lazy_mount_routes_registered_volumes_and_requires_exact_grant() -> Resu
         b"bucket b"
     );
 
+    // A whole-volume grant on A never reads B's bytes through a reference
+    // rebuilt on A: the shared account holds them, but A has no record of them.
+    for path in ["b.txt", "a.txt"] {
+        let forged = FileRef::new(
+            volume_a.clone(),
+            path.into(),
+            file_b.version().into(),
+            file_b.descriptor().clone(),
+            file_b.display_name().into(),
+            &mut None,
+        )?;
+        assert!(matches!(
+            owner_store_a
+                .read(&forged, forged.descriptor().byte_length(), None, None)?
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            owner_store_a
+                .read_range(
+                    &forged,
+                    acyclic_fs::ByteRange {
+                        offset: 1,
+                        length: 3
+                    },
+                    None,
+                    None
+                )?
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+    }
+
     let no_grant = issuer.bootstrap_scope(
         "no-grant",
         &Capabilities::new([] as [String; 0]),

@@ -1,8 +1,12 @@
 use super::*;
 
-/// The record blob binding one file's descriptor and display name to its content.
+/// The record blob binding one file's volume, path, descriptor and display
+/// name to its content. Content blobs are account-wide, so a read serves a
+/// version only through this volume's record of it.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct ContentRecord {
+    pub(super) volume: String,
+    pub(super) path: String,
     pub(super) descriptor: FileDescriptor,
     pub(super) display_name: String,
     pub(super) content: String,
@@ -19,6 +23,24 @@ impl ObjectContentStore {
         }
         Digest::from_hex(file.version())
             .map_err(|_| Error::Invalid("Objects file version is not a blob digest".into()))
+    }
+
+    /// The content blob of `file`, once this volume's record binds it to the
+    /// file's path: a version staged in another volume, or at another path,
+    /// has no record here.
+    pub(super) async fn bound_content(&self, file: &FileRef) -> Result<Digest> {
+        let content = self.content_digest(file)?;
+        let record = Digest::of(&self.record(file)?);
+        match self.objects.head(record).await {
+            Ok(head) if head.references == [content] => Ok(content),
+            Ok(_) => Err(Error::Unauthorized(
+                "file is not bound to this Objects volume".into(),
+            )),
+            Err(error) if error.code == acyclic_objects::wire::ErrorCode::NotFound => Err(
+                Error::Unauthorized("file is not bound to this Objects volume".into()),
+            ),
+            Err(error) => Err(storage(error)),
+        }
     }
 
     pub(super) async fn read_exact(
@@ -38,7 +60,7 @@ impl ObjectContentStore {
         let read = self
             .objects
             .get(
-                self.content_digest(file)?,
+                self.bound_content(file).await?,
                 ByteRange::FULL,
                 maximum_bytes.min(self.maximum_bytes),
             )
@@ -82,6 +104,8 @@ impl ObjectContentStore {
         let content = self.content_digest(file)?;
         // A struct encodes deterministically: fixed field order, no maps.
         serde_json::to_vec(&ContentRecord {
+            volume: self.volume.storage_name(&mut None)?,
+            path: file.path().to_owned(),
             descriptor: file.descriptor().clone(),
             display_name: file.display_name().to_owned(),
             content: content.to_hex(),

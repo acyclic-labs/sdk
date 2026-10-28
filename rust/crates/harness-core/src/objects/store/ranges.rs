@@ -12,7 +12,7 @@ impl ObjectContentStore {
             .checked_add(range.length)
             .filter(|end| *end <= file.descriptor().byte_length())
             .ok_or_else(|| Error::Invalid("Objects range exceeds the file".into()))?;
-        let digest = self.content_digest(file)?;
+        let digest = self.bound_content(file).await?;
         if range.length == 0 {
             let head = self.objects.head(digest).await.map_err(storage)?;
             self.verify_length(file, head.length)?;

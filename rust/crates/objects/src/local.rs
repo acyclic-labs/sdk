@@ -110,6 +110,22 @@ fn sync_directory(path: &Path, durability: LocalDurability) -> std::io::Result<(
     }
 }
 
+/// Creates `directory` and its missing ancestors, syncing the parent of each
+/// directory this call created, or raced another creator to, so that no new
+/// name below survives a crash its directory entry does not.
+fn create_directories(directory: &Path, durability: LocalDurability) -> std::io::Result<()> {
+    if directory.is_dir() {
+        return Ok(());
+    }
+    let parent = directory.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+    create_directories(parent, durability)?;
+    match std::fs::create_dir(directory) {
+        Ok(()) => sync_directory(parent, durability),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => sync_directory(parent, durability),
+        Err(error) => Err(error),
+    }
+}
+
 impl LocalMedium {
     /// Opens `root`, claiming exclusive ownership for this process.
     pub async fn open(
@@ -230,7 +246,7 @@ impl Medium for LocalMedium {
                 return Ok(Created::Exists);
             }
             let parent = target.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
-            std::fs::create_dir_all(parent)?;
+            create_directories(parent, durability)?;
             let mut file = std::fs::File::create_new(&temporary)?;
             file.write_all(&bytes)?;
             sync(&file, durability)?;

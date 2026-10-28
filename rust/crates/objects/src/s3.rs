@@ -106,23 +106,36 @@ impl Medium for S3Medium {
             Some(offset) => self.store.list_with_offset(Some(&base), offset),
             None => self.store.list(Some(&base)),
         };
-        let mut out = listing
-            .map_ok(|meta| {
-                let key = meta
-                    .location
-                    .as_ref()
-                    .strip_prefix(self.prefix.as_str())
-                    .unwrap_or(meta.location.as_ref())
-                    .to_owned();
-                (key, meta.size)
-            })
-            .try_collect::<Vec<_>>()
-            .await
-            .map_err(failed)?;
-        // Some endpoints ignore the offset or return pages out of order.
-        out.retain(|(key, _)| key.starts_with(prefix) && after.is_none_or(|after| key.as_str() > after));
-        out.sort_unstable();
-        out.truncate(limit);
-        Ok(out)
+        let mut listing = listing.map_ok(|meta| {
+            let key = meta
+                .location
+                .as_ref()
+                .strip_prefix(self.prefix.as_str())
+                .unwrap_or(meta.location.as_ref())
+                .to_owned();
+            (key, meta.size)
+        });
+        // Keep the `limit` least matches, stopping once a lexical listing
+        // (required above) has them; names at or before an offset the
+        // endpoint ignored are skipped. A listing seen out of order is read
+        // to its end, still holding at most `limit` names.
+        let mut kept = std::collections::BTreeMap::new();
+        let mut previous: Option<String> = None;
+        let mut ordered = true;
+        while let Some((key, size)) = listing.try_next().await.map_err(failed)? {
+            ordered &= previous.as_deref().is_none_or(|previous| previous < key.as_str());
+            previous = Some(key.clone());
+            if !key.starts_with(prefix) || after.is_some_and(|after| key.as_str() <= after) {
+                continue;
+            }
+            kept.insert(key, size);
+            if kept.len() > limit {
+                kept.pop_last();
+            }
+            if ordered && kept.len() == limit {
+                break;
+            }
+        }
+        Ok(kept.into_iter().collect())
     }
 }
