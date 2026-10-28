@@ -2,8 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
-import { canonical, loadAuthority, qualificationOutput, readInput, sha256, within } from "../../../shared/authority.mjs";
+import { canonical, loadAuthority, qualificationOutput, readInput, runCli, sha256, within } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const artifact = "sdk-java-transport-0.2.0-alpha.1";
@@ -125,10 +124,7 @@ export function qualifyJvm(args, { command = spawnSync, toolchains } = {}) {
   put("qualification.json", JSON.stringify(result, null, 2) + "\n"); return result;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["language", "installation", "authority", "cache", "java-home", "output"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options });
-  if (Object.keys(options).some(name => !values[name])) throw new Error("--language, --installation, --authority, --cache, --java-home and --output are required");
+runCli(import.meta.url, values => {
   const result = qualifyJvm(values);
-  console.log(JSON.stringify({ scope: result.scope, installed_jar_sha256: result.installed_jar_sha256, qualification: resolve(values.output, "qualification.json") }, null, 2));
-}
+  return { scope: result.scope, installed_jar_sha256: result.installed_jar_sha256, qualification: resolve(values.output, "qualification.json") };
+}, ["language", "installation", "authority", "cache", "java-home", "output"]);

@@ -113,9 +113,6 @@ pub(super) fn validate_source_info(source: &SourceInfo, channel: &Channel) -> Re
     Ok(())
 }
 
-pub(super) fn release_version(version: &str) -> Result<Version, Error> {
-    stable_version(version)
-}
 /// Encode a documentation version as an injective, portable path segment.
 pub fn safe_version(version: &str) -> Result<String, Error> {
     if version.is_empty() {
@@ -132,10 +129,7 @@ pub fn safe_version(version: &str) -> Result<String, Error> {
         .as_bytes()
         .iter()
         .all(|byte| is_portable_version_byte(*byte))
-        && version != "."
-        && version != ".."
         && !version.ends_with('.')
-        && !version.ends_with(' ')
         && !is_windows_reserved_segment(version)
     {
         version.to_owned()
@@ -212,30 +206,5 @@ pub(super) fn titleize(value: &str) -> String {
 
 /// Return the schema generated directly from the output structs.
 pub fn schema_json() -> Result<serde_json::Value, Error> {
-    let mut schema = serde_json::to_value(schemars::schema_for!(DocsData))?;
-    let object = schema
-        .as_object_mut()
-        .ok_or_else(|| Error::Invalid("DocsData schema must be a JSON object".into()))?;
-    let required = object
-        .entry("required")
-        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
-    let required = required
-        .as_array_mut()
-        .ok_or_else(|| Error::Invalid("DocsData schema required must be an array".into()))?;
-    for field in ["packages", "search"] {
-        if !required.iter().any(|value| value == field) {
-            required.push(serde_json::Value::String(field.into()));
-        }
-    }
-    let properties = object
-        .get_mut("properties")
-        .and_then(serde_json::Value::as_object_mut)
-        .ok_or_else(|| Error::Invalid("DocsData schema properties are missing".into()))?;
-    for field in ["schema", "schemaVersion"] {
-        let property = properties.get_mut(field).ok_or_else(|| {
-            Error::Invalid(format!("DocsData schema property {field} is missing"))
-        })?;
-        property["const"] = serde_json::Value::String(DATA_SCHEMA_VERSION.into());
-    }
-    Ok(schema)
+    serde_json::to_value(schemars::schema_for!(DocsData)).map_err(Error::from)
 }

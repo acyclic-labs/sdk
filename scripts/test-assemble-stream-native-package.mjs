@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import test from "node:test";
 import { createRequire } from "node:module";
-import { assertNativeReceipt, verifyNativeAssembly, writeCompanionManifest } from "./assemble-stream-native-package.mjs";
+import { assertNativeReceipt, verifyNativeAssembly, qualifiedCompanionManifest } from "./assemble-stream-native-package.mjs";
 import { normalizeBuildInputs, rustMetadata } from "./build-stream-native.mjs";
 import { writeWasmReceiptFixture } from "./fixtures/wasm-receipt.mjs";
 import { validBuildInputs } from "./fixtures/native-build-inputs.mjs";
@@ -183,10 +183,10 @@ test("real maintained companions for every Rust target pack as public and pass p
       for (const [name, bytes] of [["native-targets.json", JSON.stringify(meta)], ["generation-manifest.json", generationBytes], ["producer-receipt.json", JSON.stringify(receipt)]]) {
         await writeFile(join(companion, name), bytes);
         await writeFile(join(attestation, name), bytes);
-        manifest.files.push(name);
       }
       await writeFile(join(companion, manifest.main), manifest.main);
-      await writeCompanionManifest(companion, manifest);
+      Object.assign(manifest, qualifiedCompanionManifest(manifest));
+      await json(join(companion, "package.json"), manifest);
       assert.equal(JSON.parse(await readFile(join(companion, "package.json"), "utf8")).private, false);
       const asset = `native/${parseTriple(selected).platformArchABI}.tgz`;
       // Pack the real generated directory using npm, including its actual files allowlist.

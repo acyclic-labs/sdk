@@ -3,8 +3,8 @@ import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
-import { tarEntries } from "../../../../../scripts/archive-utils.mjs";
-import { canonical, inventory, loadAuthority, qualificationOutput, readInput, sha256, verifyInstalledPayload, runCli } from "../../../shared/authority.mjs";
+import { tarPayload } from "../../../../../scripts/archive-utils.mjs";
+import { canonical, inventory, readGenerationReceipt, qualificationOutput, readInput, sha256, verifyInstalledPayload, runCli } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const read = name => readFileSync(join(directory, name));
@@ -20,15 +20,7 @@ const packageName = "acyclic-sdk-transport-0.2.0-alpha.1.tar.gz";
 
 function archivePayload(bytes) {
   if (!bytes.length || bytes.length > 32 * 1024 * 1024) throw new Error("archive exceeds size bound");
-  const entries = tarEntries(gunzipSync(bytes, { maxOutputLength: 64 * 1024 * 1024 })), seen = new Set(), payload = new Map();
-  for (const entry of entries) {
-    const name = entry.type === "5" ? entry.path.replace(/\/$/, "") : entry.path;
-    const key = name.toLowerCase();
-    if (!canonical(name) || seen.has(key) || !["0", "5"].includes(entry.type)) throw new Error("unsafe or duplicate archive member");
-    seen.add(key); if (entry.type === "0") payload.set(name, entry.body);
-  }
-  if (!payload.size) throw new Error("empty archive payload");
-  return payload;
+  return tarPayload(gunzipSync(bytes, { maxOutputLength: 64 * 1024 * 1024 }), canonical, true);
 }
 function zipPayload(text) {
   const entries = JSON.parse(text), seen = new Set(), payload = new Map();
@@ -56,10 +48,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   const packageRoot = realpathSync(args.package), authorityRoot = realpathSync(args.authority), runtime = realpathSync(args["php-home"]);
   const composer = realpathSync(args.composer), extension = realpathSync(args["grpc-extension"]), archiver = realpathSync(args.archiver), cache = realpathSync(args.cache);
   const output = qualificationOutput(args.output, [packageRoot, authorityRoot, runtime, composer, extension, archiver, cache, dirname(directory)]);
-  const receiptBytes = readFileSync(join(packageRoot, "generation-receipt.json")), receipt = JSON.parse(receiptBytes), approved = loadAuthority(authorityRoot);
-  if (receipt.schema !== "acyclic.sdk.php-producer-receipt.v1" || receipt.target !== "php" || receipt.authority !== "rust" || !Array.isArray(receipt.outputs)) throw new Error("unsupported generation receipt");
-  if (sha256(approved.bytes) !== receipt.authority_manifest_sha256 || approved.manifest.source_revision !== receipt.source_revision) throw new Error("generation authority differs");
-  if (targets.some(name => !approved.descriptors.has(name))) throw new Error("tested family lacks attested descriptors");
+  const { receiptBytes, receipt, approved } = readGenerationReceipt(join(packageRoot, "generation-receipt.json"), authorityRoot, "php", targets);
   const payload = new Map(), metadata = ["composer.json", "LICENSE", "NOTICE", "authority/rust-authority.json"], names = new Set();
   for (const name of receipt.outputs) {
     if (!canonical(name) || names.has(name.toLowerCase()) || (!metadata.includes(name) && !/^src\/.+\.php$/.test(name))) throw new Error("unsafe, duplicate or unexpected package output");

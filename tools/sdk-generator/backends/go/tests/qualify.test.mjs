@@ -58,11 +58,11 @@ function fixture(t) {
   writeFileSync(join(authority, "validation", "v1", "options.proto"), "attested import only");
   families.push({ source: "validation/v1/options.proto", source_sha256: sha256(Buffer.from("attested import only")) });
   const manifest = Buffer.from(JSON.stringify({ schema: "acyclic.sdk.rust-authority.v1", authority: "rust",
-    source_revision: "test-only", families }));
+    source_revision: "a".repeat(40), families }));
   writeFileSync(join(authority, "rust-authority.json"), manifest);
   const files = [entry("go.mod"), entry("go.sum", "")];
   const receipt = { ...receiptFor(files), schema: "acyclic.sdk.go-producer-receipt.v1", target: "go",
-    authority: "rust", source_revision: "test-only", authority_manifest_sha256: sha256(manifest), go_version: "go1.27.2" };
+    authority: "rust", source_revision: "a".repeat(40), authority_manifest_sha256: sha256(manifest), go_version: "go1.27.2" };
   const receiptPath = join(root, "receipt.json");
   writeFileSync(receiptPath, JSON.stringify(receipt));
   const archive = join(root, "package.tar.gz");

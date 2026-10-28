@@ -1,8 +1,7 @@
 import { lstatSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
-import { sha256, within } from "../../../shared/authority.mjs";
+import { runCli, sha256, within } from "../../../shared/authority.mjs";
 import { tree } from "./provenance.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -35,8 +34,4 @@ export function inventorySDK(args, { toolchain = pinned, swiftVersion = runtime.
   return { sha256: sha256(encoded), files: contents.files.length, links: Object.keys(contents.links).length };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { values } = parseArgs({ options: { "swift-home": { type: "string" }, output: { type: "string" } } });
-  if (!values["swift-home"] || !values.output) throw new Error("--swift-home and --output are required");
-  console.log(JSON.stringify(inventorySDK(values), null, 2));
-}
+runCli(import.meta.url, inventorySDK, ["swift-home", "output"]);

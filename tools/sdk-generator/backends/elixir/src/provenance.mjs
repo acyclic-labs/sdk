@@ -2,7 +2,7 @@ import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { tarEntries } from "../../../../../scripts/archive-utils.mjs";
-import { canonical, sourceInventory, sha256 } from "../../../shared/authority.mjs";
+import { canonical, inventory, sha256 } from "../../../shared/authority.mjs";
 
 export function readDependencies(cache, pins) {
   const admitted = new Map();
@@ -41,29 +41,29 @@ export function verifyInstalledDependencies(root, dependencies) {
   for (const [name, admitted] of dependencies) {
     const source = join(root, name), metadata = [".hex", ".fetch", "hex_metadata.config"];
     if (name === "telemetry") metadata.push("_build/prod/lib/.rebar3/rebar_compiler_erl/source.dag");
-    const inventory = sourceInventory(source), expected = new Set(admitted.payload.keys());
-    if (inventory.some(file => !expected.has(file) && !metadata.includes(file)) || [...expected].some(file => !inventory.includes(file))) throw new Error("unexpected compiled source inventory: " + name);
+    const files = inventory(source), expected = new Set(admitted.payload.keys());
+    if (files.some(file => !expected.has(file) && !metadata.includes(file)) || [...expected].some(file => !files.includes(file))) throw new Error("unexpected compiled source inventory: " + name);
     for (const [file, bytes] of admitted.payload) if (!readFileSync(join(source, file)).equals(bytes)) throw new Error("compiled dependency source differs: " + name + "/" + file);
-    if (inventory.includes("hex_metadata.config") && !readFileSync(join(source, "hex_metadata.config")).equals(admitted.metadata)) throw new Error("installed Hex metadata differs");
+    if (files.includes("hex_metadata.config") && !readFileSync(join(source, "hex_metadata.config")).equals(admitted.metadata)) throw new Error("installed Hex metadata differs");
     result[name] = { version: admitted.pin.version, archive_sha256: admitted.pin.archive_sha256,
-      files_sha256: Object.fromEntries(inventory.map(file => [file, sha256(readFileSync(join(source, file)))])) };
+      files_sha256: Object.fromEntries(files.map(file => [file, sha256(readFileSync(join(source, file)))])) };
   }
   return result;
 }
 
 export function readTools(home, inventoryBytes, pins) {
   if (sha256(inventoryBytes) !== pins.tool_inventory_sha256) throw new Error("qualification tool inventory differs from pin");
-  const inventory = JSON.parse(inventoryBytes);
-  if (inventory.schema !== "acyclic.sdk.elixir-qualification-tools.v1" || inventory.hex_version !== pins.hex_version
-    || Object.keys(inventory.files_sha256 ?? {}).length !== pins.tool_files) throw new Error("qualification tool inventory metadata differs");
+  const index = JSON.parse(inventoryBytes);
+  if (index.schema !== "acyclic.sdk.elixir-qualification-tools.v1" || index.hex_version !== pins.hex_version
+    || Object.keys(index.files_sha256 ?? {}).length !== pins.tool_files) throw new Error("qualification tool inventory metadata differs");
   const payload = new Map();
-  for (const [name, digest] of Object.entries(inventory.files_sha256)) {
+  for (const [name, digest] of Object.entries(index.files_sha256)) {
     if (!canonical(name) || !(name.startsWith(".mix/archives/") || name === ".mix/elixir/1-20-otp-29/rebar3" || name === ".hex/cache.ets")) throw new Error("unexpected qualification tool input");
     const target = join(home, name);
     if (!lstatSync(target).isFile() || lstatSync(target).isSymbolicLink()) throw new Error("qualification tool kind differs");
     const bytes = readFileSync(target); if (sha256(bytes) !== digest) throw new Error("qualification tool payload differs: " + name);
     payload.set(name, bytes);
   }
-  if (JSON.stringify(sourceInventory(join(home, ".mix/archives")).map(name => ".mix/archives/" + name)) !== JSON.stringify([...payload.keys()].filter(name => name.startsWith(".mix/archives/")).sort())) throw new Error("Hex installation inventory differs");
+  if (JSON.stringify(inventory(join(home, ".mix/archives")).map(name => ".mix/archives/" + name)) !== JSON.stringify([...payload.keys()].filter(name => name.startsWith(".mix/archives/")).sort())) throw new Error("Hex installation inventory differs");
   return payload;
 }

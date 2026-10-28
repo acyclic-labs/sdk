@@ -2,17 +2,7 @@ use super::{package_by_name, ApiOwner, ProfileError, ProfileId, ProjectionKey};
 use crate::public_api;
 use cargo_metadata::Metadata;
 use rustdoc_types::{Crate as RustdocCrate, Visibility, FORMAT_VERSION};
-use std::{collections::BTreeSet, path::Path};
-
-pub fn local_item_names(path: impl AsRef<Path>) -> Result<BTreeSet<String>, ProfileError> {
-    let (_, receipt) = read_public_receipt(path.as_ref())?;
-    Ok(receipt
-        .index
-        .values()
-        .filter(|item| item.crate_id == 0)
-        .filter_map(|item| item.name.clone())
-        .collect())
-}
+use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnedApiItem {
@@ -94,7 +84,7 @@ pub fn extract_owned_api(
     Ok(items)
 }
 
-fn read_public_receipt(
+pub(super) fn read_public_receipt(
     path: impl AsRef<Path>,
 ) -> Result<(std::rc::Rc<[u8]>, std::rc::Rc<RustdocCrate>), ProfileError> {
     let path = path.as_ref();

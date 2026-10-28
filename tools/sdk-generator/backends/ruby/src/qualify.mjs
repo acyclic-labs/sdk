@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { canonical, inventory, loadAuthority, qualificationOutput, readInput, sha256, runCli } from "../../../shared/authority.mjs";
+import { canonical, inventory, readGenerationReceipt, qualificationOutput, readInput, sha256, runCli } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const pinned = JSON.parse(readFileSync(join(directory, "../toolchains/toolchain.json"))).qualification;
@@ -21,15 +21,7 @@ export function qualify(args, { command = spawnSync, toolchain = pinned } = {}) 
   const rubyHome = realpathSync(args["ruby-home"]);
   const cache = realpathSync(args.cache);
   const output = qualificationOutput(args.output, [packageRoot, authorityRoot, rubyHome, cache, dirname(directory)]);
-  const receiptBytes = readFileSync(join(packageRoot, "generation-receipt.json"));
-  const receipt = JSON.parse(receiptBytes);
-  if (receipt.schema !== "acyclic.sdk.ruby-producer-receipt.v1" || receipt.authority !== "rust"
-    || receipt.target !== "ruby" || !Array.isArray(receipt.outputs)) throw new Error("unsupported generation receipt");
-  const approved = loadAuthority(authorityRoot);
-  if (sha256(approved.bytes) !== receipt.authority_manifest_sha256 || approved.manifest.source_revision !== receipt.source_revision) {
-    throw new Error("generation authority differs");
-  }
-  if (targets.some(name => !approved.descriptors.has(name))) throw new Error("tested family lacks an attested descriptor");
+  const { receiptBytes, receipt, approved } = readGenerationReceipt(join(packageRoot, "generation-receipt.json"), authorityRoot, "ruby", targets);
   const payload = new Map();
   const metadata = [specName, "LICENSE", "NOTICE", "authority/rust-authority.json"];
   for (const name of receipt.outputs) {

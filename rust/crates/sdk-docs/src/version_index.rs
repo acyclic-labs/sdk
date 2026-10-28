@@ -89,8 +89,8 @@ pub(super) fn validate_latest_release(index: &VersionIndex) -> Result<(), Error>
         })
         .max_by(|left, right| {
             match (
-                release_version(&left.version),
-                release_version(&right.version),
+                stable_version(&left.version),
+                stable_version(&right.version),
             ) {
                 (Ok(left), Ok(right)) => left.cmp(&right),
                 _ => left.version.cmp(&right.version),
@@ -365,7 +365,7 @@ pub(super) fn merge_version_index(
         } else {
             index.release_candidates.push(entry.clone());
             index.release_candidates.sort_by(|a, b| {
-                match (release_version(&a.version), release_version(&b.version)) {
+                match (stable_version(&a.version), stable_version(&b.version)) {
                     (Ok(a), Ok(b)) => a.cmp(&b),
                     _ => a.version.cmp(&b.version),
                 }
@@ -417,7 +417,7 @@ pub(super) fn merge_version_index(
         } else {
             index.releases.push(entry.clone());
             index.releases.sort_by(|a, b| {
-                match (release_version(&a.version), release_version(&b.version)) {
+                match (stable_version(&a.version), stable_version(&b.version)) {
                     (Ok(a), Ok(b)) => a.cmp(&b),
                     _ => a.version.cmp(&b.version),
                 }
@@ -427,8 +427,8 @@ pub(super) fn merge_version_index(
             let should_advance = match index.latest.as_ref() {
                 None => true,
                 Some(current) => match (
-                    release_version(&entry.version),
-                    release_version(&current.version),
+                    stable_version(&entry.version),
+                    stable_version(&current.version),
                 ) {
                     (Ok(entry), Ok(current)) => entry > current,
                     _ => false,

@@ -1,10 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
-import { generationOutput, inventory, loadAuthority, sha256, stageDescriptorSets } from "../../../shared/authority.mjs";
+import { generationOutput, inventory, loadAuthority, runCli, sha256, stageDescriptorSets } from "../../../shared/authority.mjs";
 import { verifyRuntime } from "./runtime.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -83,9 +82,4 @@ export function generate(args, { command = spawnSync, toolchain = pinned } = {})
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["source-root", "authority", "protoc", "elixir-plugin", "runtime-root", "runtime-inventory", "output"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options });
-  if (Object.keys(options).some(name => !values[name])) throw new Error("all Elixir generation arguments are required");
-  console.log(JSON.stringify(generate(values), null, 2));
-}
+runCli(import.meta.url, generate, ["source-root", "authority", "protoc", "elixir-plugin", "runtime-root", "runtime-inventory", "output"], "all Elixir generation arguments are required");

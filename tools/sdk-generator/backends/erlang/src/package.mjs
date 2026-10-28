@@ -1,9 +1,8 @@
 import { readFileSync, statSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseArgs } from "node:util";
 import { readDeclaredTarGzip } from "../../../../../scripts/archive-utils.mjs";
-import { equalEntries, loadAuthority, sha256, verifyPackageOutputs } from "../../../shared/authority.mjs";
+import { equalEntries, readGenerationReceipt, runCli, sha256, verifyPackageOutputs } from "../../../shared/authority.mjs";
 import { packageTemplates, pins, producerSources } from "./generate.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -31,11 +30,9 @@ export function expectedModules(approved) {
 export function readPackage(args) {
   if (!/^[a-f0-9]{64}$/.test(args.sha256)) throw new Error("archive SHA256 is required");
   if (statSync(args.receipt).size > 1024 * 1024) throw new Error("generation receipt exceeds size bound");
-  const receiptBytes = readFileSync(args.receipt), receipt = JSON.parse(receiptBytes), approved = loadAuthority(args.authority);
-  if (receipt.schema !== "acyclic.sdk.erlang-producer-receipt.v1" || receipt.authority !== "rust" || receipt.target !== "erlang"
-    || !Array.isArray(receipt.outputs) || !receipt.input_sha256 || !receipt.output_sha256) throw new Error("unsupported Erlang generation receipt");
-  if (receipt.source_revision !== approved.manifest.source_revision || receipt.authority_manifest_sha256 !== sha256(approved.bytes)
-    || !equalEntries(receipt.input_sha256, Object.fromEntries([...approved.inputs].map(([name, bytes]) => [name, sha256(bytes)])))) throw new Error("package authority differs");
+  const { receiptBytes, receipt, approved } = readGenerationReceipt(args.receipt, args.authority, "erlang");
+  if (!receipt.input_sha256 || !receipt.output_sha256) throw new Error("unsupported Erlang generation receipt");
+  if (!equalEntries(receipt.input_sha256, Object.fromEntries([...approved.inputs].map(([name, bytes]) => [name, sha256(bytes)])))) throw new Error("package authority differs");
   const sources = Object.fromEntries(producerSources.map(name => [name, sha256(readFileSync(join(directory, name)))]));
   if (!equalEntries(receipt.source_sha256 ?? {}, sources) || receipt.toolchain_sha256 !== sha256(JSON.stringify(pins))) throw new Error("producer source or pins differ");
   const runtime = pins.runtime["linux-x64"];
@@ -54,10 +51,7 @@ export function readPackage(args) {
   return { payload, receipt, receiptBytes, approved, archiveBytes: compressed };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const options = Object.fromEntries(["package", "sha256", "receipt", "authority"].map(name => [name, { type: "string" }]));
-  const { values } = parseArgs({ options });
-  if (Object.keys(options).some(name => !values[name])) throw new Error("all archive admission arguments are required");
+runCli(import.meta.url, values => {
   const admitted = readPackage(values);
-  console.log(JSON.stringify({ scope: "Erlang archive admission only", archive_sha256: sha256(admitted.archiveBytes), source_revision: admitted.receipt.source_revision, payload_files: admitted.payload.size }, null, 2));
-}
+  return { scope: "Erlang archive admission only", archive_sha256: sha256(admitted.archiveBytes), source_revision: admitted.receipt.source_revision, payload_files: admitted.payload.size };
+}, ["package", "sha256", "receipt", "authority"], "all archive admission arguments are required");

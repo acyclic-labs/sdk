@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readDeclaredTarGzip } from "../../../../../scripts/archive-utils.mjs";
-import { canonical, equalEntries, loadAuthority, sha256 } from "../../../shared/authority.mjs";
+import { canonical, equalEntries, readGenerationReceipt, sha256 } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
 export const pins = {
@@ -14,12 +14,9 @@ export const targets = ["actors/v1/actors.proto", "stream/v1/stream.proto"];
 // Admission only. Compilation and native transport controls must run separately.
 export function readPackage(args) {
   if (!/^[a-f0-9]{64}$/.test(args.sha256)) throw new Error("archive SHA256 is required");
-  const receiptBytes = readFileSync(args.receipt), receipt = JSON.parse(receiptBytes);
-  const approved = loadAuthority(args.authority);
-  if (receipt.schema !== "acyclic.sdk.swift-producer-receipt.v1" || receipt.target !== "swift" || receipt.authority !== "rust"
-    || !Array.isArray(receipt.outputs) || !receipt.output_sha256 || !receipt.input_sha256) throw new Error("unsupported Swift generation receipt");
-  if (receipt.source_revision !== approved.manifest.source_revision || receipt.authority_manifest_sha256 !== sha256(approved.bytes)
-    || !equalEntries(receipt.input_sha256, Object.fromEntries([...approved.inputs].map(([name, bytes]) => [name, sha256(bytes)])))) throw new Error("package authority differs");
+  const { receiptBytes, receipt, approved } = readGenerationReceipt(args.receipt, args.authority, "swift");
+  if (!receipt.output_sha256 || !receipt.input_sha256) throw new Error("unsupported Swift generation receipt");
+  if (!equalEntries(receipt.input_sha256, Object.fromEntries([...approved.inputs].map(([name, bytes]) => [name, sha256(bytes)])))) throw new Error("package authority differs");
   if (targets.some(name => !approved.descriptors.has(name))) throw new Error("tested family lacks Rust descriptors");
   if (receipt.generator_sha256 !== sha256(readFileSync(join(directory, "generate.mjs")))
     || receipt.authority_reader_sha256 !== sha256(readFileSync(join(directory, "../../../shared/authority.mjs")))

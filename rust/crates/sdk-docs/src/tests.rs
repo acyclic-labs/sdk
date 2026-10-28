@@ -41,17 +41,6 @@ fn rustdoc_digest_omits_only_external_crate_load_paths() {
 
 #[test]
 fn profile_catalog_union_retains_feature_only_items() {
-    let source = SourceInfo {
-        captured_source: None,
-        publication_status: PublicationStatus::Candidate,
-        released_packages: Vec::new(),
-        revision: "a".repeat(40),
-        source_state: "working-tree".into(),
-        source_sha256: Some(format!("sha256:{}", "b".repeat(64))),
-        input_sha256: "c".repeat(64),
-        rustdoc_format_versions: vec![FORMAT_VERSION],
-        generator: "sdk-docs/test".into(),
-    };
     let item = |id: &str, name: &str| ApiItem {
         id: id.into(),
         parent_id: None,
@@ -72,19 +61,12 @@ fn profile_catalog_union_retains_feature_only_items() {
         items,
         guides: Vec::new(),
     };
-    let base = DocsData {
-        schema: DATA_SCHEMA_VERSION.into(),
-        schema_version: DATA_SCHEMA_VERSION.into(),
-        version: "0.2.0-preview".into(),
-        channel: Channel::Preview,
-        source: source.clone(),
-        navigation: Navigation {
-            entries: Vec::new(),
-        },
-        packages: PackageCatalog::default(),
-        search: SearchIndex::default(),
-        families: vec![family(vec![item("1", "Base")])],
-    };
+    let mut base = publication::publication_data("0.2.0-preview", 'a');
+    base.channel = Channel::Preview;
+    base.source.source_state = "working-tree".into();
+    base.source.source_sha256 = Some(format!("sha256:{}", "b".repeat(64)));
+    base.source.input_sha256 = "c".repeat(64);
+    base.families = vec![family(vec![item("1", "Base")])];
     let variant = DocsData {
         families: vec![family(vec![item("1", "Base"), item("2", "FeatureOnly")])],
         ..base.clone()
@@ -408,33 +390,12 @@ fn publication_rejects_navigation_that_does_not_match_sorted_families() {
     let directory = tempfile::tempdir().expect("fixture directory should be creatable");
     let output = directory.path().join("output");
     let data = DocsData {
-        schema: DATA_SCHEMA_VERSION.into(),
-        schema_version: DATA_SCHEMA_VERSION.into(),
-        version: "1.0.0".into(),
-        channel: Channel::Release,
-        source: SourceInfo {
-            captured_source: None,
-            publication_status: PublicationStatus::Candidate,
-            released_packages: Vec::new(),
-            revision: "a".repeat(40),
-            source_state: "captured-snapshot".into(),
-            source_sha256: Some(format!("sha256:{}", "a".repeat(64))),
-            input_sha256: "a".repeat(64),
-            rustdoc_format_versions: vec![FORMAT_VERSION],
-            generator: "sdk-docs/test".into(),
-        },
         navigation: Navigation {
             entries: vec![NavigationEntry {
                 slug: "zeta".into(),
                 title: "Zeta".into(),
                 crate_name: "zeta".into(),
             }],
-        },
-        packages: PackageCatalog {
-            entries: Vec::new(),
-        },
-        search: SearchIndex {
-            entries: Vec::new(),
         },
         families: vec![
             Family {
@@ -452,6 +413,7 @@ fn publication_rejects_navigation_that_does_not_match_sorted_families() {
                 guides: Vec::new(),
             },
         ],
+        ..publication::publication_data("1.0.0", 'a')
     };
     let error = write_bundle(&data, &output, false)
         .expect_err("publication must reject stale or incomplete navigation");

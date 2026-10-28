@@ -1,6 +1,6 @@
 use super::*;
 
-fn publication_data(version: &str, revision: char) -> DocsData {
+pub(super) fn publication_data(version: &str, revision: char) -> DocsData {
     DocsData {
         schema: DATA_SCHEMA_VERSION.into(),
         schema_version: DATA_SCHEMA_VERSION.into(),

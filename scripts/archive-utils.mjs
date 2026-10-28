@@ -37,6 +37,19 @@ function field(block, offset, length) {
   return block.subarray(offset, end === -1 || end > offset + length ? offset + length : end).toString("utf8");
 }
 
+export function tarPayload(bytes, isCanonical, caseInsensitive = process.platform === "win32") {
+  const seen = new Set(), payload = new Map();
+  for (const entry of tarEntries(bytes)) {
+    const name = entry.type === "5" ? entry.path.replace(/\/$/, "") : entry.path;
+    const key = caseInsensitive ? name.toLowerCase() : name;
+    if (!isCanonical(name) || seen.has(key) || !["0", "5"].includes(entry.type)) throw new Error("unsafe or duplicate archive member");
+    seen.add(key);
+    if (entry.type === "0") payload.set(name, entry.body);
+  }
+  if (!payload.size) throw new Error("empty archive payload");
+  return payload;
+}
+
 export function tarEntries(tar) {
   const result = [];
   let offset = 0;

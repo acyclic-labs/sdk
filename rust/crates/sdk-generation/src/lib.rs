@@ -9,7 +9,6 @@ use sdk_docs::{
     Channel, GeneratedSource, PackageMetadata,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::OsStr;

@@ -17,14 +17,15 @@ export const canonical = name => typeof name === "string" && name !== "" && name
 export const equalEntries = (left, right) => JSON.stringify(Object.entries(left).sort()) === JSON.stringify(Object.entries(right).sort());
 
 export function verifyPackageOutputs(outputs, digests, required, unexpectedMessage) {
-  const names = new Set(), folded = new Set();
+  const folded = new Set();
   for (const name of outputs) {
     if (!canonical(name) || folded.has(name.toLowerCase()) || !required.has(name)) throw new Error(unexpectedMessage);
-    names.add(name); folded.add(name.toLowerCase());
+    folded.add(name.toLowerCase());
   }
-  if (names.size !== required.size || [...required].some(name => !names.has(name))) throw new Error("package output inventory incomplete");
-  if (!equalEntries(digests, Object.fromEntries([...names].map(name => [name, digests[name]])))
-    || [...names].some(name => !/^[a-f0-9]{64}$/.test(digests[name]))) throw new Error("package digest inventory differs");
+  if (folded.size !== required.size) throw new Error("package output inventory incomplete");
+  const digestNames = Object.keys(digests);
+  if (digestNames.length !== required.size
+    || digestNames.some(name => !required.has(name) || !/^[a-f0-9]{64}$/.test(digests[name]))) throw new Error("package digest inventory differs");
 }
 
 export function runCli(url, execute, names, missingMessage) {
@@ -57,7 +58,9 @@ export function qualificationOutput(path, inputs) {
 }
 
 export function inventory(root, prefix = "") {
-  return readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(entry => {
+  const directory = join(root, prefix), kind = lstatSync(directory);
+  if (!kind.isDirectory() || kind.isSymbolicLink()) throw new Error("inventory directory kind differs");
+  return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
     const name = posix.join(prefix, entry.name);
     if (entry.isSymbolicLink()) throw new Error("generated output contains a link");
     if (entry.isDirectory()) return inventory(root, name);
@@ -67,20 +70,9 @@ export function inventory(root, prefix = "") {
 }
 
 export function verifyInstalledPayload(root, payload) {
-  if (JSON.stringify(inventory(root)) !== JSON.stringify([...payload.keys()].sort())) throw new Error("installed payload inventory differs");
+  const files = inventory(root);
+  if (files.length !== payload.size || files.some(name => !payload.has(name))) throw new Error("installed payload inventory differs");
   for (const [name, bytes] of payload) readInput(root, name, sha256(bytes));
-}
-
-export function sourceInventory(root, prefix = "") {
-  const directory = join(root, prefix), kind = lstatSync(directory);
-  if (!kind.isDirectory() || kind.isSymbolicLink()) throw new Error("inventory directory kind differs");
-  return readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
-    const name = posix.join(prefix, entry.name);
-    if (entry.isSymbolicLink()) throw new Error("inventory contains a link: " + name);
-    if (entry.isDirectory()) return sourceInventory(root, name);
-    if (!entry.isFile()) throw new Error("inventory contains a non-file");
-    return [name];
-  }).sort();
 }
 
 export function stageDescriptorSets(manifest, inputs, directory) {
@@ -138,9 +130,22 @@ export function loadAuthority(root) {
   return { bytes, manifest, inputs, descriptors };
 }
 
+export function readGenerationReceipt(receiptPath, authority, target, targets = []) {
+  const receiptBytes = readFileSync(receiptPath);
+  const receipt = JSON.parse(receiptBytes);
+  if (receipt.schema !== `acyclic.sdk.${target}-producer-receipt.v1` || receipt.authority !== "rust"
+    || receipt.target !== target || !Array.isArray(receipt.outputs)) throw new Error("unsupported generation receipt");
+  const approved = loadAuthority(authority);
+  if (sha256(approved.bytes) !== receipt.authority_manifest_sha256
+    || approved.manifest.source_revision !== receipt.source_revision) throw new Error("generation authority differs");
+  if (targets.some(name => !approved.descriptors.has(name))) throw new Error("tested family lacks an attested descriptor");
+  return { receiptBytes, receipt, approved };
+}
+
 export function generateProtocPackage(args, {
   command, toolchain, directory, backend, language, pluginArgument, pluginKey,
   pluginMismatch, bindingsDirectory, authorityDirectory, extension, compilerArguments, packageMetadata,
+  licenseDirectory = "", admitHost,
 }) {
   const source = realpathSync(args["source-root"]);
   const authority = realpathSync(args.authority);
@@ -149,9 +154,10 @@ export function generateProtocPackage(args, {
   const output = generationOutput(args.output, [source, authority, protoc, plugin, dirname(directory)]);
   const { bytes: manifestBytes, manifest, inputs } = loadAuthority(authority);
   const inputHashes = Object.fromEntries([...inputs].map(([name, bytes]) => [name, sha256(bytes)]));
-  const metadata = Object.fromEntries(["LICENSE", "NOTICE"].map(name => [name, readFileSync(join(source, name))]));
+  const metadata = Object.fromEntries(["LICENSE", "NOTICE"].map(name => [join(licenseDirectory, name), readFileSync(join(source, name))]));
   Object.assign(metadata, packageMetadata(manifest));
   const host = `${process.platform}-${process.arch}`;
+  admitHost?.();
   const pluginPin = toolchain[pluginKey][host];
   const pluginHash = sha256(readFileSync(plugin));
   if (!pluginPin || pluginHash !== pluginPin.sha256) throw new Error(pluginMismatch);

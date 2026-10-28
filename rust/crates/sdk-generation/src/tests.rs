@@ -46,6 +46,7 @@ fn registry_frontier_cli_requires_paired_authority_inputs() {
     );
 }
 use super::*;
+use sha2::{Digest, Sha256};
 
 #[path = "source_attestation_tests.rs"]
 mod source_attestation;

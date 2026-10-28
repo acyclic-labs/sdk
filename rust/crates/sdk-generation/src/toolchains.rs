@@ -3,10 +3,6 @@ use super::*;
 static VERSIONS: crate::concrete_versions::Versions<PathBuf, sdk_file_identity::Stamp> =
     crate::concrete_versions::Mutex::new(BTreeMap::new());
 
-pub(super) fn rustc_host() -> Result<String, CliError> {
-    sdk_docs::rustdoc_profiles::rustdoc_host().map_err(profile_error)
-}
-
 pub(super) fn pinned_cargo(root: &Path) -> Result<PathBuf, CliError> {
     let declaration = root.join("rust-toolchain.toml");
     select_cargo(
@@ -125,8 +121,4 @@ pub(super) fn cargo_context(
         }
     }
     format!("cargo-vV:{}", sha256_bytes(&context))
-}
-
-pub(super) fn rustup_targets() -> Result<BTreeSet<String>, CliError> {
-    sdk_docs::rustdoc_profiles::rustdoc_targets(&["wasm32-unknown-unknown"]).map_err(profile_error)
 }
