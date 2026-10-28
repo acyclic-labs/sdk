@@ -82,7 +82,10 @@ pub fn prepare_turn(
     limits.validate_file(&content, &mut None)?;
     attachments.validate(&mut None)?;
     if let ReferencedAttachments::Inline { items } = &attachments {
-        if items.len() > limits.attachments {
+        if limits
+            .attachments
+            .is_some_and(|maximum| items.len() > maximum.get())
+        {
             return Err(Error::Invalid(
                 "turn attachments exceed harness limits".into(),
             ));
@@ -96,7 +99,10 @@ pub fn prepare_turn(
         item_count,
     } = &attachments
     {
-        if *item_count as usize > limits.attachments {
+        if limits
+            .attachments
+            .is_some_and(|maximum| *item_count as usize > maximum.get())
+        {
             return Err(Error::Invalid(
                 "turn attachments exceed harness limits".into(),
             ));
