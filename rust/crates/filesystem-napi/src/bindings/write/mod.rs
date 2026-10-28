@@ -101,10 +101,7 @@ impl NativeCheckout {
             change_content(
                 path,
                 acyclic_fs::ContentChange::ZeroRange {
-                    range: ByteRange {
-                        offset: bigint_u64(&offset, "offset")?,
-                        length: bigint_u64(&length, "length")?,
-                    },
+                    range: byte_range(&offset, &length)?,
                     allocated,
                     extend,
                 },
@@ -129,10 +126,7 @@ impl NativeCheckout {
             change_content(
                 file_id,
                 acyclic_fs::ContentChange::ZeroRange {
-                    range: ByteRange {
-                        offset: bigint_u64(&offset, "offset")?,
-                        length: bigint_u64(&length, "length")?,
-                    },
+                    range: byte_range(&offset, &length)?,
                     allocated,
                     extend,
                 },
@@ -156,10 +150,7 @@ impl NativeCheckout {
             change_content(
                 path,
                 acyclic_fs::ContentChange::Preallocate {
-                    range: ByteRange {
-                        offset: bigint_u64(&offset, "offset")?,
-                        length: bigint_u64(&length, "length")?,
-                    },
+                    range: byte_range(&offset, &length)?,
                     keep_size,
                 },
                 acyclic_fs::ContentTimes::Preserve,
@@ -182,10 +173,7 @@ impl NativeCheckout {
             change_content(
                 file_id,
                 acyclic_fs::ContentChange::Preallocate {
-                    range: ByteRange {
-                        offset: bigint_u64(&offset, "offset")?,
-                        length: bigint_u64(&length, "length")?,
-                    },
+                    range: byte_range(&offset, &length)?,
                     keep_size,
                 },
                 acyclic_fs::ContentTimes::Preserve,

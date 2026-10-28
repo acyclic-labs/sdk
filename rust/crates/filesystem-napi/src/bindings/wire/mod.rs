@@ -288,6 +288,13 @@ pub(in crate::bindings) fn required_bigint(value: Option<BigInt>, field: &str) -
     bigint_u64(&required(value, field)?, field)
 }
 
+pub(in crate::bindings) fn byte_range(offset: &BigInt, length: &BigInt) -> Result<ByteRange> {
+    Ok(ByteRange {
+        offset: bigint_u64(offset, "offset")?,
+        length: bigint_u64(length, "length")?,
+    })
+}
+
 pub(in crate::bindings) fn bigint_u64(value: &BigInt, field: &str) -> Result<u64> {
     let (negative, value, lossless) = value.get_u64();
     if negative || !lossless {

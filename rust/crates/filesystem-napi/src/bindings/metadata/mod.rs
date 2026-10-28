@@ -14,11 +14,9 @@ pub(in crate::bindings) fn native_metadata(
     bytes: &[u8],
     config: VolumeConfig,
 ) -> Result<FileMetadata> {
-    decode_file_metadata(
-        bytes,
-        DecodeLimits::for_volume(config),
-        &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-    )
+    decode_file_metadata(bytes, DecodeLimits::for_volume(config), &mut |_| {
+        Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(())
+    })
     .map_err(napi_error)
 }
 

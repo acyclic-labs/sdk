@@ -63,10 +63,7 @@ impl NativeResolvedFile {
         let receipt = self
             .inner
             .read_range(
-                ByteRange {
-                    offset: bigint_u64(&offset, "offset")?,
-                    length: bigint_u64(&length, "length")?,
-                },
+                byte_range(&offset, &length)?,
                 acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )

@@ -194,10 +194,7 @@ impl NativeCheckout {
             checkout,
             read_file_range(
                 &path,
-                ByteRange {
-                    offset: bigint_u64(&offset, "offset")?,
-                    length: bigint_u64(&length, "length")?,
-                },
+                byte_range(&offset, &length)?,
             )
         )?;
         Ok(NativeFileRead {
@@ -220,10 +217,7 @@ impl NativeCheckout {
             checkout,
             read_file_range(
                 file_id,
-                ByteRange {
-                    offset: bigint_u64(&offset, "offset")?,
-                    length: bigint_u64(&length, "length")?,
-                },
+                byte_range(&offset, &length)?,
             )
         )?;
         Ok(NativeFileRead {

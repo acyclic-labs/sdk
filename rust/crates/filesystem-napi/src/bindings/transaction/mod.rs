@@ -177,13 +177,6 @@ impl NativeWorkspaceTransaction {
     }
 }
 
-fn byte_range(offset: &BigInt, length: &BigInt) -> Result<ByteRange> {
-    Ok(ByteRange {
-        offset: bigint_u64(offset, "offset")?,
-        length: bigint_u64(length, "length")?,
-    })
-}
-
 pub(in crate::bindings) fn native_transaction_rebase(
     outcome: TransactionRebase<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeTransactionRebaseResult {

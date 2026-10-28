@@ -59,10 +59,7 @@ impl NativeCheckout {
             .checkpoint(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
             .await
             .map_err(napi_error)?;
-        Ok(NativeCheckpointResult {
-            generation_id: Buffer::from(receipt.value.digest().into_bytes().to_vec()),
-            work_json: work_json(&receipt.work)?,
-        })
+        encode_checkpoint_receipt(&receipt)
     }
 
     #[napi]

@@ -46,10 +46,7 @@ impl NativeCheckout {
             checkout,
             plan_file_extents(
                 &path,
-                ByteRange {
-                    offset: bigint_u64(&offset, "offset")?,
-                    length: bigint_u64(&length, "length")?,
-                },
+                byte_range(&offset, &length)?,
                 maximum_spans,
             )
         )?;
@@ -73,10 +70,7 @@ impl NativeCheckout {
             checkout,
             plan_file_extents(
                 file_id,
-                ByteRange {
-                    offset: bigint_u64(&offset, "offset")?,
-                    length: bigint_u64(&length, "length")?,
-                },
+                byte_range(&offset, &length)?,
                 maximum_spans,
             )
         )?;
