@@ -1,6 +1,9 @@
 /// Local provider initialization or durable-publication failure.
 #[derive(Debug, Error)]
 pub enum LocalStreamError {
+    /// The trusted publication deadline elapsed before the frame was written.
+    #[error("local Stream publication deadline elapsed")]
+    DeadlineElapsed,
     /// An accepted write stopped before its complete frame.
     #[error("incomplete accepted journal frame")]
     IncompleteFrame,
@@ -30,6 +33,7 @@ pub enum LocalStreamError {
 impl obs::ErrorKind for LocalStreamError {
     fn kind(&self) -> &'static str {
         match self {
+            Self::DeadlineElapsed => "deadline_elapsed",
             Self::IncompleteFrame => "incomplete_frame",
             Self::Io(_) => "io",
             Self::AlreadyOpen => "already_open",

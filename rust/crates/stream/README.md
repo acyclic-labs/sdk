@@ -112,6 +112,18 @@ The default `grpc` feature provides the service client; `local` enables the dura
 
 On browser WASM builds, `BrowserStream::open(name, limits)` binds that same Rust state machine to a strict `IndexedDB` command journal. It implements the ordinary `StreamProvider` contract, including atomic multi-path commits and provider-clock deadlines. Native and browser persistence share the command codec and Rust replay. Tabs and workers serialize refresh, admission and publication in one transaction on one named database; this gives no atomicity across databases, filesystem volumes or other providers. Browser storage eviction and origin quotas remain platform limits.
 
+Persistent providers share `Replicated<J: CommandJournal>` for canonical replay
+and conditional publication. The journal port supplies `append_if(expected,
+frames)`, `read(from, page)` and an atomically registered `changed(after)` event.
+Storage cursors are opaque and strictly increasing within the retained journal;
+they are separate from Stream sequence numbers and applied revision indexes.
+Catch-up pins its first observed journal head and reads bounded pages through
+that cut, so concurrent writers cannot keep a reader chasing the head. Only a
+reported stale proposal is replanned, with its original request identity and
+deadline; an unknown transport outcome closes that replica. Browser, host,
+PostgreSQL and local storage retain their native durability boundaries. Native
+local completion and prepared ingress retain their original funded guards.
+
 Each handle retains a disposable Rust cache and catches up only new journal commands. Initial recovery and total retention are bounded by `BrowserStreamLimits` (default 65,536 commands and 256 MiB of journal bytes) and `MemoryLimits`. New work fails at capacity while exact retained replay still succeeds. Cancellation or persistence failure invalidates unpublished cached state. Live follow registers before reading and receives publication notifications over `BroadcastChannel`; subscribers catch up new durable commands on notification. Dropping the cursor releases its subscription. The provider does not run or schedule application work. Provider hooks use `BoxProviderFuture`, `BoxProviderStream`, `ProviderTask` and `ProviderPlatform`: native futures remain `Send` and native providers remain `Send + Sync`; WASM hooks retain event-loop ownership.
 
 `MemoryStream` and `LocalStream` retain successful retry outcomes and immutable commit envelopes indefinitely within their explicit capacity limits. Replay precedes capacity admission; a new identity fails closed when the store is full. An admitted identity cannot execute again or acquire another digest after a clock advance. `LocalStream` preserves these outcomes through journal replay and snapshots. Recovery enforces the same capacity limits as live admission. Hosted services must provide the same no-reexecution guarantee under their own durable account-wide retry authority; local checks do not qualify that service behavior.

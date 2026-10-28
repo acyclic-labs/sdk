@@ -18,8 +18,12 @@ impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
     }
 
     #[cfg(any(
+        feature = "local",
         feature = "postgres",
-        all(feature = "wasm-journal", target_arch = "wasm32")
+        all(
+            any(feature = "wasm", feature = "wasm-journal"),
+            target_arch = "wasm32"
+        )
     ))]
     async fn durable(
         self,
@@ -42,8 +46,12 @@ impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
 }
 
 #[cfg(any(
+    feature = "local",
     feature = "postgres",
-    all(feature = "wasm-journal", target_arch = "wasm32")
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
 ))]
 impl MemoryStream {
     pub(crate) async fn apply_durable(
@@ -53,6 +61,13 @@ impl MemoryStream {
         persist: impl Future<Output = Result<(), StreamError>>,
     ) -> Result<crate::journal::Outcome, StreamError> {
         use crate::journal::{Command, Outcome};
+        let (command, digest) = match command {
+            Command::Commit(mut request) => {
+                let digest = self.commit_request_digest(&mut request)?;
+                (Command::Commit(request), Some(digest))
+            }
+            command => (command, None),
+        };
         let mut state = self.state.write().await;
         match command {
             Command::Append(request) => self
@@ -65,8 +80,8 @@ impl MemoryStream {
                 .durable(self, &mut state, persist)
                 .await
                 .map(Outcome::Fork),
-            Command::Commit(mut request) => {
-                let digest = commit_digest(&mut request)?;
+            Command::Commit(request) => {
+                let digest = digest.ok_or(StreamError::InvalidResponse)?;
                 self.plan_commit_locked(&mut state, request, digest, deadline)?
                     .durable(self, &mut state, persist)
                     .await

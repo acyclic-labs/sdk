@@ -203,9 +203,7 @@ impl BrowserStream {
         }
         #[cfg(test)]
         self.inner.refreshes.set(self.inner.refreshes.get() + 1);
-        let transaction = self.transaction().inspect_err(|_| cache.valid = false)?;
-        self.refresh(&transaction, &mut cache, &mut dispatch.keys)
-            .await?;
+        self.refresh(&mut cache, &mut dispatch.keys).await?;
         Ok(())
     }
     pub(super) async fn with_cached_provider<T>(
@@ -215,11 +213,8 @@ impl BrowserStream {
         let mut dispatch = Dispatch::new(self);
         let mut cache = self.inner.cache.lock().await;
         if !cache.valid {
-            let transaction = self.transaction()?;
             dispatch.repair = true;
-            let result = self
-                .refresh(&transaction, &mut cache, &mut dispatch.keys)
-                .await;
+            let result = self.refresh(&mut cache, &mut dispatch.keys).await;
             dispatch.repair = false;
             dispatch.failed = result.is_err();
             result?;
@@ -229,5 +224,40 @@ impl BrowserStream {
             .follow_reads
             .set(self.inner.follow_reads.get() + 1);
         operation(&cache.provider).await
+    }
+}
+
+pub(super) struct Observer<'a> {
+    pub(super) stream: &'a BrowserStream,
+    pub(super) changed: &'a mut Changes,
+    pub(super) cursor: u64,
+    pub(super) announced: u64,
+    pub(super) before: Option<Before>,
+}
+impl crate::replicated::ReplayObserver for Observer<'_> {
+    fn observe<'a>(
+        &'a mut self,
+        provider: &'a MemoryStream,
+        command: &'a Command,
+        after: bool,
+    ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a {
+        async move {
+            if after {
+                if let Some(before) = self.before.take() {
+                    before
+                        .collect(provider, self.changed, &self.stream.inner.publications)
+                        .await?;
+                    self.announced = self.cursor + 1;
+                }
+                self.cursor += 1;
+            } else {
+                self.before = if self.cursor >= self.announced {
+                    Some(Before::capture(provider, command, &self.stream.inner.publications).await?)
+                } else {
+                    None
+                };
+            }
+            Ok(())
+        }
     }
 }

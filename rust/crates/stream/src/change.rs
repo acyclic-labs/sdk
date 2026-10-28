@@ -88,7 +88,7 @@ impl Subscription {
         drop(previous);
         result
     }
-    async fn changed(&mut self) -> Result<(), StreamError> {
+    pub(crate) async fn changed(&mut self) -> Result<(), StreamError> {
         poll_fn(|cx| self.poll_changed(cx)).await
     }
     pub(crate) async fn next<T>(

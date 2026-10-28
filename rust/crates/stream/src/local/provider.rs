@@ -161,24 +161,11 @@ impl StreamProvider for LocalStream {
         span.scope(async {
             let operation = span.clone();
             self.exclusive(&span, move |stream| async move {
-                let replay = stream
-                    .inner
-                    .provider
-                    .has_replay(&request.idempotency_key)
-                    .await?;
-                let frame = if replay {
-                    None
-                } else {
-                    Some(stream.prepare(&Command::Append(request.clone()))?)
+                let crate::journal::Outcome::Append(outcome) =
+                    stream.execute(Command::Append(request), None).await?
+                else {
+                    return Err(StreamError::InvalidResponse);
                 };
-                let outcome = stream.inner.provider.append(request).await?;
-                if let Some(frame) = frame
-                    && matches!(outcome, AppendOutcome::Committed(_))
-                {
-                    stream.persist(frame).await?;
-                } else if replay {
-                    stream.require_accepted::<true>()?;
-                }
                 if let AppendOutcome::Committed(receipt) = &outcome {
                     operation.record("rev", receipt.tail);
                 }
@@ -204,22 +191,11 @@ impl StreamProvider for LocalStream {
         ));
         span.scope(async {
             self.exclusive(&span, |stream| async move {
-                let replay = stream
-                    .inner
-                    .provider
-                    .has_replay(&request.idempotency_key)
-                    .await?;
-                let frame = if replay {
-                    None
-                } else {
-                    Some(stream.prepare(&Command::Fork(request.clone()))?)
+                let crate::journal::Outcome::Fork(outcome) =
+                    stream.execute(Command::Fork(request), None).await?
+                else {
+                    return Err(StreamError::InvalidResponse);
                 };
-                let outcome = stream.inner.provider.fork(request).await?;
-                if let Some(frame) = frame {
-                    stream.persist(frame).await?;
-                } else {
-                    stream.require_accepted::<true>()?;
-                }
                 Ok(outcome)
             })
             .await
@@ -288,7 +264,7 @@ impl StreamProvider for LocalStream {
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        commit::<true>(self, request, None).await
+        commit(self, request, None).await
     }
 
     async fn read_commit(
@@ -379,7 +355,7 @@ impl StreamProvider for LocalStream {
     }
 }
 
-async fn commit<const ELIDE_REPLAY: bool>(
+async fn commit(
     stream: &LocalStream,
     request: CommitRequest,
     deadline: Option<u64>,
@@ -395,32 +371,11 @@ async fn commit<const ELIDE_REPLAY: bool>(
     span.scope(async {
         stream
             .exclusive(&span, move |stream| async move {
-                // The visibility guard covers this lookup and settlement. A
-                // replay still passes through commit_inner for fingerprint and
-                // deadline semantics, then exclusive awaits the original WAL.
-                let replay = ELIDE_REPLAY
-                    && stream
-                        .inner
-                        .provider
-                        .has_replay(&request.idempotency_key)
-                        .await?;
-                let frame = if replay {
-                    None
-                } else {
-                    Some(stream.prepare(&Command::Commit(request.clone()))?)
+                let crate::journal::Outcome::Commit(outcome) =
+                    stream.execute(Command::Commit(request), deadline).await?
+                else {
+                    return Err(StreamError::InvalidResponse);
                 };
-                let (outcome, _claim) = stream
-                    .inner
-                    .provider
-                    .commit_inner(request, deadline)
-                    .await?;
-                if let Some(frame) = frame
-                    && matches!(outcome, CommitOutcome::Committed(_))
-                {
-                    stream.persist(frame).await?;
-                } else {
-                    stream.require_accepted::<true>()?;
-                }
                 Ok(outcome)
             })
             .await
