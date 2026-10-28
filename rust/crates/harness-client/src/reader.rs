@@ -389,6 +389,8 @@ const MAX_REFUSED: usize = 64;
 /// Footprint of one client, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Residency {
+    /// One encoded snapshot awaiting source admission, separately bounded.
+    pub snapshot_bytes: usize,
     /// Cache charge, never above the byte budget.
     pub cache_bytes: usize,
     /// Uncached charge, including payload retained by cloned views after eviction.
@@ -417,6 +419,7 @@ pub struct Reader {
     policy: ReaderPolicy,
     cache: RecordCache,
     credentials: Option<Credentials>,
+    pending_snapshot: Option<Vec<u8>>,
     driver: Option<std::sync::Arc<()>>,
     demand: BTreeMap<OpKey, Demand>,
     next_ticket: u64,
@@ -455,6 +458,7 @@ impl Reader {
             policy,
             cache: RecordCache::new(policy.cache_bytes, policy.streams),
             credentials: None,
+            pending_snapshot: None,
             driver: None,
             demand: BTreeMap::new(),
             next_ticket: 0,
@@ -529,6 +533,17 @@ impl Reader {
             .as_ref()
             .map_or(Access::Unqualified, Credentials::access);
         self.cache.reset_access(access);
+        match self.credential_status() {
+            CredentialStatus::Current => {
+                if let Some(snapshot) = self.pending_snapshot.take() {
+                    // A cache miss is harmless; it never authenticates a source
+                    // or changes the requested observation's logical outcome.
+                    let _ = self.cache.restore(&snapshot);
+                }
+            }
+            CredentialStatus::Pending => {}
+            _ => self.pending_snapshot = None,
+        }
         self.generation += 1;
     }
 
@@ -581,13 +596,22 @@ impl Reader {
         self.cache.snapshot()
     }
 
-    /// Warm start from persisted bytes.
+    /// Warm start from persisted bytes. While the registered source resolves,
+    /// retain one bounded snapshot for atomic validation after lease admission.
     ///
     /// # Errors
     /// Refuses malformed bytes or replacement while reads or follows are active.
     pub fn restore(&mut self, bytes: &[u8]) -> Result<(), SnapshotError> {
         if !self.inflight.is_empty() || !self.follows.is_empty() || !self.demand.is_empty() {
             return Err(SnapshotError);
+        }
+        if self.credential_status() == CredentialStatus::Pending {
+            if bytes.len() > self.cache.snapshot_limit() {
+                return Err(SnapshotError);
+            }
+            self.pending_snapshot = Some(bytes.to_vec());
+            self.generation += 1;
+            return Ok(());
         }
         self.cache.restore(bytes)?;
         self.generation += 1;
@@ -599,6 +623,14 @@ impl Reader {
         let bytes = bytes.clamp(64 * 1024, 256 << 20);
         self.policy.cache_bytes = bytes;
         self.cache.set_budget(bytes);
+        if self
+            .pending_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.len() > self.cache.snapshot_limit())
+        {
+            self.pending_snapshot = None;
+            self.generation += 1;
+        }
     }
 
     /// Reads issued since construction.
@@ -654,6 +686,7 @@ impl Reader {
     #[must_use]
     pub fn residency(&self) -> Residency {
         Residency {
+            snapshot_bytes: self.pending_snapshot.as_ref().map_or(0, Vec::len),
             cache_bytes: self.cache.bytes(),
             passed_bytes: self.cache.passed_bytes(),
             backing_bytes: self.cache.backing_bytes(),

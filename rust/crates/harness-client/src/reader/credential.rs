@@ -1,6 +1,8 @@
 //! Source custody for the shared reader, driven by its existing task.
 
-use acyclic_auth::credential::{CredentialProvider, CredentialWatch, ResolvedCredential};
+use acyclic_auth::credential::{
+    CredentialBinding, CredentialProvider, CredentialWatch, ResolvedCredential,
+};
 use std::{
     future::Future,
     pin::Pin,
@@ -39,8 +41,14 @@ impl Access {
         }
     }
 
-    pub(super) fn local(&self) -> bool {
-        matches!(self, Self::Local)
+    pub(super) fn binding(&self) -> Result<Option<CredentialBinding>, super::SnapshotError> {
+        match self {
+            Self::Local => Ok(None),
+            Self::Lease(lease) if lease.check().is_ok() => {
+                lease.binding().map(Some).ok_or(super::SnapshotError)
+            }
+            _ => Err(super::SnapshotError),
+        }
     }
 }
 
@@ -244,12 +252,16 @@ mod tests {
                     if !available.load(Ordering::SeqCst) {
                         futures::future::pending::<()>().await;
                     }
-                    CredentialSnapshot::new("credential".into(), CredentialRevision([1; 32]), 20)
+                    CredentialSnapshot::new(
+                        "credential".into(),
+                        CredentialRevision::from([1; 32]),
+                        20,
+                    )
                 }
             },
             || CredentialValidity {
                 now_unix_seconds: 10,
-                revision: Some(CredentialRevision([1; 32])),
+                revision: Some(CredentialRevision::from([1; 32])),
             },
         );
         let mut credentials = Credentials::new(source.clone().into(), 10, 25);
@@ -274,13 +286,13 @@ mod tests {
         futures::executor::block_on(async {
             let validity = Arc::new(Mutex::new(CredentialValidity {
                 now_unix_seconds: 10,
-                revision: Some(CredentialRevision([1; 32])),
+                revision: Some(CredentialRevision::from([1; 32])),
             }));
             let observed = validity.clone();
             let refreshed = validity.clone();
             let source = CredentialCache::new(
                 move |_| {
-                    let observation = *refreshed.lock().unwrap();
+                    let observation = refreshed.lock().unwrap().clone();
                     async move {
                         CredentialSnapshot::new(
                             "credential".into(),
@@ -289,7 +301,7 @@ mod tests {
                         )
                     }
                 },
-                move || *observed.lock().unwrap(),
+                move || observed.lock().unwrap().clone(),
             );
             let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
             reader.credentials = Some(Credentials::new(source.clone().into(), 500, 10_000));
@@ -326,6 +338,20 @@ mod tests {
             reader.complete(id, Outcome::Head(head), 500);
             let view = reader.cache().record(&path, 0).unwrap().clone();
             let old_backing = reader.cache().backing_bytes();
+            let snapshot = reader.snapshot();
+            assert!(!snapshot.is_empty());
+            let mut restored = Reader::new(ReaderPolicy::default()).unwrap();
+            restored.credentials = Some(Credentials::new(source.clone().into(), 500, 10_000));
+            restored.reset_source();
+            restored.restore(&snapshot).unwrap();
+            assert_eq!(restored.residency().snapshot_bytes, snapshot.len());
+            assert!(restored.cache().record(&path, 0).is_none());
+            restored.advance_credentials(500, &mut cx);
+            assert_eq!(restored.residency().snapshot_bytes, 0);
+            assert_eq!(
+                restored.cache().record(&path, 0).unwrap().as_ref(),
+                b"committed"
+            );
             reader.plan([(
                 Want::Range {
                     stream: path.clone(),
@@ -358,10 +384,11 @@ mod tests {
             assert_eq!(reader.cache().backing_bytes(), old_backing);
             assert_eq!(view.as_ref(), b"committed");
 
-            validity.lock().unwrap().revision = Some(CredentialRevision([2; 32]));
+            validity.lock().unwrap().revision = Some(CredentialRevision::from([2; 32]));
             source.invalidate().unwrap();
             reader.advance_credentials(700, &mut cx);
             assert_eq!(reader.credential_status(), CredentialStatus::Current);
+            assert!(reader.restore(&snapshot).is_err());
             reader.complete(
                 late,
                 Outcome::Records(vec![Fetched {
@@ -382,6 +409,79 @@ mod tests {
             assert_eq!(reader.credential_status(), CredentialStatus::Unavailable);
             drop(view);
             assert_eq!(reader.cache().backing_bytes(), 0);
+        });
+    }
+
+    #[test]
+    fn persisted_partitions_preserve_utf16_and_original_absolute_expiry() {
+        futures::executor::block_on(async {
+            use std::sync::atomic::AtomicU64;
+            let provider = MemoryStream::default();
+            let path = StreamPath::new("snapshot/record").unwrap();
+            provider
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![b"immutable".as_slice().into()],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::new(b"snapshot record".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            let mut snapshots: Vec<Vec<u8>> = Vec::new();
+            for revision in [
+                CredentialRevision::from([4; 32]),
+                CredentialRevision::from(vec![0xd800, 0, 0xdc00]),
+                CredentialRevision::from(vec![0xd801, 0, 0xdc00]),
+            ] {
+                let observed = revision.clone();
+                let expires = Arc::new(AtomicU64::new(20));
+                let refreshed = expires.clone();
+                let source = CredentialCache::new(
+                    move |_| {
+                        let revision = revision.clone();
+                        let expiry = refreshed.load(Ordering::SeqCst);
+                        async move { CredentialSnapshot::new("credential".into(), revision, expiry) }
+                    },
+                    move || CredentialValidity {
+                        now_unix_seconds: 10,
+                        revision: Some(observed.clone()),
+                    },
+                );
+                let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+                reader.credentials = Some(Credentials::new(source.clone().into(), 0, 10_000));
+                reader.reset_source();
+                let waker = futures::task::noop_waker();
+                let mut cx = Context::from_waker(&waker);
+                reader.advance_credentials(0, &mut cx);
+                reader.plan([(
+                    Want::Last {
+                        stream: path.clone(),
+                        count: 1,
+                    },
+                    Priority::Visible,
+                )]);
+                let id = reader.poll(0).pop().unwrap().id();
+                reader.complete(
+                    id,
+                    Outcome::Head(provider.head(path.clone()).await.unwrap()),
+                    0,
+                );
+                let snapshot = reader.snapshot();
+                reader.restore(&snapshot).unwrap();
+                assert_eq!(
+                    reader.cache().record(&path, 0).unwrap().as_ref(),
+                    b"immutable"
+                );
+                for other in &snapshots {
+                    assert!(reader.restore(other).is_err());
+                }
+                expires.store(25, Ordering::SeqCst);
+                source.invalidate().unwrap();
+                reader.advance_credentials(1, &mut cx);
+                assert!(reader.readable());
+                assert!(reader.restore(&snapshot).is_err());
+                snapshots.push(snapshot);
+            }
         });
     }
 }

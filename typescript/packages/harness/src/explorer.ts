@@ -20,6 +20,8 @@ export interface ExplorerHistoryRow { sequence: bigint; value: Uint8Array | null
 export interface ExplorerHealth {
   /** Trusted source custody, independently of transport connectivity. */
   credentials: "unqualified" | "pending" | "current" | "unavailable";
+  /** One encoded snapshot waiting for source admission in the shared reader. */
+  snapshotBytes: number;
   connectivity: "online" | "degraded" | "offline";
   retryAt: bigint | null;
   cacheBytes: number;
@@ -146,7 +148,10 @@ export class AgentExplorer {
   /** Persists the cache under its key; the same bytes restore the same view. */
   save(): void {
     if (this.#db === undefined || this.#options.persist === undefined) return;
-    this.#db.transaction(STORE, "readwrite").objectStore(STORE).put(this.#core.snapshot(), this.#options.persist);
+    const snapshot = this.#core.snapshot();
+    const store = this.#db.transaction(STORE, "readwrite").objectStore(STORE);
+    if (snapshot.length === 0) store.delete(this.#options.persist);
+    else store.put(snapshot, this.#options.persist);
   }
 
   /** Persists, then drops every follow and read. */

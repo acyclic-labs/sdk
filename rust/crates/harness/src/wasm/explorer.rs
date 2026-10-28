@@ -70,6 +70,7 @@ enum RowView<'a> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Health<'a> {
+    snapshot_bytes: usize,
     credentials: &'static str,
     connectivity: &'static str,
     retry_at: Option<u64>,
@@ -228,6 +229,7 @@ impl WasmExplorer {
             Connectivity::Offline { retry_at, .. } => ("offline", Some(retry_at)),
         };
         to_js_client(&Health {
+            snapshot_bytes: residency.snapshot_bytes,
             credentials: match reader.credential_status() {
                 CredentialStatus::Unqualified => "unqualified",
                 CredentialStatus::Pending => "pending",
