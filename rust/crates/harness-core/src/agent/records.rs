@@ -110,6 +110,9 @@ pub struct ForkAdopted {
     pub forked_at: u64,
     /// Tail of the inherited conversation at the fork cut.
     pub conversation_tail: u64,
+    /// Sequence of the inherited conversation's latest context checkpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<u64>,
     /// Volumes the agent owns.
     pub volumes: Vec<VolumeBinding>,
     /// Task brief, if any.

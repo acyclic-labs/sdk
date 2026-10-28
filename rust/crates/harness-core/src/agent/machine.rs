@@ -81,6 +81,11 @@ pub struct AgentState {
     /// Inherited conversation tail at adoption: this agent's own entries are
     /// `[conversation_base, conversation_tail)`, in increasing inbox order.
     pub conversation_base: u64,
+    /// Conversation sequence of the latest context checkpoint (compaction,
+    /// rewind or clear), committed with that entry: the one entry a turn's
+    /// context starts from, however far behind the tail it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<u64>,
     /// Exact status tail; the agent is its only writer.
     pub status_tail: u64,
     /// Last published phase.
@@ -128,6 +133,7 @@ impl AgentState {
             policy: adopted.policy.clone(),
             conversation_tail: adopted.conversation_tail,
             conversation_base: adopted.conversation_tail,
+            checkpoint: adopted.checkpoint,
             // The creating commit wrote the first status (`Idle`).
             status_tail: 1,
             phase: Phase::Idle,
@@ -255,6 +261,9 @@ impl AgentState {
 pub enum Out {
     /// Append to this agent's conversation.
     Conversation(Vec<u8>),
+    /// The conversation entry just before this is the agent's latest context
+    /// checkpoint, indexed in its state with the append.
+    Checkpoint,
     /// Send an inbox record to another agent.
     Send {
         /// Recipient.
@@ -482,6 +491,14 @@ pub async fn step<T: TurnDriver + ?Sized>(
     // record an idle agent consumes publishes its cursor too, so `Idle` at a
     // cursor proves every record before it settled (see [`super::settled`]).
     let phase = published(&state);
+    let mut sequence = state.conversation_tail;
+    for out in &outs {
+        match out {
+            Out::Conversation(_) => sequence += 1,
+            Out::Checkpoint => state.checkpoint = sequence.checked_sub(1),
+            Out::Send { .. } | Out::Archive { .. } | Out::Spawn { .. } => {}
+        }
+    }
     state.conversation_tail += appended;
     let status = (phase != previous || appended > 0 || (inbox_wake && phase == Phase::Idle))
         .then_some(StatusRecord {
@@ -583,7 +600,7 @@ fn admissible(out: &Out) -> bool {
                 InboxRecord::ForkAdopted(_) | InboxRecord::Archive(_)
             ) && super::AgentRecord::encode(record).is_ok()
         }
-        Out::Archive { .. } => true,
+        Out::Archive { .. } | Out::Checkpoint => true,
         Out::Spawn { volumes, .. } => super::records::check_volumes(volumes).is_ok(),
     }
 }

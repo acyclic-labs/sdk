@@ -98,6 +98,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
     for out in &step.outs {
         match out {
             Out::Conversation(record) => builder.append(conversation.clone(), record.clone()),
+            Out::Checkpoint => {}
             Out::Send { to, record } => {
                 if matches!(
                     record,
@@ -173,6 +174,8 @@ pub(super) fn adoption(
         parent: None,
         forked_at: cursor,
         conversation_tail,
+        // The checkpoint inherited at the cut, never one this step appends.
+        checkpoint: state.checkpoint.filter(|at| *at < conversation_tail),
         volumes: volumes.to_vec(),
         // The brief is a file in the child's private volume, whose version
         // exists only once the spawn's commit seals.

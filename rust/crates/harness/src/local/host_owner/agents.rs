@@ -537,6 +537,7 @@ impl NativeAgents {
                     parent: None,
                     forked_at: 0,
                     conversation_tail: 0,
+                    checkpoint: None,
                     volumes,
                     brief: None,
                     policy: None,

@@ -360,6 +360,7 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
         parent: Some(parent.clone()),
         forked_at: 0,
         conversation_tail: 1,
+        checkpoint: None,
         volumes: vec![VolumeBinding {
             name: PRIVATE_VOLUME.into(),
             volume: own,

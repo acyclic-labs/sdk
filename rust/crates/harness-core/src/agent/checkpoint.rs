@@ -268,6 +268,7 @@ mod tests {
             parent: Some(agent(MAX_DEPTH - 1)),
             forked_at: u64::MAX,
             conversation_tail: u64::MAX,
+            checkpoint: Some(u64::MAX),
             volumes: (0..MAX_VOLUMES)
                 .map(|_| VolumeBinding {
                     name: widest(MAX_INTENT_BYTES),
@@ -422,6 +423,7 @@ mod tests {
                     policy: adopted.policy.clone(),
                     conversation_base: u64::MAX,
                     conversation_tail: u64::MAX,
+                    checkpoint: Some(u64::MAX),
                     status_tail: u64::MAX,
                     phase: Phase::Done { outcome },
                     archive_pending: open_children.clone(),

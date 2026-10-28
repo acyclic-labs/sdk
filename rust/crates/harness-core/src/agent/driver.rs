@@ -412,10 +412,20 @@ async fn settle_selection(
     Ok(TurnStep {
         reserved_children: 0,
         checkpoint: None,
-        outs: vec![Out::Conversation(entry.encode()?)],
+        outs: settled(&entry)?,
         wait: Wait::Input,
         drops: None,
     })
+}
+
+/// A settled entry's appends: the entry, indexed as the agent's latest
+/// checkpoint when it is one.
+fn settled(entry: &ConversationEntry) -> Result<Vec<Out>, Error> {
+    let mut outs = vec![Out::Conversation(entry.encode()?)];
+    if entry.checkpoint().is_some() {
+        outs.push(Out::Checkpoint);
+    }
+    Ok(outs)
 }
 
 /// Every settled turn commits its already-recorded actions, including a turn
@@ -534,8 +544,7 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         outcome: TurnOutcome::Completed,
                     };
                     // The tools' recorded effects commit with the turn's settlement.
-                    let mut outs = Vec::new();
-                    outs.push(Out::Conversation(entry.encode()?));
+                    let mut outs = settled(&entry)?;
                     outs.extend(goal);
                     // Every agent waits for input once its turn settles: a child
                     // stays open to its parent's messages until archived, and a

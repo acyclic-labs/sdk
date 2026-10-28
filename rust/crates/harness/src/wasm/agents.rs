@@ -517,6 +517,7 @@ impl WasmAgents {
                     parent: None,
                     forked_at: 0,
                     conversation_tail: 0,
+                    checkpoint: None,
                     volumes: vec![VolumeBinding {
                         name: PRIVATE_VOLUME.to_owned(),
                         volume,

@@ -655,8 +655,27 @@ where
         agent: &AgentState,
     ) -> Result<Vec<ConversationEntry>> {
         let tail = agent.conversation_tail;
-        let from = tail.saturating_sub(u64::from(self.limits.history_turns));
-        if from == tail {
+        // Nothing before the latest checkpoint is context: read from it, or
+        // the bounded window when it is further back, plus that one entry
+        // read by its indexed sequence.
+        let window = tail.saturating_sub(u64::from(self.limits.history_turns));
+        let from = agent.checkpoint.map_or(window, |at| at.max(window));
+        let mut entries = match agent.checkpoint.filter(|at| *at < from) {
+            Some(at) => self.entries(agent, at, 1).await?,
+            None => Vec::new(),
+        };
+        entries.extend(self.entries(agent, from, tail - from).await?);
+        Ok(entries)
+    }
+
+    /// `count` conversation entries of `agent` from sequence `from`.
+    async fn entries(
+        &self,
+        agent: &AgentState,
+        from: u64,
+        count: u64,
+    ) -> Result<Vec<ConversationEntry>> {
+        if count == 0 {
             return Ok(Vec::new());
         }
         let path = agent.path.conversation().map_err(agent_error)?;
@@ -666,7 +685,7 @@ where
                 key: None,
                 path,
                 from,
-                limit: u32::try_from(tail - from).unwrap_or(u32::MAX),
+                limit: u32::try_from(count).unwrap_or(u32::MAX),
                 at_least: Default::default(),
             })
             .await
