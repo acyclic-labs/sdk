@@ -12,6 +12,7 @@ use acyclic_harness::{
 use acyclic_stream::session::{
     Admission, Authority, CapabilityVerifier, CredentialVerifier, TrustSnapshot,
 };
+use futures::future::BoxFuture;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -66,11 +67,11 @@ struct Credentials {
 }
 
 impl CredentialVerifier for Credentials {
-    fn verify(
-        &self,
-        credential: &[u8],
-        trust: &TrustSnapshot,
-    ) -> std::result::Result<Arc<dyn Admission>, VerifyError> {
+    fn verify<'a>(
+        &'a self,
+        credential: &'a [u8],
+        trust: &'a TrustSnapshot,
+    ) -> BoxFuture<'a, std::result::Result<Arc<dyn Admission>, VerifyError>> {
         self.witness.saw();
         CapabilityVerifier.verify(credential, trust)
     }

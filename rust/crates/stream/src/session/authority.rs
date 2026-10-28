@@ -45,6 +45,7 @@ pub(super) enum Rejection {
     Revoked,
     Expired,
     Filter,
+    Unavailable,
 }
 impl Rejection {
     pub(super) fn code(self) -> &'static str {
@@ -53,6 +54,7 @@ impl Rejection {
             Self::Revoked => "revoked",
             Self::Expired => "credential_expired",
             Self::Filter => "filter_invalid",
+            Self::Unavailable => "unavailable",
         }
     }
 }
@@ -61,11 +63,38 @@ impl From<VerifyError> for Rejection {
         match error {
             VerifyError::Revoked => Self::Revoked,
             VerifyError::Time => Self::Expired,
+            VerifyError::Unavailable => Self::Unavailable,
             _ => Self::Forbidden,
         }
     }
 }
 type Credential = Result<Arc<dyn Admission>, Rejection>;
+
+/// A credential its verifier is still deciding, for one slot. The session
+/// keeps serving its channels and enforcing their trust while it waits.
+pub(super) struct Verifying {
+    pub(super) slot: u32,
+    length: usize,
+    pub(super) verdict: futures::future::BoxFuture<'static, Credential>,
+}
+
+impl Verifying {
+    pub(super) const fn length(&self) -> usize {
+        self.length
+    }
+}
+impl Slots {
+    /// The credential bytes held once `slot` holds `length` of them.
+    fn credential_bytes(&self, slot: u32, length: usize) -> Result<usize, StreamError> {
+        let previous = self.entries.get(&slot).map_or(0, |entry| entry.1);
+        self.credential_bytes
+            .checked_sub(previous)
+            .and_then(|current| current.checked_add(length))
+            .filter(|total| *total <= crate::MAX_COMMAND_BYTES)
+            .ok_or(StreamError::Capacity)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Slots {
     entries: BTreeMap<u32, (u64, usize, Credential)>,
@@ -134,31 +163,67 @@ impl Authority {
     pub(super) fn snapshot(&self) -> Result<TrustSnapshot, Rejection> {
         self.state.snapshot().map_err(Into::into)
     }
-    pub(super) fn register(
+    /// Verifies `bytes` and registers the result in `slot`.
+    pub(super) async fn register(
         &self,
         slots: &mut Slots,
         slot: u32,
         bytes: &[u8],
         maximum: usize,
     ) -> Result<(), StreamError> {
+        match self.verifying(slots, slot, Bytes::copy_from_slice(bytes), maximum)? {
+            Some(verifying) => {
+                let verdict = verifying.verdict.await;
+                self.settle(slots, verifying.slot, verifying.length, verdict, maximum)
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// Starts verifying `bytes` for `slot`, within the slot and credential
+    /// byte bounds; empty `bytes` clear the slot at once. The verdict owns
+    /// what it reads, so the session need not wait on it.
+    pub(super) fn verifying(
+        &self,
+        slots: &mut Slots,
+        slot: u32,
+        bytes: Bytes,
+        maximum: usize,
+    ) -> Result<Option<Verifying>, StreamError> {
         if usize::try_from(slot).map_err(|_| StreamError::Capacity)? >= maximum {
             return Err(StreamError::Capacity);
         }
-        let previous_bytes = slots.entries.get(&slot).map_or(0, |entry| entry.1);
-        let credential_bytes = slots
-            .credential_bytes
-            .checked_sub(previous_bytes)
-            .and_then(|current| current.checked_add(bytes.len()))
-            .filter(|total| *total <= crate::MAX_COMMAND_BYTES)
-            .ok_or(StreamError::Capacity)?;
+        let credential_bytes = slots.credential_bytes(slot, bytes.len())?;
         if bytes.is_empty() {
             slots.entries.remove(&slot);
             slots.credential_bytes = credential_bytes;
-            return Ok(());
+            return Ok(None);
         }
-        let credential = self
-            .snapshot()
-            .and_then(|snapshot| self.verifier.verify(bytes, &snapshot).map_err(Into::into));
+        let length = bytes.len();
+        let verifier = Arc::clone(&self.verifier);
+        let snapshot = self.snapshot();
+        Ok(Some(Verifying {
+            slot,
+            length,
+            verdict: Box::pin(async move {
+                match snapshot {
+                    Ok(snapshot) => verifier.verify(&bytes, &snapshot).await.map_err(Into::into),
+                    Err(rejection) => Err(rejection),
+                }
+            }),
+        }))
+    }
+
+    /// Registers `credential`, `slot`'s verdict, under a new revision.
+    pub(super) fn settle(
+        &self,
+        slots: &mut Slots,
+        slot: u32,
+        length: usize,
+        credential: Credential,
+        maximum: usize,
+    ) -> Result<(), StreamError> {
+        let credential_bytes = slots.credential_bytes(slot, length)?;
         let revision = slots
             .next_revision
             .checked_add(1)
@@ -171,9 +236,7 @@ impl Authority {
                 slot,
             )));
         }
-        slots
-            .entries
-            .insert(slot, (revision, bytes.len(), credential));
+        slots.entries.insert(slot, (revision, length, credential));
         slots.credential_bytes = credential_bytes;
         if slots.expiries.len() > maximum.saturating_mul(2) {
             slots.expiries = slots

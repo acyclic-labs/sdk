@@ -31,6 +31,10 @@ pub enum VerifyError {
     /// The trust owner could not provide authenticated current state.
     #[error("capability trust state unavailable")]
     Trust,
+    /// A dependency of the verifier (a keyring, KMS or database) could not
+    /// answer. Retryable, and never a verdict on the credential.
+    #[error("credential verifier unavailable")]
+    Unavailable,
     /// An ancestor key, epoch or block has been revoked.
     #[error("capability revoked")]
     Revoked,

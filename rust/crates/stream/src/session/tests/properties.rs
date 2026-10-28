@@ -43,6 +43,7 @@ pub(super) fn empty_session(latest: bool) -> Session<MemoryStream> {
         pending_bytes: 0,
         runnable: BTreeSet::new(),
         ready_after: None,
+        verifying: None,
         head_visits: 0,
     }
 }
@@ -147,7 +148,7 @@ fn exercise_admission(operations: &[u8], broken: bool) {
                     .unwrap();
                 sequence += 1;
             }
-            1 => session.receive(super::window(1)).unwrap(),
+            1 => futures::executor::block_on(session.receive(super::window(1))).unwrap(),
             2 => {
                 session.ready().unwrap();
             }

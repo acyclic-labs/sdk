@@ -11,6 +11,7 @@ use acyclic_auth::{
     contract::{GrantSet, Principal},
     verify::{self, Trust, VerifiedCapability, VerifyError},
 };
+use futures::future::{self, BoxFuture};
 
 /// A credential its session's verifier admitted, held for as long as the
 /// credential stays registered in its slot. Every authorization the session
@@ -48,17 +49,20 @@ pub trait Admission: Send + Sync + 'static {
     ) -> Result<crate::FollowFilter, StreamError>;
 }
 
-/// Verifies the credentials a session's clients present.
+/// Verifies the credentials a session's clients present. Verification may
+/// await its own dependencies (a keyring, KMS or database); the session holds
+/// no slot or lock while it does.
 pub trait CredentialVerifier: Send + Sync + 'static {
     /// Verifies `credential` under `trust`.
     ///
     /// # Errors
-    /// When `credential` is malformed, untrusted, revoked or expired.
-    fn verify(
-        &self,
-        credential: &[u8],
-        trust: &TrustSnapshot,
-    ) -> Result<Arc<dyn Admission>, VerifyError>;
+    /// When `credential` is malformed, untrusted, revoked or expired, or
+    /// [`VerifyError::Unavailable`] when a dependency could not answer.
+    fn verify<'a>(
+        &'a self,
+        credential: &'a [u8],
+        trust: &'a TrustSnapshot,
+    ) -> BoxFuture<'a, Result<Arc<dyn Admission>, VerifyError>>;
 }
 
 /// The stock verifier: this SDK's signed capability envelope, verified
@@ -66,13 +70,14 @@ pub trait CredentialVerifier: Send + Sync + 'static {
 pub struct CapabilityVerifier;
 
 impl CredentialVerifier for CapabilityVerifier {
-    fn verify(
-        &self,
-        credential: &[u8],
-        trust: &TrustSnapshot,
-    ) -> Result<Arc<dyn Admission>, VerifyError> {
-        let capability = verify::verify(credential, trust.trust.as_ref(), trust.now_unix_seconds)?;
-        Ok(Arc::new(capability))
+    fn verify<'a>(
+        &'a self,
+        credential: &'a [u8],
+        trust: &'a TrustSnapshot,
+    ) -> BoxFuture<'a, Result<Arc<dyn Admission>, VerifyError>> {
+        let verified = verify::verify(credential, trust.trust.as_ref(), trust.now_unix_seconds)
+            .map(|capability| Arc::new(capability) as Arc<dyn Admission>);
+        Box::pin(future::ready(verified))
     }
 }
 

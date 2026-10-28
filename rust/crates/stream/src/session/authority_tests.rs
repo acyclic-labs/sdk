@@ -105,7 +105,7 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
         Err(Rejection::Forbidden)
     ));
     let bytes = token("allowed", |_| {});
-    auth.register(&mut slots, 0, &bytes, 2).unwrap();
+    futures::executor::block_on(auth.register(&mut slots, 0, &bytes, 2)).unwrap();
     assert!(bind(&auth, &slots, "allowed/child").is_ok());
     assert!(matches!(
         bind(&auth, &slots, "allowed-other"),
@@ -116,14 +116,14 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
         Err(Rejection::Forbidden)
     ));
     assert_eq!(
-        auth.register(&mut slots, 2, &bytes, 2),
+        futures::executor::block_on(auth.register(&mut slots, 2, &bytes, 2)),
         Err(StreamError::Capacity)
     );
     let mut forged = bytes.clone();
     if let Some(byte) = forged.get_mut(20) {
         *byte ^= 1;
     }
-    auth.register(&mut slots, 0, &forged, 2).unwrap();
+    futures::executor::block_on(auth.register(&mut slots, 0, &forged, 2)).unwrap();
     assert!(matches!(
         bind(&auth, &slots, "allowed"),
         Err(Rejection::Forbidden)
@@ -138,7 +138,7 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
             account: Some("other".into()),
         }),
     ] {
-        auth.register(
+        futures::executor::block_on(auth.register(
             &mut slots,
             0,
             &token("allowed", |block| {
@@ -147,11 +147,11 @@ fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
                 }];
             }),
             2,
-        )
+        ))
         .unwrap();
         assert!(bind(&auth, &slots, "allowed").is_err());
     }
-    auth.register(&mut slots, 0, &bytes, 2).unwrap();
+    futures::executor::block_on(auth.register(&mut slots, 0, &bytes, 2)).unwrap();
     let (mut binding, _) = bind(&auth, &slots, "allowed").unwrap();
     state.publish(signed::Snapshot::default(), 1000);
     assert_eq!(
@@ -165,7 +165,7 @@ async fn revocation_and_drop_invalidate_idle_bindings_without_record_credit() {
     let auth = authority(state.clone());
     let mut slots = Slots::default();
     let bytes = token("allowed", |_| {});
-    auth.register(&mut slots, 0, &bytes, 2).unwrap();
+    futures::executor::block_on(auth.register(&mut slots, 0, &bytes, 2)).unwrap();
     let (mut binding, _) = bind(&auth, &slots, "allowed").unwrap();
     let revision = auth.snapshot().unwrap().revision;
     let changed = auth.changed(revision, auth.deadline(&mut slots));
@@ -185,7 +185,7 @@ async fn revocation_and_drop_invalidate_idle_bindings_without_record_credit() {
         Err(Rejection::Revoked)
     );
     state.publish(signed::Snapshot::default(), signed::NOW);
-    auth.register(&mut slots, 0, &[], 2).unwrap();
+    futures::executor::block_on(auth.register(&mut slots, 0, &[], 2)).unwrap();
     assert_eq!(
         auth.validate(&slots, &mut binding, 1),
         Err(Rejection::Forbidden)
@@ -204,7 +204,7 @@ fn rotation_cannot_drop_pins_filters_or_rebind_the_declaring_subject() {
             }),
         }];
     });
-    auth.register(&mut slots, 0, &bytes, 2).unwrap();
+    futures::executor::block_on(auth.register(&mut slots, 0, &bytes, 2)).unwrap();
     let (mut binding, filter) = bind(&auth, &slots, "allowed").unwrap();
     let headers = |author: &'static str| {
         crate::RecordHeaders::new(
@@ -237,7 +237,7 @@ fn rotation_cannot_drop_pins_filters_or_rebind_the_declaring_subject() {
     assert!(child_filter.matches(&headers("issuer")));
     assert!(!child_filter.matches(&headers("child")));
     let plain = token("allowed", |_| {});
-    auth.register(&mut slots, 0, &plain, 2).unwrap();
+    futures::executor::block_on(auth.register(&mut slots, 0, &plain, 2)).unwrap();
     assert_eq!(
         auth.validate(&slots, &mut binding, 1),
         Err(Rejection::Forbidden)
@@ -474,7 +474,7 @@ fn filesystem_discovery_defers_only_list_and_checks_full_paths_and_deny_wins() {
     let auth = Arc::new(authority(State::new()));
     let mut slots = Slots::default();
     let bytes = fs_token("fs:/volume/public", |_| {});
-    auth.register(&mut slots, 0, &bytes, 2).unwrap();
+    futures::executor::block_on(auth.register(&mut slots, 0, &bytes, 2)).unwrap();
     let (_, filter, context) = auth
         .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
         .unwrap();
@@ -534,8 +534,13 @@ fn filesystem_discovery_defers_only_list_and_checks_full_paths_and_deny_wins() {
 fn filesystem_prefix_grant_trailing_slash_indexes_the_same_subtree() {
     let auth = Arc::new(authority(State::new()));
     let mut slots = Slots::default();
-    auth.register(&mut slots, 0, &fs_token("fs:/volume/public/", |_| {}), 2)
-        .unwrap();
+    futures::executor::block_on(auth.register(
+        &mut slots,
+        0,
+        &fs_token("fs:/volume/public/", |_| {}),
+        2,
+    ))
+    .unwrap();
     let (_, filter, context) = auth
         .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
         .unwrap();
@@ -553,7 +558,7 @@ fn filesystem_context_rechecks_revocation_expiry_and_renewal_before_disclosure()
         let auth = Arc::new(authority(state.clone()));
         let mut slots = Slots::default();
         let bytes = fs_token("fs:/volume/public", |_| {});
-        auth.register(&mut slots, 0, &bytes, 2).unwrap();
+        futures::executor::block_on(auth.register(&mut slots, 0, &bytes, 2)).unwrap();
         let (_, _, context) = auth
             .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
             .unwrap();
@@ -583,13 +588,18 @@ fn filesystem_context_rechecks_revocation_expiry_and_renewal_before_disclosure()
     }
     let auth = Arc::new(authority(State::new()));
     let mut slots = Slots::default();
-    auth.register(&mut slots, 0, &fs_token("fs:/volume", |_| {}), 2)
+    futures::executor::block_on(auth.register(&mut slots, 0, &fs_token("fs:/volume", |_| {}), 2))
         .unwrap();
     let (mut binding, _, _) = auth
         .bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
         .unwrap();
-    auth.register(&mut slots, 0, &fs_token("fs:/volume/public", |_| {}), 2)
-        .unwrap();
+    futures::executor::block_on(auth.register(
+        &mut slots,
+        0,
+        &fs_token("fs:/volume/public", |_| {}),
+        2,
+    ))
+    .unwrap();
     assert!(
         matches!(
             auth.validate(&slots, &mut binding, 1),
@@ -623,7 +633,7 @@ fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
             });
         }),
     ] {
-        auth.register(&mut slots, 0, &bytes, 2).unwrap();
+        futures::executor::block_on(auth.register(&mut slots, 0, &bytes, 2)).unwrap();
         assert!(
             auth.bind_resource(&slots, 0, "fs:/volume".into(), Default::default(), 1)
                 .is_err()
@@ -632,7 +642,9 @@ fn filesystem_context_rejects_forged_expired_and_wrong_audience_credentials() {
 }
 
 /// A gateway's own credential format, `gateway:<principal>:<actor>`: not
-/// this SDK's capability envelope.
+/// this SDK's capability envelope. Like a keyring- or database-backed
+/// verifier, it awaits before it decides, and `gateway-down:` stands for its
+/// dependency being unreachable.
 struct Gateway {
     verified: AtomicU64,
 }
@@ -646,13 +658,25 @@ struct GatewayAdmission {
 }
 
 impl CredentialVerifier for Gateway {
-    fn verify(
-        &self,
-        credential: &[u8],
-        _: &TrustSnapshot,
-    ) -> Result<Arc<dyn Admission>, VerifyError> {
+    fn verify<'a>(
+        &'a self,
+        credential: &'a [u8],
+        _: &'a TrustSnapshot,
+    ) -> futures::future::BoxFuture<'a, Result<Arc<dyn Admission>, VerifyError>> {
+        Box::pin(self.admit(credential))
+    }
+}
+
+impl Gateway {
+    async fn admit(&self, credential: &[u8]) -> Result<Arc<dyn Admission>, VerifyError> {
         self.verified.fetch_add(1, Ordering::SeqCst);
+        // The verdict waits on a dependency: the session is suspended here,
+        // holding no slot.
+        tokio::task::yield_now().await;
         let text = std::str::from_utf8(credential).map_err(|_| VerifyError::Malformed)?;
+        if text.starts_with("gateway-down:") {
+            return Err(VerifyError::Unavailable);
+        }
         let mut parts = text.splitn(3, ':');
         let (Some("gateway"), Some(id), Some(actor)) = (parts.next(), parts.next(), parts.next())
         else {
@@ -727,8 +751,8 @@ impl Admission for GatewayAdmission {
     }
 }
 
-#[test]
-fn a_hosts_own_verifier_is_the_only_one_and_its_admission_is_call_authority() {
+#[tokio::test]
+async fn a_hosts_own_verifier_is_the_only_one_and_its_admission_is_call_authority() {
     let state = State::new();
     let gateway = Arc::new(Gateway {
         verified: AtomicU64::new(0),
@@ -738,14 +762,34 @@ fn a_hosts_own_verifier_is_the_only_one_and_its_admission_is_call_authority() {
     // The stock envelope is not this session's format: the host's verifier
     // alone admits credentials.
     auth.register(&mut slots, 1, &token("agents", |_| {}), 4)
+        .await
         .unwrap();
     assert!(
         auth.bind_call(&slots, 1, "actors:/agents/server".into(), 1)
             .is_err()
     );
     auth.register(&mut slots, 0, b"gateway:alice:actors:/agents/server", 4)
+        .await
         .unwrap();
     assert_eq!(gateway.verified.load(Ordering::SeqCst), 2);
+    // An unreachable dependency admits nothing, and refuses retryably: not
+    // as a verdict on the credential.
+    auth.register(
+        &mut slots,
+        2,
+        b"gateway-down:alice:actors:/agents/server",
+        4,
+    )
+    .await
+    .unwrap();
+    let refused = auth
+        .bind_call(&slots, 2, "actors:/agents/server".into(), 1)
+        .err();
+    assert_eq!(refused, Some(Rejection::Unavailable));
+    assert_eq!(
+        StreamError::from_session_close(Rejection::Unavailable.code()),
+        StreamError::Unavailable
+    );
     let (_, call) = auth
         .bind_call(&slots, 0, "actors:/agents/server".into(), 1)
         .unwrap();

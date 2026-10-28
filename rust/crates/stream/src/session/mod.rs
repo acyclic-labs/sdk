@@ -143,6 +143,9 @@ struct Session<P: ?Sized> {
     pending_bytes: usize,
     runnable: BTreeSet<(usize, u64)>,
     ready_after: Option<(usize, u64)>,
+    /// A renewed credential its verifier is deciding. Later frames wait for
+    /// it, in order; channels keep sending and trust is still enforced.
+    verifying: Option<authority::Verifying>,
     #[cfg(test)]
     head_visits: usize,
 }
@@ -277,6 +280,7 @@ fn serve_on_with_products<P: StreamProvider + ?Sized>(
         pending_bytes: 0,
         runnable: BTreeSet::new(),
         ready_after: None,
+        verifying: None,
         #[cfg(test)]
         head_visits: 0,
     };
@@ -299,6 +303,10 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             if let Some(frame) = self.ready()? {
                 return Ok(Some(frame));
             }
+            if self.verifying.is_some() {
+                self.await_verdict().await?;
+                continue;
+            }
             if self.sources.is_empty() && self.terminals.is_empty() {
                 let changed = self.authority.changed(self.trust_revision, self.deadline);
                 let input = match future::select(self.incoming.next(), Box::pin(changed)).await {
@@ -309,7 +317,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     }
                 };
                 match input {
-                    Some(Some(frame)) => self.receive(frame?)?,
+                    Some(Some(frame)) => self.receive(frame?).await?,
                     Some(None) => return Ok(None),
                     None => self.revalidate(None)?,
                 }
@@ -354,7 +362,7 @@ impl<P: StreamProvider + ?Sized> Session<P> {
             };
             self.prefer_control = !self.prefer_control;
             match event {
-                future::Either::Left(Some(frame)) => self.receive(frame?)?,
+                future::Either::Left(Some(frame)) => self.receive(frame?).await?,
                 future::Either::Left(None) => return Ok(None),
                 future::Either::Right(source) => {
                     if let Some((channel, event)) = source? {
@@ -362,6 +370,60 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     }
                 }
             }
+        }
+    }
+}
+
+impl<P: StreamProvider + ?Sized> Session<P> {
+    /// Waits for the pending credential's verdict while serving every
+    /// channel and enforcing trust changes; registers it once it is in.
+    async fn await_verdict(&mut self) -> Result<(), StreamError> {
+        let Some(verifying) = self.verifying.as_mut() else {
+            return Ok(());
+        };
+        let changed = Box::pin(self.authority.changed(self.trust_revision, self.deadline));
+        let event = if self.sources.is_empty() && self.terminals.is_empty() {
+            match future::select(&mut verifying.verdict, changed).await {
+                future::Either::Left((verdict, _)) => Some(Ok(verdict)),
+                future::Either::Right(((), _)) => None,
+            }
+        } else {
+            let room = policy::room(
+                self.limits.pending_frames,
+                self.limits.pending_bytes,
+                self.pending_frames,
+                self.pending_bytes,
+                DATA_FRAME_BYTES,
+                self.credit.frames > 0 && self.credit.bytes > 0,
+            );
+            let source = Box::pin(self.sources.next_with_control(&mut self.terminals, room));
+            match future::select(future::select(&mut verifying.verdict, source), changed).await {
+                future::Either::Left((future::Either::Left((verdict, _)), _)) => Some(Ok(verdict)),
+                future::Either::Left((future::Either::Right((source, _)), _)) => Some(Err(source)),
+                future::Either::Right(((), _)) => None,
+            }
+        };
+        match event {
+            Some(Ok(verdict)) => {
+                if let Some(verifying) = self.verifying.take() {
+                    self.authority.settle(
+                        &mut self.slots,
+                        verifying.slot,
+                        verifying.length(),
+                        verdict,
+                        self.limits.channels,
+                    )?;
+                    self.revalidate(Some(verifying.slot))?;
+                }
+                Ok(())
+            }
+            Some(Err(source)) => {
+                if let Some((channel, event)) = source? {
+                    self.record(channel, event)?;
+                }
+                Ok(())
+            }
+            None => self.revalidate(None),
         }
     }
 }
@@ -381,7 +443,7 @@ fn cursor(next: u64) -> wire::SessionCursor {
 }
 
 impl<P: StreamProvider + ?Sized> Session<P> {
-    fn receive(&mut self, input: wire::SessionFrame) -> Result<(), StreamError> {
+    async fn receive(&mut self, input: wire::SessionFrame) -> Result<(), StreamError> {
         if input.encoded_len() > crate::MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
@@ -402,12 +464,14 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 return Err(StreamError::Capacity);
             }
             for (slot, credential) in hello.credentials.iter().enumerate() {
-                self.authority.register(
-                    &mut self.slots,
-                    u32::try_from(slot).map_err(|_| StreamError::Capacity)?,
-                    credential,
-                    self.limits.channels,
-                )?;
+                self.authority
+                    .register(
+                        &mut self.slots,
+                        u32::try_from(slot).map_err(|_| StreamError::Capacity)?,
+                        credential,
+                        self.limits.channels,
+                    )
+                    .await?;
             }
             self.deadline = self.authority.deadline(&mut self.slots);
             self.hello = true;
@@ -440,13 +504,16 @@ impl<P: StreamProvider + ?Sized> Session<P> {
         }
         match body {
             Body::Credential(credential) if input.channel_id == 0 && input.generation == 0 => {
-                self.authority.register(
+                self.verifying = self.authority.verifying(
                     &mut self.slots,
                     credential.slot,
-                    &credential.credential,
+                    credential.credential.into(),
                     self.limits.channels,
                 )?;
-                self.revalidate(Some(credential.slot))
+                if self.verifying.is_none() {
+                    self.revalidate(Some(credential.slot))?;
+                }
+                Ok(())
             }
             Body::Interest(interest) if input.channel_id == 0 && input.generation == 0 => {
                 self.interest(interest)
