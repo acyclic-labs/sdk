@@ -1,4 +1,5 @@
 use super::*;
+use super::archives::StagedArchive;
 
 /// Reconstruct the separately retained resolution without interpreting arbitrary
 /// Cargo overrides. Patches are restricted to checksum-verified dependency archives.
@@ -141,40 +142,29 @@ pub(super) fn producer_dependencies(
         if path.canonicalize().map_err(|e| e.to_string())? != path {
             return Err("dependency archive redirects source".into());
         }
-        let members = archive_members(&release, &path)?;
-        let vcs = archive_vcs(&members)?;
+        let members = StagedArchive::read(&release, &path, ArchiveLimits::default())?;
+        let vcs = members.vcs()?;
         if retained.is_none() {
             dependency.publisher_vcs = vcs.clone();
         }
         if vcs != dependency.publisher_vcs {
             return Err("dependency publisher VCS differs".into());
         }
-        files.insert(
-            logical,
-            crate::sha256_file(&path).map_err(|e| e.to_string())?,
-        );
+        files.insert(logical, format!("sha256:{}", release.checksum));
         if retained.is_none() {
-            // Check every destination before the first immutable import can create anything.
-            for member in members.keys() {
-                validate_import_path(
-                    &root,
-                    &root.join(format!("{prefix}dependencies/{name}/{member}")),
-                )?;
-            }
+            members.publish(&root, &format!("{prefix}dependencies/{name}"))?;
         }
-        for (member, bytes) in members {
+        for (member, digest) in &members.files {
             let logical = format!("{prefix}dependencies/{name}/{member}");
-            let path = root.join(&logical);
-            if retained.is_none() {
-                crate::write_immutable(&path, &bytes).map_err(|e| e.to_string())?;
-            }
-            if path.canonicalize().map_err(|e| e.to_string())? != path
-                || fs::read(path).map_err(|e| e.to_string())? != bytes
+            let imported = root.join(&logical);
+            if imported.canonicalize().map_err(|e| e.to_string())? != imported
+                || !members.matches(member, &imported)?
             {
                 return Err("dependency source differs or redirects".into());
             }
-            files.insert(logical, crate::sha256_bytes(&bytes));
+            files.insert(logical, digest.clone());
         }
+        members.check_source(&release, &path)?;
     }
     Ok((dependencies, files))
 }

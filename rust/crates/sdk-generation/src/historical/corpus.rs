@@ -227,7 +227,12 @@ pub(super) fn cohort_publishers(
         .filter(|release| release.num == version)
         .map(|release| {
             let name = format!("{}-{}.crate", release.package, release.num);
-            let vcs = archive_vcs(&archive_members(release, &archives.join(&name))?)?;
+            let members = super::archives::StagedArchive::read(
+                release,
+                &archives.join(&name),
+                ArchiveLimits::default(),
+            )?;
+            let vcs = members.vcs()?;
             if vcs.as_ref().is_some_and(|vcs| {
                 vcs.revision.len() != 40 || !vcs.revision.bytes().all(|b| b.is_ascii_hexdigit())
             }) {

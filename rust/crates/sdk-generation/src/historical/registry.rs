@@ -1,4 +1,5 @@
 use super::*;
+use super::archives::StagedArchive;
 
 pub(super) fn registry_response(path: &str) -> Result<Option<Vec<u8>>, String> {
     let url = format!("https://crates.io/api/v1/crates/{path}");
@@ -62,12 +63,8 @@ pub fn verify_archive(
     {
         return Err("invalid registry archive checksum".into());
     }
-    let actual = crate::sha256_file(archive).map_err(|e| e.to_string())?;
-    if actual != format!("sha256:{}", release.checksum) {
-        return Err("released registry archive checksum differs".into());
-    }
-    let members = archive_members(release, archive)?;
-    let vcs = archive_vcs(&members)?.ok_or("clean Git binding requires publisher VCS facts")?;
+    let members = StagedArchive::read(release, archive, ArchiveLimits::default())?;
+    let vcs = members.vcs()?.ok_or("clean Git binding requires publisher VCS facts")?;
     if vcs.dirty {
         return Err(
             "released archive records dirty source; clean Git provenance is not valid".into(),
@@ -109,9 +106,7 @@ pub fn verify_archive(
         return Err("released archive VCS path differs from Cargo package source".into());
     }
     let files = verify_archive_sources(&root, package, &source, archive, &members)?;
-    if crate::sha256_file(archive).map_err(|e| e.to_string())? != actual {
-        return Err("released archive changed during verification".into());
-    }
+    members.check_source(release, archive)?;
     Ok((
         ReleasedPackage {
             package: release.package.clone(),
@@ -132,12 +127,12 @@ pub(super) fn verify_archive_sources(
     package: &cargo_metadata::Package,
     source: &Path,
     archive: &Path,
-    members: &BTreeMap<String, Vec<u8>>,
+    members: &StagedArchive,
 ) -> Result<BTreeMap<String, String>, String> {
     let mut source_inputs = BTreeMap::new();
     let mut retained = BTreeSet::new();
     let mut has_manifest = false;
-    for (member, released) in members {
+    for (member, digest) in &members.files {
         let relative = member.as_str();
         let original_manifest = relative == "Cargo.toml.orig";
         // Cargo creates the normalized manifest and standalone package lock.
@@ -163,7 +158,7 @@ pub(super) fn verify_archive_sources(
         if !checkout.starts_with(source) {
             return Err("released archive source escapes checkout package".into());
         }
-        if fs::read(checkout).map_err(|e| e.to_string())? != *released {
+        if !members.matches(member, &checkout)? {
             return Err(format!(
                 "released archive source bytes differ from checkout: {relative}"
             ));
@@ -174,7 +169,7 @@ pub(super) fn verify_archive_sources(
                 .strip_prefix(root)
                 .map_err(|e| e.to_string())?,
         );
-        source_inputs.insert(logical, crate::sha256_bytes(released));
+        source_inputs.insert(logical, digest.clone());
         has_manifest |= original_manifest;
     }
     if !has_manifest {

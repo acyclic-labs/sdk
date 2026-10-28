@@ -240,3 +240,65 @@ fn staged_archive_retains_snapshot_and_detects_source_replacement() {
     assert!(staged.check_source(&release, input.path()).unwrap_err().contains("changed"));
     assert_eq!(staged.files["src/lib.rs"], crate::sha256_bytes(&[42]));
 }
+
+#[test]
+fn staged_dependency_verification_preserves_exact_inventory_bytes_and_refusals() {
+    let bodies = BTreeMap::from([
+        ("Cargo.toml".into(), b"[package]\nname='fixture'\nversion='0.1.0'\n".to_vec()),
+        ("descriptor.bin".into(), vec![42; 128 * 1024]),
+        (".cargo_vcs_info.json".into(), serde_json::to_vec(&serde_json::json!({
+            "git": {"sha1": "a".repeat(40), "dirty": false}, "path_in_vcs": "original-owner"
+        })).unwrap()),
+    ]);
+    for compressed in [false, true] {
+        let bytes = encode(&bodies, compressed);
+        let original = super::archive_decoder_oracle::retained_archive_decoder(
+            &bytes, "fixture", "0.1.0", ArchiveLimits::default(),
+        ).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let directory = "historical-fixture-0.1.0";
+        let prefix = format!(".docs-producer/{directory}/");
+        let archive_logical = format!("{prefix}registry-archives/fixture-0.1.0.crate");
+        let archive = root.path().join(&archive_logical);
+        fs::create_dir_all(archive.parent().unwrap()).unwrap();
+        fs::write(&archive, &bytes).unwrap();
+        let imported = root.path().join(format!("{prefix}dependencies/fixture-0.1.0"));
+        fs::create_dir_all(&imported).unwrap();
+        let mut expected = BTreeMap::from([(archive_logical, crate::sha256_bytes(&bytes))]);
+        for (name, body) in &original {
+            fs::write(imported.join(name), body).unwrap();
+            expected.insert(format!("{prefix}dependencies/fixture-0.1.0/{name}"), crate::sha256_bytes(body));
+        }
+        let dependency = ProducerDependencyArchive {
+            package: "fixture".into(), version: "0.1.0".into(),
+            registry_checksum: crate::sha256_bytes(&bytes).trim_start_matches("sha256:").into(),
+            yanked: true, publisher_vcs: archive_vcs(&original).unwrap(),
+        };
+        let retained = [dependency];
+        let accepted = producer_dependencies(root.path(), directory, Some(&retained)).unwrap();
+        assert_eq!(accepted.1, expected);
+        assert_eq!(accepted.0[0].publisher_vcs, retained[0].publisher_vcs);
+        assert!(accepted.0[0].yanked);
+        let payload = imported.join("descriptor.bin");
+        fs::write(&payload, vec![43; 128 * 1024]).unwrap();
+        assert!(producer_dependencies(root.path(), directory, Some(&retained)).unwrap_err().contains("source differs"));
+        fs::remove_file(&payload).unwrap();
+        assert!(producer_dependencies(root.path(), directory, Some(&retained)).is_err());
+        fs::write(&payload, &original["descriptor.bin"]).unwrap();
+        #[cfg(unix)]
+        {
+            fs::remove_file(&payload).unwrap();
+            let other = root.path().join("redirected.bin");
+            fs::write(&other, &original["descriptor.bin"]).unwrap();
+            std::os::unix::fs::symlink(&other, &payload).unwrap();
+            assert!(producer_dependencies(root.path(), directory, Some(&retained)).unwrap_err().contains("redirects"));
+            fs::remove_file(&payload).unwrap();
+            fs::write(&payload, &original["descriptor.bin"]).unwrap();
+        }
+        let mut wrong_vcs = retained.clone();
+        wrong_vcs[0].publisher_vcs = None;
+        assert!(producer_dependencies(root.path(), directory, Some(&wrong_vcs)).unwrap_err().contains("publisher VCS differs"));
+        fs::write(&archive, b"corrupted archive").unwrap();
+        assert!(producer_dependencies(root.path(), directory, Some(&retained)).unwrap_err().contains("checksum differs"));
+    }
+}
