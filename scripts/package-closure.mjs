@@ -13,7 +13,7 @@ export function packageClosure(root, selected) {
     }));
   function visit(name) {
     if (visited.has(name)) return;
-    if (!/^[a-z][a-z-]*$/.test(name)) throw new Error("invalid package generation target");
+    if (!/^[a-z][a-z-]*$/.test(name)) throw new Error("STEP package-generation-target failed: invalid package directory; recovery: bun scripts/generate.mjs");
     const directory = join(root, "typescript/packages", name);
     const config = JSON.parse(readFileSync(join(directory, "tsconfig.json"), "utf8"));
     visited.add(name);
@@ -22,7 +22,7 @@ export function packageClosure(root, selected) {
       if (names.has(dependency)) visit(names.get(dependency));
     }
     for (const reference of config.references ?? []) {
-      if (!/^\.\.\/[a-z][a-z-]*$/.test(reference.path)) throw new Error("invalid package reference");
+      if (!/^\.\.\/[a-z][a-z-]*$/.test(reference.path)) throw new Error("STEP package-generation-reference failed: invalid dependency path; recovery: bun scripts/generate.mjs");
       visit(reference.path.slice(3));
     }
     packages.add(name);
