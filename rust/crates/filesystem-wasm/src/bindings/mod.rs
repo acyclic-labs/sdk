@@ -21,7 +21,7 @@ macro_rules! browser_call {
     ($owner:ident, $operation:ident($($argument:expr),* $(,)?)) => {{
         $owner.engine.$operation(
             $($argument,)*
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &CancellationToken::default(),
         ).await.map_err(js_error)
     }};

@@ -150,11 +150,7 @@ impl NativeCheckout {
                 checkout.pinned_reader().map_err(napi_error)?
             };
             let receipt = reader
-                .resolve_files(
-                    &parsed,
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
-                    &cancellation,
-                )
+                .resolve_files(&parsed, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
                 .await
                 .map_err(napi_error)?;
             Ok(NativeResolvedFiles {

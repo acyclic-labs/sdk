@@ -73,7 +73,7 @@ impl NativeResolvedFile {
                     offset: bigint_u64(&offset, "offset")?,
                     length: bigint_u64(&length, "length")?,
                 },
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -88,7 +88,7 @@ impl NativeResolvedFile {
     pub async fn read_symbolic_link(&self) -> Result<NativeFileRead> {
         let receipt = self
             .inner
-            .read_symbolic_link(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
+            .read_symbolic_link(acyclic_fs::WorkBudget::UNBOUNDED, &self.cancellation)
             .await
             .map_err(napi_error)?;
         Ok(NativeFileRead {

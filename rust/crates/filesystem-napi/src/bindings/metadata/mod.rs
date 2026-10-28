@@ -165,7 +165,7 @@ impl NativeCheckout {
         let receipt = Box::pin(checkout.read_named_attribute(
             &path,
             &name,
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &self.cancellation,
         ))
         .await
@@ -205,7 +205,7 @@ impl NativeCheckout {
             &path,
             after.as_ref(),
             maximum_entries,
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &self.cancellation,
         ))
         .await
@@ -243,7 +243,7 @@ impl NativeCheckout {
             path,
             &name,
             Some((bytes.as_ref(), mode)),
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &self.cancellation,
         ))
         .await
@@ -266,7 +266,7 @@ impl NativeCheckout {
             path,
             &name,
             None,
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &self.cancellation,
         ))
         .await
