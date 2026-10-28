@@ -62,7 +62,7 @@ fn prepared_frames_withhold_and_refund_codec_allowance() -> Result<(), Box<dyn s
         },
         ..Meter::default()
     });
-    let work = crate::memory::Work::new(meter.original())?;
+    let work = crate::native::Work::new(meter.original())?;
     let frame = PreparedFrame::reserve(128, Some(Arc::clone(&work)))?;
     for request in [(1, 0, 0), (0, 1, 0), (0, 0, 1)] {
         assert!(
@@ -394,7 +394,7 @@ fn prepared_partial_write_stops_at_exact_accepted_boundary()
         }
     }
     let meter = Arc::new(Meter::local());
-    let work = crate::memory::Work::new(meter.original())?;
+    let work = crate::native::Work::new(meter.original())?;
     let mut plan =
         PreparedFrame::encode(&Command::Commit(keyed_commit("partial", 0)?), 0, Some(work))?;
     let mut writer = Partial { bytes: Vec::new() };

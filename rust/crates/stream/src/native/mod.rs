@@ -2,6 +2,8 @@ use super::*;
 
 mod output;
 mod prepared;
+mod work;
+pub(crate) use work::Work;
 pub use output::NativeStreamOutput;
 pub use output::{NativeProviderFuture, NativeRecordStream, NativeStreamResult};
 pub(crate) use prepared::NativeCommitRecordSlot;

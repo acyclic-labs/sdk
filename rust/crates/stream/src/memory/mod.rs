@@ -8,6 +8,8 @@ use std::{
 #[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::MAX_RECORD_BYTES;
 use crate::OwnedBytes as Bytes;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::native::Work;
 use crate::preparation::commit_identity;
 use crate::query_sync::{RwLock, watch};
 #[cfg(test)]

@@ -203,7 +203,7 @@ impl Journal {
     fn restart(
         &mut self,
         epoch: u64,
-        work: Option<&Arc<crate::memory::Work>>,
+        work: Option<&Arc<crate::native::Work>>,
     ) -> Result<(), LocalStreamError> {
         let header = encode_header(self.limits, epoch)?;
         let lease = self.file.lease()?;
@@ -243,7 +243,7 @@ impl Journal {
     fn compact(
         &mut self,
         state: &[u8],
-        work: Option<&Arc<crate::memory::Work>>,
+        work: Option<&Arc<crate::native::Work>>,
     ) -> Result<DeviceFlushed, LocalStreamError> {
         let epoch = self.epoch.checked_add(1).ok_or(LocalStreamError::Corrupt)?;
         let temporary = self.root.join(SNAPSHOT_TEMPORARY);

@@ -10,7 +10,7 @@ impl LocalStream {
         let original = Arc::clone(&meter);
         let stream = self.clone();
         crate::NativeProviderFuture::new(&Arc::clone(&original), async move {
-            let work = crate::memory::Work::new(meter)?;
+            let work = crate::native::Work::new(meter)?;
             let mut stream = Self {
                 work: Some(Arc::clone(&work)),
                 ..stream

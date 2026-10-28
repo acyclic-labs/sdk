@@ -21,7 +21,7 @@ impl StreamProvider for LocalStream {
     ) -> crate::NativeProviderFuture<'_, ()> {
         let stream = self.clone();
         crate::NativeProviderFuture::new(&Arc::clone(&meter), async move {
-            let work = crate::memory::Work::new(meter)?;
+            let work = crate::native::Work::new(meter)?;
             let stream = Self {
                 work: Some(Arc::clone(&work)),
                 ..stream
@@ -39,7 +39,7 @@ impl StreamProvider for LocalStream {
         &self,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> std::io::Result<crate::NativeProviderFuture<'_, ()>> {
-        let work = crate::memory::Work::new(Arc::clone(&meter))?;
+        let work = crate::native::Work::new(Arc::clone(&meter))?;
         // This ticket survives original cancellation and excludes competing
         // work from consuming the phase's final durability allowance.
         work.prepare_durability(1)?;
