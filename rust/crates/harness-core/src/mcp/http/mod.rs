@@ -35,7 +35,7 @@ pub struct McpHttpRequest {
     /// Whole-exchange deadline.
     pub timeout_ms: u32,
     /// Total response body allowance.
-    pub maximum_response_bytes: u32,
+    pub maximum_response_bytes: Option<u32>,
 }
 
 /// Bounded streaming HTTP response.
@@ -69,15 +69,20 @@ pub struct HttpMcpTransport {
     provider: Arc<dyn McpHttpProvider>,
     endpoint: String,
     session: Option<String>,
-    maximum_bytes: u32,
+    maximum_bytes: Option<u32>,
     timeout_ms: u32,
     callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
 }
 
 impl HttpMcpTransport {
     /// Selects independent tool-exchange bounds after catalog discovery.
-    pub fn with_tool_limits(mut self, maximum_bytes: u32, timeout_ms: u32) -> Result<Self> {
-        if maximum_bytes == 0 || timeout_ms == 0 {
+    pub fn with_tool_limits(
+        mut self,
+        maximum_bytes: impl Into<Option<u32>>,
+        timeout_ms: u32,
+    ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.into();
+        if maximum_bytes == Some(0) || timeout_ms == 0 {
             return Err(Error::Invalid(
                 "MCP request deadline must be positive".into(),
             ));
@@ -105,10 +110,11 @@ impl HttpMcpTransport {
         provider: Arc<dyn McpHttpProvider>,
         endpoint: String,
         session: Option<String>,
-        maximum_bytes: u32,
+        maximum_bytes: impl Into<Option<u32>>,
         timeout_ms: u32,
         callbacks: Option<(McpCallbackPolicy, Arc<McpRuntimeCallbacks>)>,
     ) -> Result<Self> {
+        let maximum_bytes = maximum_bytes.into();
         let uri = endpoint
             .parse::<::http::Uri>()
             .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -119,7 +125,7 @@ impl HttpMcpTransport {
                 || authority.as_str().contains('@')
                 || (authority.port().is_some() && authority.port_u16().is_none())
         }) || endpoint.contains('#')
-            || maximum_bytes == 0
+            || maximum_bytes == Some(0)
             || timeout_ms == 0
             || session.as_ref().is_some_and(|value| !valid_session(value))
         {
@@ -192,7 +198,9 @@ impl HttpMcpTransport {
     /// Constructs the exact request for separate host admission.
     pub fn request(&self, method: &str, body: Vec<u8>) -> Result<McpHttpRequest> {
         if !matches!(method, "POST" | "GET" | "DELETE")
-            || body.len() as u64 > u64::from(self.maximum_bytes)
+            || self
+                .maximum_bytes
+                .is_some_and(|maximum| body.len() as u64 > u64::from(maximum))
         {
             return Err(Error::Invalid("invalid MCP HTTP request".into()));
         }
@@ -259,7 +267,10 @@ impl HttpMcpTransport {
             bytes
                 .len()
                 .checked_add(chunk.len())
-                .filter(|total| *total as u64 <= u64::from(self.maximum_bytes))
+                .filter(|total| {
+                    self.maximum_bytes
+                        .is_none_or(|maximum| *total as u64 <= u64::from(maximum))
+                })
                 .ok_or(Error::Indeterminate(operation))?;
             bytes.extend_from_slice(&chunk);
         }

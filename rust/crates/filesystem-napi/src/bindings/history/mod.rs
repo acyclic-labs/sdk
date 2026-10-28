@@ -22,7 +22,7 @@ pub struct NativeJoinPlan {
 #[napi(object)]
 pub struct NativeJoinOptions {
     pub history: String,
-    pub maximum_generations: NapiU32,
+    pub maximum_generations: Option<NapiU32>,
     pub maximum_changes: NapiU32,
     pub maximum_conflicts: NapiU32,
     pub source_generation: Option<Buffer>,

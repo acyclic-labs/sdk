@@ -125,7 +125,6 @@ export function workspace(client: HostedClient, value: WireWorkspace): HostedFsW
     },
     async liveRebase(options, idempotencyKey) {
       validateMergeLimits(options);
-      requirePageBound(client, options.maximumGenerations, "maximum generations");
       requirePageBound(client, options.maximumChanges, "maximum changes");
       requirePageBound(client, options.maximumConflicts, "maximum conflicts");
       const response = await call(client.rpc.rebase({
@@ -150,7 +149,6 @@ export function workspace(client: HostedClient, value: WireWorkspace): HostedFsW
     },
     async joinInto(target, options) {
       validateMergeLimits(options);
-      requirePageBound(client, options.maximumGenerations, "maximum generations");
       requirePageBound(client, options.maximumChanges, "maximum changes");
       requirePageBound(client, options.maximumConflicts, "maximum conflicts");
       const destination = requireWorkspace(target, client);

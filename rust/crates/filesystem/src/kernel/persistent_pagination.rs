@@ -1,5 +1,6 @@
 //! Shared bounded cursor pagination with field-owned original native custody.
 
+use super::DecodeLimits;
 use super::allocation::{
     AllocationLedger, KernelAccounting, KernelOwnedAllocation, VisitedObjectSet,
 };
@@ -8,7 +9,6 @@ use super::persistent_btree::{Child, Format, Page, children_within, leaf_within}
 use super::persistent_io::{self, OwnedPage};
 use super::persistent_point::{Owned, retire_allocation, split_allocation};
 use super::search::partition_point_with_accounting;
-use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
@@ -191,32 +191,16 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         if !limits.page_limits_valid(1) {
             return Err(fail(Error::InvalidLimits));
         }
-        let cursor = match bound {
-            Bound::Included(key) | Bound::Excluded(key) => Some(key),
-            Bound::Unbounded => None,
-        };
-        if let Some(observed) = cursor
-            .map(F::key_nested_bytes)
-            .filter(|&bytes| bytes > u64::from(limits.maximum_name_bytes))
-        {
-            return Err(fail(Error::Decode(CanonicalDecodeError::FieldTooLarge {
-                observed: u32::try_from(observed).unwrap_or(u32::MAX),
-                maximum: limits.maximum_name_bytes,
-            })));
-        }
         let maximum_values =
             usize::try_from(maximum_values).map_err(|_| fail(Error::LimitOverflow))?;
         let target = maximum_values
             .checked_add(1)
             .ok_or_else(|| fail(Error::LimitOverflow))?;
-        let configured_maximum = usize::try_from(limits.maximum_visited_pages)
-            .map_err(|_| fail(Error::InvalidLimits))?;
         // One cursor-exhausted subtree plus each requested value/witness frontier.
         let maximum_traversal_pages = target
             .checked_add(1)
             .and_then(|value| value.checked_mul(usize::from(limits.maximum_page_height)))
-            .ok_or_else(|| fail(Error::LimitOverflow))?
-            .min(configured_maximum);
+            .ok_or_else(|| fail(Error::LimitOverflow))?;
         accounting
             .admit(WorkCounters {
                 items_returned: usize_to_u64(maximum_values),
@@ -244,8 +228,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
                 return Err(failed(project_failure(error), accounting.spent()));
             }
         };
-        let visited_result =
-            VisitedObjectSet::new_with_accounting(maximum_traversal_pages, accounting);
+        let visited_result = VisitedObjectSet::new_with_accounting(accounting);
         let completed = finish_custody_leaf(accounting, data_custody, prefix);
         let visited = match visited_result {
             Ok(result) => result,
@@ -537,13 +520,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
             self.examine_value(value)?;
             let prefix = begin_custody_leaf(self.accounting, self.data_custody)
                 .map_err(|error| self.failure(error))?;
-            let result = persistent_io::clone_value::<F>(
-                value,
-                self.limits.maximum_name_bytes,
-                self.accounting,
-                None,
-                0,
-            );
+            let result = persistent_io::clone_value::<F>(value, self.accounting, None, 0);
             let completed = finish_custody_leaf(self.accounting, self.data_custody, prefix);
             let (cloned, allocation) = result.map_err(|error| self.failure(error))?;
             let nested = F::value_owned_bytes(&cloned);
@@ -752,13 +729,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
     fn clone_key(&mut self, key: &F::Key) -> Result<Owned<F::Key>, Failure> {
         let prefix = begin_custody_leaf(self.accounting, self.data_custody)
             .map_err(|error| self.failure(error))?;
-        let result = persistent_io::clone_key::<F>(
-            key,
-            self.limits.maximum_name_bytes,
-            self.accounting,
-            None,
-            0,
-        );
+        let result = persistent_io::clone_key::<F>(key, self.accounting, None, 0);
         let completed = finish_custody_leaf(self.accounting, self.data_custody, prefix);
         let (value, allocation) = result.map_err(|error| self.failure(error))?;
         let bytes = F::key_owned_bytes(&value);

@@ -43,11 +43,6 @@ impl MachinesProvider for SimulatedMachines {
                     "required image capabilities are unavailable".into(),
                 ));
             }
-            if state.machines.len() >= 1_024 {
-                return Err(ProviderError::Rejected(
-                    "simulation machine limit reached".into(),
-                ));
-            }
             let id = Self::machine(key, 0);
             let now = tick(state)?;
             let contract = Self::contract(&request, capabilities);
@@ -173,9 +168,6 @@ impl MachinesProvider for SimulatedMachines {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         let count_value = count.get();
-        if count_value > MAX_FORK_CHILDREN {
-            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-        }
         self.apply(
             key,
             MemoryIntent::Fork(checkpoint, count_value),
@@ -192,11 +184,6 @@ impl MachinesProvider for SimulatedMachines {
                 }
                 let add = usize::try_from(count_value)
                     .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?;
-                if state.machines.len().saturating_add(add) > 1_024 {
-                    return Err(ProviderError::Rejected(
-                        "simulation machine limit reached".into(),
-                    ));
-                }
                 let mut children = Vec::with_capacity(add);
                 for index in 0..count_value {
                     let id = Self::machine(key, index);
@@ -231,9 +218,6 @@ impl MachinesProvider for SimulatedMachines {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         let count_value = count.get();
-        if count_value > MAX_FORK_CHILDREN {
-            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-        }
         self.apply(
             key,
             MemoryIntent::ForkMachine(machine, count_value),
@@ -253,11 +237,6 @@ impl MachinesProvider for SimulatedMachines {
                 }
                 let add = usize::try_from(count_value)
                     .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?;
-                if state.machines.len().saturating_add(add) > 1_024 {
-                    return Err(ProviderError::Rejected(
-                        "simulation machine limit reached".into(),
-                    ));
-                }
                 let mut children = Vec::with_capacity(add);
                 for index in 0..count_value {
                     let id = Self::machine(key, index);

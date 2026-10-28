@@ -126,7 +126,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             maximum_conflicts,
             resolutions,
         } = request;
-        if maximum_generations == 0 || maximum_changes == 0 || maximum_conflicts == 0 {
+        if maximum_generations == Some(0) || maximum_changes == 0 || maximum_conflicts == 0 {
             return Err(WorkspaceError::JoinLimit.into());
         }
         if !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)

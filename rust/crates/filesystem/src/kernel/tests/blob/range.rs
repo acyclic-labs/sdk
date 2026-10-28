@@ -596,7 +596,6 @@ async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growt
     let limits = DecodeLimits {
         maximum_page_items: 2,
         maximum_page_height: 1,
-        maximum_visited_pages: 2,
         ..DecodeLimits::default()
     };
     let range = ByteRange {

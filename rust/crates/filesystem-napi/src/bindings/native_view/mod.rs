@@ -177,10 +177,10 @@ impl NativeCheckout {
         &self,
         source_root: String,
         paths: Vec<String>,
-        maximum_paths: NapiU32,
+        maximum_paths: Option<NapiU32>,
         maximum_extent_spans: NapiU32,
     ) -> Result<NativeCaptureResult> {
-        let maximum_paths = maximum_paths.into_inner();
+        let maximum_paths = maximum_paths.map(NapiU32::into_inner);
         let maximum_extent_spans = maximum_extent_spans.into_inner();
 
         let source_root = PathBuf::from(source_root);
@@ -212,10 +212,10 @@ impl NativeCheckout {
     pub async fn capture_baseline(
         &self,
         source_root: String,
-        maximum_paths: NapiU32,
+        maximum_paths: Option<NapiU32>,
         maximum_extent_spans: NapiU32,
     ) -> Result<NativeCaptureResult> {
-        let maximum_paths = maximum_paths.into_inner();
+        let maximum_paths = maximum_paths.map(NapiU32::into_inner);
         let maximum_extent_spans = maximum_extent_spans.into_inner();
 
         let source_root = PathBuf::from(source_root);
@@ -286,7 +286,7 @@ impl NativeWatcher {
 
     async fn capture_reconcile_baseline(
         &self,
-        maximum_paths: u32,
+        maximum_paths: Option<u32>,
         maximum_extent_spans: u32,
     ) -> Result<PendingReconcileScan> {
         let operation_id = OperationId::new();
@@ -343,10 +343,10 @@ impl NativeWatcher {
     #[napi]
     pub async fn reconcile(
         &self,
-        maximum_paths: NapiU32,
+        maximum_paths: Option<NapiU32>,
         maximum_extent_spans: NapiU32,
     ) -> Result<NativeWatchReconcileResult> {
-        let maximum_paths = maximum_paths.into_inner();
+        let maximum_paths = maximum_paths.map(NapiU32::into_inner);
         let maximum_extent_spans = maximum_extent_spans.into_inner();
 
         let _operation = self.operation.lock().await;
@@ -404,11 +404,11 @@ impl NativeWatcher {
     pub async fn poll_capture(
         &self,
         maximum_changes: NapiU32,
-        maximum_paths: NapiU32,
+        maximum_paths: Option<NapiU32>,
         maximum_extent_spans: NapiU32,
     ) -> Result<NativeWatchCaptureResult> {
         let maximum_changes = maximum_changes.into_inner();
-        let maximum_paths = maximum_paths.into_inner();
+        let maximum_paths = maximum_paths.map(NapiU32::into_inner);
         let maximum_extent_spans = maximum_extent_spans.into_inner();
 
         let _operation = self.operation.lock().await;

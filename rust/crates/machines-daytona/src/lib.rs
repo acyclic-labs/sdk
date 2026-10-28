@@ -23,10 +23,10 @@ use std::{
 use acyclic_machines::{
     Capability, CheckpointId, CheckpointObservation, CompatibilityPolicy, CreateMachine, EventPage,
     ExecCommand, ExecStream, ForkFidelity, IdempotencyKey, Image, ImageQualification,
-    MAX_EVENT_PAGE_SIZE, MAX_FORK_CHILDREN, MAX_PAGE_SIZE, MachineContract, MachineId,
-    MachineObservation, MachineOutput, MachinePage, MachineState, MachinesProvider,
-    MutationOutcome, OperationId, OperationObservation, OperationPhase, OperationStream,
-    ProviderAssurance, ProviderError, SuspensionPolicy, UsageReceipt,
+    MAX_EVENT_PAGE_SIZE, MAX_PAGE_SIZE, MachineContract, MachineId, MachineObservation,
+    MachineOutput, MachinePage, MachineState, MachinesProvider, MutationOutcome, OperationId,
+    OperationObservation, OperationPhase, OperationStream, ProviderAssurance, ProviderError,
+    SuspensionPolicy, UsageReceipt,
 };
 use async_trait::async_trait;
 use futures::StreamExt as _;
@@ -1249,9 +1249,6 @@ impl MachinesProvider for DaytonaProvider {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         let count = count.get();
-        if count > MAX_FORK_CHILDREN {
-            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-        }
         self.apply(key, &Intent::Fork(checkpoint, count), async |operation| {
             let source = self.inspect_checkpoint(checkpoint).await?;
             if !source.forkable {
@@ -1289,9 +1286,6 @@ impl MachinesProvider for DaytonaProvider {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         let count = count.get();
-        if count > MAX_FORK_CHILDREN {
-            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-        }
         self.apply(
             key,
             &Intent::ForkMachine(machine, count),
@@ -1823,17 +1817,6 @@ mod tests {
         assert!(matches!(
             provider.watch_operation(op).await.err(),
             Some(ProviderError::NotFound(_))
-        ));
-    }
-
-    #[tokio::test]
-    async fn fork_counts_are_bounded_before_any_request() {
-        let provider = DaytonaProvider::new(DaytonaConfig::new("k")).unwrap();
-        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000004").unwrap();
-        let too_many = NonZeroU32::new(MAX_FORK_CHILDREN + 1).unwrap();
-        assert!(matches!(
-            provider.fork_machine(MachineId::new(), too_many, key).await,
-            Err(ProviderError::Invalid(_))
         ));
     }
 

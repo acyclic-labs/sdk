@@ -258,10 +258,6 @@ impl Pool {
                     let _ = ready.send(Err(StreamError::Unavailable));
                     return Ok(());
                 }
-                if self.routes.len() >= Limits::default().channels {
-                    let _ = ready.send(Err(StreamError::Capacity));
-                    return Ok(());
-                }
                 if records.is_closed() || progress.cancelled() {
                     return Ok(());
                 }

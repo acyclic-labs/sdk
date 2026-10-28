@@ -13,7 +13,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const WATCH_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
 const OBSERVATION_RETRY_DELAY: Duration = Duration::from_secs(1);
-const MAX_CONSECUTIVE_UNKNOWN_INSPECTIONS: u8 = 3;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Remote mutual-TLS identity. Key material is borrowed and never retained by the client.

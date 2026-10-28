@@ -166,7 +166,6 @@ async fn admit_mount_startup()
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 const ATTRIBUTE_PAGE_SIZE: u32 = 256;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-const MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES: usize = 1024 * 1024;
 
 /// Metadata for a node created through a POSIX mount by `uid`/`gid` now.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
