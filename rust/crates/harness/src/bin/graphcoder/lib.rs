@@ -9,6 +9,7 @@ acyclic_test_support::counting_allocator!();
 mod args;
 mod headless;
 mod view;
+mod waits;
 
 use acyclic_harness::{
     OperationId,
@@ -35,19 +36,45 @@ fn phase<'a, F: Future + 'a>(build: impl FnOnce() -> F) -> LocalBoxFuture<'a, F:
 /// self-deployed and a managed server share.
 pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
     let args = Args::parse();
+    use tracing_subscriber::{Layer as _, prelude::*};
+    let waits = waits::Waits::default();
     // Harness diagnostics (agent turn failures among them) go to stderr when
     // `GRAPHCODER_LOG` names a filter, e.g. `warn`.
-    if let Ok(filter) = std::env::var("GRAPHCODER_LOG") {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
-            .with_writer(std::io::stderr)
-            .try_init();
-    }
+    let filter = std::env::var("GRAPHCODER_LOG").unwrap_or_else(|_| "off".into());
+    let _ = tracing_subscriber::registry()
+        .with(
+            waits
+                .clone()
+                .with_filter(tracing_subscriber::filter::filter_fn(|metadata| {
+                    metadata.target() == "acyclic.wait"
+                })),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::io::stderr)
+                .with_filter(tracing_subscriber::EnvFilter::new(filter)),
+        )
+        .try_init();
     let result = acyclic_native_runtime::coordination_runtime()
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
         .and_then(|runtime| {
             // Keep Tokio's entry frame independent of the size of the CLI future.
-            let result = runtime.block_on(phase(|| run(args, seams)));
+            let result = runtime.block_on(async {
+                let run = phase(|| run(args, seams));
+                tokio::pin!(run);
+                tokio::select! {
+                    result = &mut run => {
+                        let _ = waits.report(&mut std::io::stderr());
+                        result
+                    }
+                    signal = workspace_shutdown() => {
+                        // Report before dropping the pending producer futures.
+                        let _ = waits.report(&mut std::io::stderr());
+                        signal?;
+                        Ok(130)
+                    }
+                }
+            });
             runtime.shutdown_background();
             result
         });

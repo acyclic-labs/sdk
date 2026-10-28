@@ -39,7 +39,9 @@ pub async fn prompt(
             }
             Reply::Pending => {}
         }
-        match events.next().await? {
+        match acyclic_native_runtime::obs::waiting("stream-append", operation, events.next())
+            .await?
+        {
             Event::Turn(entry) if entry.inbox == inbox => {
                 return print(conversation, &entry, output).await;
             }
@@ -61,7 +63,13 @@ pub async fn prompt(
                 }
                 if let Phase::WaitingApproval { id } = status.phase {
                     eprint!("graphcoder: approve request {}? [y/N] ", id.as_str());
-                    let answer = answers.next_line().await?.unwrap_or_default();
+                    let answer = acyclic_native_runtime::obs::waiting(
+                        "stdin-read",
+                        id.as_str(),
+                        answers.next_line(),
+                    )
+                    .await?
+                    .unwrap_or_default();
                     let approved = matches!(answer.trim(), "y" | "Y" | "yes");
                     conversation.decide(&id, approved).await?;
                 }
@@ -135,7 +143,7 @@ pub async fn jsonl(
             return Ok(0);
         }
         tokio::select! {
-            line = lines.next_line(), if open => {
+            line = acyclic_native_runtime::obs::waiting("stdin-read", operation, lines.next_line()), if open => {
                 let Some(line) = line? else {
                     open = false;
                     continue;
@@ -172,7 +180,7 @@ pub async fn jsonl(
                     return Err(format!("unknown JSONL request: {line}").into());
                 }
             }
-            event = events.next() => match event? {
+            event = acyclic_native_runtime::obs::waiting("stream-append", operation, events.next()) => match event? {
                 Event::Turn(entry) => {
                     if let Some((_, id)) = pending.remove(&entry.inbox) {
                         emit(output, &answer(conversation, &id, &entry).await?)?;

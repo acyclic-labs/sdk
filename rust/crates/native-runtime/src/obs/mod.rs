@@ -5,7 +5,9 @@ use tracing::{Dispatch, Span};
 
 mod scoped;
 pub use scoped::Scoped;
+mod waiting;
 pub(crate) use tracing::field::Empty;
+pub use waiting::waiting;
 
 macro_rules! span {
     ($level:ident, $name:literal $(, $($fields:tt)*)?) => {

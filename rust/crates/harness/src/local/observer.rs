@@ -48,6 +48,7 @@ pub struct Observer {
     /// also appends a status, so it reopens after the next status.
     missing: bool,
     failures: Option<(broadcast::Receiver<AgentFailure>, ActorReference)>,
+    stopped: Option<tokio::sync::watch::Receiver<Option<String>>>,
     tail: OutputTail,
 }
 
@@ -93,6 +94,10 @@ impl Observer {
                 .failures
                 .as_ref()
                 .map(|failures| (failures.sender.subscribe(), failures.actor.clone())),
+            stopped: connection
+                .failures
+                .as_ref()
+                .map(|failures| failures.stopped.clone()),
             tail: OutputTail::default(),
             connection: connection.clone(),
             agent,
@@ -107,7 +112,10 @@ impl Observer {
         loop {
             let next = {
                 let Self {
-                    client, failures, ..
+                    client,
+                    failures,
+                    stopped,
+                    ..
                 } = &mut *self;
                 let failure = async {
                     match failures.as_mut() {
@@ -118,6 +126,7 @@ impl Observer {
                 tokio::select! {
                     event = client.next() => Ok(event),
                     failure = failure => Err(failure),
+                    error = runtime_stopped(stopped.as_mut()) => return Ok(Event::Failed(error)),
                 }
             };
             let event = match next {
@@ -236,5 +245,58 @@ impl Observer {
     #[must_use]
     pub fn output(&self) -> &str {
         self.tail.text()
+    }
+}
+
+/// A runtime's sole sender closes on every task exit, including unwinding.
+/// An already-published failure also reaches observers opened after that exit.
+async fn runtime_stopped(
+    stopped: Option<&mut tokio::sync::watch::Receiver<Option<String>>>,
+) -> String {
+    let Some(stopped) = stopped else {
+        return futures::future::pending().await;
+    };
+    loop {
+        if let Some(error) = stopped.borrow().as_ref() {
+            return format!("agent runtime stopped: {error}");
+        }
+        if stopped.changed().await.is_err() {
+            return "agent runtime stopped without a result".into();
+        }
+    }
+}
+
+#[cfg(test)]
+mod runtime_stop_tests {
+    use super::runtime_stopped;
+    use futures::FutureExt as _;
+
+    #[test]
+    fn runtime_exit_wakes_existing_and_late_observers() {
+        let (sender, mut receiver) = tokio::sync::watch::channel(None);
+        assert!(
+            runtime_stopped(Some(&mut receiver))
+                .now_or_never()
+                .is_none()
+        );
+        sender.send(Some("storage failed".into())).unwrap();
+        let mut late = receiver.clone();
+        for receiver in [&mut receiver, &mut late] {
+            assert_eq!(
+                runtime_stopped(Some(receiver)).now_or_never(),
+                Some("agent runtime stopped: storage failed".into())
+            );
+        }
+        let (sender, mut receiver) = tokio::sync::watch::channel(None);
+        assert!(
+            runtime_stopped(Some(&mut receiver))
+                .now_or_never()
+                .is_none()
+        );
+        drop(sender);
+        assert_eq!(
+            runtime_stopped(Some(&mut receiver)).now_or_never(),
+            Some("agent runtime stopped without a result".into())
+        );
     }
 }

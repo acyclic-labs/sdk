@@ -400,7 +400,12 @@ impl StockExecution<'_> {
         {
             let mut stream = stream;
             loop {
-                let next = stream.next().await;
+                let next = crate::obs::waiting(
+                    "provider-event",
+                    format_args!("{operation_id}:{step}"),
+                    stream.next(),
+                )
+                .await;
                 let Some(event) = next else {
                     break;
                 };
@@ -418,15 +423,24 @@ impl StockExecution<'_> {
                     )
                 })?;
                 admission.observe(event, self.stock.limits, io)?;
-                super::model_observation::append(
-                    journal,
-                    operation_id,
-                    &key,
-                    (step, purpose),
-                    event,
-                    io,
+                crate::obs::waiting(
+                    "journal-commit",
+                    format_args!("{operation_id}:{step}:{index}"),
+                    super::model_observation::append(
+                        journal,
+                        operation_id,
+                        &key,
+                        (step, purpose),
+                        event,
+                        io,
+                    ),
                 )
                 .await?;
+                // The committed terminal event settles this step. Transport
+                // closure is independent and may never follow it.
+                if admission.completed {
+                    break;
+                }
             }
         }
         Ok(observed)
