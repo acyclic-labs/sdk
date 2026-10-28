@@ -152,7 +152,6 @@ impl<'a> PendingStdin<'a> {
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<bool> {
         let mut progressed = false;
-        #[cfg(unix)]
         if self.written < self.bytes.len() {
             let suffix = self
                 .bytes
