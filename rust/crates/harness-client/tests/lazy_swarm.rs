@@ -415,7 +415,7 @@ impl Peak {
 fn bounded(peak: &Peak, policy: &ReaderPolicy) -> bool {
     peak.cache_bytes <= policy.cache_bytes
         && peak.follows <= 2 * HEIGHT + 1
-        && peak.follows <= policy.follows
+        && policy.follows.is_none_or(|maximum| peak.follows <= maximum)
         && peak.requests <= policy.requests
         && peak.timers <= 1
 }
@@ -835,7 +835,7 @@ fn swarm_scroll_and_history_stay_bounded() {
 #[test]
 fn the_open_history_keeps_its_follow_under_a_full_follow_budget() {
     let policy = ReaderPolicy {
-        follows: 2,
+        follows: Some(2),
         ..policy()
     };
     let mut client = Client::new(policy, RTT);
@@ -1166,4 +1166,15 @@ fn cached_records_do_not_end_a_stream() {
     let step = u64::from(policy.read_limit);
     assert_eq!(starts, [0, step, 2 * step], "a full read is not the end");
     assert_eq!(reader.cache().tail(&stream), None, "no end was observed");
+}
+
+#[test]
+fn selected_expansions_survive_beyond_256_agents() {
+    let mut client = Client::new(policy(), RTT);
+    for index in 0..300 {
+        client.explorer.expand(&agent(index, None));
+    }
+    assert_eq!(client.explorer.expanded(), 300);
+    client.explorer.collapse(&agent(0, None));
+    assert_eq!(client.explorer.expanded(), 299);
 }

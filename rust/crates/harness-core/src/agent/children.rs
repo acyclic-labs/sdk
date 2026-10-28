@@ -71,10 +71,10 @@ impl<P: StreamProvider + ?Sized> Storage for Provider<P> {
                 path: path(digest)?,
                 records: vec![bytes.into()],
                 if_tail: Some(0),
-                idempotency_key: Some(super::intent_key(
+                idempotency_key: super::intent_key(
                     "child-node",
                     &[&blake3::Hash::from_bytes(digest).to_hex()],
-                )?),
+                )?,
             };
             match self.0.append(request).await.map_err(Error::Stream)? {
                 AppendOutcome::Committed(_) => Ok(()),
