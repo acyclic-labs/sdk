@@ -148,7 +148,7 @@ pub const MAX_RECORD_BYTES: usize = wire::StreamLimit::MaxRecordBytes as usize;
 pub const MAX_ITEMS: usize = wire::StreamLimit::MaxItems as usize;
 const REPLAY_PAGE: u32 = 1_024;
 /// Materialized hierarchy page size; larger requests continue through next_after.
-const CHILDREN_PAGE_ITEMS: u32 = 1_024;
+pub const CHILDREN_PAGE_ITEMS: u32 = 1_024;
 /// Maximum canonical application command, including metadata.
 pub const MAX_COMMAND_BYTES: usize = wire::StreamLimit::MaxCommandBytes as usize;
 /// Maximum canonical path text accepted by the single-command wire format.

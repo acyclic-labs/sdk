@@ -623,26 +623,6 @@ impl RecordCache {
         }
     }
 
-    /// Retained listing pages of a parent, without scanning unrelated streams.
-    pub fn listings<'a>(
-        &'a self,
-        parent: &'a StreamPath,
-    ) -> impl Iterator<Item = (u32, &'a Listing)> + 'a {
-        let range = Key::Listing(parent.clone(), 0)..=Key::Listing(parent.clone(), u32::MAX);
-        self.entries
-            .range(range.clone())
-            .map(|(key, entry)| (key, &entry.value))
-            .chain(
-                self.passed
-                    .range(range)
-                    .map(|(key, (value, _))| (key, value)),
-            )
-            .filter_map(|(key, value)| match (key, value) {
-                (Key::Listing(_, page), Value::Listing(listing)) => Some((*page, listing)),
-                _ => None,
-            })
-    }
-
     /// Mark a displayed listing page most recently used.
     pub fn touch_listing(&mut self, parent: &StreamPath, index: u32) {
         self.touch(&Key::Listing(parent.clone(), index));

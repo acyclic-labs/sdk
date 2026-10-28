@@ -531,7 +531,7 @@ impl Explorer {
 
     /// The last row shown under `pos`, through expanded descendants.
     fn last_descendant(&self, mut pos: Pos) -> Pos {
-        for _ in 0..acyclic_harness_core::agent::MAX_DEPTH {
+        loop {
             let Pos::Row {
                 parent,
                 page,
@@ -552,19 +552,17 @@ impl Explorer {
             let Ok(children) = agent.children() else {
                 return pos;
             };
-            let mut last = None;
-            let mut page = 0;
-            loop {
+            let mut page = 0_u32;
+            let last = loop {
                 match self.reader.cache().listing(&children, page) {
                     None => {
-                        last = Some(Pos::Gap {
+                        break Some(Pos::Gap {
                             parent: children.clone(),
                             page,
                         });
-                        break;
                     }
                     Some(listing) if listing.next.is_none() => {
-                        last = listing
+                        break listing
                             .children
                             .len()
                             .checked_sub(1)
@@ -573,21 +571,20 @@ impl Explorer {
                                 page,
                                 offset: u32::try_from(offset).unwrap_or(0),
                             });
-                        break;
                     }
-                    Some(_) => {}
+                    Some(_) => {
+                        let Some(next) = page.checked_add(1) else {
+                            return pos;
+                        };
+                        page = next;
+                    }
                 }
-                let Some(next) = page.checked_add(1) else {
-                    break;
-                };
-                page = next;
-            }
+            };
             match last {
                 Some(next) => pos = next,
                 None => return pos,
             }
         }
-        pos
     }
 
     fn render(&self, pos: &Pos) -> Row {
