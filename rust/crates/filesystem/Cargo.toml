@@ -134,7 +134,7 @@ proptest.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 loom = { version = "=0.7.2", features = ["checkpoint"] }
-vhost = { version = "0.16.0", features = ["vhost-user-frontend"] }
+vhost = { version = "0.18.0", features = ["vhost-user-frontend"] }
 
 [build-dependencies]
 icu_casemap.workspace = true
@@ -149,10 +149,10 @@ tempfile = { version = "3.27.0", optional = true }
 fuser = { version = "=0.18.0", default-features = false, optional = true }
 nix = { version = "0.31.3", default-features = false, features = ["fs", "user", "mount"], optional = true }
 rustix = { workspace = true, features = ["fs", "net"] }
-vhost = { version = "0.16.0", features = ["vhost-user-backend"] }
+vhost = { version = "0.18.0", features = ["vhost-user-backend"] }
 vmm-sys-util = "0.15.0"
-virtio-queue = "0.17.0"
-vm-memory = { version = "=0.17.1", features = ["backend-mmap"] }
+virtio-queue = "0.18.0"
+vm-memory = { version = "=0.18.0", features = ["backend-mmap"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 rustix = { workspace = true, features = ["fs"] }

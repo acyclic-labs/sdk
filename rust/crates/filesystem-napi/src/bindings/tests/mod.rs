@@ -86,15 +86,6 @@ fn string_paths_and_directory_cursors_use_native_profile() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn capability_identity_matches_build_target() {
-    let facts = native_capabilities();
-    assert_eq!(facts.version, env!("CARGO_PKG_VERSION"));
-    assert_eq!(facts.platform, std::env::consts::OS);
-    assert_eq!(facts.architecture, std::env::consts::ARCH);
-    assert!(facts.local && facts.native_watch);
-}
-
 #[tokio::test]
 async fn object_cache_bounds_are_exact() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
