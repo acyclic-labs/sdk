@@ -85,7 +85,11 @@ impl LocalHarness {
                 return Ok(reference);
             }
             let path = manifest_path(operation);
-            if path.len() > self.limits.path_bytes {
+            if self
+                .limits
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+            {
                 return Err(Error::Invalid(
                     "context manifest path exceeds path bound".into(),
                 ));
@@ -519,7 +523,12 @@ impl crate::context::InstructionReader for VolumeInstructions<'_> {
         maximum: u64,
     ) -> acyclic_stream::BoxProviderFuture<'a, Result<crate::model::ProjectInstruction>> {
         Box::pin(async move {
-            if path.len() > self.harness.limits.path_bytes {
+            if self
+                .harness
+                .limits
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+            {
                 return Err(Error::Invalid("instruction path exceeds path bound".into()));
             }
             let instruction = self.source.instruction(path, revision, maximum).await?;
@@ -622,7 +631,6 @@ mod tests {
             let name = path.strip_prefix("inputs/").unwrap().strip_suffix(".manifest.json").unwrap();
             let decoded: OperationId = serde_json::from_value(serde_json::Value::String(name.into()))?;
             prop_assert_eq!(decoded, operation);
-            prop_assert!(path.len() <= Limits::default().path_bytes);
             prop_assert_eq!(manifest_path(operation), path.clone());
             if operation != other {
                 prop_assert_ne!(path, manifest_path(other));
