@@ -6,7 +6,7 @@ import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import fc from "fast-check";
 import { AppendRecordSchema, AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, Codec, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest } from "../generated/wasm/acyclic_stream_wasm.js";
-import { ensureStreamWasm } from "../src/contract.js";
+import { ensureStreamWasm, wireAppendRequest } from "../src/contract.js";
 import { DefaultStreamProvider } from "../src/default.js";
 import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, compareStreamPaths, idempotencyKey, jsonCodec, type Record as StreamRecord } from "../src/index.js";
 import type { StreamProvider } from "../src/types.js";
@@ -129,7 +129,7 @@ describe("website Stream contract", () => {
       hostedCalls += 1;
       return new Response("null");
     } });
-    await expect(hosted.append("bounded", [])).rejects.toMatchObject({ code: "limit_exceeded" });
+    await expect(hosted.append("bounded", [], { idempotencyKey: key("empty-hosted") })).rejects.toMatchObject({ code: "limit_exceeded" });
     expect(hostedCalls).toBe(0);
     await expect(stream.read({ from: 0n, limit: 1_025 }).next()).rejects.toThrow();
     const cursor = client.bytes("cursor-bounds");
@@ -161,7 +161,7 @@ describe("website Stream contract", () => {
       hostedCalls += 1;
       return new Response("null");
     } });
-    await expect(hosted.append("a".repeat(65_535), Array(16).fill(new Uint8Array(65_536)))).rejects.toThrow();
+    await expect(hosted.append("a".repeat(65_535), Array(16).fill(new Uint8Array(65_536)), { idempotencyKey: key("large-hosted") })).rejects.toThrow();
     const hostedMutations = conditions.map(condition => ({ append: { path: condition.path, values: [body] } }));
     await expect(hosted.commit({ conditions, mutations: hostedMutations }, { idempotencyKey: key("hosted-large") })).rejects.toThrow();
     expect(hostedCalls).toBe(0);
@@ -187,13 +187,15 @@ describe("website Stream contract", () => {
     expect(is_stream_error_code("not_a_stream_error")).toBe(false);
   });
 
-  test("requires matching conditions and canonicalizes coordinated retry identity", async () => {
+  test("requires fork destination absence and canonicalizes coordinated retry identity", async () => {
     const client = StreamClient.memory();
     const first = client.bytes("coordinated/a");
     const second = client.bytes("coordinated/b");
+    const source = client.bytes("coordinated/source");
+    await source.append(new Uint8Array([1]), { idempotencyKey: key("fork-source") });
     await expect(client.commit({ conditions: [{ path: first.path, ifAbsent: true }], mutations: [
-      { append: { stream: second, values: [new Uint8Array([1])] } },
-    ] }, { idempotencyKey: key("missing-condition") })).rejects.toThrow();
+      { fork: { source, destination: second.path, atTail: 1n } },
+    ] }, { idempotencyKey: key("missing-condition") })).rejects.toMatchObject({ code: "invalid_argument" });
     const options = { idempotencyKey: key("ordered") };
     const conditions = [{ path: first.path, ifAbsent: true as const }, { path: second.path, ifAbsent: true as const }];
     const mutations = [
@@ -337,7 +339,7 @@ describe("website Stream contract", () => {
     append.commitId[0] = 99;
     expect((await provider.readCommit(appendId)).commitId).toEqual(appendId);
 
-    const appendConflict = await provider.append("projection/events", [new Uint8Array([3])], { ifTail: 0n });
+    const appendConflict = await provider.append("projection/events", [new Uint8Array([3])], { ifTail: 0n, idempotencyKey: key("projection-conflict") });
     expect(appendConflict).toEqual({ ok: false, code: "tail_conflict", actualTail: 1n });
     const forkKey = key("projection-fork");
     const fork = await provider.fork("projection/events", "projection/copy", { idempotencyKey: forkKey });
@@ -430,8 +432,8 @@ describe("website Stream contract", () => {
   });
 
   test("binds commit identities to request content", async () => {
-    const left = await new MemoryStreamProvider().append("events", [new Uint8Array([1])]);
-    const right = await new MemoryStreamProvider().append("events", [new Uint8Array([2])]);
+    const left = await new MemoryStreamProvider().append("events", [new Uint8Array([1])], { idempotencyKey: key("content-identity") });
+    const right = await new MemoryStreamProvider().append("events", [new Uint8Array([2])], { idempotencyKey: key("content-identity") });
     if (!left.ok || !right.ok) throw new Error("unconditional append unexpectedly conflicted");
     expect(left.commitId).not.toEqual(right.commitId);
   });
@@ -458,8 +460,8 @@ describe("website Stream contract", () => {
     expect(observed?.outcome).toEqual({ type: "append", outcome: first });
 
     const [second, third] = await Promise.all([
-      provider.append("events", [new Uint8Array([2])]),
-      provider.append("events", [new Uint8Array([3])]),
+      provider.append("events", [new Uint8Array([2])], { idempotencyKey: key("second-event") }),
+      provider.append("events", [new Uint8Array([3])], { idempotencyKey: key("third-event") }),
     ]);
     if (!second.ok || !third.ok) throw new Error("unconditional append unexpectedly conflicted");
     expect([second.start, third.start]).toEqual([1n, 2n]);
@@ -476,7 +478,7 @@ describe("website Stream contract", () => {
 
   test("does not create a path when its first conditional append conflicts", async () => {
     const provider = new MemoryStreamProvider();
-    const conflict = await provider.append("parent/phantom", [new Uint8Array([1])], { ifTail: 1n });
+    const conflict = await provider.append("parent/phantom", [new Uint8Array([1])], { ifTail: 1n, idempotencyKey: key("first-conflict") });
     expect(conflict).toEqual({ ok: false, code: "tail_conflict", actualTail: 0n });
     expect((await new StreamClient(provider).childrenPage({ parent: "parent", limit: 10 })).children).toEqual([]);
     await expect(provider.tail("parent/phantom")).rejects.toMatchObject({ code: "stream_not_found" });
@@ -484,7 +486,7 @@ describe("website Stream contract", () => {
 
   test("removes cancelled memory followers without waiting for a later append", async () => {
     const provider = new MemoryStreamProvider();
-    await provider.append("events", [new Uint8Array([1])]);
+    await provider.append("events", [new Uint8Array([1])], { idempotencyKey: key("first-event") });
     const controller = new AbortController();
     let removed = 0;
     let followerReady!: () => void;
@@ -498,14 +500,14 @@ describe("website Stream contract", () => {
     controller.abort();
     await expect(next).resolves.toEqual({ done: true, value: undefined });
     expect(removed).toBe(1);
-    await provider.append("events", [new Uint8Array([2])]);
+    await provider.append("events", [new Uint8Array([2])], { idempotencyKey: key("second-event") });
     expect(removed).toBe(1);
   });
 
   test("closed Rust follow handles end before or during a pending read", async () => {
     await ensureStreamWasm();
     const wasm = new WasmStream();
-    await wasm.dispatch("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "events", records: [new Uint8Array([1])] })));
+    await wasm.dispatch("append", wireAppendRequest("events", [new Uint8Array([1])], { idempotencyKey: key("rust-follow-source") }));
     const request = toBinary(FollowRequestSchema, create(FollowRequestSchema, { path: "events", from: 1n }));
     const closed = await wasm.open_follow(request);
     closed.close();
@@ -835,7 +837,7 @@ describe("website Stream contract", () => {
   test("read captures one cursor before asynchronous validation", async () => {
     let localReads = 0;
     const local = new MemoryStreamProvider();
-    await local.append("events", [new Uint8Array([1])]);
+    await local.append("events", [new Uint8Array([1])], { idempotencyKey: key("cursor-snapshot") });
     const localOptions = { get from() { localReads += 1; return 0n; }, limit: 1 };
     for await (const _record of local.read("events", localOptions)) { /* consume */ }
     expect(localReads).toBe(1);
@@ -849,11 +851,11 @@ describe("website Stream contract", () => {
 
   test("managed transport validates responses and propagates follow cancellation", async () => {
     const malformed = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ ok: true })) });
-    await expect(malformed.append("events", [new Uint8Array([1])])).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(malformed.append("events", [new Uint8Array([1])], { idempotencyKey: key("malformed-response") })).rejects.toMatchObject({ code: "invalid_response" });
     const impossible = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ ok: true, start: "3", end: "2", tail: "1", commitId: encodedCommitId })) });
-    await expect(impossible.append("events", [new Uint8Array([1])])).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(impossible.append("events", [new Uint8Array([1])], { idempotencyKey: key("impossible-response") })).rejects.toMatchObject({ code: "invalid_response" });
     const invalidPath = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify({ source: "bad//path", destination: "ok", forkedAt: "0", tail: "0", commitId: encodedCommitId })) });
-    await expect(invalidPath.fork("events", "copy")).rejects.toMatchObject({ code: "invalid_response" });
+    await expect(invalidPath.fork("events", "copy", { idempotencyKey: key("invalid-response-path") })).rejects.toMatchObject({ code: "invalid_response" });
     const invalidUtf8 = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(new Uint8Array([255])) });
     await expect(invalidUtf8.tail("events")).rejects.toMatchObject({ code: "invalid_response" });
     const controller = new AbortController();
