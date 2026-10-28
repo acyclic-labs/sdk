@@ -146,10 +146,6 @@ impl StreamProvider for Observed {
         self.requests.record(RequestClass::Head);
         self.io(self.inner.tail(path)).await
     }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.requests.record(RequestClass::Head);
-        self.io(self.inner.bounds(path)).await
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.appends
             .lock()

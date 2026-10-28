@@ -228,7 +228,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     if !matches!(complete_history.as_slice(), [first, second]
         if first.value == Bytes::from_static(b"one")
             && second.value == Bytes::from_static(b"live"))
-        || provider.bounds(child.clone()).await?.tail != 2
+        || provider.tail(child.clone()).await? != 2
     {
         return Err(StreamError::Unavailable);
     }

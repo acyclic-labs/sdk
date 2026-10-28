@@ -132,7 +132,6 @@ delegate! {
     head(path: StreamPath) -> acyclic_stream::PathHead;
     inspect_idempotency(key: acyclic_stream::IdempotencyKey) -> Option<acyclic_stream::IdempotencyObservation>;
     tail(path: StreamPath) -> u64;
-    bounds(path: StreamPath) -> acyclic_stream::StreamBounds;
     fork(request: acyclic_stream::ForkRequest) -> acyclic_stream::ForkReceipt;
     read(request: acyclic_stream::ReadRequest) -> acyclic_stream::RecordStream;
     commit(request: acyclic_stream::CommitRequest) -> acyclic_stream::CommitOutcome;
