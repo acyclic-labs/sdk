@@ -1057,3 +1057,4 @@ The exact transaction staging fixture in `rust/crates/filesystem/src/workspace/t
 
 | `PreparedRecordCapacity::{payload_bytes,keys,attributes}` | `rust/crates/stream/src/native/prepared.rs:8` | Explicit caller reservation | KEEP original-operation storage selected before an external effect; no default header-count fallback. Representation arithmetic is checked. |
 | `CHANGES_PAGE_ENTRIES` | `rust/crates/filesystem/src/distributed/changes.rs:7` | 2 | KEEP funded change-production chunk width; larger publications continue with further records in the same atomic publication. |
+| Projected children-page bytes | `rust/crates/stream/src/memory/provider.rs:220` | 2 | Return a shorter page and exact continuation when projected records fill the page. The shared public conformance oracle follows every page, checks complete ordered coverage and measures each encoded page; its byte-omission negative remains. Compile pending. |
