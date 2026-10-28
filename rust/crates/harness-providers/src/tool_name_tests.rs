@@ -427,7 +427,7 @@ async fn an_invalid_alias_rejects_the_complete_batch_before_publication() -> Res
 #[tokio::test]
 async fn canonical_name_expansion_obeys_the_aggregate_parser_bound() -> Result<()> {
     let (mut provider, _) = provider(Adapter::Chat, 200);
-    Arc::make_mut(&mut provider.config).max_event_bytes = 512;
+    Arc::make_mut(&mut provider.config).max_event_bytes = Some(512);
     let (prepared, _) = request(&provider)?;
     let mut request = prepared.request().clone();
     request.tools = ['a', 'b']
