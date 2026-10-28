@@ -7,6 +7,9 @@ use indexed_db_futures::prelude::*;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
+#[cfg(feature = "conformance")]
+#[path = "browser_commit/conformance.rs"]
+mod conformance;
 #[path = "browser_commit/merge_ancestry.rs"]
 mod merge_ancestry;
 #[path = "browser_commit/storage.rs"]

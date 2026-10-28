@@ -358,8 +358,7 @@ async fn browser_wave1_conformance() {
     let provider = BrowserStream::open(&name(), BrowserStreamLimits::default())
         .await
         .unwrap();
-    crate::conformance::verify(&provider).await.unwrap();
-    crate::conformance::wave1::verify(&provider, &StreamPath::new("wave1").unwrap())
+    crate::conformance::verify(&crate::conformance::Fixture::new(provider.clone()))
         .await
         .unwrap();
 }

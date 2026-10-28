@@ -1,6 +1,0 @@
-{
-  "capture": "2026-10-25T21:14:37.9785615Z",
-  "extraction": "Exact admitted and verify_request functions; omit separator blank lines; LF",
-  "source": "git show 7eab06de98a906fd807e2196341b4b9ce194b076:scripts/buildbox/bb-cache.py",
-  "sha256": "18299bd7b27167ed5004ea4a5bdfea85e76c4235b715120c5f40d09a484383f1"
-}

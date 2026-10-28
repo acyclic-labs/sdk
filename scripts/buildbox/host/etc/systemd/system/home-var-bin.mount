@@ -1,9 +1,0 @@
-[Unit]
-Description=Qualified buildbox tool entry point
-[Mount]
-What=/opt/buildbox/bin
-Where=/home/var/bin
-Type=none
-Options=bind,ro
-[Install]
-WantedBy=local-fs.target

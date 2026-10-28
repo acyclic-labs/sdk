@@ -1,6 +1,0 @@
-test result: ok. 44 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.28s
-GATE_TEST_WALL phase=targets seconds=907 rc=0
-GATE_TEST_WALL phase=docs seconds=73 rc=0
-GATE_TEST_COVERAGE all-targets+doc packages=acyclic-actors,acyclic-actors-napi,acyclic-actors-wasm,acyclic-auth,acyclic-auth-wasm,acyclic-conformance,acyclic-contract-derive,acyclic-differential,acyclic-fs,acyclic-fs-base,acyclic-fs-fuzz,acyclic-fs-napi,acyclic-fs-wasm,acyclic-fs-wire,acyclic-grpc-observability,acyclic-harness,acyclic-harness-conformance,acyclic-harness-core,acyclic-harness-fuzz,acyclic-harness-providers,acyclic-harness-search,acyclic-harness-tui,acyclic-inference,acyclic-inference-wasm,acyclic-machines,acyclic-machines-daytona,acyclic-machines-wasm,acyclic-manifest,acyclic-markdown,acyclic-markdown-work,acyclic-native-runtime,acyclic-objects,acyclic-objects-wasm,acyclic-plugin,acyclic-plugin-identity,acyclic-proto-build,acyclic-sdk-fuzz,acyclic-stream,acyclic-stream-napi,acyclic-test-support,acyclic-workers,graphcoder,harness-mock-model,sdk-proto-codegen,sdk-service-examples
-GATE_DONE rc=0
-GATE_EXECUTOR rc=0

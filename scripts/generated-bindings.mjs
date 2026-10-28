@@ -32,32 +32,32 @@ export const compatibilityArtifacts = {
   },
   harness: {
     schemaDigest: "rust/crates/harness-core/proto/harness/v2/harness.proto",
-    conformanceDigest: "conformance/vectors/core.json",
+    conformanceDigest: "rust/crates/harness/conformance/legacy-harness.json",
   },
   filesystem: {
     schemaDigest: "rust/crates/filesystem-wire/proto/filesystem/v2/filesystem.proto",
     descriptorDigest: "compatibility/descriptors/filesystem-v2.bin",
-    conformanceDigest: "conformance/vectors/filesystem/dependency-content-range-v1.json",
+    conformanceDigest: "rust/crates/filesystem/conformance/dependency-content-range-v1.json",
   },
   stream: {
     schemaDigest: "rust/crates/stream/proto/stream/v1/stream.proto",
     descriptorDigest: "compatibility/descriptors/stream-v1.bin",
-    conformanceDigest: "conformance/vectors/stream.json",
+    conformanceDigest: "rust/crates/stream/conformance/stream.json",
   },
   objects: {
     schemaDigest: "rust/crates/objects/proto/objects/v1/objects.proto",
     descriptorDigest: "compatibility/descriptors/objects-v1.bin",
-    conformanceDigest: "conformance/vectors/objects-v1.json",
+    conformanceDigest: "rust/crates/objects/conformance/objects-v1.json",
   },
   machines: {
     schemaDigest: "rust/crates/machines/proto/machines/v1/machines.proto",
     descriptorDigest: "compatibility/descriptors/machines-v1.bin",
-    conformanceDigest: "conformance/vectors/machines.json",
+    conformanceDigest: "rust/crates/machines/conformance/machines.json",
   },
   inference: {
     schemaDigest: "rust/crates/inference/proto/inference/v1/inference.proto",
     descriptorDigest: "compatibility/descriptors/inference-v1.bin",
-    conformanceDigest: "conformance/vectors/inference.json",
+    conformanceDigest: "rust/crates/inference/conformance/inference.json",
   },
   actors: {
     schemaDigest: "rust/crates/actors/proto/actors/v1/actors.proto",
@@ -65,7 +65,7 @@ export const compatibilityArtifacts = {
   },
 };
 
-export const nativeWasmVector = "conformance/vectors/harness/native-wasm-event-v2.json";
+export const nativeWasmVector = "rust/crates/harness/conformance/native-wasm-event-v2.json";
 export const packagedSourceCopies = [
   [compatibilityArtifacts.actors.descriptorDigest, "rust/crates/actors/tests/fixtures/actors/v1/actors-v1.bin"],
   ...["actors", "filesystem-wire", "inference", "machines", "objects", "stream"].map(crate => [
@@ -77,12 +77,4 @@ export const packagedSourceCopies = [
     "interaction-resolution", "project-merge-receipt",
   ].map(name => [`fixtures/harness/v2/${name}.json`, `rust/crates/harness/fixtures/v2/${name}.json`]),
   ["rust/crates/harness-core/proto/protocol/v1/protocol.proto", "rust/crates/filesystem-wire/proto/protocol/v1/protocol.proto"],
-  [compatibilityArtifacts.harness.conformanceDigest, "rust/crates/conformance/vectors/harness.json"],
-  [nativeWasmVector, "rust/crates/harness/conformance/native-wasm-event-v2.json"],
-  ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],
-  ["conformance/vectors/stream.json", "rust/crates/conformance/vectors/stream.json"],
-  ["conformance/vectors/objects-v1.json", "rust/crates/objects/conformance/objects-v1.json"],
-  ["conformance/vectors/objects-v1.json", "rust/crates/conformance/vectors/objects-v1.json"],
-  ["conformance/vectors/machines.json", "rust/crates/conformance/vectors/machines.json"],
-  [compatibilityArtifacts.filesystem.conformanceDigest, "rust/crates/conformance/vectors/filesystem/dependency-content-range-v1.json"],
 ];

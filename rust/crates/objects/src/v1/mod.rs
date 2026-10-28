@@ -1,5 +1,8 @@
 //! Logical bucket/key Objects contract replacing public version history and snapshots.
+#[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
+#[cfg(any(test, feature = "conformance"))]
+mod counted;
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
 #[cfg(feature = "json")]

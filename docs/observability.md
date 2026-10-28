@@ -193,15 +193,14 @@ Open the file in [Perfetto](https://ui.perfetto.dev).
 
 ## Benchmarks
 
-`rust/crates/conformance/benches/` holds [divan](https://docs.rs/divan)
-benchmarks of the local hot paths. The private crate keeps profiling
-dependencies out of targeted product-library test builds. Benchmarks run on
-demand only, never in CI; `clippy --all-targets --all-features` keeps them compiling.
+Filesystem and Objects own their [divan](https://docs.rs/divan) hot-path
+benchmarks. The private conformance crate retains the agent and host diagnostics.
+Run these benchmarks on demand; no schedule or per-merge execution is required.
 
 ```sh
-cargo bench -p acyclic-conformance --features local-runner --bench objects
-cargo bench -p acyclic-conformance --features local-runner --bench filesystem
-cargo bench -p acyclic-conformance --features local-runner --bench filesystem_alloc
+cargo bench -p acyclic-objects --features local --bench objects
+cargo bench -p acyclic-fs --bench filesystem
+cargo bench -p acyclic-fs --bench filesystem_alloc
 cargo bench -p acyclic-conformance --features local-runner --bench harness
 cargo bench -p acyclic-conformance --features local-runner --bench client_demand
 cargo bench -p acyclic-conformance --features local-runner --bench write_validation
@@ -209,5 +208,5 @@ cargo bench -p acyclic-conformance --features local-runner --bench write_validat
 
 Pass divan options after `--`, for example `-- --sample-count 10 put_small`.
 Name the bench with `--bench`: the library's test harness rejects those options.
-`bench-fs` and `bench-objects` in the conformance crate measure whole
+The `bench-fs` and `bench-objects` examples in their owning crates measure whole
 workloads (see its README).

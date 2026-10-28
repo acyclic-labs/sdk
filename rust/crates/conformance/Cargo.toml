@@ -12,7 +12,7 @@ readme = "README.md"
 [features]
 inference = ["dep:acyclic-harness-providers"]
 client-session = ["acyclic-harness-client/grpc", "acyclic-stream/grpc"]
-storage-backends = ["acyclic-objects/s3", "acyclic-stream/postgres", "acyclic-stream/local", "acyclic-harness/serve", "dep:acyclic-harness-client", "dep:acyclic-auth", "dep:tempfile", "dep:object_store", "dep:async-trait", "dep:rustls"]
+storage-backends = ["acyclic-objects/s3", "acyclic-stream/postgres", "acyclic-fs/conformance", "acyclic-stream/local", "acyclic-harness/serve", "dep:acyclic-harness-client", "dep:acyclic-auth", "dep:tempfile", "dep:object_store", "dep:async-trait", "dep:rustls"]
 harness-accounting = ["acyclic-harness/filesystem"]
 local-runner = ["acyclic-harness/filesystem-local", "acyclic-harness/native-execution", "acyclic-fs/local", "acyclic-fs/native-mount", "acyclic-objects/local", "acyclic-stream/local", "dep:tempfile", "dep:rusqlite", "dep:notify"]
 s3-fixture = ["local-runner", "acyclic-fs/s3-http", "dep:async-trait", "dep:axum", "dep:s3s"]
@@ -25,17 +25,17 @@ graphcoder-backends = ["dep:acyclic-auth", "dep:axum", "dep:tempfile", "dep:grap
 acyclic-actors = { version = "=0.2.0", path = "../actors" }
 acyclic-agent-host-conformance = { path = "agent-host" }
 acyclic-auth = { version = "=0.2.0", path = "../auth", optional = true }
-acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", default-features = false }
+acyclic-harness-core = { version = "=0.2.0", path = "../harness-core", default-features = false, features = ["conformance"] }
 acyclic-harness-providers = { version = "=0.2.0", path = "../harness-providers", features = ["endpoint-presets"], optional = true }
 object_store = { version = "0.14.2", default-features = false, features = ["aws-base", "reqwest", "ring"], optional = true }
 rustls = { workspace = true, optional = true }
-acyclic-fs = { version = "=0.2.0", path = "../filesystem" }
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", features = ["conformance"] }
 acyclic-harness = { version = "=0.2.0", path = "../harness" }
 acyclic-harness-client = { version = "=0.2.0", path = "../harness-client", optional = true }
-acyclic-machines = { version = "=0.2.0", path = "../machines" }
+acyclic-machines = { version = "=0.2.0", path = "../machines", features = ["conformance"] }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
-acyclic-objects = { version = "=0.2.0", path = "../objects" }
-acyclic-stream = { version = "=0.2.0", path = "../stream" }
+acyclic-objects = { version = "=0.2.0", path = "../objects", features = ["conformance"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["conformance"] }
 async-trait = { workspace = true, optional = true }
 axum = { workspace = true, optional = true }
 graphcoder = { path = "../harness/src/bin/graphcoder", optional = true }
@@ -66,6 +66,11 @@ path = "src/bin/graphcoder_seams.rs"
 required-features = ["graphcoder-backends"]
 
 [[bin]]
+name = "harness-conformance"
+path = "src/bin/harness_conformance.rs"
+test = false
+
+[[bin]]
 name = "inference-qualify"
 path = "src/bin/inference_qualify.rs"
 required-features = ["inference"]
@@ -84,32 +89,6 @@ required-features = ["storage-backends"]
 [[bin]]
 name = "native-mount-qualify"
 path = "src/bin/native_mount_qualify.rs"
-required-features = ["local-runner"]
-
-[[bin]]
-name = "bench-fs"
-path = "src/bin/bench_fs.rs"
-required-features = ["local-runner"]
-
-[[bin]]
-name = "bench-objects"
-test = false
-path = "src/bin/bench_objects.rs"
-required-features = ["local-runner"]
-
-[[bench]]
-name = "filesystem"
-harness = false
-required-features = ["local-runner"]
-
-[[bench]]
-name = "filesystem_alloc"
-harness = false
-required-features = ["local-runner"]
-
-[[bench]]
-name = "objects"
-harness = false
 required-features = ["local-runner"]
 
 [[bench]]

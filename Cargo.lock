@@ -57,6 +57,7 @@ dependencies = [
  "ts-rs",
  "url",
  "uuid",
+ "wasm-bindgen-test",
 ]
 
 [[package]]
@@ -91,22 +92,12 @@ name = "acyclic-agent-host-conformance"
 version = "0.2.0"
 dependencies = [
  "acyclic-actors",
- "acyclic-auth",
  "acyclic-fs",
  "acyclic-harness",
- "acyclic-harness-client",
  "acyclic-harness-core",
  "acyclic-native-runtime",
- "acyclic-objects",
  "acyclic-stream",
- "async-trait",
- "base64 0.22.1",
- "bytes",
- "ed25519-dalek 3.0.0",
- "futures",
  "hex",
- "jsonwebtoken",
- "prost",
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
@@ -432,6 +423,7 @@ dependencies = [
  "bytes",
  "diffy",
  "dirs",
+ "ed25519-dalek 3.0.0",
  "futures",
  "getrandom 0.3.4",
  "hex",
@@ -441,6 +433,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "jsonschema",
+ "jsonwebtoken",
  "keyring",
  "loom",
  "notify",
@@ -511,7 +504,6 @@ dependencies = [
 name = "acyclic-harness-conformance"
 version = "0.2.0"
 dependencies = [
- "acyclic-conformance",
  "acyclic-fs",
  "acyclic-harness",
  "acyclic-native-runtime",
@@ -519,7 +511,6 @@ dependencies = [
  "acyclic-stream",
  "acyclic-test-support",
  "async-trait",
- "blake3",
  "futures",
  "serde",
  "serde_json",
@@ -776,6 +767,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-grpc-observability",
  "acyclic-proto-build",
+ "acyclic-stream",
  "async-trait",
  "futures",
  "hex",
@@ -921,6 +913,7 @@ dependencies = [
  "axum",
  "blake3",
  "bytes",
+ "divan",
  "futures",
  "getrandom 0.4.3",
  "hex",
@@ -953,6 +946,7 @@ dependencies = [
  "tracing",
  "tracing-chrome",
  "tracing-subscriber",
+ "wasm-bindgen-test",
 ]
 
 [[package]]

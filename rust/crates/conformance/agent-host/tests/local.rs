@@ -49,12 +49,48 @@ impl Backend for Local {
     }
 }
 
+async fn native() -> Result<Local> {
+    Ok(Local { wire: false })
+}
+
+async fn guest_wire() -> Result<Local> {
+    Ok(Local { wire: true })
+}
+
+acyclic_agent_host_conformance::suite!(local_native, native);
+acyclic_agent_host_conformance::suite!(local_guest_wire, guest_wire);
+
 #[tokio::test]
-async fn local_native() -> Result {
-    acyclic_agent_host_conformance::verify(&Local { wire: false }).await
+async fn shared_benchmark_and_scale_check_native_and_guest_work() -> Result {
+    for backend in [native().await?, guest_wire().await?] {
+        let sample = acyclic_agent_host_conformance::bench(&backend).await?;
+        assert_eq!(sample.deliveries, 64);
+        assert_eq!(sample.idle_agents, 0);
+        assert!(sample.requests.data() >= sample.deliveries as u64);
+        println!("AGENT_BENCH {sample:?}");
+        let samples = acyclic_agent_host_conformance::scale(
+            &backend,
+            acyclic_agent_host_conformance::Scale {
+                small: 4,
+                large: 16,
+            },
+        )
+        .await?;
+        assert_eq!(samples.small.idle_agents, 4);
+        assert_eq!(samples.large.idle_agents, 16);
+        println!("AGENT_SCALE {samples:?}");
+    }
+    Ok(())
 }
 
 #[tokio::test]
-async fn local_guest_wire() -> Result {
-    acyclic_agent_host_conformance::verify(&Local { wire: true }).await
+#[ignore = "on-demand scale qualification: creates 1,000 and 10,000 agents"]
+async fn agent_scale() -> Result {
+    let samples = acyclic_agent_host_conformance::scale(
+        &native().await?,
+        acyclic_agent_host_conformance::Scale::default(),
+    )
+    .await?;
+    println!("AGENT_SCALE {samples:?}");
+    Ok(())
 }

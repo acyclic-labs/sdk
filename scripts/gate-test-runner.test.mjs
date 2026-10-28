@@ -51,10 +51,10 @@ test('Cargo artifact package, kind and executable identity distinguish same-name
  }finally{rmSync(cwd,{recursive:true,force:true});}
 });
 test('live main bootstrap uses the reviewed runner exactly',()=>{
- const wrapper=readFileSync(new URL('./buildbox/coordinator/gate-checks.sh',import.meta.url),'utf8');
+ const wrapper=readFileSync(join(process.env.SDK_BUILD_TOOLS_DIR || '/home/var/lib/sdk-build-tools', 'coordinator/gate-checks.sh'),'utf8');
  const marker="cat > .gate-test-runner.sh <<'GATE_FUZZ_BOOTSTRAP'\n";
  assert.equal(wrapper.split(marker)[1].split('GATE_FUZZ_BOOTSTRAP\n')[0],source);
- const pr=readFileSync(new URL('./buildbox/coordinator/pr-gate.sh',import.meta.url),'utf8');
+ const pr=readFileSync(join(process.env.SDK_BUILD_TOOLS_DIR || '/home/var/lib/sdk-build-tools', 'coordinator/pr-gate.sh'),'utf8');
  assert.match(pr,/cp Q:\/lanes\/gate-test-runner.sh "\$W\/\.gate-test-runner.sh"/);
  assert.match(pr,/GATE_TEST_RUNNER_SCRIPT=\.gate-test-runner.sh/);
 });
@@ -68,7 +68,7 @@ test('main installs corrected helper before dispatching an older reviewed runner
   writeFileSync(join(cwd,'scripts/gate-test-runner.sh'),'old name-only runner');
   writeFileSync(join(cwd,'scripts/main-gate-checks.sh'),'# Main baseline completion v2\n# Fuzz executable identity v2\ntest "$GATE_TEST_RUNNER_SCRIPT" = .gate-test-runner.sh || exit 71\ncmp .gate-test-runner.sh expected || exit 72\necho corrected-helper-selected\n');
   writeFileSync(join(cwd,'expected'),source);
-  const complete=readFileSync(new URL('./buildbox/coordinator/gate-checks.sh',import.meta.url),'utf8');
+  const complete=readFileSync(join(process.env.SDK_BUILD_TOOLS_DIR || '/home/var/lib/sdk-build-tools', 'coordinator/gate-checks.sh'),'utf8');
   // Exercise main dispatch only; auxiliary Cargo phases belong to other tests.
   const boundary=complete.lastIndexOf('gate_main_existing "$@" | sed');
   assert.ok(boundary>0);

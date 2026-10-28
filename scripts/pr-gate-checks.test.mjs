@@ -11,19 +11,19 @@ test('affected PR checks every target and docs, including test=false fuzz binari
   const cwd=mkdtempSync(join(tmpdir(),'pr-gate-targets-'));
   // Dispatch controls own their cache roots, regardless of the enclosing gate.
   // Never contend with a real gate's feature lock or inherit its worker count.
-  const fixtureEnv={...process.env,CARGO_TARGET_DIR:join(cwd,'target'),
+  const fixtureEnv={...process.env, SDK_GATE_CLIPPY: join(cwd,"scripts/external-gate/gate-clippy.py"), SDK_WINDOWS_GATE: join(cwd,"scripts/external-gate/gate-checks.sh"),CARGO_TARGET_DIR:join(cwd,'target'),
     GATE_FEATURE_TARGET_DIR:join(cwd,'features'),GATE_FEATURE_WORKERS:'1'};
   try{
     mkdirSync(join(cwd,'bin'));mkdirSync(join(cwd,'scripts'));
-    mkdirSync(join(cwd,'scripts/buildbox/coordinator'),{recursive:true});
-    writeFileSync(join(cwd,'scripts/buildbox/coordinator/gate-checks.sh'),'#!/bin/bash\n[ "$1" = --windows-runtime-only ] || exit 9\necho "GATE_WINDOWS_RUNTIME_CLIPPY rc=0"\n');
+    mkdirSync(join(cwd,'scripts/external-gate'),{recursive:true});
+    writeFileSync(join(cwd,'scripts/external-gate/gate-checks.sh'),'#!/bin/bash\n[ "$1" = --windows-runtime-only ] || exit 9\necho "GATE_WINDOWS_RUNTIME_CLIPPY rc=0"\n');
     writeFileSync(join(cwd,'scripts/gate-rust-format.sh'),readFileSync(join(scripts,'gate-rust-format.sh')));
     writeFileSync(join(cwd,'bin/bun'),'#!/bin/bash\necho "format $*" >> calls\nexit "${FORMAT_RC:-0}"\n');
     chmodSync(join(cwd,'bin/bun'),0o755);
     writeFileSync(join(cwd,'scripts/gate-test-runner.sh'),readFileSync(join(scripts,'gate-test-runner.sh')));
     writeFileSync(join(cwd,'scripts/gate-windows-features.sh'),'#!/bin/bash\necho "windows-features $*" >> calls\nexit "${WINDOWS_FEATURE_RC:-0}"\n');
     writeFileSync(join(cwd,'scripts/check-harness-models.sh'),'#!/bin/bash\necho "models $*" >> calls\nexit "${MODELS_RC:-0}"\n');
-    writeFileSync(join(cwd,'scripts/buildbox/coordinator/gate-clippy.py'),readFileSync(join(scripts,'buildbox/coordinator/gate-clippy.py')));
+    writeFileSync(join(cwd,'scripts/external-gate/gate-clippy.py'),readFileSync(process.env.SDK_GATE_CLIPPY || '/home/var/bin/gate-clippy.py'));
     const cargo=join(cwd,'bin/cargo');
     writeFileSync(cargo,`#!/bin/bash
 echo "$*" >> calls
@@ -199,7 +199,7 @@ test('main and affected PRs use the same complete model qualifier', () => {
     chmodSync(node, 0o755);
     const core = 'scripts/qualify-mcp-loom.mjs --child-views --all-features';
     const facade = ['--harness-models', '--query-model'].map(flag => `scripts/qualify-mcp-loom.mjs ${flag} --all-features`);
-    const env = {...process.env, PATH: join(cwd, 'bin') + ':' + process.env.PATH, MODEL_RC: '0'};
+    const env = {...process.env, SDK_GATE_CLIPPY: join(cwd,"scripts/external-gate/gate-clippy.py"), SDK_WINDOWS_GATE: join(cwd,"scripts/external-gate/gate-checks.sh"), PATH: join(cwd, 'bin') + ':' + process.env.PATH, MODEL_RC: '0'};
     for (const [packages, expected] of [[null, [core, ...facade]], [['acyclic-harness-core'], [core]], [['acyclic-harness'], facade], [['acyclic-harness-core', 'acyclic-harness'], [core, ...facade]], [['acyclic-fs'], []]]) {
       writeFileSync(join(cwd, 'calls'), '');
       if (packages !== null) writeFileSync(join(cwd, 'packages'), packages.join('\r\n'));

@@ -234,7 +234,12 @@ impl NativeHostWork for &NativeMaterializationWork {
     }
 }
 
-#[cfg(any(test, feature = "local", feature = "native-watch"))]
+#[cfg(any(
+    test,
+    feature = "local",
+    feature = "native-watch",
+    feature = "conformance"
+))]
 pub(crate) fn clone_path<W: NativeHostWork>(
     path: &Path,
     work: &mut W,

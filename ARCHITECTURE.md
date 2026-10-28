@@ -16,8 +16,10 @@ The dependency graph is one way:
    transport glue. Bun is the only JavaScript workspace tool.
 4. Each family's memory provider is constructed directly in qualification code;
    no public profile or umbrella crate sits between applications and providers.
-5. The private `acyclic-conformance` workspace crate and `conformance/vectors` own black-box assertions used
-   unchanged against memory, customer, and Acyclic implementations.
+5. Each published primitive owns its public `conformance` harness and canonical
+   vectors. Downstream backends run the same assertions through `Backend` and
+   `suite!`; the private `acyclic-conformance` crate supplies provider adapters
+   and retains historical proof/report producers.
 6. `acyclic-harness` owns durable agent/task semantics, the replaceable runtime,
    and opaque cross-family references. Host adapters consume public provider
    traits; no family crate depends on harness internals.

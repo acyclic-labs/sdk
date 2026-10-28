@@ -252,7 +252,7 @@ sys.exit(int(os.environ.get('MATRIX_RC','0')))
             self.assertEqual(gate.execute([sys.executable,'-c','import os,signal;os.kill(os.getpid(),signal.SIGTERM)'],os.environ),143)
 
     def test_added_source_during_matrix_uses_the_shared_publication_guard(self):
-        base=Path(__file__).parent/'buildbox'
+        base=Path(os.environ.get('SDK_BUILD_TOOLS_DIR', '/home/var/bin'))
         modules=[]
         for name,file in [('candidate_store','bb_target_store.py'),('cargo_controls','cargo_cache.test.py')]:
             spec=importlib.util.spec_from_file_location(name,base/file)

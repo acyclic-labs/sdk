@@ -34,6 +34,8 @@ pub mod build_metadata;
 pub mod hosting;
 
 pub mod client;
+#[cfg(feature = "conformance")]
+pub mod conformance;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub mod local;
 pub mod preset;

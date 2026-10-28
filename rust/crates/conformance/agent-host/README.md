@@ -1,6 +1,8 @@
 # Agent host conformance
 
-`acyclic_conformance::agent_host::verify` drives the public `AgentHost` API over a fresh backend. The implementation lives in a small independent crate so browser wasm does not pull the native qualification CLI and its process dependencies into the build.
+`acyclic_harness::conformance::verify` drives the public `AgentHost` API over a fresh backend. Enable the published crate's `conformance` feature. This compatibility crate re-exports that same implementation for existing native, browser and hosted adapters.
+
+Downstream backends can register the suite with `acyclic_harness::conformance::suite!(MyBackend::create)`, where `create` is an async factory returning `Result<MyBackend>`. Use `suite!(backend_name, MyBackend::create)` when registering several backends in one test module. Native test crates need Tokio's test macros; browser test crates use `wasm-bindgen-test`.
 
 A backend implements two setup traits. `Backend::fresh` returns disposable storage, and `Storage::open` opens a new session on that same retained data. `Storage::objects` provisions the Objects provider, an empty logical bucket and its declared durability for filesystem-backed root and approval vectors. Native fixtures also supply a private staging directory and retain it for the fixture lifetime. The suite composes the existing immutable cache and native publication staging. Stream-only fixtures explicitly use `Objects::memory()`. `Backend::handler` installs its actual handler transport. `Backend::serving` opens its production hosting endpoint with the requested preset approval policy and shared `protocol` model/tool fixtures. Its endpoint supplies canonical binding/exchange, explicit delivery and observations; it cannot replace a vector. The suite owns all fault injection and assertions.
 
@@ -34,6 +36,26 @@ uses the canonical guest wire boundary. The driver binds disposable emulators
 to loopback ports 15400 and 15401 and stops both when the run ends. These host
 vectors exercise storage composition; they do not establish an OSS endpoint or
 real GraphCoder binary qualification.
+
+For G46/G47, `acyclic_harness::conformance::bench(&backend)` sends and settles
+64 inputs after warmup, checks every conversation effect, and reports elapsed
+time plus data and control request counts. The shared `scale(&backend, Scale)`
+vector runs that workload at two independently provisioned idle populations. It
+uses the global scheduler drain and rejects more than a factor of two growth in
+either request class. A zero control baseline must remain zero. This measures
+dispatch work and real runtime registrations. Each settled turn must retain
+exactly one registration per provisioned agent and leave none ready after the
+global drain. It does not measure physical memory or allocations inside a
+provider. Reported control traffic remains visible even if the scale bound passes.
+
+Run the native 1,000 versus 10,000 idle-agent vector explicitly on bb2 or ivar:
+
+```sh
+build-slot --remote cargo test --locked -p acyclic-agent-host-conformance --features local --test local agent_scale -- --ignored --nocapture
+```
+
+No CI workflow or merge-gate step invokes this workload. Downstream adapters can
+call the same public `bench` and `scale` functions with their own `Backend`.
 
 To execute browser tests after compiling them, use the workspace's pinned `wasm-bindgen-test-runner` and Chrome driver:
 

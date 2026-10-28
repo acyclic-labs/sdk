@@ -9,9 +9,19 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
+
+
+def compiler_path():
+    path = Path(os.environ.get('SDK_MSVC_COMPILER', '/home/var/bin/msvc-compiler.py'))
+    if not path.is_file():
+        recovery = shlex.join([sys.executable, *sys.argv])
+        raise RuntimeError('STEP_FAILED msvc-compiler: installed shim missing at ' + str(path)
+                           + '; recovery: SDK_MSVC_COMPILER=/absolute/path/to/msvc-compiler.py ' + recovery)
+    return path
 
 
 def sdk_identity(root):
@@ -52,13 +62,13 @@ def populate(root, workers):
     compilers = root / "bin"
     compilers.mkdir()
     driver = compilers / "clang-cl"
-    shutil.copyfile(Path(__file__).parent / "buildbox" / "msvc-compiler.py", driver)
+    shutil.copyfile(compiler_path(), driver)
     driver.chmod(0o755)
 
 
 def workspace_identity(target, workers):
     return {'target': str(Path(target).resolve()), 'workers': workers,
-            'compiler_sha256': hashlib.sha256((Path(__file__).parent / 'buildbox' / 'msvc-compiler.py').read_bytes()).hexdigest()}
+            'compiler_sha256': hashlib.sha256(compiler_path().read_bytes()).hexdigest()}
 
 
 def workspace_payload_complete(root, workers, identity):

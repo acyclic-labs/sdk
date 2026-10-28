@@ -14,8 +14,14 @@ keywords = ["objects", "storage", "grpc"]
 categories = ["api-bindings", "filesystem"]
 
 
+[[bench]]
+name = "objects"
+harness = false
+required-features = ["local"]
+
 [features]
 model-checking = ["dep:loom"]
+conformance = ["acyclic-stream/conformance"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 default = ["grpc"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/time"]
@@ -62,6 +68,9 @@ tracing.workspace = true
 rustls = { workspace = true, optional = true }
 rustls-platform-verifier = { workspace = true, optional = true }
 
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.67"
+
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tracing-subscriber.workspace = true
@@ -78,6 +87,9 @@ tokio-rustls = { version = "=0.26.6", default-features = false, features = ["rin
 workspace = true
 
 [dev-dependencies]
+divan.workspace = true
+serde_json.workspace = true
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["conformance"] }
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 syn = { version = "=3.0.6", features = ["full", "visit"] }

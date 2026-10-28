@@ -286,7 +286,7 @@ def main():
     records.mkdir(parents=True)
     if os.environ.get('WIN_TEST_TARGET_DIR') or os.environ.get('WIN_TEST_PERSISTENT_SOURCE_CLOCK'):
         fail('Windows builds require build-slot job-owned targets; custom targets/source clocks are prohibited')
-    for shared in ('scripts/with-xwin-cache.py', 'scripts/buildbox/msvc-compiler.py', 'scripts/windows-runner.py', 'scripts/windows-native-host.py', 'scripts/windows-artifacts.py', 'scripts/graphcoder-e2e/materialize.py'):
+    for shared in ('scripts/with-xwin-cache.py', 'scripts/windows-runner.py', 'scripts/windows-native-host.py', 'scripts/windows-artifacts.py', 'scripts/graphcoder-e2e/materialize.py'):
         path = root / shared
         if not path.is_file() or path.is_symlink():
             fail('The source snapshot must contain the shared SDK factory: ' + shared)
@@ -301,7 +301,8 @@ def main():
     env.pop('BUILD_SLOT_REMOTE_FETCH', None)
     print('WIN_TEST_RECORDS', records, flush=True)
     with (records / 'build.log').open('w', encoding='utf-8') as log:
-        process = subprocess.Popen(['pwsh.exe', '-NoProfile', '-File', 'Q:/lanes/bs.ps1', *payload], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
+        remote_env = ['--env', 'SDK_MSVC_COMPILER=' + env['SDK_MSVC_COMPILER']] if env.get('SDK_MSVC_COMPILER') else []
+        process = subprocess.Popen(['pwsh.exe', '-NoProfile', '-File', 'Q:/lanes/bs.ps1', *remote_env, *payload], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace')
         for line in process.stdout:
             log.write(line); log.flush()
             print(line, end='', flush=True)

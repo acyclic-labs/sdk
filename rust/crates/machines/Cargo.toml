@@ -15,10 +15,12 @@ categories = ["api-bindings"]
 
 
 [features]
+conformance = ["dep:acyclic-stream", "tokio/time"]
 default = ["grpc"]
 grpc = ["dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tower", "tokio/macros", "tokio/net", "tokio/time", "tokio/rt-multi-thread"]
 
 [dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["conformance"], optional = true }
 acyclic-auth = { version = "=0.2.0", path = "../auth" }
 async-trait.workspace = true
 futures.workspace = true

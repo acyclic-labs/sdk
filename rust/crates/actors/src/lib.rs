@@ -15,7 +15,7 @@ pub mod client;
 pub mod contract;
 
 /// One conformance suite for local and hosted Actors runtimes.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
 /// Rust-owned guest ABI and typed authoring hooks, without an execution runtime.
 pub mod guest;

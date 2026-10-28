@@ -1,5 +1,5 @@
 //! Filesystem-only entry point for the shared read and accounting benchmarks.
-#[path = "../../conformance/benches/filesystem.rs"]
+#[path = "support/filesystem.rs"]
 mod filesystem;
 
 #[path = "support/admission.rs"]

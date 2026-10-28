@@ -1,6 +1,0 @@
-{
-  "source": "git show a29e245f5d961ce181232904aff2a518b7bc683d:scripts/buildbox/bb-cache.py",
-  "sha256": "965b9048385a03dfc316870b0b7bd40b9f3e4f8460c16fe8d86d0f833ea0e363",
-  "capture": "2026-10-25T21:03:47.9575588Z",
-  "extraction": "Exact CONTROL.unlink through end of listener block; remove eight indentation spaces; LF"
-}

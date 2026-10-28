@@ -10,7 +10,10 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
         PostgresStream::connect(database, &namespace),
         PostgresStream::connect(database, &namespace)
     )?;
-    acyclic_stream::conformance::verify(&provider).await?;
+    acyclic_stream::conformance::verify(&acyclic_stream::conformance::Fixture::new(
+        provider.clone(),
+    ))
+    .await?;
     println!("Stream conformance passed in {:?}", start.elapsed());
     let path = StreamPath::new("cross-session")?;
     let first = AppendRequest {

@@ -1,6 +1,0 @@
-{
-  "captured": "2026-10-25T23:14:21.0952454Z",
-  "source": "Q:/lanes/pr-gate/1504-5c3289b2ff.log",
-  "source_sha256": "b82e10824deadfc1f80093e1b5990a6d25912c3d859674ed440bad082158ee35",
-  "selection": "Exact GATE_SCOPE, native Clippy status/findings/errors, and recorded baseline markers; legacy log has no Clippy completion receipt"
-}

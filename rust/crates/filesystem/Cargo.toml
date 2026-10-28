@@ -208,6 +208,7 @@ windows = { version = "0.62.2", features = [
 
 
 [features]
+conformance = ["distributed", "acyclic-stream/conformance", "acyclic-objects/conformance", "dep:tempfile"]
 session = ["distributed", "acyclic-stream/session"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support", "acyclic-objects?/test-support"]
 fuzzing = []
@@ -253,6 +254,10 @@ workspace = true
 
 [[example]]
 name = "embedded_workspace"
+required-features = ["local"]
+
+[[example]]
+name = "bench-fs"
 required-features = ["local"]
 
 [[example]]

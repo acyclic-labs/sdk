@@ -67,3 +67,7 @@ pub mod grpc;
 mod obs;
 #[cfg(feature = "grpc")]
 pub use grpc::Tls;
+
+/// Shared provider qualification, checked benchmarks and request accounting.
+#[cfg(feature = "conformance")]
+pub mod conformance;

@@ -1,5 +1,5 @@
 //! Allocation instrumentation stays in its own benchmark executable.
-#[path = "../../conformance/benches/filesystem.rs"]
+#[path = "support/filesystem.rs"]
 mod filesystem;
 
 #[path = "support/admission.rs"]

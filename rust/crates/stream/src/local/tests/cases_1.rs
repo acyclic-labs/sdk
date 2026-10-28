@@ -102,7 +102,7 @@ async fn local_provider_reopens_and_passes_public_conformance()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
-    conformance::verify(&provider)
+    conformance::verify(&crate::conformance::Fixture::new(provider.clone()))
         .await
         .map_err(std::io::Error::other)?;
     drop(provider);
@@ -488,7 +488,7 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
     for (index, outcome) in (0..).zip(&outcomes) {
         assert_eq!(&append_keyed(&reopened, index).await?, outcome, "{index}");
     }
-    conformance::verify(&reopened)
+    conformance::verify(&crate::conformance::Fixture::new(reopened.clone()))
         .await
         .map_err(std::io::Error::other)?;
     Ok(())

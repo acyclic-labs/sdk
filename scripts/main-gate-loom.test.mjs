@@ -16,9 +16,9 @@ test("main gate executes complete harness Loom qualifications and propagates eac
     for (const name of ["check-harness-models.sh"]) {
       writeFileSync(join(cwd, "scripts", name), readFileSync(join(scripts, name)));
     }
-    mkdirSync(join(cwd, "scripts/buildbox/coordinator"), { recursive: true });
-    writeFileSync(join(cwd, "scripts/buildbox/coordinator/gate-clippy.py"),
-      readFileSync(join(scripts, "buildbox/coordinator/gate-clippy.py")));
+    mkdirSync(join(cwd, "scripts/external-gate"), { recursive: true });
+    writeFileSync(join(cwd, "scripts/external-gate/gate-clippy.py"),
+      readFileSync(process.env.SDK_GATE_CLIPPY || "/home/var/bin/gate-clippy.py"));
     writeFileSync(join(cwd, "bin/cargo"), `#!/bin/bash
 if [ "$1" = metadata ]; then
   echo '{"workspace_members":["a"],"packages":[{"id":"a","name":"harness"}]}'
@@ -41,7 +41,7 @@ if (process.argv[2] === process.env.FAIL_MODEL) {
     for (const fail of ["", ...flags]) {
       writeFileSync(join(cwd, "loom-calls"), "");
       const result = spawnSync("bash", [process.env.MAIN_GATE_LOOM_TEST_RUNNER || join(scripts, "main-gate-checks.sh")], {
-        cwd, encoding: "utf8", env: { ...process.env, PATH: `${join(cwd, "bin")}:${process.env.PATH}`, GATE_MAIN_TARGET_DIR: join(cwd, "cache"), FAIL_MODEL: fail },
+        cwd, encoding: "utf8", env: { ...process.env, SDK_GATE_CLIPPY: join(cwd,"scripts/external-gate/gate-clippy.py"), SDK_WINDOWS_GATE: join(cwd,"scripts/external-gate/gate-checks.sh"), PATH: `${join(cwd, "bin")}:${process.env.PATH}`, GATE_MAIN_TARGET_DIR: join(cwd, "cache"), FAIL_MODEL: fail },
       });
       assert.equal(result.status, fail ? 101 : 0, result.stdout + result.stderr);
       const calls = readFileSync(join(cwd, "loom-calls"), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);

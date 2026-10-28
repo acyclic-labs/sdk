@@ -138,3 +138,40 @@ Cloud input is the coordinator-located draft
 `980BA694CF42AABE595527F6EEB05EC10521BDF228E28A73ADA8AB3BC53CD4FF`.
 A final/superseding disposition remains pending. Subtree splitting and hot
 directory partitioning remain Streams capabilities.
+
+The `conformance` feature publishes `conformance::{Backend, Fixture, verify, bench,
+suite}` over the existing public `Fs`, `Workspace` and immutable `Generation`
+operations. `from_providers` composes actual Stream and Objects providers with one
+shared `Counted<P>` dispatch ledger, including errors. Downstream storage adapters
+retain their concrete authority and object types so publication guards, original
+work and custody cross the same production seams. Temporary resources must stay
+owned by the backend throughout each invocation.
+
+Portable vectors check binary size boundaries, immutable history, typed read
+refusals, cancellation, fork isolation and removal. The checked benchmark reads
+one exact immutable 4-KiB value after warmup and rejects head, metadata, list,
+lease or token probes. Mount qualification additionally exercises the real mounted
+interface through the existing mount qualifier. Run the memory and durable local
+adapters on demand (the default features include local storage):
+
+```sh
+cargo test --locked -p acyclic-fs --features conformance,memory --test main public_conformance
+```
+
+The Postgres/MinIO adapter runs the same public suite and retains the independent
+provider-reopen check through `bash scripts/backends/storage-conformance.sh`.
+The browser adapter uses real `BrowserStream` and `IndexedDbObjectStore` providers:
+
+```sh
+bash scripts/run-browser-tests.sh cargo test --locked -p acyclic-fs \
+  --no-default-features --features browser,memory,conformance \
+  --target wasm32-unknown-unknown --test browser_commit public_conformance
+```
+
+The runner uses installed Chrome/Chromedriver. Set `CHROME_BINARY_DIR` and
+`CHROMEDRIVER` when selecting another installed distribution.
+
+`Counted<P>` also forwards `AsyncObjectStore` directly. Cache and collection
+visits preserve the original owner; async storage calls retain the original
+`AuthorityWork`, buffers and publication holds. Counts describe the wrapped
+provider boundary, rather than physical traffic hidden inside a provider.

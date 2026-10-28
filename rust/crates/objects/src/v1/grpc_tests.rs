@@ -401,7 +401,11 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
             .map(|error| error.code),
         Some(wire::ErrorCode::AccessDenied)
     );
-    super::conformance::verify(&client, "conformance-grpc").await?;
+    super::conformance::verify(&super::conformance::Fixture::new(
+        client.clone(),
+        "conformance-grpc",
+    ))
+    .await?;
     super::tests::exercise_uploads(
         &client,
         |query, body| Box::pin(client.put_stream(query, body)),
@@ -889,7 +893,11 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
         Some((client_pem.as_bytes(), client_key_pem.as_bytes())),
     )
     .await?;
-    super::conformance::verify(&client, "conformance-mtls").await?;
+    super::conformance::verify(&super::conformance::Fixture::new(
+        client.clone(),
+        "conformance-mtls",
+    ))
+    .await?;
     super::tests::exercise_uploads(
         &client,
         |query, body| Box::pin(client.put_stream(query, body)),

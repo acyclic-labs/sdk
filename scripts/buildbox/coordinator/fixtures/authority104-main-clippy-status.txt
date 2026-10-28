@@ -1,1 +1,0 @@
-GATE_CLIPPY rc=0

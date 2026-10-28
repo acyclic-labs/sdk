@@ -38,15 +38,7 @@ test("release selection executes the complete registry without Git or GitHub reu
   assert.deepEqual(JSON.parse(result.stdout.trim().slice("matrix=".length)), lanes);
 });
 
-test("packaged conformance copies cover the complete vector inventory", () => {
-  const prefix = "rust/crates/conformance/";
-  const actual = new Set(packagedSourceCopies.flat().filter(path => path.startsWith(prefix)));
-  const expected = new Set(readdirSync(prefix + "vectors", { recursive: true, withFileTypes: true })
-    .filter(entry => entry.isFile()).map(entry => (entry.parentPath + "/" + entry.name).replaceAll("\\", "/")));
-  assert.deepEqual(actual, expected);
-});
-
-test("the actual generated-copy guard rejects a mutation of every packaged conformance vector", () => {
+test("the actual generated-copy guard rejects a mutation of every packaged source", () => {
   const source = readFileSync("scripts/check-baselines.mjs", "utf8");
   const start = source.indexOf("for (const [source, packaged] of packagedSourceCopies) {");
   const end = source.indexOf("const harnessSuite", start);
@@ -55,7 +47,7 @@ test("the actual generated-copy guard rejects a mutation of every packaged confo
   const files = new Map(packagedSourceCopies.flat().map(path => [path, readFileSync(path)]));
   const check = () => runInNewContext(guard, { packagedSourceCopies, readFileSync: path => files.get(path), join: posix.join, root: "." });
   assert.doesNotThrow(check);
-  for (const [, packaged] of packagedSourceCopies.filter(([, path]) => path.startsWith("rust/crates/conformance/"))) {
+  for (const [, packaged] of packagedSourceCopies) {
     const original = files.get(packaged);
     assert.ok(original, packaged);
     files.set(packaged, Buffer.concat([original, Buffer.from(" ")]));

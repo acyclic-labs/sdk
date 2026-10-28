@@ -731,7 +731,7 @@ async fn a_journal_torn_before_its_header_completed_is_created_again()
         assert_eq!(std::fs::read(&path)?, header);
     }
     let provider = LocalStream::open(directory.path(), limits).await?;
-    conformance::verify(&provider)
+    conformance::verify(&crate::conformance::Fixture::new(provider.clone()))
         .await
         .map_err(std::io::Error::other)?;
     drop(provider);

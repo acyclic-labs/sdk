@@ -1,6 +1,18 @@
 //! Reusable black-box qualification of the complete public Stream contract.
 
-pub mod wave1;
+mod atomic;
+mod backend;
+#[path = "conformance"]
+mod histories {
+    pub(super) mod wave1;
+}
+/// Stable selected-history and receipt API. Full qualification uses [`verify`].
+pub mod wave1 {
+    pub use super::histories::wave1::{Case, Failure, Invariant, RECOVERY, coverage, verify_case};
+}
+#[cfg(all(target_arch = "wasm32", feature = "wasm"))]
+pub use backend::injected;
+pub use backend::{Backend, Failure, Fixture, Measurement, bench, suite, verify};
 
 use crate::OwnedBytes as Bytes;
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -21,7 +33,7 @@ const _: () = assert!(!SUITE.is_empty(), "conformance inventory is empty");
     clippy::cognitive_complexity,
     reason = "one public contract walkthrough"
 )]
-pub async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
+async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
     let source = path("conformance/source")?;
     let child = path("conformance/child")?;
     let append_key = key(b"stream-append")?;
@@ -914,11 +926,20 @@ pub async fn verify_page_tail_bytes(
 
 #[cfg(test)]
 mod tests {
-    use super::verify;
-    use crate::{MemoryLimits, MemoryStream, StreamError};
+    use super::{Failure, Fixture, bench, suite};
+    use crate::{MemoryLimits, MemoryStream};
+
+    async fn memory() -> Result<Fixture<MemoryStream>, Failure> {
+        Ok(Fixture::new(MemoryStream::new(MemoryLimits::default())))
+    }
+    suite!(memory_provider_passes_the_public_suite, memory);
 
     #[tokio::test]
-    async fn memory_provider_passes_the_public_suite() -> Result<(), StreamError> {
-        verify(&MemoryStream::new(MemoryLimits::default())).await
+    async fn shared_benchmark_checks_append_read_follow_and_zero_control() -> Result<(), Failure> {
+        let sample = bench(&memory().await?).await?;
+        assert_eq!(sample.records, 256);
+        assert_eq!(sample.requests.control(), 0);
+        assert_eq!(sample.requests.data(), 512);
+        Ok(())
     }
 }

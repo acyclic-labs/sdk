@@ -1,8 +1,0 @@
-[Unit]
-Description=Bound build box scratch (LRU target eviction over 80% of /mnt/bb; hourly incremental caps)
-RequiresMountsFor=/mnt/bb
-[Service]
-Type=oneshot
-User=var
-Slice=bbsync.slice
-ExecStart=/usr/local/sbin/bb-target-prune

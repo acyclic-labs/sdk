@@ -61,7 +61,7 @@ pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/be-edge-oidc-verify.sh
 Dex binds only 127.0.0.1:15482 (OIDC) and 127.0.0.1:15483 (telemetry), uses memory
 storage and a public disposable test account, and stops on script exit. Raw
 responses, hashes, capture time and container image provenance are retained in
-`rust/crates/conformance/fixtures/identity/dex`. Its short-lived test token is
+`rust/crates/harness/fixtures/conformance/identity/dex`. Its short-lived test token is
 validated during capture; later executions start a fresh issuer and recapture.
 This proves local integration; it does not qualify a particular production IdP's
 configuration, discovery service, user interface or account lifecycle.

@@ -48,7 +48,8 @@ impl Backend for Browser {
     }
 }
 
-#[wasm_bindgen_test]
-async fn browser_guest_wire() -> Result {
-    acyclic_agent_host_conformance::verify(&Browser).await
+async fn browser() -> Result<Browser> {
+    Ok(Browser)
 }
+
+acyclic_agent_host_conformance::suite!(browser_guest_wire, browser);

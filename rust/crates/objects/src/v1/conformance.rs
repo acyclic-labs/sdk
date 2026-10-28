@@ -1,7 +1,86 @@
 //! Black-box logical Objects conformance for deterministic, disposable test providers.
 
 use super::{Error, ObjectsProvider, wire};
-use acyclic_stream::OwnedBytes;
+use acyclic_stream::testing::{Counted, RequestLedger, Requests};
+use acyclic_stream::{OwnedBytes, ProviderPlatform, UnixMillisClock as _};
+
+/// Backend setup and dispatch instrumentation; assertions belong to this suite.
+/// Each factory must retain fresh disposable storage for the complete invocation.
+pub trait Backend: ProviderPlatform {
+    /// The same public logical provider used by consumers.
+    fn provider(&self) -> &dyn ObjectsProvider;
+    /// A namespace unused by any previous invocation or concurrent writer.
+    fn namespace(&self) -> &str;
+    /// Calls at the backend's declared dispatch boundary, including failures.
+    fn requests(&self) -> RequestLedger;
+}
+
+/// A counted concrete provider and its disposable namespace. Backends measuring
+/// physical transport traffic can implement [`Backend`] using a transport ledger.
+pub struct Fixture<P> {
+    provider: Counted<P>,
+    namespace: String,
+}
+
+impl<P> Fixture<P> {
+    /// Retains this provider and namespace for one complete suite invocation.
+    pub fn new(provider: P, namespace: impl Into<String>) -> Self {
+        Self {
+            provider: Counted::new(provider),
+            namespace: namespace.into(),
+        }
+    }
+}
+
+impl<P: ObjectsProvider> Backend for Fixture<P> {
+    fn provider(&self) -> &dyn ObjectsProvider {
+        &self.provider
+    }
+    fn namespace(&self) -> &str {
+        &self.namespace
+    }
+    fn requests(&self) -> RequestLedger {
+        self.provider.ledger()
+    }
+}
+
+impl<P: ObjectsProvider> Backend for Counted<P> {
+    fn provider(&self) -> &dyn ObjectsProvider {
+        self
+    }
+    fn namespace(&self) -> &str {
+        "conformance"
+    }
+    fn requests(&self) -> RequestLedger {
+        self.ledger()
+    }
+}
+
+/// Register the complete suite with an async factory returning a fresh backend.
+pub use crate::objects_conformance_suite as suite;
+
+/// Implementation of [`suite!`].
+#[macro_export]
+macro_rules! objects_conformance_suite {
+    ($factory:path) => {
+        $crate::objects_conformance_suite!(objects_conformance, $factory);
+    };
+    ($name:ident, $factory:path) => {
+        #[cfg_attr(not(target_arch = "wasm32"), tokio::test)]
+        #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+        async fn $name() -> std::result::Result<(), Box<dyn std::error::Error>> {
+            let backend = $factory().await?;
+            $crate::v1::conformance::verify(&backend).await?;
+            Ok(())
+        }
+    };
+}
+
+/// Run the complete logical contract and steady-state request budgets.
+pub async fn verify(backend: &dyn Backend) -> Result<(), Failure> {
+    verify_provider(backend.provider(), backend.namespace()).await?;
+    steady(backend).await
+}
 
 /// Canonical inventory of the executable logical provider walkthrough.
 pub const SUITE: &[u8] = include_bytes!("../../conformance/objects-v1.json");
@@ -15,6 +94,14 @@ pub enum Failure {
     /// A successful operation or expected failure contradicted the contract.
     #[error("Objects v1 conformance: {0}")]
     Invariant(&'static str),
+    /// A steady-state data operation issued control requests or excess data calls.
+    #[error("Objects {case} exceeded its request budget: {requests:?}")]
+    Budget {
+        /// Operation under measurement.
+        case: &'static str,
+        /// Calls made between the operation's snapshots.
+        requests: Requests,
+    },
 }
 
 fn ensure(condition: bool, message: &'static str) -> Result<(), Failure> {
@@ -67,7 +154,7 @@ fn identity(namespace: &str, operation: &str) -> Option<wire::MutationIdentity> 
     clippy::cognitive_complexity,
     reason = "one ordered provider lifecycle qualifies every public operation"
 )]
-pub async fn verify<P: ObjectsProvider + ?Sized>(
+async fn verify_provider<P: ObjectsProvider + ?Sized>(
     provider: &P,
     namespace: &str,
 ) -> Result<(), Failure> {
@@ -426,4 +513,142 @@ pub async fn verify<P: ObjectsProvider + ?Sized>(
         "deleted bucket remained public",
     )?;
     Ok(())
+}
+
+fn budget(case: &'static str, before: Requests, ledger: &RequestLedger) -> Result<(), Failure> {
+    let requests = ledger.requests().since(before);
+    if requests.control() != 0 || requests.data() > 1 {
+        return Err(Failure::Budget { case, requests });
+    }
+    Ok(())
+}
+
+async fn steady(backend: &dyn Backend) -> Result<(), Failure> {
+    let provider = backend.provider();
+    let ledger = backend.requests();
+    let bucket = provider
+        .create_bucket(wire::CreateBucketRequest {
+            name: format!("{}-budget", backend.namespace()),
+            mutation: None,
+        })
+        .await?
+        .bucket
+        .ok_or(Failure::Invariant("budget bucket omitted identity"))?;
+    let value = OwnedBytes::from_static(b"request-budget");
+    let before = ledger.requests();
+    provider.put(put(&bucket, "value"), value.clone()).await?;
+    budget("put", before, &ledger)?;
+    let before = ledger.requests();
+    let object = provider
+        .get(get(&bucket, "value"), value.len() as u64)
+        .await?;
+    budget("get", before, &ledger)?;
+    ensure(object.body() == &value, "budget get changed payload")?;
+    let before = ledger.requests();
+    let missing = provider.get(get(&bucket, "missing"), 1).await;
+    budget("missing get", before, &ledger)?;
+    expected_error(
+        missing,
+        wire::ErrorCode::NotFound,
+        "budget missing get changed error",
+    )?;
+    provider
+        .delete(wire::DeleteObjectRequest {
+            bucket: Some(bucket.clone()),
+            object_key: "value".into(),
+            ..Default::default()
+        })
+        .await?;
+    provider
+        .delete_bucket(wire::DeleteBucketRequest {
+            bucket: Some(bucket),
+            mutation: None,
+        })
+        .await?;
+    Ok(())
+}
+
+/// Measurements for the same checked workload on every backend.
+#[derive(Debug)]
+pub struct Measurement {
+    /// Completed puts and gets, each with an exact payload check.
+    pub operations: usize,
+    /// Elapsed wall-clock time at millisecond resolution. Native performance
+    /// runners can additionally time the invocation with a monotonic clock.
+    pub elapsed: std::time::Duration,
+    /// Calls after bucket setup, at the backend's declared dispatch boundary.
+    pub requests: Requests,
+}
+
+/// An on-demand 256-round put/get workload, excluding bucket setup. Every
+/// operation enforces zero control requests and at most one data request.
+/// Supply fresh storage independently of [`verify`]. No scheduler invokes it.
+pub async fn bench(backend: &dyn Backend) -> Result<Measurement, Failure> {
+    let provider = backend.provider();
+    let ledger = backend.requests();
+    let bucket = provider
+        .create_bucket(wire::CreateBucketRequest {
+            name: format!("{}-bench", backend.namespace()),
+            mutation: None,
+        })
+        .await?
+        .bucket
+        .ok_or(Failure::Invariant("bench bucket omitted identity"))?;
+    let value = OwnedBytes::from(vec![0x5a; 4096]);
+    let before = ledger.requests();
+    let clock = acyclic_stream::SystemUnixMillisClock;
+    let started = clock.now_unix_millis();
+    for _ in 0..256 {
+        let before = ledger.requests();
+        provider.put(put(&bucket, "value"), value.clone()).await?;
+        budget("bench put", before, &ledger)?;
+        let before = ledger.requests();
+        let object = provider
+            .get(get(&bucket, "value"), value.len() as u64)
+            .await?;
+        budget("bench get", before, &ledger)?;
+        ensure(object.body() == &value, "benchmark get changed payload")?;
+    }
+    let requests = ledger.requests().since(before);
+    let elapsed = std::time::Duration::from_millis(clock.now_unix_millis().saturating_sub(started));
+    provider
+        .delete(wire::DeleteObjectRequest {
+            bucket: Some(bucket.clone()),
+            object_key: "value".into(),
+            ..Default::default()
+        })
+        .await?;
+    provider
+        .delete_bucket(wire::DeleteBucketRequest {
+            bucket: Some(bucket),
+            mutation: None,
+        })
+        .await?;
+    Ok(Measurement {
+        operations: 512,
+        elapsed,
+        requests,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    async fn memory() -> Result<Fixture<super::super::MemoryObjects>, Failure> {
+        Ok(Fixture::new(
+            super::super::MemoryObjects::new(Default::default())?,
+            "suite-macro",
+        ))
+    }
+    suite!(memory_backend, memory);
+
+    #[tokio::test]
+    async fn shared_bench_checks_values_and_zero_control_budget() -> Result<(), Failure> {
+        let backend = memory().await?;
+        let sample = bench(&backend).await?;
+        assert_eq!(sample.operations, 512);
+        assert_eq!(sample.requests.control(), 0);
+        assert_eq!(sample.requests.data(), 512);
+        Ok(())
+    }
 }

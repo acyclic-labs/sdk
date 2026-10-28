@@ -1,6 +1,0 @@
-#!/usr/bin/python3 -B
-"""Thin compiler adapter to the same host policy used by build admission."""
-import os
-from pathlib import Path
-import sys
-os.execv('/usr/bin/python3', ['/usr/bin/python3', '-B', str(Path(__file__).with_name('bb-cache.py')), 'compiler', *sys.argv[1:]])

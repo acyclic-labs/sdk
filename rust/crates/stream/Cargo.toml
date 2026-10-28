@@ -22,14 +22,11 @@ name = "wave1-conformance"
 required-features = ["http"]
 
 [[example]]
-name = "http-conformance"
-required-features = ["http"]
-
-[[example]]
 name = "browser-test-host"
 required-features = ["grpc", "test-support"]
 
 [features]
+conformance = []
 model-checking = ["dep:loom", "dep:tempfile"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-auth/test-support"]
 default = ["grpc"]
@@ -124,11 +121,7 @@ workspace = true
 
 [[example]]
 name = "provider-conformance"
-required-features = ["http"]
-
-[[example]]
-name = "postgres-conformance"
-required-features = ["postgres"]
+required-features = ["conformance"]
 
 [[test]]
 name = "browser_follow_model"
@@ -163,4 +156,14 @@ required-features = ["local", "model-checking"]
 [[test]]
 name = "wave1_recovery"
 path = "tests/wave1_recovery.rs"
-required-features = ["local"]
+required-features = ["local", "conformance"]
+
+[[test]]
+name = "wave1_keys"
+path = "tests/wave1_keys.rs"
+required-features = ["conformance"]
+
+[[test]]
+name = "wave1_coverage"
+path = "tests/wave1_coverage.rs"
+required-features = ["conformance"]

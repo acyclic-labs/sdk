@@ -6,8 +6,8 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "Internal Harness report qualification command"
-default-run = "harness-conformance"
+description = "Internal Harness scenario substrates and parity oracles"
+default-run = "scenarios"
 
 [package.metadata.acyclic]
 consumer-examples = true
@@ -20,11 +20,6 @@ name = "scenarios"
 path = "src/scenarios.rs"
 test = false
 
-[[bin]]
-name = "harness-conformance"
-path = "src/main.rs"
-test = false
-
 [dependencies]
 acyclic-harness = { version = "=0.2.0", path = "../harness", features = ["test-support", "filesystem-local"] }
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", features = ["memory"] }
@@ -32,8 +27,6 @@ acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["local"] 
 futures.workspace = true
 serde.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-acyclic-conformance = { version = "=0.2.0", path = "../conformance" }
-blake3.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
