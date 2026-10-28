@@ -336,6 +336,7 @@ pub fn children_page_from_response(
             .into_iter()
             .map(|child| {
                 Ok(crate::Child {
+                    origin: child.origin.map(fork_origin_from_wire).transpose()?,
                     tail_record: child.tail_record.map(record).transpose()?,
                     path: path(child.path)?,
                 })
