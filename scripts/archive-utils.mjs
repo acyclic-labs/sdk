@@ -1,6 +1,7 @@
+import { constants } from "node:fs";
 import { createHash } from "node:crypto";
-import { open } from "node:fs/promises";
-import { Transform } from "node:stream";
+import { copyFile, open } from "node:fs/promises";
+import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 
@@ -120,18 +121,18 @@ export async function hashBody(entry) {
   return hash.digest("hex");
 }
 
-export async function readTarGzip(path, visit, options = /** @type {{ algorithm?: string, encoding?: import("node:crypto").BinaryToTextEncoding }} */ ({})) {
+export async function readTarGzip(input, visit, options = /** @type {{ algorithm?: string, encoding?: import("node:crypto").BinaryToTextEncoding }} */ ({})) {
   const { algorithm = "sha256", encoding = "hex" } = options;
-  const file = await open(path, "r");
+  const file = input instanceof Uint8Array ? null : await open(input, "r");
   let source;
   let expanded;
   let finished;
   try {
-    const before = await file.stat({ bigint: true });
-    if (!before.isFile() || before.size === 0n) throw new Error("archive must be a nonempty regular file");
+    const before = file ? await file.stat({ bigint: true }) : null;
+    if (before ? !before.isFile() || before.size === 0n : input.length === 0) throw new Error("archive must be a nonempty regular file");
     const hash = createHash(algorithm);
     let bytes = 0n;
-    source = file.createReadStream({ autoClose: false });
+    source = file ? file.createReadStream({ autoClose: false }) : Readable.from([input]);
     expanded = createGunzip();
     finished = pipeline(source, new Transform({
       transform(chunk, _encoding, callback) {
@@ -145,8 +146,8 @@ export async function readTarGzip(path, visit, options = /** @type {{ algorithm?
     finished.catch(() => {});
     await visitTar(expanded, visit);
     await finished;
-    const after = await file.stat({ bigint: true });
-    if (bytes !== before.size || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
+    const after = file ? await file.stat({ bigint: true }) : null;
+    if (before && (bytes !== before.size || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs)) {
       throw new Error("archive changed while it was being read");
     }
     if (bytes > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("archive length is not representable");
@@ -155,6 +156,31 @@ export async function readTarGzip(path, visit, options = /** @type {{ algorithm?
     source?.destroy();
     expanded?.destroy();
     if (finished) await finished.catch(() => {});
-    await file.close();
+    await file?.close();
   }
+}
+
+// Validate names before retaining individual files. The expanded tar itself is
+// never materialized; exact inventories and digests remain caller authority.
+export async function readArchivePayload(input, { canonical, caseInsensitive = process.platform === "win32", declared, expected, regularOnly = false } = {}) {
+  const payload = new Map(), seen = new Set();
+  const evidence = await readTarGzip(input, async entry => {
+    const name = entry.type === "5" ? entry.path.replace(/\/$/, "") : entry.path;
+    const alias = caseInsensitive ? name.toLowerCase() : name;
+    if (!canonical(name) || seen.has(alias) || (entry.type !== "0" && (declared || regularOnly || entry.type !== "5"))) throw new Error("unsafe or duplicate archive member");
+    seen.add(alias);
+    if (entry.type === "5") return;
+    if (declared && !Object.hasOwn(declared, name)) throw new Error("archive inventory differs");
+    const body = await collectBody(entry);
+    if (declared && sha256(body) !== declared[name]) throw new Error("archive payload digest differs");
+    payload.set(name, body);
+  });
+  if (expected !== undefined && evidence.digest !== expected) throw new Error("archive digest differs");
+  if (!payload.size || (declared && payload.size !== Object.keys(declared).length)) throw new Error("archive inventory differs");
+  return { payload, ...evidence };
+}
+
+export async function copyVerifiedArchive(source, destination, expected) {
+  await copyFile(source, destination, constants.COPYFILE_EXCL);
+  if ((await readTarGzip(destination, () => {})).digest !== expected) throw new Error("archive evidence changed");
 }
