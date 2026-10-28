@@ -221,7 +221,10 @@ impl PreparedModelRequest {
                 .total_messages
                 .checked_add(local_messages)
                 .ok_or_else(|| Error::Invalid("model prefix message count overflow".into()))?;
-            if total > limits.context_messages {
+            if limits
+                .context_messages
+                .is_some_and(|maximum| total > maximum.get())
+            {
                 return Err(Error::Invalid(
                     "inherited model context exceeds message limit".into(),
                 ));

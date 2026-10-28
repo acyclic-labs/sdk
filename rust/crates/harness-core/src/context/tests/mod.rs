@@ -94,9 +94,9 @@ fn payload_limits() -> Limits {
     Limits {
         file_bytes: 1_048_576,
         render_bytes: 1_048_576,
-        context_messages: 4_096,
-        attachments: 1_024,
-        path_bytes: 4_096,
+        context_messages: std::num::NonZeroUsize::new(4_096),
+        attachments: std::num::NonZeroUsize::new(1_024),
+        path_bytes: std::num::NonZeroUsize::new(4_096),
         ..Limits::default()
     }
 }

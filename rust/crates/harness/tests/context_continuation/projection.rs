@@ -219,9 +219,9 @@ pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_e
     let limits = Limits {
         file_bytes: 262_144,
         render_bytes: 262_144,
-        context_messages: 32,
-        attachments: 32,
-        path_bytes: 4_096,
+        context_messages: std::num::NonZeroUsize::new(32),
+        attachments: std::num::NonZeroUsize::new(32),
+        path_bytes: std::num::NonZeroUsize::new(4_096),
         ..Limits::default()
     };
     let provider = DurableContextProvider::new(

@@ -47,14 +47,23 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
             let js = to_js(&value)?;
             for (key, bound) in [
                 ("file_bytes", value.file_bytes),
-                ("path_bytes", value.path_bytes as u64),
-                ("attachments", value.attachments as u64),
                 ("render_bytes", value.render_bytes),
-                ("context_messages", value.context_messages as u64),
             ] {
                 set_js_field(&js, key, &exact_js_number(bound)?)?;
             }
             for (key, bound) in [
+                (
+                    "path_bytes",
+                    value.path_bytes.map(std::num::NonZeroUsize::get),
+                ),
+                (
+                    "attachments",
+                    value.attachments.map(std::num::NonZeroUsize::get),
+                ),
+                (
+                    "context_messages",
+                    value.context_messages.map(std::num::NonZeroUsize::get),
+                ),
                 (
                     "model_steps",
                     value.model_steps.map(std::num::NonZeroUsize::get),
