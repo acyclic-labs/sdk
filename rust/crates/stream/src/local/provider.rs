@@ -64,12 +64,11 @@ impl StreamProvider for LocalStream {
             .await?;
         let projection = request.projection;
         let through = request.durable_through;
-        let paths = request.paths.clone();
         let (mut view, revision) = self
             .accepted(async {
-                let mut view = self.inner.provider.heads(request).await?;
+                let mut view = self.inner.provider.capture_heads(&request).await?;
                 let revision = *self.inner.revision.borrow();
-                if projection == crate::HeadProjection::Tail || paths.is_empty() {
+                if projection == crate::HeadProjection::Tail || request.paths.is_empty() {
                     return Ok::<_, StreamError>((view, revision));
                 }
                 let synced = self
@@ -83,7 +82,7 @@ impl StreamProvider for LocalStream {
                     .durable_tails
                     .lock()
                     .map_err(|_| StreamError::Unavailable)?;
-                for (path, head) in paths.iter().zip(&mut view.heads) {
+                for (path, head) in request.paths.iter().zip(&mut view.heads) {
                     if let Some(head) = head {
                         let durable = tails.entry(path.clone()).or_default();
                         if synced {
@@ -110,7 +109,7 @@ impl StreamProvider for LocalStream {
                 .durable_tails
                 .lock()
                 .map_err(|_| StreamError::Unavailable)?;
-            for (path, head) in paths.into_iter().zip(&mut view.heads) {
+            for (path, head) in request.paths.into_iter().zip(&mut view.heads) {
                 if let Some(head) = head {
                     let durable = tails.entry(path).or_default();
                     let marks = flushed_watermarks(durable, head.tail, flushed);

@@ -392,7 +392,8 @@ impl StreamProvider for PostgresStream {
             self.refresh().await?;
         }
         let projection = request.projection;
-        let mut view = self.inner.core.heads(request).await?;
+        self.inner.core.revisions.wait(&request.at_least).await?;
+        let mut view = self.inner.core.capture_heads(&request).await?;
         for head in view.heads.iter_mut().flatten() {
             head.durable = if projection == crate::HeadProjection::Tail {
                 0

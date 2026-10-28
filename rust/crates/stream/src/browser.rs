@@ -319,12 +319,13 @@ impl StreamProvider for BrowserStream {
             .await
     }
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        request.validate()?;
         if !request.at_least.is_empty() {
             self.wait_revision(&request.at_least).await?;
         }
         self.with_provider(async move |provider| {
             let projection = request.projection;
-            let mut view = provider.heads(request).await?;
+            let mut view = provider.capture_heads(&request).await?;
             for head in view.heads.iter_mut().flatten() {
                 head.durable = if projection == crate::HeadProjection::Tail {
                     0

@@ -210,3 +210,8 @@ request/result collections add zero collection allocations; larger views grow
 with their actual cardinality. These are source counts, not measured latency or
 throughput results. Physical flush counts depend on the requested guarantee and
 concurrent work already in the device buffer.
+
+Local, browser, journal and Postgres adapters borrow the same memory snapshot
+implementation directly. This removes their inner boxed provider future. Local
+multi-path views also reuse the request's path storage instead of cloning its
+collection to associate each captured head with its durability metadata.

@@ -1,3 +1,40 @@
+impl MemoryStream {
+    /// Captures an already validated request whose minimum cut was awaited
+    /// outside any adapter publication lock. There is no boxed inner dispatch.
+    pub(crate) async fn capture_heads(
+        &self,
+        request: &crate::HeadsRequest,
+    ) -> Result<crate::Heads, StreamError> {
+        let state = self.state.read().await;
+        let heads = request
+            .paths
+            .iter()
+            .map(|path| head_at(&state, path, request.projection, request.durable_through))
+            .collect::<Result<_, _>>()?;
+        let mut children = request.children.clone();
+        if let Some(children) = &mut children {
+            children.limit = children
+                .limit
+                .min(request.limit - request.paths.len() as u32);
+        }
+        let view = crate::Heads {
+            projection: request.projection,
+            snapshot: self.revisions.at(state.decision),
+            heads,
+            children: children
+                .map(|request| children_at(&state, request))
+                .transpose()?,
+        };
+        if !request.at_least.proven_by(Some(&view.snapshot)) {
+            return Err(StreamError::InvalidResponse);
+        }
+        if crate::wire_codec::requests::heads_len(&view) > crate::MAX_COMMAND_BYTES {
+            return Err(StreamError::LimitExceeded);
+        }
+        Ok(view)
+    }
+}
+
 fn head_at(
     state: &State,
     path: &StreamPath,
@@ -178,33 +215,10 @@ impl StreamProvider for MemoryStream {
         crate::ProviderContext::new(&self.operation_claims).with_process_exclusion()
     }
 
-    async fn heads(&self, mut request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
         request.validate()?;
         self.revisions.wait(&request.at_least).await?;
-        let state = self.state.read().await;
-        let heads = request
-            .paths
-            .iter()
-            .map(|path| head_at(&state, path, request.projection, request.durable_through))
-            .collect::<Result<_, _>>()?;
-        if let Some(children) = &mut request.children {
-            children.limit = children
-                .limit
-                .min(request.limit - request.paths.len() as u32);
-        }
-        let view = crate::Heads {
-            projection: request.projection,
-            snapshot: self.revisions.at(state.decision),
-            heads,
-            children: request
-                .children
-                .map(|request| children_at(&state, request))
-                .transpose()?,
-        };
-        if crate::wire_codec::requests::heads_len(&view) > crate::MAX_COMMAND_BYTES {
-            return Err(StreamError::LimitExceeded);
-        }
-        Ok(view)
+        self.capture_heads(&request).await
     }
 
     async fn inspect_idempotency(

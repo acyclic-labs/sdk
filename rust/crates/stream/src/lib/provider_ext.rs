@@ -153,20 +153,15 @@ async fn named_head<P: StreamProvider + ?Sized>(
     path: StreamPath,
     projection: HeadProjection,
 ) -> Result<PathHead, StreamError> {
-    let mut view = provider
-        .heads(HeadsRequest {
-            durable_through: None,
-            projection,
-            paths: [path].into(),
-            children: None,
-            limit: 1,
-            at_least: Default::default(),
-        })
-        .await?;
-    if view.projection != projection || view.heads.len() != 1 || view.children.is_some() {
-        return Err(StreamError::InvalidResponse);
-    }
-    let head = view.heads.pop().flatten().ok_or(StreamError::NotFound)?;
-    head.validate_projection(projection)?;
-    Ok(head)
+    let request = HeadsRequest {
+        durable_through: None,
+        projection,
+        paths: [path].into(),
+        children: None,
+        limit: 1,
+        at_least: Default::default(),
+    };
+    let mut view = provider.heads(request.clone()).await?;
+    view.validate_for(&request)?;
+    view.heads.pop().flatten().ok_or(StreamError::NotFound)
 }
