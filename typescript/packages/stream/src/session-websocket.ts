@@ -18,7 +18,11 @@ export function webSocketSession(endpoint: string, token: string | CredentialPro
     const unwatch = (): void => { if (watching) { watching = false; watch?.close(); } };
     try {
       const lease = await resolveCredential(provider, sourceSignal);
-      const credential = btoa(String.fromCharCode(...new TextEncoder().encode(lease.token()))).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+      // Encode in pieces so credentials can exceed the engine's argument allowance.
+      const bytes = new TextEncoder().encode(lease.token());
+      const pieces: string[] = [];
+      for (let start = 0; start < bytes.length; start += 8192) pieces.push(String.fromCharCode(...bytes.subarray(start, start + 8192)));
+      const credential = btoa(pieces.join("")).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
       const base = new URL(node?.endpoint ?? endpoint);
       if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) throw new StreamError("configuration", "session node must be an authenticated HTTPS endpoint");
       if (!base.pathname.endsWith("/")) base.pathname += "/";
