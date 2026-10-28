@@ -183,14 +183,21 @@ pub(crate) fn restrict_context_limits(
         path_bytes: pinned.path_bytes.min(admitted.path_bytes),
         attachments: pinned.attachments.min(admitted.attachments),
         render_bytes: pinned.render_bytes.min(admitted.render_bytes),
-        model_steps: match (pinned.model_steps, admitted.model_steps) {
-            (Some(pinned), Some(admitted)) => Some(pinned.min(admitted)),
-            (pinned, admitted) => pinned.or(admitted),
-        },
+        model_steps: pinned
+            .model_steps
+            .into_iter()
+            .chain(admitted.model_steps)
+            .min(),
         model_events_per_step: pinned
             .model_events_per_step
-            .min(admitted.model_events_per_step),
-        tool_calls_per_step: pinned.tool_calls_per_step.min(admitted.tool_calls_per_step),
+            .into_iter()
+            .chain(admitted.model_events_per_step)
+            .min(),
+        tool_calls_per_step: pinned
+            .tool_calls_per_step
+            .into_iter()
+            .chain(admitted.tool_calls_per_step)
+            .min(),
         context_messages: pinned.context_messages.min(admitted.context_messages),
     })
 }
