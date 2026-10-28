@@ -116,8 +116,7 @@ impl<'a> Size<'a> {
     }
     /// Adds `entry`, or says why it cannot follow the entries so far.
     fn push(&mut self, entry: &ChangeEntryRef<'a>) -> Result<(), StreamError> {
-        if entry.key.len() > crate::MAX_RECORD_KEY_BYTES
-            || entry.operation.is_empty()
+        if entry.operation.is_empty()
             || entry.operation.chars().any(char::is_control)
             || self.previous.is_some_and(|previous| previous >= entry.key)
         {
@@ -260,7 +259,6 @@ fn parse_v1<'a>(
         let metadata = entry.field(26)?.unwrap_or_default();
         count += 1;
         if count > crate::MAX_RECORD_KEYS
-            || key.len() > crate::MAX_RECORD_KEY_BYTES
             || previous.is_some_and(|previous| previous >= key)
             || operation.chars().any(char::is_control)
             || !entry.0.is_empty()
@@ -282,7 +280,7 @@ fn parse_record<'a>(
     visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
 ) -> Result<&'a [u8], StreamError> {
     if compact(headers) {
-        parse(bytes, visit)
+        parse(bytes, Some(headers.keys()), visit)
     } else {
         parse_v1(bytes, visit)
     }
@@ -292,6 +290,7 @@ fn parse_record<'a>(
 /// noncanonical encoding.
 fn parse<'a>(
     bytes: &'a [u8],
+    expected: Option<&[OwnedBytes]>,
     mut visit: impl FnMut(&[u8], &'a str, &'a [u8]) -> Result<(), StreamError>,
 ) -> Result<&'a [u8], StreamError> {
     let mut reader = Reader(bytes);
@@ -300,8 +299,10 @@ fn parse<'a>(
     if count == 0 || count > crate::MAX_RECORD_KEYS {
         return Err(StreamError::InvalidArgument);
     }
-    let mut key = [0_u8; crate::MAX_RECORD_KEY_BYTES];
-    let mut length = 0;
+    // Native validation already owns the admitted immutable full keys. Compare
+    // their prefix/suffix slices directly, without a second allocation. Owned
+    // decoders reconstruct into their own scratch alongside their owned output.
+    let mut reconstructed = Vec::new();
     for index in 0..count {
         let common = reader.number()?;
         let suffix = reader.bytes()?;
@@ -309,18 +310,25 @@ fn parse<'a>(
         let metadata = reader.bytes()?;
         let total = common
             .checked_add(suffix.len())
-            .filter(|total| *total <= crate::MAX_RECORD_KEY_BYTES)
             .ok_or(StreamError::InvalidArgument)?;
+        let previous = match expected {
+            Some(keys) if index != 0 => keys
+                .get(index - 1)
+                .ok_or(StreamError::InvalidArgument)?
+                .as_ref(),
+            Some(_) => &[],
+            None => reconstructed.as_slice(),
+        };
         // The shared length is exactly the common prefix, so the suffix's
         // first byte must differ from the predecessor's next one; together
         // with that byte's order this makes keys strictly increasing.
         let canonical = if index == 0 {
             common == 0
         } else {
-            common <= length
+            common <= previous.len()
                 && match (
                     suffix.first(),
-                    key.get(common..length).and_then(<[u8]>::first),
+                    previous.get(common..).and_then(<[u8]>::first),
                 ) {
                     (Some(next), Some(previous)) => next > previous,
                     (Some(_), None) => true,
@@ -331,15 +339,23 @@ fn parse<'a>(
         if !canonical || operation.is_empty() || operation.chars().any(char::is_control) {
             return Err(StreamError::InvalidArgument);
         }
-        key.get_mut(common..total)
-            .ok_or(StreamError::InvalidArgument)?
-            .copy_from_slice(suffix);
-        length = total;
-        visit(
-            key.get(..length).ok_or(StreamError::InvalidArgument)?,
-            operation,
-            metadata,
-        )?;
+        if let Some(keys) = expected {
+            let key = keys
+                .get(index)
+                .ok_or(StreamError::InvalidArgument)?
+                .as_ref();
+            if key.len() != total
+                || key.get(..common) != previous.get(..common)
+                || key.get(common..) != Some(suffix)
+            {
+                return Err(StreamError::InvalidArgument);
+            }
+            visit(key, operation, metadata)?;
+        } else {
+            reconstructed.truncate(common);
+            reconstructed.extend_from_slice(suffix);
+            visit(&reconstructed, operation, metadata)?;
+        }
     }
     if !reader.0.is_empty() {
         return Err(StreamError::InvalidArgument);
@@ -350,7 +366,7 @@ fn parse<'a>(
 /// Decodes a canonical change value into its entries with full keys.
 pub fn decode_changes(bytes: &[u8]) -> Result<wire::ChangeRecord, StreamError> {
     let mut entries = Vec::new();
-    let context = parse(bytes, |key, operation, metadata| {
+    let context = parse(bytes, None, |key, operation, metadata| {
         entries.push(wire::ChangeEntry {
             key: bytes::Bytes::copy_from_slice(key),
             operation: operation.into(),
@@ -437,7 +453,7 @@ pub(crate) fn record_headers(
     }
     let mut ranges = Vec::new();
     let mut owned = Vec::new();
-    parse(value, |key, _, _| {
+    parse(value, None, |key, _, _| {
         let start = owned.len();
         owned.extend_from_slice(key);
         ranges.push(start..owned.len());
