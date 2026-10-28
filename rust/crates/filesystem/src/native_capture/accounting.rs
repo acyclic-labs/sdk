@@ -33,11 +33,7 @@ impl CaptureWorkScope {
         let Some(custody) = self.custody.take() else {
             return Ok(());
         };
-        while std::sync::Arc::strong_count(&custody) != 1 {
-            std::thread::yield_now();
-        }
-        let bytes = custody.take_retained_bytes();
-        drop(custody);
+        let bytes = custody.retire();
         self.native
             .with_original_leaf(|work| {
                 work.scope(

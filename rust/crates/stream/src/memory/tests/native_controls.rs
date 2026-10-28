@@ -812,7 +812,9 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
         commits: Some(3),
         records: Some(3),
         payload_bytes: Some(72),
-        idempotency_results: Some(1),
+        // Both fixture seeds retain their replay identity, followed by the
+        // one promised completion. Unrelated work has no remaining slot.
+        idempotency_results: Some(3),
         ..MemoryLimits::default()
     };
     for abandon in [false, true] {
