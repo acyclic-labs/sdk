@@ -3,7 +3,7 @@ pub(crate) struct DirectoryMergeResult {
     pub(crate) record: Option<FileRecord>,
     pub(crate) conflicts: Vec<MergeConflict>,
     pub(crate) truncated: bool,
-    pub(crate) examined_changes: u32,
+    pub(crate) examined_changes: usize,
 }
 
 pub(crate) struct FileFold {
@@ -24,12 +24,15 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
     base: FileRecord,
     ours: FileRecord,
     theirs: FileRecord,
-    maximum_changes: u32,
-    maximum_conflicts: u32,
+    maximum_changes: impl Into<Option<u32>>,
+    maximum_conflicts: impl Into<Option<u32>>,
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<DirectoryMergeResult>, OperationFailure<MergeGenerationError>> {
+    let maximum_changes = maximum_changes.into();
+    let maximum_conflicts = maximum_conflicts.into();
+
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = async {
         let mut state = MergeState::new(maximum_changes, &mut accounting)?;
@@ -51,7 +54,7 @@ pub(crate) async fn merge_directory_record_async<S: AsyncObjectStore>(
             record,
             conflicts: state.conflicts.value,
             truncated: state.truncated,
-            examined_changes: maximum_changes - state.remaining_changes,
+            examined_changes: state.changes.examined,
         })
     }
     .await;
@@ -73,12 +76,14 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
     ours: FileRecord,
     theirs: FileRecord,
     requested: ResolutionView<'_>,
-    maximum_conflicts: u32,
+    maximum_conflicts: impl Into<Option<u32>>,
     limits: DecodeLimits,
     state: &mut MergeState,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<Option<FileRecord>, FsError> {
+    let maximum_conflicts = maximum_conflicts.into();
+
     let (Some(base_entries), Some(ours_entries), Some(theirs_entries)) = (
         directory_entries(Some(base)),
         directory_entries(Some(ours)),
@@ -121,7 +126,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
         )?;
         return Ok(None);
     };
-    let maximum = state.remaining_changes.max(1);
+    let maximum = state.changes.remaining.map(|remaining| remaining.max(1));
     let (ours_diff, allocation) = diff_tree_entries_with_accounting(
         store,
         Some(base_entries),
@@ -163,7 +168,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                     items_examined: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                state.consume(1)?;
+                state.changes.consume(1)?;
                 let name = &left.or(right).ok_or(FsError::InvalidDiff)?.key;
                 let base_value = left.or(right).and_then(|change| change.before.as_ref());
                 let ours_value = left.map_or(base_value, |change| change.after.as_ref());
@@ -231,10 +236,13 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                 }
                 let Some(resolved) = resolved else {
                     conflicted = true;
-                    if state.conflicts.value.len() < maximum_conflicts as usize {
-                        state
-                            .conflicts
-                            .ensure_for_push(maximum_conflicts as usize, accounting)?;
+                    if state.conflicts.value.len()
+                        < maximum_conflicts.map_or(usize::MAX, |maximum| maximum as usize)
+                    {
+                        state.conflicts.ensure_for_push(
+                            maximum_conflicts.map_or(usize::MAX, |maximum| maximum as usize),
+                            accounting,
+                        )?;
                         let (name, mut allocation) = super::persistent_io::clone_key::<TreeFormat>(
                             name, accounting, None, 0,
                         )?;

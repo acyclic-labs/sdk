@@ -6,13 +6,13 @@ async fn merge_request_guards_fail_before_backend_work() -> Result<(), Box<dyn s
     let cancellation = CancellationToken::new();
 
     let mut zero_changes = request(valid.clone(), valid.clone(), valid.clone());
-    zero_changes.maximum_changes = 0;
+    zero_changes.maximum_changes = Some(0);
     let failure = merge_error(zero_changes, &cancellation).await?;
     assert!(matches!(failure.error, MergeGenerationError::ChangeLimit));
     assert_eq!(*failure.work, WorkCounters::default());
 
     let mut zero_conflicts = request(valid.clone(), valid.clone(), valid.clone());
-    zero_conflicts.maximum_conflicts = 0;
+    zero_conflicts.maximum_conflicts = Some(0);
     assert!(matches!(
         merge_error(zero_conflicts, &cancellation).await?.error,
         MergeGenerationError::ChangeLimit

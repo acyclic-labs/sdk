@@ -129,8 +129,10 @@ pub enum BrowserWorkspaceOperationClose {
 pub struct BrowserOperationReconcileOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     maximum_generations: Option<u32>,
-    maximum_changes: u32,
-    maximum_conflicts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    maximum_changes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    maximum_conflicts: Option<u32>,
 }
 
 impl From<BrowserOperationReconcileOptions> for OperationReconcileLimits {

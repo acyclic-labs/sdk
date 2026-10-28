@@ -17,9 +17,7 @@ where
                 "transaction mutation count is invalid",
             ));
         }
-        if request.maximum_conflicts == 0
-            || request.maximum_conflicts > self.limits.maximum_page_items
-        {
+        if request.maximum_conflicts == Some(0) {
             return Err(Status::invalid_argument(
                 "transaction conflict bound is invalid",
             ));

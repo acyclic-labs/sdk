@@ -67,10 +67,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         operations: Vec<Mutation>,
         operation_id: OperationId,
         maximum_attempts: u32,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<LiveMutationOutcome> {
+        let maximum_conflicts = maximum_conflicts.into();
+
         self.validate_live_operation(maximum_attempts)
             .map_err(OperationFailure::before_work)?;
         if self.has_pending_mutations() {
@@ -101,10 +103,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         authored: Vec<AuthoredMutation>,
         operation_id: OperationId,
         maximum_attempts: u32,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<AuthoredLiveMutationResult> {
+        let maximum_conflicts = maximum_conflicts.into();
+
         self.validate_live_operation(maximum_attempts)
             .map_err(OperationFailure::before_work)?;
         if self.has_pending_mutations() {
@@ -140,10 +144,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         operation_id: OperationId,
         maximum_attempts: u32,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<LiveMutationOutcome> {
+        let maximum_conflicts = maximum_conflicts.into();
+
         self.validate_live_operation(maximum_attempts)
             .map_err(OperationFailure::before_work)?;
         if !self.has_pending_mutations() {
@@ -183,7 +189,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         operation_id: OperationId,
         maximum_attempts: u32,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         permit: PublicationPermit,
         original: &'a crate::NativeMaterializationWork,
         cancellation: &CancellationToken,
@@ -201,6 +207,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
             + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
+        let maximum_conflicts = maximum_conflicts.into();
+
         let mut accounting =
             crate::kernel::allocation::KernelAccounting::native(original, cancellation);
         accounting.check().map_err(E::from)?;
@@ -303,10 +311,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         operation_id: OperationId,
         maximum_attempts: u32,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<LiveMutationOutcome> {
+        let maximum_conflicts = maximum_conflicts.into();
+
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = async {
             accounting.check()?;
@@ -367,11 +377,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         &mut self,
         state: &mut LiveRetryState,
         publication: LivePublicationObservation,
-        maximum_conflicts: u32,
+        maximum_conflicts: impl Into<Option<u32>>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
         empty_allocation: &mut KernelOwnedAllocation,
     ) -> Result<Option<(LiveMutationOutcome, KernelOwnedAllocation)>, FsError> {
+        let maximum_conflicts = maximum_conflicts.into();
+
         match state
             .observe_publication(publication)
             .map_err(FsError::LiveRetry)?

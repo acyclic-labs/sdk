@@ -10,10 +10,8 @@ where
         self.admit(&request)?;
         let request = request.into_inner();
         if request.maximum_generations == Some(0)
-            || request.maximum_changes == 0
-            || request.maximum_changes > self.limits.maximum_page_items
-            || request.maximum_conflicts == 0
-            || request.maximum_conflicts > self.limits.maximum_page_items
+            || request.maximum_changes == Some(0)
+            || request.maximum_conflicts == Some(0)
         {
             return Err(Status::invalid_argument("join bounds are invalid"));
         }
@@ -211,10 +209,8 @@ where
         history: JoinHistory,
     ) -> Result<(), Status> {
         if supplied.maximum_generations == Some(0)
-            || supplied.maximum_changes == 0
-            || supplied.maximum_changes > self.limits.maximum_page_items
-            || supplied.maximum_conflicts == 0
-            || supplied.maximum_conflicts > self.limits.maximum_page_items
+            || supplied.maximum_changes == Some(0)
+            || supplied.maximum_conflicts == Some(0)
         {
             return Err(Status::invalid_argument("join bounds are invalid"));
         }
