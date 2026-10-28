@@ -72,6 +72,13 @@ impl StreamError {
         Self::RevisionForeign,
     ];
 
+    /// Whether the provider left the outcome undecided: it was unreachable or
+    /// its deadline elapsed, so the same request may yet succeed unchanged.
+    #[must_use]
+    pub const fn uncertain(&self) -> bool {
+        matches!(self, Self::Unavailable | Self::DeadlineElapsed)
+    }
+
     /// Stable `snake_case` code shared by the HTTP, gRPC, and WASM transports.
     #[must_use]
     pub const fn code(&self) -> &'static str {

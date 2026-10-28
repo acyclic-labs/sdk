@@ -263,9 +263,11 @@ async fn provider_failures_commit_terminal_status_while_uncertain_errors_propaga
             false,
         ),
         (CoreError::Cancelled, false),
+        // A definitive failure settles the agent as failed; only an
+        // undecided one retries the step.
         (
             CoreError::Invalid("unclassified executor error".into()),
-            false,
+            true,
         ),
     ];
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
