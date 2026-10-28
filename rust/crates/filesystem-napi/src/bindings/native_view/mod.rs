@@ -152,7 +152,7 @@ impl NativeCheckout {
                         maximum_extent_spans: options.maximum_extent_spans.into_inner(),
                         transfer_bytes: bigint_u64(&options.transfer_bytes, "transferBytes")?,
                     },
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
                     &cancellation,
                 ))
                 .await
@@ -200,7 +200,7 @@ impl NativeCheckout {
                 maximum_paths,
                 maximum_extent_spans,
             },
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &self.cancellation,
         ))
         .await
@@ -231,7 +231,7 @@ impl NativeCheckout {
                 maximum_extent_spans,
             },
             &acyclic_fs::CapturePolicy::default(),
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &self.cancellation,
         ))
         .await
@@ -309,7 +309,7 @@ impl NativeWatcher {
                 maximum_extent_spans,
             },
             &acyclic_fs::CapturePolicy::default(),
-            acyclic_fs::performance::BOUNDARY_BUDGET,
+            acyclic_fs::WorkBudget::UNBOUNDED,
             &self.cancellation,
         ))
         .await;
@@ -373,7 +373,7 @@ impl NativeWatcher {
             seal_checkout(
                 &mut checkout,
                 pending.operation_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -423,7 +423,7 @@ impl NativeWatcher {
             let receipt = lock_state(&self.inner, "native watcher state")?
                 .poll(
                     maximum_changes,
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
                     &self.cancellation,
                 )
                 .map_err(napi_error)?;
@@ -458,7 +458,7 @@ impl NativeWatcher {
                     maximum_extent_spans,
                 },
                 &acyclic_fs::CapturePolicy::default(),
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             ))
             .await
@@ -476,7 +476,7 @@ impl NativeWatcher {
             seal_checkout(
                 &mut checkout,
                 pending.operation_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
