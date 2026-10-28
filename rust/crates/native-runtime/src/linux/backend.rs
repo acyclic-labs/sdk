@@ -221,7 +221,9 @@ impl Owner {
             if std::time::Instant::now() >= deadline {
                 return Err(self.retire(retired(key), io::ErrorKind::TimedOut.into()));
             }
-            match driver.poll(Some(deadline.saturating_duration_since(std::time::Instant::now()))) {
+            match driver.poll(Some(
+                deadline.saturating_duration_since(std::time::Instant::now()),
+            )) {
                 Ok(()) => {}
                 Err(error)
                     if matches!(
