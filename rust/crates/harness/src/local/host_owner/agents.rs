@@ -467,7 +467,7 @@ impl NativeAgents {
                 stream,
                 Shared(Arc::clone(&driver)),
                 within,
-                ActorLimits::new(60_000, 1 << 20, 1 << 16).map_err(storage)?,
+                ActorLimits::new(None, None, None).map_err(storage)?,
                 Arc::new(SystemClock),
                 Arc::clone(&volumes),
             )
