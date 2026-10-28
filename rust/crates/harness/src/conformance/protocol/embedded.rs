@@ -146,10 +146,13 @@ pub async fn open<B: Backend + ?Sized>(
         VerifiedCaller { audience, scope },
         Placement {
             filesystem: Fs::new(StreamAuthorityStore::new(stream), objects, capabilities),
-            provider: crate::conformance::roots::volume(PRIVATE_VOLUME, crate::conformance::fixtures::adopted().agent)?
-                .volume
-                .provider()
-                .clone(),
+            provider: crate::conformance::roots::volume(
+                PRIVATE_VOLUME,
+                crate::conformance::fixtures::adopted().agent,
+            )?
+            .volume
+            .provider()
+            .clone(),
             within: ActorReference::new(b"account", b"agents", b"host")?,
         },
         Turns {
