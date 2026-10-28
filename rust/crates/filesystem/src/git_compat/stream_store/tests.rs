@@ -28,7 +28,9 @@ async fn independent_hosts_share_conditional_state_without_crossing_repositories
     );
     assert_ne!(left?, right?);
     let reopened = StreamGitCompatStore::new(StreamAuthorityStore::new(provider));
-    let committed = GitCompatStore::load(&reopened, id).await?.ok_or("missing committed state")?;
+    let committed = GitCompatStore::load(&reopened, id)
+        .await?
+        .ok_or("missing committed state")?;
     assert_eq!(committed.revision, 2);
     assert!(["left", "right"].contains(&committed.current_branch.as_str()));
     assert!(!GitCompatStore::compare_and_delete(&second, id, 1).await?);
@@ -36,7 +38,9 @@ async fn independent_hosts_share_conditional_state_without_crossing_repositories
     assert!(GitCompatStore::compare_and_delete(&second, id, 2).await?);
     assert!(GitCompatStore::load(&reopened, id).await?.is_none());
     assert!(!GitCompatStore::compare_and_swap(&first, id, 2, state(id, 3, "stale")).await?);
-    assert!(GitCompatStore::compare_and_swap(&first, foreign, 0, state(foreign, 1, "foreign")).await?);
+    assert!(
+        GitCompatStore::compare_and_swap(&first, foreign, 0, state(foreign, 1, "foreign")).await?
+    );
     assert!(GitCompatStore::load(&reopened, id).await?.is_none());
     Ok(())
 }
@@ -49,18 +53,43 @@ async fn malformed_record_refuses_instead_of_becoming_absent()
     let id = WorkspaceId::from_bytes([3; 16]);
     let cancellation = CancellationToken::new();
     let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-    let observed = authority.observe_record(StreamGitCompatStore::<MemoryStream>::path(id, "refs")?, &mut work).await?;
+    let observed = authority
+        .observe_record(
+            StreamGitCompatStore::<MemoryStream>::path(id, "refs")?,
+            &mut work,
+        )
+        .await?;
     let mut commit = FilesystemCommit::new(CommitRequest {
-        idempotency_key: acyclic_stream::IdempotencyKey::new(bytes::Bytes::from_static(b"malformed-state"))?,
-        conditions: Vec::new(), mutations: Vec::new(), deadline_unix_millis: None,
+        idempotency_key: acyclic_stream::IdempotencyKey::new(bytes::Bytes::from_static(
+            b"malformed-state",
+        ))?,
+        conditions: Vec::new(),
+        mutations: Vec::new(),
+        deadline_unix_millis: None,
     });
-    authority.contribute_record(&mut commit, &observed.observation, &StateRecord::Companion {
-        kind: CompanionKind::GitRefs,
-        payload: bytes::Bytes::from_static(b"invalid JSON").into(),
-    }, crate::PublicationHold::none(), &mut work)?;
+    authority.contribute_record(
+        &mut commit,
+        &observed.observation,
+        &StateRecord::Companion {
+            kind: CompanionKind::GitRefs,
+            payload: bytes::Bytes::from_static(b"invalid JSON").into(),
+        },
+        crate::PublicationHold::none(),
+        &mut work,
+    )?;
     authority.seal_observed(&mut commit, &[], None, &mut work)?;
-    assert!(matches!(authority.submit(commit, &mut work).await?, FilesystemCommitOutcome::Committed(_)));
-    assert!(matches!(GitCompatStore::load(&store, id).await, Err(StreamGitCompatStoreError::Codec(_))));
-    assert!(GitCompatStore::compare_and_swap(&store, id, 0, state(id, 1, "overwrite")).await.is_err());
+    assert!(matches!(
+        authority.submit(commit, &mut work).await?,
+        FilesystemCommitOutcome::Committed(_)
+    ));
+    assert!(matches!(
+        GitCompatStore::load(&store, id).await,
+        Err(StreamGitCompatStoreError::Codec(_))
+    ));
+    assert!(
+        GitCompatStore::compare_and_swap(&store, id, 0, state(id, 1, "overwrite"))
+            .await
+            .is_err()
+    );
     Ok(())
 }

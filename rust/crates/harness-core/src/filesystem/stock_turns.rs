@@ -1,5 +1,5 @@
 //! The one stock composition of an agent turn's executor, shared by every
-//! host: the local harness, the browser and a hosted server. A host supplies
+//! host: the local harness, the browser and an agent Actor. A host supplies
 //! its model, tools and limits, and a [`TurnContext`] for what only it adds;
 //! the turn's admission is the host's own, carried by its
 //! [`super::FilesystemTurnHost`] or [`super::hosting::Bound`], never chosen
@@ -108,10 +108,8 @@ impl TurnContext for Grants {
                     .chain([crate::contract::capability::MODEL_GENERATE.to_owned()]),
             );
             let scope = RuntimeScope::new(grants, limits)?;
-            let executor = executor.with_tool_authority(
-                scope.clone(),
-                authority.approval.clone(),
-            )?;
+            let executor =
+                executor.with_tool_authority(scope.clone(), authority.approval.clone())?;
             if authority.workspace_tools.is_none() {
                 return Ok(executor);
             }
@@ -120,7 +118,8 @@ impl TurnContext for Grants {
                 scope,
                 content: Some(authority.content.clone()),
                 artifacts: None,
-            }.build()?;
+            }
+            .build()?;
             let task = harness.agent_context(&authority.grants, authority.content.clone())?;
             executor.with_task_context(&task, turn)
         })
@@ -161,7 +160,8 @@ impl Preset {
 
     /// This preset's tools, the one construction every host takes them from:
     /// the catalog tools it selects that the host can back (the volume tools
-    /// always; each workspace tool only when `workspace` admits its name),
+    /// and filesystem commands always; each workspace tool only when
+    /// `workspace` admits its name),
     /// then the host's own `tools`. Its agent tools are bound
     /// per turn by [`Self::executors`].
     ///

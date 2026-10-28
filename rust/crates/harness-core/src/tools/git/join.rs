@@ -6,8 +6,8 @@ where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
-    F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Result<(), Error>> + Send,
+    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
+    Fut: Future<Output = Result<(), Error>> + acyclic_stream::ProviderTask,
 {
     pub(super) async fn join(
         &self,
@@ -309,10 +309,26 @@ where
     /// of either
     /// side's fork counts, so a parent merging its child and a child merging
     /// its parent agree.
-    #[cfg(not(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32"))))]
-    async fn exact_base(&self, _: &acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>, _: &ManagedWorkspace<P, O>, _: Vec<acyclic_fs::MergeConflict>, _: bool) -> crate::Result<Option<ManagedGeneration<P, O>>> { Ok(None) }
+    #[cfg(not(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    )))]
+    async fn exact_base(
+        &self,
+        _: &acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>,
+        _: &ManagedWorkspace<P, O>,
+        _: Vec<acyclic_fs::MergeConflict>,
+        _: bool,
+    ) -> crate::Result<Option<ManagedGeneration<P, O>>> {
+        Ok(None)
+    }
 
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+    #[cfg(all(
+        feature = "filesystem-local",
+        feature = "native-execution",
+        not(target_arch = "wasm32")
+    ))]
     async fn exact_base(
         &self,
         plan: &acyclic_fs::JoinPlan<acyclic_fs::StreamAuthorityStore<P>, O>,

@@ -1,7 +1,12 @@
 use super::*;
 
 /// The task-selected managed workspace and its publication authority.
-pub struct Workspace<'a, P: ?Sized + 'static = DefaultProvider, O: 'static = DefaultObjects, S = DefaultStore> {
+pub struct Workspace<
+    'a,
+    P: ?Sized + 'static = DefaultProvider,
+    O: 'static = DefaultObjects,
+    S = DefaultStore,
+> {
     /// Authenticated workload and invocation ceiling, checked for every resolved volume.
     pub access: &'a crate::filesystem::WorkspaceAccess,
     /// Local filesystem owning the view.
@@ -17,6 +22,7 @@ pub struct Workspace<'a, P: ?Sized + 'static = DefaultProvider, O: 'static = Def
     /// Admitted operation lease, when the caller owns an operation window.
     pub lease: Option<OperationWindowLease>,
     /// Pin for an ordinary checkout that must receive published changes.
+    #[cfg(not(target_arch = "wasm32"))]
     pub checkout: Option<acyclic_fs::NativeRootIdentity>,
     /// Root-relative paths the host owns inside the view, such as bound
     /// volume aliases and their mount controls. They are never Git content.
@@ -53,15 +59,19 @@ pub fn run<'a>(
 }
 
 #[doc(hidden)]
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 pub async fn run_with_guard<F, Fut>(
     workspace: Workspace<'_>,
     args: &[String],
     before_effect: F,
 ) -> crate::Result<Output>
 where
-    F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = crate::Result<()>> + Send,
+    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
+    Fut: Future<Output = crate::Result<()>> + acyclic_stream::ProviderTask,
 {
     // Callers retain only the command pointer, rather than the state for
     // every filesystem preparation and action nested in this command.
@@ -80,7 +90,11 @@ where
 {
     let (executor, tree, patch) = match prepare(&workspace, args, &before_effect).await? {
         Prepared::Complete(output) => return Ok(output),
-        Prepared::Ready { executor, tree, patch } => (executor, tree, patch),
+        Prepared::Ready {
+            executor,
+            tree,
+            patch,
+        } => (executor, tree, patch),
     };
     let command = if let Some(identity) = workspace.checkout {
         execute(
@@ -112,15 +126,22 @@ where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
-    F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = crate::Result<()>> + Send,
+    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
+    Fut: Future<Output = crate::Result<()>> + acyclic_stream::ProviderTask,
 {
+    #[cfg(not(target_arch = "wasm32"))]
     if workspace.checkout.is_some() || !matches!(workspace.view, View::Volume(_)) {
-        return Err(Error::Invalid("volume commands require a volume view".into()));
+        return Err(Error::Invalid(
+            "volume commands require a volume view".into(),
+        ));
     }
     let (executor, tree, patch) = match prepare(&workspace, args, &before_effect).await? {
         Prepared::Complete(output) => return Ok(output),
-        Prepared::Ready { executor, tree, patch } => (executor, tree, patch),
+        Prepared::Ready {
+            executor,
+            tree,
+            patch,
+        } => (executor, tree, patch),
     };
     let command = execute(&workspace, args, tree, patch.as_deref(), &executor).await?;
     finish(executor, command)
@@ -144,8 +165,8 @@ where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
-    F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = crate::Result<()>> + Send,
+    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
+    Fut: Future<Output = crate::Result<()>> + acyclic_stream::ProviderTask,
 {
     before_effect().await?;
     workspace.access.require(workspace.view.workspace()).await?;
@@ -197,7 +218,11 @@ where
         before_effect().await?;
         return Ok(Prepared::Complete(output));
     }
-    Ok(Prepared::Ready { executor, tree, patch })
+    Ok(Prepared::Ready {
+        executor,
+        tree,
+        patch,
+    })
 }
 
 fn finish<F, Fut, P, O, S>(
@@ -208,8 +233,8 @@ where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
-    F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = crate::Result<()>> + Send,
+    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
+    Fut: Future<Output = crate::Result<()>> + acyclic_stream::ProviderTask,
 {
     Ok(Output {
         command: command.map(|output| without_host_paths(output, &executor.repository)),

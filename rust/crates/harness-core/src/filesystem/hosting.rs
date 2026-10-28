@@ -320,7 +320,12 @@ where
             provider,
             within,
         } = placement;
-        let volumes = FilesystemHost::new(filesystem, &provider, None).map_err(turn)?;
+        let ancestry = acyclic_fs::StreamGitCompatStore::new(StreamAuthorityStore::new(
+            filesystem.stream_provider(),
+        ));
+        let volumes = FilesystemHost::new(filesystem, &provider, None)
+            .and_then(|host| host.with_project_families(ancestry))
+            .map_err(turn)?;
         Self::on(
             issuer,
             admission,
@@ -352,10 +357,15 @@ where
             turns.limits,
             turns.approval_policy,
         );
-        #[cfg(not(target_arch = "wasm32"))]
         let turner = turner.with_workspace_tools({
             let volumes = Arc::clone(&volumes);
-            Arc::new(move |agent, authority| Ok(Arc::new(super::FilesystemTools::new(Arc::clone(&volumes), agent, authority)?)))
+            Arc::new(move |agent, authority| {
+                Ok(Arc::new(super::FilesystemTools::new(
+                    Arc::clone(&volumes),
+                    agent,
+                    authority,
+                )?))
+            })
         });
         let turner = Arc::new(configure(turner));
         let driver = ExecutorDriver::new(Arc::clone(&turner));

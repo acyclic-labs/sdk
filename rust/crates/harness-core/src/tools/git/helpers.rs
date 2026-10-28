@@ -1,9 +1,14 @@
 use super::*;
 
-pub(super) fn existing_tracked_paths<'a, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectStore + 'static>(
+pub(super) fn existing_tracked_paths<
+    'a,
+    A: acyclic_fs::AsyncAuthorityStore + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+>(
     generation: &'a Generation<A, O>,
     candidates: &'a BTreeSet<String>,
-) -> impl std::future::Future<Output = Result<BTreeSet<String>, Error>> + Send + 'a {
+) -> impl std::future::Future<Output = Result<BTreeSet<String>, Error>> + acyclic_stream::ProviderTask + 'a
+{
     async move {
         let mut tracked = BTreeSet::new();
         for path in candidates {

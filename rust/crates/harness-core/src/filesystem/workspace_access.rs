@@ -1,7 +1,11 @@
 //! Authenticated raw workspace access shared by every filesystem host.
-use crate::{Error, Result, conversation::{VolumeOperation, VolumeRef}, core::{AuthorityVerifier, Scope}};
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Workspace};
 use super::PreparationIo;
+use crate::{
+    Error, Result,
+    conversation::{VolumeOperation, VolumeRef},
+    core::{AuthorityVerifier, Scope},
+};
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Workspace};
 /// An authenticated scope and invocation ceiling for a raw workspace surface.
 /// Construction is mandatory: raw facades cannot omit the grant admission.
 #[derive(Clone)]
@@ -130,4 +134,3 @@ pub async fn require_unrestricted_workspace_read<
         surface,
     )
 }
-

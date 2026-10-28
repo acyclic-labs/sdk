@@ -502,14 +502,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         generation: GenerationId,
         io: &PreparationIo,
     ) -> Result<Generation<A, O>> {
-        #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-        if let Some((root, store)) = &self.project_family
-            && workspace.id() == *root
+        if let Some(family) = &self.project_family
+            && family.applies(workspace.id())
         {
-            return crate::conversation::BoundedContentFuture::new(Some(io), || {
-                self.project_generation(workspace, generation, *root, store, io)
-            })?
-            .await;
+            return family.generation(self, workspace, generation, io)?.await;
         }
 
         io.sdk(
