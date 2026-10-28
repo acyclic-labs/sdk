@@ -11,10 +11,10 @@ import { observed, resolveObserver, type AcyclicObserver, type OperationSizes } 
 
 export interface HttpMachinesOptions extends CredentialOptions { readonly endpoint: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number; readonly observer?: AcyclicObserver }
 
-/** Managed-service transport with bounded responses and no implicit mutation retries. */
+/** Managed-service transport with optional response policy and no implicit mutation retries. */
 export class HttpMachinesProvider implements MachinesProvider {
   readonly assurance = "managed-service" as const;
-  readonly #endpoint: string; readonly #credential: CredentialProvider; readonly #fetcher: typeof fetch; readonly #maximum: number; readonly #observer: AcyclicObserver | undefined;
+  readonly #endpoint: string; readonly #credential: CredentialProvider; readonly #fetcher: typeof fetch; readonly #maximum: number | undefined; readonly #observer: AcyclicObserver | undefined;
   static fromEnv(environment?: Partial<Pick<HttpMachinesOptions, "endpoint" | "token" | "credential">>): HttpMachinesProvider {
     const callback = environment?.credential;
     return new HttpMachinesProvider({
@@ -27,9 +27,9 @@ export class HttpMachinesProvider implements MachinesProvider {
   constructor(options: HttpMachinesOptions) {
     const endpoint = new URL(options.endpoint);
     if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment");
-    const maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
+    const maximum = options.maximumResponseBytes;
     this.#credential = credentialProvider(options);
-    try { validateMaximumResponseBytes(maximum); }
+    try { if (maximum !== undefined) validateMaximumResponseBytes(maximum); }
     catch (error) {
       const details = error !== null && typeof error === "object" ? error as { readonly code?: unknown; readonly message?: unknown } : undefined;
       if (details?.code === "invalid-maximum") throw new RangeError(typeof details.message === "string" ? details.message : "invalid Machines response bound");
@@ -70,7 +70,7 @@ export class HttpMachinesProvider implements MachinesProvider {
     const token = await this.#credential();
     validateTransportOptions(token, this.#maximum);
     const response = await this.#fetcher(new URL(`v1/machines/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: payload });
-    const bytes = await boundedBytes(response, this.#maximum);
+    const bytes = await responseBytes(response, this.#maximum);
     if (sizes) sizes.responseBytes = bytes.byteLength;
     let body: string;
     try { body = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
@@ -90,7 +90,7 @@ export class HttpMachinesProvider implements MachinesProvider {
 }
 
 export class MachinesTransportError extends Error { constructor(message: string, readonly status: number) { super(message); } }
-async function boundedBytes(response: Response, maximum: number): Promise<Uint8Array> {
+async function responseBytes(response: Response, maximum: number | undefined): Promise<Uint8Array> {
   const reader = response.body?.getReader();
   if (reader === undefined) return new Uint8Array();
   const chunks: Uint8Array[] = []; let total = 0;
@@ -99,7 +99,7 @@ async function boundedBytes(response: Response, maximum: number): Promise<Uint8A
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > maximum) { await reader.cancel().catch(() => undefined); throw new MachinesTransportError("response exceeds configured bound", response.status); }
+      if (maximum !== undefined && total > maximum) { await reader.cancel().catch(() => undefined); throw new MachinesTransportError("response exceeds configured bound", response.status); }
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }
