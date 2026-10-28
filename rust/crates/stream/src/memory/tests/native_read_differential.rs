@@ -205,20 +205,24 @@ fn funding_bound(
     before: acyclic_test_support::AllocationInfo,
     after: acyclic_test_support::AllocationInfo,
 ) -> proptest::test_runner::TestCaseResult {
-    // TryUnfold stores both its cursor state and the in-flight step future.
-    let saved = if before_held == 0 {
+    // The paged cursor additionally retains its immutable snapshot and page cut.
+    // TryUnfold holds both the idle state and the in-flight step future.
+    let added = if before_held == 0 {
         0
     } else {
-        2 * (std::mem::size_of::<BaselineCursor>() - std::mem::size_of::<VecDeque<HistoryWindow>>())
-    } as u64;
+        native_cursor_frame_delta()
+    };
     prop_assert_eq!(before.count_total, after.count_total);
-    prop_assert_eq!(before_held, after_held + saved);
-    prop_assert_eq!(before.bytes_total, after.bytes_total + saved);
+    prop_assert_eq!(i128::from(before_held) + added, i128::from(after_held));
+    prop_assert_eq!(
+        i128::from(before.bytes_total) + added,
+        i128::from(after.bytes_total)
+    );
     Ok(())
 }
 
 #[test]
-fn restoring_unused_native_cursor_fields_fails_the_same_funding_bound() {
+fn unfunded_native_cursor_storage_fails_the_same_funding_bound() {
     for old_candidate in [false, true] {
         let baseline_provider = futures::executor::block_on(seed(1));
         let candidate_provider = futures::executor::block_on(seed(1));
@@ -257,7 +261,12 @@ fn restoring_unused_native_cursor_fields_fails_the_same_funding_bound() {
     }
 }
 
-// The sole intentional observer difference is the smaller native cursor frame.
+fn native_cursor_frame_delta() -> i128 {
+    2 * (std::mem::size_of::<NativeReadCursor>() as i128
+        - std::mem::size_of::<BaselineCursor>() as i128)
+}
+
+// For reads fitting one page, only the funded cursor frame changes.
 // Retain every event and argument, adjusting exactly its allocation and the
 // final aggregate refund. The funding property independently checks this delta.
 fn normalize_baseline_events(
@@ -265,20 +274,18 @@ fn normalize_baseline_events(
     held: u64,
 ) -> Vec<meter_trace::Event> {
     if held != 0 {
-        let saved = 2
-            * (std::mem::size_of::<BaselineCursor>()
-                - std::mem::size_of::<VecDeque<HistoryWindow>>()) as u64;
+        let added = native_cursor_frame_delta();
         let allocation = events
             .iter_mut()
             .rfind(|event| event.0 == "allocate")
             .unwrap();
-        allocation.1 = allocation.1.checked_sub(saved).unwrap();
+        allocation.1 = u64::try_from(i128::from(allocation.1) + added).unwrap();
         let refund = events
             .iter_mut()
             .rfind(|event| event.0 == "release")
             .unwrap();
         assert_eq!(refund.1, held);
-        refund.1 -= saved;
+        refund.1 = u64::try_from(i128::from(refund.1) + added).unwrap();
     }
     events
 }
