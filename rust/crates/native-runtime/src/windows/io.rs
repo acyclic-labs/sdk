@@ -465,3 +465,32 @@ pub(crate) fn file_identity(file: &File) -> io::Result<crate::FileIdentity> {
     }
     Ok((info.VolumeSerialNumber, info.FileId.Identifier))
 }
+
+/// Opens one prepared, terminated path without an additional path allocation.
+pub(super) fn open_read_terminated(path: &[u16]) -> io::Result<File> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_ATTRIBUTE_NORMAL, OPEN_EXISTING,
+    };
+    if path.last() != Some(&0) || path[..path.len() - 1].contains(&0) {
+        return Err(io::ErrorKind::InvalidInput.into());
+    }
+    // SAFETY: the path remains held and terminated through this synchronous
+    // call. No security or template pointer is supplied; the returned handle
+    // transfers directly into its sole owned file.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            FILE_GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: CreateFileW returned one newly owned, non-invalid handle.
+    Ok(unsafe { File::from_raw_handle(handle) })
+}
