@@ -54,7 +54,10 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
                 set_js_field(&js, key, &exact_js_number(bound)?)?;
             }
             for (key, bound) in [
-                ("model_steps", value.model_steps),
+                (
+                    "model_steps",
+                    value.model_steps.map(std::num::NonZeroUsize::get),
+                ),
                 (
                     "model_events_per_step",
                     value.model_events_per_step.map(std::num::NonZeroUsize::get),
