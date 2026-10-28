@@ -202,7 +202,24 @@ impl SecretReference {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Explicit path segments, without assigning a fixed depth or default scope.
+    pub fn segments(&self) -> impl Iterator<Item = &str> {
+        self.0["secrets:/".len()..].split('/')
+    }
+
+    /// Format explicit segments through the original reference constructor.
+    pub fn from_segments(segments: &[String]) -> Result<Self, ManifestError> {
+        let reference = Self::new(format!("secrets:/{}", segments.join("/")))?;
+        if !reference.segments().eq(segments.iter().map(String::as_str)) {
+            return Err(ManifestError::invalid("reference", "secret-reference"));
+        }
+        Ok(reference)
+    }
 }
+
+#[cfg(target_arch = "wasm32")]
+mod secret_projection;
 impl TryFrom<String> for SecretReference {
     type Error = ManifestError;
     fn try_from(value: String) -> Result<Self, Self::Error> {

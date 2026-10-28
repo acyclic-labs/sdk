@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import initializeManifest, { validate } from "../generated/wasm/acyclic_manifest.js";
+import initializeManifest, { validate, parseSecretReference, formatSecretReference, selectSecretReference } from "../generated/wasm/acyclic_manifest.js";
 
 await initializeManifest({ module_or_path: await readFile(new URL("../generated/wasm/acyclic_manifest_bg.wasm", import.meta.url)) });
 const fixture = JSON.parse(await readFile(new URL("../../../../rust/crates/manifest/fuzz/corpus/manifest_json/valid.json", import.meta.url), "utf8"));
@@ -19,4 +19,14 @@ test("Node calls the Rust cross-reference, secret and hostname rules", () => {
   manifest.environments[0].crons = [];
   manifest.environments[0].entries[0].fetch = { name: "HTTP", egress: [{ host: "169.254.169.0xfe", port: 443 }] };
   assert.throws(() => validate(JSON.stringify(manifest)));
+});
+test("standalone secret projection uses the same bounded Rust grammar", () => {
+  for (const reference of ["secrets:/a", "secrets:/Scope/deep/NAME", `secrets:/${"a".repeat(63)}/${"b".repeat(63)}/${"c".repeat(63)}/${"d".repeat(56)}`]) {
+    assert.equal(formatSecretReference(parseSecretReference(reference)), reference);
+    assert.deepEqual(JSON.parse(selectSecretReference("MODEL_KEY", reference)), { name: "MODEL_KEY", reference });
+  }
+  for (const reference of ["secrets:/", "secrets://a", "secrets:/a/", "secrets:/a//b", "secrets:/a%2Fb", "secrets:/a:b", "secrets:/a?q", "secrets:/a#f", "secrets:/é", "secrets:/.",
+    `secrets:/${"x".repeat(64)}`, `secrets:/${"a".repeat(63)}/${"b".repeat(63)}/${"c".repeat(63)}/${"d".repeat(57)}`]) assert.throws(() => parseSecretReference(reference));
+  assert.throws(() => formatSecretReference(["a/b"]));
+  assert.throws(() => selectSecretReference("NOT-AN-ENV-NAME", "secrets:/a"));
 });

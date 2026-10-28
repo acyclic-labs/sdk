@@ -912,3 +912,20 @@ fn actor_and_worker_lowering_carry_only_explicit_secret_selections()
     }
     Ok(())
 }
+
+#[test]
+fn secret_reference_segments_preserve_canonical_bytes_and_original_bounds() {
+    for value in ["secrets:/a", "secrets:/Scope/deep/NAME", &format!("secrets:/{}", "x".repeat(63)),
+        &format!("secrets:/{}/{}/{}/{}", "a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(56))] {
+        let reference = SecretReference::new(value.to_owned()).unwrap();
+        let segments = reference.segments().map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(SecretReference::from_segments(&segments).unwrap().as_str(), value);
+    }
+    for value in ["secrets:/", "secrets://a", "secrets:/a/", "secrets:/a//b", "secrets:/a%2Fb",
+        "secrets:/a:b", "secrets:/a?q", "secrets:/a#f", "secrets:/é", "secrets:/.",
+        &format!("secrets:/{}", "x".repeat(64)),
+        &format!("secrets:/{}/{}/{}/{}", "a".repeat(63), "b".repeat(63), "c".repeat(63), "d".repeat(57))] {
+        assert!(SecretReference::new(value.to_owned()).is_err(), "{value}");
+    }
+    assert!(SecretReference::from_segments(&["a/b".to_owned()]).is_err());
+}
