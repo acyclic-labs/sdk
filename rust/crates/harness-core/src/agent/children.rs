@@ -50,6 +50,7 @@ impl<P: StreamProvider + ?Sized> Storage for Provider<P> {
                     path: path(digest)?,
                     from: 0,
                     limit: 1,
+                    at_least: Default::default(),
                 })
                 .await
                 .map_err(Error::Stream)?;
