@@ -17,8 +17,8 @@ pub struct JoinCommitWitness {
     /// Exact history form used to publish the result.
     pub history: crate::workspace::JoinHistory,
     pub(crate) maximum_generations: Option<u32>,
-    pub(crate) maximum_changes: u32,
-    pub(crate) maximum_conflicts: u32,
+    pub(crate) maximum_changes: Option<u32>,
+    pub(crate) maximum_conflicts: Option<u32>,
     pub(crate) resolutions_digest: Digest,
     pub(crate) expected_head: Head,
     /// Stable Filesystem retry identity bound to the committed join.
@@ -214,8 +214,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             }
             if target.id != witness.target_workspace
                 || witness.maximum_generations == Some(0)
-                || witness.maximum_changes == 0
-                || witness.maximum_conflicts == 0
+                || witness.maximum_changes == Some(0)
+                || witness.maximum_conflicts == Some(0)
                 || witness.source_workspace == witness.target_workspace
                 || witness.expected_target == witness.result_generation
             {
