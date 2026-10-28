@@ -939,10 +939,7 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
     runtime.track(cold.clone())?;
     let work = runtime.ready.take().ok_or("missing initial hot work")?;
     assert_eq!(work.key(), &hot);
-    runtime
-        .execute(work, Inputs::Follow)
-        .await
-        .map_err(|(_, error)| error)?;
+    runtime.execute(work).await.map_err(|(_, error)| error)?;
     assert_eq!(
         store
             .load(&hot)
@@ -953,10 +950,7 @@ async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> Te
     );
     let work = runtime.ready.take().ok_or("missing cold work")?;
     assert_eq!(work.key(), &cold, "a hot actor must rejoin at the back");
-    runtime
-        .execute(work, Inputs::Follow)
-        .await
-        .map_err(|(_, error)| error)?;
+    runtime.execute(work).await.map_err(|(_, error)| error)?;
     assert_eq!(
         records(&*provider, "out/cold").await?,
         vec![Bytes::from_static(b"r0")]

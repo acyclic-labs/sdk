@@ -34,32 +34,23 @@ impl RecordReceipt {
         })
     }
 
-    /// Extracts the exact record receipt from a successful committed envelope.
-    pub fn from_envelope(
-        envelope: &acyclic_stream::CommittedEnvelope,
+    /// Extracts the exact record receipt from a successful commit receipt:
+    /// `sequence` must be one this commit assigned on `path`, never inherited.
+    pub fn from_receipt(
+        receipt: &acyclic_stream::CommitReceipt,
         path: &StreamPath,
         sequence: u64,
     ) -> Option<Self> {
-        envelope.mutations.iter().find_map(|mutation| {
-            let (destination, records) = match mutation {
-                acyclic_stream::CommittedMutation::Append(append) => {
-                    (&append.path, &append.records)
-                }
-                acyclic_stream::CommittedMutation::Fork(fork) => (&fork.destination, &fork.records),
-            };
-            if destination != path {
-                return None;
-            }
-            records
-                .iter()
-                .find(|record| {
-                    record.sequence == sequence && record.commit_id == envelope.commit_id
-                })
-                .map(|record| Self {
-                    path: path.clone(),
-                    sequence,
-                    commit_id: record.commit_id,
-                })
+        let assigned =
+            receipt.appends.iter().any(|append| {
+                &append.path == path && (append.start..append.tail).contains(&sequence)
+            }) || receipt.forks.iter().any(|fork| {
+                &fork.destination == path && (fork.forked_at..fork.tail).contains(&sequence)
+            });
+        assigned.then(|| Self {
+            path: path.clone(),
+            sequence,
+            commit_id: receipt.commit_id,
         })
     }
 }
@@ -325,5 +316,6 @@ fn clone_condition(
             expected: *expected,
         },
         CommitCondition::Absent { .. } => CommitCondition::Absent { path },
+        CommitCondition::Present { .. } => CommitCondition::Present { path },
     })
 }

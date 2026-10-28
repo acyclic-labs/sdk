@@ -244,9 +244,7 @@ impl StreamProvider for InjectedStream {
                 .map(wire_codec::append_record_wire)
                 .collect(),
             if_tail: request.if_tail,
-            idempotency_key: request
-                .idempotency_key
-                .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
+            idempotency_key: bytes::Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
         };
         wire_codec::append_outcome_from_wire(self.call("append", input).await?)
     }
@@ -255,9 +253,7 @@ impl StreamProvider for InjectedStream {
             source: request.source.to_string(),
             destination: request.destination.to_string(),
             at_tail: request.at_tail,
-            idempotency_key: request
-                .idempotency_key
-                .map(|key| bytes::Bytes::copy_from_slice(key.as_bytes())),
+            idempotency_key: bytes::Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
             exclude: request.exclude.into_iter().map(|p| p.to_string()).collect(),
         };
         let result: wire::ForkReceipt = self.call("fork", input).await?;
