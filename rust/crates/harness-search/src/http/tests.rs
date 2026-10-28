@@ -1,6 +1,7 @@
 use super::*;
 use crate::SearchResult;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 #[tokio::test]
