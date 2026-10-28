@@ -316,7 +316,7 @@ async fn queued_credentials_stream_sparse_slots_and_preserve_revocation() -> Tes
     tokio::time::timeout(Duration::from_secs(8), async {
         let provider = Arc::new(MemoryStream::default());
         append(&provider, "events", 1).await?;
-        let fixture = Fixture::open(provider, "node").await?;
+        let fixture = Fixture::open(provider.clone(), "node").await?;
         let client = Client::with_connector(
             fixture._channel.clone(),
             Some("Bearer fixture".parse()?),
@@ -350,6 +350,10 @@ async fn queued_credentials_stream_sparse_slots_and_preserve_revocation() -> Tes
                 break;
             }
         }
+        let mut records = client
+            .follow_records(crate::FollowRequest::new(StreamPath::new("events")?, 0))
+            .await?;
+        assert_eq!(next(&mut records).await?.sequence, 0);
         client.register_credential(u32::MAX, Bytes::new())?;
         let error = loop {
             match frames.next().await {
@@ -360,10 +364,8 @@ async fn queued_credentials_stream_sparse_slots_and_preserve_revocation() -> Tes
         };
         assert_eq!(error, StreamError::AccessDenied);
         // The same physical session and independent slot remain usable.
-        let mut records = client
-            .follow_records(crate::FollowRequest::new(StreamPath::new("events")?, 0))
-            .await?;
-        assert_eq!(next(&mut records).await?.sequence, 0);
+        append(&provider, "events", 1).await?;
+        assert_eq!(next(&mut records).await?.sequence, 1);
         assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     })
