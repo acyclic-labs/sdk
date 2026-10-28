@@ -103,10 +103,11 @@ impl CommandJournal for BrowserPort<'_> {
         if frames.is_empty() {
             return Err(StreamError::InvalidArgument);
         }
-        let at_millis = BrowserClock.now_unix_millis();
+        let at_millis = frames.last().ok_or(StreamError::InvalidArgument)?.at_millis;
+        let now = BrowserClock.now_unix_millis();
         if frames
             .iter()
-            .any(|frame| frame.deadline.is_some_and(|deadline| at_millis >= deadline))
+            .any(|frame| frame.deadline.is_some_and(|deadline| now >= deadline))
         {
             return Err(StreamError::DeadlineElapsed);
         }
@@ -128,7 +129,7 @@ impl CommandJournal for BrowserPort<'_> {
             .object_store(JOURNAL)
             .map_err(backend)?;
         for (offset, frame) in frames.into_iter().enumerate() {
-            let mut encoded = at_millis.to_le_bytes().to_vec();
+            let mut encoded = frame.at_millis.to_le_bytes().to_vec();
             encoded.extend_from_slice(&frame.command);
             let key = format!("{:016x}", expected + offset as u64);
             store

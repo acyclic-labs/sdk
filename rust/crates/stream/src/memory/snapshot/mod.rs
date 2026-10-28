@@ -1,5 +1,5 @@
 //! Canonical snapshot of retained Stream facts.
-use super::{History, MemoryStream, Retained, State, publish, retain};
+use super::{History, MemoryStream, Retained, State, install_namespace, retain, stage_namespace};
 use crate::wire_codec::{envelope_to_wire, observation_wire};
 use crate::{CommitId, CommittedMutation, IdempotencyKey, IdempotencyObservation, StreamError};
 use prost::Message as _;
@@ -269,14 +269,15 @@ fn reconstruct(
                 }),
             )
             .ok()?;
-        publish(
-            &mut state,
+        let namespace = stage_namespace(
+            &state,
             paths,
             histories,
             envelope,
             &mut super::NamespaceBuilder::new(&|_| Ok(None)),
         )
         .ok()?;
+        install_namespace(&mut state, namespace, envelope).ok()?;
         state.decision = state.decision.checked_add(1)?;
         state.last_committed_at_micros = envelope.committed_at_micros;
     }

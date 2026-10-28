@@ -33,15 +33,7 @@ impl CommandJournal for PgJournal<'_> {
                 .await
                 .map_err(unavailable)?,
         };
-        append(
-            transaction,
-            self.publish,
-            self.namespace,
-            expected,
-            self.at_millis,
-            frames,
-        )
-        .await
+        append(transaction, self.publish, self.namespace, expected, frames).await
     }
 
     async fn read(&mut self, from: u64, page: usize) -> Result<JournalPage, StreamError> {
@@ -130,15 +122,15 @@ async fn append(
     publish: &Statement,
     namespace: &str,
     expected: u64,
-    at_millis: u64,
     frames: Vec<JournalFrame>,
 ) -> Result<AppendIf, StreamError> {
     if frames.is_empty() {
         return Err(StreamError::InvalidArgument);
     }
     let mut expected = i64::try_from(expected).map_err(unavailable)?;
-    let millis = i64::try_from(at_millis).map_err(unavailable)?;
+    let at_millis = frames.last().ok_or(StreamError::InvalidArgument)?.at_millis;
     for frame in frames {
+        let millis = i64::try_from(frame.at_millis).map_err(unavailable)?;
         let deadline = frame
             .deadline
             .map(|value| i64::try_from(value).unwrap_or(i64::MAX));

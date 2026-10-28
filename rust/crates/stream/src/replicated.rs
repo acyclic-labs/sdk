@@ -41,6 +41,9 @@ pub(crate) struct JournalPage {
 
 pub(crate) struct JournalFrame {
     pub(crate) command: OwnedBytes,
+    /// Trusted proposal clock sampled by the journal read. Installation and
+    /// recovery use this same stamp; the port checks deadlines at acceptance.
+    pub(crate) at_millis: u64,
     pub(crate) deadline: Option<u64>,
     #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
     pub(crate) changes: Vec<(StreamPath, bool)>,
@@ -216,7 +219,7 @@ impl<J: CommandJournal> Replicated<J> {
         page: usize,
         observe: &mut impl ReplayObserver,
     ) -> Result<Outcome, StreamError> {
-        let command = command.validated()?;
+        let mut command = command.validated()?;
         let deadline = deadline
             .into_iter()
             .chain(match &command {
@@ -249,13 +252,14 @@ impl<J: CommandJournal> Replicated<J> {
             let journal = &mut self.journal;
             let frame = JournalFrame {
                 command: encoded.clone(),
+                at_millis: clock.now_unix_millis(),
                 deadline,
                 #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
                 changes: changes.clone(),
             };
             let result = self
                 .provider
-                .apply_durable(command.clone(), deadline, async {
+                .apply_durable(&mut command, deadline, async {
                     let result = journal.append_if(expected, vec![frame]).await?;
                     match result {
                         AppendIf::Accepted {
@@ -265,7 +269,9 @@ impl<J: CommandJournal> Replicated<J> {
                             if sequence <= expected {
                                 return Err(StreamError::InvalidResponse);
                             }
-                            clock.set(at_millis);
+                            if at_millis != clock.now_unix_millis() {
+                                return Err(StreamError::InvalidResponse);
+                            }
                             appended = Some(AppendIf::Accepted {
                                 sequence,
                                 at_millis,

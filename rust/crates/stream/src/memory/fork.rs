@@ -2,7 +2,7 @@ impl MemoryStream {
     fn plan_fork_locked<'a>(
         &'a self,
         state: &mut State,
-        request: ForkRequest,
+        request: &'a ForkRequest,
     ) -> Result<
         Decision<
             ForkReceipt,
@@ -28,8 +28,8 @@ impl MemoryStream {
         let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
         let commit_id = commit_identity(decision, digest);
         let receipt = ForkReceipt {
-            source: request.source,
-            destination: request.destination,
+            source: request.source.clone(),
+            destination: request.destination.clone(),
             forked_at,
             tail: forked_at,
             commit_id,
@@ -50,29 +50,30 @@ impl MemoryStream {
         let (histories, _histories) = self.histories(&state, &envelope.mutations)?;
         let (paths, _paths) = self.paths(&state, std::iter::once(&receipt.destination))?;
         self.reserve_retained(state)?;
+        let time = crate::preparation::committed_time(
+            state.last_committed_at_micros,
+            self.commit_clock.now_unix_millis(),
+        );
+        bind_envelope(&mut envelope, commit_id, time);
+        let namespace = stage_namespace(
+            state,
+            paths,
+            histories,
+            &envelope,
+            &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
+        )?;
         Ok(Decision::Accepted {
             bytes: 0,
             install: move |state: &mut State, _durable| {
                 let _holds = (_histories, _paths);
-                let time = crate::preparation::committed_time(
-                    state.last_committed_at_micros,
-                    self.commit_clock.now_unix_millis(),
-                );
-                bind_envelope(&mut envelope, commit_id, time);
-                publish(
-                    state,
-                    paths,
-                    histories,
-                    &envelope,
-                    &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
-                )?;
+                install_namespace(state, namespace, &envelope)?;
                 state.decision = decision;
                 state.last_committed_at_micros = time;
                 retain(
                     state,
                     &mut || self.record_replay_probe(&mut probes),
                     Some(envelope),
-                    Some(request.idempotency_key),
+                    Some(request.idempotency_key.clone()),
                     digest,
                     IdempotencyOutcome::Fork(receipt.clone()),
                     Default::default(),

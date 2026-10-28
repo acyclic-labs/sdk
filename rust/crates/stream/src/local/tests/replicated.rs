@@ -1,4 +1,5 @@
 use super::super::*;
+use std::sync::atomic::Ordering;
 use crate::replicated::{
     AppendIf, CommandJournal, JournalFrame, JournalPage, ReplicaClock, Replicated,
 };
@@ -9,6 +10,7 @@ struct Advancing {
     pages: Vec<usize>,
     proposals: Vec<crate::OwnedBytes>,
     lose_reply: bool,
+    advance_clock: Option<Arc<super::TestClock>>,
 }
 
 #[async_trait]
@@ -28,6 +30,9 @@ impl CommandJournal for Advancing {
     ) -> Result<AppendIf, StreamError> {
         self.proposals
             .extend(frames.iter().map(|frame| frame.command.clone()));
+        if let Some(clock) = self.advance_clock.take() {
+            clock.0.store(20, Ordering::SeqCst);
+        }
         let outcome = self.port.append_if(expected, frames).await?;
         if self.lose_reply && matches!(outcome, AppendIf::Accepted { .. }) {
             return Err(StreamError::Unavailable);
@@ -77,6 +82,7 @@ async fn real_journal_pages_pin_a_head_while_the_source_advances()
                 pages: Vec::new(),
                 proposals: Vec::new(),
                 lose_reply: false,
+                advance_clock: None,
             },
             provider,
             clock,
@@ -116,6 +122,7 @@ async fn a_lost_conditional_proposal_keeps_its_exact_command()
             pages: Vec::new(),
             proposals: Vec::new(),
             lose_reply: false,
+            advance_clock: None,
         },
         MemoryStream::new_with_commit_clock(MemoryLimits::default(), clock.clone(), clock.clone()),
         clock,
@@ -167,6 +174,7 @@ async fn a_lost_durable_reply_closes_the_replica_and_recovers_the_original_ident
             pages: Vec::new(),
             proposals: Vec::new(),
             lose_reply: true,
+            advance_clock: None,
         },
         MemoryStream::new_with_commit_clock(MemoryLimits::default(), clock.clone(), clock.clone()),
         clock,
@@ -205,5 +213,47 @@ async fn a_lost_durable_reply_closes_the_replica_and_recovers_the_original_ident
         std::fs::metadata(root.path().join(JOURNAL_FILE))?.len(),
         bytes
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_prepared_stamp_matches_recovery_when_the_acceptance_clock_advances()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let wall = Arc::new(super::TestClock::default());
+    wall.0.store(10, Ordering::SeqCst);
+    let source =
+        LocalStream::open_with_clock(root.path(), LocalStreamLimits::default(), wall.clone())
+            .await?;
+    let path = StreamPath::new("stamped/events")?;
+    let request = append(&path, 0);
+    let clock = Arc::new(ReplicaClock::default());
+    let mut replica = Replicated::new(
+        Advancing {
+            port: port::LocalPort {
+                stream: source.clone(),
+            },
+            advance: None,
+            pages: Vec::new(),
+            proposals: Vec::new(),
+            lose_reply: false,
+            advance_clock: Some(wall.clone()),
+        },
+        MemoryStream::new_with_commit_clock(MemoryLimits::default(), wall.clone(), clock.clone()),
+        clock,
+        HEADER_BYTES as u64,
+    );
+    let crate::journal::Outcome::Append(AppendOutcome::Committed(receipt)) =
+        replica.execute(Command::Append(request), None, 1).await?
+    else {
+        panic!("prepared proposal did not commit")
+    };
+    let live = replica.provider.read_commit(receipt.commit_id).await?;
+    assert_eq!(live.committed_at_micros, 10_000);
+    assert_eq!(wall.now_unix_millis(), 20);
+    drop(replica);
+    drop(source);
+    let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
+    assert_eq!(reopened.read_commit(receipt.commit_id).await?, live);
     Ok(())
 }

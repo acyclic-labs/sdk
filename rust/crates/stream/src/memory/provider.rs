@@ -261,7 +261,7 @@ impl StreamProvider for MemoryStream {
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let mut state = self.state.write().await;
-        self.plan_fork_locked(&mut state, request)?
+        self.plan_fork_locked(&mut state, &request)?
             .install(self, &mut state)
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {

@@ -4,14 +4,14 @@ impl MemoryStream {
         request: AppendRequest,
     ) -> Result<(AppendOutcome, Allocation), StreamError> {
         let mut state = self.state.write().await;
-        self.plan_append_locked(&mut state, request)?
+        self.plan_append_locked(&mut state, &request)?
             .install(self, &mut state)
     }
 
     fn plan_append_locked<'a>(
         &'a self,
         state: &mut State,
-        request: AppendRequest,
+        request: &'a AppendRequest,
     ) -> Result<
         Decision<
             (AppendOutcome, Allocation),
@@ -81,32 +81,29 @@ impl MemoryStream {
             committed_at_micros: 0,
             mutations: facts,
         };
+        bind_envelope(&mut envelope, commit_id, time);
+        bind_histories(&mut histories, commit_id, time)?;
+        let namespace = stage_namespace(
+            state,
+            paths,
+            histories,
+            &envelope,
+            &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
+        )?;
         Ok(Decision::Accepted {
             bytes,
             install: move |state: &mut State, _durable| {
                 #[cfg(not(target_arch = "wasm32"))]
                 let _input = _input;
                 let _holds = (_histories, _paths);
-                let time = crate::preparation::committed_time(
-                    state.last_committed_at_micros,
-                    self.commit_clock.now_unix_millis(),
-                );
-                bind_envelope(&mut envelope, commit_id, time);
-                bind_histories(&mut histories, commit_id, time)?;
-                publish(
-                    state,
-                    paths,
-                    histories,
-                    &envelope,
-                    &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
-                )?;
+                install_namespace(state, namespace, &envelope)?;
                 state.decision = decision;
                 state.last_committed_at_micros = time;
                 retain(
                     state,
                     &mut || self.record_replay_probe(&mut probes),
                     Some(envelope),
-                    Some(request.idempotency_key),
+                    Some(request.idempotency_key.clone()),
                     digest,
                     IdempotencyOutcome::Append(outcome.clone()),
                     allocation,
