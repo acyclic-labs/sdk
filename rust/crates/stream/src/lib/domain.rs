@@ -668,12 +668,12 @@ pub fn records_only<S>(updates: S) -> RecordStream
 where
     S: futures::Stream<Item = Result<FollowUpdate, StreamError>> + ProviderTask + 'static,
 {
-    use futures::StreamExt as _;
-    Box::pin(updates.filter_map(|update| {
-        futures::future::ready(match update {
+    Box::pin(crate::projection::filter_map(
+        updates,
+        |update| match update {
             Ok(FollowUpdate::Record(record)) => Some(Ok(record)),
             Ok(FollowUpdate::Progress { .. }) => None,
             Err(error) => Some(Err(error)),
-        })
-    }))
+        },
+    ))
 }
