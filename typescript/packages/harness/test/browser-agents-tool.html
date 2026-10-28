@@ -3,6 +3,13 @@
 <meta charset="utf-8">
 <title>Harness agent tool reconciliation in the browser</title>
 <pre id="result" data-status="pending">initializing</pre>
+<script type="importmap">
+{"imports":{
+  "@bufbuild/protobuf":"/node_modules/@bufbuild/protobuf/dist/esm/index.js",
+  "@bufbuild/protobuf/codegenv2":"/node_modules/@bufbuild/protobuf/dist/esm/codegenv2/index.js",
+  "@bufbuild/protobuf/wkt":"/node_modules/@bufbuild/protobuf/dist/esm/wkt/index.js"
+}}
+</script>
 <script type="module">
 import { agentsFixture, until, turnText } from "./browser-agents-fixture.mjs";
 import { jsonToolProjectionSchema } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -14,6 +21,8 @@ let agents;
 let cleanup;
 try {
   const invocations = [];
+  let dispatched;
+  const dispatchObserved = new Promise(resolve => { dispatched = resolve; });
   fixture = await agentsFixture(crypto.randomUUID(), async function* ({ dispatch, request }) {
     if (dispatch.step === 0) {
       yield { kind: "tool_call", call_id: "effect", name: "test.effect", arguments: { value: "committed" } };
@@ -34,6 +43,7 @@ try {
     invocations.push(invocation);
     assert(localStorage.getItem(effectKey) === null, "an uncertain effect was dispatched again");
     localStorage.setItem(effectKey, JSON.stringify({ operation_id: invocation.operation_id, arguments: invocation.arguments }));
+    dispatched();
     throw new Error("acknowledgment lost after durable effect");
   }, async invocation => {
     reconciliations++;
@@ -50,11 +60,11 @@ try {
   agents = await fixture.open();
   result.dataset.waiting = "the turn dispatches the effect and loses its acknowledgment";
   const agent = await agents.create("tool-agent", "use the tool");
-  await until(() => invocations.length, count => count > 0);
+  await dispatchObserved;
   agents.free();
   result.dataset.waiting = "reopen reconciles the recorded effect and settles the turn";
   agents = await fixture.open();
-  const entries = await until(() => agents.read(agent, "conversation", 0n, 4), entries => entries.length === 1);
+  const entries = await until(agents, agent, "conversation", entries => entries.length === 1);
   const text = await turnText(agents, agent, entries[0]);
   assert(invocations.length === 1 && invocations[0].arguments.value === "committed", describe(invocations));
   assert(reconciliations >= 1, "the uncertain effect settled without reconciliation");

@@ -322,18 +322,7 @@ impl WasmStream {
                 .await
                 .map_err(js_error)?,
         );
-        Ok(WasmFollow {
-            state: Rc::new(FollowState::new(
-                stream
-                    .map(|record| {
-                        record.map(|record| {
-                            wire_codec::read_response_wire(vec![wire_codec::record_wire(record)])
-                                .encode_to_vec()
-                        })
-                    })
-                    .boxed_local(),
-            )),
-        })
+        Ok(WasmFollow::from_records(stream))
     }
 }
 
