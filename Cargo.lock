@@ -1117,6 +1117,7 @@ dependencies = [
  "tower-service",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-bindgen-test",
  "wasm-streams 0.7.0",
  "web-sys",
 ]
