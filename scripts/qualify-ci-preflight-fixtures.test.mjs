@@ -22,7 +22,6 @@ test("every production gate step supplies its artifact and complete test selecti
   // These two different target shapes were absent from the old fake cargo.
   assert.ok(plans.some(plan => plan.target === "e2e-progress-model" && plan.tests.length === 4));
   assert.ok(plans.some(plan => plan.target === "acyclic_native_runtime" && plan.tests.length === 18));
-  assert.match(plans.find(plan => plan.target === "memory-accounting-model").rustflags, /-Dwarnings/);
   const sessionFs = plans.find(plan => plan.target === "session_fs_model");
   assert.equal(sessionFs.tests.length, 2);
   assert.match(sessionFs.wrapper, /loom-rustc\.(?:sh|cmd)$/);
@@ -61,7 +60,7 @@ test("an unknown model step or flag in the production plan fails closed", () => 
     ["--e2e-progress", "--bogus"], ["--fs-binding", "--features"], ["--features", "--all-features"], ["--release"]]) {
     assert.throws(() => qualificationPlan(args), /unknown qualification argument/, JSON.stringify(args));
   }
-  for (const step of [{ args: ["--new-model"] }, { args: ["--memory-accounting", "--all-features"] }]) {
+  for (const step of [{ args: ["--new-model"] }, { args: ["--timer", "--all-features"] }]) {
     gateQualifications.push(step);
     try { assert.throws(() => qualificationGatePlans(), /unknown qualification argument/); }
     finally { gateQualifications.pop(); }

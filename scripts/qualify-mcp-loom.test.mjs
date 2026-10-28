@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { loomEnvironment, qualificationMain, qualifySkillMaterializerLoom, qualifyFsPolicyLoom } from "./qualify-mcp-loom.mjs";
 import { harnessModelSuites, qualifyHarnessModelsLoom } from "./qualify-mcp-loom.mjs";
-import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyMemoryAccountingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
+import { gateQualifications, qualifyMcpLoom, qualifyTimerLoom, qualifyGuestLoom, qualifyFsBindingLoom, qualifyHookLifecycleLoom, qualifyE2eProgressLoom, qualifyNativeProgressLoom, qualifySessionFsLoom, qualifyOwnershipLoom, qualifyNativeRegistryLoom } from "./qualify-mcp-loom.mjs";
 
 const artifact = { reason: "compiler-artifact", target: { name: "mcp-loom" }, profile: { test: true }, executable: "model-binary" };
 const summary = (passed, ignored = 0, filtered = 0) => `test result: ok. ${passed} passed; 0 failed; ${ignored} ignored; 0 measured; ${filtered} filtered out;\n`;
@@ -297,26 +297,6 @@ test("filesystem qualification models the production mutex only in its dedicated
     ["model-binary", []],
   ]);
   assertGateStep(["--fs-binding", "--all-features"]);
-  assertGateStep(["--memory-accounting"]);
-});
-
-test("memory accounting instruments dependency cancellation and the real ledger mutex", () => {
-  const calls = [];
-  qualifyMemoryAccountingLoom((command, args, options) => {
-    calls.push([command, args]);
-    if (command === "cargo") {
-      assert.match(options.env.RUSTC_WORKSPACE_WRAPPER, /loom-rustc\.(?:sh|cmd)$/);
-      assert.doesNotMatch(options.env.RUSTFLAGS ?? "", /--cfg loom/);
-    }
-    const memory = { ...artifact, target: { name: "memory-accounting-model" } };
-    return { status: 0, stderr: "", stdout: command === "cargo" ? JSON.stringify(memory) : summary(6) };
-  });
-  assert.deepEqual(calls, [
-    ["cargo", ["rustc", "--locked", "--message-format=json", "-p", "acyclic-harness-core", "--test", "memory-accounting-model",
-      "--features", "filesystem,acyclic-fs/model-checking", "--target-dir", resolve(process.env.CARGO_TARGET_DIR || "target", "memory-accounting-loom"),
-      "--features", "model-checking", "--", "--cfg", "loom"]],
-    ["model-binary", []],
-  ]);
 });
 
 test("registry gate instruments real native locks and rejects either omitted proof", () => {

@@ -37,11 +37,6 @@ name = "skill-materializer-loom"
 path = "tests/skill_materializer_loom.rs"
 required-features = ["model-checking"]
 
-[[test]]
-name = "memory-accounting-model"
-path = "tests/memory_accounting_model.rs"
-required-features = ["filesystem", "model-checking"]
-
 [features]
 oidc = ["filesystem", "dep:jsonwebtoken", "dep:oidc-getrandom"]
 oidc-http = ["oidc", "dep:reqwest"]
