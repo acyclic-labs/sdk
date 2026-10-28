@@ -101,9 +101,9 @@ mod tests {
             &entries
                 .iter()
                 .map(|entry| wire::ChangeEntry {
-                    key: entry.key.into(),
+                    key: bytes::Bytes::copy_from_slice(entry.key),
                     operation: entry.operation.into(),
-                    metadata: entry.metadata.into(),
+                    metadata: bytes::Bytes::copy_from_slice(entry.metadata),
                 })
                 .collect::<Vec<_>>(),
             vec![],
