@@ -949,3 +949,20 @@ async fn multipart_history_replays_every_page_and_keeps_exact_retry_identities()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn create_retry_returns_the_existing_upload_validation_error() -> S3Result {
+    let mut adapter = adapter(true).await?;
+    let input = || CreateMultipartUploadInput {
+        bucket: "bucket".to_owned(),
+        key: "retry/object".to_owned(),
+        ..CreateMultipartUploadInput::default()
+    };
+    S3::create_multipart_upload(&adapter, request(input())).await?;
+    adapter.limits.maximum_multipart_parts = 1;
+    let error = S3::create_multipart_upload(&adapter, request(input()))
+        .await
+        .expect_err("the persisted upload exceeds the explicit replacement policy");
+    assert_eq!(error.code(), &s3s::S3ErrorCode::InvalidRequest);
+    Ok(())
+}
