@@ -859,3 +859,93 @@ async fn multipart_abort_is_durable_and_fences_parts() -> S3Result {
     assert!(S3::upload_part(&adapter, upload).await.is_err());
     Ok(())
 }
+
+#[tokio::test]
+async fn multipart_history_replays_every_page_and_keeps_exact_retry_identities()
+-> Result<(), Box<dyn std::error::Error>> {
+    let provider = acyclic_stream::MemoryStream::default();
+    let path = acyclic_stream::StreamPath::new("multipart/long-history")?;
+    let limits = FilesystemS3Limits::default();
+    let staged = StagedContent::from_canonical_parts(
+        ObjectId {
+            kind: ObjectKind::Blob,
+            digest: Digest::from_bytes([7; 32]),
+        },
+        6,
+    );
+    let etag = format!("\"{}\"", hex::encode([7; 32]));
+    let updates = 20_004_u64;
+    let mut tail = 0_u64;
+    for start in (0..=updates).step_by(128) {
+        let records = (start..(start + 128).min(updates + 1))
+            .map(|index| {
+                if index == 0 {
+                    encode_multipart_created("large/object", 2, 8, 1).map(Into::into)
+                } else {
+                    Ok(encode_multipart_part(
+                        1,
+                        staged,
+                        IdempotencyKey::from_bytes(u128::from(index).to_le_bytes()),
+                        &etag,
+                    )
+                    .into())
+                }
+            })
+            .collect::<S3Result<Vec<_>>>()?;
+        let result = provider
+            .append(acyclic_stream::AppendRequest {
+                path: path.clone(),
+                records,
+                if_tail: Some(tail),
+                idempotency_key: acyclic_stream::IdempotencyKey::new(start.to_le_bytes().to_vec())?,
+            })
+            .await?;
+        let acyclic_stream::AppendOutcome::Committed(receipt) = result else {
+            return Err("unexpected history append conflict".into());
+        };
+        tail = receipt.tail;
+    }
+    let snapshot = read_multipart_snapshot(&provider, path.clone(), limits).await?;
+    assert_eq!(snapshot.tail, updates + 1);
+    assert_eq!(snapshot.parts.len(), 1);
+    assert_eq!(
+        snapshot.parts.get(&1).ok_or("missing current part")?.staged,
+        staged
+    );
+    assert_eq!(snapshot.operations.len(), usize::try_from(updates)?);
+    assert_eq!(snapshot.work.authority_records_read, tail);
+    assert!(snapshot.work.backend_read_operations > 2);
+    for index in 1..=updates {
+        assert_eq!(
+            snapshot.operations.get(&u128::from(index).to_le_bytes()),
+            Some(&(1, etag.clone()))
+        );
+    }
+    // A conflicting reuse of the oldest identity must still fail after every
+    // page, even though its old payload no longer lives in a replay vector.
+    let conflict = encode_multipart_part(
+        2,
+        staged,
+        IdempotencyKey::from_bytes(1_u128.to_le_bytes()),
+        &etag,
+    );
+    assert!(matches!(
+        provider
+            .append(acyclic_stream::AppendRequest {
+                path: path.clone(),
+                records: vec![conflict.into()],
+                if_tail: Some(tail),
+                idempotency_key: acyclic_stream::IdempotencyKey::new(
+                    b"conflicting-old-identity".as_slice()
+                )?,
+            })
+            .await?,
+        acyclic_stream::AppendOutcome::Committed(_)
+    ));
+    assert!(
+        read_multipart_snapshot(&provider, path, limits)
+            .await
+            .is_err()
+    );
+    Ok(())
+}

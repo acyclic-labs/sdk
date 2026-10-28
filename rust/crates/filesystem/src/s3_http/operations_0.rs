@@ -118,7 +118,7 @@ where
             self.limits.minimum_multipart_part_bytes,
         )?;
         let registry = Self::multipart_registry_path(&upload_id)?;
-        for _ in 0..self.limits.maximum_multipart_cas_retries {
+        loop {
             let (registry_condition, registry_tail) = match provider.tail(registry.clone()).await {
                 Ok(tail) => (
                     acyclic_stream::CommitCondition::Tail {
@@ -167,6 +167,9 @@ where
                         }
                         break;
                     }
+                    acyclic_stream::runtime::yield_now()
+                        .await
+                        .map_err(|error| stream_write_error(&error))?;
                     continue;
                 }
             }
@@ -224,7 +227,7 @@ where
         }
         verify_crc32(&source, expected_crc32)?;
         let etag_value = format!("\"{}\"", hex::encode(staged.root().digest.as_bytes()));
-        for _ in 0..self.limits.maximum_multipart_cas_retries {
+        loop {
             let snapshot = self
                 .multipart_snapshot(&workspace, &request.input.upload_id)
                 .await?;
@@ -242,9 +245,6 @@ where
                     e_tag: Some(etag(existing_etag)?),
                     ..UploadPartOutput::default()
                 }));
-            }
-            if snapshot.tail.saturating_add(2) >= u64::from(self.limits.maximum_multipart_records) {
-                return Err(s3s::s3_error!(SlowDown));
             }
             if self
                 .multipart_append(
@@ -267,8 +267,10 @@ where
                     ..UploadPartOutput::default()
                 }));
             }
+            acyclic_stream::runtime::yield_now()
+                .await
+                .map_err(|error| stream_write_error(&error))?;
         }
-        return Err(s3s::s3_error!(SlowDown));
     }
 
     async fn s3_list_parts(
@@ -403,18 +405,14 @@ where
                 .map_err(|failure| s3_error(&S3Error::Workspace(failure.error)))?
                 .value,
         )?;
-        let terminalized = self
-            .terminalize_multipart_completion(
-                &workspace,
-                &request.input.upload_id,
-                operation,
-                &requested,
-                generation.id(),
-            )
-            .await?;
-        if !terminalized {
-            return Err(s3s::s3_error!(SlowDown));
-        }
+        self.terminalize_multipart_completion(
+            &workspace,
+            &request.input.upload_id,
+            operation,
+            &requested,
+            generation.id(),
+        )
+        .await?;
         Ok(S3Response::new(CompleteMultipartUploadOutput {
             bucket: Some(request.input.bucket),
             key: Some(request.input.key.clone()),
@@ -435,7 +433,7 @@ where
             return Err(s3s::s3_error!(NotImplemented));
         }
         let operation = request_operation(&request)?;
-        for _ in 0..self.limits.maximum_multipart_cas_retries {
+        loop {
             let snapshot = self
                 .multipart_snapshot(&workspace, &request.input.upload_id)
                 .await?;
@@ -467,8 +465,10 @@ where
                     }
                 }
             }
+            acyclic_stream::runtime::yield_now()
+                .await
+                .map_err(|error| stream_write_error(&error))?;
         }
-        Err(s3s::s3_error!(SlowDown))
     }
 
     async fn s3_head_bucket(
