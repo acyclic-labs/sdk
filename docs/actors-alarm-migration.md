@@ -2,9 +2,9 @@
 
 An actor has one durable alarm. The artifact keeps its logical timers in its own checkpoint, with a stable identity and deadline for each entry. A transition that inserts, replaces or cancels an entry publishes the updated checkpoint together with `guest::AlarmChange::Set` for the earliest remaining deadline, or `Clear` when none remain. Alarm delivery consumes only the due entries and rearms the next deadline in the same transition. `Keep` preserves the existing alarm when the timer set does not change. A stale generation cannot consume a replacement alarm.
 
-The generic SDK does not retain a second timer registry, issue a timer stream append, or serialize application task and operation identities into a second timer record. The TypeScript `schedule`/`setAlarm` callback and `TimerRecord` export, and the WASM `timerRecord` encoder, are retired. Applications migrate their actual pending entries into their artifact checkpoint and return the corresponding alarm change. They must preserve distinct logical identities rather than replacing several timers with one anonymous deadline.
+This transition contract does not require a second timer registry or timer stream append. The Rust `timers::schedule`/`set_alarm` callback, TypeScript `schedule`/`setAlarm` callback and `TimerRecord` export, and WASM `timerRecord` encoder, are retired. Applications migrate their actual pending entries into their artifact checkpoint and return the corresponding alarm change. They must preserve distinct logical identities rather than replacing several timers with one anonymous deadline.
 
-The existing Rust `timers` codec remains live for the harness generic heap layout and diagnostics, the frozen timer corpus, Loom proof and independent timer baseline oracle. Its retirement is a subsequent source composition, not implied by retiring the JavaScript callback. Useful native process/readiness helpers remain independent.
+The existing Rust `timers` codec and inbox delivery helper remain live for the harness generic heap layout and diagnostics, the frozen timer corpus, Loom proof and independent timer baseline oracle. Their retirement is a subsequent source composition, not implied by retiring the scheduling callback. Useful native process/readiness helpers remain independent.
 
 ## Validation and measurement plan
 

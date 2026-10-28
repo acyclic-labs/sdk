@@ -154,19 +154,6 @@ impl TimerRecord {
     }
 }
 
-/// Retain through the host's scoped publisher, preserving its fence and retry rules.
-/// The SDK never appends a competing source record or invents a publication key.
-pub async fn schedule<T, E: From<TimerError>>(
-    retain: impl AsyncFnOnce(uuid::Uuid, uuid::Uuid, u64) -> Result<T, E>,
-    timer: &TimerRecord,
-) -> Result<T, E> {
-    let (task, operation) = timer.validated_ids()?;
-    retain(task, operation, timer.deadline_unix_ms).await
-}
-
-/// Absolute-deadline alarm spelling of schedule; replacement uses a fresh operation ID.
-pub use schedule as set_alarm;
-
 /// Append a due timer to its admitted inbox. Clock and dispatch belong to the runtime.
 /// Retrying uses the identical timer key and payload; no Invoke or waiting loop exists.
 pub async fn fire<P: acyclic_stream::StreamProvider>(
