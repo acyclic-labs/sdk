@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { featureSets, featureWorker, linuxCommands, windowsCommands } from "./check-feature-matrix.mjs";
+import { featureSets, featureWorker, linuxCommands, windowsCommands, selectFeaturePackages } from "./check-feature-matrix.mjs";
+
+test("feature package selection refuses missing members and empty inventories", () => {
+  const items = [{ name: "alpha" }, { name: "beta" }];
+  assert.deepEqual(selectFeaturePackages(items, []), items);
+  assert.deepEqual(selectFeaturePackages(items, ["beta"]), [items[1]]);
+  for (const selected of [["missing"], ["alpha", "missing"], [""]]) {
+    assert.throws(() => selectFeaturePackages(items, selected), /STEP_FAILED feature-selection: unknown packages.*recovery: node scripts\/check-feature-matrix\.mjs --list/);
+  }
+  assert.throws(() => selectFeaturePackages([], []), /STEP_FAILED feature-selection: empty package inventory/);
+});
 
 const sets = features => featureSets({ manifest_path: "c/Cargo.toml", features }, true)
   .map(args => args.slice(5).join(" ") || "(defaults)");

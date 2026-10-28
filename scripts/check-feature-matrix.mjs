@@ -91,6 +91,15 @@ export function windowsCommands(args) {
   return ["--lib", "--all-targets"].map(target => [...base, target, ...args.slice(5)]);
 }
 
+export function selectFeaturePackages(items, selected) {
+  const names = new Set(items.map(item => item.name));
+  const missing = selected.filter(name => !names.has(name));
+  if (items.length === 0 || missing.length > 0) {
+    throw new Error(`STEP_FAILED feature-selection: ${items.length === 0 ? "empty package inventory" : `unknown packages ${JSON.stringify(missing)}`}; recovery: node scripts/check-feature-matrix.mjs --list`);
+  }
+  return items.filter(item => !selected.length || selected.includes(item.name));
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const list = args.includes("--list");
@@ -102,7 +111,7 @@ async function main() {
   // already proves the order lists each exactly once).
   const eachFeature = args.includes("--each-feature");
   const items = [...metadata().values()];
-  const sets = items.filter(item => !selected.length || selected.includes(item.name)).flatMap(item => featureSets(item, eachFeature)
+  const sets = selectFeaturePackages(items, selected).flatMap(item => featureSets(item, eachFeature)
     .map(args => ({ name: item.name, args })));
   if (list) {
     for (const { args } of sets) for (const command of windows ? windowsCommands(args) : linuxCommands(args)) console.log(`cargo ${command.join(" ")}`);
