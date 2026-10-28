@@ -68,6 +68,8 @@ test("contract binaries use exact Cargo identities and current source/configurat
     assert.deepEqual(report.artifacts.filter(item => item.requested).map(item => item.features), [[], []]);
     assert.ok(report.artifacts.some(item => item.name === "dependency" && item.features.includes("propagated")));
     assert.ok(binaries.every(binary => binary.includes("configured-target")));
+    assert.deepEqual(run(buildContractTargets(root, targets, cargo, report, () => {}, ["alpha/alternate"])), ["alpha:true:true", "beta:false:true"]);
+    assert.deepEqual(run(build()), ["alpha:false:true", "beta:false:true"]);
     const before = binaries.map(binary => statSync(binary).mtimeMs);
     assert.deepEqual(run(build()), ["alpha:false:true", "beta:false:true"]);
     assert.ok(report.artifacts.every(item => item.fresh));

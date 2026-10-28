@@ -66,16 +66,31 @@ try {
   report.phase = "imports";
   saveReport();
   const generators = await Promise.all(modules.map(name => import(`./${name}`)));
-  const targets = generators.flatMap(generator => generator.rust ?? []);
-  const executables = targets.length === 0 ? [] : buildContractTargets(root, targets, process.env.ACYCLIC_CARGO_BIN || "cargo", report, saveReport);
-  let targetIndex = 0;
+  const targets = [...new Map(generators.flatMap(generator => generator.rust ?? [])
+    .map(target => [JSON.stringify(target), target])).values()];
+  const features = [...new Set(generators.flatMap(generator => generator.rustFeatures ?? []))];
+  const executables = targets.length === 0 ? [] : buildContractTargets(root, targets, process.env.ACYCLIC_CARGO_BIN || "cargo", report, saveReport, features);
+  const targetIndex = new Map(targets.map((target, index) => [JSON.stringify(target), index]));
+  const executed = new Map();
 
   const stale = [];
   for (const [index, generator] of generators.entries()) {
     const executionStart = performance.now();
     report.phase = `execute:${modules[index]}`;
     saveReport();
-    const stdout = (generator.rust ?? []).map(() => runContractTarget(root, executables[targetIndex++]));
+    const stdout = (generator.rust ?? []).map(target => {
+      const targetSlot = targetIndex.get(JSON.stringify(target));
+      if (!executed.has(targetSlot)) executed.set(targetSlot, runContractTarget(root, executables[targetSlot]));
+      const output = executed.get(targetSlot);
+      if (generator.rustPayload === undefined) return output;
+      let payloads;
+      try { payloads = JSON.parse(output); }
+      catch { throw new Error(`STEP_FAILED contract-payload: malformed bundle for ${modules[index]}; recovery: bun scripts/generate-contracts.mjs check`); }
+      if (!payloads || !Object.hasOwn(payloads, generator.rustPayload) || typeof payloads[generator.rustPayload] !== "string") {
+        throw new Error(`STEP_FAILED contract-payload: missing ${generator.rustPayload}; recovery: bun scripts/generate-contracts.mjs check`);
+      }
+      return payloads[generator.rustPayload];
+    });
     const execute_ms = performance.now() - executionStart;
     const renderStart = performance.now();
     report.phase = `render:${modules[index]}`;

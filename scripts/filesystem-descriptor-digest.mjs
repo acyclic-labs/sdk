@@ -1,4 +1,6 @@
-export const rust = [["acyclic-fs", "example", "filesystem-descriptor-digest"]];
+export const rust = [["acyclic-fs", "example", "filesystem-contracts"]];
+export const rustFeatures = ["acyclic-fs/tooling"];
+export const rustPayload = "filesystem-descriptor-digest";
 
 export function render([stdout]) {
   const digest = stdout.trim();
