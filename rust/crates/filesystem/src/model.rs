@@ -333,8 +333,6 @@ public_names! {
         InvalidRequest => "invalid-request",
         DuplicateObject => "duplicate-object",
         DuplicateOperation => "duplicate-operation",
-        OperationCapacity => "operation-capacity",
-        ByteCapacity => "byte-capacity",
         CostBudget => "cost-budget",
         LowUsefulness => "low-usefulness",
     }
@@ -351,7 +349,6 @@ public_names! {
         MissingSource => "missing-source",
         DuplicateObject => "duplicate-object",
         DuplicateOperation => "duplicate-operation",
-        ActiveCapacity => "active-capacity",
         NoDestination => "no-destination",
         LowUsefulness => "low-usefulness",
     }

@@ -75,13 +75,13 @@ fn public_names_are_pinned_and_round_trip() {
             => "directory-successor sequential-range metadata-successor consumer-hint";
         ResidencyRejection: [
             WrongVolume, StaleGeneration, InvalidRequest, DuplicateObject, DuplicateOperation,
-            OperationCapacity, ByteCapacity, CostBudget, LowUsefulness
-        ] => "wrong-volume stale-generation invalid-request duplicate-object duplicate-operation operation-capacity byte-capacity cost-budget low-usefulness";
+            CostBudget, LowUsefulness
+        ] => "wrong-volume stale-generation invalid-request duplicate-object duplicate-operation cost-budget low-usefulness";
         StorageTier: [ProcessMemory, NodeLocal, SharedCache, DurableOrigin]
             => "process-memory node-local shared-cache durable-origin";
         PromotionRejection: [
             WrongVolume, StaleGeneration, InvalidRequest, MissingSource,
-            DuplicateObject, DuplicateOperation, ActiveCapacity, NoDestination, LowUsefulness
-        ] => "wrong-volume stale-generation invalid-request missing-source duplicate-object duplicate-operation active-capacity no-destination low-usefulness";
+            DuplicateObject, DuplicateOperation, NoDestination, LowUsefulness
+        ] => "wrong-volume stale-generation invalid-request missing-source duplicate-object duplicate-operation no-destination low-usefulness";
     }
 }
