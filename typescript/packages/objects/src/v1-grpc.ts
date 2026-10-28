@@ -15,7 +15,7 @@ export interface ObjectsV1GrpcOptions extends CredentialOptions {
   readonly caCertificate?: string;
   readonly maximumMessageBytes?: number;
   readonly observer?: AcyclicObserver;
-  /** The caller's deadline for one call, in milliseconds; defaults to 30 s. */
+  /** Optional caller deadline for one call, in milliseconds. */
   readonly timeoutMs?: number;
 }
 
@@ -33,6 +33,8 @@ export function createObjectsV1GrpcClients(options: ObjectsV1GrpcOptions) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
   const credential = credentialProvider(options);
+  const timeoutMs = options.timeoutMs;
+  if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1)) throw new RangeError("timeoutMs must be a positive safe integer");
   const maximum = options.maximumMessageBytes;
   if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 1)) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   if (options.caCertificate !== undefined && options.caCertificate.length === 0) throw new RangeError("invalid private CA certificate");
@@ -42,7 +44,7 @@ export function createObjectsV1GrpcClients(options: ObjectsV1GrpcOptions) {
   };
   // Bun on Windows prematurely closes large compressed response streams in the local TLS fixture.
   const session = new Http2SessionManager(endpoint, {}, options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] });
-  const transport = grpcDeadlines(createGrpcTransport({ sessionManager: session, acceptCompression: [], baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "objects"), ...(maximum === undefined ? {} : { readMaxBytes: maximum, writeMaxBytes: maximum }) }), () => new ConnectError("the operation timed out", Code.DeadlineExceeded));
+  const transport = grpcDeadlines(createGrpcTransport({ sessionManager: session, acceptCompression: [], baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "objects"), ...(maximum === undefined ? {} : { readMaxBytes: maximum, writeMaxBytes: maximum }) }), () => new ConnectError("the operation timed out", Code.DeadlineExceeded), timeoutMs);
   return { blobs: createClient(BlobsService, transport), close: () => session.abort() };
 }
 
