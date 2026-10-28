@@ -75,6 +75,10 @@ impl StreamProvider for Client {
         crate::ProviderContext::new(&self.operation_claims)
     }
 
+    fn credential_provider(&self) -> Option<&acyclic_auth::credential::CredentialProvider> {
+        self.credential.as_ref()
+    }
+
     async fn inspect_idempotency(
         &self,
         idempotency_key: IdempotencyKey,

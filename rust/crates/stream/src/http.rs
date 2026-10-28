@@ -307,6 +307,10 @@ impl StreamProvider for HttpStream {
         crate::ProviderContext::new(&self.operation_claims)
     }
 
+    fn credential_provider(&self) -> Option<&CredentialProvider> {
+        self.credential.as_ref()
+    }
+
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,

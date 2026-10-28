@@ -11,6 +11,9 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
     fn context(&self) -> crate::ProviderContext<'_> {
         self.inner().context()
     }
+    fn credential_provider(&self) -> Option<&acyclic_auth::credential::CredentialProvider> {
+        self.inner().credential_provider()
+    }
     async fn durability_barrier(&self) -> Result<(), StreamError> {
         self.record(RequestClass::Data);
         self.inner().durability_barrier().await

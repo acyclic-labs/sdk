@@ -142,6 +142,9 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     fn context(&self) -> acyclic_stream::ProviderContext<'_> {
         self.inner.context()
     }
+    fn credential_provider(&self) -> Option<&acyclic_auth::credential::CredentialProvider> {
+        self.inner.credential_provider()
+    }
     async fn durability_barrier(&self) -> Result<(), StreamError> {
         self.inner.durability_barrier().await
     }

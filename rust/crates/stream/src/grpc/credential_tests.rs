@@ -1,4 +1,5 @@
 use super::*;
+use futures::FutureExt;
 use proptest::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -208,15 +209,28 @@ async fn wire_rejection_and_owner_denial_keep_exact_credential_custody() -> test
                 }
             }),
         );
-        let client = Client::from_channel_with_credential(channel, cache.clone().into());
+        let client = crate::testing::Counted::new(Client::from_channel_with_credential(
+            channel,
+            cache.clone().into(),
+        ));
+        let source = client.credential_provider().expect("forwarded Auth source");
+        let changed = source.watch()?.expect("trusted source notification");
+        let admitted = source.resolve().await?;
+        let binding = admitted.binding().expect("trusted lease binding");
+        assert_eq!(binding.revision, revision);
+        assert_eq!(binding.expires_at_unix_seconds, 100);
         assert!(matches!(
             client.tail(StreamPath::new("synthetic/path")?).await,
             Err(StreamError::AccessDenied)
         ));
         if code == Code::PermissionDenied {
+            assert!(changed.now_or_never().is_none());
+            admitted.check()?;
             cache.check(&old)?;
             assert_eq!(calls.load(Ordering::SeqCst), 1);
         } else {
+            assert!(changed.now_or_never().is_some());
+            assert!(admitted.check().is_err());
             assert!(cache.check(&old).is_err());
             let current = cache.resolve().await?;
             cache.check(&current)?;

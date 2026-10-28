@@ -76,6 +76,14 @@ Notifications use active registrations with no timer, detached task or queued
 event history. Expiry still uses the absolute request deadline and validity
 check. A revision is freshness metadata, not proof of permission for a target.
 
+`StreamProvider::credential_provider` forwards the configured Auth source through
+gRPC, HTTP and the counted/attested adapters. Higher-level native and Rust WASM
+readers can use that same source through their provider, register its watch,
+resolve a lease and retain its binding/check around their work. An absent source
+or a raw callback supplies no trusted cache identity. The default browser remote
+callback still lacks this custody across its JavaScript ABI; exposing the source
+on the Rust provider does not qualify that path.
+
 Rust Actors, Streams and Objects retain leases across their HTTP/gRPC attempts.
 JS gRPC also retains custody through streaming trailers. Browser WebSocket
 setup checks its exact lease before connection; browser handshake transport
