@@ -402,18 +402,6 @@ impl DaytonaApi {
         .await
     }
 
-    /// Stops a sandbox (filesystem kept, memory discarded): `POST /sandbox/{id}/stop`.
-    ///
-    /// # Errors
-    /// Maps transport failures and non-2xx statuses to [`ProviderError`].
-    pub async fn stop(&self, id: &str) -> Result<(), ProviderError> {
-        self.empty(
-            "stop",
-            self.request(Method::POST, &format!("/sandbox/{id}/stop")),
-        )
-        .await
-    }
-
     /// Pauses a started VM sandbox, retaining memory: `POST /sandbox/{id}/pause`. Container
     /// sandboxes reject it.
     ///
@@ -529,19 +517,6 @@ impl DaytonaApi {
         .await
     }
 
-    /// Sets the idle auto-stop interval in minutes, zero disabling it:
-    /// `POST /sandbox/{idOrName}/autostop/{minutes}`.
-    ///
-    /// # Errors
-    /// Maps transport failures and non-2xx statuses to [`ProviderError`].
-    pub async fn set_autostop(&self, id: &str, minutes: u32) -> Result<(), ProviderError> {
-        self.empty(
-            "set_autostop",
-            self.request(Method::POST, &format!("/sandbox/{id}/autostop/{minutes}")),
-        )
-        .await
-    }
-
     /// Sets the idle auto-pause interval in minutes, zero disabling it (VM classes only):
     /// `POST /sandbox/{idOrName}/autopause/{minutes}`.
     ///
@@ -594,48 +569,6 @@ impl DaytonaApi {
         ))
     }
 
-    /// Reads one file through a sandbox's toolbox proxy:
-    /// `GET {toolboxProxyUrl}/{sandboxId}/files/download?path={path}`. The proxy is resolved as
-    /// for [`Self::execute`].
-    ///
-    /// # Errors
-    /// Returns [`ProviderError::Rejected`] when the sandbox reports no acceptable toolbox proxy
-    /// URL, and maps transport failures and non-2xx statuses to [`ProviderError`].
-    pub async fn download_file(
-        &self,
-        sandbox_id: &str,
-        path: &str,
-    ) -> Result<Vec<u8>, ProviderError> {
-        let url = self.toolbox_url(sandbox_id, "files/download").await?;
-        let request = self.authorized(self.http.get(url).query(&[("path", path)]));
-        self.send("download_file", request, Ok).await
-    }
-
-    /// Writes one file through a sandbox's toolbox proxy:
-    /// `POST {toolboxProxyUrl}/{sandboxId}/files/upload?path={path}` with a
-    /// `multipart/form-data` body whose `file` part holds `contents`. The proxy is resolved as
-    /// for [`Self::execute`].
-    ///
-    /// # Errors
-    /// Returns [`ProviderError::Rejected`] when the sandbox reports no acceptable toolbox proxy
-    /// URL, and maps transport failures and non-2xx statuses to [`ProviderError`].
-    pub async fn upload_file(
-        &self,
-        sandbox_id: &str,
-        path: &str,
-        contents: &[u8],
-    ) -> Result<(), ProviderError> {
-        let url = self.toolbox_url(sandbox_id, "files/upload").await?;
-        let (content_type, body) = multipart_file(contents);
-        self.empty(
-            "upload_file",
-            self.authorized(self.http.post(url).query(&[("path", path)]))
-                .header(reqwest::header::CONTENT_TYPE, content_type)
-                .body(body),
-        )
-        .await
-    }
-
     /// Accepts a toolbox proxy URL only when it may receive this client's API key: `https`
     /// (or the API's own scheme), no userinfo, and a host that is the API host, a subdomain of
     /// it (Daytona serves `proxy.app.daytona.io` for `app.daytona.io`), or one of the
@@ -675,29 +608,6 @@ impl DaytonaApi {
             Err(rejected())
         }
     }
-}
-
-/// One-part `multipart/form-data` body carrying `contents` as the `file` field. The boundary
-/// is fixed and long; a collision would need the archive to contain it verbatim, which the
-/// check below turns into a different boundary.
-fn multipart_file(contents: &[u8]) -> (String, Vec<u8>) {
-    let mut boundary = "acyclic-machines-daytona-7f3c9a1e5b2d4086".to_owned();
-    while contents
-        .windows(boundary.len())
-        .any(|window| window == boundary.as_bytes())
-    {
-        boundary.push('x');
-    }
-    let mut body = Vec::with_capacity(contents.len() + 256);
-    body.extend_from_slice(
-        format!(
-            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"archive\"\r\nContent-Type: application/octet-stream\r\n\r\n"
-        )
-        .as_bytes(),
-    );
-    body.extend_from_slice(contents);
-    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
-    (format!("multipart/form-data; boundary={boundary}"), body)
 }
 
 /// Maps an HTTP status to the closest provider-boundary failure.
@@ -810,19 +720,6 @@ mod tests {
                 .check_toolbox_proxy("http://127.0.0.1:9001/t")
                 .is_err()
         );
-    }
-
-    #[test]
-    fn multipart_body_frames_the_file_part() {
-        let (content_type, body) = multipart_file(b"payload");
-        let boundary = content_type.split("boundary=").nth(1).unwrap();
-        let text = String::from_utf8(body).unwrap();
-        assert!(text.starts_with(&format!("--{boundary}\r\n")));
-        assert!(text.contains("name=\"file\""));
-        assert!(text.contains("\r\n\r\npayload\r\n"));
-        assert!(text.ends_with(&format!("--{boundary}--\r\n")));
-        let (content_type, _) = multipart_file(boundary.as_bytes());
-        assert!(!content_type.ends_with(&format!("={boundary}")));
     }
 
     #[test]

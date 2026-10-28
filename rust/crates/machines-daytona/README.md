@@ -74,8 +74,8 @@ Safety rules the provider enforces:
   expiry; process-group cleanup and transport framing are shared there too.
   `read_output` reads core's bounded ephemeral command history after canonical
   machine/driver admission. This history is not restart recovery. The existing
-  `DaytonaApi::execute`, `download_file`, and `upload_file` methods remain direct
-  wire calls. Toolbox calls send credentials only to admitted proxy hosts.
+  `DaytonaApi::execute` remains the direct wire call used by the live REST smoke
+  check. Uncalled stop/autostop and legacy file-copy endpoints are removed. Toolbox calls send credentials only to admitted proxy hosts.
   Live guest transport qualification still requires a registered process-ledger image.
 
 Lifecycle operation ownership, idempotency, state events and watch use
