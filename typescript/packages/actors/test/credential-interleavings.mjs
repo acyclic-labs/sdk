@@ -88,6 +88,40 @@ for (const mode of ["pre", "return", "throw", "reject"]) {
   assert.equal(connects, 0);
 }
 
+// Connection settlement and caller cancellation are separate promise jobs. No
+// binding operation may begin after the shared connection waiter has stopped.
+let cancelledAfterConnect = 0;
+let invokedBeforeCancel = 0;
+for (let abortAfterJobs = 0; abortAfterJobs <= 16; abortAfterJobs++) {
+  const controller = new AbortController();
+  const entered = new Error("binding operation entered");
+  const abort = remaining => {
+    if (remaining === 0) controller.abort();
+    else queueMicrotask(() => abort(remaining - 1));
+  };
+  const client = new ActorsClient({
+    endpoint: "https://actors.example.test",
+    token: "exact-token",
+    binding: { connect: async () => {
+      queueMicrotask(() => abort(abortAfterJobs));
+      return { inspectActor: (_request, signal) => {
+        assert.equal(signal.aborted, false, `binding started after cancellation at job ${abortAfterJobs}`);
+        invokedBeforeCancel++;
+        throw entered;
+      } };
+    } },
+  });
+  await assert.rejects(client.inspectActor({ actorId: "actor-a" }, { signal: controller.signal }), error => {
+    if (error === entered) return true;
+    assert.equal(error.code, "cancelled");
+    cancelledAfterConnect++;
+    return true;
+  });
+  await setImmediate();
+}
+assert.ok(cancelledAfterConnect > 0);
+assert.ok(invokedBeforeCancel > 0);
+
 // A transport deadline is carried by AbortSignal too. An already-expired signal
 // is above; here it expires while a provider that ignores cancellation is pending.
 const deadline = AbortSignal.timeout(1);
