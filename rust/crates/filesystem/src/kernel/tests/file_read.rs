@@ -257,7 +257,7 @@ async fn sparse_file_read_composes_multichunk_content_holes_and_allocated_zero()
             chunk_bytes: 2,
             page_items: 4,
             page_bytes: 1024,
-            maximum_blob_bytes: 10,
+            maximum_blob_bytes: Some(10),
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
