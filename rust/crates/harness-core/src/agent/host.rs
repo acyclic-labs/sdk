@@ -166,15 +166,10 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         from: u64,
     ) -> Result<acyclic_stream::RecordStream, Error> {
         let conversation = agent.conversation()?;
-        match self
-            .provider
-            .follow(acyclic_stream::FollowRequest::new(
-                conversation.clone(),
-                from,
-            ))
-            .await
-        {
-            Ok(records) => return Ok(acyclic_stream::records_only(records)),
+        // Follow transports may defer NotFound to their first item. The tail
+        // observation establishes existence before opening any such transport.
+        match self.provider.tail(conversation.clone()).await {
+            Ok(_) => return self.conversation_cursor(conversation, from).await,
             Err(StreamError::NotFound) if from == 0 => {}
             Err(error) => return Err(Error::Stream(error)),
         }
@@ -197,21 +192,26 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
         );
         while let Some(record) = committed.try_next().await.map_err(Error::Stream)? {
             let status = <super::StatusRecord as super::AgentRecord>::decode(&record.value)?;
-            match self
-                .provider
-                .follow(acyclic_stream::FollowRequest::new(
-                    conversation.clone(),
-                    from,
-                ))
-                .await
-            {
-                Ok(records) => return Ok(acyclic_stream::records_only(records)),
+            match self.provider.tail(conversation.clone()).await {
+                Ok(_) => return self.conversation_cursor(conversation, from).await,
                 Err(StreamError::NotFound)
                     if !matches!(status.phase, super::Phase::Done { .. }) => {}
                 Err(error) => return Err(Error::Stream(error)),
             }
         }
         Err(Error::Stream(StreamError::Unavailable))
+    }
+
+    async fn conversation_cursor(
+        &self,
+        conversation: StreamPath,
+        from: u64,
+    ) -> Result<acyclic_stream::RecordStream, Error> {
+        self.provider
+            .follow(acyclic_stream::FollowRequest::new(conversation, from))
+            .await
+            .map(acyclic_stream::records_only)
+            .map_err(Error::Stream)
     }
 
     /// The committed reply to `agent`'s message `id` at inbox sequence `inbox`
