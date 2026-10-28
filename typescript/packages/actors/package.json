@@ -37,6 +37,10 @@
     "./addressing": {
       "types": "./dist/addressing.d.ts",
       "default": "./dist/addressing.js"
+    },
+    "./deadline": {
+      "types": "./dist/deadline.d.ts",
+      "default": "./dist/deadline.js"
     }
   },
   "types": "./dist/index.d.ts",
