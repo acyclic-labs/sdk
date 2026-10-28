@@ -45,7 +45,6 @@ pub fn parse_frontmatter<T: serde::de::DeserializeOwned>(prefix: &[u8]) -> Resul
         duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
         merge_keys: serde_saphyr::MergeKeyPolicy::Error,
         reject_unsupported_tags: true,
-        emit_comments: false,
         with_snippet: false,
     };
     serde_saphyr::from_slice_with_options(header, options)

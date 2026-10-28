@@ -297,7 +297,7 @@ fn parse(text: &str) -> Result<(Frontmatter, &str)> {
                 duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
                 merge_keys: serde_saphyr::MergeKeyPolicy::Error,
                 reject_unsupported_tags: true,
-                emit_comments: false, with_snippet: false,
+                with_snippet: false,
             };
             let frontmatter: Frontmatter = if header.trim().is_empty() {
                 Frontmatter::default()
