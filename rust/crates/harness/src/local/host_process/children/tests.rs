@@ -82,7 +82,7 @@ fn exercise(host: &str, cwd: &Path) -> Result {
         process: lease.funded_process()?,
         claim: serde_json::from_value(claimed["claim"].clone())?,
         failure: None,
-        events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
+        events: acyclic_native_runtime::lines::LineBuffer::new(None),
         answer: String::new(),
         session: None,
     };
