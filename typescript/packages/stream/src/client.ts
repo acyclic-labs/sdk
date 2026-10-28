@@ -5,7 +5,7 @@ import type {
   AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions,
   CommitRequest, CommitResult, CreateTokenRequest, FollowOptions, ForkOptions,
   IdempotencyKey, IdempotencyObservation, ReadOptions, Record, Sequence, StreamEnvironment,
-  StreamProvider,
+  StreamProvider, ProviderCommitRequest,
 } from "./types.js";
 import { StreamError, commitId, compareStreamPaths } from "./types.js";
 import { ensureStreamWasm, normalizeWireCommit, validatePathValue, validateSequenceValue, validateWireAppend } from "./contract.js";
@@ -62,6 +62,7 @@ export class StreamClient {
   inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
     return this.provider.inspectIdempotency(key.slice() as IdempotencyKey);
   }
+  heads(request: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> { return this.provider.heads(structuredClone(request)); }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const { parent, after, hierarchyVersion, limit } = request;
     const origin = { limit, ...(request.tailStream === undefined ? {} : { tailStream: request.tailStream }), ...(parent === undefined ? {} : { parent }) };
@@ -106,6 +107,11 @@ export class StreamClient {
   }
 
   async commit(request: CommitRequest, options: CommitOptions): Promise<CommitResult> {
+    return this.submit(request, options).wait();
+  }
+
+  /** Transfers one exact keyed commit to an owned, cancellation-independent handle. */
+  submit(request: CommitRequest, options: CommitOptions): Pending {
     const authoredOptions = structuredClone(options);
     const conditions = request.conditions.map(condition => {
       if ("stream" in condition) {
@@ -133,9 +139,30 @@ export class StreamClient {
       }
       throw new StreamError("invalid_argument", "commit mutation is invalid");
     });
-    return this.provider.commit(await normalizeWireCommit({ conditions, mutations }, authoredOptions), authoredOptions);
+    return Pending.submit(this.provider, { conditions, mutations }, authoredOptions);
   }
   readCommit(commitId: CommitId): Promise<CommittedEnvelope> { return this.provider.readCommit(commitId.slice() as CommitId); }
+}
+
+/** One exact keyed submission. Waiters share one Promise and never replay it. */
+export class Pending {
+  readonly #request: ProviderCommitRequest;
+  readonly #options: CommitOptions;
+  readonly #outcome: Promise<CommitResult>;
+  private constructor(provider: StreamProvider, request: ProviderCommitRequest, options: CommitOptions) {
+    this.#request = structuredClone(request);
+    this.#options = structuredClone(options);
+    this.#outcome = normalizeWireCommit(this.#request, this.#options).then(canonical => provider.commit(canonical, this.#options));
+    // Observe rejection even when every waiter goes away; wait() retains the
+    // original rejected outcome rather than manufacturing a successful result.
+    void this.#outcome.catch(() => {});
+  }
+  static submit(provider: StreamProvider, request: ProviderCommitRequest, options: CommitOptions): Pending {
+    return new Pending(provider, request, options);
+  }
+  get request(): ProviderCommitRequest { return structuredClone(this.#request); }
+  get options(): CommitOptions { return structuredClone(this.#options); }
+  wait(): Promise<CommitResult> { return this.#outcome; }
 }
 
 /** Handle for one permanent Stream path. */
@@ -153,6 +180,8 @@ export class Stream<Value = Uint8Array> {
   constructor(readonly provider: StreamProvider, readonly path: string, readonly codec: Codec<Value>) {
     validatePathValue(path);
   }
+  /** Submits a canonical provider commit, also usable by staged publication. */
+  submit(request: ProviderCommitRequest, options: CommitOptions): Pending { return Pending.submit(this.provider, request, options); }
   encode(value: Value): Uint8Array { return this.codec.encode(value); }
   head(): Promise<import("./types.js").PathHead> { return this.provider.head(this.path); }
   tail(): Promise<Sequence> { return this.provider.tail(this.path); }
@@ -186,6 +215,7 @@ export class Stream<Value = Uint8Array> {
   follow(options: FollowOptions): AsyncIterable<Record<Value>> {
     const authored = {
       from: options.from,
+      ...(options.whenAbsent === undefined ? {} : { whenAbsent: options.whenAbsent }),
       ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     };

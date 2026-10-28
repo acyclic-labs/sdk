@@ -425,6 +425,20 @@ impl StreamProvider for JournalStream {
         self.query(async move |p| p.inspect_idempotency(key).await)
             .await
     }
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        if !request.at_least.is_empty() {
+            self.wait_applied(&request.at_least).await?;
+        }
+        self.query(async move |provider| {
+            let mut view = provider.heads(request).await?;
+            for head in view.heads.iter_mut().flatten() {
+                head.durable = head.tail;
+            }
+            Ok(view)
+        })
+        .await
+    }
+
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
         self.query(async move |provider| {
             let mut head = provider.head(path).await?;

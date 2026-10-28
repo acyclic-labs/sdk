@@ -49,10 +49,10 @@ mod signal;
 mod sync;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub(crate) use client::Cache;
-pub use client::Client;
 pub use client::transport;
 #[cfg(loom)]
 pub use client::verify_admission_binding;
+pub use client::{ApplicationDelivery, ApplicationSubscription, Client};
 #[cfg(all(loom, feature = "grpc", not(target_arch = "wasm32")))]
 pub use client::{
     verify_abandoned_reconnect, verify_cache, verify_cancel_before_open, verify_follow_data,

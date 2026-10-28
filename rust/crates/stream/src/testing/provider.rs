@@ -48,6 +48,11 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.record(RequestClass::Head);
         self.inner().tail(path).await
     }
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        self.record(RequestClass::Head);
+        self.inner().heads(request).await
+    }
+
     async fn head(&self, path: StreamPath) -> Result<PathHead, StreamError> {
         self.record(RequestClass::Head);
         self.inner().head(path).await

@@ -160,6 +160,64 @@ async fn session_children_page_equals_the_provider_page() -> TestResult {
 }
 
 #[tokio::test]
+async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    tree(&provider).await?;
+    let client = local(&provider)?;
+    let request = crate::HeadsRequest {
+        paths: vec![
+            StreamPath::new("tree/a/status")?,
+            StreamPath::new("tree/absent")?,
+        ],
+        children: Some(page("tree", 10)?),
+        limit: 4,
+        at_least: Default::default(),
+    };
+    let expected = provider.heads(request.clone()).await?;
+    let actual = client.heads(request.clone(), 0).await?;
+    assert_eq!(actual, expected);
+    assert!(actual.heads[1].is_none());
+    assert_eq!(
+        actual
+            .children
+            .as_ref()
+            .ok_or("missing page")?
+            .children
+            .len(),
+        2
+    );
+    // Even one named denial refuses the whole view; absence cannot hide it.
+    use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
+    client.register_credential(
+        1,
+        crate::session::testing::credential_with_grants(vec![
+            ResourceGrant {
+                resource: ResourcePattern {
+                    name: "streams:/tree".into(),
+                    prefix: true,
+                },
+                actions: vec!["streams/list".into(), "streams/follow".into()],
+            },
+            ResourceGrant {
+                resource: ResourcePattern {
+                    name: "streams:/tree/a/status".into(),
+                    prefix: false,
+                },
+                actions: vec!["streams/read".into()],
+            },
+        ]),
+    )?;
+    let mut allowed = request.clone();
+    allowed.paths.pop();
+    assert!(client.heads(allowed, 1).await?.heads[0].is_some());
+    assert_eq!(
+        client.heads(request, 1).await,
+        Err(StreamError::AccessDenied)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn remote_provider_reads_and_pages_never_use_unary_rpcs() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "events", 4).await?;
@@ -173,6 +231,16 @@ async fn remote_provider_reads_and_pages_never_use_unary_rpcs() -> TestResult {
     assert_eq!(
         StreamProvider::children_page(&client, page("tree", 10)?).await?,
         provider.children_page(page("tree", 10)?).await?
+    );
+    let view = crate::HeadsRequest {
+        paths: vec![StreamPath::new("tree/a/status")?],
+        children: Some(page("tree", 10)?),
+        limit: 3,
+        at_least: Default::default(),
+    };
+    assert_eq!(
+        StreamProvider::heads(&client, view.clone()).await?,
+        provider.heads(view).await?
     );
     assert_eq!(fixture.counts.unary.load(Ordering::Relaxed), 0);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);

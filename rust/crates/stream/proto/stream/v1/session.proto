@@ -72,6 +72,8 @@ message SessionSubscription {
     // absent. A pure read: a client may retry it before any reply fragment
     // arrives, but never splices fragments of two attempts.
     ChildrenPageRequest children_page = 15;
+    // One coherent snapshot, under the same finite-fragment rules.
+    HeadsRequest heads = 16;
   }
 }
 enum SessionDelivery {
@@ -140,6 +142,7 @@ message SessionData {
     // fragment rules (after.next counts chunks from 1; after.opaque is the
     // 8-byte little-endian total length).
     bytes children_page = 16;
+    bytes heads = 17;
   }
 }
 message SessionAck {

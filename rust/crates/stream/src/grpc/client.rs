@@ -92,6 +92,10 @@ impl StreamProvider for Client {
         })
     }
 
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        self.session()?.heads(request, 0).await
+    }
+
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
         let body = wire::HeadRequest {
             path: path.to_string(),

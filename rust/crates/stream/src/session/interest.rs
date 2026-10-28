@@ -220,6 +220,34 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                     None,
                 )
             }
+            Some(Kind::Heads(request)) => {
+                if resume.next != 0 || !resume.opaque.is_empty() || subscription.filter.is_some() {
+                    return Err(StreamError::InvalidArgument);
+                }
+                let request = wire_codec::heads_from_wire(request)?;
+                let (authorization, context, visibility) = match self.authority.bind_heads(
+                    &self.slots,
+                    subscription.credential,
+                    &request,
+                    channels,
+                ) {
+                    Ok(binding) => binding,
+                    Err(reason) => return Ok(Admission::Denied(identity, reason)),
+                };
+                binding = Some(authorization);
+                opaque_cursor = true;
+                (
+                    false,
+                    pages::heads(
+                        Arc::clone(&self.provider),
+                        request,
+                        context,
+                        visibility,
+                        identity,
+                    ),
+                    None,
+                )
+            }
             Some(Kind::ChildrenPage(request)) => {
                 if resume.next != 0 || !resume.opaque.is_empty() || subscription.filter.is_some() {
                     return Err(StreamError::InvalidArgument);

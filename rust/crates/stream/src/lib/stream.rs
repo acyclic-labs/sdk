@@ -28,6 +28,18 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         &self.path
     }
 
+    /// Submits one canonical commit across this provider's paths. The returned
+    /// owned handle outlives this Stream and any waiter; cancellation cannot
+    /// withdraw a submitted publication. Its exact identity is recoverable.
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    pub fn submit(&self, request: CommitRequest) -> crate::Pending {
+        crate::Pending::submit(
+            Arc::clone(&self.provider),
+            request,
+            &crate::runtime::PlatformExecutor,
+        )
+    }
+
     /// One atomic observation of history, durability and inherited origin.
     pub async fn head(&self) -> Result<PathHead, StreamError> {
         self.provider.head(self.path.clone()).await

@@ -1,3 +1,18 @@
+fn head_at(state: &State, path: &StreamPath) -> Result<Option<crate::PathHead>, StreamError> {
+    state
+        .paths
+        .get(path)
+        .map(|stream| {
+            Ok(crate::PathHead {
+                tail: stream.tail,
+                last: last_record(stream),
+                durable: 0,
+                origin: state.paths.origin(path)?,
+            })
+        })
+        .transpose()
+}
+
 fn namespace_page(
     index: &Index,
     lower: Option<&str>,
@@ -61,6 +76,100 @@ fn last_record(stream: &PathState) -> Option<Record> {
     })
 }
 
+fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPage, StreamError> {
+    validate_limit(request.limit)?;
+    if request.after.is_some() && request.hierarchy_version.is_none() {
+        return Err(StreamError::InvalidArgument);
+    }
+    if request.after.as_ref().is_some_and(|after| {
+        !request.parent.as_ref().map_or_else(
+            || !after.as_str().contains('/'),
+            |parent| after.parent().as_ref() == Some(parent),
+        )
+    }) {
+        return Err(StreamError::InvalidArgument);
+    }
+    if request
+        .hierarchy_version
+        .is_some_and(|version| version != state.hierarchy_version)
+    {
+        return Err(StreamError::HierarchyChanged);
+    }
+    let children = request
+        .parent
+        .as_ref()
+        .map_or(Some(&state.paths.roots), |parent| {
+            state.paths.node(parent).map(|node| &node.children)
+        });
+    let lower = request
+        .after
+        .as_ref()
+        .map(|path| path.as_str().rsplit('/').next().unwrap_or_default());
+    let mut paths = Vec::new();
+    if let Some(children) = children {
+        namespace_page(
+            children,
+            lower,
+            request.parent.as_ref(),
+            request.limit as usize + 1,
+            &mut paths,
+        )?;
+    }
+    let has_more = paths.len() > request.limit as usize;
+    paths.truncate(request.limit as usize);
+    let next_after = if has_more {
+        paths.last().cloned()
+    } else {
+        None
+    };
+    let mut page_bytes =
+        64usize.saturating_add(next_after.as_ref().map_or(0, |path| path.as_str().len()));
+    let children = paths
+        .into_iter()
+        .map(|path| {
+            let tail_record = projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
+            let origin = state.paths.origin(&path)?;
+            let child = Child {
+                path,
+                tail_record,
+                origin,
+            };
+            let encoded = crate::wire::Child {
+                origin: child
+                    .origin
+                    .clone()
+                    .map(crate::wire_codec::fork_origin_to_wire),
+                path: child.path.to_string(),
+                tail_record: child
+                    .tail_record
+                    .clone()
+                    .map(crate::wire_codec::record_wire),
+            };
+            #[cfg(all(loom, feature = "local"))]
+            let size =
+                if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes)
+                {
+                    encoded.path.len()
+                } else {
+                    prost::Message::encoded_len(&encoded)
+                };
+            #[cfg(not(all(loom, feature = "local")))]
+            let size = prost::Message::encoded_len(&encoded);
+            page_bytes = page_bytes.saturating_add(size).saturating_add(10);
+            if page_bytes > crate::MAX_COMMAND_BYTES {
+                return Err(StreamError::LimitExceeded);
+            }
+            Ok(child)
+        })
+        .collect::<Result<Vec<_>, StreamError>>()?;
+    let result = ChildrenPage {
+        hierarchy_version: state.hierarchy_version,
+        children,
+        next_after,
+    };
+    Ok(result)
+}
+
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl StreamProvider for MemoryStream {
@@ -72,14 +181,37 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+        head_at(&*self.state.read().await, &path)?.ok_or(StreamError::NotFound)
+    }
+
+    async fn heads(&self, mut request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        request.validate()?;
+        self.revisions.wait(&request.at_least).await?;
         let state = self.state.read().await;
-        let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
-        Ok(crate::PathHead {
-            tail: stream.tail,
-            last: last_record(stream),
-            durable: 0,
-            origin: state.paths.origin(&path)?,
-        })
+        let heads = request
+            .paths
+            .iter()
+            .map(|path| head_at(&state, path))
+            .collect::<Result<_, _>>()?;
+        if let Some(children) = &mut request.children {
+            children.limit = children
+                .limit
+                .min(request.limit - request.paths.len() as u32);
+        }
+        let view = crate::Heads {
+            snapshot: self.revisions.at(state.decision),
+            heads,
+            children: request
+                .children
+                .map(|request| children_at(&state, request))
+                .transpose()?,
+        };
+        if prost::Message::encoded_len(&crate::wire_codec::heads_to_wire(view.clone()))
+            > crate::MAX_COMMAND_BYTES
+        {
+            return Err(StreamError::LimitExceeded);
+        }
+        Ok(view)
     }
 
     async fn inspect_idempotency(
@@ -182,99 +314,7 @@ impl StreamProvider for MemoryStream {
         &self,
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
-        validate_limit(request.limit)?;
-        if request.after.is_some() && request.hierarchy_version.is_none() {
-            return Err(StreamError::InvalidArgument);
-        }
-        if request.after.as_ref().is_some_and(|after| {
-            !request.parent.as_ref().map_or_else(
-                || !after.as_str().contains('/'),
-                |parent| after.parent().as_ref() == Some(parent),
-            )
-        }) {
-            return Err(StreamError::InvalidArgument);
-        }
-        let state = self.state.read().await;
-        if request
-            .hierarchy_version
-            .is_some_and(|version| version != state.hierarchy_version)
-        {
-            return Err(StreamError::HierarchyChanged);
-        }
-        let children = request
-            .parent
-            .as_ref()
-            .map_or(Some(&state.paths.roots), |parent| {
-                state.paths.node(parent).map(|node| &node.children)
-            });
-        let lower = request
-            .after
-            .as_ref()
-            .map(|path| path.as_str().rsplit('/').next().unwrap_or_default());
-        let mut paths = Vec::new();
-        if let Some(children) = children {
-            namespace_page(
-                children,
-                lower,
-                request.parent.as_ref(),
-                request.limit as usize + 1,
-                &mut paths,
-            )?;
-        }
-        let has_more = paths.len() > request.limit as usize;
-        paths.truncate(request.limit as usize);
-        let next_after = if has_more {
-            paths.last().cloned()
-        } else {
-            None
-        };
-        let mut page_bytes =
-            64usize.saturating_add(next_after.as_ref().map_or(0, |path| path.as_str().len()));
-        let children = paths
-            .into_iter()
-            .map(|path| {
-                let tail_record =
-                    projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
-                let origin = state.paths.origin(&path)?;
-                let child = Child {
-                    path,
-                    tail_record,
-                    origin,
-                };
-                let encoded = crate::wire::Child {
-                    origin: child
-                        .origin
-                        .clone()
-                        .map(crate::wire_codec::fork_origin_to_wire),
-                    path: child.path.to_string(),
-                    tail_record: child
-                        .tail_record
-                        .clone()
-                        .map(crate::wire_codec::record_wire),
-                };
-                #[cfg(all(loom, feature = "local"))]
-                let size = if crate::verification::fault_is(
-                    crate::verification::Fault::IgnorePageRecordBytes,
-                ) {
-                    encoded.path.len()
-                } else {
-                    prost::Message::encoded_len(&encoded)
-                };
-                #[cfg(not(all(loom, feature = "local")))]
-                let size = prost::Message::encoded_len(&encoded);
-                page_bytes = page_bytes.saturating_add(size).saturating_add(10);
-                if page_bytes > crate::MAX_COMMAND_BYTES {
-                    return Err(StreamError::LimitExceeded);
-                }
-                Ok(child)
-            })
-            .collect::<Result<Vec<_>, StreamError>>()?;
-        let result = ChildrenPage {
-            hierarchy_version: state.hierarchy_version,
-            children,
-            next_after,
-        };
-        Ok(result)
+        children_at(&*self.state.read().await, request)
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {

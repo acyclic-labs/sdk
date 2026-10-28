@@ -44,6 +44,13 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     fn operation_claims(&self) -> &crate::OperationClaims;
     /// Atomically observes accepted history, its last record, durable cut and fork origin.
     async fn head(&self, path: StreamPath) -> Result<PathHead, StreamError>;
+    /// Observes named heads, absence and a child page atomically at one snapshot.
+    /// Adapters must forward this operation intact; separate head calls cannot
+    /// establish this guarantee. Denial refuses the whole view, never absence.
+    async fn heads(&self, request: HeadsRequest) -> Result<Heads, StreamError> {
+        let _ = request;
+        Err(StreamError::Unsupported)
+    }
     /// Whether every mutation of this provider's storage shares these process
     /// claims. Remote sessions must leave this false, even with local caches.
     fn has_exclusive_process_owner(&self) -> bool {

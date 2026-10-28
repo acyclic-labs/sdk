@@ -9,6 +9,7 @@ pub(super) struct Position {
 struct State {
     position: Position,
     generation: u64,
+    track_records: bool,
 }
 pub(super) struct Progress {
     // Lock order: this is the only cursor lock. Never nest it with another
@@ -47,6 +48,7 @@ impl Progress {
                     preceding,
                 },
                 generation: 1,
+                track_records: preceding.is_some(),
             }),
             cancelled: AtomicU64::new(0),
             ended: AtomicU64::new(0),
@@ -104,6 +106,13 @@ impl Progress {
             .generation
             == generation)
     }
+    pub(super) fn track_records(&self) -> Result<(), StreamError> {
+        self.state
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .track_records = true;
+        Ok(())
+    }
     pub(super) fn consume_progress(
         &self,
         generation: u64,
@@ -116,7 +125,7 @@ impl Progress {
         }
         state.position.next = next;
         state.position.opaque.clear();
-        if state.position.preceding.is_some() {
+        if state.track_records {
             state.position.preceding = Some(preceding);
         }
         Ok(true)
@@ -143,12 +152,12 @@ impl Progress {
         if sequence > state.position.next && !conflated {
             return Err(StreamError::Unavailable);
         }
-        if state.position.preceding.is_some() && commit.is_none() {
+        if state.track_records && commit.is_none() {
             return Err(StreamError::Unavailable);
         }
         state.position.next = sequence.checked_add(1).ok_or(StreamError::OutOfRange)?;
         state.position.opaque = opaque.to_vec();
-        if state.position.preceding.is_some() {
+        if state.track_records {
             state.position.preceding = commit;
         }
         Ok(true)

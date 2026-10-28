@@ -26,6 +26,26 @@ pub(super) async fn inspect_idempotency(
     )
 }
 
+pub(super) async fn heads(
+    client: &Arc<grpc::Client>,
+    request: Buffer,
+    cancellation: Option<&NativeStreamCancellation>,
+) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
+    let request = wire_codec::heads_from_wire(decode::<wire::HeadsRequest>(&request, "heads")?)
+        .map_err(|error| stream_error(&error))?;
+    let view = run_with_cancellation(
+        async {
+            client
+                .heads(request)
+                .await
+                .map_err(|error| stream_error(&error))
+        },
+        cancellation_state(cancellation),
+    )
+    .await?;
+    encode(&wire_codec::heads_to_wire(view), "heads")
+}
+
 pub(super) async fn head(
     client: &Arc<grpc::Client>,
     request: Buffer,

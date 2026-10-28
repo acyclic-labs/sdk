@@ -224,6 +224,19 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
                 .map_err(|_| "invalid_argument")?;
             Ok(json!({ "idempotencyKey": STANDARD.encode(key.as_bytes()) }))
         }
+        "heads" => {
+            let wire = wire::HeadsRequest::decode(input).map_err(|_| "invalid_argument")?;
+            let request =
+                wire_codec::heads_from_wire(wire.clone()).map_err(|error| error.code())?;
+            let children = wire
+                .children
+                .map(|children| request_json("children/page", &children.encode_to_vec()))
+                .transpose()?;
+            Ok(with_at_least(
+                json!({ "paths": request.paths.iter().map(ToString::to_string).collect::<Vec<_>>(), "children": children, "limit": request.limit }),
+                &wire.at_least,
+            ))
+        }
         "head" => {
             let request = wire::HeadRequest::decode(input).map_err(|_| "invalid_argument")?;
             let path = wire_codec::path(request.path).map_err(|_| "invalid_path")?;

@@ -146,6 +146,12 @@ export class NativeStreamProvider implements StreamProvider {
     return this.project("inspect_idempotency", value) as IdempotencyObservation | undefined;
   }
 
+  async heads(options: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> {
+    const request = { kind: "heads" as const, ...structuredClone(options) };
+    await validateWireRequest(request);
+    const value = await this.operation("heads", this.request(client => client.headsResult(Buffer.from(wireRequest(request)))));
+    return this.project("heads", value) as import("./types.js").Heads;
+  }
   async head(path: string): Promise<import("./types.js").PathHead> {
     const request = { kind: "head" as const, path };
     await validateWireRequest(request);

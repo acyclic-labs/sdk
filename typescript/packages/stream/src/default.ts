@@ -107,6 +107,10 @@ export class DefaultStreamProvider implements StreamProvider {
     if (provider.registerCredential === undefined) throw new StreamError("unsupported", "provider does not support session credentials");
     await provider.registerCredential(slot, authored);
   }
+  heads(request: Parameters<StreamProvider["heads"]>[0]) {
+    const authored = structuredClone(request);
+    return this.provider().then(provider => provider.heads(authored));
+  }
   head(path: string) { return this.provider().then(provider => provider.head(path)); }
   tail(path: string) { return this.provider().then(provider => provider.tail(path)); }
   append(path: string, values: Parameters<StreamProvider["append"]>[1], options?: Parameters<StreamProvider["append"]>[2]) {

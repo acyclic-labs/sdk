@@ -1,5 +1,66 @@
 use super::*;
 
+/// Validates the canonical mixed observation request before provider admission.
+pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<crate::HeadsRequest, StreamError> {
+    let request = crate::HeadsRequest {
+        paths: value
+            .paths
+            .into_iter()
+            .map(StreamPath::new)
+            .collect::<Result<_, _>>()?,
+        children: value.children.map(children_page_from_wire).transpose()?,
+        limit: value.limit,
+        at_least: cut_from_wire(value.at_least)?,
+    };
+    request.validate()?;
+    Ok(request)
+}
+
+/// Encodes one mixed observation without splitting it into separate requests.
+pub fn heads_request_to_wire(value: crate::HeadsRequest) -> wire::HeadsRequest {
+    wire::HeadsRequest {
+        paths: value
+            .paths
+            .into_iter()
+            .map(|path| path.to_string())
+            .collect(),
+        children: value.children.map(children_page_request_to_wire),
+        limit: value.limit,
+        at_least: cut_to_wire(&value.at_least),
+    }
+}
+
+/// Encodes the exact authority snapshot and its ordered observations.
+pub fn heads_to_wire(value: crate::Heads) -> wire::HeadsResponse {
+    wire::HeadsResponse {
+        snapshot: Some(revision_to_wire(&value.snapshot)),
+        heads: value
+            .heads
+            .into_iter()
+            .map(|head| wire::HeadObservation {
+                head: head.map(head_to_wire),
+            })
+            .collect(),
+        children: value.children.map(children_page_to_wire),
+    }
+}
+
+/// Validates every head and the shared authority cut before exposing the view.
+pub fn heads_from_response(value: wire::HeadsResponse) -> Result<crate::Heads, StreamError> {
+    Ok(crate::Heads {
+        snapshot: issued_from_wire(value.snapshot)?,
+        heads: value
+            .heads
+            .into_iter()
+            .map(|head| head.head.map(head_from_wire).transpose())
+            .collect::<Result<_, _>>()?,
+        children: value
+            .children
+            .map(children_page_from_response)
+            .transpose()?,
+    })
+}
+
 /// Validates an atomic head without reconstructing it through other operations.
 pub fn head_from_wire(value: wire::PathHead) -> Result<crate::PathHead, StreamError> {
     let mut head = crate::PathHead {

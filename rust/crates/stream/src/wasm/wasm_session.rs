@@ -105,6 +105,38 @@ impl WasmSession {
             .refused(&StreamError::RevisionForeign);
     }
 
+    /// Captures a coherent view through the existing credited session pool.
+    pub async fn heads(&self, input: &[u8], credential: u32) -> Result<Vec<u8>, JsValue> {
+        check_command_size(input)?;
+        let request =
+            wire_codec::heads_from_wire(decode::<wire::HeadsRequest>(input)?).map_err(js_error)?;
+        let view = self
+            .client
+            .heads(request, credential)
+            .await
+            .map_err(js_error)?;
+        Ok(wire_codec::heads_to_wire(view).encode_to_vec())
+    }
+
+    /// Opens explicit application decisions through the same session pool.
+    pub fn deliveries(&self, input: &[u8]) -> Result<WasmApplicationSubscription, JsValue> {
+        use futures::TryStreamExt as _;
+        check_command_size(input)?;
+        let subscription = decode::<wire::SessionSubscription>(input)?;
+        let client = self.client.clone();
+        let source = futures::stream::once(async move {
+            client
+                .deliveries(subscription)
+                .await
+                .map(crate::session::ApplicationSubscription::into_stream)
+        })
+        .try_flatten()
+        .boxed_local();
+        Ok(WasmApplicationSubscription {
+            state: Rc::new(FollowState::new(source)),
+        })
+    }
+
     /// Opens a filtered subscription using its selected credential slot.
     /// Rust owns validation, credit, watermarks and recovery.
     pub fn subscribe(&self, input: &[u8]) -> Result<WasmFollow, JsValue> {
@@ -123,4 +155,58 @@ impl WasmSession {
             state: Rc::new(FollowState::new(stream)),
         })
     }
+}
+
+/// Platform adapter for the canonical application-owned cursor.
+#[wasm_bindgen]
+pub struct WasmApplicationSubscription {
+    state: Rc<FollowState<crate::session::ApplicationDelivery>>,
+}
+
+#[wasm_bindgen]
+impl WasmApplicationSubscription {
+    /// Waits for the preceding decision, then returns the next owned delivery.
+    pub async fn next(&self) -> Result<Option<WasmApplicationDelivery>, JsValue> {
+        self.state
+            .next()
+            .await
+            .map(|delivery| delivery.map(|inner| WasmApplicationDelivery { inner }))
+            .map_err(js_error)
+    }
+    /// Ends the interest and wakes a pending next call without application completion.
+    pub fn close(&self) {
+        self.state.close();
+    }
+}
+
+/// One application decision; its destructor never commits its cursor.
+#[wasm_bindgen]
+pub struct WasmApplicationDelivery {
+    inner: crate::session::ApplicationDelivery,
+}
+
+#[wasm_bindgen]
+impl WasmApplicationDelivery {
+    /// Encoded v1 frame; record bytes remain opaque.
+    pub fn frame(&self) -> Vec<u8> {
+        self.inner.frame().encode_to_vec()
+    }
+    /// Encoded preceding filtered progress, when present.
+    pub fn before(&self) -> Option<Vec<u8>> {
+        self.inner.before().map(prost::Message::encode_to_vec)
+    }
+    /// Encoded v1 checkpoint to persist with the consumer's decision.
+    pub fn checkpoint(&self) -> Vec<u8> {
+        self.inner.checkpoint().encode_to_vec()
+    }
+    /// Completes an already durable consumer decision.
+    pub fn commit(self) -> Result<bool, JsValue> {
+        self.inner.commit().map_err(js_error)
+    }
+    /// Completes an explicit terminal discard decision.
+    pub fn discard(self) -> Result<bool, JsValue> {
+        self.inner.discard().map_err(js_error)
+    }
+    /// Abandons custody without advancing the application checkpoint.
+    pub fn close(self) {}
 }

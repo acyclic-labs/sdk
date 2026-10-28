@@ -92,6 +92,10 @@ impl StreamProvider for Remote {
         }
         Ok(observed)
     }
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        self.sessions.heads(request, 0).await
+    }
+
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
         let response = self
             .service()

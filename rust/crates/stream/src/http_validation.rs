@@ -326,6 +326,19 @@ pub fn validate(route: &str, value: &Value) -> Result {
                 Err("expected empty acknowledgement response")
             }
         }
+        Some("heads") => {
+            let item = object(value)?;
+            validate_revision(field(item, "snapshot")?)?;
+            for head in array(field(item, "heads")?)? {
+                if !head.is_null() {
+                    validate("head", head)?;
+                }
+            }
+            if let Some(page) = item.get("children").filter(|value| !value.is_null()) {
+                validate_children_page(page)?;
+            }
+            Ok(())
+        }
         Some("head") => {
             let item = object(value)?;
             let tail = u64_string(field(item, "tail")?)?;

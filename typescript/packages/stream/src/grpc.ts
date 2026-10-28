@@ -145,6 +145,10 @@ export class GrpcStreamProvider implements StreamProvider {
     this.#sessions.observe(observation?.revision);
     return observation;
   }
+  async heads(options: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> {
+    return this.#sessions.heads(options);
+  }
+
   async head(path: string): Promise<import("./types.js").PathHead> {
     const request = { kind: "head" as const, path };
     await validateWireRequest(request);

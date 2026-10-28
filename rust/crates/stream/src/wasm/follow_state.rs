@@ -1,18 +1,19 @@
-type FollowFrames = futures::stream::LocalBoxStream<'static, Result<Vec<u8>, crate::StreamError>>;
-struct FollowState {
+type FollowFrames<T = Vec<u8>> =
+    futures::stream::LocalBoxStream<'static, Result<T, crate::StreamError>>;
+struct FollowState<T = Vec<u8>> {
     // Lock order: slot -> cancel value. Neither survives await, notification
     // or source destruction; close releases the cancel value before the slot.
-    stream: crate::query_sync::SyncMutex<Option<FollowFrames>>,
+    stream: crate::query_sync::SyncMutex<Option<FollowFrames<T>>>,
     cancel: crate::query_sync::watch::Sender<bool>,
 }
-impl FollowState {
-    fn new(stream: FollowFrames) -> Self {
+impl<T> FollowState<T> {
+    fn new(stream: FollowFrames<T>) -> Self {
         Self {
             stream: crate::query_sync::SyncMutex::new(Some(stream)),
             cancel: crate::query_sync::watch::channel(false).0,
         }
     }
-    async fn next(&self) -> Result<Option<Vec<u8>>, crate::StreamError> {
+    async fn next(&self) -> Result<Option<T>, crate::StreamError> {
         let Some(mut stream) = self.stream.lock().ok().and_then(|mut slot| slot.take()) else {
             return Ok(None);
         };

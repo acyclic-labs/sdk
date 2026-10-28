@@ -19,7 +19,8 @@ pub fn reply_chunk(item: Option<&wire::session_data::Item>) -> Option<&bytes::By
     match item {
         Some(
             wire::session_data::Item::ActorCall(chunk)
-            | wire::session_data::Item::ChildrenPage(chunk),
+            | wire::session_data::Item::ChildrenPage(chunk)
+            | wire::session_data::Item::Heads(chunk),
         ) => Some(chunk),
         _ => None,
     }

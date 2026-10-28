@@ -110,15 +110,19 @@ pub(super) struct Binding {
     requested: wire::SessionFilter,
     filter_digest: [u8; 32],
     resource_authorization: Option<ResourceAuthorization>,
+    additional: Vec<(&'static str, String)>,
 }
 
 impl Binding {
     /// Finite one-shot replies (Actors calls and children pages) carry no
     /// record filter and get no credit-free lookahead.
     pub(super) fn is_reply(&self) -> bool {
-        self.resource_authorization
-            .as_ref()
-            .is_some_and(|value| matches!(value.action, "actors/invoke" | "streams/list"))
+        self.resource_authorization.as_ref().is_some_and(|value| {
+            matches!(
+                value.action,
+                "actors/invoke" | "streams/list" | "streams/read"
+            )
+        })
     }
 }
 
@@ -271,7 +275,11 @@ impl Authority {
             .as_ref()
             .map_or("streams/follow", |authorization| authorization.action);
         let scoped = binding.resource_authorization.is_some();
-        self.check(&**capability, action, &binding.resource, scoped, channels)
+        self.check(&**capability, action, &binding.resource, scoped, channels)?;
+        for (action, resource) in &binding.additional {
+            self.check(&**capability, action, resource, false, channels)?;
+        }
+        Ok(())
     }
     /// Admits `action` on one stream resource for an already admitted credential.
     pub(super) fn permits(
@@ -318,7 +326,7 @@ impl Authority {
             memory_bytes: 0,
         };
         let scope = match (action, scoped) {
-            ("actors/invoke", _) => Scope::Exact,
+            ("actors/invoke" | "streams/read", _) => Scope::Exact,
             ("streams/list", _) => Scope::Children,
             (_, true) => Scope::ResourceFollow,
             (_, false) => Scope::Follow,
@@ -365,6 +373,7 @@ impl Authority {
             requested,
             filter_digest: [0; 32],
             resource_authorization: None,
+            additional: Vec::new(),
         };
         let filter = self.filter(slots, &binding, channels)?;
         binding.filter_digest = filter.digest();
@@ -392,6 +401,7 @@ impl Authority {
             requested,
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
+            additional: Vec::new(),
         };
         let filter = self.filter(slots, &binding, channels)?;
         binding.filter_digest = filter.digest();
@@ -453,6 +463,7 @@ impl Authority {
             requested: wire::SessionFilter::default(),
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
+            additional: Vec::new(),
         };
         binding.filter_digest = self.filter(slots, &binding, channels)?.digest();
         Ok((binding, CallAuthorization(authorization)))
@@ -481,6 +492,7 @@ impl Authority {
             requested: wire::SessionFilter::default(),
             filter_digest: [0; 32],
             resource_authorization: Some(authorization.clone()),
+            additional: Vec::new(),
         };
         binding.filter_digest = self.filter(slots, &binding, channels)?.digest();
         Ok((
@@ -492,6 +504,55 @@ impl Authority {
             },
         ))
     }
+    pub(super) fn bind_heads(
+        self: &Arc<Self>,
+        slots: &Slots,
+        slot: u32,
+        request: &crate::HeadsRequest,
+        channels: usize,
+    ) -> Result<
+        (
+            Binding,
+            ResourceAuthorization,
+            Option<super::pages::Visibility>,
+        ),
+        Rejection,
+    > {
+        let (mut binding, authorization, visibility) = if let Some(page) = &request.children {
+            let (binding, visibility) =
+                self.bind_list(slots, slot, page.parent.as_ref(), channels)?;
+            let authorization = visibility.authorization.clone();
+            (binding, authorization, Some(visibility))
+        } else {
+            let (revision, _, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
+            let capability = credential.as_ref().map_err(|error| *error)?;
+            let resource = stream_resource(request.paths.first());
+            let mut authorization = ResourceAuthorization::new(
+                Arc::clone(self),
+                resource.clone(),
+                Arc::clone(capability),
+            );
+            authorization.action = "streams/read";
+            let binding = Binding {
+                credential_revision: *revision,
+                slot,
+                resource,
+                requested: wire::SessionFilter::default(),
+                filter_digest: [0; 32],
+                resource_authorization: Some(authorization.clone()),
+                additional: Vec::new(),
+            };
+            (binding, authorization, None)
+        };
+        binding.additional = request
+            .paths
+            .iter()
+            .map(|path| ("streams/read", stream_resource(Some(path))))
+            .collect();
+        binding.filter_digest = self.filter(slots, &binding, channels)?.digest();
+        Ok((binding, authorization, visibility))
+    }
+
     pub(super) fn deadline(&self, slots: &mut Slots) -> Option<u64> {
         let now = self.snapshot().ok()?.now_unix_seconds;
         loop {

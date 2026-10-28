@@ -3,6 +3,7 @@
 mod absence;
 mod atomic;
 mod backend;
+mod views;
 #[path = "conformance"]
 mod histories {
     pub(super) mod wave1;
@@ -37,6 +38,7 @@ const _: () = assert!(!SUITE.is_empty(), "conformance inventory is empty");
 )]
 async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
     absence::verify(provider).await?;
+    views::verify(provider).await?;
     let source = path("conformance/source")?;
     let child = path("conformance/child")?;
     let append_key = key(b"stream-append")?;

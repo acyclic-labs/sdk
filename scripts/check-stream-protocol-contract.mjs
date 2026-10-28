@@ -28,7 +28,7 @@ try {
   const service = stream.service.find(item => item.name === "StreamService");
   assert.ok(service, "StreamService is missing");
   assert.deepEqual(service.method.map(method => method.name), [
-    "InspectIdempotency", "Append", "Head", "Tail", "Fork", "Read",
+    "InspectIdempotency", "Append", "Head", "Heads", "Tail", "Fork", "Read",
     "ChildrenPage", "Commit", "ReadCommit",
   ]);
   assert.equal(service.method.find(method => method.name === "Read").serverStreaming, true);
@@ -55,12 +55,16 @@ try {
   assertFields("Child", [["path", 1], ["tail_record", 2], ["origin", 3]]);
   assertFields("ChildrenPageRequest", [["parent", 1], ["after", 2], ["hierarchy_version", 3], ["limit", 4], ["tail_stream", 5]]);
   assertFields("ChildrenPageResponse", [["hierarchy_version", 1], ["children", 2], ["next_after", 3]]);
-  assertFields("TailRequest", [["path", 1], ["accepted", 2], ["durable_through", 3]]);
+  assertFields("TailRequest", [["path", 1], ["accepted", 2], ["durable_through", 3], ["at_least", 4]]);
   assertFields("HeadRequest", [["path", 1]]);
+  assertFields("HeadsRequest", [["paths", 1], ["children", 2], ["limit", 3], ["at_least", 4]]);
+  assertFields("HeadObservation", [["head", 1]]);
+  assertFields("HeadsResponse", [["snapshot", 1], ["heads", 2], ["children", 3]]);
+  assertFields("FollowRequest", [["path", 1], ["from", 2], ["filter", 3], ["progress", 4], ["at_least", 5], ["when_absent", 6]]);
   assertFields("PathHead", [["tail", 1], ["last", 2], ["durable", 3], ["origin", 4]]);
   assertFields("ForkOrigin", [["source", 1], ["forked_at", 2], ["commit_id", 3]]);
-  assertFields("TailResponse", [["tail", 1], ["durable", 3]]);
-  assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4]]);
+  assertFields("TailResponse", [["tail", 1], ["durable", 3], ["applied", 4]]);
+  assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4], ["applied", 6]]);
   assertReserved("ReadResponse", [[1, 2], [5, 6]], ["record", "delivery_token"]);
   assertFields("RecordBatch", [["records", 1]]);
   assertFields("Record", [["sequence", 1], ["value", 2], ["commit_id", 3], ["committed_at_micros", 4], ["keys", 5], ["attributes", 6]]);
@@ -78,7 +82,7 @@ try {
   assertReserved("CommitConflict", [[3, 4]], ["retired"]);
   assertFields("IdempotencyObservation", [
     ["idempotency_key", 1], ["request_digest", 2], ["append", 3],
-    ["fork", 4], ["commit", 7],
+    ["fork", 4], ["commit", 7], ["revision", 8],
   ]);
   assertReserved("IdempotencyObservation", [[5, 6], [6, 7]], ["trim", "delete"]);
 
@@ -87,14 +91,14 @@ try {
   const sessionMessages = new Map(session.messageType.map(message => [message.name, message]));
   const sessionService = session.service.find(item => item.name === "StreamSessionService");
   assert.deepEqual(sessionService.method.map(method => [method.name, method.clientStreaming, method.serverStreaming]), [["Session", true, true]]);
-  assertFields("SessionFollow", [["resource", 1], ["delivery", 2], ["preceding_commit_id", 3], ["until", 4]], sessionMessages);
-  assertFields("SessionOpened", [["resume", 1], ["preceding_commit_id", 2]], sessionMessages);
+  assertFields("SessionFollow", [["resource", 1], ["delivery", 2], ["preceding_commit_id", 3], ["until", 4], ["at_least", 5], ["when_absent", 6], ["bootstrap_head", 7]], sessionMessages);
+  assertFields("SessionOpened", [["resume", 1], ["preceding_commit_id", 2], ["applied", 3]], sessionMessages);
   assertFields("SessionCursor", [["next", 1], ["opaque", 2]], sessionMessages);
   assertFields("SessionSubscription", [
-    ["channel", 1], ["resume", 2], ["credential", 3], ["filter", 4], ["follow", 10], ["actor_socket", 13], ["actor_call", 14], ["children_page", 15],
+    ["channel", 1], ["resume", 2], ["credential", 3], ["filter", 4], ["follow", 10], ["actor_socket", 13], ["actor_call", 14], ["children_page", 15], ["heads", 16],
   ], sessionMessages);
   assertFields("SessionData", [
-    ["after", 1], ["accepted", 2], ["durable", 3], ["record", 10], ["actor_socket", 13], ["actor_call", 14], ["latest_value", 15], ["children_page", 16],
+    ["after", 1], ["accepted", 2], ["durable", 3], ["record", 10], ["actor_socket", 13], ["actor_call", 14], ["latest_value", 15], ["children_page", 16], ["heads", 17],
   ], sessionMessages);
   assertReserved("SessionSubscription", [[11, 12], [12, 13]], ["children", "fs_publications"], sessionMessages);
   assertReserved("SessionData", [[11, 12], [12, 13]], ["child", "fs_publication"], sessionMessages);

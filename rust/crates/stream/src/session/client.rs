@@ -14,9 +14,11 @@ pub mod transport;
 use transport::Endpoint;
 
 mod admissions;
+mod application;
 mod call;
 mod data;
 use admissions::Admissions;
+pub use application::{ApplicationDelivery, ApplicationSubscription};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod cache;
 mod credit;
@@ -103,63 +105,63 @@ impl Delivery {
         let Some(frame) = self.before.take() else {
             return Ok(None);
         };
-        let Some(Body::Watermark(mark)) = &frame.body else {
-            return Err(StreamError::Unavailable);
-        };
-        let fresh = match &mark.after {
+        let fresh = consume_frame(progress, self.generation, self.sequence, &frame)?;
+        Ok(fresh.then_some(Received::Frame(frame)))
+    }
+    fn consume(&self, progress: &Progress) -> Result<bool, StreamError> {
+        match &self.item {
+            Received::Data(data) => consume_data(progress, self.generation, self.sequence, data),
+            Received::Frame(frame) => {
+                consume_frame(progress, self.generation, self.sequence, frame)
+            }
+        }
+    }
+}
+fn consume_frame(
+    progress: &Progress,
+    generation: u64,
+    sequence: u64,
+    frame: &wire::SessionFrame,
+) -> Result<bool, StreamError> {
+    match &frame.body {
+        Some(Body::Data(data)) => consume_data(progress, generation, sequence, data),
+        Some(Body::Watermark(mark)) => match &mark.after {
             Some(after) => progress.consume_progress(
-                self.generation,
+                generation,
                 after.next,
                 mark.preceding_commit_id
                     .as_ref()
                     .try_into()
                     .map_err(|_| StreamError::Unavailable)?,
-            )?,
-            None => progress.current(self.generation)?,
-        };
-        Ok(fresh.then_some(Received::Frame(frame)))
-    }
-    /// Advance `progress` past this delivery; false means a stale generation.
-    fn consume(&self, progress: &Progress) -> Result<bool, StreamError> {
-        match &self.item {
-            Received::Data(data)
-            | Received::Frame(wire::SessionFrame {
-                body: Some(Body::Data(data)),
-                ..
-            }) => match &data.item {
-                Some(Item::Record(record)) => progress.consume_record(
-                    self.generation,
-                    self.sequence,
-                    record
-                        .commit_id
-                        .as_ref()
-                        .try_into()
-                        .map_err(|_| StreamError::Unavailable)?,
-                ),
-                // Each LATEST value and one-shot reply fragment is its own position.
-                Some(Item::LatestValue(_) | Item::ActorCall(_) | Item::ChildrenPage(_)) => {
-                    progress.consume_latest(self.generation, self.sequence)
-                }
-                _ => Err(StreamError::Unavailable),
-            },
-            Received::Frame(wire::SessionFrame {
-                body: Some(Body::Watermark(mark)),
-                ..
-            }) => match &mark.after {
-                Some(after) => progress.consume_progress(
-                    self.generation,
-                    after.next,
-                    mark.preceding_commit_id
-                        .as_ref()
-                        .try_into()
-                        .map_err(|_| StreamError::Unavailable)?,
-                ),
-                None => progress.current(self.generation),
-            },
-            _ => Err(StreamError::Unavailable),
-        }
+            ),
+            None => progress.current(generation),
+        },
+        _ => Err(StreamError::Unavailable),
     }
 }
+fn consume_data(
+    progress: &Progress,
+    generation: u64,
+    sequence: u64,
+    data: &wire::SessionData,
+) -> Result<bool, StreamError> {
+    match &data.item {
+        Some(Item::Record(record)) => progress.consume_record(
+            generation,
+            sequence,
+            record
+                .commit_id
+                .as_ref()
+                .try_into()
+                .map_err(|_| StreamError::Unavailable)?,
+        ),
+        Some(
+            Item::LatestValue(_) | Item::ActorCall(_) | Item::ChildrenPage(_) | Item::Heads(_),
+        ) => progress.consume_latest(generation, sequence),
+        _ => Err(StreamError::Unavailable),
+    }
+}
+
 enum Received {
     Data(wire::SessionData),
     Frame(wire::SessionFrame),
@@ -253,7 +255,7 @@ impl Route {
     fn resumable(&self) -> bool {
         match &self.kind {
             Kind::Follow(follow) => follow.until == 0 || !self.opened,
-            Kind::ChildrenPage(_) => self.received == 0,
+            Kind::ChildrenPage(_) | Kind::Heads(_) => self.received == 0,
             _ => false,
         }
     }
@@ -598,32 +600,14 @@ impl Client {
         acknowledge: bool,
     ) -> Result<BoxProviderStream<'static, Result<wire::SessionFrame, StreamError>>, StreamError>
     {
-        if subscription.channel.is_some() {
-            return Err(StreamError::InvalidArgument);
-        }
-        let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
-        let mut kind = subscription.kind.ok_or(StreamError::InvalidArgument)?;
-        match &mut kind {
-            Kind::Follow(follow) => {
-                wire_codec::session::validate_follow(follow, &resume)?;
-                wire_codec::cut_from_wire(follow.at_least.clone())?;
-            }
-            _ => return Err(StreamError::Unsupported),
-        }
+        let (kind, resume, filter, credential) = subscription_parts(subscription)?;
         Ok(super::runtime::boxed(
-            self.open_subscription(
-                kind,
-                resume,
-                acknowledge,
-                true,
-                subscription.filter,
-                subscription.credential,
-            )
-            .await?
-            .map(|item| match item? {
-                Received::Frame(frame) => Ok(frame),
-                _ => Err(StreamError::Unavailable),
-            }),
+            self.open_subscription(kind, resume, acknowledge, true, filter, credential)
+                .await?
+                .map(|item| match item? {
+                    Received::Frame(frame) => Ok(frame),
+                    _ => Err(StreamError::Unavailable),
+                }),
         ))
     }
 
@@ -639,6 +623,40 @@ impl Client {
         impl futures::Stream<Item = Result<Received, StreamError>> + 'static + use<>,
         StreamError,
     > {
+        let cursor = self
+            .open_cursor(kind, resume, acknowledge, raw, filter, credential)
+            .await?;
+        let operation = cursor.observation.operation.clone();
+        Ok(
+            operation.scope(stream::try_unfold(cursor, move |mut cursor| async move {
+                loop {
+                    let Some(mut delivery) = cursor.receive().await? else {
+                        return Ok(None);
+                    };
+                    if let Some(before) = delivery.consume_before(&cursor.progress)? {
+                        cursor.pending = Some(delivery);
+                        return Ok(Some((before, cursor)));
+                    }
+                    // Delivery disposal returns capacity on every exit, including
+                    // stale-generation suppression and cancellation of the cursor.
+                    let fresh = delivery.consume(&cursor.progress)?;
+                    drop(delivery.credit);
+                    if fresh {
+                        return Ok(Some((delivery.item, cursor)));
+                    }
+                }
+            })),
+        )
+    }
+    async fn open_cursor(
+        &self,
+        kind: Kind,
+        resume: wire::SessionCursor,
+        acknowledge: bool,
+        raw: bool,
+        filter: Option<wire::SessionFilter>,
+        credential: u32,
+    ) -> Result<Cursor, StreamError> {
         // One idle control slot; skipped cuts preceding data share that envelope.
         // The delivery window remains QUEUE even while a prefix is consumed.
         let (records, receiver) = mpsc::channel(QUEUE + 1);
@@ -688,42 +706,7 @@ impl Client {
             return Err(error);
         }
         operation.record("registration", "opened");
-        Ok(
-            operation.scope(stream::try_unfold(cursor, move |mut cursor| async move {
-                loop {
-                    let received = match cursor.pending.take() {
-                        Some(delivery) => Ok(delivery),
-                        None => match cursor.receiver.recv().await {
-                            Some(received) => received,
-                            // The route ended a finite channel after its last frame.
-                            None if cursor.progress.ended() => {
-                                cursor.observation.finish(None);
-                                return Ok(None);
-                            }
-                            None => Err(StreamError::Unavailable),
-                        },
-                    };
-                    let mut delivery = match received {
-                        Ok(delivery) => delivery,
-                        Err(error) => {
-                            cursor.observation.finish(Some(&error));
-                            return Err(error);
-                        }
-                    };
-                    if let Some(before) = delivery.consume_before(&cursor.progress)? {
-                        cursor.pending = Some(delivery);
-                        return Ok(Some((before, cursor)));
-                    }
-                    // Delivery disposal returns capacity on every exit, including
-                    // stale-generation suppression and cancellation of the cursor.
-                    let fresh = delivery.consume(&cursor.progress)?;
-                    drop(delivery.credit);
-                    if fresh {
-                        return Ok(Some((delivery.item, cursor)));
-                    }
-                }
-            })),
-        )
+        Ok(cursor)
     }
     fn cursor(
         &self,
@@ -760,6 +743,36 @@ struct Cursor {
     progress: Arc<Progress>,
     receiver: mpsc::Receiver<Result<Delivery, StreamError>>,
 }
+impl Cursor {
+    async fn receive(&mut self) -> Result<Option<Delivery>, StreamError> {
+        loop {
+            if self.progress.cancelled() {
+                return Ok(None);
+            }
+            let received = match self.pending.take() {
+                Some(delivery) => Ok(delivery),
+                None => match self.receiver.recv().await {
+                    Some(received) => received,
+                    None if self.progress.ended() => {
+                        self.observation.finish(None);
+                        return Ok(None);
+                    }
+                    None => Err(StreamError::Unavailable),
+                },
+            };
+            let delivery = match received {
+                Ok(delivery) => delivery,
+                Err(error) => {
+                    self.observation.finish(Some(&error));
+                    return Err(error);
+                }
+            };
+            if self.progress.current(delivery.generation)? {
+                return Ok(Some(delivery));
+            }
+        }
+    }
+}
 impl Drop for Cursor {
     fn drop(&mut self) {
         self.progress.cancel();
@@ -785,4 +798,22 @@ fn follow_kind(request: crate::FollowRequest) -> Kind {
         until: 0,
         at_least: crate::wire_codec::cut_to_wire(&request.at_least),
     })
+}
+
+fn subscription_parts(
+    subscription: wire::SessionSubscription,
+) -> Result<(Kind, wire::SessionCursor, Option<wire::SessionFilter>, u32), StreamError> {
+    if subscription.channel.is_some() {
+        return Err(StreamError::InvalidArgument);
+    }
+    let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
+    let mut kind = subscription.kind.ok_or(StreamError::InvalidArgument)?;
+    match &mut kind {
+        Kind::Follow(follow) => {
+            wire_codec::session::validate_follow(follow, &resume)?;
+            wire_codec::cut_from_wire(follow.at_least.clone())?;
+        }
+        _ => return Err(StreamError::Unsupported),
+    }
+    Ok((kind, resume, subscription.filter, subscription.credential))
 }
