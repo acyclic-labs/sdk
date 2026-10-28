@@ -44,6 +44,6 @@
   "license": "Apache-2.0",
   "type": "commonjs",
   "patchedDependencies": {
-    "@napi-rs/cli@3.10.8": "patches/napi-rs-cli-3.10.8.patch"
+    "@napi-rs/cli@3.10.9": "patches/napi-rs-cli-3.10.9.patch"
   }
 }
