@@ -123,19 +123,6 @@ where
             });
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            if io.is_none() {
-                let span = obs_span!(
-                    "acyclic.harness.journal.replay",
-                    rev = after,
-                    items = crate::obs::Empty
-                );
-                return traced(span, async move {
-                    let records = self.records(operation, after, maximum, io).await?;
-                    crate::obs::obs_record!("items" = records.len());
-                    Ok(records)
-                })
-                .await;
-            }
             let records = self.records(operation, after, maximum, io).await?;
             io.ok_or_else(|| {
                 crate::executor::stock_boundary(
@@ -166,15 +153,6 @@ where
             });
         }
         crate::conversation::BoundedContentFuture::new(io, || async move {
-            if io.is_none() {
-                let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
-                return traced(span, async move {
-                    let bytes = self.load_content(reference, io).await?;
-                    crate::obs::obs_record!("bytes" = bytes.len());
-                    Ok(bytes)
-                })
-                .await;
-            }
             self.load_content(reference, io).await
         })
     }
