@@ -31,14 +31,16 @@ impl ToolPolicy for ObservedPolicy {
         invocation: &'a ToolInvocation,
         scope: &'a RuntimeScope,
         io: Option<&'a PreparationIo>,
-    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>> {
+    ) -> Result<crate::store::HistoryContentFuture<'a, (ToolPolicyDecision, crate::NativeCustody)>>
+    {
         self.evaluations.fetch_add(1, Ordering::SeqCst);
         self.fixed.evaluate(invocation, scope, io)
     }
 }
 
 #[tokio::test]
-async fn native_policy_identity_checks_use_original_work_before_and_after_evaluation() -> Result<()> {
+async fn native_policy_identity_checks_use_original_work_before_and_after_evaluation() -> Result<()>
+{
     for (copies, changed_before, changed_during) in [
         (0, false, false),
         (4096, false, false),
@@ -112,13 +114,20 @@ async fn native_policy_identity_checks_use_original_work_before_and_after_evalua
         } else {
             let checks = if changed_before { 1 } else { 2 };
             assert_eq!(policy.native.load(Ordering::SeqCst), checks);
-            assert_eq!(policy.evaluations.load(Ordering::SeqCst), usize::from(!changed_before));
+            assert_eq!(
+                policy.evaluations.load(Ordering::SeqCst),
+                usize::from(!changed_before)
+            );
             let bytes = policy.fixed.identity.name.len() + policy.fixed.identity.version.len();
             assert_eq!(work.receipt().bytes_copied, (checks * bytes) as u64);
             if changed_before {
-                assert!(matches!(result, Err(Error::Conflict(ref reason)) if reason == "stock policy changed after binding"));
+                assert!(
+                    matches!(result, Err(Error::Conflict(ref reason)) if reason == "stock policy changed after binding")
+                );
             } else if changed_during {
-                assert!(matches!(result, Err(Error::Conflict(ref reason)) if reason == "stock policy changed during evaluation"));
+                assert!(
+                    matches!(result, Err(Error::Conflict(ref reason)) if reason == "stock policy changed during evaluation")
+                );
             } else {
                 assert!(matches!(result, Ok(None)));
             }

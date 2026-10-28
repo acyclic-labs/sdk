@@ -9,8 +9,8 @@ use crate::{
     AgentId, Capabilities, ConversationId, Error, IdempotencyKey, InteractionId, OperationId,
     Result,
     conversation::{
-        ContentPublisher, ContentResidencyVerifier, FileRef, Limits, VolumeClass,
-        VolumeOperation, VolumeOwner, VolumeRef,
+        ContentPublisher, ContentResidencyVerifier, FileRef, Limits, VolumeClass, VolumeOperation,
+        VolumeOwner, VolumeRef,
     },
     core::{Action, AggregateKind, Authority, AuthorityRoot, Command, SchemaRegistry, Scope},
     executor::ExecutionJournal,
@@ -224,8 +224,7 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
         filesystem: Fs<A, O>,
         stream: Arc<P>,
     ) -> Result<Self> {
-        let (host, volume) =
-            new_memory_content(agent, maximum_file_bytes, filesystem).await?;
+        let (host, volume) = new_memory_content(agent, maximum_file_bytes, filesystem).await?;
         let conversation = Authority {
             kind: AggregateKind::Conversation,
             id: ConversationId::new().to_string(),
