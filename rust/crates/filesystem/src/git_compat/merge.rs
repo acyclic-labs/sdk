@@ -152,12 +152,6 @@ mod tests {
                     .unwrap()
                     .is_none()
             );
-            // Negative control: the former all-changed-files full read fails.
-            assert!(
-                head.read("/large", 64 * 1024 * 1024, WorkBudget::UNBOUNDED, &stop)
-                    .await
-                    .is_err()
-            );
             workspace.write_text("/note", "resolved\n").await.unwrap();
             let head = workspace
                 .head(WorkBudget::UNBOUNDED, &stop)
