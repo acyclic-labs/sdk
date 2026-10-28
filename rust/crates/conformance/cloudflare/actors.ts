@@ -11,6 +11,15 @@ const recovery = "bash scripts/qualify-cloudflare.sh";
 function refuse(step: string): never { throw new Error(`STEP hosted-actors-${step} failed; recovery: ${recovery}`); }
 function key(address: Uint8Array): string { return Array.from(address, byte => byte.toString(16).padStart(2, "0")).join(""); }
 function failure(error: unknown) { return { code: typeof error === "object" && error !== null && "code" in error && typeof error.code === "string" ? error.code : "unavailable" }; }
+function route(value: string): Route {
+  let row: Route;
+  try { row = JSON.parse(value); } catch { return refuse("routing-json"); }
+  if (!row || !Array.isArray(row.address) || row.address.length === 0
+    || row.address.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)
+    || !Array.isArray(row.paths) || row.paths.some(path => typeof path !== "string" || !path)
+    || !Number.isSafeInteger(row.generation) || row.generation < 0 || typeof row.pending !== "boolean") refuse("routing-metadata");
+  return row;
+}
 
 /** One consistency domain; actual suite and remote owners share its counted provider. */
 export class Actors extends DurableObject<Env> {
@@ -40,7 +49,7 @@ export class Actors extends DurableObject<Env> {
   });
   private readonly calls = { dispatch: 0, cursor: 0, register: 0, wake: 0, lookup: 0, reset: 0 };
 
-  private rows(): [string, Route][] { return this.routes.entries().map(([name, value]) => [name, JSON.parse(value) as Route]); }
+  private rows(): [string, Route][] { return this.routes.entries().map(([name, value]) => [name, route(value)]); }
   private owner(address: Uint8Array) { ++this.calls.lookup; return this.env.ACTOR.getByName(`${this.ctx.id.name}/${key(address)}`); }
   private async discover() {
     if (this.metadata.get("pending") !== "1") return;
@@ -67,7 +76,7 @@ export class Actors extends DurableObject<Env> {
     const name = key(address), raw = this.routes.get(name);
     if (raw === undefined || paths.length === 0 || paths.length > 1000 || new Set(paths).size !== paths.length
       || paths.some(path => !path || path.length > 4096)) refuse("registration");
-    const row = JSON.parse(raw) as Route;
+    const row = route(raw);
     if (this.rows().some(([other, route]) => other !== name && route.paths.some(path => paths.includes(path)))) refuse("route-owner");
     // Register before Host::wake performs its final committed-input recheck.
     this.routes.put(name, JSON.stringify({ ...row, paths }));
@@ -102,7 +111,7 @@ export class Actors extends DurableObject<Env> {
       try {
         ++this.calls.wake;
         await this.owner(Uint8Array.from(row.address)).wake();
-        const current = JSON.parse(this.routes.get(name)!) as Route;
+        const current = route(this.routes.get(name) ?? refuse("lost-routing-metadata"));
         if (current.generation === row.generation) this.routes.put(name, JSON.stringify({ ...current, pending: false }));
       } catch (error) { errors.push(error); }
     }));
