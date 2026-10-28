@@ -81,6 +81,9 @@ impl Blobs for Replica {
         page.revision = Some(served);
         Ok(page)
     }
+    async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error> {
+        self.primary.flush(only).await
+    }
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
         self.primary.retain(root, references).await
     }

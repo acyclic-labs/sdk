@@ -187,8 +187,14 @@ where
     for (write, result) in writes.iter().zip(results) {
         let (id, body) = parts(write);
         let length = body.len() as u64;
-        match result.and_then(|put| settle(id, length, put)) {
-            Ok(()) => record_write(work, length)?,
+        // Only the put that created the blob wrote its bytes.
+        let created = result.and_then(|put| {
+            let created = matches!(put, Put::Created { .. });
+            settle(id, length, put).map(|()| created)
+        });
+        match created {
+            Ok(true) => record_write(work, length)?,
+            Ok(false) => {}
             Err(error) => {
                 failure.get_or_insert(error);
             }

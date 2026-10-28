@@ -18,6 +18,8 @@ pub enum MediumError {
 /// Immutable keys under one namespace. Every engine invariant is built from
 /// create-if-absent, ranged reads, removal and lexical listing, so one
 /// implementation of blob semantics serves memory, local disk and S3 alike.
+/// Writes are atomic and immediately visible; [`Medium::flush`] makes them
+/// durable, so a caller pays for durability once, where it commits.
 #[async_trait::async_trait]
 pub trait Medium: Send + Sync + 'static {
     /// Creates `key` with `bytes` unless it exists. `Ok(false)` leaves the existing
@@ -34,7 +36,8 @@ pub trait Medium: Send + Sync + 'static {
     async fn remove(&self, key: &str) -> Result<bool, MediumError>;
     /// Replaces `key` with `bytes` only while it holds exactly `expected`,
     /// atomically against every other conditional write and removal.
-    /// `Ok(false)` leaves the key untouched.
+    /// `Ok(false)` leaves the key untouched. Unflushed, a crash leaves the
+    /// old value or the new one, whole: a committed key is rewritten in place.
     async fn replace(
         &self,
         key: &str,
@@ -53,6 +56,21 @@ pub trait Medium: Send + Sync + 'static {
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, u64)>, MediumError>;
+    /// Makes the current state of each of `keys`, present or removed, survive
+    /// a crash, with the directory entries naming them. Until then a write is
+    /// only visible. A medium durable on every write does nothing.
+    async fn flush(&self, keys: &[String]) -> Result<(), MediumError>;
+    /// Whether a write survives a crash only once flushed.
+    fn volatile(&self) -> bool;
+    /// Whether this medium opened over writes an owner that crashed may have
+    /// left unflushed, and has not settled since: such a key can read at full
+    /// length with damaged bytes. A recovered medium has made every key that
+    /// survived durable, and stays recovered across clean closes until
+    /// [`Medium::settle`].
+    fn recovered(&self) -> bool;
+    /// Records that the engine repaired what the crash left, every repair
+    /// flushed: the next open trusts the medium, unless this owner crashes.
+    fn settle(&self);
     /// Accounts for a `bytes` buffer the engine allocates on this medium's
     /// behalf; free unless the medium meters its caller.
     fn allocate(&self, _bytes: u64) -> Result<(), MediumError> {
@@ -201,4 +219,18 @@ impl Medium for MemoryMedium {
             .map(|(key, bytes)| (key.clone(), bytes.len() as u64))
             .collect())
     }
+
+    async fn flush(&self, _keys: &[String]) -> Result<(), MediumError> {
+        Ok(())
+    }
+
+    fn volatile(&self) -> bool {
+        false
+    }
+
+    fn recovered(&self) -> bool {
+        false
+    }
+
+    fn settle(&self) {}
 }

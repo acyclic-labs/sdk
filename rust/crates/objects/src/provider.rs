@@ -293,15 +293,21 @@ pub trait Blobs: Send + Sync {
     /// for the whole traversal appears exactly once.
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error>;
 
+    /// Makes the blobs in the closure of `only`, or every blob, survive a
+    /// crash. A put alone may not: a commit referencing blobs calls this
+    /// first. A provider durable on every acknowledged put does nothing.
+    async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error>;
+
     /// Atomically appends one reference batch to `root` after verifying every
-    /// reference exists. Repeating the same batch is a no-op.
+    /// reference exists, durably. Repeating the same batch is a no-op.
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error>;
 
     /// Drops every batch of `root`. Repeating it is a no-op.
     async fn release(&self, root: &RootId) -> Result<Released, Error>;
 
-    /// Marks from every retained root and every blob admitted since the
-    /// previous cut, then sweeps the rest. An incomplete root scan sweeps nothing.
+    /// Marks from every retained root, then sweeps each other blob that the
+    /// pass before the previous one already found unreferenced: a put has
+    /// one whole pass to be referenced. An incomplete root scan sweeps nothing.
     async fn collect(&self) -> Result<Collection, Error>;
 
     /// Unique stored bytes in this account.
@@ -426,6 +432,9 @@ impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
     }
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
         (**self).list(after, limit).await
+    }
+    async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error> {
+        (**self).flush(only).await
     }
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
         (**self).retain(root, references).await

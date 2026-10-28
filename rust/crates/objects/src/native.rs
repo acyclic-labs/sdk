@@ -124,6 +124,25 @@ impl<M: Medium> Medium for Metered<M> {
         replaced
     }
 
+    async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
+        self.charge(self.meter.admit_write(0))?;
+        let flushed = self.inner.flush(keys).await;
+        self.charge(self.meter.record_write(0))?;
+        flushed
+    }
+
+    fn volatile(&self) -> bool {
+        self.inner.volatile()
+    }
+
+    fn recovered(&self) -> bool {
+        self.inner.recovered()
+    }
+
+    fn settle(&self) {
+        self.inner.settle();
+    }
+
     async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
         self.charge(self.meter.admit_write(0))?;
         let removed = self.inner.remove_if(key, expected).await;

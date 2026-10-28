@@ -42,6 +42,9 @@ impl<P: Blobs> Blobs for Counted<P> {
         self.record(RequestClass::List);
         self.inner().list(after, limit).await
     }
+    async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error> {
+        self.inner().flush(only).await
+    }
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
         self.record(RequestClass::Data);
         self.inner().retain(root, references).await

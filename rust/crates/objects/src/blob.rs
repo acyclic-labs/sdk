@@ -200,24 +200,16 @@ pub(crate) struct Envelope {
     /// width, so marking and reviving never change the envelope's size and a
     /// full bounded medium can still free space.
     pub(crate) dying: Option<[u8; 16]>,
-    /// Created before its payload and published by a conditional replace of
-    /// these exact bytes, so a collector that revokes it first leaves no
-    /// publication behind. Readers treat it as absent. It is encoded with one
-    /// state byte in place of the deleter field, so it is never larger than
-    /// its publication, even on a full bounded medium, and a listing tells it
-    /// by its size alone.
-    pub(crate) pending: bool,
+    /// The epoch of the collection that first found this blob unreferenced,
+    /// zero for none; the collection two epochs later removes it, unless a
+    /// put clears it first. Fixed width, so stamping never changes the
+    /// envelope's size.
+    pub(crate) condemned: u64,
 }
 
 impl Envelope {
-    /// Whether a stored envelope of `size` bytes is published, not pending.
-    pub(crate) fn published_size(size: u64) -> bool {
-        let base = (ENVELOPE_MAGIC.len() + 54) as u64;
-        size >= base && (size - base).is_multiple_of(32)
-    }
-
     pub(crate) fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(ENVELOPE_MAGIC.len() + 54 + self.references.len() * 32);
+        let mut bytes = Vec::with_capacity(ENVELOPE_MAGIC.len() + 62 + self.references.len() * 32);
         bytes.extend_from_slice(ENVELOPE_MAGIC);
         bytes.push(match self.kind {
             Kind::Blob => 1,
@@ -230,12 +222,9 @@ impl Envelope {
             bytes.extend_from_slice(reference.as_bytes());
         }
         bytes.extend_from_slice(&self.version);
-        if self.pending {
-            bytes.push(2);
-        } else {
-            bytes.push(u8::from(self.dying.is_some()));
-            bytes.extend_from_slice(&self.dying.unwrap_or_default());
-        }
+        bytes.push(u8::from(self.dying.is_some()));
+        bytes.extend_from_slice(&self.dying.unwrap_or_default());
+        bytes.extend_from_slice(&self.condemned.to_le_bytes());
         bytes
     }
 
@@ -258,11 +247,19 @@ impl Envelope {
             reader.take(16)?.try_into().map_err(|_| corrupt())
         };
         let version = nonce(&mut reader)?;
-        let (dying, pending) = match reader.take(1)? {
-            [2] => (None, true),
-            [0] if nonce(&mut reader)? == [0; 16] => (None, false),
-            [1] => (Some(nonce(&mut reader)?), false),
+        let dying = match reader.take(1)? {
+            // A pending envelope of the earlier put protocol: its payload,
+            // if any, is this version's like any other.
+            [2] => None,
+            [0] if nonce(&mut reader)? == [0; 16] => None,
+            [1] => Some(nonce(&mut reader)?),
             _ => return Err(corrupt()),
+        };
+        // Envelopes from before stamps were recorded are unstamped.
+        let condemned = if reader.0.is_empty() {
+            0
+        } else {
+            reader.u64()?
         };
         reader.finish()?;
         Ok(Self {
@@ -272,7 +269,7 @@ impl Envelope {
             references,
             version,
             dying,
-            pending,
+            condemned,
         })
     }
 }

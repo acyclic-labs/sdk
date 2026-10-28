@@ -187,6 +187,15 @@ impl<P: Blobs + ?Sized> AsyncObjectStore for LogicalObjectStore<P> {
             .check()
             .map_err(crate::async_storage::object_error)?;
         let Some(root) = &self.publication_root else {
+            // The stream entry is the commit: its closure is durable first.
+            let flushed = match scope {
+                crate::PublicationScope::Closure { objects, .. } => {
+                    let blobs: Vec<_> = objects.iter().copied().map(blob).collect();
+                    self.provider.flush(Some(&blobs)).await
+                }
+                crate::PublicationScope::Everything => self.provider.flush(None).await,
+            };
+            flushed.map_err(ObjectStoreError::LogicalObjects)?;
             return Ok(crate::PublicationHold::none());
         };
         // An enumerated closure is retained as listed; the root's earlier

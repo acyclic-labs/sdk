@@ -209,6 +209,21 @@ fn ambiguous(error: impl std::fmt::Display) -> MediumError {
 
 #[async_trait::async_trait]
 impl Medium for S3Medium {
+    // An acknowledged S3 write is durable.
+    async fn flush(&self, _keys: &[String]) -> Result<(), MediumError> {
+        Ok(())
+    }
+
+    fn volatile(&self) -> bool {
+        false
+    }
+
+    fn recovered(&self) -> bool {
+        false
+    }
+
+    fn settle(&self) {}
+
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
         if self.multipart && bytes.len() > 5 * 1024 * 1024 {
             return self.multipart_create(&self.path(key), bytes).await;
