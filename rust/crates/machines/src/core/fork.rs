@@ -105,7 +105,7 @@ where
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-use super::{ForkSlot, OperationRegistry, RawMachines};
+use super::{ForkSlot, NativeResource, OperationRegistry, RawMachines};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
     ForkFidelity, MAX_FORK_CHILDREN, MachineId, MachineState, MutationIntent, MutationOutcome,

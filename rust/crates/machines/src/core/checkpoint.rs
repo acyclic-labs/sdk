@@ -1,6 +1,6 @@
 //! Immutable checkpoint custody, observation and fork sequencing share one owner.
 use super::{
-    ForkSlot, MachineSource, NativeBinding, OperationRegistry, RawMachines,
+    ForkSlot, MachineSource, NativeBinding, NativeResource, OperationRegistry, RawMachines,
     lifecycle::require_capability, settle,
 };
 use crate::*;
