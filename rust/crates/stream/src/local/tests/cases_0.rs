@@ -198,15 +198,16 @@ fn cancellation_keeps_accepted_visibility_and_durable_receipts_distinct()
             .map_err(|_| "journal-persist test hook was poisoned")? =
             Some((journal_identity, started_tx, release_rx));
         let path = StreamPath::new("cancelled-visibility")?;
+        let key = crate::IdempotencyKey::unique();
         let appending = tokio::spawn({
-            let (provider, path) = (provider.clone(), path.clone());
+            let (provider, path, key) = (provider.clone(), path.clone(), key.clone());
             async move {
                 provider
                     .append(AppendRequest {
                         path,
                         records: vec![(Bytes::from_static(b"record")).into()],
                         if_tail: Some(0),
-                        idempotency_key: crate::IdempotencyKey::unique(),
+                        idempotency_key: key,
                     })
                     .await
             }
@@ -216,6 +217,52 @@ fn cancellation_keeps_accepted_visibility_and_durable_receipts_distinct()
         assert!(appending.await.is_err_and(|error| error.is_cancelled()));
 
         assert_eq!(provider.tail(path.clone()).await?, 1);
+        let observed = provider
+            .inspect_idempotency(key.clone())
+            .await?
+            .ok_or("missing accepted outcome")?;
+        let crate::IdempotencyOutcome::Append(accepted) = observed.outcome else {
+            return Err("unexpected accepted family".into());
+        };
+        let envelope = provider.read_commit(accepted.commit_id).await?;
+        assert_eq!(envelope.commit_id, accepted.commit_id);
+        let meter = Arc::new(crate::test_meter::Meter::default());
+        {
+            let tail = provider
+                .native_tail(path.clone(), meter.original())
+                .await??;
+            assert_eq!(*tail.value(), 1);
+            let observation = provider
+                .native_inspect_idempotency(key, meter.original())
+                .await??;
+            assert!(observation.value().is_some());
+            let mut records = provider
+                .native_read(
+                    ReadRequest {
+                        key: None,
+                        path: path.clone(),
+                        from: 0,
+                        limit: 1,
+                        at_least: Default::default(),
+                    },
+                    meter.original(),
+                )
+                .await??;
+            let record = records
+                .value_mut()
+                .next()
+                .await
+                .ok_or("missing accepted record")???;
+            assert_eq!(record.value().value.as_ref(), b"record");
+        }
+        meter.assert_refunded();
+        assert_eq!(
+            meter
+                .durability_operations
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+
         assert!(provider.durable_receipt(path.clone(), 2).await?.is_none());
         let receipt = provider.durable_receipt(path, 1);
         futures::pin_mut!(receipt);

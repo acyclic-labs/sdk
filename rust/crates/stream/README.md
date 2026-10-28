@@ -215,3 +215,10 @@ Local, browser, journal and Postgres adapters borrow the same memory snapshot
 implementation directly. This removes their inner boxed provider future. Local
 multi-path views also reuse the request's path storage instead of cloning its
 collection to associate each captured head with its durability metadata.
+
+All local query families share accepted-publication visibility, including native
+reads, retained outcome inspection and immutable-envelope reads. A query adds
+zero durability barriers; explicit receipts and session barriers own that cost.
+The cancellation control holds the real device flush while ordinary and native
+queries observe the accepted record, then checks that its receipt remains
+pending until the device completes.

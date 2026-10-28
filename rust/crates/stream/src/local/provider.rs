@@ -51,7 +51,7 @@ impl StreamProvider for LocalStream {
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        self.visible(self.inner.provider.inspect_idempotency(idempotency_key))
+        self.accepted(self.inner.provider.inspect_idempotency(idempotency_key))
             .await?
     }
 
@@ -200,7 +200,7 @@ impl StreamProvider for LocalStream {
                     .revisions
                     .wait(&request.at_least)
                     .await?;
-                self.read_visible(request).await
+                self.accepted(self.inner.provider.read(request)).await?
             })
             .await;
         observation.finished = true;
@@ -239,7 +239,7 @@ impl StreamProvider for LocalStream {
         &self,
         commit_id: crate::CommitId,
     ) -> Result<CommittedEnvelope, StreamError> {
-        self.visible(self.inner.provider.read_commit(commit_id))
+        self.accepted(self.inner.provider.read_commit(commit_id))
             .await?
     }
     fn native_tail(
@@ -264,7 +264,7 @@ impl StreamProvider for LocalStream {
             if let Err(error) = self.inner.provider.revisions.wait(&request.at_least).await {
                 return Ok(Err(error));
             }
-            self.visible(self.inner.provider.native_read(request, meter))
+            self.accepted(self.inner.provider.native_read(request, meter))
                 .await
                 .unwrap_or_else(|error| Ok(Err(error)))
         })
@@ -276,7 +276,7 @@ impl StreamProvider for LocalStream {
     ) -> crate::NativeProviderFuture<'_, Option<IdempotencyObservation>> {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::new(&original, async move {
-            self.visible(self.inner.provider.native_inspect_idempotency(key, meter))
+            self.accepted(self.inner.provider.native_inspect_idempotency(key, meter))
                 .await
                 .unwrap_or_else(|error| Ok(Err(error)))
         })

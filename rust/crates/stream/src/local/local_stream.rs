@@ -638,27 +638,4 @@ impl LocalStream {
         self.check_available()?;
         Ok(read.await)
     }
-
-    /// Runs one read under shared visibility, then joins its durable watermark.
-    async fn visible<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
-        let read = async {
-            self.check_available()?;
-            let (result, required) = {
-                let _visibility = self.inner.visibility.read().await;
-                self.check_available()?;
-                let required = self.inner.required()?;
-                (read.await, required)
-            };
-            self.await_publication(required).await?;
-            Ok(result)
-        };
-        #[cfg(feature = "test-support")]
-        return acyclic_native_runtime::testing::observe_read(read).await;
-        #[cfg(not(feature = "test-support"))]
-        read.await
-    }
-
-    async fn read_visible(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        self.accepted(self.inner.provider.read(request)).await?
-    }
 }
