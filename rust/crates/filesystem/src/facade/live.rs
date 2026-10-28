@@ -32,7 +32,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         }
         let (decision, allocation) = self
             .rebase_head_with_accounting(
-                self.volume.config.limits.maximum_checkout_dependencies,
+                self.volume.config.limits.maximum_directory_page_entries,
                 accounting,
                 cancellation,
             )

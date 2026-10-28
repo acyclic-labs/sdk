@@ -115,7 +115,7 @@ pub async fn build_generation_export_manifest_async<S: AsyncObjectStore>(
         objects: proof.objects,
         file_count: proof.file_count,
     };
-    validate_generation_export_manifest(&manifest, config.limits.maximum_objects_per_generation)
+    validate_generation_export_manifest(&manifest, None)
         .map_err(|error| OperationFailure::new(error.into(), proof.work))?;
     if proof.root.volume_id != volume_id {
         return Err(OperationFailure::new(
@@ -140,11 +140,8 @@ pub async fn authenticate_generation_export_manifest_async<S: AsyncObjectStore>(
     cancellation
         .check()
         .map_err(|error| OperationFailure::before_work(error.into()))?;
-    validate_generation_export_manifest(
-        manifest,
-        manifest.config.limits.maximum_objects_per_generation,
-    )
-    .map_err(|error| OperationFailure::before_work(error.into()))?;
+    validate_generation_export_manifest(manifest, None)
+        .map_err(|error| OperationFailure::before_work(error.into()))?;
     let proof = prove_generation_closure(
         store,
         manifest.generation_root,
@@ -187,11 +184,8 @@ pub async fn export_generation_batch_async<S: AsyncObjectStore + ?Sized>(
     cancellation
         .check()
         .map_err(|error| OperationFailure::before_work(error.into()))?;
-    validate_generation_export_manifest(
-        manifest,
-        manifest.config.limits.maximum_objects_per_generation,
-    )
-    .map_err(|error| OperationFailure::before_work(error.into()))?;
+    validate_generation_export_manifest(manifest, None)
+        .map_err(|error| OperationFailure::before_work(error.into()))?;
     if maximum_objects == 0 || maximum_object_bytes == 0 {
         return Err(OperationFailure::before_work(
             GenerationTransferError::EmptyBatch,
@@ -298,11 +292,8 @@ pub async fn import_generation_batch_async<S: AsyncObjectStore + ?Sized>(
     cancellation
         .check()
         .map_err(|error| OperationFailure::before_work(error.into()))?;
-    validate_generation_export_manifest(
-        manifest,
-        manifest.config.limits.maximum_objects_per_generation,
-    )
-    .map_err(|error| OperationFailure::before_work(error.into()))?;
+    validate_generation_export_manifest(manifest, None)
+        .map_err(|error| OperationFailure::before_work(error.into()))?;
     if maximum_objects == 0 {
         return Err(OperationFailure::before_work(
             GenerationTransferError::EmptyBatch,

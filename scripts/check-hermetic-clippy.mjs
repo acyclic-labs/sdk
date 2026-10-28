@@ -1,5 +1,5 @@
+import { captureCommand } from "./process-capture.mjs";
 import assert from 'node:assert/strict';
-import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -10,10 +10,10 @@ export function hermeticCompilerPlans() {
     '--', '-D', 'clippy::disallowed_methods', '-D', 'clippy::disallowed_macros']}));
 }
 
-export function qualifyHermeticCompiler(run = spawnSync) {
+export function qualifyHermeticCompiler(run = captureCommand) {
 for (const {negative, args} of hermeticCompilerPlans()) {
   const start = performance.now();
-  const result = run('cargo', args, {cwd: root, encoding: 'utf8', maxBuffer: 1 << 23});
+  const result = run('cargo', args, {cwd: root, encoding: 'utf8', });
   if (result.error) throw result.error;
   const diagnostics = result.stdout.split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line))
     .filter(record => record.reason === 'compiler-message').map(record => record.message);

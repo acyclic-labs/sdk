@@ -51,7 +51,6 @@ type BrowserAgents = AgentHost<dyn StreamProvider>;
 type BrowserHandler = AgentHandler<dyn StreamProvider, ExecutorDriver<Arc<BrowserTurns>>>;
 
 /// Settled turns of history in each turn's model context, as in the local host.
-const HISTORY_TURNS: u32 = 64;
 /// Backstop on one delivery, which awaits a whole turn, as in the local host.
 const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
 
@@ -89,14 +88,14 @@ fn digest16(domain: &str, parts: &[&[u8]]) -> [u8; 16] {
 #[serde(deny_unknown_fields)]
 #[tsify(large_number_types_as_bigints)]
 struct WasmBrowserStreamLimits {
-    commands: u64,
-    journal_bytes: u64,
-    paths: u32,
-    path_bytes: u32,
-    records: u32,
-    payload_bytes: u32,
-    commits: u32,
-    idempotency_results: u32,
+    commands: Option<u64>,
+    journal_bytes: Option<u64>,
+    paths: Option<u32>,
+    path_bytes: Option<u32>,
+    records: Option<u32>,
+    payload_bytes: Option<u32>,
+    commits: Option<u32>,
+    idempotency_results: Option<u32>,
 }
 
 #[derive(Deserialize, Tsify)]

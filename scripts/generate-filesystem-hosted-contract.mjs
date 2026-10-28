@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "./process-capture.mjs";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,7 +28,7 @@ function readProtoEnums(root) {
   try {
     const executable = join(root, "node_modules", ".bin", process.platform === "win32" ? "buf.exe" : "buf");
     const descriptorPath = join(temporary, "filesystem-descriptor.json");
-    const result = spawnSync(
+    const result = captureCommand(
       executable,
       ["build", "--as-file-descriptor-set", "--path", "rust/crates/filesystem-wire/proto/filesystem/v2", "-o", descriptorPath],
       { cwd: root, encoding: "utf8" },

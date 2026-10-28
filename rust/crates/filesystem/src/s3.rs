@@ -724,11 +724,7 @@ fn queue_listing_task(
 }
 
 /// Seek only when every earlier child directory has a flattened `name/` bound below the marker.
-fn direct_child_seek(
-    options: &S3ListOptions,
-    limits: crate::model::VolumeLimits,
-    frontier_key: &str,
-) -> Option<Bound<LogicalName>> {
+fn direct_child_seek(options: &S3ListOptions, frontier_key: &str) -> Option<Bound<LogicalName>> {
     let Some(cursor) = &options.continuation else {
         return None;
     };
@@ -751,19 +747,15 @@ fn direct_child_seek(
     {
         return None;
     }
-    LogicalName::new(
-        NameEncoding::Utf8,
-        name.as_bytes().to_vec(),
-        limits.maximum_component_bytes,
-    )
-    .ok()
-    .map(|name| {
-        if cursor.after_prefix {
-            Bound::Excluded(name)
-        } else {
-            Bound::Included(name)
-        }
-    })
+    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec())
+        .ok()
+        .map(|name| {
+            if cursor.after_prefix {
+                Bound::Excluded(name)
+            } else {
+                Bound::Included(name)
+            }
+        })
 }
 
 /// Merges directory-page lower bounds and object keys in flattened UTF-8 order.
@@ -784,7 +776,7 @@ async fn list_objects_lazy<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore
 ) -> Result<S3List, S3Error> {
     let mut pending = BTreeMap::new();
     let mut sequence = 0_u64;
-    let seek = direct_child_seek(options, limits, &frontier_key);
+    let seek = direct_child_seek(options, &frontier_key);
     queue_listing_task(
         &mut pending,
         &mut sequence,

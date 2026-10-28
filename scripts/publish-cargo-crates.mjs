@@ -1,10 +1,10 @@
 #!/usr/bin/env node
+import { captureCommand } from "./process-capture.mjs";
 
 import { createHash } from "node:crypto";
 import { readFileSync, unlinkSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawnSync } from "node:child_process";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const order = JSON.parse(readFileSync(join(root, "release", "cargo-crates.json"), "utf8"));
@@ -15,7 +15,7 @@ function fail(message) {
 }
 
 function run(command, args, options = {}) {
-  const result = spawnSync(command, args, { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...options });
+  const result = captureCommand(command, args, { cwd: root, encoding: "utf8", ...options });
   if (result.error) throw result.error;
   return result;
 }

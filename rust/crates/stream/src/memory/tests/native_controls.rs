@@ -809,10 +809,10 @@ async fn competing_tail_keeps_canonical_conflict_and_target_unchanged() -> Memor
 async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it() -> MemoryResult<()>
 {
     let limits = MemoryLimits {
-        commits: 3,
-        records: 3,
-        payload_bytes: 72,
-        idempotency_results: 1,
+        commits: Some(3),
+        records: Some(3),
+        payload_bytes: Some(72),
+        idempotency_results: Some(1),
         ..MemoryLimits::default()
     };
     for abandon in [false, true] {

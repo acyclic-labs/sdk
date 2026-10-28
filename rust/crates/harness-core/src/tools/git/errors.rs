@@ -20,13 +20,13 @@ pub(super) fn compat_error(error: GitCompatError<acyclic_fs::LocalCoreStateStore
             Error::Unsupported(format!("{command}: {reason}"))
         }
         GitCompatError::Store(error) => Error::from(error),
+        GitCompatError::Scheduling(error) => Error::from(error),
         GitCompatError::InvalidState | GitCompatError::MissingResultGeneration => {
             Error::Storage(error.to_string())
         }
         GitCompatError::WorkspaceMismatch
         | GitCompatError::UnbornHead
         | GitCompatError::NothingToCommit
-        | GitCompatError::Contended
         | GitCompatError::TransitionPending(_)
         | GitCompatError::StaleTransition => Error::Conflict(error.to_string()),
     }

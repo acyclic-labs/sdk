@@ -416,8 +416,8 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
     let complete = SessionAction::Complete {
         claim: claim(&turn)?,
         outcome: crate::Outcome::Succeeded(crate::executor::TurnOutput {
-            text: "done".into(),
-            metadata: Value::Null,
+            text: "complete result ".repeat(400),
+            metadata: json!({"preserve": "native metadata"}),
             steps: 1,
             attachments: Vec::new(),
         }),
@@ -427,7 +427,11 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
     assert_eq!(answered["reply"]["kind"], "answered");
     assert_eq!(
         answered.pointer("/reply/outcome/Succeeded/text"),
-        Some(&json!("done"))
+        Some(&json!("complete result ".repeat(400)))
+    );
+    assert_eq!(
+        answered.pointer("/reply/outcome/Succeeded/metadata"),
+        Some(&json!({"preserve": "native metadata"}))
     );
     let send = SessionAction::Send {
         prompt: "third".into(),

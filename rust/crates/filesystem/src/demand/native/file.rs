@@ -20,10 +20,47 @@ type SourceFile = std::fs::File;
 
 /// How long a read of a file under a root that is not local may take
 const REMOTE_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
-/// Most reads of files under roots that are not local that may be
+/// Credits for remote filesystem reads whose OS calls may remain blocked.
 const MAXIMUM_BLOCKED_REMOTE_READS: usize = 16;
-static BLOCKED_REMOTE_READS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static REMOTE_READ_CREDITS: (std::sync::Mutex<usize>, std::sync::Condvar) =
+    (std::sync::Mutex::new(0), std::sync::Condvar::new());
+
+struct RemoteReadCredit;
+
+impl RemoteReadCredit {
+    fn acquire(context: &mut CallbackWork) -> Result<Self, DemandError> {
+        loop {
+            context.check()?;
+            let mut active = REMOTE_READ_CREDITS
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *active < MAXIMUM_BLOCKED_REMOTE_READS {
+                *active += 1;
+                return Ok(Self);
+            }
+            // The wait holds no original-ledger loan. Check cancellation again
+            // even when every outstanding OS read is stalled indefinitely.
+            drop(
+                REMOTE_READ_CREDITS
+                    .1
+                    .wait_timeout(active, std::time::Duration::from_millis(100))
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+        }
+    }
+}
+
+impl Drop for RemoteReadCredit {
+    fn drop(&mut self) {
+        let mut active = REMOTE_READ_CREDITS
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *active -= 1;
+        REMOTE_READ_CREDITS.1.notify_one();
+    }
+}
 
 impl NativeDemandFile {
     fn open(
@@ -296,21 +333,17 @@ impl DemandFile for NativeDemandFile {
             let result = self.read(offset, length, &mut context);
             return finish_context(result, context, accounting);
         }
-        if BLOCKED_REMOTE_READS.fetch_add(1, Ordering::AcqRel) >= MAXIMUM_BLOCKED_REMOTE_READS {
-            BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
-            return Err(DemandError::SourceUnavailable);
-        }
+        let credit = RemoteReadCredit::acquire(&mut context)?;
         let file = self.clone();
         let (answer, answered) = std::sync::mpsc::sync_channel(1);
         let spawned = std::thread::Builder::new()
             .name("acyclic-remote-read".to_owned())
             .spawn(move || {
                 let result = file.read(offset, length, &mut context);
-                BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
+                drop(credit);
                 let _ = answer.send((result, context));
             });
         if spawned.is_err() {
-            BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
             return Err(DemandError::SourceUnavailable);
         }
         let (result, context) = answered

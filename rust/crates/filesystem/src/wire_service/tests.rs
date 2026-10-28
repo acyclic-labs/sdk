@@ -406,7 +406,7 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
             target: Some(fork_head.clone()),
             maximum_changes: 32,
             maximum_conflicts: 8,
-            maximum_generations: 32,
+            maximum_generations: Some(32),
             history: wire::JoinHistory::Merge as i32,
         }))
         .await?
@@ -432,7 +432,7 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
             target: Some(fork_head),
             maximum_changes: 32,
             maximum_conflicts: 8,
-            maximum_generations: 32,
+            maximum_generations: Some(32),
             history: wire::JoinHistory::Merge as i32,
         }))
         .await?
@@ -503,7 +503,10 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
         wire::JoinStatus::IdempotencyConflict as i32
     );
     let mut altered_bounds = plan.clone();
-    altered_bounds.maximum_generations += 1;
+    *altered_bounds
+        .maximum_generations
+        .as_mut()
+        .expect("finite fixture") += 1;
     altered_bounds.plan_id = join_plan_id(
         altered_bounds.source.as_ref().ok_or("missing source")?,
         altered_bounds
@@ -564,7 +567,7 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
             target: Some(advanced_target),
             maximum_changes: 32,
             maximum_conflicts: 8,
-            maximum_generations: 32,
+            maximum_generations: Some(32),
             history: wire::JoinHistory::Merge as i32,
         }))
         .await?
@@ -651,7 +654,7 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
             target: Some(conflict_target_head.clone()),
             maximum_changes: 32,
             maximum_conflicts: 8,
-            maximum_generations: 32,
+            maximum_generations: Some(32),
             history: wire::JoinHistory::Merge as i32,
         }))
         .await?
@@ -688,7 +691,7 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
             target: Some(conflict_target_head),
             maximum_changes: 32,
             maximum_conflicts: 8,
-            maximum_generations: 32,
+            maximum_generations: Some(32),
             history: wire::JoinHistory::Merge as i32,
         }))
         .await?
