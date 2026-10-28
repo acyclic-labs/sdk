@@ -38,6 +38,7 @@ use acyclic_harness_client::{
     AgentBinding, AgentCall, AgentCommand, AgentReply, ChildAgent, MAX_READ_BYTES, PendingApproval,
     ReadTarget,
 };
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     BoxProviderFuture, ChildrenPageRequest, CommitId, ProviderPlatform, ReadRequest, StreamError,
     StreamPath,

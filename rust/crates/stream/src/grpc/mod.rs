@@ -26,7 +26,7 @@ use crate::wire_codec::{
 use crate::{
     AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
     ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, Record,
-    RecordStream, StreamError, StreamPath, StreamProvider, wire,
+    RecordStream, StreamError, StreamProvider, wire,
 };
 pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
@@ -35,6 +35,8 @@ mod client;
 mod credential_tests;
 #[cfg(test)]
 mod latency_tests;
+#[cfg(test)]
+use crate::StreamPath;
 #[cfg(test)]
 mod receipt_tests;
 mod server;
