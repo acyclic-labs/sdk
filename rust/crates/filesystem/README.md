@@ -35,8 +35,9 @@ Before the callback returns, the actual filesystem adapter must durably journal 
 ## Filesystem publication migration
 
 M1 adds record contributions to the existing `distributed::FilesystemCommit`.
-It does not change the shipping workspace storage layout. G48 public retirement
-is deferred; `Fs<A, O>` and `AsyncAuthorityStore` remain exported.
+It does not change the shipping workspace storage layout or implement G48's
+selected retirement of `Fs<A, O>` and `AsyncAuthorityStore` without a compatibility
+window. Those types are still exported in this milestone's source.
 
 ### Record contract and compatibility
 
@@ -83,7 +84,9 @@ Application retention must preserve permanent semantic outcomes; this API does
 not pin all records forever or create another receipt service.
 
 Unknown retains the original request/key, deadline, holds and native request
-custody. Resubmit that commit unchanged. External submitters must honor
+custody, including when local retry preparation, cancellation, budget admission,
+owner validation or cleanup refuses. Such refusal cannot settle an earlier
+uncertain publication. Resubmit that commit unchanged. External submitters must honor
 `deadline()` with `commit_before` and settle their actual provider outcome.
 Current head reads still use tail plus exact read pending G01. Multiple
 observations are optimistic facts, not a coherent G05 snapshot. Legacy `seal`
@@ -102,7 +105,7 @@ retains its policy bridge until callers migrate.
 | `operation_window/{coordinator,streams}.rs` | M3: owning actor checkpoint/alarm and exact provider expiry; delayed alarm cannot admit an expired write |
 | `workspace/access.rs`; `async_storage/policy.rs`; `distributed/policy.rs` | G26: explicit resolver observations before deleting TLS fallback; keep immutable-root proofs |
 | `distributed/actor/generations.rs`; `kernel/publication/combiner/{mod,volume}.rs` | M4: separate retained active ownership from bounded cached facts; evicted Unknown is never Absent or a second combiner |
-| sibling `filesystem-{napi,wasm}/src/**`, `harness-core/src/filesystem/**`, conformance | G48/G49: preserve compatibility until retirement decision and migrate shared context with existing G44 ledger |
+| sibling `filesystem-{napi,wasm}/src/**`, `harness-core/src/filesystem/**`, conformance | G48/G49: migrate consumers and retire authority exports without a compatibility window; share the existing G44 work context |
 
 No path is released for deletion by M1. del-fs-native owns native
 view/frontier/rebase integration; this API is not an implemented shared follow

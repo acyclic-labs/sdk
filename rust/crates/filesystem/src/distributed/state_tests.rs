@@ -240,7 +240,10 @@ async fn prepared_commit_cannot_mix_or_switch_provider_owners() -> TestResult {
             .is_err()
     );
     store.seal_observed(&mut publication, &[], None, &mut work)?;
-    assert!(other.submit(publication, &mut work).await.is_err());
+    assert!(matches!(
+        other.submit(publication, &mut work).await?,
+        FilesystemCommitOutcome::Unknown { .. }
+    ));
     assert_eq!(
         provider.tail(path.clone()).await,
         Err(StreamError::NotFound)
@@ -342,4 +345,108 @@ fn sealed_request_keeps_original_native_custody_after_preparation_work_drops() -
     drop(publication);
     assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn local_retry_refusals_preserve_lost_ack_commit_and_collection_hold() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let spy = Arc::new(super::tests::ReleaseSpy::losing_ack(provider.clone()));
+    let store = StreamAuthorityStore::new(spy.clone());
+    let other = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
+            .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let collection = Arc::new(crate::collection::Collection::default());
+    let hold = collection.unswept().await.into_hold();
+    let path = StreamPath::new("agent/files/lost")?;
+    let mut preparation = AuthorityWork::native(&original, &cancellation);
+    let cut = store.authorized_observation(CommitCondition::Absent { path: path.clone() })?;
+    let mut publication = commit(b"held-lost-reply")?;
+    store.contribute_record(
+        &mut publication,
+        &cut,
+        &state(b"accepted"),
+        hold,
+        &mut preparation,
+    )?;
+    store.seal_observed(&mut publication, &[], Some(u64::MAX), &mut preparation)?;
+    let request = publication.request().clone();
+    drop(preparation);
+    let retained = original.live_allocation_bytes();
+    assert!(retained > baseline);
+
+    let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
+    let mut publication = unknown(store.submit(publication, &mut work).await?)?;
+    assert_eq!(
+        provider.tail(path).await?,
+        1,
+        "the lost reply followed a real publication"
+    );
+    assert_eq!(spy.commit_attempts(), 1);
+    let observed = provider
+        .inspect_idempotency(request.idempotency_key.clone())
+        .await?
+        .ok_or("missing actual outcome")?;
+    let acyclic_stream::IdempotencyOutcome::Commit(outcome) = observed.outcome else {
+        return Err("wrong outcome family".into());
+    };
+    assert!(matches!(&outcome, CommitOutcome::Committed(_)));
+    let mut collecting = Box::pin(collection.begin());
+    assert!(futures::poll!(collecting.as_mut()).is_pending());
+
+    let denied = original.native_volume_work(WorkBudget {
+        items_examined: 0,
+        ..crate::performance::BOUNDARY_BUDGET
+    })?;
+    let mut exhausted = AuthorityWork::native(&denied, &cancellation);
+    publication = unknown(store.submit(publication, &mut exhausted).await?)?;
+    assert_eq!(publication.request(), &request);
+    drop(exhausted);
+    drop(denied);
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let mut stopped = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancelled);
+    publication = unknown(store.submit(publication, &mut stopped).await?)?;
+    assert_eq!(publication.request(), &request);
+    publication = unknown(other.submit(publication, &mut work).await?)?;
+    publication = unknown(
+        other
+            .settle(publication, outcome.clone(), &mut work)
+            .await?,
+    )?;
+    assert_eq!(publication.request(), &request);
+    assert_eq!(publication.deadline(), Some(u64::MAX));
+    assert_eq!(spy.commit_attempts(), 1, "local refusals must not resubmit");
+    assert_eq!(original.live_allocation_bytes(), retained);
+    assert!(
+        futures::poll!(collecting.as_mut()).is_pending(),
+        "uncertain closure became collectible"
+    );
+
+    assert!(matches!(
+        store.settle(publication, outcome, &mut work).await?,
+        FilesystemCommitOutcome::Committed(_)
+    ));
+    assert!(futures::poll!(collecting.as_mut()).is_ready());
+    drop(request);
+    drop(work);
+    drop(store);
+    drop(spy);
+    drop(provider);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn unknown(
+    outcome: FilesystemCommitOutcome,
+) -> Result<FilesystemCommit, Box<dyn std::error::Error>> {
+    match outcome {
+        FilesystemCommitOutcome::Unknown { commit, .. } => Ok(commit),
+        _ => Err("lost-ack owner was not preserved".into()),
+    }
 }

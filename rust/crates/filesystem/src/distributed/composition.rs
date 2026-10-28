@@ -396,28 +396,34 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
     }
 
     /// Seals and submits a composed commit once, through this store's provider.
+    /// Local refusal also returns Unknown with the original owner: this may be
+    /// a retry of an earlier attempt whose publication is still uncertain.
     pub async fn submit(
         &self,
         mut commit: FilesystemCommit,
         work: &mut AuthorityWork<'_>,
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
-        self.seal(&mut commit, work)?;
-        let request = work.copy_commit(&commit.request)?;
+        let prepared = self
+            .seal(&mut commit, work)
+            .and_then(|()| work.copy_commit(&commit.request));
+        let request = match prepared {
+            Ok(request) => request,
+            Err(error) => return Ok(FilesystemCommitOutcome::Unknown { commit, error }),
+        };
         let result = self
             .commit(request, commit.deadline, work, None::<&mut ()>)
             .await;
-        if !work.is_native() {
-            work.release_request()?;
+        if !work.is_native()
+            && let Err(error) = work.release_request()
+        {
+            return Ok(FilesystemCommitOutcome::Unknown { commit, error });
         }
         match result {
             Ok((outcome, _allocation)) => self.settle(commit, outcome, work).await,
-            Err(error) => match error.into_error(std::convert::identity) {
-                // The key already holds different bytes: a retry cannot succeed.
-                error @ AuthorityStoreError::NativeStream(
-                    acyclic_stream::StreamError::IdempotencyMismatch,
-                ) => Err(error),
-                error => Ok(FilesystemCommitOutcome::Unknown { commit, error }),
-            },
+            Err(error) => Ok(FilesystemCommitOutcome::Unknown {
+                commit,
+                error: error.into_error(std::convert::identity),
+            }),
         }
     }
 
@@ -429,8 +435,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         outcome: CommitOutcome,
         work: &mut AuthorityWork<'_>,
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
-        commit.check_owner(self.operation_claims().owner_identity())?;
-        commit.ensure_sealed()?;
+        if let Err(error) = commit
+            .check_owner(self.operation_claims().owner_identity())
+            .and_then(|()| commit.ensure_sealed())
+        {
+            return Ok(FilesystemCommitOutcome::Unknown { commit, error });
+        }
         Ok(match outcome {
             CommitOutcome::Committed(envelope) => {
                 self.refresh_committed(commit, envelope.commit_id, work)
