@@ -7,8 +7,8 @@
 
 use super::host::Cancel;
 use super::{
-    BrowserHandler, WasmAgentAuthority, WasmAgentProviders, WasmAgentRegistry, WasmBrowserAgentOptions,
-    from_js, js_error,
+    BrowserHandler, WasmAgentAuthority, WasmAgentProviders, WasmAgentRegistry,
+    WasmBrowserAgentOptions, from_js, js_error,
 };
 use crate::{
     Error,
