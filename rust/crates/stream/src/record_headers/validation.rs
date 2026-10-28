@@ -13,7 +13,7 @@ pub(super) struct Validation<'a> {
 
 impl<'a> Validation<'a> {
     pub(super) fn key(&mut self, key: &'a [u8]) -> Result<(), StreamError> {
-        if self.keys == MAX_RECORD_KEYS || key.len() > MAX_RECORD_KEY_BYTES {
+        if self.keys == MAX_RECORD_KEYS {
             return Err(StreamError::LimitExceeded);
         }
         self.invalid |= self.previous_key.is_some_and(|previous| previous >= key);

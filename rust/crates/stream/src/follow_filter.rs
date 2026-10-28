@@ -272,11 +272,6 @@ fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, Str
         return Err(StreamError::LimitExceeded);
     }
     for range in &filter.keys {
-        if range.start.len() > crate::MAX_RECORD_KEY_BYTES
-            || range.end.len() > crate::MAX_RECORD_KEY_BYTES
-        {
-            return Err(StreamError::LimitExceeded);
-        }
         if !range.end.is_empty() && range.start >= range.end {
             return Err(StreamError::InvalidArgument);
         }

@@ -95,7 +95,7 @@ Actions marked pending require implementation or a semantic follow-up within thi
 | `MAX_IDEMPOTENCY_KEY_BYTES` | `rust/crates/stream/src/lib.rs:146` | 1 | Whole logical-value/count product cap. Pending shared logical chunking and removal across native/browser transports, preserving one atomic commit and original funding. |
 | `MAX_PATH_BYTES` | `rust/crates/stream/src/lib.rs:148` | 1 | Whole logical-value/count product cap. Pending shared logical chunking and removal across native/browser transports, preserving one atomic commit and original funding. |
 | `MAX_RECORD_KEYS` | `rust/crates/stream/src/record_headers.rs:14` | 1 | DELETE refusal and cap-specific tests; page/stream growing state. Pending. |
-| `MAX_RECORD_KEY_BYTES` | `rust/crates/stream/src/record_headers.rs:16` | 1 | DELETE refusal and cap-specific tests; page/stream growing state. Pending. |
+| `MAX_RECORD_KEY_BYTES` | `rust/crates/stream/src/record_headers.rs:16` (removed) | 1 | Delete generic key-width refusals in header/change validation and follow ranges, and its cap-only negative. Native compact validation compares directly against original funded immutable header keys; owned decoding reconstructs complete keys in growing owned scratch. Retain sorted/unique keys, canonical prefix compression, exact index/value equivalence and original finite native admission controls. |
 | `MAX_RECORD_ATTRIBUTES` | `rust/crates/stream/src/record_headers.rs:18` | 1 | DELETE refusal and cap-specific tests; page/stream growing state. Pending. |
 | `MAX_ACTOR_CALL_REPLY_BYTES` | `rust/crates/stream/src/wire_codec/session.rs:10` | 1 | Deleted earlier. Credited reply fragments carry complete values; receiver allocation follows actual received bytes and validates sequence/announced totals. |
 | `MAX_PAYLOAD` | `scripts/buildbox/buildbox.mjs:322` | 2 | Keep rsync transport-switch threshold. Git-only SDK payload no longer has a separate 32 MiB refusal; complete payload is shipped. |
@@ -1107,3 +1107,12 @@ The Python common option-count ceiling is now deleted; hosted endpoint capacity/
 | Gate / CLI default8s | `arena/packages/jev/src/jev/gate.py:70`; `cli.py:151` (removed) | 1 | Default to no whole-evaluation deadline. Keep explicit timeout_s / --timeout and its existing fail-open negative. Thread.join waits for the actual completion event; no readiness polling is introduced. Backend errors still produce the existing fail-open decision. |
 
 The option-tree regression uses an independent weighted-leaf probability oracle across1003 options. It checks the actual conditional-composition implementation against the flat mathematical distribution and accounts for every request, token and dollar; it is not live provider/model calibration proof.
+
+
+| Constant / limit | File:line | Category | Action |
+|---|---|---|---|
+| RESOURCE_INDEX_PREFIX_BYTES1024 | `rust/crates/stream/src/lib.rs:162`; `stream/src/session/resources.rs:285`; `filesystem/src/publication_changes/entry.rs:21` | 2 | Preserve the existing coarse filesystem index granularity as a separate shared resource-index property, not a generic key admission ceiling. Full paths remain lossless in change metadata, with exact post-selection authorization and unchanged denial negatives. Grant range selection uses the same prefix resolution, so long paths cannot disappear from follows. No data/path is truncated or refused by this index. |
+
+The native change encoding regression now publishes two4097-byte keys sharing4096 bytes, decodes their complete compact values and actual wire ingress, and retains the original allocation ownership through key aliases. All native allocation-denial and cancellation negatives remain. Qualification pending; record-count/header-count and logical whole-frame mechanisms remain separately pending.
+
+Check119 passed Python source/test compilation and all23 JEV tests in0.674s on signed `e075fc73a4` (`1793196649523-281928-94fadd2f`, 14:11:16 UTC, 46.9s). This includes the actual HTTP body/question/option round trip, the independent1003-leaf conditional probability/cost oracle and existing gate finite-timeout/error negatives. No live endpoint, GPU, model calibration or external capacity claim follows from these tests.
