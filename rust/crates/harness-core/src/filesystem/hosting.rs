@@ -383,6 +383,13 @@ where
         &self.admission
     }
 
+    /// The signing root every agent credential of this binding's tree is
+    /// issued under.
+    #[must_use]
+    pub const fn issuer(&self) -> &AuthorityRoot {
+        &self.issuer
+    }
+
     /// The agents this binding creates and hosts.
     #[must_use]
     pub const fn agents(&self) -> &Arc<AgentHost<P>> {

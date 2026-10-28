@@ -266,14 +266,14 @@ async fn verify_pair<P: StreamProvider + 'static, Q: ObjectsProvider + 'static>(
         let mut serving = Owner(tokio::spawn(async move {
             acyclic_harness::server::serve(
                 listener,
-                ServerConfig {
-                    harness: host,
-                    tls: None,
-                },
+                ServerConfig::new(host),
                 move |endpoint| {
                     assert_eq!(endpoint.server, acyclic_harness::server::IDENTITY);
-                    let _ =
-                        advertise.send((endpoint.endpoint.clone(), endpoint.credential.clone()));
+                    let credential = endpoint
+                        .observation
+                        .as_ref()
+                        .map(|minted| minted.credential.clone());
+                    let _ = advertise.send((endpoint.endpoint.clone(), credential));
                 },
                 async move {
                     let _ = stopped.await;
@@ -292,6 +292,8 @@ async fn verify_pair<P: StreamProvider + 'static, Q: ObjectsProvider + 'static>(
                     ).into());
             }
         };
+        let credential = credential
+            .ok_or("step=endpoint-ready: the key-file verifier published no credential")?;
         let options = ConnectionOptions::from_env(Some(&endpoint), Some(&credential))?;
         let observed = async {
             let connection = checked(phase, "connect", Connection::connect(&options).await)?;

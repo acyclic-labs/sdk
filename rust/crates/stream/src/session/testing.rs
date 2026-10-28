@@ -21,6 +21,7 @@ impl AuthorityState for State {
 pub fn authority() -> Arc<Authority> {
     Arc::new(Authority {
         state: Arc::new(State(Arc::new(signed::Snapshot::default()))),
+        verifier: Arc::new(super::CapabilityVerifier),
         audience: "workers:/test".into(),
         holder: Some("account".into()),
     })
@@ -54,12 +55,12 @@ pub fn credential() -> Bytes {
 pub(in crate::session) fn slots() -> Slots {
     let auth = authority();
     let mut slots = Slots::default();
-    auth.register(
+    futures::executor::block_on(auth.register(
         &mut slots,
         0,
         &credential(),
         super::Limits::default().channels,
-    )
+    ))
     .unwrap();
     slots
 }
@@ -85,7 +86,12 @@ pub fn resource_authorization(
 ) -> Result<ResourceAuthorization, StreamError> {
     let authority = authority();
     let mut slots = Slots::default();
-    authority.register(&mut slots, 0, credential, super::Limits::default().channels)?;
+    futures::executor::block_on(authority.register(
+        &mut slots,
+        0,
+        credential,
+        super::Limits::default().channels,
+    ))?;
     authority
         .bind_resource(&slots, 0, resource.into(), Default::default(), 1)
         .map(|(_, _, authorization)| authorization)

@@ -116,20 +116,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             &grants,
             seconds(clock.as_ref()),
         )?;
-        let session = Authority::new(
-            Arc::new(LocalTrust {
-                root: authority.issuer.clone(),
-                revisions: authority.issuer.trust_revisions(),
-                clock,
-            }),
-            authority.issuer.audience_resource()?,
-            None,
-        )
-        .map_err(|error| Error::Invalid(format!("observation audience: {error}")))?;
         Ok(AgentObservation {
             resource,
             credential,
-            authority: Arc::new(session),
+            authority: Arc::new(session_authority(&authority.issuer, clock)?),
             principal,
         })
     }
@@ -163,6 +153,38 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
 /// clock. A revocation advances the trust revision, so the session
 /// revalidates each open follow and ends those the revoked credential no
 /// longer authorizes.
+/// The trust every credential `issuer` signs is verified against, at
+/// `clock`'s time, following `issuer`'s revocations.
+#[must_use]
+pub fn session_trust(
+    issuer: &AuthorityRoot,
+    clock: Arc<dyn UnixMillisClock>,
+) -> Arc<dyn AuthorityState> {
+    Arc::new(LocalTrust {
+        root: issuer.clone(),
+        revisions: issuer.trust_revisions(),
+        clock,
+    })
+}
+
+/// The session authority admitting every credential `issuer` signs, under
+/// its audience ([`session_trust`]): what a host holding `issuer`'s custody
+/// verifies its clients' credentials against.
+///
+/// # Errors
+/// When `issuer`'s audience is not a session resource.
+pub fn session_authority(
+    issuer: &AuthorityRoot,
+    clock: Arc<dyn UnixMillisClock>,
+) -> Result<Authority> {
+    Authority::new(
+        session_trust(issuer, clock),
+        issuer.audience_resource()?,
+        None,
+    )
+    .map_err(|error| Error::Invalid(format!("session audience: {error}")))
+}
+
 struct LocalTrust {
     root: AuthorityRoot,
     revisions: tokio::sync::watch::Receiver<u64>,

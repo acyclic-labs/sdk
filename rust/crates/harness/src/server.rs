@@ -5,6 +5,9 @@
 //! stream session protocol over gRPC; a client reaches either with
 //! [`crate::local::Connection::connect`], the endpoint being its only
 //! difference. A host supplies only what [`ServerConfig`] names.
+pub use crate::local::{
+    Custody, KeyFileCredentials, KeyFileVerifier, Observation, RootCredential, Verifier,
+};
 use crate::{Error, LocalHarnessConfig, Result};
 use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
 use acyclic_stream::BoxProviderFuture;
@@ -26,11 +29,15 @@ pub struct TlsIdentity {
     pub key: Vec<u8>,
 }
 
-/// Everything a host supplies to [`serve`].
+/// Everything a host supplies to [`serve`]: the harness and its seams. A
+/// managed host and a self-deployed one differ only in these values.
 pub struct ServerConfig<C = LocalHarnessConfig> {
     /// The harness the tree runs on: its storage, model, preset (prompt,
     /// tools, limits, approval policy) and settings.
     pub harness: C,
+    /// Verifies the tree's caller and each client's credential;
+    /// [`KeyFileVerifier`] by default.
+    pub verifier: Arc<dyn Verifier>,
     /// The TLS identity; without one only a loopback address is served,
     /// over plain HTTP.
     pub tls: Option<TlsIdentity>,
@@ -45,10 +52,25 @@ pub trait Composition: Send + 'static {
     type Objects: AsyncObjectStore + 'static;
     /// Keeps the host's runtime and resources alive until serving ends.
     type Owner: Send + Sync + 'static;
-    /// Opens the host through the canonical admitted hosting API.
+    /// Opens the host through the canonical admitted hosting API, its tree's
+    /// caller verified by `verifier`.
     fn open(
         self,
+        verifier: &Arc<dyn Verifier>,
     ) -> BoxProviderFuture<'static, Result<Hosted<Self::Stream, Self::Objects, Self::Owner>>>;
+}
+
+impl<C> ServerConfig<C> {
+    /// `harness` served with the self-deployed defaults: the key-file
+    /// verifier and no TLS.
+    #[must_use]
+    pub fn new(harness: C) -> Self {
+        Self {
+            harness,
+            verifier: Arc::new(KeyFileVerifier),
+            tls: None,
+        }
+    }
 }
 
 /// An already admitted tree, its clock and the owner of its running runtime.
@@ -95,7 +117,9 @@ where
     type Stream = P;
     type Objects = O;
     type Owner = L;
-    fn open(self) -> BoxProviderFuture<'static, Result<Self>> {
+    /// An already hosted tree's caller was admitted by its host; `verifier`
+    /// verifies only its clients' credentials.
+    fn open(self, _: &Arc<dyn Verifier>) -> BoxProviderFuture<'static, Result<Self>> {
         Box::pin(async move { Ok(self) })
     }
 }
@@ -107,12 +131,10 @@ pub struct Endpoint {
     pub server: &'static str,
     /// The URL a client connects to.
     pub endpoint: String,
-    /// The endpoint credential (`ACYCLIC_API_KEY`): the credential minted for
-    /// the tree's root, base64url without padding.
-    pub credential: String,
-    /// The principal the credential authenticates, which an approval policy
-    /// names to route decisions to its holder.
-    pub principal: String,
+    /// The credential its verifier publishes for clients
+    /// ([`Verifier::observation`]); none when clients hold their own.
+    #[serde(flatten)]
+    pub observation: Option<Observation>,
 }
 
 /// Opens `config`'s harness and serves its agent tree on `listener` until
@@ -135,16 +157,16 @@ pub async fn serve<C: Composition>(
             "plain HTTP serves only a loopback address; give a TLS identity".into(),
         ));
     }
-    let host = config.harness.open().await?;
+    let host = config.harness.open(&config.verifier).await?;
     let server = &host.server;
     let bound = server.bound();
-    let observation = bound
-        .client_credential(server.root(), server.resource(), host.clock.clone())
-        .await
-        .map_err(failed)?;
+    let authority = config.verifier.session(&Custody {
+        issuer: bound.issuer(),
+        clock: &host.clock,
+    })?;
     let service = acyclic_stream::session::Service::new(
         bound.agents().provider().clone(),
-        observation.authority,
+        authority,
         "self-hosted".into(),
         acyclic_stream::session::Limits::default(),
     )
@@ -163,13 +185,20 @@ pub async fn serve<C: Composition>(
     } else {
         format!("http://{address}")
     };
-    use base64::Engine as _;
+    let observation = config
+        .verifier
+        .observation(RootCredential(Box::pin(async {
+            let minted = bound
+                .client_credential(server.root(), server.resource(), host.clock.clone())
+                .await
+                .map_err(failed)?;
+            Ok((minted.credential, minted.principal))
+        })))
+        .await?;
     ready(&Endpoint {
         server: IDENTITY,
         endpoint,
-        credential: base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(&observation.credential),
-        principal: observation.principal,
+        observation,
     });
     use acyclic_stream::wire::stream_session_service_server::StreamSessionServiceServer;
     let result = builder

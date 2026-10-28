@@ -119,7 +119,7 @@ impl LocalHarness {
             // sees them through the manifest like every other tool. A turn
             // binds each over any registered tool of its name, so the manifest
             // lists it in that tool's place.
-            let agent_tools = crate::tools::agent_tool_definitions(&self.agent_tools)?;
+            let agent_tools = crate::tools::agent_tool_definitions(&self.preset.tools)?;
             manifest
                 .tools
                 .retain(|tool| agent_tools.iter().all(|agent| agent.name != tool.name));
