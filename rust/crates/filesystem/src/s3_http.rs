@@ -60,14 +60,10 @@ pub struct FilesystemS3Limits {
     pub maximum_key_bytes: u32,
     /// Largest number of parts retained by one durable multipart upload.
     pub maximum_multipart_parts: u32,
-    /// Largest durable state-machine record count, including part replacements.
-    pub maximum_multipart_records: u32,
     /// Largest logical byte count admitted for one multipart part.
     pub maximum_multipart_part_bytes: u64,
     /// Minimum size of every completed part except the final part.
     pub minimum_multipart_part_bytes: u64,
-    /// Maximum optimistic Stream retries under concurrent multipart activity.
-    pub maximum_multipart_cas_retries: u32,
 }
 
 /// Optional caller policy for discovering active multipart roots before reclamation.
@@ -103,10 +99,8 @@ impl Default for FilesystemS3Limits {
             maximum_list_entries_examined: 100_000,
             maximum_key_bytes: 32 * 1024,
             maximum_multipart_parts: 10_000,
-            maximum_multipart_records: 20_003,
             maximum_multipart_part_bytes: 5 * 1024 * 1024 * 1024,
             minimum_multipart_part_bytes: 5 * 1024 * 1024,
-            maximum_multipart_cas_retries: 32,
         }
     }
 }
@@ -120,10 +114,8 @@ impl FilesystemS3Limits {
             || self.maximum_list_entries_examined == 0
             || self.maximum_key_bytes == 0
             || self.maximum_multipart_parts == 0
-            || self.maximum_multipart_records < self.maximum_multipart_parts.saturating_add(3)
             || self.maximum_multipart_part_bytes == 0
             || self.minimum_multipart_part_bytes > self.maximum_multipart_part_bytes
-            || self.maximum_multipart_cas_retries == 0
             || self.response_chunk_bytes > self.maximum_request_bytes
         {
             return Err(s3s::s3_error!(InvalidArgument));
