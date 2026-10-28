@@ -281,7 +281,11 @@ impl Providers {
         options.limits.validate(&mut None).map_err(js_error)?;
         let turn_limits = TurnLimits {
             maximum_bytes: options.limits.file_bytes,
-            max_steps: u32::try_from(options.limits.model_steps)
+            max_steps: options
+                .limits
+                .model_steps
+                .map(u32::try_from)
+                .transpose()
                 .map_err(|_| js_error(Error::Invalid("model step limit exceeds u32".into())))?,
             history_turns: None,
         };

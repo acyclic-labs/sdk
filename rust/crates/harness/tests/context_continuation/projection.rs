@@ -122,7 +122,7 @@ pub(super) async fn retained_summary_composes_into_later_admissions_and_exact_re
         operation_id: OperationId::new(),
         input: ModelContent::Text("later input".into()),
         selected_context: None,
-        max_steps: 1,
+        max_steps: Some(1),
     };
     let journal = storage.journal();
     let output = executor.execute(input.clone(), journal.as_ref()).await?;
@@ -157,7 +157,7 @@ pub(super) async fn retained_summary_composes_into_later_admissions_and_exact_re
                 operation_id: OperationId::new(),
                 input: ModelContent::Text("new source admission".into()),
                 selected_context: None,
-                max_steps: 1,
+                max_steps: Some(1),
             },
             journal.as_ref(),
         )
