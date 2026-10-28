@@ -21,7 +21,11 @@ impl PacketSession {
             Ok(reply) => {
                 // On failure the pending reply closes the session before its
                 // original work and projection leases can be released.
-                publish(PacketResponse::new(response, reply.length(), reply.payload())?)?;
+                publish(PacketResponse::new(
+                    response,
+                    reply.length(),
+                    reply.payload(),
+                )?)?;
                 reply.delivered();
                 Ok(request.opcode != 38)
             }
