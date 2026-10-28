@@ -64,7 +64,7 @@ async fn connect_channel(endpoint: &str, ca: Option<&[u8]>) -> Result<Channel, C
     let configured = Endpoint::from_shared(endpoint.to_owned())?
         .http2_max_header_list_size(tonic_web_wasm_client::limits::HEADER_LIST_BYTES);
     let configured = if let Some(ca) = ca {
-        if ca.is_empty() || ca.len() > 64 * 1024 {
+        if ca.is_empty() {
             return Err(ConnectError::InvalidCaCertificate);
         }
         configured.tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca)))?
