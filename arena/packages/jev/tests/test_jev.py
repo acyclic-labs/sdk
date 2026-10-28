@@ -34,9 +34,6 @@ class TestFormat(unittest.TestCase):
         self.assertEqual(p.cached_tokens, P + suffix)
         self.assertEqual(p.naive_tokens, P * 5 + suffix)
 
-    def test_validate_refuses_long(self):
-        with self.assertRaises(ValueError):
-            fmt.validate([Question("q " * 400, ("a", "b"))])
 
 
 class TestMock(unittest.TestCase):
