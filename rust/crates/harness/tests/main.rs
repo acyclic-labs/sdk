@@ -142,6 +142,4 @@ mod host_hooks;
 mod skills_context;
 
 #[cfg(all(loom, feature = "model-checking"))]
-mod client_mailbox_model;
-#[cfg(all(loom, feature = "model-checking"))]
 mod e2e_progress_model;

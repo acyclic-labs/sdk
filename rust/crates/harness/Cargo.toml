@@ -189,13 +189,3 @@ wasm-bindgen-test = "=0.3.67"
 
 [lints]
 workspace = true
-
-[[test]]
-name = "host-hooks"
-path = "tests/host_hooks.rs"
-required-features = ["filesystem-local", "native-execution"]
-
-[[test]]
-name = "skills-context"
-path = "tests/skills_context.rs"
-required-features = ["filesystem-local", "native-execution", "test-support"]

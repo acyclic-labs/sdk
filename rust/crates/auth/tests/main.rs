@@ -30,3 +30,9 @@ mod signatures;
 
 #[path = "verifier.rs"]
 mod verifier;
+
+#[path = "credential_cache.rs"]
+mod credential_cache;
+
+#[path = "scopes.rs"]
+mod scopes;
