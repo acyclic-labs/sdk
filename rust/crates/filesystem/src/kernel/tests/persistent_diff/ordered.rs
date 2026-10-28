@@ -185,8 +185,8 @@ fn replay_pages<const PREFIX: bool, const RESET: bool>(
         &cancellation,
     );
     let mut tasks = Owned::<Vec<Task>>::allocate(0, &mut accounting).unwrap();
-    let mut values = Owned::<Changes>::allocate(0, &mut accounting).unwrap();
-    let mut truncated = false;
+    let mut values =
+        super::super::Changes::<FileTableFormat>::allocate(128, &mut accounting).unwrap();
     COMPARISONS.with(|count| count.set(Some(0)));
     let result = (|| {
         for (before, keys) in pages {
@@ -215,8 +215,6 @@ fn replay_pages<const PREFIX: bool, const RESET: bool>(
                 *before,
                 &mut tasks,
                 &mut values,
-                128,
-                &mut truncated,
                 &mut accounting,
             )?;
         }
@@ -225,9 +223,9 @@ fn replay_pages<const PREFIX: bool, const RESET: bool>(
     let probes = COMPARISONS.with(|count| count.replace(None).unwrap());
     let work = accounting.spent();
     tasks.retire(&mut accounting).unwrap();
-    let partial = values.value.clone();
+    let partial = values.snapshot();
     let outcome = match result {
-        Ok(()) => Ok((values.value.clone(), truncated)),
+        Ok(()) => Ok((values.snapshot(), values.truncated)),
         Err(error) => Err(error.to_string()),
     };
     values.retire(&mut accounting).unwrap();
@@ -262,4 +260,59 @@ fn actual_page_mover_preserves_all_277_comparison_budget_prefixes() {
         broken, baseline,
         "the production reset is essential across sides"
     );
+}
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn native_page_mover_denies_unfunded_index_writes_and_retires_original_custody() {
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let child = original
+        .native_volume_work(WorkBudget {
+            bytes_copied: 0,
+            ..WorkBudget::UNBOUNDED
+        })
+        .unwrap();
+    let baseline = original.live_allocation_bytes();
+    let mut accounting = KernelAccounting::native(&child, &cancellation);
+    let mut tasks = Owned::<Vec<Task>>::allocate(0, &mut accounting).unwrap();
+    let mut values =
+        super::super::Changes::<FileTableFormat>::allocate(128, &mut accounting).unwrap();
+    let mut records = Owned::<Vec<FileRecord>>::allocate(1, &mut accounting).unwrap();
+    records.value.push(file_record(1).unwrap());
+    let page = Owned::new(
+        OwnedPage {
+            page: PageLease::Owned(Page::Leaf(records.value)),
+            logical_bytes: records.bytes,
+            native_custody: None,
+        },
+        records.allocation,
+        records.bytes,
+    );
+    let result = push_page::<FileTableFormat, true, true>(
+        page,
+        true,
+        &mut tasks,
+        &mut values,
+        &mut accounting,
+    );
+    assert!(matches!(
+        result,
+        Err(FsError::NativeKernel(
+            crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded {
+                counter: "bytes_copied",
+                ..
+            })
+        ))
+    ));
+    assert_eq!(
+        values.len(),
+        0,
+        "the first index write must be funded before append"
+    );
+    assert_eq!(original.receipt().bytes_copied, 0);
+    tasks.retire(&mut accounting).unwrap();
+    values.retire(&mut accounting).unwrap();
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    assert!(original.remaining().is_ok());
 }
