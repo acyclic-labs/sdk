@@ -118,6 +118,7 @@ impl StreamProvider for LocalStream {
                 }
             }
         }
+        view.check_size()?;
         Ok(view)
     }
 

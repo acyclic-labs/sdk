@@ -333,6 +333,7 @@ impl StreamProvider for BrowserStream {
                     head.tail
                 };
             }
+            view.check_size()?;
             Ok(view)
         })
         .await

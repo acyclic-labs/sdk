@@ -28,9 +28,6 @@ impl MemoryStream {
         if !request.at_least.proven_by(Some(&view.snapshot)) {
             return Err(StreamError::InvalidResponse);
         }
-        if crate::wire_codec::requests::heads_len(&view) > crate::MAX_COMMAND_BYTES {
-            return Err(StreamError::LimitExceeded);
-        }
         Ok(view)
     }
 }
@@ -218,7 +215,9 @@ impl StreamProvider for MemoryStream {
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
         request.validate()?;
         self.revisions.wait(&request.at_least).await?;
-        self.capture_heads(&request).await
+        let view = self.capture_heads(&request).await?;
+        view.check_size()?;
+        Ok(view)
     }
 
     async fn inspect_idempotency(
