@@ -1,6 +1,7 @@
 use super::tests::{Framing, joined, nonce, serve};
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
+use std::time::Duration;
 
 fn budget() -> WorkBudget {
     acyclic_fs::performance::work_budget(2_000_000, 32 * 1_024 * 1_024)
