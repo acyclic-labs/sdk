@@ -3,13 +3,13 @@ use super::*;
 const BUDGET: WorkBudget = crate::performance::BOUNDARY_BUDGET;
 
 #[test]
-fn authority_paths_keep_the_full_stream_bound_on_either_side_of_small_scratch()
+fn authority_paths_spill_beyond_inline_scratch_without_a_width_refusal()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let authority = AuthorityId::from_bytes([7; 16]);
     for generation in [None, Some(GenerationId::new(Digest::from_bytes([9; 32])))] {
         let fixed = b"fs/authorities/".len() + 32 + if generation.is_some() { 64 } else { 0 };
-        for length in [fixed, 127, 128, 129, acyclic_stream::MAX_PATH_BYTES] {
+        for length in [fixed, 127, 128, 129, 65_535, 131_073] {
             let suffix = "x".repeat(length - fixed);
             let mut work = AuthorityWork::new(BUDGET, &cancellation);
             let path = work.path(
@@ -24,20 +24,11 @@ fn authority_paths_keep_the_full_stream_bound_on_either_side_of_small_scratch()
                 work.spent().bytes_copied,
                 (b"fs/authorities/".len() + suffix.len() + length) as u64
             );
-            assert_eq!(work.spent().allocation_operations, 1);
+            assert_eq!(
+                work.spent().allocation_operations,
+                if length > 65_535 { 2 } else { 1 }
+            );
         }
-        let suffix = "x".repeat(acyclic_stream::MAX_PATH_BYTES + 1 - fixed);
-        let mut work = AuthorityWork::new(BUDGET, &cancellation);
-        assert!(matches!(
-            work.path(
-                &AuthorityPlacement::default(),
-                authority,
-                &suffix,
-                generation
-            ),
-            Err(AuthorityStoreError::RejectedStatic("fork path is too long"))
-        ));
-        assert_eq!(work.spent(), WorkCounters::UNCHARGED);
     }
     Ok(())
 }
@@ -74,7 +65,7 @@ proptest::proptest! {
         }
         let cancellation = CancellationToken::new();
         let mut old = AuthorityWork::new(budget, &cancellation);
-        let old_result = old.admit(writes).and_then(|()| old.path_buffer::<{ acyclic_stream::MAX_PATH_BYTES }>(
+        let old_result = old.admit(writes).and_then(|()| old.path_buffer::<65_535>(
             b"fs/authorities/", authority, &suffix, digest.as_ref().map(|bytes| bytes.as_slice()), length, writes));
         let mut work = AuthorityWork::new(budget, &cancellation);
         let actual = work.path(&AuthorityPlacement::default(), authority, &suffix, generation);
