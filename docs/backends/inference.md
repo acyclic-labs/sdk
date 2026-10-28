@@ -58,6 +58,16 @@ defaults and the CLI renders events. Managed Swarm can compose the registry
 directly instead of retaining a private gateway, request interpreter or transport.
 This configuration path does not qualify an untested cloud route.
 
+For a client driving a remote harness, resolve the connection through
+`acyclic_harness_client::ConnectionOptions::from_env` (or
+`resolve_connection_options` with supplied environment values on WASM). Explicit
+connection values take precedence over `ACYCLIC_ENDPOINT` and `ACYCLIC_API_KEY`;
+the endpoint otherwise defaults to `https://swarm.cloud.acyclic.dev`.
+The host separately composes its upstream model registry using `ProviderSpec`
+and `Credentials`. These provider inputs do not read the managed connection
+variables. A remote client supplies its account credential to the harness
+connection; the host supplies provider credentials to its shared model pipeline.
+
 Provider presets are configuration only: `endpoints.rs` has 74 physical lines
 including comments and whitespace, shared by all four added routes. The existing
 wire decoders are Chat 53, Anthropic 112, Responses 138 and Gemini 97 lines.
