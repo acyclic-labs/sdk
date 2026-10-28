@@ -288,6 +288,13 @@ pub(in crate::bindings) fn required_bigint(value: Option<BigInt>, field: &str) -
     bigint_u64(&required(value, field)?, field)
 }
 
+pub(in crate::bindings) fn byte_range(offset: &BigInt, length: &BigInt) -> Result<ByteRange> {
+    Ok(ByteRange {
+        offset: bigint_u64(offset, "offset")?,
+        length: bigint_u64(length, "length")?,
+    })
+}
+
 pub(in crate::bindings) fn bigint_u64(value: &BigInt, field: &str) -> Result<u64> {
     let (negative, value, lossless) = value.get_u64();
     if negative || !lossless {
@@ -332,21 +339,11 @@ pub(in crate::bindings) fn signed_bigint(value: i64) -> BigInt {
 }
 
 pub(in crate::bindings) fn empty_special_kind(kind: &str) -> Result<FileKind> {
-    match kind {
-        "fifo" => Ok(FileKind::Fifo),
-        "socket" => Ok(FileKind::Socket),
-        "mount-boundary" => Ok(FileKind::MountBoundary),
-        _ => Err(Error::new(
-            Status::InvalidArg,
-            "unknown empty special-file kind",
-        )),
-    }
+    acyclic_fs::binding_contract::empty_special_kind(kind)
+        .map_err(|message| Error::new(Status::InvalidArg, message))
 }
 
 pub(in crate::bindings) fn device_kind(kind: &str) -> Result<FileKind> {
-    match kind {
-        "character-device" => Ok(FileKind::CharacterDevice),
-        "block-device" => Ok(FileKind::BlockDevice),
-        _ => Err(Error::new(Status::InvalidArg, "unknown device kind")),
-    }
+    acyclic_fs::binding_contract::device_kind(kind)
+        .map_err(|message| Error::new(Status::InvalidArg, message))
 }

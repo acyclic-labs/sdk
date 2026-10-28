@@ -96,14 +96,7 @@ impl NativeCheckout {
         let (record, metadata_canonical_bytes) = match receipt.value {
             Some(value) => (
                 Some(encode_file_record(value.record)),
-                Some(Buffer::from(
-                    encode_file_metadata(
-                        value.metadata,
-                        |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-                        |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
-                    )
-                    .map_err(napi_error)?,
-                )),
+                Some(native_metadata_bytes(value.metadata)?),
             ),
             None => (None, None),
         };
@@ -199,13 +192,7 @@ impl NativeCheckout {
         let receipt = checkout_call!(
             self,
             checkout,
-            read_file_range(
-                &path,
-                ByteRange {
-                    offset: bigint_u64(&offset, "offset")?,
-                    length: bigint_u64(&length, "length")?,
-                },
-            )
+            read_file_range(&path, byte_range(&offset, &length)?,)
         )?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.bytes.to_vec()),
@@ -225,13 +212,7 @@ impl NativeCheckout {
         let receipt = checkout_call!(
             self,
             checkout,
-            read_file_range(
-                file_id,
-                ByteRange {
-                    offset: bigint_u64(&offset, "offset")?,
-                    length: bigint_u64(&length, "length")?,
-                },
-            )
+            read_file_range(file_id, byte_range(&offset, &length)?,)
         )?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.bytes.to_vec()),

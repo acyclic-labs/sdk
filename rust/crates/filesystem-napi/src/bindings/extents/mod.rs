@@ -44,14 +44,7 @@ impl NativeCheckout {
         let receipt = checkout_call!(
             self,
             checkout,
-            plan_file_extents(
-                &path,
-                ByteRange {
-                    offset: bigint_u64(&offset, "offset")?,
-                    length: bigint_u64(&length, "length")?,
-                },
-                maximum_spans,
-            )
+            plan_file_extents(&path, byte_range(&offset, &length)?, maximum_spans,)
         )?;
         native_extent_plan(receipt)
     }
@@ -71,14 +64,7 @@ impl NativeCheckout {
         let receipt = checkout_call!(
             self,
             checkout,
-            plan_file_extents(
-                file_id,
-                ByteRange {
-                    offset: bigint_u64(&offset, "offset")?,
-                    length: bigint_u64(&length, "length")?,
-                },
-                maximum_spans,
-            )
+            plan_file_extents(file_id, byte_range(&offset, &length)?, maximum_spans,)
         )?;
         native_extent_plan(receipt)
     }

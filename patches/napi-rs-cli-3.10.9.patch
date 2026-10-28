@@ -1,7 +1,7 @@
 diff --git a/dist/index.cjs b/dist/index.cjs
 --- a/dist/index.cjs
 +++ b/dist/index.cjs
-@@ -6366,7 +6366,7 @@
+@@ -6409,7 +6409,7 @@
  
  if (!nativeBinding) {
    if (loadErrors.length > 0) {
@@ -13,7 +13,7 @@ diff --git a/dist/index.cjs b/dist/index.cjs
 diff --git a/dist/index.js b/dist/index.js
 --- a/dist/index.js
 +++ b/dist/index.js
-@@ -6340,7 +6340,7 @@
+@@ -6383,7 +6383,7 @@
  
  if (!nativeBinding) {
    if (loadErrors.length > 0) {
@@ -25,7 +25,7 @@ diff --git a/dist/index.js b/dist/index.js
 diff --git a/src/api/templates/js-binding.ts b/src/api/templates/js-binding.ts
 --- a/src/api/templates/js-binding.ts
 +++ b/src/api/templates/js-binding.ts
-@@ -496,7 +496,7 @@
+@@ -505,7 +505,7 @@
  
  if (!nativeBinding) {
    if (loadErrors.length > 0) {

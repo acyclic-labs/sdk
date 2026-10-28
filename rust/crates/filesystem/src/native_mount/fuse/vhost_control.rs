@@ -4,6 +4,7 @@
 use super::vring_control::{FEATURES, QUEUE_COUNT, VringControl};
 use super::{Arc, NativeMountError};
 use std::fs::File;
+use vhost::VhostUserMemoryRegionBase;
 use vhost::vhost_user::{
     Error, GpuBackend, Result, VhostUserBackendReqHandlerMut,
     message::{
@@ -150,8 +151,19 @@ impl VhostUserBackendReqHandlerMut for VhostControl {
         self.apply(|_| Ok(QUEUE_COUNT as u64))
     }
 
-    fn set_mem_table(&mut self, ctx: &[VhostUserMemoryRegion], files: Vec<File>) -> Result<()> {
-        self.active(|device| device.set_memory(ctx, files))
+    fn set_mem_table(
+        &mut self,
+        ctx: &[VhostUserMemoryRegion],
+        files: Vec<File>,
+        postcopy_listening: Option<bool>,
+    ) -> Result<Option<Vec<VhostUserMemoryRegionBase>>> {
+        self.active(|device| {
+            if postcopy_listening == Some(true) {
+                return Err(libc::ENOTSUP.into());
+            }
+            device.set_memory(ctx, files)?;
+            Ok(None)
+        })
     }
 
     fn set_vring_num(&mut self, index: u32, num: u32) -> Result<()> {
@@ -251,7 +263,12 @@ impl VhostUserBackendReqHandlerMut for VhostControl {
     fn get_max_mem_slots(&mut self) -> Result<u64> {
         self.unsupported()
     }
-    fn add_mem_region(&mut self, _region: &VhostUserSingleMemoryRegion, _fd: File) -> Result<()> {
+    fn add_mem_region(
+        &mut self,
+        _region: &VhostUserSingleMemoryRegion,
+        _fd: File,
+        _postcopy_listening: Option<bool>,
+    ) -> Result<Option<VhostUserMemoryRegionBase>> {
         self.unsupported()
     }
     fn remove_mem_region(&mut self, _region: &VhostUserSingleMemoryRegion) -> Result<()> {

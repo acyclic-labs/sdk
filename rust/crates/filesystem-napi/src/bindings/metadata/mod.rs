@@ -1,5 +1,25 @@
 use super::*;
 
+pub(in crate::bindings) fn native_metadata_bytes(metadata: FileMetadata) -> Result<Buffer> {
+    encode_file_metadata(
+        metadata,
+        |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
+        |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
+    )
+    .map(Buffer::from)
+    .map_err(napi_error)
+}
+
+pub(in crate::bindings) fn native_metadata(
+    bytes: &[u8],
+    config: VolumeConfig,
+) -> Result<FileMetadata> {
+    decode_file_metadata(bytes, DecodeLimits::for_volume(config), &mut |_| {
+        Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(())
+    })
+    .map_err(napi_error)
+}
+
 /// Complete canonical metadata bytes plus exact work.
 #[napi(object)]
 pub struct NativeMetadataResult {
@@ -38,14 +58,7 @@ impl NativeCheckout {
         let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout_call!(self, checkout, read_metadata(&path,))?;
         Ok(NativeMetadataResult {
-            canonical_bytes: Buffer::from(
-                encode_file_metadata(
-                    receipt.value,
-                    |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-                    |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
-                )
-                .map_err(napi_error)?,
-            ),
+            canonical_bytes: native_metadata_bytes(receipt.value)?,
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -56,14 +69,7 @@ impl NativeCheckout {
         let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout_call!(self, checkout, read_metadata(file_id,))?;
         Ok(NativeMetadataResult {
-            canonical_bytes: Buffer::from(
-                encode_file_metadata(
-                    receipt.value,
-                    |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-                    |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
-                )
-                .map_err(napi_error)?,
-            ),
+            canonical_bytes: native_metadata_bytes(receipt.value)?,
             work_json: work_json(&receipt.work)?,
         })
     }
@@ -75,12 +81,7 @@ impl NativeCheckout {
         canonical_bytes: Buffer,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            DecodeLimits::for_volume(self.config),
-            &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-        )
-        .map_err(napi_error)?;
+        let metadata = native_metadata(canonical_bytes.as_ref(), self.config)?;
         let receipt = checkout_mutation!(
             self,
             apply_authored_transaction(vec![acyclic_fs::AuthoredMutation::SetMetadata {
@@ -98,12 +99,7 @@ impl NativeCheckout {
         canonical_bytes: Buffer,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            DecodeLimits::for_volume(self.config),
-            &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-        )
-        .map_err(napi_error)?;
+        let metadata = native_metadata(canonical_bytes.as_ref(), self.config)?;
         let receipt = checkout_mutation!(self, set_attributes(file_id, metadata, None,))?;
         mutation_result(receipt.work)
     }
@@ -116,12 +112,7 @@ impl NativeCheckout {
         logical_bytes: Option<BigInt>,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            DecodeLimits::for_volume(self.config),
-            &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-        )
-        .map_err(napi_error)?;
+        let metadata = native_metadata(canonical_bytes.as_ref(), self.config)?;
         let logical_bytes = logical_bytes
             .as_ref()
             .map(|value| bigint_u64(value, "logicalBytes"))
@@ -138,12 +129,7 @@ impl NativeCheckout {
         logical_bytes: Option<BigInt>,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let metadata = decode_file_metadata(
-            canonical_bytes.as_ref(),
-            DecodeLimits::for_volume(self.config),
-            &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-        )
-        .map_err(napi_error)?;
+        let metadata = native_metadata(canonical_bytes.as_ref(), self.config)?;
         let logical_bytes = logical_bytes
             .as_ref()
             .map(|value| bigint_u64(value, "logicalBytes"))
@@ -280,25 +266,8 @@ impl NativeCheckout {
 }
 
 pub(in crate::bindings) fn native_attribute_class(value: &str) -> Result<AttributeClass> {
-    match value {
-        "posix-xattr" => Ok(AttributeClass::PosixXattr),
-        "windows-stream" => Ok(AttributeClass::WindowsStream),
-        "mac-resource-fork" => Ok(AttributeClass::MacResourceFork),
-        _ => Err(Error::new(
-            Status::InvalidArg,
-            "unknown named-attribute class",
-        )),
-    }
-}
-
-pub(in crate::bindings) const fn native_attribute_class_name(
-    value: AttributeClass,
-) -> &'static str {
-    match value {
-        AttributeClass::PosixXattr => "posix-xattr",
-        AttributeClass::WindowsStream => "windows-stream",
-        AttributeClass::MacResourceFork => "mac-resource-fork",
-    }
+    acyclic_fs::binding_contract::attribute_class(value)
+        .map_err(|message| Error::new(Status::InvalidArg, message))
 }
 
 pub(in crate::bindings) fn native_attribute_name(
@@ -317,13 +286,6 @@ pub(in crate::bindings) fn native_attribute_name(
 pub(in crate::bindings) fn native_attribute_write_mode(
     value: &str,
 ) -> Result<NamedAttributeWriteMode> {
-    match value {
-        "upsert" => Ok(NamedAttributeWriteMode::Upsert),
-        "create" => Ok(NamedAttributeWriteMode::Create),
-        "replace" => Ok(NamedAttributeWriteMode::Replace),
-        _ => Err(Error::new(
-            Status::InvalidArg,
-            "unknown named-attribute write mode",
-        )),
-    }
+    acyclic_fs::binding_contract::attribute_write_mode(value)
+        .map_err(|message| Error::new(Status::InvalidArg, message))
 }

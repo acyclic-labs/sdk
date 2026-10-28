@@ -12,7 +12,7 @@ use super::vring_memory::GuestRam;
 use super::*;
 use std::io::IoSlice;
 use virtio_queue::{QueueOwnedT, QueueT, desc::split::Descriptor};
-use vm_memory::{Address, Bytes, GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
+use vm_memory::{Address, Bytes, GuestAddress, GuestMemoryBackend, GuestMemoryMmap, VolatileSlice};
 
 pub(super) enum QueueProgress {
     Empty,

@@ -1,54 +1,5 @@
 fn metadata(value: Option<wire::Metadata>) -> Result<FileMetadata, Status> {
-    let value = value.unwrap_or_default();
-    if value.has_named_attributes || value.has_acl || value.has_security_descriptor {
-        return Err(Status::invalid_argument(
-            "opaque metadata bodies are required separately",
-        ));
-    }
-    Ok(FileMetadata {
-        posix_mode: input_u32(value.posix_mode)?,
-        posix_uid: input_u32(value.posix_uid)?,
-        posix_gid: input_u32(value.posix_gid)?,
-        posix_flags: input_u64(value.posix_flags)?,
-        windows_attributes: input_u32(value.windows_attributes)?,
-        created_ns: input_i64(value.created_ns)?,
-        modified_ns: input_i64(value.modified_ns)?,
-        accessed_ns: input_i64(value.accessed_ns)?,
-        changed_ns: input_i64(value.changed_ns)?,
-        named_attributes: MetadataField::Unavailable,
-        acl: MetadataField::Unavailable,
-        security_descriptor: MetadataField::Unavailable,
-    })
-}
-
-fn input_u32(value: Option<wire::OptionalU32>) -> Result<MetadataField<u32>, Status> {
-    match value.and_then(|value| value.value) {
-        None | Some(wire::optional_u32::Value::Unavailable(true)) => Ok(MetadataField::Unavailable),
-        Some(wire::optional_u32::Value::Present(value)) => Ok(MetadataField::Value(value)),
-        Some(wire::optional_u32::Value::Unavailable(false)) => {
-            Err(Status::invalid_argument("unavailable marker must be true"))
-        }
-    }
-}
-
-fn input_u64(value: Option<wire::OptionalU64>) -> Result<MetadataField<u64>, Status> {
-    match value.and_then(|value| value.value) {
-        None | Some(wire::optional_u64::Value::Unavailable(true)) => Ok(MetadataField::Unavailable),
-        Some(wire::optional_u64::Value::Present(value)) => Ok(MetadataField::Value(value)),
-        Some(wire::optional_u64::Value::Unavailable(false)) => {
-            Err(Status::invalid_argument("unavailable marker must be true"))
-        }
-    }
-}
-
-fn input_i64(value: Option<wire::OptionalI64>) -> Result<MetadataField<i64>, Status> {
-    match value.and_then(|value| value.value) {
-        None | Some(wire::optional_i64::Value::Unavailable(true)) => Ok(MetadataField::Unavailable),
-        Some(wire::optional_i64::Value::Present(value)) => Ok(MetadataField::Value(value)),
-        Some(wire::optional_i64::Value::Unavailable(false)) => {
-            Err(Status::invalid_argument("unavailable marker must be true"))
-        }
-    }
+    crate::binding_contract::metadata_from_proto(value).map_err(Status::invalid_argument)
 }
 
 fn profile(value: i32) -> Result<EngineProfile, Status> {

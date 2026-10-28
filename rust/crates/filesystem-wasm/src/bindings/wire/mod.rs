@@ -294,18 +294,9 @@ pub(in crate::bindings) fn encode_name_component(name: &LogicalName) -> NameComp
 }
 
 pub(in crate::bindings) fn empty_special_kind(kind: &str) -> Result<FileKind, JsValue> {
-    match kind {
-        "fifo" => Ok(FileKind::Fifo),
-        "socket" => Ok(FileKind::Socket),
-        "mount-boundary" => Ok(FileKind::MountBoundary),
-        _ => Err(js_error("unknown empty special-file kind")),
-    }
+    acyclic_fs::binding_contract::empty_special_kind(kind).map_err(js_error)
 }
 
 pub(in crate::bindings) fn device_kind(kind: &str) -> Result<FileKind, JsValue> {
-    match kind {
-        "character-device" => Ok(FileKind::CharacterDevice),
-        "block-device" => Ok(FileKind::BlockDevice),
-        _ => Err(js_error("unknown device kind")),
-    }
+    acyclic_fs::binding_contract::device_kind(kind).map_err(js_error)
 }

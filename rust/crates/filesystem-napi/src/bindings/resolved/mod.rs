@@ -55,13 +55,7 @@ impl NativeResolvedFile {
 
     #[napi(getter)]
     pub fn metadata_canonical_bytes(&self) -> Result<Buffer> {
-        encode_file_metadata(
-            self.inner.description().metadata,
-            |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
-            |_| acyclic_fs::kernel::CanonicalDecodeError::AllocationFailed,
-        )
-        .map(Buffer::from)
-        .map_err(napi_error)
+        native_metadata_bytes(self.inner.description().metadata)
     }
 
     #[napi]
@@ -69,10 +63,7 @@ impl NativeResolvedFile {
         let receipt = self
             .inner
             .read_range(
-                ByteRange {
-                    offset: bigint_u64(&offset, "offset")?,
-                    length: bigint_u64(&length, "length")?,
-                },
+                byte_range(&offset, &length)?,
                 acyclic_fs::performance::BOUNDARY_BUDGET,
                 &self.cancellation,
             )

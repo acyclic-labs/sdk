@@ -1,8 +1,11 @@
 //! Canonical generated-wire translation for every remote filesystem deployment.
 
+use crate::binding_contract::{metadata_to_proto as metadata_message, output_u32, output_u64};
 use crate::hosted_contract;
+#[cfg(test)]
+use crate::kernel::MetadataField;
 use crate::kernel::{
-    FileKind as EngineFileKind, FileMetadata, FilePayload, LogicalName, MetadataField, TreeEntry,
+    FileKind as EngineFileKind, FileMetadata, FilePayload, LogicalName, TreeEntry,
 };
 use crate::model::{FilesystemProfile as EngineProfile, Lifecycle, VolumeConfig};
 use crate::{
@@ -10,7 +13,7 @@ use crate::{
     DependencyRegion, DependencyState, Digest, DurableCommit, ForkOptions, Fs, Generation,
     GenerationId, IdempotencyKey, JoinHistory, JoinOutcome, MergeConflict, ObjectId,
     RebaseConflict, Sequence, Transaction, TransactionCommit, TransactionRebase, WorkBudget,
-    Workspace, WorkspaceDelete, WorkspaceError, WorkspaceMetadata, WorkspaceRebase,
+    Workspace, WorkspaceDelete, WorkspaceError, WorkspaceRebase,
 };
 use acyclic_fs_wire::wire::{filesystem::v2 as wire, protocol::v1 as protocol};
 use bytes::Bytes;
