@@ -719,7 +719,7 @@ async fn pre_cancelled_async_blob_build_performs_zero_work()
             chunk_bytes: 2,
             page_items: 2,
             page_bytes: 127,
-            maximum_blob_bytes: 3,
+            maximum_blob_bytes: Some(3),
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
