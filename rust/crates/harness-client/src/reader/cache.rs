@@ -2,6 +2,13 @@
 //! `(stream, position)`, plus the hierarchy pages that list a subtree, under a
 //! single least-recently-used byte budget.
 //!
+//! The budget governs what is *cached*, never what can be *read*. A value
+//! that cannot be cached without evicting what the current frame displays
+//! (including one larger than the whole budget) is passed through: served
+//! uncached for as long as a want covers it, so it is never re-requested in
+//! a loop. Per-stream facts are bounded separately (`max_streams`) and, like
+//! displayed entries, are never evicted while the current frame uses them.
+//!
 //! Committed records never change, so a record entry is never invalidated; a
 //! stream only extends. A forked stream's prefix *is* its source's records, so
 //! `(child, position < fork_point)` resolves to the source's entry and is
@@ -68,6 +75,9 @@ struct Meta {
     fork: Option<(StreamPath, u64)>,
     /// Commit of the highest cached record, checked when a follow resumes.
     anchor: Option<(u64, CommitId)>,
+    /// Use clock of the last learn or display; facts used since the frame
+    /// mark are never chosen as eviction victims.
+    used: u64,
 }
 
 /// Bounded immutable record cache shared by every renderer.
@@ -75,8 +85,13 @@ pub struct RecordCache {
     entries: BTreeMap<Key, Entry>,
     lru: BTreeMap<u64, Key>,
     meta: BTreeMap<StreamPath, Meta>,
+    /// Values served uncached, with their charge, while a want covers them.
+    passed: BTreeMap<Key, (Value, usize)>,
+    passed_bytes: usize,
     bytes: usize,
     clock: u64,
+    /// Use clock at the start of the current frame.
+    mark: u64,
     max_bytes: usize,
     max_streams: usize,
 }
@@ -89,17 +104,34 @@ impl RecordCache {
             entries: BTreeMap::new(),
             lru: BTreeMap::new(),
             meta: BTreeMap::new(),
+            passed: BTreeMap::new(),
+            passed_bytes: 0,
             bytes: 0,
             clock: 0,
+            mark: 0,
             max_bytes,
             max_streams,
         }
     }
 
-    /// Retained charge, including keys, values and bookkeeping.
+    /// Cached charge under the byte budget: keys, values and bookkeeping of
+    /// every cached record and listing page. Never above the budget.
     #[must_use]
     pub fn bytes(&self) -> usize {
-        self.bytes + self.meta.len() * ENTRY_OVERHEAD
+        self.bytes
+    }
+
+    /// Charge of values served uncached because the budget could not hold
+    /// them beside what is displayed; bounded by what the wants cover.
+    #[must_use]
+    pub fn passed_bytes(&self) -> usize {
+        self.passed_bytes
+    }
+
+    /// Streams whose facts are retained.
+    #[must_use]
+    pub fn streams(&self) -> usize {
+        self.meta.len()
     }
 
     /// Retained entries.
@@ -118,6 +150,13 @@ impl RecordCache {
     #[must_use]
     pub fn clock(&self) -> u64 {
         self.clock
+    }
+
+    /// Start a frame: entries and facts used from now on are displayed and
+    /// protected from eviction by live inserts. Returns the mark.
+    pub(super) fn begin_frame(&mut self) -> u64 {
+        self.mark = self.clock;
+        self.mark
     }
 
     /// Shrink or grow the byte budget (memory pressure), evicting at once.
@@ -169,11 +208,8 @@ impl RecordCache {
     /// Drop `stream`'s own records and tail after its provisional suffix was
     /// replaced; an inherited fork prefix belongs to the source and stays.
     pub fn forget(&mut self, stream: &StreamPath) {
-        let keys: Vec<Key> = self
-            .entries
-            .range(Key::Record(stream.clone(), 0)..=Key::Record(stream.clone(), u64::MAX))
-            .map(|(key, _)| key.clone())
-            .collect();
+        let keys =
+            self.keys_in(Key::Record(stream.clone(), 0)..=Key::Record(stream.clone(), u64::MAX));
         for key in keys {
             self.remove(&key);
         }
@@ -208,11 +244,8 @@ impl RecordCache {
             self.forget(&path);
             self.meta.remove(&path);
         }
-        let listings: Vec<_> = self
-            .entries
-            .range(Key::Listing(stream.clone(), 0)..=Key::Listing(stream.clone(), u32::MAX))
-            .map(|(key, _)| key.clone())
-            .collect();
+        let listings =
+            self.keys_in(Key::Listing(stream.clone(), 0)..=Key::Listing(stream.clone(), u32::MAX));
         for key in listings {
             self.remove(&key);
         }
@@ -224,11 +257,8 @@ impl RecordCache {
         let Some(first) = index.checked_add(1) else {
             return;
         };
-        let keys: Vec<Key> = self
-            .entries
-            .range(Key::Listing(parent.clone(), first)..=Key::Listing(parent.clone(), u32::MAX))
-            .map(|(key, _)| key.clone())
-            .collect();
+        let keys = self
+            .keys_in(Key::Listing(parent.clone(), first)..=Key::Listing(parent.clone(), u32::MAX));
         for key in keys {
             self.remove(&key);
         }
@@ -240,15 +270,27 @@ impl RecordCache {
         self.meta.get(stream).and_then(|meta| meta.tail)
     }
 
+    /// Cached and passed-through keys in `range`.
+    fn keys_in(&self, range: std::ops::RangeInclusive<Key>) -> Vec<Key> {
+        self.entries
+            .range(range.clone())
+            .map(|(key, _)| key.clone())
+            .chain(self.passed.range(range).map(|(key, _)| key.clone()))
+            .collect()
+    }
+
     fn meta_mut(&mut self, stream: &StreamPath) -> &mut Meta {
         if !self.meta.contains_key(stream) && self.meta.len() >= self.max_streams {
-            // Facts are re-learnable from history; drop one without a fork
-            // first, so aliasing (which saves the most bytes) survives longest.
+            // Facts are re-learnable from history; drop one this frame does
+            // not use, without a fork first, so aliasing (which saves the
+            // most bytes) survives longest. When every retained fact is in
+            // use the frame needs them all: retain it rather than thrash.
+            let mark = self.mark;
             let victim = self
                 .meta
                 .iter()
-                .find(|(_, meta)| meta.fork.is_none())
-                .or_else(|| self.meta.iter().next())
+                .find(|(_, meta)| meta.used <= mark && meta.fork.is_none())
+                .or_else(|| self.meta.iter().find(|(_, meta)| meta.used <= mark))
                 .map(|(path, _)| path.clone());
             if let Some(victim) = victim {
                 // Cached bytes must not outlive the anchor that identifies them.
@@ -256,11 +298,22 @@ impl RecordCache {
                 self.meta.remove(&victim);
             }
         }
-        self.meta.entry(stream.clone()).or_default()
+        self.clock += 1;
+        let meta = self.meta.entry(stream.clone()).or_default();
+        meta.used = self.clock;
+        meta
+    }
+
+    /// Mark a displayed stream's facts in use this frame.
+    pub fn touch_stream(&mut self, stream: &StreamPath) {
+        if let Some(meta) = self.meta.get_mut(stream) {
+            self.clock += 1;
+            meta.used = self.clock;
+        }
     }
 
     /// Resolve a record through fork aliases to the key that would hold it.
-    fn resolve(&self, stream: &StreamPath, sequence: u64) -> Key {
+    pub(super) fn resolve(&self, stream: &StreamPath, sequence: u64) -> Key {
         let mut path = stream;
         for _ in 0..MAX_ALIAS_DEPTH {
             match self.meta.get(path).and_then(|meta| meta.fork.as_ref()) {
@@ -274,13 +327,18 @@ impl RecordCache {
     /// Borrow a committed record without touching recency.
     #[must_use]
     pub fn record(&self, stream: &StreamPath, sequence: u64) -> Option<&Bytes> {
-        match self.entries.get(&self.resolve(stream, sequence)) {
-            Some(Entry {
-                value: Value::Record(value),
-                ..
-            }) => Some(value),
+        match self.value(&self.resolve(stream, sequence)) {
+            Some(Value::Record(value)) => Some(value),
             _ => None,
         }
+    }
+
+    /// A cached or passed-through value.
+    fn value(&self, key: &Key) -> Option<&Value> {
+        self.entries
+            .get(key)
+            .map(|entry| &entry.value)
+            .or_else(|| self.passed.get(key).map(|(value, _)| value))
     }
 
     /// Whether `[from, to)` of `stream` is entirely cached.
@@ -298,11 +356,8 @@ impl RecordCache {
     /// Borrow a listing page without touching recency.
     #[must_use]
     pub fn listing(&self, parent: &StreamPath, index: u32) -> Option<&Listing> {
-        match self.entries.get(&Key::Listing(parent.clone(), index)) {
-            Some(Entry {
-                value: Value::Listing(listing),
-                ..
-            }) => Some(listing),
+        match self.value(&Key::Listing(parent.clone(), index)) {
+            Some(Value::Listing(listing)) => Some(listing),
             _ => None,
         }
     }
@@ -311,6 +366,7 @@ impl RecordCache {
     pub fn touch_record(&mut self, stream: &StreamPath, sequence: u64) {
         let key = self.resolve(stream, sequence);
         self.touch(&key);
+        self.touch_stream(stream);
     }
 
     /// Mark a displayed listing page most recently used.
@@ -329,9 +385,13 @@ impl RecordCache {
     }
 
     /// Insert one committed record. A position inherited through a fork is
-    /// stored once, under its source. `protect` keeps entries used at or
-    /// after that mark: a prefetched value that would displace them is not
-    /// retained, so prefetch can never evict what is on screen.
+    /// stored once, under its source. A live insert passes the frame mark as
+    /// `protect`: entries used after it are displayed and never evicted for
+    /// it, so nothing (prefetch included) can displace what is on screen. A
+    /// live value that cannot be cached beside them, or exceeds the whole
+    /// budget, is passed through instead (see [`Self::retain_passed`]).
+    /// Without `protect` (a restore) such a value is dropped. Returns whether
+    /// the value was cached.
     pub fn insert_record(
         &mut self,
         stream: &StreamPath,
@@ -374,27 +434,58 @@ impl RecordCache {
         self.insert(key, Value::Listing(listing), charge, protect)
     }
 
-    fn insert(&mut self, key: Key, value: Value, charge: usize, protect: Option<u64>) -> bool {
-        if charge > self.max_bytes {
-            return false;
+    fn insert(&mut self, key: Key, mut value: Value, charge: usize, protect: Option<u64>) -> bool {
+        self.unpass(&key);
+        if charge <= self.max_bytes {
+            self.clock += 1;
+            let used = self.clock;
+            self.lru.insert(used, key.clone());
+            self.entries.insert(
+                key.clone(),
+                Entry {
+                    value,
+                    charge,
+                    used,
+                },
+            );
+            self.bytes += charge;
+            if self.evict(protect) {
+                return true;
+            }
+            let Some(entry) = self.entries.remove(&key) else {
+                return false;
+            };
+            self.lru.remove(&entry.used);
+            self.bytes -= charge;
+            value = entry.value;
         }
-        self.clock += 1;
-        let used = self.clock;
-        self.lru.insert(used, key.clone());
-        self.entries.insert(
-            key.clone(),
-            Entry {
-                value,
-                charge,
-                used,
-            },
-        );
-        self.bytes += charge;
-        if !self.evict(protect) {
-            self.remove(&key);
-            return false;
+        if protect.is_some() {
+            self.passed_bytes += charge;
+            self.passed.insert(key, (value, charge));
         }
-        true
+        false
+    }
+
+    /// Drop every passed-through value no current want covers; called with
+    /// each frame's plan, so pass-through memory is bounded by what the
+    /// renderer asks for, not by history size.
+    pub(super) fn retain_passed(&mut self, mut covered: impl FnMut(&Self, &Key) -> bool) {
+        let this = &*self;
+        let dropped: Vec<Key> = this
+            .passed
+            .keys()
+            .filter(|key| !covered(this, key))
+            .cloned()
+            .collect();
+        for key in dropped {
+            self.unpass(&key);
+        }
+    }
+
+    fn unpass(&mut self, key: &Key) {
+        if let Some((_, charge)) = self.passed.remove(key) {
+            self.passed_bytes -= charge;
+        }
     }
 
     fn remove(&mut self, key: &Key) {
@@ -402,12 +493,14 @@ impl RecordCache {
             self.lru.remove(&entry.used);
             self.bytes -= entry.charge;
         }
+        self.unpass(key);
     }
 
     /// Evict least recently used entries until within budget. Returns false
-    /// when only protected entries remain over budget.
+    /// when only protected entries remain over budget. Only cached entries
+    /// are charged, so evicting all of them always reaches the budget.
     fn evict(&mut self, protect: Option<u64>) -> bool {
-        while self.bytes() > self.max_bytes {
+        while self.bytes > self.max_bytes {
             let Some((&used, key)) = self.lru.iter().next() else {
                 return true;
             };
@@ -489,12 +582,9 @@ impl RecordCache {
     /// # Errors
     /// Refuses malformed input without retaining any part of it.
     pub fn restore(&mut self, bytes: &[u8]) -> Result<(), SnapshotError> {
-        // Bound both parsing work and the caller-supplied encoded snapshot.
-        // Encoding overhead may exceed retained payload bytes for small entries.
-        if bytes.len() > self.max_bytes.saturating_mul(2) {
-            return Err(SnapshotError);
-        }
         let mut restored = Self::new(self.max_bytes, self.max_streams);
+        restored.clock = self.clock;
+        restored.mark = self.mark;
         let mut input = Input(bytes);
         if input.take(MAGIC.len())? != MAGIC {
             return Err(SnapshotError);
@@ -529,6 +619,12 @@ impl RecordCache {
             if let Some((at, commit)) = anchor {
                 restored.note_commit(&path, at, commit);
             }
+        }
+        // Facts are bounded by count above; bound the parsing work of the
+        // entry section by the byte budget. Encoding overhead may exceed
+        // retained payload bytes for small entries.
+        if input.0.len() > self.max_bytes.saturating_mul(2) {
+            return Err(SnapshotError);
         }
         for _ in 0..input.count()? {
             match input.u8()? {
@@ -673,6 +769,7 @@ mod tests {
         let mut cache = RecordCache::new(16 * 1024, 1);
         cache.note_commit(&stream, 0, CommitId::from_bytes([1; 32]));
         cache.insert_record(&stream, 0, Bytes::from_static(b"old"), None);
+        cache.begin_frame();
         cache.observe_tail(&other, 0);
         assert!(cache.record(&stream, 0).is_none());
         cache.note_commit(&stream, 0, CommitId::from_bytes([2; 32]));
@@ -682,6 +779,45 @@ mod tests {
             cache.anchor(&stream, 0),
             Some(CommitId::from_bytes([2; 32]))
         );
+    }
+
+    /// Facts for 4,096 streams cost nothing against a 64 KiB record budget,
+    /// so the cache still refills after shrinking. Control: when facts were
+    /// charged to the budget (393,216 bytes) every insert was evicted at once.
+    #[test]
+    fn stream_facts_never_starve_the_record_budget() {
+        let mut cache = RecordCache::new(8 << 20, 4096);
+        for index in 0..4096 {
+            let stream = StreamPath::new(format!("test/s{index}")).unwrap();
+            cache.observe_tail(&stream, 1);
+        }
+        cache.set_budget(64 * 1024);
+        let stream = StreamPath::new("test/s0").unwrap();
+        assert!(cache.insert_record(&stream, 0, Bytes::from_static(b"row"), None));
+        assert_eq!(cache.record(&stream, 0).unwrap().as_ref(), b"row");
+        assert!(cache.bytes() <= 64 * 1024);
+        assert_eq!(cache.streams(), 4096);
+    }
+
+    /// Facts the current frame uses are never eviction victims, so a frame
+    /// that needs more than `max_streams` keeps them all; facts from earlier
+    /// frames are reclaimed before the count grows.
+    #[test]
+    fn facts_in_use_this_frame_are_retained_and_cold_ones_reclaimed() {
+        let path = |index: usize| StreamPath::new(format!("test/s{index}")).unwrap();
+        let mut cache = RecordCache::new(64 * 1024, 2);
+        cache.begin_frame();
+        for index in 0..4 {
+            cache.observe_tail(&path(index), 1);
+        }
+        assert_eq!(cache.streams(), 4);
+        assert!((0..4).all(|index| cache.tail(&path(index)) == Some(1)));
+        cache.begin_frame();
+        cache.touch_stream(&path(3));
+        cache.observe_tail(&path(4), 1);
+        assert_eq!(cache.streams(), 4);
+        assert_eq!(cache.tail(&path(3)), Some(1));
+        assert_eq!(cache.tail(&path(4)), Some(1));
     }
 
     #[test]

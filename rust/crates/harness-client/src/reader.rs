@@ -16,6 +16,7 @@
 mod cache;
 mod driver;
 
+use cache::Key;
 pub use cache::{Listing, RecordCache, SnapshotError};
 pub use driver::Driver;
 
@@ -26,9 +27,12 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Finite budgets for one client, independent of the number of streams.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReaderPolicy {
-    /// One LRU byte budget for every cached record and listing page.
+    /// One LRU byte budget for every cached record and listing page. It
+    /// bounds caching, not reading: a displayed value the budget cannot hold
+    /// is served uncached while it is wanted.
     pub cache_bytes: usize,
-    /// Streams whose tail/fork facts are retained.
+    /// Streams whose tail/fork facts are retained between frames, beside the
+    /// byte budget; facts the current frame uses are never evicted.
     pub streams: usize,
     /// Reads in flight, all priorities.
     pub requests: usize,
@@ -361,8 +365,12 @@ const MAX_DEMAND: usize = 4096;
 /// Footprint of one client, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Residency {
-    /// Cache charge.
+    /// Cache charge, never above the byte budget.
     pub cache_bytes: usize,
+    /// Charge of wanted values served uncached beside the budget.
+    pub passed_bytes: usize,
+    /// Streams with retained facts.
+    pub streams: usize,
     /// Cache entries.
     pub cache_entries: usize,
     /// Reads in flight.
@@ -527,6 +535,8 @@ impl Reader {
     pub fn residency(&self) -> Residency {
         Residency {
             cache_bytes: self.cache.bytes(),
+            passed_bytes: self.cache.passed_bytes(),
+            streams: self.cache.streams(),
             cache_entries: self.cache.len(),
             requests: self.inflight.len(),
             follows: self.follows.len(),
@@ -540,7 +550,7 @@ impl Reader {
     pub fn begin_frame(&mut self, now: u64) {
         self.now = now;
         self.delivered = 0;
-        self.frame_mark = self.cache.clock();
+        self.frame_mark = self.cache.begin_frame();
         let overdue: Vec<u64> = self
             .inflight
             .iter()
@@ -555,8 +565,18 @@ impl Reader {
     }
 
     /// Replace this frame's needs, in renderer order within each priority.
-    /// Reads no longer needed at prefetch priority are cancelled.
+    /// Reads no longer needed at prefetch priority are cancelled. What the
+    /// visible wants cover is marked displayed, so no insert evicts it, and
+    /// passed-through values no want covers any longer are released.
     pub fn plan(&mut self, wants: impl IntoIterator<Item = (Want, Priority)>) {
+        let wants: Vec<(Want, Priority)> = wants.into_iter().collect();
+        for (want, priority) in &wants {
+            if *priority == Priority::Visible {
+                self.display(want);
+            }
+        }
+        self.cache
+            .retain_passed(|cache, key| wants.iter().any(|(want, _)| covers(cache, want, key)));
         let mut demand = Vec::new();
         let mut seen = BTreeSet::new();
         for (want, priority) in wants {
@@ -584,6 +604,35 @@ impl Reader {
             self.cancel(id);
         }
         self.demand = demand;
+    }
+
+    /// Mark one visible want's present values and facts in use this frame.
+    /// A range is walked only while it is present: its first absent position
+    /// is the read this frame issues, so the walk is bounded by what exists.
+    fn display(&mut self, want: &Want) {
+        if let Some((stream, from, to)) = window(&self.cache, want) {
+            let stream = stream.clone();
+            self.cache.touch_stream(&stream);
+            for sequence in from..to {
+                if self.cache.record(&stream, sequence).is_none() {
+                    break;
+                }
+                self.cache.touch_record(&stream, sequence);
+            }
+        }
+        if let Want::Listing {
+            parent,
+            index,
+            witness,
+            ..
+        } = want
+        {
+            self.cache.touch_listing(parent, *index);
+            self.cache.touch_stream(parent);
+            if let Some(witness) = witness {
+                self.cache.touch_stream(witness);
+            }
+        }
     }
 
     /// The next uncached read for one want, or `None` when it is satisfied.
@@ -778,7 +827,7 @@ impl Reader {
         } else {
             (self.rtt_ms * 7 + rtt) / 8
         };
-        let protect = (flight.priority == Priority::Prefetch).then_some(self.frame_mark);
+        let protect = Some(self.frame_mark);
         let accepted = match (&flight.key, outcome) {
             (_, Outcome::Failed(Failure::Changed)) => {
                 // Not an outage: the next first page carries the new version.
@@ -1031,7 +1080,7 @@ impl Reader {
         self.cache.observe_tail(stream, accepted);
         if let Some(position) = self.follows.get_mut(stream) {
             *position = (*position).max(record.sequence + 1);
-            self.keep(stream, record, None);
+            self.keep(stream, record, Some(self.frame_mark));
         }
     }
 
@@ -1142,6 +1191,33 @@ impl Reader {
     }
 }
 
+/// The positions one want reads, once its stream's tail is known for `Last`.
+fn window<'a>(cache: &RecordCache, want: &'a Want) -> Option<(&'a StreamPath, u64, u64)> {
+    match want {
+        Want::Range { stream, from, to } => {
+            let to = cache.tail(stream).map_or(*to, |tail| (*to).min(tail));
+            Some((stream, *from, to))
+        }
+        Want::Last { stream, count } => cache
+            .tail(stream)
+            .map(|tail| (stream, tail.saturating_sub(u64::from(*count)), tail)),
+        Want::Listing { .. } => None,
+    }
+}
+
+/// Whether `want` reads the value cached or passed through under `key`.
+fn covers(cache: &RecordCache, want: &Want, key: &Key) -> bool {
+    match (want, key) {
+        (Want::Listing { parent, index, .. }, Key::Listing(path, at)) => {
+            parent == path && index == at
+        }
+        (_, Key::Record(_, sequence)) => window(cache, want).is_some_and(|(stream, from, to)| {
+            (from..to).contains(sequence) && cache.resolve(stream, *sequence) == *key
+        }),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod reader_tests {
     use super::*;
@@ -1249,6 +1325,95 @@ mod reader_tests {
         reader.acknowledge_issue(&stream);
         reader.plan([(want, Priority::Visible)]);
         assert_eq!(reader.poll(10_000).len(), 1);
+    }
+
+    fn fetched(sequence: u64, len: usize) -> Fetched {
+        Fetched {
+            sequence,
+            value: Bytes::from(vec![7; len]),
+            commit: CommitId::from_bytes([1; 32]),
+        }
+    }
+
+    /// Plans `wants` for one frame and returns the reads it issues.
+    fn frame(reader: &mut Reader, now: u64, wants: &[(Want, Priority)]) -> Vec<Op> {
+        reader.begin_frame(now);
+        reader.plan(wants.iter().cloned());
+        reader.poll(now)
+    }
+
+    /// A record as large as the whole (minimum) budget is still delivered:
+    /// served uncached while wanted, never re-requested, released once no
+    /// want covers it. Control: before pass-through the failed insert was
+    /// dropped and every frame re-issued the same read.
+    #[test]
+    fn over_budget_record_is_served_uncached_and_never_rerequested() {
+        let stream = StreamPath::new("test/large").unwrap();
+        let mut reader = Reader::new(ReaderPolicy {
+            cache_bytes: 64 * 1024,
+            ..ReaderPolicy::default()
+        })
+        .unwrap();
+        let want = [(
+            Want::Range {
+                stream: stream.clone(),
+                from: 0,
+                to: 1,
+            },
+            Priority::Visible,
+        )];
+        let ops = frame(&mut reader, 0, &want);
+        let [op] = ops.as_slice() else {
+            panic!("one read");
+        };
+        reader.complete(op.id(), Outcome::Records(vec![fetched(0, 64 * 1024)]), 1);
+        for now in 2..6 {
+            assert!(frame(&mut reader, now, &want).is_empty(), "re-requested");
+            assert_eq!(reader.cache.record(&stream, 0).unwrap().len(), 64 * 1024);
+        }
+        let residency = reader.residency();
+        assert!(residency.cache_bytes <= 64 * 1024);
+        assert!(residency.passed_bytes > 64 * 1024);
+        assert!(frame(&mut reader, 6, &[]).is_empty());
+        assert!(reader.cache.record(&stream, 0).is_none());
+        assert_eq!(reader.residency().passed_bytes, 0);
+    }
+
+    /// Two displayed records that do not fit together never evict each
+    /// other: the second is passed through beside the first. Control: a
+    /// visible insert that could evict the displayed one re-read them in turn.
+    #[test]
+    fn displayed_records_that_do_not_fit_together_do_not_thrash() {
+        let stream = StreamPath::new("test/pair").unwrap();
+        let mut reader = Reader::new(ReaderPolicy {
+            cache_bytes: 64 * 1024,
+            ..ReaderPolicy::default()
+        })
+        .unwrap();
+        let want = [0, 1].map(|from| {
+            (
+                Want::Range {
+                    stream: stream.clone(),
+                    from,
+                    to: from + 1,
+                },
+                Priority::Visible,
+            )
+        });
+        let ops = frame(&mut reader, 0, &want);
+        assert_eq!(ops.len(), 2);
+        for (sequence, op) in ops.iter().enumerate() {
+            reader.complete(
+                op.id(),
+                Outcome::Records(vec![fetched(sequence as u64, 40 * 1024)]),
+                1,
+            );
+        }
+        for now in 2..6 {
+            assert!(frame(&mut reader, now, &want).is_empty(), "thrashed");
+            assert!(reader.cache.has_range(&stream, 0, 2));
+        }
+        assert!(reader.residency().cache_bytes <= 64 * 1024);
     }
 
     #[test]

@@ -5,7 +5,7 @@ pub mod testing;
 use super::*;
 use acyclic_auth::{
     authority::{PolicyDecision, Request, Scope, Target},
-    verify::{self, Trust, VerifiedCapability, VerifyError},
+    verify::{Trust, VerifyError},
 };
 
 /// One authenticated, current public trust view and its trusted clock.
@@ -271,7 +271,7 @@ impl Authority {
             .as_ref()
             .map_or("streams/follow", |authorization| authorization.action);
         let scoped = binding.resource_authorization.is_some();
-        self.check(capability, action, &binding.resource, scoped, channels)
+        self.check(&**capability, action, &binding.resource, scoped, channels)
     }
     /// Admits `action` on one stream resource for an already admitted credential.
     pub(super) fn permits(
