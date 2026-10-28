@@ -639,7 +639,13 @@ impl RecordCache {
 
     fn insert(&mut self, key: Key, mut value: Value, charge: usize, protect: Option<u64>) -> bool {
         self.unpass(&key);
-        if charge <= self.max_bytes {
+        let payload = match &value {
+            Value::Record(value) if !self.resident.contains_key(value.backing()) => {
+                value.backing().capacity()
+            }
+            _ => 0,
+        };
+        if charge.saturating_add(payload) <= self.max_bytes {
             self.retain_backing(&value);
             self.clock += 1;
             let used = self.clock;
@@ -1104,11 +1110,27 @@ mod tests {
         let full = OwnedBytes::from(vec![5; 8192]);
         let pointer = full.as_slice().as_ptr();
         let mut cache = RecordCache::new(4096, 16);
-        assert!(!cache.insert_record(&stream, 0, full, Some(0)));
+        assert!(cache.insert_record(&stream, 1, OwnedBytes::from(vec![2]), None));
+        assert!(cache.insert_listing(
+            &stream,
+            0,
+            Listing {
+                after: None,
+                children: vec![StreamPath::new("record/child").unwrap()],
+                next: None,
+                fresh: true,
+                witnessed: None,
+            },
+            None,
+        ));
+        let mark = cache.begin_frame();
+        assert!(!cache.insert_record(&stream, 0, full, Some(mark)));
         assert_eq!(cache.record(&stream, 0).unwrap().as_ptr(), pointer);
-        assert_eq!(cache.backing_bytes(), 8192);
+        assert_eq!(cache.record(&stream, 1).unwrap().as_ref(), &[2]);
+        assert!(cache.listing(&stream, 0).is_some());
+        assert_eq!(cache.backing_bytes(), 8193);
         cache.retain_passed(|_, _| false);
-        assert_eq!(cache.backing_bytes(), 0);
+        assert_eq!(cache.backing_bytes(), 1);
 
         // After memory pressure, a new tiny record must not prolong an old
         // giant view's allocation once that view leaves the viewport.
