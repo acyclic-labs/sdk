@@ -1051,17 +1051,6 @@ impl Reader {
                         .is_some_and(|commit| commit != last.commit_id)
                 });
             if replaced {
-                // An inherited entry is stored under its source key. Drop
-                // that backing namespace and its aliases before relearning
-                // the child, or insert_record would retain the old bytes.
-                if let Some(last) = &head.last {
-                    let Key::Record(source, _) = self.cache.resolve(stream, last.sequence) else {
-                        unreachable!("a record resolves to a record key");
-                    };
-                    if source != *stream {
-                        self.replaced(&source);
-                    }
-                }
                 self.replaced(stream);
             }
             self.learn_origin(stream, head.origin);
@@ -1195,11 +1184,12 @@ impl Reader {
     }
 
     /// A checked follow found its anchor changed: the provisional suffix was
-    /// replaced. Drop the stream's own records and re-learn it from reads.
+    /// replaced. Drop its backing namespaces and dependent aliases, then
+    /// re-learn through the requested stream's own grant.
     pub fn replaced(&mut self, stream: &StreamPath) {
         self.generation += 1;
         self.report_issue(stream, ReadIssue::RetentionLost);
-        self.invalidate(stream);
+        self.invalidate(stream, true);
     }
 
     /// Read failures and cursor discontinuities, bounded independently of history.
@@ -1228,11 +1218,11 @@ impl Reader {
     pub fn denied(&mut self, stream: &StreamPath) {
         self.generation += 1;
         self.report_issue(stream, ReadIssue::AccessDenied);
-        self.invalidate(stream);
+        self.invalidate(stream, false);
     }
 
-    fn invalidate(&mut self, stream: &StreamPath) {
-        let affected = self.cache.remove_stream(stream);
+    fn invalidate(&mut self, stream: &StreamPath, inherited: bool) {
+        let affected = self.cache.remove_stream(stream, inherited);
         self.follows.retain(|path, _| !affected.contains(path));
         let cancelled: Vec<_> = self
             .inflight
@@ -1425,7 +1415,12 @@ mod reader_tests {
         assert_eq!(
             reader.observed_head(
                 &child,
-                head(1, CommitId::from_bytes([2; 32]), b"new", Some(origin)),
+                head(
+                    1,
+                    CommitId::from_bytes([2; 32]),
+                    b"new",
+                    Some(origin.clone())
+                ),
                 observed,
             ),
             HeadObservation::Applied
@@ -1437,6 +1432,15 @@ mod reader_tests {
             Some(CommitId::from_bytes([2; 32]))
         );
         assert_eq!(reader.issues.get(&child), Some(&ReadIssue::RetentionLost));
+        // A child denial does not revoke an independent source grant.
+        reader.denied(&child);
+        assert_eq!(reader.cache.record(&source, 0).unwrap().as_ref(), b"new");
+        reader.acknowledge_issue(&child);
+        reader.cache.observe_origin(&child, Some(origin));
+        // A checked follow's retention failure uses the same backing
+        // invalidation as a conflicting Head, even without a new Head record.
+        reader.replaced(&child);
+        assert!(reader.cache.record(&source, 0).is_none());
     }
 
     #[test]

@@ -176,7 +176,7 @@ impl RecordCache {
     /// records and dependent aliases, even when source and offset match.
     pub fn observe_origin(&mut self, stream: &StreamPath, origin: Option<ForkOrigin>) {
         if self.origin_changed(stream, &origin) {
-            self.remove_stream(stream);
+            self.remove_stream(stream, true);
         }
         let meta = self.meta_mut(stream);
         meta.fork = origin;
@@ -281,7 +281,23 @@ impl RecordCache {
     }
 
     /// A denial or lost prefix cannot retain an alias into another history.
-    pub(super) fn remove_stream(&mut self, stream: &StreamPath) -> BTreeSet<StreamPath> {
+    pub(super) fn remove_stream(
+        &mut self,
+        stream: &StreamPath,
+        inherited: bool,
+    ) -> BTreeSet<StreamPath> {
+        let mut pending = vec![stream.clone()];
+        if inherited {
+            let mut path = stream;
+            let mut seen = BTreeSet::from([stream.clone()]);
+            while let Some(origin) = self.fork(path) {
+                if origin.forked_at == 0 || !seen.insert(origin.source.clone()) {
+                    break;
+                }
+                pending.push(origin.source.clone());
+                path = &origin.source;
+            }
+        }
         let mut dependents = BTreeMap::<_, Vec<_>>::new();
         for (path, meta) in &self.meta {
             if let Some(origin) = &meta.fork {
@@ -289,7 +305,6 @@ impl RecordCache {
             }
         }
         let mut affected = BTreeSet::new();
-        let mut pending = vec![stream.clone()];
         while let Some(path) = pending.pop() {
             if !affected.insert(path.clone()) {
                 continue;
