@@ -305,3 +305,29 @@ async fn a_read_without_its_revision_is_refused_under_a_minimum() -> TestResult 
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn a_transfer_deadline_is_the_callers_alone() -> TestResult {
+    let replica = Replica::new().await?;
+    // Hours-long transfers are the caller's call, up to what grpc-timeout carries.
+    let writer = client(&replica).with_transfer_timeout(Duration::from_secs(4 * 3600))?;
+    let (digest, _) = written(&writer, b"slow").await?;
+    replica.catch_up().await?;
+    assert_eq!(
+        writer
+            .get(digest, ByteRange::FULL, 64)
+            .await?
+            .body()
+            .as_ref(),
+        b"slow"
+    );
+    client(&replica).with_transfer_timeout(MAX_DEADLINE)?;
+    // Negative controls: no deadline, and one the protocol cannot carry.
+    for refused in [Duration::ZERO, MAX_DEADLINE + Duration::from_secs(3600)] {
+        assert!(matches!(
+            client(&replica).with_transfer_timeout(refused),
+            Err(ConnectError::InvalidConfiguration)
+        ));
+    }
+    Ok(())
+}

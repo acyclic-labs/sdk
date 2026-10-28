@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Replace the bucket/key/multipart clients with the account-scoped blob contract the Rust crate serves: content-addressed put, manifests, ranged get, head, delete, list, retain/release, collect and usage over memory, HTTP and gRPC. Every reply is checked against its request by the shared Rust verifier; `blobDigest` and `verified` are exported.
+- HTTP and gRPC clients take the caller's `timeoutMs` deadline (default 30 s); an elapsed deadline fails as DEADLINE_ELAPSED.
+
 ## 0.2.0 - Unreleased
 
 - Expose the sole logical Objects v1 contract through canonical Rust, protobuf, HTTP, Node/Bun gRPC and browser exports. Remove historical implementations, readers and compatibility artifacts. Local roots with obsolete format discriminators fail closed without upgrade or overwrite.

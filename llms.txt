@@ -9,25 +9,15 @@ The following complete TypeScript ES modules match the TypeScript guide and are 
 
 ## Objects
 
-Logical buckets and objects, with conditional writes and multipart uploads. This example reads an existing bucket over Node HTTP/2 gRPC using the exported canonical service descriptor.
+Account-scoped, content-addressed blobs: equal bytes name one blob, manifests join parts, and retained roots keep blobs alive across collection. This example publishes bytes and reads a range back over HTTP.
 
 ```ts
-import { createClient } from "@connectrpc/connect";
-import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
-import { BucketsService } from "@acyclic-labs/objects/proto";
+import { HttpObjectsV1, verified } from "@acyclic-labs/objects";
 
-const endpoint = process.env.OBJECTS_ENDPOINT!;
-const session = new Http2SessionManager(endpoint);
-const buckets = createClient(BucketsService, createGrpcTransport({
-  baseUrl: endpoint, sessionManager: session, defaultTimeoutMs: 30_000,
-}));
-try {
-  console.log(await buckets.headBucket({ bucket: { name: process.env.OBJECTS_BUCKET! } }, {
-    headers: { authorization: `Bearer ${process.env.ACYCLIC_API_KEY!}` },
-  }));
-} finally {
-  session.abort();
-}
+const objects = new HttpObjectsV1({ endpoint: process.env.OBJECTS_ENDPOINT!, token: process.env.ACYCLIC_API_KEY! });
+const put = verified(await objects.put(new TextEncoder().encode("Hello")));
+if (!put) throw new Error("outcome unknown; repeating the put is safe");
+console.log((await objects.get({ digest: put.digest, range: { start: 1n }, maximumBytes: 4n })).body);
 ```
 
 ## Streams
@@ -60,7 +50,7 @@ console.log(await actors.inspectActor({
 
 ## Workers
 
-Cloud Workers are stateless Actors. This example publishes `worker.mjs` (a module exporting `default.fetch`, without an actor export), creates a deployment, invokes it and deletes it. The account must already own the `actors-code` Objects bucket.
+Cloud Workers are stateless Actors. This example publishes `worker.mjs` (a module exporting `default.fetch`, without an actor export), creates a deployment, invokes it and deletes it. The module is published as an Objects blob retained under its own root.
 
 ```ts
 import { readFile } from "node:fs/promises";
@@ -70,7 +60,7 @@ import { WorkersDeploymentClient } from "@acyclic-labs/workers";
 
 const options = { endpoint: process.env.EDGE_ENDPOINT!, token: process.env.ACYCLIC_API_KEY! };
 const workers = new WorkersDeploymentClient(options, new HttpObjectsV1(options));
-const digest = await workers.publish(await readFile("worker.mjs"), "publish-worker");
+const digest = await workers.publish(await readFile("worker.mjs"));
 const { actor } = await workers.create({
   codeSha256: await CodeSha256(digest), homeRegion: "la", bindings: [], subscriptions: [],
   limits: { handlerTimeoutMillis: await PositiveU64(30000n), memoryBytes: await PositiveU64(268435456n), checkpointBytes: await PositiveU64(1048576n) },

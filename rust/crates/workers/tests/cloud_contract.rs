@@ -136,6 +136,19 @@ async fn worker_publication_and_named_deployment_contract() {
         .await
         .expect("valid Cloud fixture");
     assert_eq!(published.body().as_ref(), code.as_ref());
+    // The TypeScript client retains the module under this same root.
+    let root = field(&golden, "/publish/root")
+        .as_str()
+        .expect("valid Cloud fixture")
+        .as_bytes()
+        .to_vec();
+    assert!(
+        objects
+            .release(&acyclic_objects::RootId::new(root).expect("valid Cloud fixture"))
+            .await
+            .expect("valid Cloud fixture")
+            .existed
+    );
     let created = client
         .deploy(&decode::<wire::DeploymentRequest>(
             "DeploymentRequest",

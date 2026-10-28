@@ -81,38 +81,26 @@ impl crate::Account<LocalMedium> {
 async fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> std::io::Result<T> + Send + 'static,
 ) -> std::io::Result<T> {
-    tokio::task::spawn_blocking(work)
-        .await
-        .map_err(std::io::Error::other)?
+    acyclic_native_runtime::spawn_blocking(work).await?
 }
 
-fn sync(file: &std::fs::File, durability: LocalDurability) -> std::io::Result<()> {
+fn native(durability: LocalDurability) -> acyclic_native_runtime::Durability {
     match durability {
-        LocalDurability::FullFlush => file.sync_all(),
-        #[cfg(target_vendor = "apple")]
-        LocalDurability::Barrier => {
-            use std::os::fd::AsRawFd as _;
-            // SAFETY: the descriptor is open for the call's duration.
-            if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC) } == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        }
-        #[cfg(not(target_vendor = "apple"))]
-        LocalDurability::Barrier => Err(std::io::ErrorKind::Unsupported.into()),
+        LocalDurability::FullFlush => acyclic_native_runtime::Durability::Full,
+        LocalDurability::Barrier => acyclic_native_runtime::Durability::Barrier,
     }
 }
 
+/// The shared native content flush; a barrier outside Apple refuses.
+fn sync(file: &std::fs::File, durability: LocalDurability) -> std::io::Result<()> {
+    acyclic_native_runtime::sync_file(file, native(durability), None)
+}
+
+/// The shared native namespace flush. Every platform flushes the directory
+/// itself (Windows through a backup-semantics handle), so a successful
+/// FullFlush never rests on a skipped directory.
 fn sync_directory(path: &Path, durability: LocalDurability) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        sync(&std::fs::File::open(path)?, durability)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (path, durability);
-        Ok(())
-    }
+    acyclic_native_runtime::sync_parent(path, native(durability))
 }
 
 /// Creates `directory` and its missing ancestors, syncing the parent of each
@@ -268,7 +256,7 @@ impl Medium for LocalMedium {
             file.write_all(&bytes)?;
             sync(&file, durability)?;
             drop(file);
-            let linked = std::fs::hard_link(&temporary, &target);
+            let linked = acyclic_native_runtime::publish_new(&temporary, &target, None);
             let _ = std::fs::remove_file(&temporary);
             match linked {
                 Ok(()) => Ok(Created::Linked(sync_directory(parent, durability))),

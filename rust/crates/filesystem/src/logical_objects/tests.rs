@@ -193,3 +193,47 @@ proptest::proptest! {
 
 #[path = "decoded.rs"]
 mod decoded;
+
+#[tokio::test]
+async fn a_publication_root_keeps_its_closure_through_every_collection()
+-> Result<(), Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
+    for (rooted, enumerated) in [(true, true), (true, false), (false, true), (false, false)] {
+        let mut store = store(64)?;
+        if rooted {
+            store = store.with_publication_root(acyclic_objects::RootId::new(b"volume".to_vec())?);
+        }
+        let object = HashedObject::new(ObjectKind::BlobChunk, OwnedBytes::from_static(b"live"));
+        let id = object.object_id();
+        let ids = [id];
+        store
+            .put_hashed(object, &mut AuthorityWork::new(BUDGET, &cancel))
+            .await?;
+        // A composition without a collection handle cannot enumerate.
+        let scope = if enumerated {
+            crate::PublicationScope::Closure {
+                objects: &ids,
+                proven_at: 0,
+            }
+        } else {
+            crate::PublicationScope::Everything
+        };
+        let _hold = store
+            .flush_before_publish(scope, &mut AuthorityWork::new(BUDGET, &cancel))
+            .await?;
+        // Admission covers one cut; only a root survives the next ones.
+        for _ in 0..3 {
+            store.provider().collect().await?;
+        }
+        let read = store
+            .read(id, 64, &mut AuthorityWork::new(BUDGET, &cancel))
+            .await;
+        if rooted {
+            assert_eq!(read?.bytes, OwnedBytes::from_static(b"live"));
+        } else {
+            // Negative control: the same publication without a root is swept.
+            assert!(read.is_err());
+        }
+    }
+    Ok(())
+}

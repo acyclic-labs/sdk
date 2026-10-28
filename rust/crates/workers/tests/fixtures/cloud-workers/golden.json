@@ -22,15 +22,7 @@
   },
   "code": "// The probe's Worker: no `actor` export, so it runs as a stateless Actor.\n// Its reply names it and echoes the request method.\nexport default {\n  async fetch(request) {\n    return Response.json({worker: 'probe', method: request.method});\n  },\n};\n",
   "publish": {
-    "request": {
-      "bucket": {
-        "name": "actors-code"
-      },
-      "objectKey": "sha256/b141ab5594bdbea591aba109fd1cd68edd799fe02d79fd65c1a494454e86b0d6",
-      "mutation": {
-        "idempotencyKey": "publish-code"
-      }
-    },
+    "root": "worker-code:sha256:b141ab5594bdbea591aba109fd1cd68edd799fe02d79fd65c1a494454e86b0d6",
     "sha256": "b141ab5594bdbea591aba109fd1cd68edd799fe02d79fd65c1a494454e86b0d6"
   },
   "invoke": {

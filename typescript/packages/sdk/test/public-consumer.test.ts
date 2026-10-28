@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { harness as harnessApi, objects as objectsApi, stream as streamApi } from "@acyclic-labs/sdk";
 import { openMemoryFs } from "@acyclic-labs/fs/memory";
-import { create } from "@bufbuild/protobuf";
 
 test("one consumer can use the public stream, objects, filesystem, and WASM APIs", async () => {
   const stream = streamApi.StreamClient.memory().json("runs/one", value => {
@@ -15,20 +14,12 @@ test("one consumer can use the public stream, objects, filesystem, and WASM APIs
   expect(records).toEqual([{ kind: "started" }]);
 
   const objects = await objectsApi.MemoryObjectsV1.create();
-  const bucket = create(objectsApi.BucketRefSchema, { name: "consumer" });
-  expect((await objects.createBucket(create(objectsApi.CreateBucketRequestSchema, {
-    name: bucket.name,
-  }))).bucket?.name).toBe(bucket.name);
   const document = new TextEncoder().encode(JSON.stringify({ ok: true }));
-  await objects.put(create(objectsApi.PutObjectHeaderSchema, {
-    bucket, objectKey: "result.json", metadata: { contentType: "application/json" },
-  }), document);
-  const read = await objects.get(create(objectsApi.GetObjectRequestSchema, {
-    bucket, objectKey: "result.json",
-  }), BigInt(document.byteLength));
+  const put = objectsApi.verified(await objects.put(document));
+  expect(put?.length).toBe(BigInt(document.byteLength));
+  const read = await objects.get({ digest: put!.digest, maximumBytes: BigInt(document.byteLength) });
   expect(JSON.parse(new TextDecoder().decode(read.body))).toEqual({ ok: true });
-  expect((await objects.list(create(objectsApi.ListObjectsRequestSchema, { bucket })))
-    .entries.map(entry => entry.objectKey)).toEqual(["result.json"]);
+  expect((await objects.list({ limit: 10 })).digests.map(digest => [...digest.blake3])).toEqual([[...put!.digest!.blake3]]);
   const fs = await openMemoryFs();
   try {
     const workspace = await fs.createWorkspace("consumer");

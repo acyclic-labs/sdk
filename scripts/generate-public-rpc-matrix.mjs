@@ -3,14 +3,12 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { createSourceInspector } from "./public-rpc-source.mjs";
 import { ActorsService } from "../typescript/packages/actors/generated/proto/actors/v1/actors_pb.js";
 import { StreamService } from "../typescript/packages/stream/generated/proto/stream/v1/stream_pb.js";
-import { BucketsService as BucketsV1, ObjectsService as ObjectsV1, MultipartService as MultipartV1 } from "../typescript/packages/objects/generated/proto/objects/v1/objects_pb.js";
+import { BlobsService as BlobsV1 } from "../typescript/packages/objects/generated/proto/objects/v1/objects_pb.js";
 
 const objects = {
-  CreateBucket: "buckets/create", HeadBucket: "buckets/head", DeleteBucket: "buckets/delete",
-  PutObject: "objects/put", GetObject: "objects/get", HeadObject: "objects/head",
-  DeleteObject: "objects/delete", ListObjects: "objects/list", RestoreObjects: "objects/restore",
-  CreateMultipart: "multipart/create", UploadPart: "multipart/upload-part", ListParts: "multipart/list-parts",
-  CompleteMultipart: "multipart/complete", AbortMultipart: "multipart/abort",
+  PutBlob: "blobs/put", PutManifest: "blobs/put-manifest", GetBlob: "blobs/get", HeadBlob: "blobs/head",
+  DeleteBlob: "blobs/delete", ListBlobs: "blobs/list", Retain: "blobs/retain", Release: "blobs/release",
+  Collect: "blobs/collect", Usage: "blobs/usage",
 };
 const stream = {
   InspectIdempotency: "idempotency/inspect", Append: "append", Head: "head", Tail: "tail", Fork: "fork",
@@ -25,17 +23,15 @@ const actors = routes("actors");
 const inspectSource = createSourceInspector(new URL("..", import.meta.url));
 // Rows describe the sole current SDK contract.
 // Implementation fields describe source presence, not package or live acceptance.
-const services = [ActorsService, StreamService, BucketsV1, ObjectsV1, MultipartV1];
-const v1Routes = readFileSync(new URL("../rust/crates/objects/src/v1/mod.rs", import.meta.url), "utf8");
-const objectsRoot = readFileSync(new URL("../rust/crates/objects/src/lib.rs", import.meta.url), "utf8");
-if (!/pub use v1::\*/.test(objectsRoot)) throw new Error("current Objects Rust exposure is missing");
+const services = [ActorsService, StreamService, BlobsV1];
+const objectsRoutes = readFileSync(new URL("../rust/crates/objects/src/lib.rs", import.meta.url), "utf8").split("pub const HTTP_ROUTES")[1] ?? "";
 const rows = services.flatMap(service => service.methods.map(method => {
   const family = service.typeName.split(".")[1];
   const version = service.typeName.split(".")[2];
   const objectsV1 = family === "objects" && version === "v1";
   const http = family === "actors" ? actors[method.localName] : (family === "stream" ? stream : objects)[method.name];
   if (!http) throw new Error(`missing HTTP mapping for ${service.typeName}/${method.name}`);
-  if (objectsV1 && !v1Routes.includes(`"${http}"`)) throw new Error(`Objects v1 Rust route missing: ${http}`);
+  if (objectsV1 && !objectsRoutes.includes(`("${http}",`)) throw new Error(`Objects v1 Rust route missing: ${http}`);
   return {
     rpc: `${service.typeName}/${method.name}`,
     kind: method.methodKind,

@@ -5,7 +5,6 @@ import { WorkersDeploymentClient } from "../packages/workers/src/deployment.js";
 import { create, toBinary } from "@bufbuild/protobuf";
 import { HttpStreamProvider } from "../packages/stream/src/http.js";
 import { HttpObjectsV1 } from "../packages/objects/src/v1-http.js";
-import { HeadBucketRequestSchema } from "../packages/objects/generated/proto/objects/v1/objects_pb.js";
 import { HttpMachinesProvider } from "../packages/machines/src/http.js";
 import { machineId } from "../packages/machines/src/index.js";
 import { HttpInferenceTransport } from "../packages/inference/src/index.js";
@@ -54,7 +53,7 @@ test("HTTP clients renew for each request and never fall back to fixed credentia
       switch (product) {
         case "streams": { const client = new HttpStreamProvider(options); invoke = () => client.tail("credential/test"); break; }
         case "fs": { const client = await openHostedFs(options); invoke = () => client.openWorkspace("credential-test"); release = () => client.close(); break; }
-        case "objects": { const client = new HttpObjectsV1(options); invoke = () => client.headBucket(create(HeadBucketRequestSchema, { bucket: { name: "credential-test" } })); break; }
+        case "objects": { const client = new HttpObjectsV1(options); invoke = () => client.usage(); break; }
         case "machines": { const client = new HttpMachinesProvider(options); invoke = () => client.inspectMachine(machineId("00000000-0000-0000-0000-000000000003")); break; }
         case "inference": { const client = new HttpInferenceTransport(options.endpoint, options, fetcher); invoke = () => client.listModels(); break; }
       }

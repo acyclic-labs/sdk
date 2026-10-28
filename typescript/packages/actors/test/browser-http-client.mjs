@@ -29,8 +29,8 @@ try {
   await assert.rejects(CurrentHeadMarker(1), error => errorCode(error) === "invalid_argument");
   const objects = new HttpObjectsV1(options);
   await lifecycle(objects);
-  await assert.rejects(new HttpObjectsV1({ ...options, token: "wrong" }).headBucket(create(objectsWire.HeadBucketRequestSchema, { bucket: { name: "customer.inputs" } })), error => error.code === objectsWire.ErrorCode.ACCESS_DENIED);
-  await assert.rejects(new HttpObjectsV1({ ...options, maximumResponseBytes: 8 }).createBucket(create(objectsWire.CreateBucketRequestSchema, { name: "bounded-response" })), error => error.code === objectsWire.ErrorCode.QUOTA_EXCEEDED);
+  await assert.rejects(new HttpObjectsV1({ ...options, token: "wrong" }).usage(), error => error.code === objectsWire.ErrorCode.ACCESS_DENIED);
+  await assert.rejects(new HttpObjectsV1({ ...options, maximumResponseBytes: 8 }).put(new Uint8Array([1, 2, 3])), error => error.code === objectsWire.ErrorCode.QUOTA_EXCEEDED);
   const actors = new ActorsClient(options);
   assert.equal(await actors.transport, "grpc-web");
   let methods = 0;

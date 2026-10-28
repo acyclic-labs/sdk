@@ -22,7 +22,8 @@ pub const MINIMUM_REVISION: &str = "acyclic-min-revision-bin";
 pub const REVISION: &str = "acyclic-revision-bin";
 
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const MAX_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
+/// The largest deadline `grpc-timeout` can carry: eight digits of hours.
+const MAX_DEADLINE: std::time::Duration = std::time::Duration::from_secs(99_999_999 * 3600);
 
 fn credential_header(token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
     if !acyclic_auth::credential::valid_credential(token) {
@@ -69,12 +70,13 @@ impl GrpcObjects {
         &self.revisions
     }
 
-    /// Sets the finite deadline for body-carrying calls.
+    /// Sets the caller's finite deadline for body-carrying calls; a slow or
+    /// large transfer is bounded by this deadline alone.
     pub fn with_transfer_timeout(
         mut self,
         timeout: std::time::Duration,
     ) -> Result<Self, ConnectError> {
-        if timeout.is_zero() || timeout > MAX_TRANSFER_TIMEOUT {
+        if timeout.is_zero() || timeout > MAX_DEADLINE {
             return Err(ConnectError::InvalidConfiguration);
         }
         self.transfer_timeout = timeout;
@@ -152,9 +154,8 @@ impl GrpcObjects {
             endpoint.tls_config_with_verifier(tls, Arc::new(verifier))?
         };
         let channel = endpoint
+            // Every request carries its own deadline; the channel adds none.
             .connect_timeout(std::time::Duration::from_secs(10))
-            // Requests carry their own deadlines; this ceiling admits the largest transfer budget.
-            .timeout(MAX_TRANSFER_TIMEOUT)
             .connect()
             .await?;
         Ok(Self::over(channel, authorization, credential))
@@ -358,18 +359,15 @@ impl Blobs for GrpcObjects {
             put_blob,
             wire::PutBlobRequest {
                 digest: Some(digest.into()),
-                body: body.to_vec(),
+                body: bytes::Bytes::from_owner(body.clone()),
                 references: convert::wire_digests(&references),
             },
             self.transfer_timeout
         )?;
-        let put = committed(convert::put(&reply.0)?, reply.1);
-        if put.verified().is_some_and(|verified| {
-            verified.digest != digest || verified.length != body.len() as u64
-        }) {
-            return Err(wire::ErrorCode::Unavailable.into());
-        }
-        Ok(put)
+        Ok(committed(
+            convert::verified_put(&reply.0, digest, body.len() as u64)?,
+            reply.1,
+        ))
     }
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
@@ -383,14 +381,10 @@ impl Blobs for GrpcObjects {
             },
             REQUEST_TIMEOUT
         )?;
-        let put = committed(convert::put(&reply.0)?, reply.1);
-        if put
-            .verified()
-            .is_some_and(|verified| verified.digest != digest || verified.length != length)
-        {
-            return Err(wire::ErrorCode::Unavailable.into());
-        }
-        Ok(put)
+        Ok(committed(
+            convert::verified_put(&reply.0, digest, length)?,
+            reply.1,
+        ))
     }
 
     async fn get(
@@ -423,10 +417,7 @@ impl Blobs for GrpcObjects {
             REQUEST_TIMEOUT,
             read
         )?;
-        let mut head = convert::head(&reply.0)?;
-        if head.digest != digest {
-            return Err(wire::ErrorCode::Unavailable.into());
-        }
+        let mut head = convert::headed(&reply.0, digest)?;
         head.revision = reply.1;
         Ok(head)
     }
@@ -457,13 +448,8 @@ impl Blobs for GrpcObjects {
             REQUEST_TIMEOUT,
             read
         )?;
-        let mut page = convert::page(&reply.0)?;
+        let mut page = convert::listed(&reply.0, after, limit)?;
         page.revision = reply.1;
-        if page.digests.len() > limit as usize
-            || after.is_some_and(|after| page.digests.first().is_some_and(|first| *first <= after))
-        {
-            return Err(wire::ErrorCode::Unavailable.into());
-        }
         Ok(page)
     }
 

@@ -70,6 +70,7 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
             }
         };
         settle(id, length, put)?;
+        self.published([id]);
         record_write(work, length)?;
         work.check()
     }
@@ -154,6 +155,7 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
             }
         };
         result?;
+        self.published(writes.iter().map(|write| parts(write).0));
         work.check()
     }
 }

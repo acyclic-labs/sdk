@@ -187,6 +187,30 @@ pub struct Account<M> {
     state: Arc<State>,
 }
 
+/// A prefix's listing, one page per call.
+struct Pages<'a, M> {
+    medium: &'a M,
+    prefix: String,
+    after: Option<String>,
+    done: bool,
+}
+
+impl<M: Medium> Pages<'_, M> {
+    async fn next(&mut self) -> Result<Option<Vec<(String, u64)>>, Error> {
+        if self.done {
+            return Ok(None);
+        }
+        let page = self
+            .medium
+            .list(&self.prefix, self.after.as_deref(), PAGE)
+            .await
+            .map_err(medium)?;
+        self.done = page.len() < PAGE;
+        self.after = page.last().map(|(key, _)| key.clone());
+        Ok(Some(page))
+    }
+}
+
 impl<M> Clone for Account<M> {
     fn clone(&self) -> Self {
         Self {
@@ -623,6 +647,16 @@ impl<M: Medium> Account<M> {
         };
         let envelope = Envelope::decode(&bytes)?;
         Ok(Some((bytes, envelope)))
+    }
+
+    /// One listing page at a time, so a pass over a prefix holds one page.
+    fn pages(&self, prefix: String) -> Pages<'_, M> {
+        Pages {
+            medium: &*self.medium,
+            prefix,
+            after: None,
+            done: false,
+        }
     }
 
     async fn list_all(&self, prefix: &str) -> Result<Vec<(String, u64)>, Error> {
@@ -1158,9 +1192,12 @@ impl<M: Medium> crate::Blobs for Account<M> {
             Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
             Err(error) => return Err(medium(error)),
         }
-        for (key, _) in self.list_all(&format!("{}g/", self.prefix)).await? {
-            if Self::revision_of(&key, 0)? < fence {
-                self.medium.remove(&key).await.map_err(medium)?;
+        let mut pages = self.pages(format!("{}g/", self.prefix));
+        while let Some(page) = pages.next().await? {
+            for (key, _) in page {
+                if Self::revision_of(&key, 0)? < fence {
+                    self.medium.remove(&key).await.map_err(medium)?;
+                }
             }
         }
         let mut marked = HashSet::new();
@@ -1196,47 +1233,56 @@ impl<M: Medium> crate::Blobs for Account<M> {
             epoch,
             ..Collection::default()
         };
-        for (key, _) in self.list_all(&format!("{}e/", self.prefix)).await? {
-            let digest = self.digest_from_key(&key)?;
-            if marked.contains(&digest) {
-                collection.marked += 1;
-                continue;
-            }
-            let stored = self
-                .envelope(&digest)
-                .await?
-                .map_or(0, |envelope| envelope.stored);
-            if self.sweep(digest, fence).await? == Delete::Deleted {
-                collection.swept += 1;
-                collection.swept_bytes += stored;
+        let mut pages = self.pages(format!("{}e/", self.prefix));
+        while let Some(page) = pages.next().await? {
+            for (key, _) in page {
+                let digest = self.digest_from_key(&key)?;
+                if marked.contains(&digest) {
+                    collection.marked += 1;
+                    continue;
+                }
+                let stored = self
+                    .envelope(&digest)
+                    .await?
+                    .map_or(0, |envelope| envelope.stored);
+                if self.sweep(digest, fence).await? == Delete::Deleted {
+                    collection.swept += 1;
+                    collection.swept_bytes += stored;
+                }
             }
         }
         // Payloads of no envelope, or of one a parent's sweep above unpinned.
-        for (key, size) in self.list_all(&format!("{}p/", self.prefix)).await? {
-            let (digest, version) = self.payload_of(&key)?;
-            if marked.contains(&digest) || self.admitted(&digest, fence).await? {
-                continue;
-            }
-            match self.stored_envelope(&digest).await? {
-                // A pending one is revoked before its payload goes.
-                Some((_, envelope)) if envelope.version == version => {
-                    if self.sweep(digest, fence).await? == Delete::Deleted {
-                        collection.swept += 1;
+        let mut pages = self.pages(format!("{}p/", self.prefix));
+        while let Some(page) = pages.next().await? {
+            for (key, size) in page {
+                let (digest, version) = self.payload_of(&key)?;
+                if marked.contains(&digest) || self.admitted(&digest, fence).await? {
+                    continue;
+                }
+                match self.stored_envelope(&digest).await? {
+                    // A pending one is revoked before its payload goes.
+                    Some((_, envelope)) if envelope.version == version => {
+                        if self.sweep(digest, fence).await? == Delete::Deleted {
+                            collection.swept += 1;
+                            collection.swept_bytes += size;
+                        }
+                    }
+                    // Its put was revoked, lost to an equal put, or its deleter
+                    // stopped: no publication of this version can follow.
+                    _ => {
+                        self.medium.remove(&key).await.map_err(medium)?;
                         collection.swept_bytes += size;
                     }
-                }
-                // Its put was revoked, lost to an equal put, or its deleter
-                // stopped: no publication of this version can follow.
-                _ => {
-                    self.medium.remove(&key).await.map_err(medium)?;
-                    collection.swept_bytes += size;
                 }
             }
         }
         // Admissions before the fence no longer protect anything.
-        for (key, _) in self.list_all(&format!("{}a/", self.prefix)).await? {
-            if Self::revision_of(&key, 1)? < fence {
-                self.medium.remove(&key).await.map_err(medium)?;
+        let mut pages = self.pages(format!("{}a/", self.prefix));
+        while let Some(page) = pages.next().await? {
+            for (key, _) in page {
+                if Self::revision_of(&key, 1)? < fence {
+                    self.medium.remove(&key).await.map_err(medium)?;
+                }
             }
         }
         collection.revision = Some(if collection.swept > 0 {

@@ -1,42 +1,33 @@
 # @acyclic-labs/objects
 
-## Canonical logical Objects v1
+## Objects v1 blobs
 
-The unmerged source branch exposes `MemoryObjectsV1`, `HttpObjectsV1` and generated
-request/response types at the default package export. `./proto` contains v1
-Protobuf messages, `./http` the browser HTTP client, and `./grpc` the complete
-Node/Bun gRPC client. The `./v1` subpaths expose the same sole contract.
+`MemoryObjectsV1`, `HttpObjectsV1` and the generated request/response types are
+at the default export; `./proto` holds the Protobuf messages, `./http` the
+browser HTTP client and `./grpc` the Node/Bun gRPC client.
 
-Objects use logical bucket names and current keys, eventual reads/listing,
-single-key conditions, bounded ranges, multipart uploads and opaque ETags.
-Public versions, history, snapshots and forks are retired.
+The caller's account is the whole namespace. A blob is named by the BLAKE3-256
+digest of its bytes, so a put is idempotent by content: `created` and
+`alreadyExists` are durable and carry the verified digest and length, while
+`unknown` means the outcome could not be determined and repeating the same put
+is safe. Manifests join existing parts, retained roots keep blobs alive, and
+collection reclaims what nothing references. Every reply is checked against its
+request by the same Rust rules the Rust clients use.
 
 ```ts
-import { create } from "@bufbuild/protobuf";
-import {
-  MemoryObjectsV1, CreateBucketRequestSchema, PutObjectHeaderSchema,
-  GetObjectRequestSchema,
-} from "@acyclic-labs/objects";
+import { MemoryObjectsV1, verified } from "@acyclic-labs/objects";
 
 const objects = await MemoryObjectsV1.create();
-const bucket = await objects.createBucket(create(CreateBucketRequestSchema, {
-  name: "documents",
-}));
-await objects.put(create(PutObjectHeaderSchema, {
-  bucket: bucket.bucket, objectKey: "welcome.txt",
-  preconditions: { condition: { case: "ifAbsent", value: true } },
-}), new TextEncoder().encode("Hello"));
-const value = await objects.get(create(GetObjectRequestSchema, {
-  bucket: bucket.bucket, objectKey: "welcome.txt",
-}), 1024n);
+const put = verified(await objects.put(new TextEncoder().encode("Hello")));
+if (!put) throw new Error("outcome unknown; repeating the put is safe");
+await objects.retain(new TextEncoder().encode("documents"), [put.digest]);
+const value = await objects.get({ digest: put.digest, maximumBytes: 1024n });
 console.log(new TextDecoder().decode(value.body));
 ```
 
 Construct `HttpObjectsV1` with `{ endpoint, token }` for HTTPS services. Node/Bun
-use `GrpcObjectsV1` or `createObjectsV1GrpcClients` from `./grpc`. The latter
-exposes every canonical RPC, including streamed PUT/part uploads and GET, and
-owns a session that callers close. Optional `caCertificate` adds a private PEM
-CA; request/download/message bounds are explicit. Browsers use HTTP.
+use `GrpcObjectsV1` or `createObjectsV1GrpcClients` from `./grpc`, which owns a
+session callers close; optional `caCertificate` adds a private PEM CA.
 
 ## Breaking transition and published history
 

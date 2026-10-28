@@ -13,24 +13,17 @@
 </script>
 <body data-result="pending">
 <script type="module">
-  import { create } from "@bufbuild/protobuf";
-  import { MemoryObjectsV1, CreateBucketRequestSchema, PutObjectHeaderSchema, GetObjectRequestSchema } from "../dist/index.js";
+  import { MemoryObjectsV1, verified } from "../dist/index.js";
 
   try {
     const objects = await MemoryObjectsV1.create();
-    const bucket = await objects.createBucket(create(CreateBucketRequestSchema, { name: "browser-objects" }));
     const body = new Uint8Array([1, 2, 3]);
-    const header = create(PutObjectHeaderSchema, { bucket: bucket.bucket, objectKey: "artifact" });
-    const published = await objects.put(header, body);
-    const fetched = await objects.get(create(GetObjectRequestSchema, {
-      bucket: bucket.bucket, objectKey: "artifact", range: { selection: { case: "bytes", value: { start: 1n, end: 2n } } },
-    }), 2n);
-    if (published.size !== 3n || fetched.body.join(",") !== "2,3" || fetched.header.contentRange?.total !== 3n) {
-      throw new Error("Rust-backed browser object read differs from its write");
+    const published = verified(await objects.put(body));
+    const fetched = await objects.get({ digest: published.digest, range: { start: 1n, end: 3n }, maximumBytes: 2n });
+    if (published.length !== 3n || fetched.body.join(",") !== "2,3" || fetched.start !== 1n || fetched.info.length !== 3n) {
+      throw new Error("Rust-backed browser blob read differs from its write");
     }
-    await objects.put(header, new Uint8Array([4]));
-    const replaced = await objects.get(create(GetObjectRequestSchema, { bucket: bucket.bucket, objectKey: "artifact" }), 1n);
-    if (replaced.body.join(",") !== "4") throw new Error("current key did not reflect replacement");
+    if ((await objects.put(body)).outcome.case !== "alreadyExists") throw new Error("equal bytes did not name the same blob");
     document.body.dataset.result = "passed";
   } catch (error) {
     document.body.dataset.result = "failed";
