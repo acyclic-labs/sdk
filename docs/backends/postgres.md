@@ -32,6 +32,25 @@ prepares the canonical decision before SQL publication and installs it after
 durability; its source-scoped receipts below do not qualify this source.
 SQL synchronous commit must remain enabled for durable acknowledgements.
 
+`acyclic_stream_publish(namespace, expected_revision, command_bytes, deadline)`
+is the physical publication primitive. Its prepared call checks the journal
+cursor under the namespace fence, samples the database clock, inserts the exact
+command and queues NOTIFY in one server-side statement. A final database-clock
+deadline refusal aborts both insertion and notification. READ COMMITTED is
+required, and the head snapshot is obtained after waiting for the lock. A stale
+cursor writes nothing. SQL does not interpret Stream conditions or retry keys.
+Installation needs PL/pgSQL and permission to create/replace and execute this
+function as well as the table permissions above.
+
+The current wrapper still takes its existing transaction fence and performs
+bounded catch-up before that call, then commits before exposing the canonical
+result. This is the first PLATFORM-9 change, not the one-round-trip target or
+closure of G07. Moving catch-up/replanning/batching into the one shared replica
+belongs with the Streams owner. The existing DG071 correction must be retained
+when that owner consumes this primitive; no condition evaluator is moved to SQL.
+The separate BEGIN, lock, catch-up and COMMIT exchanges still exist. Delayed
+NOTIFY is a wake hint, not evidence that a read is fresh; reads still catch up.
+
 Each opened provider owns two connections and three shared async tasks: one
 serialized query connection, one LISTEN connection, and one notification refresh
 task. Clones share them. Streams and follows add no connection, OS thread or
@@ -97,7 +116,7 @@ listener-loss checks, and the idle 100,000-stream/subscription check in 17.65 s
 (700 ms path creation), with two provider connections, four total tasks including
 the observer, one OS thread and 321,380 KiB RSS. Browser and Cloudflare host
 fixtures compiled for wasm. The current storage draft's adapter inventory is
-495 Rust lines plus 13 SQL lines, pending the #1705 integration; the shared
+508 Rust lines plus 62 SQL lines, pending the #1705 integration; the shared
 journal-orchestration extraction remains follow-up #1629.
 
 The shared prepare/durability/install correction passed all 390 Stream library
@@ -120,6 +139,32 @@ default GraphCoder compile. Evidence: job `1793132738027-89535-de4d1919`, log
 `/home/var/log/buildbox/1793132723435-89535-8486c831.log`. Missing resource
 routing and synchronous resource refusal now close only their channel. This
 preserves ordinary follows; it does not supply the missing remote policy watch.
+
+## Audit v3 measurement plan
+
+No new SQL runtime, throughput, latency or freshness qualification is claimed.
+The compile-only refresh does not execute PL/pgSQL. Before claiming PLATFORM-9
+performance, use a disposable bb2 PostgreSQL container and process-owned RTT
+proxy under `/mnt/bb`, bound only to `127.0.0.1:15400-15499`, with cleanup on exit.
+Use the same source, command sizes, work budgets and semantic oracles for the
+sequential baseline and the publication function. Keep setup/statement preparation
+separate from warm operations and count actual frontend protocol messages,
+flush/response boundaries and SQL executions, not just outer provider calls.
+
+| Workload | Measurements and unchanged controls |
+| --- | --- |
+| 1, 2, 4, 8, 16, 32, 64 writers; distinct paths in one namespace | Test shared-provider clones and independent provider processes separately. Record completed throughput, end-to-end p50/p99, SQL/protocol messages and namespace advisory-lock wait/hold time. Repeat with injected RTT 0/1/5/20 ms. Keep total inflight work bounded and report the single-query-connection limit. |
+| Conflicting paths and multi-stream commits | Preserve exactly one CAS winner and all-or-nothing conditions. Replay the same key after response loss and independent reopen; no new key or duplicate accepted command. Stale journal cursor and deadline-after-lock-wait publish no row/notification. |
+| Cancellation before send, after send, after commit; process crash | Retain original command bytes and native work custody. Reconcile a sent Unknown using the original key; inspect actual journal rows and immutable receipts, not only returned errors. Retain existing refused-command/DG071 oracles when adopting the shared replica. |
+| Delayed/lost notifications and stale grants | A delayed notification never establishes freshness. Keep the authoritative read/decision boundary and stale-grant AlreadyExists/privacy oracles in the canonical immutable Objects core. No polling or private grant cache. |
+
+Replay the sequential adapter as the negative control without changing workloads
+or budgets; report whether the stage/lock measurements detect it. Any later frame
+batching or refresh elision needs an ordered-observation proof and the same
+conflict, deadline, notification-loss and crash oracles. G20 transport/context is
+be-edge-owned; G24/G25 replication/blob contracts are Streams-owned; G30 uses the
+existing guest Placement. This adapter adds no framing, reconnect loop, private
+blob engine, or backend-specific filesystem branch.
 
 ## Live steps
 

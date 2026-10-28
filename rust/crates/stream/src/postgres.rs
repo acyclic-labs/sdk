@@ -11,7 +11,7 @@ use crate::{
 use futures::StreamExt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::{Mutex, watch};
-use tokio_postgres::{AsyncMessage, Client, GenericClient, NoTls};
+use tokio_postgres::{AsyncMessage, Client, GenericClient, NoTls, Statement};
 
 const PAGE: i64 = 64;
 const SCHEMA: &str = include_str!("postgres/schema.sql");
@@ -27,6 +27,7 @@ impl UnixMillisClock for Clock {
 struct Session {
     client: Client,
     cursor: i64,
+    publish: Statement,
 }
 
 struct Inner {
@@ -86,6 +87,12 @@ impl PostgresStream {
             .await
             .map_err(unavailable)?;
         client.batch_execute(SCHEMA).await.map_err(unavailable)?;
+        let publish = client
+            .prepare(
+                "SELECT revision, at_millis, accepted FROM acyclic_stream_publish($1,$2,$3,$4)",
+            )
+            .await
+            .map_err(unavailable)?;
         let (listener, mut notifications) = tokio_postgres::connect(database, NoTls)
             .await
             .map_err(unavailable)?;
@@ -128,7 +135,11 @@ impl PostgresStream {
             core,
             clock,
             namespace: namespace.to_owned(),
-            session: Mutex::new(Session { client, cursor: 0 }),
+            session: Mutex::new(Session {
+                client,
+                cursor: 0,
+                publish,
+            }),
             failed: AtomicBool::new(false),
             failure,
             tasks: std::sync::Mutex::new(vec![
@@ -219,7 +230,7 @@ impl PostgresStream {
     async fn refresh(&self) -> Result<(), StreamError> {
         self.check()?;
         let mut session = self.inner.session.lock().await;
-        let Session { client, cursor } = &mut *session;
+        let Session { client, cursor, .. } = &mut *session;
         self.catch_up(client, cursor).await
     }
 
@@ -263,7 +274,11 @@ impl PostgresStream {
     ) -> Result<Outcome, StreamError> {
         self.check()?;
         let mut session = self.inner.session.lock().await;
-        let Session { client, cursor } = &mut *session;
+        let Session {
+            client,
+            cursor,
+            publish,
+        } = &mut *session;
         // Acquire the namespace lock before taking the catch-up snapshot. A
         // caller-configured repeatable-read default could otherwise preserve a
         // snapshot from before a competing publisher released the lock.
@@ -294,45 +309,43 @@ impl PostgresStream {
         {
             return self.apply(command).await;
         }
-        let row = tx
-            .query_one(
-                "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint",
-                &[],
-            )
-            .await
-            .map_err(unavailable)?;
-        let millis: i64 = row.get(0);
-        let at = u64::try_from(millis).map_err(unavailable)?;
-        if deadline.is_some_and(|deadline| at >= deadline) {
-            return Err(StreamError::DeadlineElapsed);
-        }
         let bytes = command.encode_to_vec();
         // The journal's protobuf oneof adds a field tag and length delimiter;
         // the public request ceiling remains MAX_COMMAND_BYTES.
         if bytes.len() > crate::wire_codec::requests::block_len(MAX_COMMAND_BYTES) {
             return Err(StreamError::LimitExceeded);
         }
-        let row = tx.query_one("INSERT INTO acyclic_stream_journal(namespace, at_millis, command) VALUES($1,$2,$3) RETURNING revision", &[&self.inner.namespace, &millis, &bytes]).await.map_err(unavailable)?;
-        let revision: i64 = row.get(0);
-        tx.execute(
-            "SELECT pg_notify('acyclic_stream_commits', $1)",
-            &[&self.inner.namespace],
-        )
-        .await
-        .map_err(unavailable)?;
-        if let Some(deadline) = deadline {
-            let now: i64 = tx
-                .query_one(
-                    "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint",
-                    &[],
-                )
-                .await
-                .map_err(unavailable)?
-                .get(0);
-            if u64::try_from(now).map_err(unavailable)? >= deadline {
-                return Err(StreamError::DeadlineElapsed);
-            }
+        // Clock, physical cursor CAS, insertion, notification and the final
+        // acceptance deadline share one server-side statement. The transaction
+        // fence still serializes catch-up/publication; Stream conditions remain
+        // in the canonical core.
+        let deadline = deadline.map(|value| i64::try_from(value).unwrap_or(i64::MAX));
+        let row = tx
+            .query_one(
+                &*publish,
+                &[&self.inner.namespace, &*cursor, &bytes, &deadline],
+            )
+            .await
+            .map_err(|error| {
+                if error
+                    .as_db_error()
+                    .is_some_and(|error| error.code().code() == "PST01")
+                {
+                    StreamError::DeadlineElapsed
+                } else {
+                    unavailable(error)
+                }
+            })?;
+        if !row.get::<_, bool>(2) {
+            // A cursor mismatch is impossible under this publication fence.
+            // The future shared replica owns refresh/replan, not the SQL adapter.
+            self.fail();
+            return Err(unavailable(
+                "journal changed while holding its namespace fence",
+            ));
         }
+        let revision: i64 = row.get(0);
+        let at = u64::try_from(row.get::<_, i64>(1)).map_err(unavailable)?;
         tx.commit().await.map_err(unavailable)?;
         self.inner.clock.0.store(at, Ordering::Release);
         let result = self.apply(command).await;
