@@ -63,23 +63,30 @@ impl Remote {
             .await
             .map_err(|_| StreamError::AccessDenied)?;
         let mut request = tonic::Request::new(body);
-        let mut authorization = format!("Bearer {}", lease.as_str())
-            .parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-            .map_err(|_| StreamError::AccessDenied)?;
+        let mut authorization = tonic::metadata::MetadataValue::try_from(
+            acyclic_auth::credential::bearer_bytes(lease.as_str()),
+        )
+        .map_err(|_| StreamError::AccessDenied)?;
         authorization.set_sensitive(true);
         request
             .metadata_mut()
             .insert("authorization", authorization);
-        lease.check().map_err(|_| StreamError::AccessDenied)?;
-        let response = dispatch(self.service(), request).await.map_err(|error| {
-            if error.code() == tonic::Code::Unauthenticated
-                && std::error::Error::source(&error).is_none()
-            {
-                let _ = lease.reject();
+        lease.check().await.map_err(|_| StreamError::AccessDenied)?;
+        let response = match dispatch(self.service(), request).await {
+            Ok(response) => response,
+            Err(error) => {
+                if error.code() == tonic::Code::Unauthenticated
+                    && std::error::Error::source(&error).is_none()
+                {
+                    lease
+                        .reject()
+                        .await
+                        .map_err(|_| StreamError::AccessDenied)?;
+                }
+                return Err(wire_codec::status(&error));
             }
-            wire_codec::status(&error)
-        })?;
-        lease.check().map_err(|_| StreamError::AccessDenied)?;
+        };
+        lease.check().await.map_err(|_| StreamError::AccessDenied)?;
         Ok(response.into_inner())
     }
 }

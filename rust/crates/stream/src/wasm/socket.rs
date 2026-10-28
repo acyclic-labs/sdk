@@ -39,7 +39,7 @@ impl Endpoint {
 }
 
 struct Incoming {
-    sender: Option<mpsc::Sender<Result<wire::SessionFrame, StreamError>>>,
+    sender: Option<mpsc::Sender<js_sys::ArrayBuffer>>,
     terminal: Option<StreamError>,
 }
 impl Incoming {
@@ -78,7 +78,10 @@ impl Transport for Endpoint {
                 .resolve()
                 .await
                 .map_err(|_| StreamError::AccessDenied)?;
-            credential.check().map_err(|_| StreamError::AccessDenied)?;
+            credential
+                .check()
+                .await
+                .map_err(|_| StreamError::AccessDenied)?;
             let token =
                 base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(credential.as_str());
             let url = format!("{}/v1/stream/session", self.url).replacen("http", "ws", 1);
@@ -110,28 +113,22 @@ impl Transport for Endpoint {
             });
             let messages = incoming.clone();
             let message_socket = socket.clone();
-            let received_credential = credential.clone();
             let message = Closure::new(move |event: web_sys::MessageEvent| {
-                let result = received_credential
-                    .check()
-                    .map_err(|_| StreamError::AccessDenied)
-                    .and_then(|()| decode_frame(event.data()));
                 let mut incoming = messages.borrow_mut();
-                match result {
-                    Ok(frame) => {
-                        if incoming
-                            .sender
-                            .as_ref()
-                            .is_some_and(|sender| sender.try_send(Ok(frame)).is_err())
-                        {
-                            incoming.fail(StreamError::Capacity);
-                            let _ = message_socket.close();
-                        }
+                // Bound retained transport bytes without copying or decoding.
+                let data = event.data().dyn_into::<js_sys::ArrayBuffer>();
+                let error = match data {
+                    Err(_) => Some(StreamError::InvalidResponse),
+                    Ok(data) if data.byte_length() as usize > MAX_COMMAND_BYTES => {
+                        Some(StreamError::LimitExceeded)
                     }
-                    Err(error) => {
-                        incoming.fail(error);
-                        let _ = message_socket.close();
-                    }
+                    Ok(data) => incoming.sender.as_ref().and_then(|sender| {
+                        sender.try_send(data).err().map(|_| StreamError::Capacity)
+                    }),
+                };
+                if let Some(error) = error {
+                    incoming.fail(error);
+                    let _ = message_socket.close();
                 }
             });
             let failure = incoming.clone();
@@ -168,6 +165,7 @@ impl Transport for Endpoint {
             guard
                 .credential
                 .check()
+                .await
                 .map_err(|_| StreamError::AccessDenied)?;
             let response = futures::stream::try_unfold(
                 (guard, receiver, source, incoming),
@@ -184,10 +182,14 @@ impl Transport for Endpoint {
                         guard
                             .credential
                             .check()
+                            .await
                             .map_err(|_| StreamError::AccessDenied)?;
                         match event {
                             Either::Left(Some(frame)) => {
-                                return Ok(Some((frame?, (guard, receiver, source, incoming))));
+                                // Admission occurs at consumption, before copying
+                                // or decoding the queued browser buffer.
+                                let frame = decode_frame(frame)?;
+                                return Ok(Some((frame, (guard, receiver, source, incoming))));
                             }
                             Either::Left(None) => {
                                 return Err(incoming
@@ -218,14 +220,8 @@ impl Transport for Endpoint {
         })
     }
 }
-fn decode_frame(data: JsValue) -> Result<wire::SessionFrame, StreamError> {
-    if !data.is_instance_of::<js_sys::ArrayBuffer>() {
-        return Err(StreamError::InvalidResponse);
-    }
+fn decode_frame(data: js_sys::ArrayBuffer) -> Result<wire::SessionFrame, StreamError> {
     let bytes = Uint8Array::new(&data);
-    if bytes.length() as usize > MAX_COMMAND_BYTES {
-        return Err(StreamError::LimitExceeded);
-    }
     wire_codec::session::decode_frame(&bytes.to_vec())
 }
 

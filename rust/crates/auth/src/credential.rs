@@ -1,9 +1,11 @@
 //! Credential callbacks and validity-aware snapshots shared by product transports.
+mod action;
 mod cache;
 mod custodian;
 #[cfg(all(target_arch = "wasm32", feature = "js-credential"))]
 pub mod javascript;
 mod watch;
+pub use action::{CredentialAction, CredentialPending};
 pub use cache::{
     CredentialCache, CredentialCacheError, CredentialLease, CredentialRevision, CredentialSnapshot,
     CredentialValidity,
@@ -91,11 +93,11 @@ impl std::fmt::Debug for ResolvedCredential {
 impl ResolvedCredential {
     /// Retain an existing owner's exact request, without creating a cache.
     /// Invalid bytes and already-refused requests fail before transport.
-    pub fn from_custodian(request: impl CredentialRequest) -> Result<Self, CredentialError> {
+    pub async fn from_custodian(request: impl CredentialRequest) -> Result<Self, CredentialError> {
         if !valid_credential(request.token()) {
             return Err(CredentialError::Invalid);
         }
-        request.check()?;
+        request.check().await?;
         Ok(Self(Resolved::Custodian(Shared::new(request))))
     }
 
@@ -123,19 +125,19 @@ impl ResolvedCredential {
     }
 
     /// Revalidate after transport acquisition, immediately before dispatch.
-    pub fn check(&self) -> Result<(), CredentialError> {
+    pub fn check(&self) -> CredentialAction<()> {
         match &self.0 {
-            Resolved::Raw(_) => Ok(()),
-            Resolved::Cached { cache, lease } => cache.check(lease).map_err(cache_error),
+            Resolved::Raw(_) => Ok(()).into(),
+            Resolved::Cached { cache, lease } => cache.check(lease).map_err(cache_error).into(),
             Resolved::Custodian(request) => request.check(),
         }
     }
 
     /// A late rejection cannot discard a newer request's snapshot.
-    pub fn reject(&self) -> Result<bool, CredentialError> {
+    pub fn reject(&self) -> CredentialAction<bool> {
         match &self.0 {
-            Resolved::Raw(_) => Ok(false),
-            Resolved::Cached { cache, lease } => cache.reject(lease).map_err(cache_error),
+            Resolved::Raw(_) => Ok(false).into(),
+            Resolved::Cached { cache, lease } => cache.reject(lease).map_err(cache_error).into(),
             Resolved::Custodian(request) => request.reject(),
         }
     }
@@ -175,10 +177,10 @@ impl CredentialProvider {
     /// the admitted request's binding and validity. Custodians must publish a
     /// changed/unavailable revision and call CredentialCache::invalidate on
     /// source events. Raw callbacks return None, never a fabricated identity.
-    pub fn watch(&self) -> Result<Option<CredentialWatch>, CredentialError> {
+    pub fn watch(&self) -> CredentialAction<Option<CredentialWatch>> {
         match &self.0 {
-            Source::Raw(_) => Ok(None),
-            Source::Cached(cache) => cache.watch().map(Some).map_err(cache_error),
+            Source::Raw(_) => Ok(None).into(),
+            Source::Cached(cache) => cache.watch().map(Some).map_err(cache_error).into(),
             Source::Custodian(source) => source.watch(),
         }
     }
@@ -225,14 +227,7 @@ impl CredentialProvider {
                     lease,
                 }))
             }
-            Source::Custodian(source) => {
-                let request = source.resolve().await?;
-                if !valid_credential(request.as_str()) {
-                    return Err(CredentialError::Invalid);
-                }
-                request.check()?;
-                Ok(request)
-            }
+            Source::Custodian(source) => source.resolve().await,
         }
     }
 }
@@ -242,4 +237,15 @@ pub fn valid_credential(value: &str) -> bool {
     value.len() <= MAX_CREDENTIAL_BYTES
         && !value.trim().is_empty()
         && !value.contains(['\r', '\n', '\0'])
+}
+
+/// Encode bearer metadata in one exactly sized buffer. This does not admit a
+/// request: validate static credentials first, or retain resolved custody and
+/// check it at dispatch. The transport consumes this buffer without copying it.
+pub fn bearer_bytes(value: &str) -> Vec<u8> {
+    const PREFIX: &[u8] = b"Bearer ";
+    let mut bytes = Vec::with_capacity(PREFIX.len() + value.len());
+    bytes.extend_from_slice(PREFIX);
+    bytes.extend_from_slice(value.as_bytes());
+    bytes
 }

@@ -1,5 +1,7 @@
 //! Adapters retain an existing custodian; they never introduce another cache.
-use super::{CredentialBinding, CredentialError, CredentialWatch, ResolvedCredential};
+use super::{
+    CredentialAction, CredentialBinding, CredentialError, CredentialWatch, ResolvedCredential,
+};
 use std::{future::Future, pin::Pin};
 
 /// Native custodians can cross transport threads; browser custodians stay local.
@@ -30,7 +32,7 @@ pub trait CredentialSource: CustodianPlatform + 'static {
     fn resolve(&self) -> CredentialResolution<'_>;
     /// Register before resolution or cache lookup. None means no trusted source
     /// identity; a raw callback must not acquire one through conversion.
-    fn watch(&self) -> Result<Option<CredentialWatch>, CredentialError>;
+    fn watch(&self) -> CredentialAction<Option<CredentialWatch>>;
 }
 
 /// Exact request custody retained by its original owner. An adapter must hold
@@ -43,7 +45,7 @@ pub trait CredentialRequest: CustodianPlatform + 'static {
     /// Binding is immutable and must describe this exact request's check.
     fn binding(&self) -> Option<CredentialBinding>;
     /// Recheck source, account, audience and absolute expiry before admission.
-    fn check(&self) -> Result<(), CredentialError>;
+    fn check(&self) -> CredentialAction<()>;
     /// Reject only this exact snapshot on authenticated remote rejection.
-    fn reject(&self) -> Result<bool, CredentialError>;
+    fn reject(&self) -> CredentialAction<bool>;
 }

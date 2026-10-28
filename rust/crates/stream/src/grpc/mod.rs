@@ -321,14 +321,14 @@ impl Client {
                             && std::error::Error::source(error).is_none()
                     }) {
                         if let Some(lease) = &lease {
-                            lease.reject().map_err(|_| {
+                            lease.reject().await.map_err(|_| {
                                 Status::unauthenticated("credential source unavailable")
                             })?;
                         }
                     }
                     if result.is_ok() {
                         if let Some(lease) = &lease {
-                            lease.check().map_err(|error| {
+                            lease.check().await.map_err(|error| {
                                 let mut status = Status::unauthenticated(
                                     "credential source unavailable or changed",
                                 );
@@ -426,6 +426,7 @@ pub(crate) async fn request_authorization(
             .map_err(|_| Status::unauthenticated("credential provider failed"))?;
         token
             .check()
+            .await
             .map_err(|_| Status::unauthenticated("credential expired or changed"))?;
         Ok((
             authorization(&token).map_err(|_| Status::unauthenticated("invalid credential"))?,
@@ -443,8 +444,7 @@ fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectErro
     if !acyclic_auth::credential::valid_credential(bearer_token) {
         return Err(ConnectError::InvalidCredential);
     }
-    let mut value = format!("Bearer {bearer_token}")
-        .parse::<MetadataValue<Ascii>>()
+    let mut value = MetadataValue::try_from(acyclic_auth::credential::bearer_bytes(bearer_token))
         .map_err(|_| ConnectError::InvalidCredential)?;
     value.set_sensitive(true);
     Ok(value)

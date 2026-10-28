@@ -230,6 +230,72 @@ still require their separate counters below.
   Count token calls before approval: the required result is zero. An SDK sleep
   wrapper or an assumed endpoint would not satisfy this contract.
 
+## Admission ownership and required work
+
+`CredentialAction` is the shared check, exact rejection and source-registration
+operation. An in-process owner returns an immediate result with no future
+allocation or scheduler hop. A thread-confined owner supplies its completion
+future; transport workers await that event under the caller's original
+deadline/cancellation. Adapters must return a typed source failure when that
+producer disappears. A future that owns its completion producer violates this
+contract.
+
+The tonic guard retains the handle that acquired readiness while waiting for
+admission. Its inline state machine either dispatches that reserved handle once
+or drops it and the request on refusal/cancellation. It adds no boxed dispatch
+future. The next service call acquires readiness on the replacement handle.
+No retry, readiness probe, new timeout or credential re-resolution is added.
+
+The counts below compare the immediately preceding implementation with this
+change. They are static owner-operation counts, not measurements of allocator
+internals, TLS, HTTP/2 or operating-system scheduling. All listed operations add
+zero syscalls, durability barriers and remote round trips; transport's existing
+RPC and buffering costs remain separate.
+
+| Operation | Before | After | Required guarantee |
+| --- | --- | --- | --- |
+| Construct and resolve a custodian request | 2 bearer validation scans, 2 owner checks | 1 scan, 1 owner check | Validate opaque bytes and admit original custody once |
+| Shared native request metadata construction | 1 owner check | 0 owner checks | Carry secret metadata; the guard checks after readiness |
+| Bearer encoding in Auth, Actors, Streams and Objects | 2 owned payload buffers and 2 token copies, with possible formatter growth | 1 exactly sized payload buffer and 1 token copy | Prefix the opaque token once and transfer that allocation into transport metadata |
+| Immediate native dispatch | 1 owner check, 0 added allocations, 0 channel clones | Same | Admit immediately before the maintained channel call |
+| Deferred native dispatch | Unsupported | 1 owner check/event, 0 added dispatch allocations, 1 channel handle clone, 0 bearer copies | Preserve the readiness reservation while the original owner admits dispatch |
+| Successful native reply | 1 owner check | Same, awaited if required | Reject a changed/expired lease before accepting its result |
+| Native session command | 0 owner checks | 1 owner check, 0 added frame copies/allocations for immediate owners | Refuse an old lease before the gRPC body consumes a command |
+| Credentialled native physical session | No local admission-failure event | 1 one-shot event and 1 retained lease clone, shared across its commands | End a pending response on outgoing refusal without waiting for a server reply |
+| Browser session frame | 2 owner checks, 1 buffer copy, 1 protobuf decode | 1 owner check, 1 copy, 1 decode for an admitted frame; 0 copies/decodes for a refused queued frame | Check at consumption before copying or decoding; retain only size-checked buffers |
+| Native session completion | 0 owner checks | 1 owner check | Do not admit successful completion under a changed/expired lease |
+
+The deferred owner's type-erased completion future is one owner allocation,
+not a dispatch allocation; owners with immediate checks allocate neither.
+The channel handle clone shares the existing connection and is required only
+for deferred admission. No caller/source registry or history traversal is added.
+Each state transition performs fixed work; notifying multiple live watches
+still costs one notification per observer as described below.
+
+`credential_custodian` holds real cache-backed custody on a one-shot admission
+event. Its controls retain the producer (still pending), drop the producer
+(typed unavailable immediately), cancel the admission (receiver released),
+and delay an old rejection until after a replacement lease (replacement stays
+valid). `channel` exercises the deferred operation through the maintained tonic
+client after readiness, including expiry, producer loss and cancellation.
+Local failure never invokes exact remote rejection. The existing immediate
+owner and successful reply controls exercise the other branch.
+
+The native session input holds at most its current frame and that frame's
+admission action. Outgoing refusal ends the input and sends a typed failure to
+the response wait. If normal gRPC body teardown drops that sender, the response
+continues waiting on its existing maintained transport operation, preserving
+real statuses and trailers. Neither path starts a task or timer. A loopback
+session control first observes a healthy command acknowledgement, then changes
+account, expiry, availability or explicit invalidation before another command.
+The old command must contribute zero received bytes on the server and must end
+the pending response locally; the unchanged control must reach the server.
+
+JavaScript source watches also register before observing, matching the Rust
+contract. Reentrant invalidation completes the returned signal immediately;
+an observation failure removes its registration before propagating. The
+unchanged and closed-watch controls remain unnotified.
+
 ## Source event progress and operation cost
 
 Native source watches share one one-shot event per current source epoch. A

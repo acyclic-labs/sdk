@@ -181,10 +181,17 @@ export class CredentialCache {
 
   /** Custodians publish changed/unavailable validity before calling invalidate. */
   watch(): CredentialWatch {
-    const validity = Object.freeze({ ...this.#observe() });
     const controller = new AbortController();
     this.#changes.add(controller);
-    return { validity, changed: controller.signal, close: () => { this.#changes.delete(controller); } };
+    try {
+      // Subscribe before observation: the source may publish a change while
+      // observing, including synchronously reentering invalidate().
+      const validity = Object.freeze({ ...this.#observe() });
+      return { validity, changed: controller.signal, close: () => { this.#changes.delete(controller); } };
+    } catch (error) {
+      this.#changes.delete(controller);
+      throw error;
+    }
   }
 
   #notify(): void {

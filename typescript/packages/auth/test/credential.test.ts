@@ -63,6 +63,29 @@ test("cohort and warm requests share validity; expiry refreshes once", async () 
   expect(calls).toBe(2);
 });
 
+test("source observation can invalidate a registered watch and recover from refusal", () => {
+  let action = "unchanged";
+  const cache = new CredentialCache(async () => new CredentialSnapshot("synthetic", "r", 100), () => {
+    if (action === "change") cache.invalidate();
+    if (action === "refuse") throw new Error("source unavailable");
+    return { nowUnixSeconds: 1, revision: "r" };
+  });
+  const unchanged = cache.watch();
+  expect(unchanged.changed.aborted).toBe(false);
+  action = "change";
+  const reentrant = cache.watch();
+  expect(unchanged.changed.aborted).toBe(true);
+  expect(reentrant.changed.aborted).toBe(true);
+  action = "refuse";
+  expect(() => cache.watch()).toThrow("source unavailable");
+  action = "unchanged";
+  const next = cache.watch();
+  expect(next.changed.aborted).toBe(false);
+  next.close();
+  cache.invalidate();
+  expect(next.changed.aborted).toBe(false);
+});
+
 test("late rejection and dispatch after revision change preserve exact invalidation", async () => {
   let revision = "account/audience/1";
   let generation = 0;

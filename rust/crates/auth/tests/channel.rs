@@ -3,11 +3,157 @@
 
 use acyclic_auth::{
     channel,
-    credential::{CredentialCache, CredentialRevision, CredentialSnapshot, CredentialValidity},
+    credential::{
+        CredentialAction, CredentialBinding, CredentialCache, CredentialCacheError,
+        CredentialError, CredentialProvider, CredentialRequest, CredentialResolution,
+        CredentialRevision, CredentialSnapshot, CredentialSource, CredentialValidity,
+        CredentialWatch, ResolvedCredential,
+    },
 };
 use futures::{FutureExt, channel::oneshot};
 use std::sync::{Arc, Mutex};
 use tonic::{Code, Response, transport::Endpoint};
+
+struct DeferredSource {
+    cache: CredentialCache,
+    admission: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
+    entered: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+impl CredentialSource for DeferredSource {
+    fn resolve(&self) -> CredentialResolution<'_> {
+        Box::pin(async {
+            ResolvedCredential::from_custodian(DeferredRequest {
+                lease: CredentialProvider::from(self.cache.clone())
+                    .resolve()
+                    .await?,
+                first: std::sync::atomic::AtomicBool::new(true),
+                admission: self.admission.clone(),
+                entered: self.entered.clone(),
+            })
+            .await
+        })
+    }
+    fn watch(&self) -> CredentialAction<Option<CredentialWatch>> {
+        self.cache
+            .watch()
+            .map(Some)
+            .map_err(|error| CredentialError::Provider(Box::new(error)))
+            .into()
+    }
+}
+
+struct DeferredRequest {
+    lease: ResolvedCredential,
+    first: std::sync::atomic::AtomicBool,
+    admission: Arc<Mutex<Option<oneshot::Receiver<()>>>>,
+    entered: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+}
+
+impl CredentialRequest for DeferredRequest {
+    fn token(&self) -> &str {
+        self.lease.as_str()
+    }
+    fn binding(&self) -> Option<CredentialBinding> {
+        self.lease.binding()
+    }
+    fn check(&self) -> CredentialAction<()> {
+        if self.first.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            return self.lease.check();
+        }
+        let Some(admission) = self.admission.lock().unwrap().take() else {
+            return self.lease.check();
+        };
+        let entered = self.entered.lock().unwrap().take().unwrap();
+        let lease = self.lease.clone();
+        CredentialAction::Pending(Box::pin(async move {
+            entered.send(()).unwrap();
+            admission.await.map_err(|_| {
+                CredentialError::Provider(Box::new(CredentialCacheError::Unavailable))
+            })?;
+            lease.check().await
+        }))
+    }
+    fn reject(&self) -> CredentialAction<bool> {
+        self.lease.reject()
+    }
+}
+
+#[tokio::test]
+async fn tonic_dispatch_waits_for_its_owner_and_releases_cancelled_admission() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    for completion in ["expiry", "producer-loss", "cancel"] {
+        let now = Arc::new(AtomicU64::new(1));
+        let observed = now.clone();
+        let cache = CredentialCache::new(
+            |_| async { CredentialSnapshot::new("synthetic".into(), [1; 32].into(), 100) },
+            move || CredentialValidity {
+                now_unix_seconds: observed.load(Ordering::SeqCst),
+                revision: Some([1; 32].into()),
+            },
+        );
+        let original = cache.resolve().await.unwrap();
+        let changed = cache.watch().unwrap();
+        let (complete, completed) = oneshot::channel();
+        let (entered, started) = oneshot::channel();
+        let provider = CredentialProvider::from_custodian(DeferredSource {
+            cache: cache.clone(),
+            admission: Arc::new(Mutex::new(Some(completed))),
+            entered: Arc::new(Mutex::new(Some(entered))),
+        });
+        let mut operation = Box::pin(channel::call(
+            Endpoint::from_static("https://fixture.invalid").connect_lazy(),
+            &provider,
+            tokio::time::Instant::now() + std::time::Duration::from_secs(30),
+            Empty {},
+            |channel, request| async move {
+                let mut client = tonic::client::Grpc::new(channel);
+                client.ready().await?;
+                client
+                    .unary(
+                        request,
+                        tonic::codegen::http::uri::PathAndQuery::from_static(
+                            "/synthetic.Service/Call",
+                        ),
+                        tonic_prost::ProstCodec::<Empty, Empty>::default(),
+                    )
+                    .await
+            },
+        ));
+        futures::select! {
+            result = operation.as_mut().fuse() => panic!("owner has not admitted dispatch: {result:?}"),
+            _ = started.fuse() => {},
+        }
+        // Keeping the producer alive cannot admit a dispatch on its own.
+        assert!(operation.as_mut().now_or_never().is_none());
+        match completion {
+            "cancel" => {
+                drop(operation);
+                assert!(complete.is_canceled());
+            }
+            other => {
+                if other == "expiry" {
+                    now.store(100, Ordering::SeqCst);
+                    complete.send(()).unwrap();
+                } else {
+                    drop(complete);
+                }
+                let error = operation
+                    .now_or_never()
+                    .expect("owner event must finish admission")
+                    .unwrap_err();
+                assert_eq!(error.code(), Code::Unauthenticated);
+                assert!(std::error::Error::source(&error).is_some());
+            }
+        }
+        assert!(
+            changed.now_or_never().is_none(),
+            "local failure must not reject the snapshot"
+        );
+        now.store(1, Ordering::SeqCst);
+        cache.check(&original).unwrap();
+    }
+}
 
 #[derive(Clone, PartialEq, prost::Message)]
 struct Empty {}

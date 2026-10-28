@@ -214,7 +214,7 @@ async fn wire_rejection_and_owner_denial_keep_exact_credential_custody() -> test
             cache.clone().into(),
         ));
         let source = client.credential_provider().expect("forwarded Auth source");
-        let changed = source.watch()?.expect("trusted source notification");
+        let changed = source.watch().await?.expect("trusted source notification");
         let admitted = source.resolve().await?;
         let binding = admitted.binding().expect("trusted lease binding");
         assert_eq!(binding.revision, revision);
@@ -225,12 +225,12 @@ async fn wire_rejection_and_owner_denial_keep_exact_credential_custody() -> test
         ));
         if code == Code::PermissionDenied {
             assert!(changed.now_or_never().is_none());
-            admitted.check()?;
+            admitted.check().await?;
             cache.check(&old)?;
             assert_eq!(calls.load(Ordering::SeqCst), 1);
         } else {
             assert!(changed.now_or_never().is_some());
-            assert!(admitted.check().is_err());
+            assert!(admitted.check().await.is_err());
             assert!(cache.check(&old).is_err());
             let current = cache.resolve().await?;
             cache.check(&current)?;

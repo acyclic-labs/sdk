@@ -1,5 +1,103 @@
 use super::*;
 
+#[tokio::test]
+async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_reply() -> TestResult
+{
+    use acyclic_auth::credential::{CredentialCache, CredentialSnapshot, CredentialValidity};
+    for change in [
+        "unchanged",
+        "account",
+        "expiry",
+        "unavailable",
+        "invalidate",
+    ] {
+        let fixture = Fixture::open(Arc::new(MemoryStream::default()), "node").await?;
+        let validity = Arc::new(std::sync::Mutex::new(CredentialValidity {
+            now_unix_seconds: 1,
+            revision: Some([1; 32].into()),
+        }));
+        let observed = validity.clone();
+        let cache = CredentialCache::new(
+            |_| async { CredentialSnapshot::new("fixture".into(), [1; 32].into(), 100) },
+            move || observed.lock().unwrap().clone(),
+        );
+        let endpoint = crate::session::client::native::endpoint(
+            fixture._channel.clone(),
+            None,
+            Some(cache.clone().into()),
+        );
+        let (send, receive) = tokio::sync::mpsc::channel(1);
+        send.send(frame(
+            0,
+            0,
+            Body::Hello(wire::SessionHello {
+                version: 1,
+                client_id: bytes::Bytes::from_static(b"credential-owner"),
+                destination_node: "node".into(),
+                receive_bytes: crate::MAX_COMMAND_BYTES as u64,
+                receive_frames: crate::MAX_ITEMS as u32,
+                credentials: vec![],
+            }),
+        ))
+        .await?;
+        let source = stream::unfold(receive, |mut receive| async {
+            receive.recv().await.map(|frame| (frame, receive))
+        });
+        let mut response = endpoint.session(Box::pin(source)).await?;
+        assert!(matches!(
+            response.next().await.ok_or("welcome producer ended")??.body,
+            Some(Body::Welcome(_))
+        ));
+        for revision in [1, 2] {
+            if revision == 2 {
+                match change {
+                    "account" => validity.lock().unwrap().revision = Some([2; 32].into()),
+                    "expiry" => validity.lock().unwrap().now_unix_seconds = 100,
+                    "unavailable" => validity.lock().unwrap().revision = None,
+                    "invalidate" => cache.invalidate()?,
+                    _ => {}
+                }
+            }
+            let received = fixture.counts.received_bytes.load(Ordering::Relaxed);
+            send.send(frame(
+                0,
+                0,
+                Body::Interest(wire::SessionInterest {
+                    revision,
+                    upsert: vec![],
+                    remove: vec![],
+                }),
+            ))
+            .await?;
+            let result = response
+                .next()
+                .await
+                .ok_or("session result producer ended")?;
+            if revision == 1 || change == "unchanged" {
+                assert!(
+                    matches!(result?.body, Some(Body::InterestApplied(applied)) if applied.revision == revision)
+                );
+                assert!(fixture.counts.received_bytes.load(Ordering::Relaxed) > received);
+            } else {
+                assert!(matches!(result, Err(StreamError::AccessDenied)));
+                assert_eq!(
+                    fixture.counts.received_bytes.load(Ordering::Relaxed),
+                    received,
+                    "refused command reached the server"
+                );
+            }
+        }
+        *validity.lock().unwrap() = CredentialValidity {
+            now_unix_seconds: 1,
+            revision: Some([1; 32].into()),
+        };
+        // Local dispatch refusal never records an authenticated rejection.
+        let current = cache.resolve().await?;
+        cache.check(&current)?;
+    }
+    Ok(())
+}
+
 struct RotatingHost {
     service: crate::session::Service<MemoryStream>,
     calls: std::sync::Arc<AtomicUsize>,

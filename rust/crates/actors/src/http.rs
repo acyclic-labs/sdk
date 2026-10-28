@@ -62,8 +62,8 @@ fn credential_header(token: &str) -> Result<HeaderValue, Error> {
     if !crate::valid_token(token) {
         return Err(Error::InvalidArgument);
     }
-    let mut value =
-        HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| Error::InvalidArgument)?;
+    let mut value = HeaderValue::try_from(acyclic_auth::credential::bearer_bytes(token))
+        .map_err(|_| Error::InvalidArgument)?;
     value.set_sensitive(true);
     Ok(value)
 }
@@ -238,7 +238,7 @@ impl Client {
     > {
         if let Some(provider) = &self.credential {
             let token = provider.resolve().await?;
-            token.check()?;
+            token.check().await?;
             Ok((credential_header(&token)?, Some(token)))
         } else {
             self.authorization
@@ -298,7 +298,7 @@ impl Client {
             let status = response.status();
             if status.as_u16() == 401 {
                 if let Some(lease) = &lease {
-                    lease.reject()?;
+                    lease.reject().await?;
                 }
             }
             tracing::Span::current().record("http.status", status.as_u16());
@@ -324,11 +324,11 @@ impl Client {
                 });
             }
             if let Some(lease) = &lease {
-                lease.check()?;
+                lease.check().await?;
             }
             let decoded = decode(&self.descriptors, output, &bytes)?;
             if let Some(lease) = &lease {
-                lease.check()?;
+                lease.check().await?;
             }
             Ok(decoded)
         };

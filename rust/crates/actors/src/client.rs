@@ -18,8 +18,8 @@ impl BearerAuth {
         if !crate::valid_token(token) {
             return Err(invalid());
         }
-        let mut value: MetadataValue<Ascii> =
-            format!("Bearer {token}").parse().map_err(|_| invalid())?;
+        let mut value = MetadataValue::try_from(acyclic_auth::credential::bearer_bytes(token))
+            .map_err(|_| invalid())?;
         value.set_sensitive(true);
         Ok(Self(Some(value)))
     }
@@ -211,7 +211,7 @@ fn service_error(status: tonic::Status) -> Error {
     }
 }
 
-fn request_error(
+async fn request_error(
     status: tonic::Status,
     lease: Option<&acyclic_auth::credential::ResolvedCredential>,
 ) -> Error {
@@ -224,7 +224,7 @@ fn request_error(
     }
     if status.code() == tonic::Code::Unauthenticated {
         if let Some(lease) = lease {
-            if let Err(error) = lease.reject() {
+            if let Err(error) = lease.reject().await {
                 return Error::Credential(error);
             }
         }
@@ -266,7 +266,7 @@ impl Client {
             authorization
         } else if let Some(provider) = &self.credential {
             let token = provider.resolve().await?;
-            token.check()?;
+            token.check().await?;
             let authorization = Some(BearerAuth::new(&token)?);
             lease = Some(token);
             authorization
@@ -448,9 +448,11 @@ macro_rules! client_operations {
                 let input = wire::$input::from(request.clone());
                 validate_operation($name, &input)?;
                 let (input, lease) = self.request(input, None).await?;
-                let response = self.inner.clone().$method(input).await
-                    .map(tonic::Response::into_inner).map_err(|status| request_error(status, lease.as_ref()))?;
-                if let Some(lease) = &lease { lease.check()?; }
+                let response = match self.inner.clone().$method(input).await {
+                    Ok(response) => response.into_inner(),
+                    Err(status) => return Err(request_error(status, lease.as_ref()).await),
+                };
+                if let Some(lease) = &lease { lease.check().await?; }
                 Ok(response.try_into()?)
             }
             )*
@@ -478,9 +480,11 @@ macro_rules! client_operations {
                         let input = wire::$input::from(input);
                         validate_operation($name, &input)?;
                         let (input, lease) = self.request(input, authorization).await?;
-                        let response = self.inner.clone().$method(input).await
-                            .map(tonic::Response::into_inner).map_err(|status| request_error(status, lease.as_ref()))?;
-                        if let Some(lease) = &lease { lease.check()?; }
+                        let response = match self.inner.clone().$method(input).await {
+                            Ok(response) => response.into_inner(),
+                            Err(status) => return Err(request_error(status, lease.as_ref()).await),
+                        };
+                        if let Some(lease) = &lease { lease.check().await?; }
                         let output = domain::$output::try_from(response)?;
                         Ok(wire::$output::from(output).encode_to_vec())
                     }, )*

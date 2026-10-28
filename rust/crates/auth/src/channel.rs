@@ -1,13 +1,14 @@
 //! Shared native TLS channel and exact credential dispatch. A cloned tonic
 //! Channel shares its connection; no per-product authority pool or refresh loop.
-use crate::credential::{CredentialError, CredentialProvider, ResolvedCredential};
-use futures::{
-    TryFutureExt,
-    future::{Either, MapErr},
+use crate::credential::{
+    CredentialAction, CredentialError, CredentialPending, CredentialProvider, ResolvedCredential,
 };
+use futures::FutureExt;
 use std::{
     future::{Future, Ready},
+    pin::Pin,
     sync::Arc,
+    task::{Context, Poll},
 };
 use tonic::{
     Request, Response, Status,
@@ -54,14 +55,48 @@ pub struct CredentialChannel {
     channel: Channel,
 }
 
-/// Dispatch future with no allocation beyond the maintained channel's future.
-pub type CredentialDispatch = Either<
-    Ready<Result<http::Response<Body>, Status>>,
-    MapErr<
-        <Channel as Service<http::Request<Body>>>::Future,
-        fn(tonic::transport::Error) -> Status,
-    >,
->;
+/// Dispatch adds no allocation to the maintained channel's future.
+/// A foreign owner retains the already-ready channel until admission completes.
+pub struct CredentialDispatch(Dispatch);
+
+enum Dispatch {
+    Refused(Ready<Result<http::Response<Body>, Status>>),
+    Admission {
+        check: CredentialPending<()>,
+        channel: Channel,
+        request: Option<http::Request<Body>>,
+    },
+    Transport(<Channel as Service<http::Request<Body>>>::Future),
+}
+
+impl Future for CredentialDispatch {
+    type Output = Result<http::Response<Body>, Status>;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        loop {
+            match &mut self.0 {
+                Dispatch::Refused(result) => return Pin::new(result).poll(cx),
+                Dispatch::Transport(result) => {
+                    return Pin::new(result).poll(cx).map_err(transport_error);
+                }
+                Dispatch::Admission {
+                    check,
+                    channel,
+                    request,
+                } => {
+                    let result = futures::ready!(check.as_mut().poll(cx));
+                    self.0 = match result {
+                        Ok(()) => Dispatch::Transport(
+                            channel.call(request.take().expect("admission owns request")),
+                        ),
+                        Err(error) => {
+                            Dispatch::Refused(std::future::ready(Err(credential_error(error))))
+                        }
+                    };
+                }
+            }
+        }
+    }
+}
 
 fn transport_error(error: tonic::transport::Error) -> Status {
     Status::from_error(Box::new(error))
@@ -80,16 +115,29 @@ impl Service<http::Request<Body>> for CredentialChannel {
     }
 
     fn call(&mut self, request: http::Request<Body>) -> Self::Future {
-        if let Some(lease) = request.extensions().get::<ResolvedCredential>()
-            && let Err(error) = lease.check()
-        {
-            return Either::Left(std::future::ready(Err(credential_error(error))));
+        if let Some(lease) = request.extensions().get::<ResolvedCredential>() {
+            match lease.check() {
+                CredentialAction::Ready(result) => {
+                    if let Err(error) = result.now_or_never().expect("ready credential action") {
+                        return CredentialDispatch(Dispatch::Refused(std::future::ready(Err(
+                            credential_error(error),
+                        ))));
+                    }
+                }
+                CredentialAction::Pending(check) => {
+                    // The original handle owns the readiness reservation. Its
+                    // clone must acquire its own reservation on the next call.
+                    let replacement = self.channel.clone();
+                    let channel = std::mem::replace(&mut self.channel, replacement);
+                    return CredentialDispatch(Dispatch::Admission {
+                        check,
+                        channel,
+                        request: Some(request),
+                    });
+                }
+            }
         }
-        Either::Right(
-            self.channel
-                .call(request)
-                .map_err(transport_error as fn(_) -> _),
-        )
+        CredentialDispatch(Dispatch::Transport(self.channel.call(request)))
     }
 }
 
@@ -161,10 +209,10 @@ where
             error.code() == tonic::Code::Unauthenticated
                 && std::error::Error::source(error).is_none()
         }) {
-            lease.reject().map_err(credential_error)?;
+            lease.reject().await.map_err(credential_error)?;
         }
         if response.is_ok() {
-            lease.check().map_err(credential_error)?;
+            lease.check().await.map_err(credential_error)?;
         }
         response
     })
@@ -183,10 +231,9 @@ pub fn request<T>(
         .checked_duration_since(tokio::time::Instant::now())
         .filter(|duration| !duration.is_zero())
         .ok_or_else(|| Status::deadline_exceeded("operation deadline expired"))?;
-    lease.check().map_err(credential_error)?;
-    let mut authorization = format!("Bearer {}", lease.as_str())
-        .parse::<tonic::metadata::MetadataValue<_>>()
-        .map_err(|_| credential_error(CredentialError::Invalid))?;
+    let mut authorization =
+        tonic::metadata::MetadataValue::try_from(crate::credential::bearer_bytes(lease.as_str()))
+            .map_err(|_| credential_error(CredentialError::Invalid))?;
     authorization.set_sensitive(true);
     let mut request = Request::new(body);
     request.set_timeout(remaining);

@@ -132,7 +132,7 @@ impl HttpStream {
                 .resolve()
                 .await
                 .map_err(|_| StreamError::AccessDenied)?;
-            token.check().map_err(|_| StreamError::AccessDenied)?;
+            token.check().await.map_err(|_| StreamError::AccessDenied)?;
             Ok((
                 credential_header(&token).map_err(|_| StreamError::AccessDenied)?,
                 Some(token),
@@ -199,7 +199,10 @@ impl HttpStream {
             .map_err(|_| StreamError::Unavailable)?;
         if response.status().as_u16() == 401 {
             if let Some(lease) = &lease {
-                lease.reject().map_err(|_| StreamError::AccessDenied)?;
+                lease
+                    .reject()
+                    .await
+                    .map_err(|_| StreamError::AccessDenied)?;
             }
         }
         let success = response.status().is_success();
@@ -223,7 +226,7 @@ impl HttpStream {
         }
         span.record("bytes", body.len());
         if success && let Some(lease) = &lease {
-            lease.check().map_err(|_| StreamError::AccessDenied)?;
+            lease.check().await.map_err(|_| StreamError::AccessDenied)?;
         }
         let value: Value = serde_json::from_slice(&body).map_err(|_| StreamError::Unavailable)?;
         if !success {
@@ -241,7 +244,7 @@ impl HttpStream {
         // A well-formed body that breaks the response contract is the peer's fault.
         http_validation::validate(route, &value).map_err(|_| StreamError::InvalidResponse)?;
         if let Some(lease) = &lease {
-            lease.check().map_err(|_| StreamError::AccessDenied)?;
+            lease.check().await.map_err(|_| StreamError::AccessDenied)?;
         }
         Ok(value)
     }
@@ -461,7 +464,8 @@ fn credential_header(token: &str) -> Result<HeaderValue, ConnectError> {
     if !acyclic_auth::credential::valid_credential(token) {
         return Err(ConnectError);
     }
-    let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| ConnectError)?;
+    let mut value = HeaderValue::try_from(acyclic_auth::credential::bearer_bytes(token))
+        .map_err(|_| ConnectError)?;
     value.set_sensitive(true);
     Ok(value)
 }

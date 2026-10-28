@@ -70,62 +70,66 @@ impl CredentialSource for Source {
                 token: Zeroizing::new(token),
                 binding,
             })
+            .await
         })
     }
 
-    fn watch(&self) -> Result<Option<CredentialWatch>, CredentialError> {
-        if get(&self.0, "resolveRequest")?.is_undefined() {
-            return Ok(None);
-        }
-        let function = get(&self.0, "watch")?;
-        if function.is_undefined() {
-            return Ok(None);
-        }
-        let object = function
-            .dyn_into::<Function>()
-            .map_err(invalid)?
-            .call0(&self.0)
-            .map_err(invalid)?;
-        // Close even if malformed metadata prevents constructing a registration.
-        let owner = Close(object);
-        let validity = get(&owner.0, "validity")?;
-        let source_revision = get(&validity, "revision")?;
-        let validity = CredentialValidity {
-            now_unix_seconds: seconds(get(&validity, "nowUnixSeconds")?)?,
-            revision: if source_revision.is_undefined() {
-                None
-            } else {
-                Some(revision(source_revision)?)
-            },
-        };
-        let signal = get(&owner.0, "changed")?
-            .dyn_into::<AbortSignal>()
-            .map_err(invalid)?;
-        let (send, receive) = oneshot::channel();
-        let send = Rc::new(RefCell::new(Some(send)));
-        let changed_send = send.clone();
-        let changed = Closure::new(move |_: web_sys::Event| {
-            if let Some(send) = changed_send.borrow_mut().take() {
-                let _ = send.send(());
+    fn watch(&self) -> CredentialAction<Option<CredentialWatch>> {
+        (|| {
+            if get(&self.0, "resolveRequest")?.is_undefined() {
+                return Ok(None);
             }
-        });
-        signal
-            .add_event_listener_with_callback("abort", changed.as_ref().unchecked_ref())
-            .map_err(invalid)?;
-        if signal.aborted() {
-            if let Some(send) = send.borrow_mut().take() {
-                let _ = send.send(());
+            let function = get(&self.0, "watch")?;
+            if function.is_undefined() {
+                return Ok(None);
             }
-        }
-        Ok(Some(CredentialWatch::from_custodian(
-            validity,
-            Registration {
-                _owner: owner,
-                signal,
-                changed,
-                receive,
-            },
-        )))
+            let object = function
+                .dyn_into::<Function>()
+                .map_err(invalid)?
+                .call0(&self.0)
+                .map_err(invalid)?;
+            // Close even if malformed metadata prevents constructing a registration.
+            let owner = Close(object);
+            let validity = get(&owner.0, "validity")?;
+            let source_revision = get(&validity, "revision")?;
+            let validity = CredentialValidity {
+                now_unix_seconds: seconds(get(&validity, "nowUnixSeconds")?)?,
+                revision: if source_revision.is_undefined() {
+                    None
+                } else {
+                    Some(revision(source_revision)?)
+                },
+            };
+            let signal = get(&owner.0, "changed")?
+                .dyn_into::<AbortSignal>()
+                .map_err(invalid)?;
+            let (send, receive) = oneshot::channel();
+            let send = Rc::new(RefCell::new(Some(send)));
+            let changed_send = send.clone();
+            let changed = Closure::new(move |_: web_sys::Event| {
+                if let Some(send) = changed_send.borrow_mut().take() {
+                    let _ = send.send(());
+                }
+            });
+            signal
+                .add_event_listener_with_callback("abort", changed.as_ref().unchecked_ref())
+                .map_err(invalid)?;
+            if signal.aborted() {
+                if let Some(send) = send.borrow_mut().take() {
+                    let _ = send.send(());
+                }
+            }
+            Ok(Some(CredentialWatch::from_custodian(
+                validity,
+                Registration {
+                    _owner: owner,
+                    signal,
+                    changed,
+                    receive,
+                },
+            )))
+        })()
+        .into()
     }
 }
 
@@ -141,13 +145,13 @@ impl CredentialRequest for Request {
     fn binding(&self) -> Option<CredentialBinding> {
         self.binding.clone()
     }
-    fn check(&self) -> Result<(), CredentialError> {
-        invoke(&self.object, "check").map(|_| ())
+    fn check(&self) -> CredentialAction<()> {
+        invoke(&self.object, "check").map(|_| ()).into()
     }
-    fn reject(&self) -> Result<bool, CredentialError> {
-        invoke(&self.object, "reject")?
-            .as_bool()
-            .ok_or(CredentialError::Invalid)
+    fn reject(&self) -> CredentialAction<bool> {
+        invoke(&self.object, "reject")
+            .and_then(|value| value.as_bool().ok_or(CredentialError::Invalid))
+            .into()
     }
 }
 

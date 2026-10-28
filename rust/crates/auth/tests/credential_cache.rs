@@ -48,7 +48,7 @@ fn provider_projects_trusted_binding_and_push_changes_without_raw_identity() {
         observer(Arc::new(AtomicU64::new(1)), rev.clone()),
     );
     let provider: CredentialProvider = cache.clone().into();
-    let mut change = Box::pin(provider.watch().unwrap().unwrap());
+    let mut change = Box::pin(block_on(provider.watch()).unwrap().unwrap());
     assert_eq!(change.validity().revision, Some(revision(1)));
     pending(change.as_mut());
     let old = block_on(provider.resolve()).unwrap();
@@ -62,22 +62,22 @@ fn provider_projects_trusted_binding_and_push_changes_without_raw_identity() {
     rev.store(2, Ordering::SeqCst);
     cache.invalidate().unwrap();
     block_on(change).unwrap();
-    assert!(old.check().is_err());
+    assert!(block_on(old.check()).is_err());
 
     let next = block_on(provider.resolve()).unwrap();
-    let mut change = Box::pin(provider.watch().unwrap().unwrap());
+    let mut change = Box::pin(block_on(provider.watch()).unwrap().unwrap());
     assert_eq!(change.validity().revision, Some(revision(2)));
     assert_eq!(next.binding().unwrap().revision, revision(2));
-    assert!(!old.reject().unwrap());
+    assert!(!block_on(old.reject()).unwrap());
     pending(change.as_mut());
-    assert!(next.reject().unwrap());
+    assert!(block_on(next.reject()).unwrap());
     block_on(change).unwrap();
     // Dropped subscriptions release their registration and do not affect peers.
-    drop(provider.watch().unwrap());
+    drop(block_on(provider.watch()).unwrap());
     cache.invalidate().unwrap();
 
     let raw = CredentialProvider::new(|| future::ready(Ok("synthetic-raw".into())));
-    assert!(raw.watch().unwrap().is_none());
+    assert!(block_on(raw.watch()).unwrap().is_none());
     assert_eq!(block_on(raw.resolve()).unwrap().binding(), None);
 }
 
@@ -401,15 +401,15 @@ fn cached_callback_composes_with_existing_provider_and_redacts_invalid_bytes() {
     );
     let provider = CredentialProvider::from(cache);
     let old = block_on(provider.resolve()).unwrap();
-    old.check().unwrap();
-    assert!(old.reject().unwrap());
+    block_on(old.check()).unwrap();
+    assert!(block_on(old.reject()).unwrap());
     let current = block_on(provider.resolve()).unwrap();
-    assert!(!old.reject().unwrap());
-    assert!(old.check().is_err());
-    current.check().unwrap();
+    assert!(!block_on(old.reject()).unwrap());
+    assert!(block_on(old.check()).is_err());
+    block_on(current.check()).unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     clock.store(100, Ordering::SeqCst);
-    assert!(current.check().is_err());
+    assert!(block_on(current.check()).is_err());
     assert!(CredentialSnapshot::new("bad\r\nheader".into(), revision(1), 100).is_err());
     fn send_sync<T: Send + Sync>() {}
     send_sync::<CredentialCache>();

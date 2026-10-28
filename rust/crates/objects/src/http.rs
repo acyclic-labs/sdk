@@ -16,7 +16,8 @@ fn credential_header(token: &str) -> Result<HeaderValue, Error> {
     if !acyclic_auth::credential::valid_credential(token) {
         return Err(invalid());
     }
-    let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| invalid())?;
+    let mut value = HeaderValue::try_from(acyclic_auth::credential::bearer_bytes(token))
+        .map_err(|_| invalid())?;
     value.set_sensitive(true);
     Ok(value)
 }
@@ -121,6 +122,7 @@ impl HttpObjects {
                 .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
             token
                 .check()
+                .await
                 .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
             let header = credential_header(&token)
                 .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
@@ -161,6 +163,7 @@ impl HttpObjects {
             if let Some(lease) = &lease {
                 lease
                     .reject()
+                    .await
                     .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
             }
         }
@@ -171,12 +174,14 @@ impl HttpObjects {
         if let Some(lease) = &lease {
             lease
                 .check()
+                .await
                 .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
         }
         let decoded = json::decode(output_name, &bytes, self.maximum).map_err(|_| unavailable())?;
         if let Some(lease) = &lease {
             lease
                 .check()
+                .await
                 .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
         }
         Ok(decoded)

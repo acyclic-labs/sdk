@@ -63,36 +63,36 @@ async fn javascript_owner_keeps_exact_rejection_revision_watch_and_cancellation(
     .await
     .unwrap();
     let provider = javascript::provider(function(&source, "provider"));
-    let watch = provider.watch().unwrap().unwrap();
+    let watch = provider.watch().await.unwrap().unwrap();
     let old = provider.resolve().await.unwrap();
     let revision = CredentialRevision::from(vec![0xd800; 257]);
     assert_eq!(old.binding().unwrap().revision, revision);
     assert_eq!(watch.validity().revision, Some(revision));
-    old.check().unwrap();
-    assert!(old.reject().unwrap());
+    old.check().await.unwrap();
+    assert!(old.reject().await.unwrap());
     watch.await.unwrap();
     assert_eq!(call(&source, "closed").as_f64(), Some(1.0));
     let current = provider.resolve().await.unwrap();
-    let watch = provider.watch().unwrap().unwrap();
-    assert!(!old.reject().unwrap());
-    current.check().unwrap();
+    let watch = provider.watch().await.unwrap().unwrap();
+    assert!(!old.reject().await.unwrap());
+    current.check().await.unwrap();
     assert_eq!(call(&source, "calls").as_f64(), Some(2.0));
     call(&source, "replace");
     watch.await.unwrap();
-    assert!(current.check().is_err());
+    assert!(current.check().await.is_err());
     let replacement = provider.resolve().await.unwrap();
     assert_ne!(replacement.binding(), current.binding());
-    drop(provider.watch().unwrap());
+    drop(provider.watch().await.unwrap());
     assert_eq!(call(&source, "closed").as_f64(), Some(3.0));
     call(&source, "expire");
-    assert!(replacement.check().is_err());
+    assert!(replacement.check().await.is_err());
 
     let raw = javascript::provider(function(&source, "raw"));
-    assert!(raw.watch().unwrap().is_none());
+    assert!(raw.watch().await.unwrap().is_none());
     let request = raw.resolve().await.unwrap();
-    request.check().unwrap();
+    request.check().await.unwrap();
     assert!(request.binding().is_none());
-    assert!(!request.reject().unwrap());
+    assert!(!request.reject().await.unwrap());
 
     call(&source, "block");
     let mut pending = Box::pin(provider.resolve());
