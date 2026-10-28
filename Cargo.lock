@@ -476,6 +476,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-bindgen-test",
  "which",
+ "x509-parser",
 ]
 
 [[package]]

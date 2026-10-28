@@ -169,6 +169,7 @@ async fn run(
                     url: url.clone(),
                     certificate: std::fs::read(certificate)?,
                     key: std::fs::read(key)?,
+                    peer: None,
                 })
             }
             _ => None,
