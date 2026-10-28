@@ -20,7 +20,7 @@
     "bun.lock",
     "compatibility",
     "package.json",
-    "patches/napi-rs-cli-3.10.8.patch",
+    "patches/napi-rs-cli-3.10.9.patch",
     "rust-toolchain.toml",
     "rust/crates/actors",
     "rust/crates/actors-napi",
