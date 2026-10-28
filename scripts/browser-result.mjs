@@ -43,3 +43,61 @@ export function waitForBrowserResult(timeoutMs) {
     changed();
   });
 }
+
+// CDP exposes the DOM publication through a binding installed before scripts.
+// The caller supplies its existing protocol connection and may attach an
+// external event (for example server-observed request cancellation) to this tab.
+export async function chromiumPageResult(browser, url, timeoutMs, { onReady, onResult } = {}) {
+  const { targetId } = await browser.send("Target.createTarget", { url: "about:blank" });
+  const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
+  const binding = "__acyclicQualificationResult";
+  let finish, fail;
+  const result = new Promise(resolve => { finish = resolve; });
+  const terminal = new Promise((_, reject) => { fail = reject; });
+  let active = true;
+  const send = async (...args) => {
+    if (!active) throw new Error("page observation retired");
+    const value = await browser.send(...args);
+    if (!active) throw new Error("page observation retired");
+    return value;
+  };
+  const disconnected = () => fail(browser.signal.reason);
+  if (browser.signal.aborted) disconnected();
+  else browser.signal.addEventListener("abort", disconnected, { once: true });
+  const unlisten = browser.listen(message => {
+    if (message.sessionId !== sessionId) return;
+    if (message.method === "Runtime.bindingCalled" && message.params.name === binding) {
+      try { finish(JSON.parse(message.params.payload)); }
+      catch (error) { fail(error); }
+    } else if (message.method === "Runtime.exceptionThrown") {
+      const details = message.params.exceptionDetails;
+      finish({ status: "failed", text: details.exception?.description ?? details.exception?.value ?? details.text });
+    }
+  });
+  const timeout = setTimeout(() => fail(new Error(`timed out waiting for ${url} result`)), timeoutMs);
+  let retire;
+  try {
+    // Attach a rejection handler before protocol setup: an early page failure
+    // can occur while a command acknowledgment is still in flight.
+    return await Promise.race([terminal, (async () => {
+      await send("Runtime.enable", {}, sessionId);
+      await send("Runtime.addBinding", { name: binding }, sessionId);
+      await send("Page.addScriptToEvaluateOnNewDocument", {
+        source: `(${waitForBrowserResult})(${timeoutMs}).then(value => globalThis.${binding}(JSON.stringify(value)));`,
+      }, sessionId);
+      retire = onReady?.(sessionId, fail);
+      const navigation = await send("Page.navigate", { url }, sessionId);
+      if (navigation.errorText) throw new Error(navigation.errorText);
+      const observed = await result;
+      await onResult?.(observed);
+      return observed;
+    })()]);
+  } finally {
+    active = false;
+    clearTimeout(timeout);
+    browser.signal.removeEventListener("abort", disconnected);
+    retire?.();
+    unlisten();
+    await browser.send("Target.closeTarget", { targetId }).catch(() => {});
+  }
+}
