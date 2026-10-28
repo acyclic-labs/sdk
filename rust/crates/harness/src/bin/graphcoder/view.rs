@@ -354,6 +354,17 @@ impl View {
 /// single blocking worker stays free for the agent's file work, which would
 /// otherwise wait behind a read that lasts until the next key. A full channel
 /// holds the reader back; a dropped view ends it at its next batch.
+/// The page keys scroll the transcript, or an open panel, by one page of
+/// `page` rows.
+fn paged(effect: InputEffect, page: usize) -> InputEffect {
+    let page = isize::try_from(page).unwrap_or(isize::MAX);
+    match effect {
+        InputEffect::Host(Action::TranscriptUp) => InputEffect::Scroll(page),
+        InputEffect::Host(Action::TranscriptDown) => InputEffect::Scroll(-page),
+        other => other,
+    }
+}
+
 fn terminal_events(
     mut tty: Tty,
 ) -> std::io::Result<LocalBoxStream<'static, std::io::Result<Vec<InputEvent>>>> {
@@ -498,7 +509,7 @@ pub async fn run(
                     let effects = areas
                         .event(&mut input, event, &mut viewport, now, &mut |_| None)
                         .collect::<Vec<_>>();
-                    for effect in effects {
+                    for effect in effects.into_iter().map(|effect| paged(effect, page)) {
                         match effect {
                             InputEffect::Submit { text, .. } => {
                                 view.notice = None;
