@@ -39,15 +39,17 @@ function deadlineHeader(header: HeadersInit | undefined, timeoutMs: number | und
 }
 
 /** Own deadlines outside transports whose host timer overflows long durations. */
-export function grpcDeadlines(transport: Transport, expired: () => unknown): Transport {
+export function grpcDeadlines(transport: Transport, expired: () => unknown, defaultTimeoutMs?: number): Transport {
   return {
     async unary(method, signal, timeoutMs, header, input, contextValues) {
+      timeoutMs ??= defaultTimeoutMs;
       const deadline = deadlineSignal(timeoutMs, expired, signal);
       try {
         return await transport.unary(method, deadline.signal, 0, deadlineHeader(header, timeoutMs), input, contextValues);
       } finally { deadline.cleanup(); }
     },
     async stream(method, signal, timeoutMs, header, input, contextValues) {
+      timeoutMs ??= defaultTimeoutMs;
       const deadline = deadlineSignal(timeoutMs, expired, signal);
       try {
         const response = await transport.stream(method, deadline.signal, 0, deadlineHeader(header, timeoutMs), input, contextValues);
