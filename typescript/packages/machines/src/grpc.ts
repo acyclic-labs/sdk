@@ -38,9 +38,8 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
       ...machines,
       async *exec(request: MessageInitShape<typeof wire.ExecRequestSchema>, callOptions?: CallOptions) {
         const query = create(wire.ExecRequestSchema, request);
-        const lengths = query.argv.map(value => new TextEncoder().encode(value).byteLength);
-        if (query.argv.length < 1 || query.argv.length > 64 || !query.argv[0] || query.argv.some(value => value.includes("\0")) || lengths.some(length => length > 4096) || lengths.reduce((sum, length) => sum + length, 0) > 32768) throw new RangeError("invalid exec argv");
-        if (!Number.isInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 60000) throw new RangeError("timeoutMs must be 1..60000");
+        if (query.argv.length < 1 || !query.argv[0] || query.argv.some(value => value.includes("\0"))) throw new RangeError("invalid exec argv");
+        if (!Number.isInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 0xffff_ffff) throw new RangeError("timeoutMs must be a positive uint32");
         const controller = new AbortController();
         const signal = callOptions?.signal;
         const abort = () => controller.abort(signal?.reason);
