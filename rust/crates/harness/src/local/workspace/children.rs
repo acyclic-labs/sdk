@@ -53,7 +53,7 @@ impl LocalWorkspace {
         if let Some(origin) = retained {
             return Ok(Some(origin.snapshot.authored_generation));
         }
-        let lazy = self
+        let Some(state) = self
             .store
             .load_lazy_workspace(
                 self.filesystem
@@ -63,11 +63,15 @@ impl LocalWorkspace {
             )
             .await
             .map_err(storage)?
-            .is_some();
-        if !lazy {
+        else {
             return Ok(None);
-        }
-        let view = self.project_view(source).await?;
+        };
+        // A spawned fork serves no reads until bound, so a child's own spawn
+        // binds it (idempotently) and forks what that child sees.
+        let view = match state.fork_origin {
+            Some(_) => self.spawned_project_view(source).await?,
+            None => self.project_view(source).await?,
+        };
         let cut = view.snapshot(&mut accounting).await.map_err(storage)?;
         view.prepare_fork_snapshot(&destination, cut, operation, &mut accounting)
             .await
@@ -179,10 +183,12 @@ impl crate::filesystem::ForkCuts for LazyForkCuts {
 impl LocalWorkspace {
     /// Registers each `agents/<name>` that `arguments` name as the branch of
     /// `agent`'s spawned child `name`, when `agent` binds this checkout's
-    /// project: that child's project is a prepared lazy fork of this checkout,
-    /// bound into the workspace graph here the first time its parent names
-    /// it, in the same turn that spawned it. A bound fork is never registered
-    /// again, so a discarded branch stays discarded.
+    /// project: that child's project is a lazy fork of this checkout, bound
+    /// into the workspace graph (if nothing bound it earlier) and registered
+    /// the first time its parent names it, in the same turn that spawned it.
+    /// A registered branch is left as it is; one discarded and named again is
+    /// registered again, since discarding retires only this repository's
+    /// reference to the child's fork.
     pub(in crate::local) async fn register_named_children(
         &self,
         agent: &crate::agent::AgentPath,
@@ -211,6 +217,11 @@ impl LocalWorkspace {
         let Some(project) = project else {
             return Ok(());
         };
+        let registered = acyclic_fs::GitCompatStore::load(&self.store, repository)
+            .await
+            .map_err(storage)?
+            .map(|state| state.branches)
+            .unwrap_or_default();
         let cancellation = acyclic_fs::CancellationToken::new();
         for name in names {
             // A name no spawn could carry names no child; git reports it.
@@ -223,23 +234,25 @@ impl LocalWorkspace {
                 .workspace_id(&volume.storage_name(&mut None)?)
                 .map_err(storage)?;
             let mut accounting = acyclic_fs::WorkBudget::UNBOUNDED.accounting(&cancellation);
-            let prepared = self
+            let forked = self
                 .store
                 .load_lazy_workspace(id, &mut accounting)
                 .await
                 .map_err(storage)?
-                .and_then(|state| state.fork_origin)
-                .is_some_and(|origin| origin.phase == acyclic_fs::LazyForkPhase::Prepared);
-            if !prepared {
+                .is_some_and(|state| {
+                    state.fork_origin.is_some() && state.parent_workspace_id == Some(repository)
+                });
+            let branch = format!("agents/{name}");
+            if !forked || registered.contains_key(&branch) {
                 continue;
             }
-            // The branch first: a stop before the binding below registers it
-            // again idempotently, and the bound fork then retires the name.
+            // Bound first, so the branch names a workspace that serves reads;
+            // a stop between the two steps repeats both idempotently.
+            self.spawned_project_view(&volume).await?;
             acyclic_fs::GitCompatRepository::new(repository, self.store.clone())
-                .register_branch_workspace(format!("agents/{name}"), id, None, false)
+                .register_branch_workspace(branch, id, None, false)
                 .await
                 .map_err(storage)?;
-            self.spawned_project_view(&volume).await?;
         }
         Ok(())
     }
