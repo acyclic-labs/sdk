@@ -87,7 +87,7 @@ pub use descriptor::{
     cached_descriptor_capacity, cached_descriptors,
 };
 mod ownership;
-pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier};
+pub use ownership::{OwnershipAnchor, OwnershipReleaseBarrier, OwnershipReleaseSignal};
 mod file_lock;
 pub use file_lock::{FileLock, FileLockMode};
 mod recovery;

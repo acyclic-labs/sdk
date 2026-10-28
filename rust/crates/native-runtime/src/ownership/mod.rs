@@ -15,15 +15,53 @@ impl Clone for OwnershipAnchor {
     }
 }
 
-struct ReleaseState {
+struct ReleaseState<T> {
     complete: Mutex<bool>,
     synchronous: Condvar,
     asynchronous: tokio::sync::Notify,
+    value: T,
 }
 
-struct OwnerReleased(Arc<ReleaseState>);
+/// Publishes retirement when dropped. Place this field after the resources
+/// whose destruction must precede completion.
+pub struct OwnershipReleaseSignal<T = ()>(Arc<ReleaseState<T>>);
 
-impl Drop for OwnerReleased {
+impl<T> OwnershipReleaseSignal<T> {
+    /// Complete shared-state allocation, including Arc counters, for callers
+    /// that admit native control storage before construction.
+    #[must_use]
+    pub const fn allocation_bytes() -> usize {
+        crate::arc_allocation_bytes::<ReleaseState<T>>()
+    }
+
+    /// Creates one retirement condition and its retained state. The caller
+    /// supplies any allocation guard as part of the state.
+    #[must_use]
+    pub fn new(value: T) -> Self {
+        Self(Arc::new(ReleaseState {
+            complete: Mutex::new(false),
+            synchronous: Condvar::new(),
+            asynchronous: tokio::sync::Notify::new(),
+            value,
+        }))
+    }
+
+    /// State that remains available to observers after retirement.
+    #[must_use]
+    pub fn state(&self) -> &T {
+        &self.0.value
+    }
+
+    /// Observes this exact retirement condition without retaining its owner.
+    #[must_use]
+    pub fn release_barrier(&self) -> OwnershipReleaseBarrier<T> {
+        OwnershipReleaseBarrier {
+            released: Arc::clone(&self.0),
+        }
+    }
+}
+
+impl<T> Drop for OwnershipReleaseSignal<T> {
     fn drop(&mut self) {
         {
             let mut complete = self
@@ -45,7 +83,7 @@ struct SharedOwner<Owner, Fence> {
     _owner: Owner,
     fences: crate::sync::Mutex<Vec<Fence>>,
     // Last: observers learn completion only after payload and fences retire.
-    released: OwnerReleased,
+    released: OwnershipReleaseSignal,
 }
 
 impl<Owner, Fence> SharedOwner<Owner, Fence> {
@@ -53,11 +91,7 @@ impl<Owner, Fence> SharedOwner<Owner, Fence> {
         Self {
             _owner: owner,
             fences: crate::sync::Mutex::new(Vec::new()),
-            released: OwnerReleased(Arc::new(ReleaseState {
-                complete: Mutex::new(false),
-                synchronous: Condvar::new(),
-                asynchronous: tokio::sync::Notify::new(),
-            })),
+            released: OwnershipReleaseSignal::new(()),
         }
     }
 
@@ -126,11 +160,17 @@ impl OwnershipAnchor {
 }
 
 /// A non-owning release condition for an [`OwnershipAnchor`] clone family.
-pub struct OwnershipReleaseBarrier {
-    released: Arc<ReleaseState>,
+pub struct OwnershipReleaseBarrier<T = ()> {
+    released: Arc<ReleaseState<T>>,
 }
 
-impl OwnershipReleaseBarrier {
+impl<T> OwnershipReleaseBarrier<T> {
+    /// State retained through the final owner's retirement.
+    #[must_use]
+    pub fn state(&self) -> &T {
+        &self.released.value
+    }
+
     /// Returns whether every ownership-anchor clone has released the owner.
     #[must_use]
     pub fn is_released(&self) -> bool {
@@ -142,7 +182,7 @@ impl OwnershipReleaseBarrier {
     }
 
     /// Blocks until every ownership-anchor clone has released the owner.
-    pub fn wait(self) {
+    pub fn wait(&self) {
         let mut guard = self
             .released
             .complete
