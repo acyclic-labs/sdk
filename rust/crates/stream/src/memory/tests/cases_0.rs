@@ -138,32 +138,35 @@ async fn paginates_more_children_than_one_wire_page_without_gaps() -> Result<(),
             })
             .await?;
     }
-    let mut after = None;
-    let mut revision = None;
-    let mut found = Vec::new();
-    loop {
-        let page = provider
-            .children_page(ChildrenPageRequest {
-                tail_stream: None,
-                parent: Some(path("agents")?),
-                after,
-                hierarchy_version: revision,
-                limit: 127,
-            })
-            .await?;
-        revision = Some(page.hierarchy_version);
-        found.extend(page.children.into_iter().map(|child| child.path));
-        after = page.next_after;
-        if after.is_none() {
-            break;
+    for limit in [127, u32::MAX] {
+        let mut after = None;
+        let mut revision = None;
+        let mut found = Vec::new();
+        loop {
+            let page = provider
+                .children_page(ChildrenPageRequest {
+                    tail_stream: None,
+                    parent: Some(path("agents")?),
+                    after,
+                    hierarchy_version: revision,
+                    limit,
+                })
+                .await?;
+            assert!(page.children.len() <= crate::CHILDREN_PAGE_ITEMS as usize);
+            revision = Some(page.hierarchy_version);
+            found.extend(page.children.into_iter().map(|child| child.path));
+            after = page.next_after;
+            if after.is_none() {
+                break;
+            }
         }
+        assert_eq!(found.len(), 2_049);
+        assert!(
+            found
+                .windows(2)
+                .all(|pair| matches!(pair, [left, right] if left < right))
+        );
     }
-    assert_eq!(found.len(), 2_049);
-    assert!(
-        found
-            .windows(2)
-            .all(|pair| matches!(pair, [left, right] if left < right))
-    );
     Ok(())
 }
 
@@ -374,6 +377,20 @@ async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
                 })
                 .await?;
         }
+        let mut read = provider
+            .read(ReadRequest {
+                path: stream.clone(),
+                from: 0,
+                limit: u32::MAX,
+                at_least: Default::default(),
+            })
+            .await?;
+        for expected in 0..count {
+            let record = read.next().await.ok_or(StreamError::Unavailable)??;
+            assert_eq!(record.sequence, expected);
+        }
+        assert!(read.next().await.is_none());
+        drop(read);
         let mut follow = provider
             .follow(crate::FollowRequest::new(stream, 0))
             .map_ok(crate::records_only)
