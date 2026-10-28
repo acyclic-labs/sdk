@@ -731,7 +731,7 @@ async fn inherited_environment_respects_final_message_and_byte_limits() -> Resul
             [],
         );
         let limits = Limits {
-            context_messages: message_limit,
+            context_messages: std::num::NonZeroUsize::new(message_limit),
             render_bytes,
             ..Limits::default()
         };
@@ -843,6 +843,18 @@ async fn optional_count_policies_preserve_unbounded_execution_and_finite_authori
         },
         Limits {
             tool_calls_per_step: std::num::NonZeroUsize::new(1),
+            ..limits
+        },
+        Limits {
+            path_bytes: std::num::NonZeroUsize::new(1),
+            ..limits
+        },
+        Limits {
+            attachments: std::num::NonZeroUsize::new(1),
+            ..limits
+        },
+        Limits {
+            context_messages: std::num::NonZeroUsize::new(1),
             ..limits
         },
     ] {

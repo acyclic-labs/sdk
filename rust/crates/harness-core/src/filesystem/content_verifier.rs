@@ -557,9 +557,18 @@ where
                 &mut Some(&mut observer),
             )?;
             let grant_custody = observer.into_custody()?;
-            if path.len() > context.effective_scope().limits().path_bytes
-                || after
-                    .is_some_and(|name| name.len() > context.effective_scope().limits().path_bytes)
+            if context
+                .effective_scope()
+                .limits()
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+                || after.is_some_and(|name| {
+                    context
+                        .effective_scope()
+                        .limits()
+                        .path_bytes
+                        .is_some_and(|maximum| name.len() > maximum.get())
+                })
                 || (after.is_some() && expected_generation.is_none())
             {
                 return Err(Error::NativeBoundary {

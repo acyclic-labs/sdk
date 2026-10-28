@@ -178,14 +178,16 @@ fn configured_limits_reject_oversized_references() -> Result<()> {
     limits.validate_file(&file, &mut None)?;
     limits.model_events_per_step = std::num::NonZeroUsize::new(1);
     limits.validate(&mut None)?;
-    limits.attachments = 0;
-    assert!(limits.validate(&mut None).is_err());
+    let mut invalid =
+        serde_json::to_value(limits).map_err(|error| Error::Invalid(error.to_string()))?;
+    invalid["attachments"] = serde_json::json!(0);
+    assert!(serde_json::from_value::<Limits>(invalid).is_err());
     Limits {
-        attachments: 65_537,
+        attachments: std::num::NonZeroUsize::new(65_537),
         model_steps: std::num::NonZeroUsize::new(1_000_001),
         model_events_per_step: std::num::NonZeroUsize::new(1_000_001),
         tool_calls_per_step: std::num::NonZeroUsize::new(1_000_001),
-        context_messages: 1_000_001,
+        context_messages: std::num::NonZeroUsize::new(1_000_001),
         ..Limits::default()
     }
     .validate(&mut None)?;
