@@ -8,7 +8,7 @@ pub(crate) async fn verify_with<P: StreamProvider + ?Sized>(
     provider: &P,
     mut read_records: impl AsyncFnMut(ReadRequest) -> Result<crate::RecordStream, StreamError>,
 ) -> Result<(), StreamError> {
-    let source = path("conformance/keys")?;
+    let source = path("key-seek/source")?;
     let record =
         |key: &'static [u8], value: &'static [u8]| -> Result<crate::AppendRecord, StreamError> {
             Ok(crate::AppendRecord {
