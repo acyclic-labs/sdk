@@ -106,23 +106,21 @@ impl McpConfig {
         let results = join_all(self.servers.into_iter().map(|(name, server)| {
             let connect = &connect;
             async move {
-                let deadline = tokio::time::Instant::now()
-                    + Duration::from_millis(u64::from(server.startup_timeout_ms));
-                let result = tokio::time::timeout_at(deadline, connect(&server))
-                    .await
-                    .map_err(|_| startup_timeout())
-                    .and_then(|result| result);
                 let required = server.required;
-                let result = match result {
-                    Ok(connected) => {
-                        let name = name.clone();
-                        register_before(deadline, move |check| {
-                            register(name, &server, connected, limits, check)
-                        })
+                let result = async {
+                    let deadline = super::deadline::after(
+                        server.startup_timeout_ms.map(Duration::from_millis),
+                    )?;
+                    let connected = super::deadline::until(deadline, connect(&server))
                         .await
-                    }
-                    Err(error) => Err(error),
-                };
+                        .map_err(|_| startup_timeout())??;
+                    let name = name.clone();
+                    register_before(deadline, move |check| {
+                        register(name, &server, connected, limits, check)
+                    })
+                    .await
+                }
+                .await;
                 (name, required, result)
             }
         }))
@@ -156,9 +154,10 @@ fn startup_timeout() -> Error {
 }
 
 async fn register_before<T: Send + 'static>(
-    deadline: tokio::time::Instant,
+    deadline: impl Into<Option<tokio::time::Instant>>,
     register: impl FnOnce(&dyn Fn() -> Result<()>) -> Result<T> + Send + 'static,
 ) -> Result<T> {
+    let deadline = deadline.into();
     use super::sync::{Arc, atomic::AtomicBool};
     acyclic_native_runtime::initialize_native_io_services().map_err(Error::process_io)?;
     let guard = CancelOnDrop(Arc::new(AtomicBool::new(false)));
@@ -166,8 +165,8 @@ async fn register_before<T: Send + 'static>(
     let mut worker =
         acyclic_native_runtime::run_blocking_io(move || cancellation::run(flag, register), None)
             .map_err(Error::process_io)?;
-    match tokio::time::timeout_at(deadline, &mut worker).await {
-        Ok(result) if tokio::time::Instant::now() < deadline => {
+    match super::deadline::until(deadline, &mut worker).await {
+        Ok(result) if deadline.is_none_or(|deadline| tokio::time::Instant::now() < deadline) => {
             result.map_err(Error::process_io)?
         }
         result => {
