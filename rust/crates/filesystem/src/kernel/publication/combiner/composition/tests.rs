@@ -235,7 +235,7 @@ async fn proposal_core(
             base: root_id,
             config,
             head: expected,
-            reads: crate::kernel::CheckoutDependencies::new([], [], 1)?,
+            reads: crate::kernel::CheckoutDependencies::new([], [])?,
         },
         base,
         delta,

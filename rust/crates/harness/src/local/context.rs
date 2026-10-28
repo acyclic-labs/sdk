@@ -53,7 +53,7 @@ impl LocalHarness {
         let (reference, _) = publisher
             .observe_staged_once(
                 manifest_operation(operation),
-                self.limits.file_bytes,
+                Some(self.limits.file_bytes),
                 crate::conversation::ContentAccess::default(),
             )?
             .await?;
@@ -101,10 +101,14 @@ impl LocalHarness {
             };
             let policy = ContextDiscoveryPolicy::default();
             let limits = ContextDiscoveryLimits::default();
-            let maximum = limits.instruction_bytes.min(self.limits.file_bytes);
+            let maximum = limits
+                .instruction_bytes
+                .map_or(self.limits.file_bytes, |maximum| {
+                    maximum.min(self.limits.file_bytes)
+                });
             let mut work = crate::context::DiscoveryWork {
                 limits: ContextDiscoveryLimits {
-                    instruction_bytes: maximum,
+                    instruction_bytes: Some(maximum),
                     ..limits
                 },
                 ..Default::default()
@@ -351,7 +355,7 @@ mod tests {
         // exactly the positive byte bound, UTF-8 and NUL constraints determine acceptance.
         #[test]
         fn instruction_text_round_trip(bytes in prop::collection::vec(any::<u8>(), 0..128), maximum in 0u64..128) {
-            let limits = ContextDiscoveryLimits { instruction_bytes: maximum, ..Default::default() };
+            let limits = ContextDiscoveryLimits { instruction_bytes: Some(maximum), ..Default::default() };
             let accepted = limits.validate_instruction(&bytes).is_ok();
             prop_assert_eq!(accepted, maximum > 0 && bytes.len() as u64 <= maximum && std::str::from_utf8(&bytes).is_ok() && !bytes.contains(&0));
             if accepted {

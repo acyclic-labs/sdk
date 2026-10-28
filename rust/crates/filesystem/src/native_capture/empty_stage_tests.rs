@@ -343,7 +343,7 @@ fn empty_finalization(length: u64) -> Result<(), Box<dyn std::error::Error>> {
                     source_root: source.path().to_owned(),
                     expected_root_identity: capture_root_identity(source.path())
                         .map_err(|error| TestCaseError::fail(format!("{error:?}")))?,
-                    maximum_paths: 8,
+                    maximum_paths: Some(8),
                     maximum_extent_spans: 8,
                 };
                 let (mut baseline, seeded, _, _) = run_capture(

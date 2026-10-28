@@ -160,7 +160,7 @@ impl NativeCheckout {
         name: Buffer,
     ) -> Result<NativeNamedAttributeResult> {
         let path = native_path(&path, self.config)?;
-        let name = native_attribute_name(&attribute_class, name.to_vec(), self.config.limits)?;
+        let name = native_attribute_name(&attribute_class, name.to_vec())?;
         let mut checkout = Box::pin(self.inner.lock()).await;
         let receipt = Box::pin(checkout.read_named_attribute(
             &path,
@@ -192,11 +192,7 @@ impl NativeCheckout {
         let path = native_path(&path, self.config)?;
         let after = match (after_class, after_name) {
             (None, None) => None,
-            (Some(class), Some(name)) => Some(native_attribute_name(
-                &class,
-                name.to_vec(),
-                self.config.limits,
-            )?),
+            (Some(class), Some(name)) => Some(native_attribute_name(&class, name.to_vec())?),
             _ => {
                 return Err(Error::new(
                     Status::InvalidArg,
@@ -239,7 +235,7 @@ impl NativeCheckout {
         mode: String,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let name = native_attribute_name(&attribute_class, name.to_vec(), self.config.limits)?;
+        let name = native_attribute_name(&attribute_class, name.to_vec())?;
         let mode = native_attribute_write_mode(&mode)?;
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
@@ -263,7 +259,7 @@ impl NativeCheckout {
         name: Buffer,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let name = native_attribute_name(&attribute_class, name.to_vec(), self.config.limits)?;
+        let name = native_attribute_name(&attribute_class, name.to_vec())?;
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = Box::pin(checkout.change_named_attribute(
@@ -304,14 +300,8 @@ pub(in crate::bindings) const fn native_attribute_class_name(
 pub(in crate::bindings) fn native_attribute_name(
     class: &str,
     name: Vec<u8>,
-    limits: VolumeLimits,
 ) -> Result<AttributeName> {
-    AttributeName::new(
-        native_attribute_class(class)?,
-        name,
-        limits.maximum_component_bytes,
-    )
-    .map_err(napi_error)
+    AttributeName::new(native_attribute_class(class)?, name).map_err(napi_error)
 }
 
 pub(in crate::bindings) fn native_attribute_write_mode(

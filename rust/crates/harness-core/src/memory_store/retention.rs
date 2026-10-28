@@ -14,7 +14,9 @@ impl MemoryStore {
         reference.descriptor().verify(bytes, &mut None)?;
         let path = reference.path();
         if bytes.len() as u64 > self.maximum_file_bytes
-            || path.len() as u64 > self.maximum_path_bytes
+            || self
+                .maximum_path_bytes
+                .is_some_and(|maximum| path.len() as u64 > maximum)
         {
             return Err(Error::Invalid("staged file exceeds harness limits".into()));
         }

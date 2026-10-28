@@ -15,7 +15,7 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct LogicalObjectStore<P: ?Sized> {
     provider: Arc<P>,
-    maximum_object_bytes: u64,
+    maximum_object_bytes: Option<u64>,
     decoded: Arc<crate::cache::CachedObjectStore<()>>,
 }
 
@@ -24,14 +24,14 @@ impl<P: ?Sized> LogicalObjectStore<P> {
     pub fn new(provider: Arc<P>) -> Self {
         Self {
             provider,
-            maximum_object_bytes: 5 * 1024 * 1024 * 1024,
+            maximum_object_bytes: None,
             decoded: Arc::new(crate::cache::CachedObjectStore::with_default_options(())),
         }
     }
 
     /// Applies the composition's existing positive per-object bound.
-    pub fn with_object_limit(mut self, maximum: u64) -> Result<Self, ObjectStoreError> {
-        if maximum == 0 || usize::try_from(maximum).is_err() {
+    pub fn with_object_limit(mut self, maximum: Option<u64>) -> Result<Self, ObjectStoreError> {
+        if maximum.is_some_and(|maximum| maximum == 0 || usize::try_from(maximum).is_err()) {
             return Err(ObjectStoreError::Rejected(
                 "invalid object size limit".to_owned(),
             ));

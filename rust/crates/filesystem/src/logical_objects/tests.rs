@@ -11,7 +11,7 @@ fn store(maximum: u64) -> Result<Store, ObjectStoreError> {
     #[cfg(not(target_arch = "wasm32"))]
     crate::initialize_test_native_io();
     let provider = MemoryObjects::memory();
-    LogicalObjectStore::new(Arc::new(provider)).with_object_limit(maximum)
+    LogicalObjectStore::new(Arc::new(provider)).with_object_limit(Some(maximum))
 }
 
 #[tokio::test]

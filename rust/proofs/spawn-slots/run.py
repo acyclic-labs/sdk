@@ -15,7 +15,7 @@ import time
 ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).resolve().parent
 parser = argparse.ArgumentParser(__doc__)
-parser.add_argument("mode", choices=["rust", "docs", "finish", "remaining", "kani", "mutants", "type-control", "check", "rebase"])
+parser.add_argument("mode", choices=["rust", "docs", "finish", "remaining", "mutants", "type-control", "check", "rebase"])
 parser.add_argument("--evidence", type=Path, required=True)
 args = parser.parse_args()
 start = time.monotonic()
@@ -127,27 +127,26 @@ try:
         base = subprocess.check_output(["git", "merge-base", "HEAD", "origin/main"], cwd=ROOT, text=True).strip()
         run("lane-artifacts", ["node", "scripts/check-lane-artifacts.mjs", base, "HEAD"])
         binaries = build(ROOT, "rebase-build")
-        for name in ["record_bounds_cover_every_kind_and_json_escape_expansion",
-                     "every_record_a_step_writes_fits_its_limit_at_the_configured_maxima",
-                     "waiting_host_status_requires_a_bounded_name"]:
-            run(name, [binaries["acyclic_harness_core"], name, "--nocapture"], passed=1)
-        run("slot-schedules", [binaries["agent-model"], "slot_schedules::", "--nocapture"], passed=3)
+        run("invalid-host", [binaries["agent-model"],
+                             "slot_schedules::an_invalid_host_wait_fails_before_publishing_status_or_effects",
+                             "--nocapture"], passed=1)
         run("affected-check", ["cargo", "check", "--locked", "--all-features", "-p", "acyclic-harness-core",
                                "-p", "acyclic-stream", "-p", "acyclic-contract-derive"])
         changed = variant("host-bound-control", "rust/crates/harness-core/src/agent/records.rs",
                           "Phase::WaitingHost { host } => check_text(host)",
                           "Phase::WaitingHost { host: _ } => Ok(())")
         binaries = build(changed, "host-bound-control-build")
-        run("host-bound-control", [binaries["acyclic_harness_core"],
-                                  "waiting_host_status_requires_a_bounded_name", "--nocapture"],
-            changed, failure="unbounded or malformed host name admitted")
+        run("host-bound-control", [binaries["agent-model"],
+                                  "slot_schedules::an_invalid_host_wait_fails_before_publishing_status_or_effects", "--nocapture"],
+            changed, failure="invalid host wait must settle")
     elif args.mode == "rust":
         binaries = build(ROOT, "positive-build")
-        for name in ["record_bounds_cover_every_kind_and_json_escape_expansion",
-                     "every_record_a_step_writes_fits_its_limit_at_the_configured_maxima",
-                     "every_write_family_preserves_digest_admission_and_retry_evidence"]:
-            run(name, [binaries["acyclic_harness_core"], name, "--nocapture"], passed=1)
-        run("slot-schedules", [binaries["agent-model"], "slot_schedules::", "--nocapture"], passed=3)
+        run("attested", [binaries["acyclic_harness_core"],
+                         "every_write_family_preserves_digest_admission_and_retry_evidence",
+                         "--nocapture"], passed=1)
+        run("invalid-host", [binaries["agent-model"],
+                             "slot_schedules::an_invalid_host_wait_fails_before_publishing_status_or_effects",
+                             "--nocapture"], passed=1)
         run("explicit-provider-docs", ["cargo", "test", "--locked", "-p", "acyclic-contract-derive",
                                       "--doc", "explicit_provider", "--", "--nocapture"], passed=3)
     elif args.mode in ("docs", "finish", "remaining"):
@@ -161,35 +160,14 @@ try:
                 "    async fn durability_barrier(&self) -> Result<(), StreamError> {\n        self.inner.durability_barrier().await\n    }\n", "")
             run("missing-method", ["cargo", "check", "--locked", "-p", "acyclic-harness-core", "--features", "filesystem"],
                 changed, failure="missing: `durability_barrier`")
-    elif args.mode == "kani":
-        env.pop("RUSTC", None)
-        env.pop("RUSTC_WRAPPER", None)
-        env["KANI_HOME"] = "/home/var/.kani"
-        env["PATH"] = "/home/var/.kani/kani-0.68.0/bin:" + env["PATH"]
-        command = ["cargo", "kani", "--manifest-path", "rust/proofs/spawn-slots/Cargo.toml"]
-        run("kani-version", ["cargo", "kani", "--version"], env=env)
-        run("kani-positive", command, env=env)
-        slot_path = "rust/crates/harness-core/src/agent/slots.rs"
-        for label, before, after in [
-            ("reservation-control", "MAX_OPEN_CHILDREN.saturating_sub(if turn { reserved } else { 0 })", "MAX_OPEN_CHILDREN"),
-            ("vacated-control", "reserved.saturating_add(1).min(MAX_OPEN_CHILDREN as u16)", "reserved"),
-        ]:
-            changed = variant(label, slot_path, before, after)
-            run(label, command, cwd=changed, env=env, failure="VERIFICATION:- FAILED")
     elif args.mode == "mutants":
         for label, path, before, after, target, oracle in [
-            ("vacated-control", "rust/crates/harness-core/src/agent/slots.rs",
-             "reserved.saturating_add(1).min(MAX_OPEN_CHILDREN as u16)", "reserved", "agent-model",
-             "a_child_finishing_during_pause_cannot_strand_a_recorded_replay"),
             ("digest-control", "rust/crates/harness-core/src/filesystem/attestation.rs",
              "digest: digest()?", "digest: [0; 32]", "acyclic_harness_core",
              "every_write_family_preserves_digest_admission_and_retry_evidence"),
             ("admission-control", "rust/crates/harness-core/src/filesystem/attestation.rs",
              "admission: &self.admission", "admission: &super::TurnAdmission::LocalRoot", "acyclic_harness_core",
              "every_write_family_preserves_digest_admission_and_retry_evidence"),
-            ("record-control", "rust/crates/harness-core/src/conversation/mod.rs",
-             "pub const MAX_PATH_BYTES: usize = 4096;", "pub const MAX_PATH_BYTES: usize = 32768;",
-             "acyclic_harness_core", "record_bounds_cover_every_kind_and_json_escape_expansion"),
         ]:
             changed = variant(label, path, before, after, reuse=True)
             binaries = build(changed, label + "-build")

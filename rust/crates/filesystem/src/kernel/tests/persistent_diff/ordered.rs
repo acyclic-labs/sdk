@@ -217,7 +217,6 @@ fn replay_pages<const PREFIX: bool, const RESET: bool>(
                 &mut values,
                 128,
                 &mut truncated,
-                DecodeLimits::default(),
                 &mut accounting,
             )?;
         }

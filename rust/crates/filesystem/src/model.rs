@@ -102,50 +102,26 @@ pub enum UnicodePolicy {
 /// Hard limits enforced before allocation, traversal, or mutation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VolumeLimits {
-    /// Maximum encoded path bytes.
-    pub maximum_path_bytes: u32,
-    /// Maximum encoded bytes in one path component.
-    pub maximum_component_bytes: u32,
-    /// Maximum path components.
-    pub maximum_path_depth: u16,
     /// Maximum canonical bytes in one immutable object.
     pub maximum_object_bytes: u64,
     /// Maximum mutations admitted in one atomic batch.
     pub maximum_mutations_per_batch: u32,
     /// Maximum exact paths admitted in one shared lookup/stat batch.
     pub maximum_paths_per_batch: u32,
-    /// Maximum distinct observation and mutation regions retained by one checkout.
-    pub maximum_checkout_dependencies: u32,
     /// Maximum directory entries returned in one page.
     pub maximum_directory_page_entries: u32,
     /// Maximum authenticated B+tree levels followed by one operation.
     pub maximum_page_height: u16,
-    /// Maximum bytes returned by one range request.
-    pub maximum_read_bytes: u64,
-    /// Maximum path-independent files authenticated in one generation.
-    pub maximum_files_per_generation: u64,
-    /// Maximum distinct immutable objects authenticated in one generation.
-    pub maximum_objects_per_generation: u64,
-    /// Maximum cumulative canonical object bytes in one generation closure.
-    pub maximum_generation_bytes: u64,
 }
 
 impl Default for VolumeLimits {
     fn default() -> Self {
         Self {
-            maximum_path_bytes: 32 * 1024,
-            maximum_component_bytes: 255,
-            maximum_path_depth: 1_024,
             maximum_object_bytes: 64 * 1024 * 1024,
             maximum_mutations_per_batch: 2_048,
             maximum_paths_per_batch: 65_536,
-            maximum_checkout_dependencies: 262_144,
             maximum_directory_page_entries: 1_024,
             maximum_page_height: 64,
-            maximum_read_bytes: 16 * 1024 * 1024,
-            maximum_files_per_generation: 16 * 1024 * 1024,
-            maximum_objects_per_generation: 64 * 1024 * 1024,
-            maximum_generation_bytes: 1024 * 1024 * 1024 * 1024,
         }
     }
 }
@@ -194,19 +170,12 @@ impl VolumeConfig {
     #[must_use]
     #[cfg(not(target_arch = "wasm32"))]
     pub fn native(lifecycle: Lifecycle) -> Self {
-        let mut limits = VolumeLimits::default();
-        if cfg!(windows) {
-            // Windows names are encoded as UTF-16LE in the SDK; NTFS admits
-            // 255 code units per component, not 255 encoded bytes.
-            limits.maximum_component_bytes = 255 * 2;
-        }
         Self {
             profile: if cfg!(windows) {
                 FilesystemProfile::Windows
             } else {
                 FilesystemProfile::Posix
             },
-            limits,
             ..Self::portable(lifecycle)
         }
     }
@@ -218,24 +187,13 @@ impl VolumeConfig {
     /// Returns a stable configuration error before any backend is opened.
     pub fn validate(self) -> Result<Self, VolumeConfigError> {
         let limits = self.limits;
-        if limits.maximum_path_bytes == 0
-            || limits.maximum_component_bytes == 0
-            || limits.maximum_path_depth == 0
-            || limits.maximum_object_bytes == 0
+        if limits.maximum_object_bytes == 0
             || limits.maximum_mutations_per_batch == 0
             || limits.maximum_paths_per_batch == 0
-            || limits.maximum_checkout_dependencies == 0
             || limits.maximum_directory_page_entries == 0
             || limits.maximum_page_height == 0
-            || limits.maximum_read_bytes == 0
-            || limits.maximum_files_per_generation == 0
-            || limits.maximum_objects_per_generation == 0
-            || limits.maximum_generation_bytes == 0
         {
             return Err(VolumeConfigError::ZeroLimit);
-        }
-        if limits.maximum_component_bytes > limits.maximum_path_bytes {
-            return Err(VolumeConfigError::ComponentExceedsPath);
         }
         if limits.maximum_directory_page_entries < 2 {
             return Err(VolumeConfigError::InsufficientPageFanout);
@@ -406,9 +364,6 @@ pub enum VolumeConfigError {
     /// Every work or allocation limit must be positive.
     #[error("volume limits must be non-zero")]
     ZeroLimit,
-    /// One component cannot be larger than the complete admitted path.
-    #[error("maximum component bytes exceeds maximum path bytes")]
-    ComponentExceedsPath,
     /// Persistent trees require at least two entries per internal page to make progress.
     #[error("maximum directory page entries must be at least two")]
     InsufficientPageFanout,

@@ -43,23 +43,6 @@ fn default_limits_are_valid() {
         invalid.validate(),
         Err(VolumeConfigError::InsufficientPageFanout)
     );
-    invalid = config;
-    invalid.limits.maximum_component_bytes = invalid.limits.maximum_path_bytes + 1;
-    assert_eq!(
-        invalid.validate(),
-        Err(VolumeConfigError::ComponentExceedsPath)
-    );
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_component_limit_matches_host_encoding() {
-    let native = VolumeConfig::native(Lifecycle::Durable);
-    assert_eq!(native.validate(), Ok(native));
-    #[cfg(windows)]
-    assert_eq!(native.limits.maximum_component_bytes, 510);
-    #[cfg(not(windows))]
-    assert_eq!(native.limits.maximum_component_bytes, 255);
 }
 
 /// Pins the exact public strings (host bindings and TypeScript depend on

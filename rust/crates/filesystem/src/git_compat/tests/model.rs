@@ -9,15 +9,17 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-// In-memory adapters finish in one poll. A TLS executor is incorrect here:
+// Poll cooperative contention retries on the same owner. A TLS executor is incorrect here:
 // Loom's coroutines share the OS thread and may switch while a mutex blocks.
 fn ready<F: Future>(mut future: Pin<Box<F>>) -> F::Output {
-    match future
-        .as_mut()
-        .poll(&mut Context::from_waker(Waker::noop()))
-    {
-        Poll::Ready(value) => value,
-        Poll::Pending => panic!("memory operation unexpectedly suspended"),
+    loop {
+        match future
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+        {
+            Poll::Ready(value) => return value,
+            Poll::Pending => loom::thread::yield_now(),
+        }
     }
 }
 

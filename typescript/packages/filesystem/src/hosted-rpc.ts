@@ -145,7 +145,7 @@ export function boundedFetch(send: typeof globalThis.fetch, maximumBytes: number
 }
 
 export function validateMergeLimits(value: Pick<JoinOptions, "maximumGenerations" | "maximumChanges" | "maximumConflicts">): void {
-  positiveU32(value.maximumGenerations, "maximum generations");
+  if (value.maximumGenerations !== undefined) positiveU32(value.maximumGenerations, "maximum generations");
   positiveU32(value.maximumChanges, "maximum changes");
   positiveU32(value.maximumConflicts, "maximum conflicts");
 }

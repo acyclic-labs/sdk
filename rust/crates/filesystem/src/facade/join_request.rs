@@ -24,7 +24,7 @@ pub(crate) struct WorkspaceJoinRequest<'a, A: 'static, O: 'static> {
     pub history: crate::workspace::JoinHistory,
     pub operation_id: OperationId,
     pub permit: PublicationPermit,
-    pub maximum_generations: u32,
+    pub maximum_generations: Option<u32>,
     pub maximum_changes: u32,
     pub maximum_conflicts: u32,
     pub resolutions: WorkspaceJoinResolutions<'a>,
@@ -58,7 +58,7 @@ pub(super) fn workspace_join_context(
     expected_target: GenerationId,
     base: WorkspaceCommonAncestor,
     history: crate::workspace::JoinHistory,
-    maximum_generations: u32,
+    maximum_generations: Option<u32>,
     maximum_changes: u32,
     maximum_conflicts: u32,
     resolutions: Digest,
@@ -77,7 +77,10 @@ pub(super) fn workspace_join_context(
         crate::workspace::JoinHistory::Squash => 3,
         crate::workspace::JoinHistory::CherryPick => 4,
     }]);
-    hasher.update(&maximum_generations.to_le_bytes());
+    hasher.update(&[u8::from(maximum_generations.is_some())]);
+    if let Some(maximum) = maximum_generations {
+        hasher.update(&maximum.to_le_bytes());
+    }
     hasher.update(&maximum_changes.to_le_bytes());
     hasher.update(&maximum_conflicts.to_le_bytes());
     hasher.update(resolutions.as_bytes());

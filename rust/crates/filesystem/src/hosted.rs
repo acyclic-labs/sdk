@@ -26,8 +26,6 @@ use tonic::{Request, Status};
 
 type Client = wire::filesystem_service_client::FilesystemServiceClient<Channel>;
 
-/// Largest caller-supplied PEM trust bundle accepted by the hosted constructor.
-pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
 /// Smallest encoded response that can contain a valid protocol handshake.
 pub const MINIMUM_HANDSHAKE_RESPONSE_BYTES: usize = 512;
 /// Largest encoded byte-bearing envelope: an eight-byte cursor, 33-byte typed
@@ -203,12 +201,10 @@ fn validate_hosted_options(options: &HostedFsOptions) -> Result<(), HostedFsErro
     if options
         .ca_certificate_pem
         .as_ref()
-        .is_some_and(|certificate| {
-            certificate.is_empty() || certificate.len() > MAX_CA_CERTIFICATE_BYTES
-        })
+        .is_some_and(|certificate| certificate.is_empty())
     {
         return Err(HostedFsError::InvalidOptions(
-            "CA certificate must contain 1 to 65536 bytes",
+            "CA certificate must not be empty",
         ));
     }
     if !(options.endpoint.starts_with("https://")

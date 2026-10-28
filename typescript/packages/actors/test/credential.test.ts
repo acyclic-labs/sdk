@@ -15,17 +15,14 @@ const token = fc.string({ minLength: 1, maxLength: 256 })
   .filter(value => value.trim().length > 0 && !/[\r\n\0]/.test(value));
 const settings = { numRuns: 128 };
 
-test("credential admission matches the byte bound and forbidden characters", () => {
+test("credential admission matches the forbidden characters", () => {
   fc.assert(fc.property(fc.oneof(fc.string({ maxLength: 14000 }), token), value => {
     const admitted = value.trim().length > 0 &&
-      new TextEncoder().encode(value).byteLength <= 12288 && !/[\r\n\0]/.test(value);
+      !/[\r\n\0]/.test(value);
     if (admitted) expect(() => validateCredential(value)).not.toThrow();
     else expect(() => validateCredential(value)).toThrow(TypeError);
   }), settings);
-  for (const value of ["é".repeat(6144), "é".repeat(6145), "a".repeat(12288), "a".repeat(12289)]) {
-    if (new TextEncoder().encode(value).length <= 12288) validateCredential(value);
-    else expect(() => validateCredential(value)).toThrow(TypeError);
-  }
+
 });
 
 test("every request resolves the current provider without caching or fallback", async () => {

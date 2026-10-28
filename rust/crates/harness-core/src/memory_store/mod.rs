@@ -29,7 +29,7 @@ struct PathHistory {
 pub struct MemoryStore {
     volume: VolumeRef,
     maximum_file_bytes: u64,
-    maximum_path_bytes: u64,
+    maximum_path_bytes: Option<u64>,
     maximum_resident_bytes: u64,
     maximum_resident_files: u64,
     resident_bytes: u64,
@@ -45,7 +45,7 @@ impl MemoryStore {
     pub fn new(
         volume: VolumeRef,
         maximum_file_bytes: u64,
-        maximum_path_bytes: u64,
+        maximum_path_bytes: impl Into<Option<u64>>,
         maximum_resident_bytes: u64,
         maximum_resident_files: u64,
     ) -> Result<Self> {
@@ -58,7 +58,7 @@ impl MemoryStore {
         Ok(Self {
             volume,
             maximum_file_bytes,
-            maximum_path_bytes,
+            maximum_path_bytes: maximum_path_bytes.into(),
             maximum_resident_bytes,
             maximum_resident_files,
             resident_bytes: 0,
@@ -85,7 +85,10 @@ impl MemoryStore {
         if is_internal_path(path) {
             return Err(Error::Invalid("internal storage paths are reserved".into()));
         }
-        if path.len() as u64 > self.maximum_path_bytes {
+        if self
+            .maximum_path_bytes
+            .is_some_and(|maximum| path.len() as u64 > maximum)
+        {
             return Err(Error::Invalid("staged file exceeds harness limits".into()));
         }
         let descriptor = FileDescriptor::from_bytes(bytes, media_type, &mut None)?;
