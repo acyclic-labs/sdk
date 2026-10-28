@@ -8,6 +8,36 @@ pub enum NetworkPolicy {
     AllowDomains(Vec<String>),
 }
 
+/// Native enforcement facts and host-enrolled policies. These are composition
+/// inputs, never a caller's permission to weaken the requested contract.
+pub struct CreationAdmission<'a> {
+    pub network_policies: &'a BTreeMap<[u8; 32], NetworkPolicy>,
+    pub spend_budgets: bool,
+    pub concurrency_budgets: bool,
+    pub absolute_expiration: bool,
+}
+
+impl CreationAdmission<'_> {
+    /// Refuse unrepresentable contracts before any native qualification or create.
+    pub fn admit(&self, request: &CreateMachine) -> Result<(), ProviderError> {
+        if (!self.spend_budgets && request.budgets.spend_micros != 0)
+            || (!self.concurrency_budgets && request.budgets.concurrency != 0)
+        {
+            return Err(ProviderError::Unsupported(
+                "native backend cannot enforce the requested budget; recovery: select a backend with budget enforcement or leave that budget zero".into(),
+            ));
+        }
+        if !self.absolute_expiration && matches!(request.expiration, ExpirationPolicy::AtUnixMs(_))
+        {
+            return Err(ProviderError::Unsupported(
+                "native backend cannot enforce fixed-instant expiration; recovery: use MaxAge, Idle, or Never".into(),
+            ));
+        }
+        admit_network(self.network_policies, &request.network_policy_digest)?;
+        Ok(())
+    }
+}
+
 /// Resolve and validate the committed policy before native creation. Adapters
 /// only encode this admitted value in their provider's wire representation.
 pub fn admit_network<'a>(

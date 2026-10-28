@@ -25,10 +25,16 @@ Usage identity/interval and console
 read bounds are admitted there before transport. Retained command output reads
 the core console after canonical machine/driver admission; no raw output read
 primitive or second provider history is needed. Image identity, required
-capabilities and the effective suspension contract are admitted once in core.
+capabilities and the effective suspension contract are admitted in core before
+native creation. `CreationAdmission` supplies the backend's actual budget and
+fixed-expiration enforcement facts and host-enrolled network policies. Pure
+refusals precede image qualification; settled replay precedes fresh admission.
+`raw_start` receives the admitted contract and image or immutable checkpoint
+source. Suspend, wake and suspension policy share `raw_change`; their public
+preconditions, readiness, history and result publication remain in core.
 An image without SuspendResume records Manual, including in the simulator.
 `core::NetworkPolicy` and `admit_network` resolve enrolled 32-byte commitments
-and validate domain lists once; adapters only encode their native egress fields.
+and validate domain lists in one owner; adapters only encode their native egress fields.
 The HTTP core also admits provider-reported credential destinations against
 the enrolled parent origin and proxy hosts before attaching sensitive headers.
 

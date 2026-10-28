@@ -1,8 +1,8 @@
 //! Raw provider primitives. Replay, ordering and resource ownership live in core.
-use super::{Dispatch, NativeBinding};
+use super::{CreationAdmission, Dispatch, NativeBinding};
 use crate::{
-    CheckpointId, CheckpointObservation, CreateMachine, IdempotencyKey, MachineContract, MachineId,
-    MachineObservation, MachineState, ProviderError, SuspensionPolicy,
+    CheckpointId, CheckpointObservation, IdempotencyKey, Image, ImageQualification,
+    MachineContract, MachineId, MachineObservation, MachineState, ProviderError, SuspensionPolicy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,9 +41,17 @@ pub trait NativeResources: acyclic_stream::ProviderPlatform {
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub trait RawMachines: NativeResources {
+    fn creation_admission(&self) -> CreationAdmission<'_>;
+    async fn raw_qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError>;
+
     /// Dispatch one creation and retain its accepted address even when decoding
     /// the native observation fails. Admission/idempotency/readiness are in core.
-    async fn raw_create(&self, request: &CreateMachine) -> Result<RawCreated, ProviderError>;
+    async fn raw_start(
+        &self,
+        key: IdempotencyKey,
+        contract: &MachineContract,
+        source: MachineSource<'_>,
+    ) -> Result<RawCreated, ProviderError>;
 
     /// Read once; `known` is the canonical observation, not a provider cache.
     /// Return the provider's actual readiness separately from its public state
@@ -55,21 +63,13 @@ pub trait RawMachines: NativeResources {
         known: Option<&MachineObservation>,
     ) -> Result<RawObservation, ProviderError>;
 
-    async fn raw_suspend(
+    /// Apply one admitted native change. Preconditions, replay, readiness and
+    /// canonical observation publication are owned by the shared lifecycle.
+    async fn raw_change(
         &self,
         machine: MachineId,
         native: Option<&NativeBinding>,
-    ) -> Result<(), ProviderError>;
-    async fn raw_wake(
-        &self,
-        machine: MachineId,
-        native: Option<&NativeBinding>,
-    ) -> Result<(), ProviderError>;
-    async fn raw_set_suspension_policy(
-        &self,
-        machine: MachineId,
-        native: Option<&NativeBinding>,
-        policy: SuspensionPolicy,
+        change: MachineChange,
     ) -> Result<(), ProviderError>;
 
     /// Start one atomic provider checkpoint. Return its native address only after
@@ -89,17 +89,6 @@ pub trait RawMachines: NativeResources {
         contract: &MachineContract,
     ) -> Result<Option<CheckpointObservation>, ProviderError>;
 
-    /// Create one independent child from the admitted immutable checkpoint.
-    /// Sequencing, child order, ownership and readiness remain in the core.
-    async fn raw_fork(
-        &self,
-        checkpoint: CheckpointId,
-        native: Option<&NativeBinding>,
-        contract: &MachineContract,
-        slot: ForkSlot,
-        key: IdempotencyKey,
-    ) -> Result<RawCreated, ProviderError>;
-
     /// Dispatch one native memory-and-disk fork. Only a definite state refusal
     /// may return Refused; ambiguous transport results remain errors.
     async fn raw_fork_machine(
@@ -118,6 +107,24 @@ pub trait RawMachines: NativeResources {
         machine: MachineId,
         native: Option<&NativeBinding>,
     ) -> Result<Vec<MachineState>, ProviderError>;
+}
+
+/// An admitted image or immutable checkpoint starts through the same primitive.
+/// The core owns checkpoint identity, child order and retained native custody.
+pub enum MachineSource<'a> {
+    Image,
+    Checkpoint {
+        id: CheckpointId,
+        native: Option<&'a NativeBinding>,
+        slot: ForkSlot,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MachineChange {
+    Suspend,
+    Wake,
+    SuspensionPolicy(SuspensionPolicy),
 }
 
 /// Native readiness is transport data; waiting and state history belong to core.

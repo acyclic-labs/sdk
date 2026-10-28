@@ -87,7 +87,6 @@ pub struct RawUsage {
 pub trait Backend: RawMachines {
     fn core(&self) -> &BackendCore;
     fn now_unix_ms(&self) -> u64;
-    async fn raw_qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError>;
     async fn raw_list(&self) -> Result<Vec<MachineObservation>, ProviderError>;
     /// Prepare a lazy command session without dispatching IO. Core registers its
     /// cancellation and WallAlarm owner before polling the first request.

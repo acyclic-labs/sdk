@@ -88,11 +88,9 @@ async fn restart_preserves_success_and_exact_settlement_identity() -> TestResult
         core.admit(key, &"wake").await,
         Err(ProviderError::Conflict(_))
     ));
-    assert!(
-        core.cancel(id)
-            .await?
-            .is_some_and(|(_, resources)| resources.is_empty())
-    );
+    assert!(core.cancel(id).await?.is_some());
+    assert!(core.created(id).await?.is_empty());
+    assert_eq!(core.cancel(OperationId::new()).await?, None);
     assert_eq!(settled, core.settled(key).await?);
     Ok(())
 }
@@ -211,9 +209,9 @@ async fn failed_operation_retains_cleanup_and_never_replays() -> TestResult {
     assert!(
         core.cancel(id)
             .await?
-            .is_some_and(|(obs, resources)| obs.phase == OperationPhase::Failed
-                && resources == [machine_resource("child")])
+            .is_some_and(|obs| obs.phase == OperationPhase::Failed)
     );
+    assert_eq!(core.created(id).await?, [machine_resource("child")]);
     assert!(matches!(
         core.admit(key, &"fork").await,
         Err(ProviderError::Failed)
@@ -457,12 +455,63 @@ impl NativeResources for NativeLifecycle {
 
 #[async_trait]
 impl RawMachines for NativeLifecycle {
-    async fn raw_create(&self, _: &CreateMachine) -> Result<RawCreated, ProviderError> {
+    fn creation_admission(&self) -> CreationAdmission<'_> {
+        static POLICIES: std::sync::LazyLock<BTreeMap<[u8; 32], NetworkPolicy>> =
+            std::sync::LazyLock::new(|| BTreeMap::from([([8; 32], NetworkPolicy::BlockAll)]));
+        CreationAdmission {
+            network_policies: &POLICIES,
+            spend_budgets: false,
+            concurrency_budgets: false,
+            absolute_expiration: false,
+        }
+    }
+
+    async fn raw_qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        let value = self.value.lock().await;
+        Ok(ImageQualification {
+            image,
+            capabilities: value.contract.capabilities.clone(),
+            compatibility_revision: value.contract.compatibility_revision,
+        })
+    }
+
+    async fn raw_start(
+        &self,
+        key: IdempotencyKey,
+        contract: &MachineContract,
+        source: MachineSource<'_>,
+    ) -> Result<RawCreated, ProviderError> {
+        let MachineSource::Checkpoint {
+            id: checkpoint,
+            native,
+            slot,
+        } = source
+        else {
+            self.mutations.fetch_add(1, Ordering::SeqCst);
+            return Ok(RawCreated {
+                handle: "opaque-created-vm".into(),
+                endpoint: None,
+                observation: Ok(self.value.lock().await.clone()),
+                adopted: false,
+            });
+        };
+        if native.is_none_or(|native| !native.handle.starts_with("opaque-checkpoint-")) {
+            return Err(ProviderError::Rejected(
+                "internal fork oracle requires the canonical opaque checkpoint address".into(),
+            ));
+        }
         self.mutations.fetch_add(1, Ordering::SeqCst);
+        let id = MachineId::from_digest(Sha256::digest(format!("{key}/{}", slot.index)).into());
+        let mut child = self.value.lock().await.clone();
+        child.id = id;
+        child.contract = contract.clone();
+        child.last_checkpoint = Some(checkpoint);
+        self.children.lock().await.insert(id, child.clone());
         Ok(RawCreated {
-            handle: "opaque-created-vm".into(),
+            handle: format!("opaque-fork-{id}"),
             endpoint: None,
-            observation: Ok(self.value.lock().await.clone()),
+            observation: Ok(child),
             adopted: false,
         })
     }
@@ -493,35 +542,20 @@ impl RawMachines for NativeLifecycle {
             settled: true,
         })
     }
-    async fn raw_suspend(
+    async fn raw_change(
         &self,
         _: MachineId,
         native: Option<&NativeBinding>,
+        change: MachineChange,
     ) -> Result<(), ProviderError> {
         self.check_binding(native)?;
         self.mutations.fetch_add(1, Ordering::SeqCst);
-        self.value.lock().await.state = MachineState::Suspended;
-        Ok(())
-    }
-    async fn raw_wake(
-        &self,
-        _: MachineId,
-        native: Option<&NativeBinding>,
-    ) -> Result<(), ProviderError> {
-        self.check_binding(native)?;
-        self.mutations.fetch_add(1, Ordering::SeqCst);
-        self.value.lock().await.state = MachineState::Running;
-        Ok(())
-    }
-    async fn raw_set_suspension_policy(
-        &self,
-        _: MachineId,
-        native: Option<&NativeBinding>,
-        policy: SuspensionPolicy,
-    ) -> Result<(), ProviderError> {
-        self.check_binding(native)?;
-        self.mutations.fetch_add(1, Ordering::SeqCst);
-        self.value.lock().await.contract.suspension = policy;
+        let mut value = self.value.lock().await;
+        match change {
+            MachineChange::Suspend => value.state = MachineState::Suspended,
+            MachineChange::Wake => value.state = MachineState::Running,
+            MachineChange::SuspensionPolicy(policy) => value.contract.suspension = policy,
+        }
         Ok(())
     }
     async fn raw_checkpoint(
@@ -556,33 +590,6 @@ impl RawMachines for NativeLifecycle {
             forkable: true,
             created_at_unix_ms: self.value.lock().await.changed_at_unix_ms,
         }))
-    }
-    async fn raw_fork(
-        &self,
-        checkpoint: CheckpointId,
-        native: Option<&NativeBinding>,
-        contract: &MachineContract,
-        slot: ForkSlot,
-        key: IdempotencyKey,
-    ) -> Result<RawCreated, ProviderError> {
-        if native.is_none_or(|native| !native.handle.starts_with("opaque-checkpoint-")) {
-            return Err(ProviderError::Rejected(
-                "internal fork oracle requires the canonical opaque checkpoint address".into(),
-            ));
-        }
-        self.mutations.fetch_add(1, Ordering::SeqCst);
-        let id = MachineId::from_digest(Sha256::digest(format!("{key}/{}", slot.index)).into());
-        let mut child = self.value.lock().await.clone();
-        child.id = id;
-        child.contract = contract.clone();
-        child.last_checkpoint = Some(checkpoint);
-        self.children.lock().await.insert(id, child.clone());
-        Ok(RawCreated {
-            handle: format!("opaque-fork-{id}"),
-            endpoint: None,
-            observation: Ok(child),
-            adopted: false,
-        })
     }
     async fn raw_fork_machine(
         &self,
@@ -1031,6 +1038,29 @@ async fn creation_reopens_exact_native_binding_and_settlement_without_dispatch()
     let core = open(dir.path()).await?;
     let interval = Duration::from_millis(1);
     let timeout = Duration::from_secs(5);
+    let mut refused = vec![request.clone(); 4];
+    refused[0].budgets.spend_micros = 1;
+    refused[1].budgets.concurrency = 1;
+    refused[2].expiration = ExpirationPolicy::AtUnixMs(1);
+    refused[3].network_policy_digest = [9; 32];
+    for request in refused {
+        assert!(matches!(
+            core.create_machine(&native, request, interval, timeout)
+                .await,
+            Err(ProviderError::Unsupported(_))
+        ));
+        assert_eq!(native.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(native.mutations.load(Ordering::SeqCst), 0);
+    }
+    let mut incompatible = request.clone();
+    incompatible.compatibility = CompatibilityPolicy::Require(BTreeSet::new());
+    assert!(matches!(
+        core.create_machine(&native, incompatible, interval, timeout)
+            .await,
+        Err(ProviderError::Unsupported(_))
+    ));
+    assert_eq!(native.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(native.mutations.load(Ordering::SeqCst), 0);
     let original = core
         .create_machine(&native, request.clone(), interval, timeout)
         .await?;

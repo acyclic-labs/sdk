@@ -5,7 +5,7 @@ pub use crate::{OperationSettlement, SettledMutation};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 mod admission;
-pub use admission::{NetworkPolicy, admit_contract, admit_network};
+pub use admission::{CreationAdmission, NetworkPolicy, admit_contract, admit_network};
 #[cfg(not(target_arch = "wasm32"))]
 mod backend;
 #[cfg(not(target_arch = "wasm32"))]
@@ -44,7 +44,10 @@ pub use bindings::NativeBinding;
 pub use limits::RegistryLimits;
 pub use pages::{NativePage, collect_pages};
 mod raw;
-pub use raw::{ForkSlot, NativeResource, NativeResources, RawCreated, RawMachines, RawObservation};
+pub use raw::{
+    ForkSlot, MachineChange, MachineSource, NativeResource, NativeResources, RawCreated,
+    RawMachines, RawObservation,
+};
 #[cfg(not(target_arch = "wasm32"))]
 mod checkpoint;
 #[cfg(not(target_arch = "wasm32"))]
@@ -408,17 +411,8 @@ impl OperationRegistry {
     pub async fn cancel(
         &self,
         id: OperationId,
-    ) -> Result<Option<(OperationObservation, Vec<NativeResource>)>, ProviderError> {
-        if self
-            .journal
-            .load::<StoredOperation>(&format!("ops/{id}"))
-            .await?
-            .value
-            .is_none()
-        {
-            return Ok(None);
-        }
-        let observation = self
+    ) -> Result<Option<OperationObservation>, ProviderError> {
+        match self
             .change(id, |record| {
                 if matches!(
                     record.phase,
@@ -428,8 +422,12 @@ impl OperationRegistry {
                 }
                 record.observation()
             })
-            .await?;
-        Ok(Some((observation, self.created(id).await?)))
+            .await
+        {
+            Ok(observation) => Ok(Some(observation)),
+            Err(ProviderError::NotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     pub async fn created(&self, id: OperationId) -> Result<Vec<NativeResource>, ProviderError> {
@@ -478,7 +476,7 @@ impl OperationRegistry {
         operation: OperationId,
     ) -> Result<OperationObservation, ProviderError> {
         self.check_driver(operation, driver.name()).await?;
-        let (observation, _) = self
+        let observation = self
             .cancel(operation)
             .await?
             .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;

@@ -39,56 +39,40 @@ pub struct Sandbox {
     /// Sandbox identity; a UUID for every sandbox Daytona creates.
     pub id: String,
     /// Organization-unique sandbox name; defaults to the id.
-    #[serde(default)]
     pub name: Option<String>,
     /// Daytona lifecycle state (`creating`, `started`, `paused`, `forking`, ...).
-    #[serde(default)]
     pub state: Option<String>,
     /// State Daytona is driving the sandbox towards.
-    #[serde(default)]
     pub desired_state: Option<String>,
     /// Snapshot the sandbox was created from.
-    #[serde(default)]
     pub snapshot: Option<String>,
     /// Free-form string labels.
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
     /// Sandbox class (`linux-vm`, `container`, `windows`, `android`); inherited from the
     /// snapshot, never chosen at create time.
-    #[serde(default)]
     pub sandbox_class: Option<String>,
     /// Region target.
-    #[serde(default)]
     pub target: Option<String>,
     /// Allocated vCPUs.
-    #[serde(default)]
     pub cpu: Option<u64>,
     /// Allocated memory in GiB.
-    #[serde(default)]
     pub memory: Option<u64>,
     /// Allocated disk in GiB.
-    #[serde(default)]
     pub disk: Option<u64>,
     /// Idle minutes before Daytona stops the sandbox; zero disables.
-    #[serde(default)]
     pub auto_stop_interval: Option<i64>,
     /// Idle minutes before Daytona pauses a VM sandbox; zero disables.
-    #[serde(default)]
     pub auto_pause_interval: Option<i64>,
     /// Stopped minutes before Daytona deletes the sandbox; negative disables.
-    #[serde(default)]
     pub auto_delete_interval: Option<i64>,
     /// Failure detail when `state` is `error` or `build_failed`.
-    #[serde(default)]
     pub error_reason: Option<String>,
     /// Base URL of the toolbox proxy serving this sandbox.
-    #[serde(default)]
     pub toolbox_proxy_url: Option<String>,
     /// RFC 3339 creation timestamp.
-    #[serde(default)]
     pub created_at: Option<String>,
     /// RFC 3339 last-change timestamp.
-    #[serde(default)]
     pub updated_at: Option<String>,
     /// Fields this client does not model.
     #[serde(flatten)]
@@ -168,22 +152,16 @@ pub struct Snapshot {
     /// Snapshot identity.
     pub id: String,
     /// Snapshot name.
-    #[serde(default)]
     pub name: Option<String>,
     /// Snapshot state (`pending`, `snapshotting`, `active`, `error`, ...).
-    #[serde(default)]
     pub state: Option<String>,
     /// Class of the sandboxes this snapshot boots.
-    #[serde(default)]
     pub sandbox_class: Option<String>,
     /// Sandbox the snapshot was taken from, for snapshots created from a sandbox.
-    #[serde(default)]
     pub source_sandbox_id: Option<String>,
     /// Failure detail when `state` is `error`.
-    #[serde(default)]
     pub error_reason: Option<String>,
     /// RFC 3339 creation timestamp.
-    #[serde(default)]
     pub created_at: Option<String>,
     /// Fields this client does not model.
     #[serde(flatten)]
@@ -217,10 +195,8 @@ pub struct ExecuteRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ExecuteResponse {
     /// Process exit code.
-    #[serde(default)]
     pub exit_code: Option<i64>,
     /// Combined output.
-    #[serde(default)]
     pub result: Option<String>,
     /// Fields this client does not model.
     #[serde(flatten)]

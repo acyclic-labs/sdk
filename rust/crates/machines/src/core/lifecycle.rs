@@ -1,7 +1,7 @@
 //! Lifecycle decisions over single native dispatches, shared by every adapter.
 use super::{
-    NativeBinding, NativeResource, OperationRegistry, RawCreated, RawMachines, RawObservation,
-    settle,
+    MachineChange, MachineSource, NativeBinding, NativeResource, OperationRegistry, RawCreated,
+    RawMachines, RawObservation, settle,
 };
 use crate::*;
 
@@ -22,13 +22,10 @@ impl OperationRegistry {
                     "create readiness admission failed; recovery: configure positive poll_interval and ready_timeout".into(),
                 ));
             }
-            let created = driver.raw_create(&request).await?.checked(|initial| {
-                let admitted = super::admit_contract(&request, ImageQualification {
-                    image: initial.contract.image.clone(),
-                    capabilities: initial.contract.capabilities.clone(),
-                    compatibility_revision: initial.contract.compatibility_revision,
-                })?;
-                if initial.contract != admitted {
+            driver.creation_admission().admit(&request)?;
+            let contract = super::admit_contract(&request, driver.raw_qualify_image(request.image.clone()).await?)?;
+            let created = driver.raw_start(key, &contract, MachineSource::Image).await?.checked(|initial| {
+                if initial.contract != contract {
                     return Err(ProviderError::Rejected(
                         "native create contract contradicts admission; recovery: inspect this operation's cleanup before creating a new machine".into(),
                     ));
@@ -195,11 +192,11 @@ impl OperationRegistry {
             let native = self.native_binding(machine, driver.name()).await?;
             let handle = native.as_ref().map_or_else(|| machine.to_string(), |value| value.handle.clone());
             self.bind_target(operation, &handle).await?;
-            if wake {
-                driver.raw_wake(machine, native.as_ref()).await?;
+            driver.raw_change(machine, native.as_ref(), if wake {
+                MachineChange::Wake
             } else {
-                driver.raw_suspend(machine, native.as_ref()).await?;
-            }
+                MachineChange::Suspend
+            }).await?;
             if self.wait_machine(driver, machine, key, interval, timeout).await?.state != to {
                 return Err(ProviderError::Failed);
             }
@@ -234,7 +231,11 @@ impl OperationRegistry {
                     .map_or_else(|| machine.to_string(), |value| value.handle.clone());
                 self.bind_target(operation, &handle).await?;
                 driver
-                    .raw_set_suspension_policy(machine, native.as_ref(), policy)
+                    .raw_change(
+                        machine,
+                        native.as_ref(),
+                        MachineChange::SuspensionPolicy(policy),
+                    )
                     .await?;
                 current.contract.suspension = policy;
                 current.changed_at_unix_ms = at;

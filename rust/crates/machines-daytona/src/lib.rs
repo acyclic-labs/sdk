@@ -18,22 +18,22 @@ use std::{
 };
 
 use acyclic_machines::{
-    Capability, CheckpointId, CheckpointObservation, CreateMachine, ExecCommand, IdempotencyKey,
-    Image, ImageQualification, MachineContract, MachineId, MachineObservation, MachineState,
-    ProviderAssurance, ProviderError, SuspensionPolicy,
+    Capability, CheckpointId, CheckpointObservation, ExecCommand, IdempotencyKey, Image,
+    ImageQualification, MachineContract, MachineId, MachineObservation, MachineState,
+    ProviderAssurance, ProviderError,
 };
 use async_trait::async_trait;
 use sha2::{Digest as _, Sha256};
 
 use acyclic_machines::core::{
-    Backend, BackendCore, Dispatch, ExecSession, ForkSlot, NativeBinding, NativeResource,
-    NativeResources, NetworkPolicy, OperationRegistry, RawCreated, RawMachines, RawObservation,
-    RawUsage, metadata, now_unix_ms,
+    Backend, BackendCore, CreationAdmission, Dispatch, ExecSession, ForkSlot, MachineChange,
+    MachineSource, NativeBinding, NativeResource, NativeResources, NetworkPolicy,
+    OperationRegistry, RawCreated, RawMachines, RawObservation, RawUsage, metadata, now_unix_ms,
 };
 #[cfg(test)]
 use acyclic_machines::{
-    CompatibilityPolicy, ForkFidelity, MAX_FORK_CHILDREN, MachinesProvider, MutationIntent,
-    MutationOutcome, core as ops,
+    CompatibilityPolicy, CreateMachine, ForkFidelity, MAX_FORK_CHILDREN, MachinesProvider,
+    MutationIntent, MutationOutcome, SuspensionPolicy, core as ops,
 };
 use api::{CreateSnapshotRequest, DaytonaApi, ForkRequest, Sandbox};
 
@@ -253,31 +253,6 @@ impl DaytonaProvider {
         })
     }
 
-    /// Request checks that need no Daytona call.
-    fn check_request(request: &CreateMachine) -> Result<(), ProviderError> {
-        if request.budgets.spend_micros != 0 || request.budgets.concurrency != 0 {
-            return Err(ProviderError::Unsupported(
-                "Daytona cannot enforce per-machine spend or concurrency budgets; leave budgets zero".into(),
-            ));
-        }
-        map::lifetime_fields(request.expiration).map(|_| ())
-    }
-
-    fn contract(
-        request: &CreateMachine,
-        capabilities: BTreeSet<Capability>,
-    ) -> Result<MachineContract, ProviderError> {
-        Self::check_request(request)?;
-        acyclic_machines::core::admit_contract(
-            request,
-            ImageQualification {
-                image: request.image.clone(),
-                capabilities,
-                compatibility_revision: Self::revision(),
-            },
-        )
-    }
-
     /// Decode native metadata using the admitted canonical contract when needed.
     async fn map_observation(
         &self,
@@ -354,18 +329,45 @@ impl NativeResources for DaytonaProvider {
 
 #[async_trait]
 impl RawMachines for DaytonaProvider {
-    async fn raw_create(&self, request: &CreateMachine) -> Result<RawCreated, ProviderError> {
-        let key = request.idempotency_key;
-        let snapshot = self.resolve_snapshot(&request.image)?;
-        // Pure wire representability checks precede the native qualification read.
-        Self::check_request(request)?;
-        map::network_fields(&self.config, &request.network_policy_digest)?;
+    fn creation_admission(&self) -> CreationAdmission<'_> {
+        CreationAdmission {
+            network_policies: &self.config.network_policies,
+            spend_budgets: false,
+            concurrency_budgets: false,
+            absolute_expiration: false,
+        }
+    }
+
+    async fn raw_qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
+        let snapshot = self.resolve_snapshot(&image)?;
         let capabilities = self.snapshot_capabilities(&snapshot).await?;
-        let contract = Self::contract(request, capabilities)?;
-        let mut body = map::create_request(&self.config, &snapshot, key, None, &contract)?;
-        body.env = self.core.staged_boot_env(key).unwrap_or_default();
+        Ok(ImageQualification {
+            image,
+            capabilities,
+            compatibility_revision: Self::revision(),
+        })
+    }
+
+    async fn raw_start(
+        &self,
+        key: IdempotencyKey,
+        contract: &MachineContract,
+        source: MachineSource<'_>,
+    ) -> Result<RawCreated, ProviderError> {
+        let (snapshot, slot, checkpoint) = match source {
+            MachineSource::Image => (self.resolve_snapshot(&contract.image)?, None, None),
+            MachineSource::Checkpoint { id, native, slot } => (
+                native.map_or_else(|| id.to_string(), |value| value.handle.clone()),
+                Some(slot),
+                Some(id),
+            ),
+        };
+        let mut body = map::create_request(&self.config, &snapshot, key, slot, contract)?;
+        if slot.is_none() {
+            body.env = self.core.staged_boot_env(key).unwrap_or_default();
+        }
         let created = self.api.create(&body).await?;
-        Ok(Self::raw_created(&created, &contract, None))
+        Ok(Self::raw_created(&created, contract, checkpoint))
     }
 
     async fn raw_observe(
@@ -391,36 +393,22 @@ impl RawMachines for DaytonaProvider {
             )?,
         })
     }
-    async fn raw_suspend(
+    async fn raw_change(
         &self,
         machine: MachineId,
         native: Option<&NativeBinding>,
+        change: MachineChange,
     ) -> Result<(), ProviderError> {
-        self.api
-            .pause(&native.map_or_else(|| machine.to_string(), |value| value.handle.clone()))
-            .await
-    }
-    async fn raw_wake(
-        &self,
-        machine: MachineId,
-        native: Option<&NativeBinding>,
-    ) -> Result<(), ProviderError> {
-        self.api
-            .start(&native.map_or_else(|| machine.to_string(), |value| value.handle.clone()))
-            .await
-    }
-    async fn raw_set_suspension_policy(
-        &self,
-        machine: MachineId,
-        native: Option<&NativeBinding>,
-        policy: SuspensionPolicy,
-    ) -> Result<(), ProviderError> {
-        self.api
-            .set_autopause(
-                &native.map_or_else(|| machine.to_string(), |value| value.handle.clone()),
-                map::autopause_minutes(policy),
-            )
-            .await
+        let handle = native.map_or_else(|| machine.to_string(), |value| value.handle.clone());
+        match change {
+            MachineChange::Suspend => self.api.pause(&handle).await,
+            MachineChange::Wake => self.api.start(&handle).await,
+            MachineChange::SuspensionPolicy(policy) => {
+                self.api
+                    .set_autopause(&handle, map::autopause_minutes(policy))
+                    .await
+            }
+        }
     }
 
     async fn raw_checkpoint(
@@ -472,20 +460,6 @@ impl RawMachines for DaytonaProvider {
             Ok(_) | Err(ProviderError::NotFound(_)) => Ok(None),
             Err(error) => Err(error),
         }
-    }
-
-    async fn raw_fork(
-        &self,
-        checkpoint: CheckpointId,
-        native: Option<&NativeBinding>,
-        contract: &MachineContract,
-        slot: ForkSlot,
-        key: IdempotencyKey,
-    ) -> Result<RawCreated, ProviderError> {
-        let handle = native.map_or_else(|| checkpoint.to_string(), |native| native.handle.clone());
-        let body = map::create_request(&self.config, &handle, key, Some(slot), contract)?;
-        let created = self.api.create(&body).await?;
-        Ok(Self::raw_created(&created, contract, Some(checkpoint)))
     }
 
     async fn raw_fork_machine(
@@ -549,15 +523,6 @@ impl Backend for DaytonaProvider {
         Ok(self
             .api
             .prepare_exec(&native.handle, &command, &self.config.workspace_dir))
-    }
-    async fn raw_qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
-        let snapshot = self.resolve_snapshot(&image)?;
-        let capabilities = self.snapshot_capabilities(&snapshot).await?;
-        Ok(ImageQualification {
-            image,
-            capabilities,
-            compatibility_revision: Self::revision(),
-        })
     }
     async fn raw_list(&self) -> Result<Vec<MachineObservation>, ProviderError> {
         let tenant = self.tenant();
@@ -824,7 +789,7 @@ mod tests {
     fn container_contracts_refuse_non_atomic_fork_and_never_auto_suspend() {
         let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000005").unwrap();
         let request = CreateMachine::new(key, Image::custom([7; 32]).unwrap(), [8; 32]);
-        let container = DaytonaProvider::contract(
+        let container = qualified_contract(
             &request,
             map::capabilities_for_class(Some("container")).unwrap(),
         )
@@ -840,7 +805,7 @@ mod tests {
                 .get("autoPauseInterval")
                 .is_none()
         );
-        let vm = DaytonaProvider::contract(
+        let vm = qualified_contract(
             &request,
             map::capabilities_for_class(Some("linux-vm")).unwrap(),
         )
@@ -851,7 +816,7 @@ mod tests {
         require.compatibility =
             CompatibilityPolicy::Require(BTreeSet::from([Capability::LiveFork]));
         assert!(matches!(
-            DaytonaProvider::contract(
+            qualified_contract(
                 &require,
                 map::capabilities_for_class(Some("container")).unwrap()
             ),
@@ -871,8 +836,22 @@ mod tests {
         CreateMachine::new(key, Image::custom([7; 32]).unwrap(), [8; 32])
     }
 
+    fn qualified_contract(
+        request: &CreateMachine,
+        capabilities: BTreeSet<Capability>,
+    ) -> Result<MachineContract, ProviderError> {
+        ops::admit_contract(
+            request,
+            ImageQualification {
+                image: request.image.clone(),
+                capabilities,
+                compatibility_revision: DaytonaProvider::revision(),
+            },
+        )
+    }
+
     fn contract() -> MachineContract {
-        DaytonaProvider::contract(
+        qualified_contract(
             &request(test_key(0)),
             map::capabilities_for_class(Some("linux-vm")).unwrap(),
         )

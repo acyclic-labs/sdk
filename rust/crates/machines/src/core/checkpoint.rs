@@ -1,6 +1,7 @@
 //! Immutable checkpoint custody, observation and fork sequencing share one owner.
 use super::{
-    ForkSlot, NativeBinding, OperationRegistry, RawMachines, lifecycle::require_capability, settle,
+    ForkSlot, MachineSource, NativeBinding, OperationRegistry, RawMachines,
+    lifecycle::require_capability, settle,
 };
 use crate::*;
 
@@ -129,7 +130,7 @@ impl OperationRegistry {
             let mut ids = Vec::with_capacity(count as usize);
             let mut seen = BTreeSet::new();
             for index in 0..count {
-                let created = driver.raw_fork(checkpoint, native.as_ref(), &contract, ForkSlot { index, count }, key).await?.checked(|child| {
+                let created = driver.raw_start(key, &contract, MachineSource::Checkpoint { id: checkpoint, native: native.as_ref(), slot: ForkSlot { index, count } }).await?.checked(|child| {
                     if child.contract != contract || child.last_checkpoint != Some(checkpoint) || child.id == source.source || !seen.insert(child.id) {
                         return Err(ProviderError::Rejected(
                             "native fork child contradicts admission; recovery: inspect this operation's cleanup before creating a new fork".into(),
