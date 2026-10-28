@@ -308,6 +308,48 @@ async fn native_files_preserve_binary_ranges_errno_and_lost_write_identity() {
         machine.read_file(range.clone(), 2).await,
         Err(ProviderError::Rejected(_))
     ));
+    let valid = io.file_write.lock().unwrap().clone();
+    for invalid in [
+        wire::WriteFileResponse {
+            result: None,
+            ..valid.clone()
+        },
+        wire::WriteFileResponse {
+            result: Some(Write::Errno(0)),
+            ..valid.clone()
+        },
+        wire::WriteFileResponse {
+            result: Some(Write::Written(3)),
+            ..valid.clone()
+        },
+        wire::WriteFileResponse {
+            machine: None,
+            ..valid.clone()
+        },
+        wire::WriteFileResponse {
+            machine: Some(wire::MachineId { value: vec![1] }),
+            ..valid.clone()
+        },
+        wire::WriteFileResponse {
+            machine: Some(encode_machine(
+                MachineId::parse("00000000-0000-4000-8000-000000000099").unwrap(),
+            )),
+            ..valid.clone()
+        },
+        wire::WriteFileResponse { offset: 1, ..valid },
+    ] {
+        *io.file_write.lock().unwrap() = invalid;
+        let before = io.file_writes.lock().unwrap().len();
+        assert_eq!(
+            machine
+                .write_file(access.clone(), vec![0, 255], true)
+                .await
+                .unwrap_err(),
+            ProviderError::FileIndeterminate(machine.id())
+        );
+        assert_eq!(io.file_writes.lock().unwrap().len(), before + 1);
+    }
+    let before_admission = io.file_writes.lock().unwrap().len();
     for path in ["", "relative", "/a\0b"] {
         assert!(FileAccess::new(path.into(), 0, access.deadline_unix_ms()).is_err());
     }
@@ -327,6 +369,7 @@ async fn native_files_preserve_binary_ranges_errno_and_lost_write_identity() {
         machine.write_file(expired, vec![], true).await,
         Err(ProviderError::Rejected(_))
     ));
+    assert_eq!(io.file_writes.lock().unwrap().len(), before_admission);
     let before = io.file_writes.lock().unwrap().len();
     *io.file_write_error.lock().unwrap() = Some(Code::Unavailable);
     assert_eq!(

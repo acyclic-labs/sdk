@@ -72,12 +72,15 @@ impl GrpcProvider {
             response.offset,
             machine,
             access.offset,
-        )?;
-        match response.result {
+        )
+        .and_then(|()| match response.result {
             Some(wire::write_file_response::Result::Written(written)) if written as usize <= length => Ok(FileWrite::Written(written)),
             Some(wire::write_file_response::Result::Errno(errno)) => Ok(FileWrite::Errno(decode_errno(errno)?)),
             _ => Err(ProviderError::Rejected("file write result invalid; recovery: repair the native producer's terminal response".into())),
-        }
+        })
+        // Dispatch may already have changed the file. An unverified response
+        // cannot establish rejection or authorize another write.
+        .map_err(|_| ProviderError::FileIndeterminate(machine))
     }
 
     async fn file_client(&self, deadline: &GuestDeadline) -> Result<Client, ProviderError> {
