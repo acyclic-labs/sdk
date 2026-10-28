@@ -61,10 +61,10 @@ pub struct Limits {
     pub render_bytes: u64,
     /// Optional maximum model round trips in the stock agent loop.
     pub model_steps: Option<usize>,
-    /// Maximum streamed observations admitted in one model round trip.
-    pub model_events_per_step: usize,
-    /// Maximum distinct tool calls admitted in one model round trip.
-    pub tool_calls_per_step: usize,
+    /// Optional maximum streamed observations admitted in one model round trip.
+    pub model_events_per_step: Option<usize>,
+    /// Optional maximum distinct tool calls admitted in one model round trip.
+    pub tool_calls_per_step: Option<usize>,
     /// Maximum canonical messages selected into one model request.
     pub context_messages: usize,
 }
@@ -77,8 +77,8 @@ impl Default for Limits {
             attachments: u32::MAX as usize,
             render_bytes: MAX_EXACT_JS_INTEGER,
             model_steps: None,
-            model_events_per_step: u32::MAX as usize,
-            tool_calls_per_step: u32::MAX as usize,
+            model_events_per_step: None,
+            tool_calls_per_step: None,
             context_messages: u32::MAX as usize,
         }
     }
@@ -96,16 +96,12 @@ impl Limits {
         if [self.file_bytes, self.render_bytes]
             .into_iter()
             .any(|limit| limit == 0 || limit > MAX_EXACT_JS_INTEGER)
-            || [
-                self.path_bytes,
-                self.attachments,
-                self.model_events_per_step,
-                self.tool_calls_per_step,
-                self.context_messages,
-            ]
-            .into_iter()
-            .chain(self.model_steps)
-            .any(|limit| limit == 0 || limit as u64 > MAX_PORTABLE_COUNT as u64)
+            || [self.path_bytes, self.attachments, self.context_messages]
+                .into_iter()
+                .chain(self.model_steps)
+                .chain(self.model_events_per_step)
+                .chain(self.tool_calls_per_step)
+                .any(|limit| limit == 0 || limit as u64 > MAX_PORTABLE_COUNT as u64)
         {
             return Err(conversation_error(
                 work,
