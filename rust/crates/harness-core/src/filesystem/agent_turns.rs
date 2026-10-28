@@ -788,7 +788,9 @@ impl<'a> TurnContext<'a> {
             message_ids.push(prompt_id(prompt));
         }
         for (settled, content, output) in settled {
-            let bytes = reader.read(&output, output.descriptor().byte_length(), None, None)?.await?;
+            let bytes = reader
+                .read(&output, output.descriptor().byte_length(), None, None)?
+                .await?;
             let output: TurnOutput = serde_json::from_slice(&bytes)
                 .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
             messages.push(ModelMessage {
@@ -884,9 +886,7 @@ where
             let journal = journal
                 .with_stop(stop)
                 .with_agent_approvals(Arc::clone(&approvals));
-            let selected = context
-                .select(agent, &*authority.content.reader)
-                .await?;
+            let selected = context.select(agent, &*authority.content.reader).await?;
             let journal = match &selected {
                 Some(selected) => journal.with_bound_selection(selected.clone()),
                 None => journal,
