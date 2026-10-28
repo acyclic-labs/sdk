@@ -15,6 +15,7 @@ model-checking = ["acyclic-stream/model-checking"]
 test-support = ["dep:acyclic-native-runtime", "acyclic-native-runtime/test-support"]
 
 [dependencies]
+acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json" }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false, features = ["serde"] }
 uuid.workspace = true
 bytes = { workspace = true, features = ["serde"] }
