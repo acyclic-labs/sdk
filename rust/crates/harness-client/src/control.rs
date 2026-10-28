@@ -195,6 +195,23 @@ pub struct AgentControls {
 }
 
 impl AgentControls {
+    /// Discover the endpoint's binding using only an existing credential slot.
+    /// Bind is read-only; subsequent commands retain their own prepared intent.
+    pub async fn discover(
+        client: Client,
+        credential: u32,
+    ) -> Result<(Self, String), AgentExchangeError> {
+        let discovery = Self::new(client.clone(), credential, AgentBinding::discovery());
+        let invocation = discovery.prepare(PreparedCommand::new(&AgentCommand::Bind {})?)?;
+        let (binding, tools) = AgentBinding::from_reply(&discovery.execute(&invocation).await?)?;
+        Ok((Self::new(client, credential, binding), tools))
+    }
+
+    /// Canonical host-published routing, without a command body or ordering.
+    pub fn binding_bytes(&self) -> Vec<u8> {
+        self.binding.0.encode_to_vec()
+    }
+
     /// Compose the host's existing session and published binding. Endpoint
     /// bootstrap belongs to the host; this constructor invents no routing.
     pub fn new(client: Client, credential: u32, binding: AgentBinding) -> Self {

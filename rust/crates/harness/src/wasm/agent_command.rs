@@ -1,5 +1,8 @@
 //! Admission and ownership of frontend commands, using the public Rust codec.
 
+#[cfg(test)]
+mod tests;
+
 use acyclic_harness_client::{
     AgentBinding, AgentControlFailure, AgentControls, AgentExchangeError, CommandError,
     MAX_AGENT_COMMAND_BYTES, MAX_AGENT_REPLY_BYTES, PreparedAgentInvocation, PreparedCommand,
@@ -79,6 +82,62 @@ pub struct WasmAgentControls {
     controls: Rc<AgentControls>,
 }
 
+/// Discovered controls and the endpoint's canonical routing and tool resource.
+#[wasm_bindgen]
+pub struct WasmAgentDiscovery {
+    controls: Rc<AgentControls>,
+    tools: String,
+}
+
+#[wasm_bindgen]
+impl WasmAgentDiscovery {
+    #[wasm_bindgen(getter)]
+    pub fn controls(&self) -> WasmAgentControls {
+        WasmAgentControls {
+            controls: self.controls.clone(),
+        }
+    }
+
+    /// An owned copy suitable for the controls constructor or AgentClient.controls.
+    #[wasm_bindgen(getter)]
+    pub fn binding(&self) -> Vec<u8> {
+        self.controls.binding_bytes()
+    }
+
+    /// The root's tool-output resource.
+    #[wasm_bindgen(getter)]
+    pub fn tools(&self) -> String {
+        self.tools.clone()
+    }
+}
+
+/// Discover controls on the stream's existing session and registered credential.
+/// The endpoint verifies the credential; no account or binding is caller-supplied.
+#[wasm_bindgen(js_name = discoverAgentControls)]
+pub async fn discover_agent_controls(
+    stream: &acyclic_stream::WasmStream,
+    credential: u32,
+) -> Result<WasmAgentDiscovery, JsValue> {
+    let client = session_client(stream)?;
+    let (controls, tools) = AgentControls::discover(client, credential)
+        .await
+        .map_err(exchange_error)?;
+    Ok(WasmAgentDiscovery {
+        controls: Rc::new(controls),
+        tools,
+    })
+}
+
+fn session_client(
+    stream: &acyclic_stream::WasmStream,
+) -> Result<acyclic_stream::session::Client, JsValue> {
+    stream.session_client().ok_or_else(|| {
+        let error = js_sys::Error::new("an authenticated session is required");
+        error.set_name("client_no_session");
+        JsValue::from(error)
+    })
+}
+
 impl WasmAgentControls {
     pub(super) fn from_controls(controls: AgentControls) -> Self {
         Self {
@@ -98,11 +157,7 @@ impl WasmAgentControls {
         credential: u32,
     ) -> Result<Self, JsValue> {
         let binding = binding(encoded_binding)?;
-        let client = stream.session_client().ok_or_else(|| {
-            let error = js_sys::Error::new("an authenticated session is required");
-            error.set_name("client_no_session");
-            JsValue::from(error)
-        })?;
+        let client = session_client(stream)?;
         Ok(Self::from_controls(AgentControls::new(
             client, credential, binding,
         )))
