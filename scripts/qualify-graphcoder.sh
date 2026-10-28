@@ -9,8 +9,9 @@ native_artifact=$(mktemp "$artifact_dir/graphcoder-native.XXXXXX.jsonl")
 core_artifact=$(mktemp "$artifact_dir/graphcoder-core.XXXXXX.jsonl")
 trap 'rm -f "$native_artifact" "$core_artifact"' EXIT
 native_features=filesystem-local,native-execution,terminal,tui,test-support,grpc,search-http
+core_features=filesystem-local,native-execution,tui,test-support,grpc,search-http
 cargo test -p acyclic-harness --features "$native_features" --lib --no-run --message-format=json > "$native_artifact"
-cargo test -p acyclic-harness-core --features "$native_features" --lib --no-run --message-format=json > "$core_artifact"
+cargo test -p acyclic-harness-core --features "$core_features" --lib --no-run --message-format=json > "$core_artifact"
 python3 scripts/qualify-graphcoder-artifact.py \
     contract::errors::tests:: executor::tests::invocation_bounds:: \
     tools::git::view::tests:: < "$core_artifact"

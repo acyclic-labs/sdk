@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 features=filesystem-local,native-execution,terminal,tui,test-support,grpc,search-http,model-checking
+core_features=filesystem-local,native-execution,tui,test-support,grpc,search-http,model-checking
 artifact_dir=$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')
 cargo test -p acyclic-harness --features "$features" --test main context_discovery::manifest::
 cargo test -p acyclic-harness --features "$features" --test main default_tools::
-cargo test -p acyclic-harness-core --features "$features" --test main git_executor::facade_commits_branches_merges_and_inspects_managed_files
+cargo test -p acyclic-harness-core --features "$core_features" --test main git_executor::facade_commits_branches_merges_and_inspects_managed_files
 cargo test -p acyclic-harness --features "$features" --test main saved_tool_metadata::
 for target in command; do
   cargo +nightly-2026-07-01 fuzz run --fuzz-dir rust/crates/harness-fuzz --features runtime "$target" --target x86_64-unknown-linux-gnu --dev -- -runs=64 -max_len=4096 -timeout=2
