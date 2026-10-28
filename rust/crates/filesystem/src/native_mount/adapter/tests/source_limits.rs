@@ -759,3 +759,53 @@ fn native_source_qualified_guard_keeps_primary_and_actual_accounting_failure()
     source.shutdown_accepted_cleanup()?;
     Ok(())
 }
+
+#[test]
+fn physical_source_quiescence_includes_accepted_owner_destruction()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct Owner {
+        entered: std::sync::mpsc::Sender<()>,
+        release: StdMutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl Drop for Owner {
+        fn drop(&mut self) {
+            self.entered.send(()).expect("owner destruction observed");
+            self.release.lock().unwrap().recv().expect("owner released");
+        }
+    }
+    let borrowed = source(FilesystemProfile::Portable)?;
+    let cancellation = CancellationToken::new();
+    let original = capture_meter(BOUNDARY_BUDGET, &cancellation)?;
+    let source = native_source_io_control(&borrowed, &original)?;
+    let (entered, destroying) = std::sync::mpsc::channel();
+    let (release, held) = std::sync::mpsc::channel();
+    let owner = Arc::new(Owner {
+        entered,
+        release: StdMutex::new(held),
+    });
+    let lease = source.native_source_io_lease(owner)?;
+    let (waiting, observed) = std::sync::mpsc::channel();
+    source
+        .capture_gate
+        .lock()
+        .unwrap()
+        .physical_cleanup_wait_observed = Some(waiting);
+    let mounted = source.clone();
+    let cleanup = std::thread::spawn(move || mounted.shutdown_physical_cleanup());
+    observed.recv()?;
+    let finishing = std::thread::spawn(move || drop(lease));
+    destroying.recv()?;
+    let complete = {
+        let gate = source.capture_gate.lock().unwrap();
+        gate.producers == 0 || gate.retired
+    };
+    // Release before asserting so the negative does not strand worker threads.
+    release.send(())?;
+    finishing
+        .join()
+        .map_err(|_| "producer retirement panicked")?;
+    cleanup.join().map_err(|_| "physical cleanup panicked")??;
+    assert!(!complete, "quiescence preceded accepted owner destruction");
+    assert!(source.capture_retired());
+    Ok(())
+}
