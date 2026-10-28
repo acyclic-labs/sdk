@@ -17,7 +17,6 @@ export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts
 export { performanceObserver } from "@acyclic-labs/actors/observe";
 export { HostedFsError, type HostedFsErrorCode } from "./hosted-rpc.js";
 
-export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
 
 export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
   const endpoint = secureServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));

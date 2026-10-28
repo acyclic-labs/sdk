@@ -6,7 +6,7 @@
 //! their StreamProvider and immutable object store through the same boundary.
 
 use super::{
-    Authorities, BrowserHandler, Error, HISTORY_TURNS, TURN_BACKSTOP_MS, WasmAgentAuthority,
+    Authorities, BrowserHandler, Error, TURN_BACKSTOP_MS, WasmAgentAuthority,
     WasmAgentRegistry, WasmBrowserAgentOptions, agent_error, from_js, js_error, stream_error,
 };
 use crate::{
@@ -197,12 +197,12 @@ impl Providers {
     fn memory_limits(options: &WasmBrowserAgentOptions) -> MemoryLimits {
         let limits = &options.stream_limits;
         MemoryLimits {
-            paths: limits.paths as usize,
-            path_bytes: limits.path_bytes as usize,
-            records: limits.records as usize,
-            payload_bytes: limits.payload_bytes as usize,
-            commits: limits.commits as usize,
-            idempotency_results: limits.idempotency_results as usize,
+            paths: limits.paths.map(|value| value as usize),
+            path_bytes: limits.path_bytes.map(|value| value as usize),
+            records: limits.records.map(|value| value as usize),
+            payload_bytes: limits.payload_bytes.map(|value| value as usize),
+            commits: limits.commits.map(|value| value as usize),
+            idempotency_results: limits.idempotency_results.map(|value| value as usize),
         }
     }
 
@@ -255,7 +255,7 @@ impl Providers {
         options: &WasmBrowserAgentOptions,
     ) -> Result<Self, JsValue> {
         let objects = LogicalObjectStore::new(objects)
-            .with_object_limit(options.maximum_object_bytes)
+            .with_object_limit(Some(options.maximum_object_bytes))
             .map_err(|error| js_error(Error::Storage(error.to_string())))?;
         Self::new(
             Arc::clone(&stream),
@@ -283,7 +283,7 @@ impl Providers {
             maximum_bytes: options.limits.file_bytes,
             max_steps: u32::try_from(options.limits.model_steps)
                 .map_err(|_| js_error(Error::Invalid("model step limit exceeds u32".into())))?,
-            history_turns: HISTORY_TURNS,
+            history_turns: None,
         };
         let turns = Arc::new(FilesystemTurnHost::new(
             Arc::clone(&self.stream),

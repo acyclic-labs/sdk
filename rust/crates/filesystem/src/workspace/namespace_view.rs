@@ -206,7 +206,6 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
                 self.objects,
                 self.root.file_table,
                 &ids.value,
-                maximum_entries,
                 DecodeLimits::for_volume(self.config),
                 accounting,
                 cancellation,

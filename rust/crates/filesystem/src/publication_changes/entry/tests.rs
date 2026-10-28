@@ -24,14 +24,7 @@ fn named(config: VolumeConfig, names: &[(NameEncoding, Vec<u8>)]) -> NamespacePa
     NamespacePath::new(
         names
             .iter()
-            .map(|(encoding, bytes)| {
-                LogicalName::new(
-                    *encoding,
-                    bytes.clone(),
-                    config.limits.maximum_component_bytes,
-                )
-                .unwrap()
-            })
+            .map(|(encoding, bytes)| LogicalName::new(*encoding, bytes.clone()).unwrap())
             .collect(),
         config.limits,
     )
@@ -40,11 +33,10 @@ fn named(config: VolumeConfig, names: &[(NameEncoding, Vec<u8>)]) -> NamespacePa
 
 fn configs() -> [VolumeConfig; 3] {
     let portable = VolumeConfig::portable(crate::Lifecycle::Ephemeral);
-    let mut windows = VolumeConfig {
+    let windows = VolumeConfig {
         profile: FilesystemProfile::Windows,
         ..portable
     };
-    windows.limits.maximum_component_bytes = 255 * 2;
     let folded = VolumeConfig {
         case_sensitivity: CaseSensitivity::ProfileFolded,
         ..portable

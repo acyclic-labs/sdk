@@ -170,7 +170,7 @@ export interface JoinResult {
   readonly truncated: boolean;
 }
 export interface WorkspaceRebaseOptions {
-  readonly maximumGenerations: number;
+  readonly maximumGenerations?: number;
   readonly maximumChanges: number;
   readonly maximumConflicts: number;
 }
@@ -565,8 +565,8 @@ export interface BrowserFsOptions {
   readonly observer?: AcyclicObserver;
 }
 export interface MemoryFsOptions {
-  readonly maximumObjectBytes: number;
-  readonly maximumMemoryBytes: number;
+  readonly maximumObjectBytes?: number;
+  readonly maximumMemoryBytes?: number;
   readonly objectCache: ObjectCacheOptions;
   /** Reports each engine, volume, checkout, and workspace call with its work receipt. */
   readonly observer?: AcyclicObserver;

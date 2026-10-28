@@ -192,7 +192,7 @@ async fn payload_bytes(
                 offset: 0,
                 length: logical_bytes,
             },
-            maximum_spans: 1_024,
+            maximum_spans: Some(1_024),
             limits: DecodeLimits::for_volume(config()),
             budget: WorkBudget::UNBOUNDED,
         },

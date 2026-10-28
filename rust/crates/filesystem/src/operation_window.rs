@@ -11,7 +11,7 @@
 //! Each renewal retains another gate stream; lifetime storage depends on provider
 //! retention and is not bounded by the active lease count.
 
-use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, MemoryRecords, next_revision};
+use crate::record_store::{MemoryRecords, next_revision};
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, GenerationId, IdempotencyKey, OperationId, Workspace,
     WorkspaceError, WorkspaceId, WorkspaceRebase,
@@ -184,7 +184,7 @@ enum FinalClose {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct OperationReconcileLimits {
     /// Maximum immutable generations inspected while finding ancestry.
-    pub maximum_generations: u32,
+    pub maximum_generations: Option<u32>,
     /// Maximum semantic changes retained during planning.
     pub maximum_changes: u32,
     /// Maximum conflicts returned to the caller.
@@ -194,7 +194,7 @@ pub struct OperationReconcileLimits {
 impl Default for OperationReconcileLimits {
     fn default() -> Self {
         Self {
-            maximum_generations: 4_096,
+            maximum_generations: None,
             maximum_changes: 65_536,
             maximum_conflicts: 1_024,
         }
@@ -206,7 +206,7 @@ impl Default for OperationReconcileLimits {
 mod kani_reconcile_limits_proof;
 
 fn validate_reconcile_limits(limits: OperationReconcileLimits) -> Result<(), WorkspaceError> {
-    if limits.maximum_generations == 0
+    if limits.maximum_generations == Some(0)
         || limits.maximum_changes == 0
         || limits.maximum_conflicts == 0
     {
@@ -277,9 +277,9 @@ pub enum OperationWindowError<E: std::error::Error + 'static> {
     /// The supplied lease was closed, expired, or superseded by a renewal.
     #[error("operation lease is no longer active")]
     StaleLease,
-    /// Optimistic-concurrency contention exceeded the bounded retry policy.
-    #[error("operation-window state remained contended")]
-    Contended,
+    /// The host scheduler could not resume a contended publication.
+    #[error(transparent)]
+    Scheduling(#[from] acyclic_stream::StreamError),
     /// Reconciliation completion used a stale ticket.
     #[error("operation-window reconciliation ticket is stale")]
     StaleTicket,

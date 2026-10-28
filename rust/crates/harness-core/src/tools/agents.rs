@@ -7,7 +7,7 @@
 
 use crate::{
     Error, Result,
-    agent::{AgentPath, AgentState, IntentId, MAX_OPEN_CHILDREN, TurnEffect, TurnEffects},
+    agent::{AgentPath, AgentState, IntentId, TurnEffect, TurnEffects},
     conversation::{ContentAccess, ContentPublisher},
     runtime::ToolContext,
     tool::{
@@ -58,7 +58,7 @@ pub struct ArchiveAgentInput {
 struct Turn {
     agent: AgentPath,
     parent: Option<AgentPath>,
-    children: BTreeSet<AgentPath>,
+    children: crate::agent::Children,
     effects: Arc<dyn TurnEffects>,
     writer: Arc<dyn ContentPublisher>,
     maximum_bytes: u64,
@@ -123,17 +123,13 @@ impl AgentTool {
                         "name must be short printable ASCII without spaces",
                     ));
                 };
-                // The configured bound, never past the agent's hard limit:
-                // a spawn the step would refuse is refused here, before the
-                // model is told it succeeded.
-                let limit = turn.max_children.map_or(MAX_OPEN_CHILDREN, |limit| {
-                    usize::try_from(limit)
-                        .map_or(MAX_OPEN_CHILDREN, |limit| limit.min(MAX_OPEN_CHILDREN))
-                });
-                if !self.within(&intent, limit).await? {
-                    return Ok(rejected(format!(
-                        "at most {limit} open children; archive one or wait for one to finish"
-                    )));
+                if let Some(limit) = turn.max_children {
+                    let limit = limit as usize;
+                    if !self.within(&intent, limit).await? {
+                        return Ok(rejected(format!(
+                            "at most {limit} open children; archive one or wait for one to finish"
+                        )));
+                    }
                 }
                 TurnEffect::Spawn {
                     intent,
@@ -145,7 +141,7 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
-                let Some(to) = self.recipient(input.agent, true) else {
+                let Some(to) = self.recipient(input.agent, true).await? else {
                     return Ok(rejected("send reaches only the parent or an open child"));
                 };
                 if input.message.len() as u64 > turn.maximum_bytes {
@@ -174,7 +170,7 @@ impl AgentTool {
                     Ok(input) => input,
                     Err(rejected) => return Ok(rejected),
                 };
-                let Some(target) = self.recipient(input.agent, false) else {
+                let Some(target) = self.recipient(input.agent, false).await? else {
                     return Ok(rejected("archive reaches only an open child"));
                 };
                 TurnEffect::Archive {
@@ -204,22 +200,35 @@ impl AgentTool {
     /// already recorded (a replayed call) is within its own limit.
     async fn within(&self, intent: &IntentId, limit: usize) -> Result<bool> {
         let turn = &*self.turn;
-        let mut open = turn.children.clone();
+        let child = TurnEffect::child(&turn.agent, intent).map_err(agent)?;
+        if turn.children.contains(&child).await.map_err(agent)? {
+            return Ok(true);
+        }
+        let mut spawned = BTreeSet::new();
         for effect in turn.effects.recorded().await? {
             if let TurnEffect::Spawn { intent, .. } = effect {
-                open.insert(TurnEffect::child(&turn.agent, &intent).map_err(agent)?);
+                let path = TurnEffect::child(&turn.agent, &intent).map_err(agent)?;
+                if path == child {
+                    return Ok(true);
+                }
+                if !turn.children.contains(&path).await.map_err(agent)? {
+                    spawned.insert(path);
+                }
             }
         }
-        let child = TurnEffect::child(&turn.agent, intent).map_err(agent)?;
-        Ok(open.contains(&child) || open.len() < limit)
+        Ok(turn.children.len().saturating_add(spawned.len()) < limit)
     }
 
     /// `agent` when this turn may reach it: an open child, or the parent too.
-    fn recipient(&self, agent: String, parent: bool) -> Option<AgentPath> {
-        let agent = AgentPath::try_from(agent).ok()?;
+    async fn recipient(&self, path: String, parent: bool) -> Result<Option<AgentPath>> {
+        let Ok(path) = AgentPath::try_from(path) else {
+            return Ok(None);
+        };
         let turn = &*self.turn;
-        (turn.children.contains(&agent) || (parent && turn.parent.as_ref() == Some(&agent)))
-            .then_some(agent)
+        let allowed = (parent && turn.parent.as_ref() == Some(&path))
+            || (path.parent().as_ref() == Some(&turn.agent)
+                && turn.children.contains(&path).await.map_err(agent)?);
+        Ok(allowed.then_some(path))
     }
 }
 
@@ -311,8 +320,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
 /// `effects` and its private `writer`, and selects them for the model over any
 /// other revision of the same names. Only the agent tools `names` selects are
 /// bound, so a host omits or swaps each one like any standard tool.
-/// `max_children`, capped at [`MAX_OPEN_CHILDREN`], bounds the agent's open
-/// children; `spawn` refuses a child beyond it.
+/// `max_children` optionally bounds open children; `None` admits any count.
 pub fn bind_agent_tools(
     registry: &mut ToolRegistry,
     agent: &AgentState,

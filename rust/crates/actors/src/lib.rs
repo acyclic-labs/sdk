@@ -4,8 +4,8 @@ pub use acyclic_auth::addressing;
 
 /// Rust-owned semantic projections for generated SDK metadata.
 pub use contract::{
-    ContractError, MAX_BINDINGS, MAX_SUBSCRIPTIONS, domain, validate_add_subscription,
-    validate_delete, validate_deployment, validate_update,
+    ContractError, domain, validate_add_subscription, validate_delete, validate_deployment,
+    validate_update,
 };
 
 /// Authenticated operations over the platform's Rust-owned transport.
@@ -53,9 +53,6 @@ pub mod wire;
 /// Canonical version-one descriptor set.
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin"));
-/// Largest accepted bearer credential, in bytes.
-pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
-
 pub(crate) fn valid_token(token: &str) -> bool {
     acyclic_auth::credential::valid_credential(token)
 }
@@ -186,8 +183,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn clients_share_endpoint_and_credential_policy() {
-        let long = "t".repeat(MAX_BEARER_TOKEN_BYTES + 1);
-        for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
+        for token in ["", " ", "a\r\nb", "a\0b"] {
             assert!(matches!(
                 http::Client::new("https://example.test", token, 1),
                 Err(http::Error::InvalidArgument)
@@ -199,7 +195,7 @@ mod tests {
             "http://[::1]:1",
             "https://example.test",
         ] {
-            assert!(http::Client::new(endpoint, &"t".repeat(MAX_BEARER_TOKEN_BYTES), 1).is_ok());
+            assert!(http::Client::new(endpoint, "t", 1).is_ok());
         }
         for endpoint in [
             "http://example.test",

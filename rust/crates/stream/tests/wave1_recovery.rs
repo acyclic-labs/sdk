@@ -10,7 +10,7 @@ async fn subtree_and_success_keys_survive_journal_and_snapshot_recovery()
     for compact in [false, true] {
         let directory = tempfile::tempdir()?;
         let limits = LocalStreamLimits {
-            journal_operations: if compact { 3 } else { 1_000_000 },
+            compaction_operations: if compact { 3 } else { 1_000_000 },
             ..LocalStreamLimits::default()
         };
         let provider = LocalStream::open(directory.path(), limits).await?;

@@ -164,7 +164,7 @@ fn dense_capture_equals_queried_capture_with_bounded_admission()
                     let options = CaptureOptions {
                         source_root: source.path().to_owned(),
                         expected_root_identity: capture_root_identity(source.path()).unwrap(),
-                        maximum_paths: 8,
+                        maximum_paths: Some(8),
                         maximum_extent_spans: 8,
                     };
                     // Share the authored identity; independent creation deliberately mints
@@ -305,7 +305,7 @@ fn dense_capture_equals_queried_capture_with_bounded_admission()
                     let options = CaptureOptions {
                         source_root: source.path().to_owned(),
                         expected_root_identity: capture_root_identity(source.path()).unwrap(),
-                        maximum_paths: 8,
+                        maximum_paths: Some(8),
                         maximum_extent_spans: 8,
                     };
                     let (checkout, result, _) = capture(
