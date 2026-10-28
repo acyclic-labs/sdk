@@ -1,7 +1,5 @@
 //! Stream result fields on SDK-owned operation spans.
 pub(crate) use acyclic_native_runtime::obs::OperationSpan;
-#[cfg(any(feature = "http", feature = "grpc"))]
-pub(crate) use acyclic_native_runtime::obs::Scoped;
 use tracing::Span;
 
 /// A failure with a stable, path-free kind to record as `error.kind`.

@@ -176,6 +176,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         .await?;
         let anchor = provider
             .read(ReadRequest {
+                key: None,
                 path: path.clone(),
                 from: 0,
                 limit: 1,

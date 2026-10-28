@@ -184,6 +184,9 @@ impl MemoryStream {
                     .clone();
                 let jump = self.history_jump(source.as_ref(), fork.forked_at)?;
                 Some(Arc::new(History::Prefix {
+                    keys: source
+                        .as_ref()
+                        .map_or_else(KeyTree::default, |source| source.keys().cap(fork.forked_at)),
                     source,
                     jump,
                     tail: fork.forked_at,
@@ -227,7 +230,12 @@ impl MemoryStream {
                 .ok_or(StreamError::Unavailable)?
                 .sequence,
         )?;
+        let keys = parent
+            .as_ref()
+            .map_or_else(KeyTree::default, |parent| parent.keys().clone())
+            .append(&records, self)?;
         Ok(Arc::new(History::Batch {
+            keys,
             parent,
             jump,
             records,

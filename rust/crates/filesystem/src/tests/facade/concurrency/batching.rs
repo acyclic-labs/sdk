@@ -155,6 +155,7 @@ async fn public_checkouts_batch_disjoint_edits_and_recover_each_original_operati
     let provider = volume.fs.inner.authority.provider();
     let records: Vec<_> = provider
         .read(acyclic_stream::ReadRequest {
+            key: None,
             path: acyclic_stream::StreamPath::new(format!(
                 "fs/authorities/{}/records",
                 hex::encode(volume_authority_id(volume.id).into_bytes())

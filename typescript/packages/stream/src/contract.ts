@@ -96,7 +96,7 @@ type WireRequest =
   | { readonly kind: "head"; readonly path: string }
   | { readonly kind: "tail"; readonly path: string; readonly atLeast?: readonly Revision[] }
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
-  | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number; readonly atLeast?: readonly Revision[] }
+  | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number; readonly key?: import("./types.js").ReadKeySeek; readonly atLeast?: readonly Revision[] }
   | { readonly kind: "follow"; readonly path: string; readonly from: bigint }
   | { readonly kind: "children_page"; readonly tailStream?: string; readonly parent?: string; readonly after?: string; readonly hierarchyVersion?: Uint8Array; readonly limit: number };
 
@@ -155,7 +155,8 @@ export function wireRequest(request: WireRequest): Uint8Array {
         requirePathType(request.path);
         requireSequenceType(request.from);
         requireLimitType(request.limit);
-        return toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: request.path, from: request.from, limit: request.limit, atLeast: [...(request.atLeast ?? [])] }));
+        if (request.key !== undefined) { requireBytesType(request.key.key); requireSequenceType(request.key.before); }
+        return toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: request.path, from: request.from, limit: request.limit, ...(request.key === undefined ? {} : { key: request.key }), atLeast: [...(request.atLeast ?? [])] }));
       case "follow":
         requirePathType(request.path);
         requireSequenceType(request.from);

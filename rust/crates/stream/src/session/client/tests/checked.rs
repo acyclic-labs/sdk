@@ -1,6 +1,5 @@
 use super::*;
 use crate::{CommitId, ReadRequest};
-use futures::TryFutureExt as _;
 
 pub(super) async fn anchor(
     provider: &MemoryStream,
@@ -9,6 +8,7 @@ pub(super) async fn anchor(
 ) -> Result<CommitId, Box<dyn std::error::Error + Send + Sync>> {
     Ok(provider
         .read(ReadRequest {
+            key: None,
             path: StreamPath::new(path)?,
             from: sequence,
             limit: 1,

@@ -41,6 +41,7 @@ async fn records<P: StreamProvider + ?Sized>(
         history
             .provider
             .read(ReadRequest {
+                key: None,
                 path: target.clone(),
                 from: 0,
                 limit: 8,

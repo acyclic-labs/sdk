@@ -93,6 +93,7 @@ async fn real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retr
         assert_eq!(restored.tail(path.clone()).await?, 2);
         let records = restored
             .read(ReadRequest {
+                key: None,
                 path,
                 from: 0,
                 limit: 3,
@@ -214,6 +215,7 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
         assert_eq!(restored.tail(path.clone()).await?, tail);
         let records = restored
             .read(ReadRequest {
+                key: None,
                 path,
                 from: 0,
                 limit: 3,
@@ -343,19 +345,19 @@ fn current_codec_rejects_duplicate_entries_and_impossible_history() {
         put_u64(&mut duplicate, 0);
     }
     put_len(&mut duplicate, 0);
-    assert!(decode(&duplicate).is_none());
+    assert!(decode(&duplicate).is_err());
     let mut impossible = header();
     put_len(&mut impossible, 1);
     impossible.push(NODE_PREFIX);
     put_len(&mut impossible, 0);
     put_u64(&mut impossible, 1);
-    assert!(decode(&impossible).is_none());
+    assert!(decode(&impossible).is_err());
     let mut unknown_flags = header();
     put_len(&mut unknown_flags, 0);
     put_len(&mut unknown_flags, 0);
     put_len(&mut unknown_flags, 1);
     unknown_flags.push(4);
-    assert!(decode(&unknown_flags).is_none());
+    assert!(decode(&unknown_flags).is_err());
 }
 
 #[test]
@@ -384,11 +386,11 @@ fn current_codec_rejects_duplicate_retry_identity_and_unknown_wire_fields()
         }
         encoded
     };
-    assert!(decode(&fixture(1, &observation)).is_some());
-    assert!(decode(&fixture(2, &observation)).is_none());
+    assert!(decode(&fixture(1, &observation)).is_ok());
+    assert!(decode(&fixture(2, &observation)).is_err());
     let mut unknown = observation;
     unknown.extend_from_slice(&[0xa0, 0x06, 0x01]);
-    assert!(decode(&fixture(1, &unknown)).is_none());
+    assert!(decode(&fixture(1, &unknown)).is_err());
     Ok(())
 }
 
@@ -427,7 +429,7 @@ async fn retained_facts_reject_impossible_receipts_records_and_phantom_payloads(
         return Err(StreamError::Unavailable);
     };
     receipt.start = receipt.end;
-    assert!(decode(&encode(&state)).is_none());
+    assert!(decode(&encode(&state)).is_err());
     state
         .retained
         .get_mut(index)
@@ -445,7 +447,7 @@ async fn retained_facts_reject_impossible_receipts_records_and_phantom_payloads(
     receipt.start = 1;
     receipt.end = 2;
     receipt.tail = 2;
-    assert!(decode(&encode(&state)).is_none());
+    assert!(decode(&encode(&state)).is_err());
     state
         .retained
         .get_mut(index)
@@ -462,7 +464,7 @@ async fn retained_facts_reject_impossible_receipts_records_and_phantom_payloads(
     };
     let record = append.records.first_mut().ok_or(StreamError::Unavailable)?;
     record.sequence = 9;
-    assert!(decode(&encode(&state)).is_none());
+    assert!(decode(&encode(&state)).is_err());
     let envelope = state
         .retained
         .get_mut(commit_index)
@@ -474,7 +476,7 @@ async fn retained_facts_reject_impossible_receipts_records_and_phantom_payloads(
     let record = append.records.first_mut().ok_or(StreamError::Unavailable)?;
     record.sequence = 0;
     record.value = Bytes::from_static(b"phantom payload absent from immutable history");
-    assert!(decode(&encode(&state)).is_none());
+    assert!(decode(&encode(&state)).is_err());
     Ok(())
 }
 
@@ -510,7 +512,7 @@ async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(
             idempotency_key: crate::IdempotencyKey::unique(),
         })
         .await?;
-    assert!(decode(&stream.encode_state().await).is_some());
+    assert!(decode(&stream.encode_state().await).is_ok());
     let mut state = stream.state.write().await;
     let index = state
         .retained
@@ -530,7 +532,7 @@ async fn retained_empty_forks_cannot_reference_future_destinations() -> Result<(
         return Err(StreamError::Unavailable);
     };
     fork.source = later;
-    assert!(decode(&encode(&state)).is_none());
+    assert!(decode(&encode(&state)).is_err());
     Ok(())
 }
 
@@ -556,7 +558,7 @@ async fn retained_fork_cannot_capture_a_future_source_head() -> Result<(), Strea
         })
         .await?;
     stream.append(append(b"future")).await?;
-    assert!(decode(&stream.encode_state().await).is_some());
+    assert!(decode(&stream.encode_state().await).is_ok());
     let mut state = stream.state.write().await;
     let future = state
         .paths
@@ -570,13 +572,14 @@ async fn retained_fork_cannot_capture_a_future_source_head() -> Result<(), Strea
         .ok_or(StreamError::Unavailable)?
         .clone();
     corrupted.history = Some(Arc::new(History::Prefix {
+        keys: Default::default(),
         jump: HistoryJump::new(future.as_ref(), 1, || Ok(()))?,
         source: future,
         tail: 1,
         _allocation: Default::default(),
     }));
     state.paths.insert(&destination, corrupted);
-    assert!(decode(&encode(&state)).is_none());
+    assert!(decode(&encode(&state)).is_err());
     Ok(())
 }
 
@@ -594,7 +597,7 @@ fn malformed_deep_history_releases_without_recursive_drop() {
     }
     encoded.push(255);
     put_len(&mut encoded, 100_000);
-    assert!(decode(&encoded).is_none());
+    assert!(decode(&encoded).is_err());
 }
 
 #[tokio::test]
@@ -617,6 +620,7 @@ async fn snapshots_preserve_committed_timestamps() -> Result<(), StreamError> {
     restored.install_state(&timed).await?;
     let timed_record = restored
         .read(ReadRequest {
+            key: None,
             path: path.clone(),
             from: 0,
             limit: 1,
@@ -638,6 +642,7 @@ async fn snapshots_preserve_committed_timestamps() -> Result<(), StreamError> {
         .await?;
     let next = restored
         .read(ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: 1,

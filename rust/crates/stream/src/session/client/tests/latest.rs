@@ -3,7 +3,6 @@ use crate::{
     AppendOutcome, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
     ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest,
 };
-use futures::TryFutureExt as _;
 
 fn subscription(path: &str, latest: bool) -> wire::SessionFollow {
     wire::SessionFollow {

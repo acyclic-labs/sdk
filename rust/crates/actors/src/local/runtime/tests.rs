@@ -595,6 +595,7 @@ async fn reopened_alarm_delivery_retains_the_committed_subscription_cut() -> Tes
     );
     let mut history = provider
         .read(acyclic_stream::ReadRequest {
+            key: None,
             path: store.path(&address)?,
             from: 0,
             limit: 16,
@@ -655,6 +656,7 @@ async fn records<P: StreamProvider + ?Sized>(
     };
     let stream = provider
         .read(acyclic_stream::ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: u32::try_from(tail)?.max(1),

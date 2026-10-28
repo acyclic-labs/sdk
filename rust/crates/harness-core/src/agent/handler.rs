@@ -224,6 +224,7 @@ impl<P: StreamProvider + ?Sized + 'static> Agents<P> {
         end: u64,
     ) -> Result<Vec<(u64, InboxRecord)>, Error> {
         let request = ReadRequest {
+            key: None,
             path: agent.inbox()?,
             from,
             limit,

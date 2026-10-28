@@ -64,6 +64,8 @@ try {
   assertFields("PathHead", [["tail", 1], ["last", 2], ["durable", 3], ["origin", 4]]);
   assertFields("ForkOrigin", [["source", 1], ["forked_at", 2], ["commit_id", 3]]);
   assertFields("TailResponse", [["tail", 1], ["durable", 3], ["applied", 4]]);
+  assertFields("ReadRequest", [["path", 1], ["from", 2], ["limit", 3], ["at_least", 4], ["key", 5]]);
+  assertFields("ReadKeySeek", [["key", 1], ["before", 2]]);
   assertFields("ReadResponse", [["codec", 2], ["data", 3], ["decoded_length", 4], ["applied", 6]]);
   assertReserved("ReadResponse", [[1, 2], [5, 6]], ["record", "delivery_token"]);
   assertFields("RecordBatch", [["records", 1]]);
@@ -91,7 +93,7 @@ try {
   const sessionMessages = new Map(session.messageType.map(message => [message.name, message]));
   const sessionService = session.service.find(item => item.name === "StreamSessionService");
   assert.deepEqual(sessionService.method.map(method => [method.name, method.clientStreaming, method.serverStreaming]), [["Session", true, true]]);
-  assertFields("SessionFollow", [["resource", 1], ["delivery", 2], ["preceding_commit_id", 3], ["until", 4], ["at_least", 5], ["when_absent", 6], ["bootstrap_head", 7]], sessionMessages);
+  assertFields("SessionFollow", [["resource", 1], ["delivery", 2], ["preceding_commit_id", 3], ["until", 4], ["at_least", 5], ["when_absent", 6], ["bootstrap_head", 7], ["key", 8], ["read_limit", 9]], sessionMessages);
   assertFields("SessionOpened", [["resume", 1], ["preceding_commit_id", 2], ["applied", 3]], sessionMessages);
   assertFields("SessionCursor", [["next", 1], ["opaque", 2]], sessionMessages);
   assertFields("SessionSubscription", [

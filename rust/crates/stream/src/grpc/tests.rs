@@ -107,6 +107,7 @@ impl StreamProvider for EndingFollow {
             return if attempt == 0 {
                 self.inner
                     .read(ReadRequest {
+                        key: None,
                         path: request.path,
                         from: request.from,
                         limit: u32::try_from(crate::MAX_ITEMS)
@@ -158,6 +159,7 @@ async fn grpc_transport_passes_the_public_suite() -> TestResult {
         .await?;
     let records = transport
         .read(ReadRequest {
+            key: None,
             path,
             from: 2,
             limit: 17,

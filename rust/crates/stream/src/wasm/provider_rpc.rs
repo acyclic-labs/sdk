@@ -116,56 +116,78 @@ impl InjectedStream {
         }
         let cursor = OwnedCursor(cursor.unchecked_into());
         let read = operation == "read";
+        let seek = if read {
+            wire_codec::read_from_wire(
+                wire::ReadRequest::decode(input.as_slice())
+                    .map_err(|_| StreamError::InvalidArgument)?,
+            )?
+            .key
+        } else {
+            None
+        };
         Ok(
-            futures::stream::try_unfold((cursor, from), move |(cursor, next)| async move {
-                let value = reply(cursor.0.next()).await?;
-                if value.is_null() {
-                    return Ok(None);
-                }
-                let bytes = snapshot(value)?;
-                let frame = wire::SessionFrame::decode(bytes.as_slice())
-                    .map_err(|_| StreamError::InvalidResponse)?;
-                if frame.channel_id != 1 || frame.generation != 1 {
-                    return Err(StreamError::InvalidResponse);
-                }
-                let (update, after) = match frame.body {
-                    Some(wire::session_frame::Body::Data(data)) => {
-                        let Some(wire::session_data::Item::Record(record)) = data.item else {
-                            return Err(StreamError::InvalidResponse);
-                        };
-                        let record = wire_codec::record(record)?;
-                        if record.sequence < next || (read && record.sequence != next) {
-                            return Err(StreamError::InvalidResponse);
-                        }
-                        let after = record
-                            .sequence
-                            .checked_add(1)
-                            .ok_or(StreamError::OutOfRange)?;
-                        if data
-                            .after
-                            .as_ref()
-                            .is_none_or(|cursor| cursor.next != after || !cursor.opaque.is_empty())
-                        {
-                            return Err(StreamError::InvalidResponse);
-                        }
-                        (FollowUpdate::Record(record), after)
+            futures::stream::try_unfold((cursor, from), move |(cursor, next)| {
+                let seek = seek.clone();
+                async move {
+                    let value = reply(cursor.0.next()).await?;
+                    if value.is_null() {
+                        return Ok(None);
                     }
-                    Some(wire::session_frame::Body::Watermark(progress)) if !read => {
-                        let after = progress.after.ok_or(StreamError::InvalidResponse)?;
-                        if after.next <= next || !after.opaque.is_empty() {
-                            return Err(StreamError::InvalidResponse);
-                        }
-                        (
-                            FollowUpdate::Progress {
-                                next: after.next,
-                                preceding: wire_codec::commit_id(&progress.preceding_commit_id)?,
-                            },
-                            after.next,
-                        )
+                    let bytes = snapshot(value)?;
+                    let frame = wire::SessionFrame::decode(bytes.as_slice())
+                        .map_err(|_| StreamError::InvalidResponse)?;
+                    if frame.channel_id != 1 || frame.generation != 1 {
+                        return Err(StreamError::InvalidResponse);
                     }
-                    _ => return Err(StreamError::InvalidResponse),
-                };
-                Ok(Some((update, (cursor, after))))
+                    let (update, after) = match frame.body {
+                        Some(wire::session_frame::Body::Data(data)) => {
+                            let Some(wire::session_data::Item::Record(record)) = data.item else {
+                                return Err(StreamError::InvalidResponse);
+                            };
+                            let record = wire_codec::record(record)?;
+                            if record.sequence < next
+                                || (read && seek.is_none() && record.sequence != next)
+                                || seek.as_ref().is_some_and(|key| {
+                                    record.sequence >= key.before
+                                        || !record
+                                            .headers
+                                            .keys()
+                                            .iter()
+                                            .any(|value| value == &key.key)
+                                })
+                            {
+                                return Err(StreamError::InvalidResponse);
+                            }
+                            let after = record
+                                .sequence
+                                .checked_add(1)
+                                .ok_or(StreamError::OutOfRange)?;
+                            if data.after.as_ref().is_none_or(|cursor| {
+                                cursor.next != after || !cursor.opaque.is_empty()
+                            }) {
+                                return Err(StreamError::InvalidResponse);
+                            }
+                            (FollowUpdate::Record(record), after)
+                        }
+                        Some(wire::session_frame::Body::Watermark(progress)) if !read => {
+                            let after = progress.after.ok_or(StreamError::InvalidResponse)?;
+                            if after.next <= next || !after.opaque.is_empty() {
+                                return Err(StreamError::InvalidResponse);
+                            }
+                            (
+                                FollowUpdate::Progress {
+                                    next: after.next,
+                                    preceding: wire_codec::commit_id(
+                                        &progress.preceding_commit_id,
+                                    )?,
+                                },
+                                after.next,
+                            )
+                        }
+                        _ => return Err(StreamError::InvalidResponse),
+                    };
+                    Ok(Some((update, (cursor, after))))
+                }
             })
             .boxed_local(),
         )
@@ -312,6 +334,7 @@ impl StreamProvider for InjectedStream {
             self.cursor(
                 "read",
                 wire::ReadRequest {
+                    key: wire_codec::read_key_to_wire(&request.key),
                     path: request.path.to_string(),
                     from,
                     limit: request.limit,

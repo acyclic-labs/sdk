@@ -41,6 +41,8 @@ async fn raw_follow_keeps_checked_anchors_and_standalone_watermarks() -> TestRes
         filter: None,
         resume: data.after,
         kind: Some(Kind::Follow(wire::SessionFollow {
+            key: None,
+            read_limit: 0,
             bootstrap_head: false,
             when_absent: Default::default(),
             resource: crate::wire_codec::session::stream_resource("events"),

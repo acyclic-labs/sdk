@@ -111,6 +111,25 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
     pub async fn read(&self, from: u64, limit: u32) -> Result<RecordStream, StreamError> {
         self.provider
             .read(ReadRequest {
+                key: None,
+                path: self.path.clone(),
+                from,
+                limit,
+                at_least: Default::default(),
+            })
+            .await
+    }
+
+    /// Reads matching opaque header keys in a bounded historical interval.
+    pub async fn seek(
+        &self,
+        key: ReadKeySeek,
+        from: u64,
+        limit: u32,
+    ) -> Result<RecordStream, StreamError> {
+        self.provider
+            .read(ReadRequest {
+                key: Some(key),
                 path: self.path.clone(),
                 from,
                 limit,

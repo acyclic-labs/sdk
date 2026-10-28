@@ -75,6 +75,7 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
     );
     let mut rows = provider
         .read(ReadRequest {
+            key: None,
             path: path("completion/target")?,
             from: 1,
             limit: 1,

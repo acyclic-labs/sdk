@@ -106,6 +106,7 @@ async fn run(writers: usize, same_file: bool) -> Result {
     assert_eq!(committed, if same_file { 1 } else { writers });
     let records: Vec<_> = stream
         .read(acyclic_stream::ReadRequest {
+            key: None,
             path: acyclic_stream::StreamPath::new(format!(
                 "fs/authorities/{}/records",
                 hex::encode(volume_authority_id(volume.id()).into_bytes())

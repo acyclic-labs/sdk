@@ -3,6 +3,7 @@
 mod absence;
 mod atomic;
 mod backend;
+pub(crate) mod key_seek;
 mod views;
 #[path = "conformance"]
 mod histories {
@@ -39,6 +40,7 @@ const _: () = assert!(!SUITE.is_empty(), "conformance inventory is empty");
 async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
     absence::verify(provider).await?;
     views::verify(provider).await?;
+    key_seek::verify(provider).await?;
     let source = path("conformance/source")?;
     let child = path("conformance/child")?;
     let append_key = key(b"stream-append")?;
@@ -117,6 +119,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     }
     let inherited = provider
         .read(ReadRequest {
+            key: None,
             path: child.clone(),
             from: 0,
             limit: 8,
@@ -224,6 +227,7 @@ async fn verify_contract<P: StreamProvider + ?Sized>(provider: &P) -> Result<(),
     }
     let complete_history = provider
         .read(ReadRequest {
+            key: None,
             path: child.clone(),
             from: 0,
             limit: 8,
@@ -323,6 +327,7 @@ async fn verify_read_open_failures(
     let open = |path: StreamPath, from: u64| async move {
         provider
             .read(ReadRequest {
+                key: None,
                 path,
                 from,
                 limit: 1,
@@ -438,6 +443,7 @@ async fn verify_fork_with_records(
     }
     let values = provider
         .read(ReadRequest {
+            key: None,
             path: destination.clone(),
             from: 0,
             limit: 8,
@@ -654,6 +660,7 @@ async fn verify_subtree_records(
     let marker = path("conformance/adopted")?;
     let records: Vec<_> = provider
         .read(ReadRequest {
+            key: None,
             path: inherited.clone(),
             from: 0,
             limit: 8,
@@ -675,6 +682,7 @@ async fn verify_subtree_records(
     ] {
         let records: Vec<_> = provider
             .read(ReadRequest {
+                key: None,
                 path: path(name)?,
                 from: 1,
                 limit: 1,
@@ -693,6 +701,7 @@ async fn verify_subtree_records(
     }
     let bound: Vec<_> = provider
         .read(ReadRequest {
+            key: None,
             path: destination.clone(),
             from: 0,
             limit: 8,
@@ -703,6 +712,7 @@ async fn verify_subtree_records(
         .await?;
     let adopted: Vec<_> = provider
         .read(ReadRequest {
+            key: None,
             path: marker,
             from: 0,
             limit: 8,
@@ -739,6 +749,7 @@ async fn verify_subtree_private_writes(
         .await?;
     let source_records: Vec<_> = provider
         .read(ReadRequest {
+            key: None,
             path: child,
             from: 1,
             limit: 8,

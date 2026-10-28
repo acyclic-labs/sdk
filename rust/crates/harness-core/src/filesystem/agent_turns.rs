@@ -645,6 +645,7 @@ where
         let records = match self
             .stream
             .read(ReadRequest {
+                key: None,
                 path,
                 from,
                 limit: u32::try_from(tail - from).unwrap_or(u32::MAX),

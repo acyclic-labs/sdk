@@ -286,6 +286,7 @@ async fn read<P: StreamProvider + ?Sized>(
 ) -> Result<Outcome, StreamError> {
     let mut records = provider
         .read(ReadRequest {
+            key: None,
             path,
             from,
             limit,

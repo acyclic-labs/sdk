@@ -1,5 +1,4 @@
 use super::*;
-use futures::TryFutureExt as _;
 
 struct RotatingHost {
     service: crate::session::Service<MemoryStream>,

@@ -22,6 +22,7 @@ async fn seeded() -> MemoryResult<MemoryStream> {
 
 fn read_request() -> Result<ReadRequest, StreamError> {
     Ok(ReadRequest {
+        key: None,
         path: path("native/read")?,
         from: 0,
         limit: 3,
@@ -91,6 +92,7 @@ async fn tail_read_fits_its_budget_without_hydrating_older_batches() -> MemoryRe
     let mut output = provider
         .native_read(
             ReadRequest {
+                key: None,
                 path: path("native/read")?,
                 from: 999,
                 limit: 1,

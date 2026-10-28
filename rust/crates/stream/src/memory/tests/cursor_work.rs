@@ -111,8 +111,14 @@ async fn seed(
     Vec<Result<AppendOutcome, StreamError>>,
     Vec<Result<ForkReceipt, StreamError>>,
 ) {
-    let provider =
+    let mut provider =
         MemoryStream::new_with_clock(MemoryLimits::default(), Arc::new(AtomicU64::new(7)));
+    // Both implementations observe one logical authority and trusted clock.
+    provider.revisions = Arc::new(crate::AppliedRevisions::new(
+        crate::RevisionScope::new(Bytes::from_static(b"cursor-oracle")),
+        1,
+        0,
+    ));
     let source = StreamPath::new("history/source").unwrap();
     let mut appends = Vec::new();
     for i in 0..batches {

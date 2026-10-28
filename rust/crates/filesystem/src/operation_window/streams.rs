@@ -67,6 +67,7 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> OperationWindowStore
         let mut records = self
             .provider
             .read(acyclic_stream::ReadRequest {
+                key: None,
                 path,
                 from: tail - 1,
                 limit: 1,

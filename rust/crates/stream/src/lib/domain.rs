@@ -222,6 +222,11 @@ pub struct ForkRequest {
 /// Required-bounds finite read.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadRequest {
+    /// Optional exact indexed key. Results are ascending matches in
+    /// `[from, min(key.before, tail at open))`, bounded by `limit` matches.
+    /// EOF proves no further match in that pinned interval. A full page resumes
+    /// at the last returned sequence plus one with the same exclusive bound.
+    pub key: Option<ReadKeySeek>,
     /// Stream path.
     pub path: StreamPath,
     /// First sequence, inclusive.
@@ -230,6 +235,24 @@ pub struct ReadRequest {
     pub limit: u32,
     /// Minimum applied cut; a lagging provider parks, a foreign one refuses.
     pub at_least: RevisionCut,
+}
+
+/// A bounded historical lookup over opaque record header keys.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadKeySeek {
+    /// Exact bytes, without interpreting the record payload.
+    pub key: Bytes,
+    /// Exclusive sequence bound; later appends cannot enter this read.
+    pub before: u64,
+}
+
+impl ReadKeySeek {
+    pub(crate) fn validate(&self) -> Result<(), StreamError> {
+        if self.key.len() > crate::MAX_RECORD_KEY_BYTES {
+            return Err(StreamError::LimitExceeded);
+        }
+        Ok(())
+    }
 }
 
 /// Policy for a path absent at follow registration.

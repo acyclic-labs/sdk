@@ -34,6 +34,7 @@ pub(crate) struct PreparedCommit {
     probes: ReplayProbes,
     codec: NativeCodecReservation<Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
     headers: crate::record_headers::PreparedHeaders,
+    key_nodes: Allocation,
 }
 
 impl MemoryStream {
@@ -76,6 +77,21 @@ impl MemoryStream {
             .sequence = expected;
         history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?.sequence =
             expected;
+        // Header keys arrive with the body. Reserve the worst-case AVL insertion
+        // paths now, while original ingress admission is still available. The
+        // pinned parent cannot grow while this completion is pending.
+        let parent_height = match plan.histories.first().map(Arc::as_ref) {
+            Some(History::Batch { parent, .. }) => parent
+                .as_ref()
+                .map_or(0, |parent| parent.keys().height() as usize),
+            _ => return Err(StreamError::Unavailable),
+        };
+        let nodes = crate::MAX_RECORD_KEYS * (parent_height + crate::MAX_RECORD_KEYS + 3);
+        let key_nodes = self.allocate(
+            nodes
+                .checked_mul(key_node_bytes())
+                .ok_or(StreamError::Capacity)?,
+        )?;
         let namespace = self.namespace_reserve(&append(&plan.result).path)?;
         let conflict = self.vector(2)?;
         let prototype = self.copy_envelope(&plan.envelope)?;
@@ -118,6 +134,7 @@ impl MemoryStream {
                 probes,
                 codec,
                 headers,
+                key_nodes,
             },
             recovery,
         ))
@@ -328,6 +345,28 @@ impl PreparedCommit {
                     );
                     let id = commit_identity(decision, digest);
                     bind_body(&mut self.plan, body)?;
+                    for history in &mut self.plan.histories {
+                        if let History::Batch {
+                            parent,
+                            records,
+                            keys,
+                            ..
+                        } = Arc::get_mut(history).ok_or(StreamError::Unavailable)?
+                        {
+                            *keys = parent
+                                .as_ref()
+                                .map_or_else(KeyTree::default, |parent| parent.keys().clone())
+                                .append_reserved(records, &mut || {
+                                    work.record(
+                                        self.key_nodes
+                                            .as_mut()
+                                            .ok_or(StreamError::Unavailable)?
+                                            .split(key_node_bytes()),
+                                    )
+                                    .map(Some)
+                                })?;
+                        }
+                    }
                     self.plan
                         .bind(id, time, &self.provider.revisions.at(decision))?;
                     let _ = work.record(record_codec(

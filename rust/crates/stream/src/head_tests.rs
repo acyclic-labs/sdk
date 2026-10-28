@@ -192,6 +192,7 @@ async fn head_conditions_and_conflicts_survive_local_recovery_and_wire_encoding(
     assert_eq!(provider.commit(correct).await?, accepted);
     let mut records = provider
         .read(ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: 2,

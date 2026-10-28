@@ -1,3 +1,4 @@
+import { checkedReadSequence } from "./record.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "./session.js";
 import { webSocketSession, type SessionWebSocketFactory } from "./session-websocket.js";
@@ -98,10 +99,10 @@ export class HttpStreamProvider implements StreamProvider {
     return this.#request("tokens/create", await encodeHttpRequest("tokens/create", input));
   }
   async #read(path: string, options: ReadOptions, signal?: AbortSignal): Promise<readonly EncodedRecord[]> {
-    const { from, limit } = options;
-    await validateWireRequest({ kind: "read", path, from, limit });
+    const { from, limit, key } = structuredClone(options);
+    await validateWireRequest({ kind: "read", path, from, limit, ...(key === undefined ? {} : { key }) });
     const atLeast = this.#sessions.revisionFloor();
-    const input = wireRequest({ kind: "read", path, from, limit, atLeast });
+    const input = wireRequest({ kind: "read", path, from, limit, atLeast, ...(key === undefined ? {} : { key }) });
     const { records, applied } = await this.#request("read", await encodeHttpRequest("read", input), signal);
     // The page's own served revision must prove the minimum sent, and then
     // floors later reads: a lagging replica cannot serve older data.
@@ -112,10 +113,7 @@ export class HttpStreamProvider implements StreamProvider {
     // backwards.
     let expected = from;
     for (const record of records) {
-      if (record.sequence !== expected) {
-        throw new StreamError("invalid_response", "read response contains a non-contiguous cursor");
-      }
-      expected += 1n;
+      expected = checkedReadSequence(record, expected, key) + 1n;
     }
     return records;
   }

@@ -14,7 +14,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                         records: vec![vec![generation].into()],
                     })
                     .collect(),
-                idempotency_key: key(&[b'v', generation])?,
+                idempotency_key: IdempotencyKey::new(Bytes::from(vec![b'v', generation]))?,
                 deadline_unix_millis: None,
             })
             .await?;

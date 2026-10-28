@@ -467,6 +467,7 @@ impl DurableContextProvider {
         let mut stream = self
             .provider
             .read(ReadRequest {
+                key: None,
                 path: self.path.clone(),
                 from,
                 limit: 1,

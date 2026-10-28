@@ -69,6 +69,7 @@ async fn values(provider: &MemoryStream, path: StreamPath) -> Result<Vec<Vec<u8>
     }
     let records: Vec<_> = provider
         .read(ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: u32::try_from(tail)?,

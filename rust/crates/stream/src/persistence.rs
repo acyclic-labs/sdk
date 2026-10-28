@@ -20,11 +20,17 @@ pub fn decode_observation(
     input: &[u8],
     maximum_bytes: usize,
 ) -> Result<IdempotencyObservation, StreamError> {
-    let value = wire_codec::observation_from_wire(decode::<wire::IdempotencyObservation>(
+    observation_from_wire(decode::<wire::IdempotencyObservation>(
         input,
         maximum_bytes,
     )?)
-    .map_err(|_| StreamError::InvalidArgument)?;
+}
+
+pub(crate) fn observation_from_wire(
+    value: wire::IdempotencyObservation,
+) -> Result<IdempotencyObservation, StreamError> {
+    let value =
+        wire_codec::observation_from_wire(value).map_err(|_| StreamError::InvalidArgument)?;
     validate_observation(&value)?;
     Ok(value)
 }
@@ -60,7 +66,7 @@ fn encode<T: Message>(value: &T, maximum: usize) -> Result<Vec<u8>, StreamError>
     bound(value.encoded_len(), maximum)?;
     Ok(value.encode_to_vec())
 }
-fn decode<T: Message + Default>(input: &[u8], maximum: usize) -> Result<T, StreamError> {
+pub(crate) fn decode<T: Message + Default>(input: &[u8], maximum: usize) -> Result<T, StreamError> {
     bound(input.len(), maximum)?;
     let value = T::decode(input).map_err(|_| StreamError::InvalidArgument)?;
     // Persistence fails closed on unknown fields, duplicate fields and alternate

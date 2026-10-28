@@ -254,7 +254,7 @@ impl Route {
     /// before its first fragment. An Actors call is never replayed.
     fn resumable(&self) -> bool {
         match &self.kind {
-            Kind::Follow(follow) => follow.until == 0 || !self.opened,
+            Kind::Follow(follow) => (follow.until == 0 && follow.key.is_none()) || !self.opened,
             Kind::ChildrenPage(_) | Kind::Heads(_) => self.received == 0,
             _ => false,
         }
@@ -406,12 +406,17 @@ impl Client {
         crate::memory::validate_limit(request.limit)?;
         // The pool adds the tracked floor on every physical open.
         let follow = wire::SessionFollow {
+            key: wire_codec::read_key_to_wire(&request.key),
+            read_limit: request.key.as_ref().map_or(0, |_| request.limit),
             bootstrap_head: false,
             when_absent: Default::default(),
             resource: crate::wire_codec::session::stream_resource(request.path.as_str()),
             delivery: wire::SessionDelivery::All as i32,
             preceding_commit_id: Bytes::new(),
-            until: request.from.saturating_add(u64::from(request.limit)),
+            until: request.key.as_ref().map_or_else(
+                || request.from.saturating_add(u64::from(request.limit)),
+                |key| key.before,
+            ),
             at_least: crate::wire_codec::cut_to_wire(&request.at_least),
         };
         let mut records = super::runtime::boxed(
@@ -667,7 +672,14 @@ impl Client {
             }
             _ => None,
         };
-        let progress = Arc::new(Progress::from_cursor(&resume, preceding));
+        let progress = Progress::from_cursor(&resume, preceding);
+        let progress = Arc::new(
+            if matches!(&kind, Kind::Follow(follow) if follow.key.is_some()) {
+                progress.with_sparse_records()
+            } else {
+                progress
+            },
+        );
         let id = progress::allocate(&self.next_id)?;
         // Install the drop guard before either await: cancellation during open
         // must remove its interest even when no record is ever appended.
@@ -788,6 +800,8 @@ impl Drop for Cursor {
 /// resume never lowers it.
 fn follow_kind(request: crate::FollowRequest) -> Kind {
     Kind::Follow(wire::SessionFollow {
+        key: None,
+        read_limit: 0,
         bootstrap_head: false,
         when_absent: request.when_absent.to_wire(),
         resource: crate::wire_codec::session::stream_resource(request.path.as_str()),

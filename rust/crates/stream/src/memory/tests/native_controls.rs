@@ -530,7 +530,15 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
         .freeze(9)
         .map_err(|_| StreamError::InvalidArgument)?;
     let last_empty_alias = body.slice(..0);
-    let output = issued.finish((body).into()).await??;
+    let output = issued
+        .finish(crate::AppendRecord {
+            value: body,
+            headers: crate::RecordHeaders::new(
+                vec![OwnedBytes::from_static(b"late-header")],
+                Vec::new(),
+            )?,
+        })
+        .await??;
     let CommitOutcome::Committed(envelope) = output.value() else {
         panic!("canonical Commit result")
     };
@@ -550,6 +558,23 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
             b"root-body"
         );
     }
+    let indexed = provider
+        .read(ReadRequest {
+            key: Some(crate::ReadKeySeek {
+                key: OwnedBytes::from_static(b"late-header"),
+                before: u64::MAX,
+            }),
+            path: path("completion/target")?,
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?
+        .next()
+        .await
+        .ok_or(StreamError::Unavailable)??;
+    assert_eq!(indexed.value.as_ref(), b"root-body");
+    drop(indexed);
     assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
     assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
     assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);

@@ -204,6 +204,7 @@ async fn workload(
         let before = ledger.requests();
         let read: Vec<_> = provider
             .read(ReadRequest {
+                key: None,
                 path: path.clone(),
                 from: sequence,
                 limit: 1,

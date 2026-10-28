@@ -225,6 +225,7 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
     assert_eq!(resumed.next().await.ok_or("resume ended")??, matched);
     let mut read = provider
         .read(ReadRequest {
+            key: None,
             path,
             from: 3,
             limit: 1,

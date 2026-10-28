@@ -26,6 +26,7 @@ async fn append(provider: &LocalStream, key: crate::IdempotencyKey) -> Result<cr
 async fn read(provider: &LocalStream, at_least: crate::RevisionCut) -> Result<usize> {
     let records = provider
         .read(ReadRequest {
+            key: None,
             path: path(),
             from: 0,
             limit: 16,
@@ -131,5 +132,83 @@ async fn a_run_that_issued_revisions_ahead_of_a_flush_rotates_its_incarnation() 
             Err(StreamError::RevisionForeign)
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_pre_revision_snapshot_has_an_actionable_format_refusal() -> Result {
+    use prost::Message as _;
+
+    let directory = tempfile::tempdir()?;
+    let limits = LocalStreamLimits::default();
+    let memory = MemoryStream::new(limits.memory);
+    let key = crate::IdempotencyKey::unique();
+    memory
+        .append(AppendRequest {
+            path: path(),
+            records: vec![Bytes::from_static(b"value").into()],
+            if_tail: None,
+            idempotency_key: key.clone(),
+        })
+        .await?;
+    // Source: the current provider's actual snapshot writer. Remove only the
+    // nested receipt revision to reproduce the earlier retained observation.
+    let state = memory.encode_state().await;
+    let mut observation = memory
+        .inspect_idempotency(key)
+        .await?
+        .ok_or("missing replay")?;
+    observation.revision = None;
+    let mut wire = crate::wire_codec::observation_wire(observation);
+    let original = wire.encode_to_vec();
+    let mut framed = (original.len() as u64).to_le_bytes().to_vec();
+    framed.extend_from_slice(&original);
+    let positions: Vec<_> = state
+        .windows(framed.len())
+        .enumerate()
+        .filter_map(|(offset, bytes)| (bytes == framed).then_some(offset))
+        .collect();
+    let [offset] = positions.as_slice() else {
+        return Err("snapshot must contain exactly one retained observation".into());
+    };
+    let Some(crate::wire::idempotency_observation::Outcome::Append(response)) = &mut wire.outcome
+    else {
+        return Err("expected append outcome".into());
+    };
+    let Some(crate::wire::append_response::Outcome::Committed(receipt)) = &mut response.outcome
+    else {
+        return Err("expected committed receipt".into());
+    };
+    receipt.revision = None;
+    let obsolete = wire.encode_to_vec();
+    let mut replacement = (obsolete.len() as u64).to_le_bytes().to_vec();
+    replacement.extend_from_slice(&obsolete);
+    let mut obsolete_state = state.clone();
+    obsolete_state.splice(*offset..*offset + framed.len(), replacement);
+
+    let snapshot = directory.path().join(SNAPSHOT_FILE);
+    let current = encode_snapshot(limits, 0, &state)?;
+    std::fs::write(&snapshot, &current)?;
+    // The same writer output with its revision intact opens and serves data.
+    let provider = LocalStream::open(directory.path(), limits).await?;
+    assert_eq!(read(&provider, crate::RevisionCut::default()).await?, 1);
+    drop(provider);
+
+    let obsolete = encode_snapshot(limits, 0, &obsolete_state)?;
+    std::fs::write(&snapshot, &obsolete)?;
+    let error = match LocalStream::open(directory.path(), limits).await {
+        Err(error) => error,
+        Ok(_) => return Err("pre-revision snapshot was accepted".into()),
+    };
+    assert!(matches!(
+        error,
+        LocalStreamError::UnsupportedPreRevisionStore
+    ));
+    assert!(error.to_string().contains("re-create the store"));
+    assert_eq!(std::fs::read(&snapshot)?, obsolete);
+    // Refusal releases ownership and leaves the original current snapshot usable.
+    std::fs::write(&snapshot, current)?;
+    let provider = LocalStream::open(directory.path(), limits).await?;
+    assert_eq!(read(&provider, crate::RevisionCut::default()).await?, 1);
     Ok(())
 }

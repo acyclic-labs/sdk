@@ -211,6 +211,7 @@ pub async fn spawned(factory: js_sys::Function) -> Result<JsValue, JsValue> {
         let inbox: Vec<acyclic_stream::Record> = endpoint
             .provider()
             .read(acyclic_stream::ReadRequest {
+                key: None,
                 path: child.inbox()?,
                 from: 0,
                 limit: 64,

@@ -40,6 +40,7 @@ async fn committed_record_times_never_regress_with_the_clock() -> Result<(), Str
     }
     let records = stream
         .read(ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: 3,
@@ -311,6 +312,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
     ] {
         let record = provider
             .read(ReadRequest {
+                key: None,
                 path: path.clone(),
                 from: expected_tail - 1,
                 limit: 1,
@@ -344,6 +346,7 @@ async fn single_record_reads_seek_deep_history_and_prefixes() -> Result<(), Stre
     for (path, expected) in [(child, b"child".as_slice()), (source, b"1".as_slice())] {
         let record = provider
             .read(ReadRequest {
+                key: None,
                 path,
                 from: 1,
                 limit: 1,
@@ -457,6 +460,7 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
             .await?;
         let records = provider
             .read(ReadRequest {
+                key: None,
                 path: destination.clone(),
                 from: 0,
                 limit: 64,
@@ -481,6 +485,7 @@ async fn every_fork_cut_reads_the_exact_prefix_and_never_aliases_suffixes()
         let from = cut.saturating_sub(3);
         let window = provider
             .read(ReadRequest {
+                key: None,
                 path: destination,
                 from,
                 limit: 4,
@@ -641,6 +646,7 @@ proptest::proptest! {
             loop {
                 let page: Vec<_> = provider
                     .read(ReadRequest {
+                        key: None,
                         path: log.clone(),
                         from: read.len() as u64,
                         limit,

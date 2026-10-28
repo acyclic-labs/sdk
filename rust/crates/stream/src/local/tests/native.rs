@@ -90,6 +90,7 @@ async fn native_denial_precedes_read_capture() -> Result<(), Box<dyn std::error:
     let error = provider
         .native_read(
             ReadRequest {
+                key: None,
                 path: StreamPath::new("uncaptured")?,
                 from: 0,
                 limit: 1,

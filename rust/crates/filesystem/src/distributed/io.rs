@@ -164,6 +164,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let mut stream = self
             .authority_read(
                 acyclic_stream::ReadRequest {
+                    key: None,
                     path,
                     from,
                     limit: 1,

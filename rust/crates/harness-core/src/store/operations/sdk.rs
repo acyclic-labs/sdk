@@ -142,6 +142,7 @@ pub(crate) async fn read_records<P: StreamProvider + ?Sized>(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<std::result::Result<ObservedRecords, StreamError>> {
     let request = ReadRequest {
+        key: None,
         path: path.clone(),
         from,
         limit: count,

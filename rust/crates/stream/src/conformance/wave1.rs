@@ -264,6 +264,7 @@ impl<'a, P: StreamProvider + ?Sized> History<'a, P> {
             "read",
             self.provider
                 .read(ReadRequest {
+                    key: None,
                     path: self.path.clone(),
                     from: 0,
                     limit: 8,

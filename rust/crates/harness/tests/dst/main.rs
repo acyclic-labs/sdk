@@ -205,6 +205,7 @@ fn agent_records(harness: &Arc<LocalHarness>) -> EntryFuture<'_, Result<Vec<Vec<
             let read = agents
                 .provider()
                 .read(ReadRequest {
+                    key: None,
                     path,
                     from: 0,
                     limit: u32::try_from(tail.max(1)).map_err(storage)?,

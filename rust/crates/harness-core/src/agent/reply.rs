@@ -96,6 +96,7 @@ async fn entry<P: StreamProvider + ?Sized>(
 ) -> Result<ConversationEntry, Error> {
     let mut records = provider
         .read(ReadRequest {
+            key: None,
             path: conversation.clone(),
             from: sequence,
             limit: 1,

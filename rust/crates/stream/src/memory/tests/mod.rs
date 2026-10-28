@@ -22,6 +22,7 @@ mod work_custody;
 mod commit_index;
 
 mod head;
+mod key_seek;
 mod subtree;
 
 #[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]

@@ -498,6 +498,7 @@ where
         };
         let mut records = provider
             .read(ReadRequest {
+                key: None,
                 path,
                 from: last,
                 limit: 1,
