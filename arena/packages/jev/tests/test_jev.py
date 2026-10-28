@@ -365,6 +365,37 @@ class TestHttp(unittest.TestCase):
 
 
 class TestOpenRouter(unittest.TestCase):
+    def test_group_conditionals_preserve_complete_leaf_distribution_and_cost(self):
+        import math
+        from jev.backends.openrouter import OpenRouterBackend
+
+        calls = []
+        def post(url, headers, body):
+            calls.append(body)
+            choices = body["messages"][1]["content"].split("\n\nOptions:\n", 1)[1].split("\n\nAnswer", 1)[0]
+            weighted = []
+            for line in choices.splitlines():
+                label, option = line.split(". ", 1)
+                leaves = json.loads(option) if option.startswith("[") else [option]
+                weighted.append((label, sum(int(leaf.removeprefix("weight-")) for leaf in leaves)))
+            total = sum(weight for _, weight in weighted)
+            top = [{"token": label, "logprob": math.log(weight / total)} for label, weight in weighted]
+            return {"choices": [{"logprobs": {"content": [{"top_logprobs": top}]}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": 0.01}}
+
+        options = tuple(f"weight-{i}" for i in range(1, 1004))
+        result = OpenRouterBackend(api_key="k", post=post).decide(STATE, [Question("Choose", options)])
+        decision = result[0]
+        self.assertEqual(len(decision.probs), len(options))
+        self.assertEqual(decision.chosen, options[-1])
+        total = sum(range(1, len(options) + 1))
+        for weight, probability in enumerate(decision.probs, 1):
+            self.assertAlmostEqual(probability, weight / total)
+        self.assertAlmostEqual(sum(decision.probs), 1.0)
+        self.assertEqual(result.timing.forwards, len(calls))
+        self.assertEqual(result.timing.tokens, 2 * len(calls))
+        self.assertAlmostEqual(result.timing.usd, 0.01 * len(calls))
+
     def fake_post(self, url, headers, body):
         self.bodies.append(body)
         assert body["max_tokens"] == 1 and body["logprobs"] is True
