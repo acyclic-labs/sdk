@@ -1,5 +1,5 @@
-use futures::TryFutureExt as _;
 use super::*;
+use futures::TryFutureExt as _;
 
 #[tokio::test]
 async fn dispatch_publication_admits_durability_before_accepting_a_start()
@@ -81,7 +81,8 @@ async fn phase_barrier_preserves_live_delivery_and_reopens_the_accepted_prefix()
             assert_eq!(watermarks.accepted, ordinal + 1);
             assert_eq!(watermarks.durable, if defer { 0 } else { ordinal + 1 });
             let mut follow = provider
-                .follow(crate::FollowRequest::new(path.clone(), ordinal)).map_ok(crate::records_only)
+                .follow(crate::FollowRequest::new(path.clone(), ordinal))
+                .map_ok(crate::records_only)
                 .await?;
             assert_eq!(
                 follow

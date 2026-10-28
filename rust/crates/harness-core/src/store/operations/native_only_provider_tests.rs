@@ -33,7 +33,10 @@ impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
     ) -> std::result::Result<Option<IdempotencyObservation>, StreamError> {
         Err(self.ordinary_error())
     }
-    async fn head(&self, _: StreamPath) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
+    async fn head(
+        &self,
+        _: StreamPath,
+    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
         Err(self.ordinary_error())
     }
     async fn tail(&self, _: StreamPath) -> std::result::Result<u64, StreamError> {
@@ -48,7 +51,10 @@ impl<P: StreamProvider> StreamProvider for NativeOnly<P> {
     async fn read(&self, _: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
         Err(self.ordinary_error())
     }
-    async fn follow(&self, _request: acyclic_stream::FollowRequest) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
+    async fn follow(
+        &self,
+        _request: acyclic_stream::FollowRequest,
+    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
         Err(self.ordinary_error())
     }
     async fn commit(&self, _: CommitRequest) -> std::result::Result<CommitOutcome, StreamError> {

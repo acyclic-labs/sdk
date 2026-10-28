@@ -1,6 +1,6 @@
-use futures::TryFutureExt as _;
 use super::*;
 use crate::{MemoryStream, OwnedBytes};
+use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use wire::stream_service_server::{StreamService, StreamServiceServer};
 
@@ -95,7 +95,10 @@ impl StreamProvider for EndingFollow {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.inner.read(request).await
     }
-    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
+    async fn follow(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<crate::FollowStream, StreamError> {
         let attempt = self.follows.fetch_add(1, Ordering::SeqCst);
         if self.finite {
             return if attempt == 0 {
@@ -122,9 +125,7 @@ impl StreamProvider for EndingFollow {
         if self.deny {
             return Err(StreamError::AccessDenied);
         }
-        self.inner
-            .follow(request)
-            .await
+        self.inner.follow(request).await
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
@@ -242,7 +243,8 @@ async fn follow_resumes_after_a_clean_end_of_stream() -> TestResult {
         .await?;
     let transport = client(provider)?;
     let mut records = transport
-        .follow(crate::FollowRequest::new(path, 0)).map_ok(crate::records_only)
+        .follow(crate::FollowRequest::new(path, 0))
+        .map_ok(crate::records_only)
         .await?;
     let record = tokio::time::timeout(Duration::from_secs(1), records.next())
         .await?
@@ -262,7 +264,11 @@ async fn a_denied_follow_reports_access_denied_once_and_then_ends() -> TestResul
     let items = tokio::time::timeout(
         Duration::from_secs(1),
         transport
-            .follow(crate::FollowRequest::new(StreamPath::new("accounts/events")?, 0)).map_ok(crate::records_only)
+            .follow(crate::FollowRequest::new(
+                StreamPath::new("accounts/events")?,
+                0,
+            ))
+            .map_ok(crate::records_only)
             .await?
             .collect::<Vec<_>>(),
     )
@@ -464,7 +470,8 @@ async fn source_eof_never_discards_records_queued_before_terminal_close() -> Tes
     let result = tokio::time::timeout(
         Duration::from_secs(1),
         client
-            .follow(crate::FollowRequest::new(path, 0)).map_ok(crate::records_only)
+            .follow(crate::FollowRequest::new(path, 0))
+            .map_ok(crate::records_only)
             .await?
             .collect::<Vec<_>>(),
     )

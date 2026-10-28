@@ -140,7 +140,12 @@ async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"accepted"))?,
     };
     assert!(matches!(
-        provider.commit(CommitRequest { deadline_unix_millis: Some(11), ..accepted }).await?,
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: Some(11),
+                ..accepted
+            })
+            .await?,
         CommitOutcome::Committed(_)
     ));
     let expired = CommitRequest {
@@ -155,7 +160,12 @@ async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"expired"))?,
     };
     assert_eq!(
-        provider.commit(CommitRequest { deadline_unix_millis: Some(10), ..expired }).await,
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: Some(10),
+                ..expired
+            })
+            .await,
         Err(StreamError::DeadlineElapsed)
     );
     drop(provider);
@@ -420,9 +430,7 @@ async fn append_keyed(
             path: StreamPath::new("compacted")?,
             records: vec![(Bytes::copy_from_slice(&index.to_le_bytes())).into()],
             if_tail: Some(index),
-            idempotency_key: IdempotencyKey::new(Bytes::copy_from_slice(
-                &index.to_le_bytes(),
-            ))?,
+            idempotency_key: IdempotencyKey::new(Bytes::copy_from_slice(&index.to_le_bytes()))?,
         })
         .await?)
 }

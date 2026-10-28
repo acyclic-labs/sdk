@@ -560,9 +560,7 @@ async fn cron_inbox_append_reaches_lowered_actor_wake_subscription()
         path,
         records: vec![record.clone().into()],
         if_tail: None,
-        idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(
-            b"cron:tick:123",
-        ))?,
+        idempotency_key: IdempotencyKey::new(bytes::Bytes::from_static(b"cron:tick:123"))?,
     };
     stream.append(append.clone()).await?;
     stream.append(append).await?;

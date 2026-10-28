@@ -52,19 +52,25 @@ pub(in crate::distributed) async fn inspect_idempotency<P: StreamProvider + ?Siz
     }
     if observation.idempotency_key != key || observation.request_digest != binding.digest() {
         return Err(guarded_boundary(
-            quota.work(), wire::ErrorCode::Conflict, "commit recovery identity reused",
+            quota.work(),
+            wire::ErrorCode::Conflict,
+            "commit recovery identity reused",
         ));
     }
     if let IdempotencyOutcome::Commit(envelope) = &observation.outcome {
-        let matches = binding.matches_with(envelope, |bytes| {
-            if let Some(io) = quota.work().as_deref_mut() {
-                io.hashed_bytes(bytes)?;
-            }
-            Ok::<(), Error>(())
-        })?.map_err(|error| operations::stream_error_with_work(error, quota.work()))?;
+        let matches = binding
+            .matches_with(envelope, |bytes| {
+                if let Some(io) = quota.work().as_deref_mut() {
+                    io.hashed_bytes(bytes)?;
+                }
+                Ok::<(), Error>(())
+            })?
+            .map_err(|error| operations::stream_error_with_work(error, quota.work()))?;
         if !matches {
             return Err(guarded_boundary(
-                quota.work(), wire::ErrorCode::Conflict, "commit recovery identity reused",
+                quota.work(),
+                wire::ErrorCode::Conflict,
+                "commit recovery identity reused",
             ));
         }
     }

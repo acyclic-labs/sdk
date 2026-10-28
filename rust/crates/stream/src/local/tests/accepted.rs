@@ -1,5 +1,5 @@
-use futures::TryFutureExt as _;
 use super::*;
+use futures::TryFutureExt as _;
 
 #[test]
 fn a_flush_never_certifies_a_write_accepted_after_its_device_operation()
@@ -178,7 +178,8 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
             })
             .await??;
             let mut follow = provider
-                .follow(crate::FollowRequest::new(path.clone(), n)).map_ok(crate::records_only)
+                .follow(crate::FollowRequest::new(path.clone(), n))
+                .map_ok(crate::records_only)
                 .await?;
             let record = tokio::time::timeout(std::time::Duration::from_secs(1), follow.next())
                 .await?
@@ -187,12 +188,27 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
             assert_eq!(record.value.as_slice(), b"delta");
             let checked = tokio::time::timeout(
                 std::time::Duration::from_secs(1),
-                provider.follow(crate::FollowRequest { path: path.clone(), from: n + 1, preceding: Some(record.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only),
+                provider
+                    .follow(crate::FollowRequest {
+                        path: path.clone(),
+                        from: n + 1,
+                        preceding: Some(record.commit_id),
+                        filter: crate::FollowFilter::default(),
+                        progress: false,
+                    })
+                    .map_ok(crate::records_only),
             )
             .await??;
             drop(checked);
             let lost = provider
-                .follow(crate::FollowRequest { path: path.clone(), from: n + 2, preceding: Some(record.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+                .follow(crate::FollowRequest {
+                    path: path.clone(),
+                    from: n + 2,
+                    preceding: Some(record.commit_id),
+                    filter: crate::FollowFilter::default(),
+                    progress: false,
+                })
+                .map_ok(crate::records_only)
                 .await;
             assert!(matches!(lost, Err(StreamError::OutOfRange)));
             assert_eq!(

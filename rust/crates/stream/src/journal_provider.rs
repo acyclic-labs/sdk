@@ -392,7 +392,10 @@ async fn apply(
         Command::Append(request) => provider.append(request).await.map(Outcome::Append),
         Command::Fork(request) => provider.fork(request).await.map(Outcome::Fork),
         Command::Commit(mut request) => {
-            request.deadline_unix_millis = deadline.into_iter().chain(request.deadline_unix_millis).min();
+            request.deadline_unix_millis = deadline
+                .into_iter()
+                .chain(request.deadline_unix_millis)
+                .min();
             provider.commit(request).await.map(Outcome::Commit)
         }
     }
@@ -423,7 +426,8 @@ impl StreamProvider for JournalStream {
             let mut head = provider.head(path).await?;
             head.durable = head.tail;
             Ok(head)
-        }).await
+        })
+        .await
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
@@ -476,7 +480,10 @@ impl StreamProvider for JournalStream {
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.query(async move |p| p.read_commit(id).await).await
     }
-    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
+    async fn follow(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<crate::FollowStream, StreamError> {
         Ok(self.retain(self.query(async move |p| p.follow(request).await).await?))
     }
 }

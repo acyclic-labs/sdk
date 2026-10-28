@@ -616,7 +616,6 @@ impl NativeStreamClient {
         operation_result(tail(&self.provider, request, cancellation)).await
     }
 
-
     /// Executes a canonical append request.
     #[napi(js_name = "appendResult")]
     pub async fn append_result(

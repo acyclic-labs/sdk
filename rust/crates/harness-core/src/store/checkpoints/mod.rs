@@ -7,9 +7,7 @@ use crate::{
     core::{Authority, AuthorityVerifier, Event, Reducer, Snapshot},
 };
 
-use acyclic_stream::{
-    CommitCondition, CommitOutcome, StreamPath, StreamProvider,
-};
+use acyclic_stream::{CommitCondition, CommitOutcome, StreamPath, StreamProvider};
 
 use crate::wire_codec::CodecQuota;
 use serde::{Deserialize, Serialize};

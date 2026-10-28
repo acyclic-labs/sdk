@@ -1,8 +1,8 @@
 use super::*;
 use crate::OwnedBytes as Bytes;
 use crate::{
-    AppendRequest, CommitCondition, CommitMutation, CommitRequest, ForkRequest,
-    IdempotencyKey, MemoryStream, StreamProvider,
+    AppendRequest, CommitCondition, CommitMutation, CommitRequest, ForkRequest, IdempotencyKey,
+    MemoryStream, StreamProvider,
 };
 
 const BOUND: usize = 1024 * 1024;
@@ -125,10 +125,15 @@ fn observation() -> Result<IdempotencyObservation, StreamError> {
             commit_id: CommitId::from_bytes([9; 32]),
             committed_at_micros: 17,
             mutations: vec![CommittedMutation::Append(crate::CommittedAppend {
-                path: StreamPath::new("a")?, start: 2, end: 3, tail: 3,
+                path: StreamPath::new("a")?,
+                start: 2,
+                end: 3,
+                tail: 3,
                 records: vec![Record {
-                    sequence: 2, commit_id: CommitId::from_bytes([9; 32]),
-                    committed_at_micros: 17, value: Bytes::from_static(b"retained"),
+                    sequence: 2,
+                    commit_id: CommitId::from_bytes([9; 32]),
+                    committed_at_micros: 17,
+                    value: Bytes::from_static(b"retained"),
                     headers: Default::default(),
                 }],
             })],

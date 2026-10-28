@@ -47,7 +47,8 @@ pub(crate) async fn commit<P: StreamProvider + ?Sized>(
             io.hashed_bytes(bytes)?;
         }
         Ok::<(), Error>(())
-    })?.map_err(|error| operations::stream_error_with_work(error, quota.work()))?;
+    })?
+    .map_err(|error| operations::stream_error_with_work(error, quota.work()))?;
     let mut vectors = 0;
     let (mut bytes, mut count) = (0, 0);
     if let Some(io) = quota.work().as_deref_mut() {
@@ -101,8 +102,11 @@ pub(crate) async fn commit<P: StreamProvider + ?Sized>(
             };
         }
         let mut request = request;
-        request.deadline_unix_millis = request.deadline_unix_millis
-            .into_iter().chain(deadline_unix_millis).min();
+        request.deadline_unix_millis = request
+            .deadline_unix_millis
+            .into_iter()
+            .chain(deadline_unix_millis)
+            .min();
         Ok::<_, Error>(client.commit(request).await)
     }
     .await?;
@@ -115,7 +119,8 @@ pub(crate) async fn commit<P: StreamProvider + ?Sized>(
     let released = quota.relinquish(vectors);
     let outcome = match (committed, operation) {
         (Ok(outcome), _) => {
-            let observed = observe_commit(&outcome, (bytes, count), phase.as_deref_mut(), &mut quota);
+            let observed =
+                observe_commit(&outcome, (bytes, count), phase.as_deref_mut(), &mut quota);
             released.and(observed)?;
             outcome
         }

@@ -161,15 +161,19 @@ impl IndexedPublication {
                 .mutations
                 .iter()
                 .find_map(|mutation| match mutation {
-                    acyclic_stream::CommitMutation::Append { path: target, records }
-                        if target == path => Some(records),
+                    acyclic_stream::CommitMutation::Append {
+                        path: target,
+                        records,
+                    } if target == path => Some(records),
                     _ => None,
                 })
                 .is_some_and(|records| {
                     matches!(records.as_slice(), [record] if record.value == *bytes)
                         && request.conditions.iter().any(|condition| match condition {
-                            CommitCondition::Tail { path: target, expected } =>
-                                target == path && *expected == tail,
+                            CommitCondition::Tail {
+                                path: target,
+                                expected,
+                            } => target == path && *expected == tail,
                             CommitCondition::Absent { path: target } => target == path && tail == 0,
                             _ => false,
                         })
@@ -190,20 +194,28 @@ impl IndexedPublication {
         receipt: &CommitReceipt,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        let appends = std::iter::once((&self.path, self.expected_tail)).chain(
-            self.indexes.iter().map(|(path, tail, _)| (path, *tail)),
-        );
+        let appends = std::iter::once((&self.path, self.expected_tail))
+            .chain(self.indexes.iter().map(|(path, tail, _)| (path, *tail)));
         let mut valid = receipt.forks.is_empty() && receipt.appends.len() == 1 + self.indexes.len();
         for (path, tail) in appends {
             if let Some(io) = work.as_deref() {
                 io.check_cancellation()?;
             }
-            valid &= receipt.appends.iter().find(|append| &append.path == path)
-                .is_some_and(|append| tail.checked_add(1)
-                    .is_some_and(|end| append.start == tail && append.tail == end));
+            valid &= receipt
+                .appends
+                .iter()
+                .find(|append| &append.path == path)
+                .is_some_and(|append| {
+                    tail.checked_add(1)
+                        .is_some_and(|end| append.start == tail && append.tail == end)
+                });
         }
         if !valid {
-            return Err(boundary(work, Storage, "indexed publication append is invalid"));
+            return Err(boundary(
+                work,
+                Storage,
+                "indexed publication append is invalid",
+            ));
         }
         Ok(())
     }

@@ -50,7 +50,9 @@ pub(crate) fn canonical_exclusions(
         return Err(StreamError::LimitExceeded);
     }
     let mut canonical = Vec::new();
-    canonical.try_reserve_exact(paths.len()).map_err(|_| StreamError::LimitExceeded)?;
+    canonical
+        .try_reserve_exact(paths.len())
+        .map_err(|_| StreamError::LimitExceeded)?;
     canonical.extend_from_slice(paths);
     normalize_exclusions(&mut canonical)?;
     Ok(canonical)
@@ -142,15 +144,19 @@ impl CommitBinding {
                     &append.records
                 }
                 crate::CommittedMutation::Fork(fork) => {
-                    bytes += 1 + path_hash_bytes(&fork.source)
-                        + path_hash_bytes(&fork.destination) + 8 + 8
+                    bytes += 1
+                        + path_hash_bytes(&fork.source)
+                        + path_hash_bytes(&fork.destination)
+                        + 8
+                        + 8
                         + fork.exclude.iter().map(path_hash_bytes).sum::<u64>();
                     &fork.records
                 }
             };
-            bytes += 8 + records.iter().map(|record| {
-                8 + record.value.len() as u64 + record.headers.hash_bytes()
-            }).sum::<u64>();
+            bytes += 8 + records
+                .iter()
+                .map(|record| 8 + record.value.len() as u64 + record.headers.hash_bytes())
+                .sum::<u64>();
         }
         admit(bytes)?;
         let mut hash = self.conditions.clone();
@@ -215,7 +221,10 @@ pub fn commit_binding_with<E>(
             }
         }
     }
-    Ok(Ok(CommitBinding { conditions, digest: hash.finalize().into() }))
+    Ok(Ok(CommitBinding {
+        conditions,
+        digest: hash.finalize().into(),
+    }))
 }
 
 /// Normalizes a commit and admits its shape and complete encoded command size.
@@ -279,7 +288,9 @@ pub(crate) fn commit_hash_bytes(request: &CommitRequest) -> u64 {
             .map(|condition| match condition {
                 CommitCondition::Head { path, .. } => 1 + path_hash_bytes(path) + 8 + 32,
                 CommitCondition::Tail { path, .. } => 1 + path_hash_bytes(path) + 8,
-                CommitCondition::Absent { path } | CommitCondition::Present { path } => 1 + path_hash_bytes(path),
+                CommitCondition::Absent { path } | CommitCondition::Present { path } => {
+                    1 + path_hash_bytes(path)
+                }
             })
             .sum::<u64>()
         + request
@@ -456,7 +467,8 @@ mod tests {
     use crate::{IdempotencyKey, IdempotencyObservation, MemoryStream, StreamPath, StreamProvider};
 
     #[tokio::test]
-    async fn recovery_binding_refuses_changed_facts_and_unfunded_hash_work() -> Result<(), StreamError> {
+    async fn recovery_binding_refuses_changed_facts_and_unfunded_hash_work()
+    -> Result<(), StreamError> {
         let provider = MemoryStream::default();
         let path = StreamPath::new("binding/events")?;
         let mut request = CommitRequest {
@@ -464,7 +476,8 @@ mod tests {
             idempotency_key: IdempotencyKey::new(Bytes::from_static(b"body-binding"))?,
             conditions: vec![CommitCondition::Absent { path: path.clone() }],
             mutations: vec![CommitMutation::Append {
-                path, records: vec![Bytes::from_static(b"original").into()],
+                path,
+                records: vec![Bytes::from_static(b"original").into()],
             }],
         };
         let binding = commit_binding_with(&mut request, |_| Ok::<(), StreamError>(()))??;
@@ -478,8 +491,10 @@ mod tests {
             Ok::<(), StreamError>(())
         })??);
         assert!(charged > 0);
-        assert_eq!(binding.matches_with(&facts, |_| Err::<(), _>(StreamError::LimitExceeded)),
-            Err(StreamError::LimitExceeded));
+        assert_eq!(
+            binding.matches_with(&facts, |_| Err::<(), _>(StreamError::LimitExceeded)),
+            Err(StreamError::LimitExceeded)
+        );
         let crate::CommittedMutation::Append(append) = &mut facts.mutations[0] else {
             return Err(StreamError::InvalidArgument);
         };

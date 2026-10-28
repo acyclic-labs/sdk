@@ -9,8 +9,7 @@
 
 use super::{
     AgentHandler, AgentPath, Error, ForkAdopted, INBOX, InboxRecord, IntentId, Sender, Spawn,
-    SpawnOutcome, SpawnVolumes, Submitted, TurnDriver, archive, handler::Agents, send,
-    submit,
+    SpawnOutcome, SpawnVolumes, Submitted, TurnDriver, archive, handler::Agents, send, submit,
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -18,10 +17,7 @@ use acyclic_actors::{
     guest::{Composer, Handler},
     local::{Clock, Runtime, State, Store},
 };
-use acyclic_stream::{
-    CommitRequest, ReadRequest, StreamError,
-    StreamPath, StreamProvider,
-};
+use acyclic_stream::{CommitRequest, ReadRequest, StreamError, StreamPath, StreamProvider};
 use futures::{StreamExt as _, TryStreamExt as _};
 use std::{convert::Infallible, sync::Arc};
 
@@ -201,11 +197,12 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
             if consumed {
                 return self.applied(&path, sequence, intent).await;
             }
-            let mut committed = acyclic_stream::records_only(self
-                .provider
-                .follow(acyclic_stream::FollowRequest::new(path.clone(), tail))
-                .await
-                .map_err(Error::Stream)?);
+            let mut committed = acyclic_stream::records_only(
+                self.provider
+                    .follow(acyclic_stream::FollowRequest::new(path.clone(), tail))
+                    .await
+                    .map_err(Error::Stream)?,
+            );
             match committed.next().await {
                 Some(Ok(_)) => {}
                 Some(Err(error)) => return Err(Error::Stream(error)),
@@ -367,7 +364,11 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
     /// exact intent retry is identical after other appends, while changed
     /// semantic bytes still fail the provider's digest check.
     /// Commits one inbox write with its agent's wake entry.
-    async fn deliver(&self, to: &AgentPath, mut request: CommitRequest) -> Result<Delivered, Error> {
+    async fn deliver(
+        &self,
+        to: &AgentPath,
+        mut request: CommitRequest,
+    ) -> Result<Delivered, Error> {
         let inbox = to.inbox()?;
         request
             .mutations

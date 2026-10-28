@@ -1,5 +1,5 @@
-use futures::TryFutureExt as _;
 use acyclic_stream::{postgres::PostgresStream, *};
+use futures::TryFutureExt as _;
 use std::time::Instant;
 
 pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
@@ -43,7 +43,11 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     for index in 0..AGENTS {
         subscriptions.push(
             provider
-                .follow(acyclic_stream::FollowRequest::new(StreamPath::new(format!("agent-{index:06}"))?, 1)).map_ok(acyclic_stream::records_only)
+                .follow(acyclic_stream::FollowRequest::new(
+                    StreamPath::new(format!("agent-{index:06}"))?,
+                    1,
+                ))
+                .map_ok(acyclic_stream::records_only)
                 .await?,
         );
     }

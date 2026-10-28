@@ -266,8 +266,11 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         meter.check()?;
         meter.admit(submitted)?;
         let mut request = request;
-        request.deadline_unix_millis = request.deadline_unix_millis
-            .into_iter().chain(deadline).min();
+        request.deadline_unix_millis = request
+            .deadline_unix_millis
+            .into_iter()
+            .chain(deadline)
+            .min();
         let result = self.provider.commit(request).await;
         meter.charge(commit_work(submitted, &result))?;
         meter.check()?;

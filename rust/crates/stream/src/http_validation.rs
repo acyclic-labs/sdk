@@ -208,7 +208,8 @@ fn validate_commit_result(value: &Value) -> Result {
         let appends = array(field(item, "appends")?)?;
         let forks = array(field(item, "forks")?)?;
         if appends.len().saturating_add(forks.len()) == 0
-            || appends.len().saturating_add(forks.len()) > crate::MAX_ITEMS {
+            || appends.len().saturating_add(forks.len()) > crate::MAX_ITEMS
+        {
             return Err("invalid receipt size");
         }
         for range in appends {
@@ -323,7 +324,9 @@ pub fn validate(route: &str, value: &Value) -> Result {
             }
             let last = field(item, "last")?;
             if last.is_null() {
-                if tail != 0 { return Err("nonempty head is missing its last record"); }
+                if tail != 0 {
+                    return Err("nonempty head is missing its last record");
+                }
             } else {
                 validate_record(last)?;
                 if u64_string(field(object(last)?, "sequence")?)?.checked_add(1) != Some(tail) {

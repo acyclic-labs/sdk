@@ -1,4 +1,3 @@
-use futures::TryFutureExt as _;
 use super::*;
 use crate::conformance::{self, Failure, Package, Target};
 use crate::guest::{AlarmChange, Checkpoint, Effect, GuestFuture, Manifest, Transition};
@@ -9,6 +8,7 @@ use acyclic_stream::{
     StreamPath,
 };
 use bytes::Bytes;
+use futures::TryFutureExt as _;
 use futures::future::BoxFuture;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -620,7 +620,10 @@ async fn created<P: StreamProvider + ?Sized>(
     wake: StreamPath,
     path: StreamPath,
 ) -> TestResult {
-    let mut wakes = provider.follow(acyclic_stream::FollowRequest::new(wake, 0)).map_ok(acyclic_stream::records_only).await?;
+    let mut wakes = provider
+        .follow(acyclic_stream::FollowRequest::new(wake, 0))
+        .map_ok(acyclic_stream::records_only)
+        .await?;
     loop {
         match provider.tail(path.clone()).await {
             Ok(_) => return Ok(()),
@@ -1216,12 +1219,7 @@ async fn retained_cut_is_invalidated_when_delivery_is_cancelled() -> TestResult 
     runtime.track(address.clone())?;
     let slot = runtime.slot(&address).ok_or("missing actor slot")?;
     // Poll through claim and state observation, then cancel the stalled handler.
-    assert!(
-        runtime
-            .deliver(&address, &slot)
-            .now_or_never()
-            .is_none()
-    );
+    assert!(runtime.deliver(&address, &slot).now_or_never().is_none());
     drop(slot);
     let cut = store.load(&address).await?;
     assert_eq!(cut.state().ok_or("missing actor state")?.epoch(), 1);

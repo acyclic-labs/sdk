@@ -446,7 +446,10 @@ impl StreamProvider for PostgresStream {
         self.refresh().await?;
         self.inner.core.children_page(request).await
     }
-    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
+    async fn follow(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<crate::FollowStream, StreamError> {
         self.refresh().await?;
         Ok(self.guarded(self.inner.core.follow(request).await?))
     }

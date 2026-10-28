@@ -357,10 +357,14 @@ impl MemoryStream {
             let IdempotencyOutcome::Commit(result) = &replay.result else {
                 return Err(StreamError::IdempotencyMismatch);
             };
-            return self.receipt(result)
-                .map(|(receipt, claim)| Decision::Returned((CommitOutcome::Committed(receipt), claim)));
+            return self.receipt(result).map(|(receipt, claim)| {
+                Decision::Returned((CommitOutcome::Committed(receipt), claim))
+            });
         }
-        let deadline = deadline.into_iter().chain(request.deadline_unix_millis).min();
+        let deadline = deadline
+            .into_iter()
+            .chain(request.deadline_unix_millis)
+            .min();
         let check_deadline = move || {
             if deadline.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
                 Err(StreamError::DeadlineElapsed)
@@ -509,8 +513,12 @@ fn identity_bytes() -> u64 {
 }
 
 fn envelope_payload_bytes(envelope: &CommittedEnvelope) -> usize {
-    envelope.mutations.iter().flat_map(fact_records)
-        .map(|record| record.payload_bytes()).sum()
+    envelope
+        .mutations
+        .iter()
+        .flat_map(fact_records)
+        .map(|record| record.payload_bytes())
+        .sum()
 }
 
 fn bind_envelope(envelope: &mut CommittedEnvelope, commit_id: CommitId, time: u64) {

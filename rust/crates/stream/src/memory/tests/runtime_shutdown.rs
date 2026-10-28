@@ -1,5 +1,5 @@
-use futures::TryFutureExt as _;
 use super::*;
+use futures::TryFutureExt as _;
 use std::{
     sync::{
         Barrier,
@@ -54,9 +54,23 @@ fn pending_stream_survives_its_polling_runtime() {
             let path = StreamPath::new("watched").unwrap();
             let mut follow = {
                 let follow = if checked {
-                    futures::executor::block_on(provider.follow(crate::FollowRequest { path: path, from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only))
+                    futures::executor::block_on(
+                        provider
+                            .follow(crate::FollowRequest {
+                                path: path,
+                                from: 1,
+                                preceding: Some(seed.commit_id),
+                                filter: crate::FollowFilter::default(),
+                                progress: false,
+                            })
+                            .map_ok(crate::records_only),
+                    )
                 } else {
-                    futures::executor::block_on(provider.follow(crate::FollowRequest::new(path, 0)).map_ok(crate::records_only))
+                    futures::executor::block_on(
+                        provider
+                            .follow(crate::FollowRequest::new(path, 0))
+                            .map_ok(crate::records_only),
+                    )
                 }
                 .unwrap();
                 follow

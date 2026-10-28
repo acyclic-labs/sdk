@@ -319,11 +319,18 @@ impl WasmStream {
             return Err(js_error(StreamError::InvalidArgument));
         }
         let (path, from, filter) = wire_codec::follow_from_wire(request).map_err(js_error)?;
-        let stream = crate::records_only(self
-            .provider
-            .follow(crate::FollowRequest { path, from, preceding: None, filter, progress: false })
-            .await
-            .map_err(js_error)?);
+        let stream = crate::records_only(
+            self.provider
+                .follow(crate::FollowRequest {
+                    path,
+                    from,
+                    preceding: None,
+                    filter,
+                    progress: false,
+                })
+                .await
+                .map_err(js_error)?,
+        );
         Ok(WasmFollow {
             state: Rc::new(FollowState::new(
                 stream

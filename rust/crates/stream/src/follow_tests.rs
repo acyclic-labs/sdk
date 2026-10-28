@@ -1,5 +1,5 @@
-use futures::TryFutureExt as _;
 use crate::*;
+use futures::TryFutureExt as _;
 use futures::{FutureExt as _, StreamExt as _};
 
 async fn seed(
@@ -38,13 +38,27 @@ async fn checked_registration_never_waits_for_a_missing_or_reused_anchor()
         (StreamPath::new("missing")?, 1, id, StreamError::NotFound),
     ] {
         let result = provider
-            .follow(crate::FollowRequest { path: path, from: from, preceding: Some(expected), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+            .follow(crate::FollowRequest {
+                path: path,
+                from: from,
+                preceding: Some(expected),
+                filter: crate::FollowFilter::default(),
+                progress: false,
+            })
+            .map_ok(crate::records_only)
             .now_or_never()
             .ok_or("registration waited for an absent anchor")?;
         assert!(matches!(result, Err(actual) if actual == error));
     }
     let mut follow = provider
-        .follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+        .follow(crate::FollowRequest {
+            path: path.clone(),
+            from: 1,
+            preceding: Some(id),
+            filter: crate::FollowFilter::default(),
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await?;
     assert!(follow.next().now_or_never().is_none());
     provider
@@ -95,7 +109,14 @@ async fn checked_delivery_rejects_history_loss_after_registration_or_while_waiti
         let second = rows.next().await.ok_or("missing second")??.commit_id;
         let from = if loss == "unconsumed" { 1 } else { 2 };
         let mut follow = provider
-            .follow(crate::FollowRequest { path: path.clone(), from: from, preceding: Some(if from == 1 { first } else { second }), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+            .follow(crate::FollowRequest {
+                path: path.clone(),
+                from: from,
+                preceding: Some(if from == 1 { first } else { second }),
+                filter: crate::FollowFilter::default(),
+                progress: false,
+            })
+            .map_ok(crate::records_only)
             .await?;
         if loss != "unconsumed" {
             assert!(follow.next().now_or_never().is_none());

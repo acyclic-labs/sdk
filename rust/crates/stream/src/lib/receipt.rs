@@ -46,7 +46,9 @@ impl CommitReceipt {
                     let bytes = std::mem::size_of::<AppendRange>();
                     visit(bytes, false)?;
                     appends.push(AppendRange {
-                        path: append.path.clone(), start: append.start, tail: append.tail,
+                        path: append.path.clone(),
+                        start: append.start,
+                        tail: append.tail,
                     });
                     visit(bytes, true)?;
                 }
@@ -57,8 +59,11 @@ impl CommitReceipt {
                     let bytes = std::mem::size_of::<ForkReceipt>();
                     visit(bytes, false)?;
                     forks.push(ForkReceipt {
-                        source: fork.source.clone(), destination: fork.destination.clone(),
-                        forked_at: fork.forked_at, tail: fork.tail, commit_id: envelope.commit_id,
+                        source: fork.source.clone(),
+                        destination: fork.destination.clone(),
+                        forked_at: fork.forked_at,
+                        tail: fork.tail,
+                        commit_id: envelope.commit_id,
                     });
                     visit(bytes, true)?;
                 }
@@ -67,37 +72,74 @@ impl CommitReceipt {
         Ok(Self {
             commit_id: envelope.commit_id,
             committed_at_micros: envelope.committed_at_micros,
-            appends, forks,
+            appends,
+            forks,
         })
     }
 
     pub(crate) fn matches_envelope(&self, envelope: &CommittedEnvelope) -> bool {
         self.commit_id == envelope.commit_id
             && self.committed_at_micros == envelope.committed_at_micros
-            && self.appends.iter().map(|a| (&a.path, a.start, a.tail)).eq(
-                envelope.mutations.iter().filter_map(|mutation| match mutation {
-                    CommittedMutation::Append(a) => Some((&a.path, a.start, a.tail)),
-                    CommittedMutation::Fork(_) => None,
-                }))
-            && self.forks.iter().map(|f| (&f.source, &f.destination, f.forked_at, f.tail, f.commit_id)).eq(
-                envelope.mutations.iter().filter_map(|mutation| match mutation {
-                    CommittedMutation::Fork(f) => Some((&f.source, &f.destination, f.forked_at, f.tail, envelope.commit_id)),
-                    CommittedMutation::Append(_) => None,
-                }))
+            && self
+                .appends
+                .iter()
+                .map(|a| (&a.path, a.start, a.tail))
+                .eq(envelope
+                    .mutations
+                    .iter()
+                    .filter_map(|mutation| match mutation {
+                        CommittedMutation::Append(a) => Some((&a.path, a.start, a.tail)),
+                        CommittedMutation::Fork(_) => None,
+                    }))
+            && self
+                .forks
+                .iter()
+                .map(|f| (&f.source, &f.destination, f.forked_at, f.tail, f.commit_id))
+                .eq(envelope
+                    .mutations
+                    .iter()
+                    .filter_map(|mutation| match mutation {
+                        CommittedMutation::Fork(f) => Some((
+                            &f.source,
+                            &f.destination,
+                            f.forked_at,
+                            f.tail,
+                            envelope.commit_id,
+                        )),
+                        CommittedMutation::Append(_) => None,
+                    }))
     }
 
     pub(crate) fn validate(&self) -> Result<(), StreamError> {
-        let count = self.appends.len().checked_add(self.forks.len())
+        let count = self
+            .appends
+            .len()
+            .checked_add(self.forks.len())
             .ok_or(StreamError::InvalidArgument)?;
-        if count == 0 || count > MAX_ITEMS
-            || self.appends.windows(2).any(|pair| pair[0].path >= pair[1].path)
-            || self.forks.windows(2).any(|pair| pair[0].destination >= pair[1].destination)
-            || self.appends.iter().any(|a| a.start >= a.tail
-                || a.tail - a.start > MAX_ITEMS as u64
-                || self.forks.binary_search_by(|f| f.destination.cmp(&a.path)).is_ok())
-            || self.forks.iter().any(|f| f.source == f.destination
-                || f.forked_at > f.tail || f.tail - f.forked_at > MAX_ITEMS as u64
-                || f.commit_id != self.commit_id)
+        if count == 0
+            || count > MAX_ITEMS
+            || self
+                .appends
+                .windows(2)
+                .any(|pair| pair[0].path >= pair[1].path)
+            || self
+                .forks
+                .windows(2)
+                .any(|pair| pair[0].destination >= pair[1].destination)
+            || self.appends.iter().any(|a| {
+                a.start >= a.tail
+                    || a.tail - a.start > MAX_ITEMS as u64
+                    || self
+                        .forks
+                        .binary_search_by(|f| f.destination.cmp(&a.path))
+                        .is_ok()
+            })
+            || self.forks.iter().any(|f| {
+                f.source == f.destination
+                    || f.forked_at > f.tail
+                    || f.tail - f.forked_at > MAX_ITEMS as u64
+                    || f.commit_id != self.commit_id
+            })
         {
             return Err(StreamError::InvalidArgument);
         }

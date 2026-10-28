@@ -1,6 +1,6 @@
-use futures::TryFutureExt as _;
 use super::tests::TestResult;
 use super::*;
+use futures::TryFutureExt as _;
 
 #[tokio::test]
 async fn append_follow_latency() -> TestResult {
@@ -56,7 +56,8 @@ async fn measure<P: StreamProvider>(writer: &P, reader: &P, label: &str) -> Test
         })
         .await?;
     let mut follow = reader
-        .follow(crate::FollowRequest::new(path.clone(), 1)).map_ok(crate::records_only)
+        .follow(crate::FollowRequest::new(path.clone(), 1))
+        .map_ok(crate::records_only)
         .await?;
     let mut samples = Vec::new();
     for sequence in 1..=144 {

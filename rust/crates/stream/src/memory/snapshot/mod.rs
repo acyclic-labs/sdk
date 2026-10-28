@@ -106,7 +106,11 @@ fn encode(state: &State) -> Vec<u8> {
         let replay = retained.replay.as_ref().map(|key| (key, retained));
         let commit = if replay.is_some()
             && matches!(retained.result, crate::IdempotencyOutcome::Commit(_))
-        { None } else { retained.envelope() };
+        {
+            None
+        } else {
+            retained.envelope()
+        };
         out.push(
             if replay.is_some() { RETAINS_REPLAY } else { 0 }
                 | if commit.is_some() { RETAINS_COMMIT } else { 0 },
@@ -289,8 +293,13 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
             }
             None => {
                 let envelope = envelope?;
-                (None, [0; 32], crate::IdempotencyOutcome::Commit(envelope), None)
-            },
+                (
+                    None,
+                    [0; 32],
+                    crate::IdempotencyOutcome::Commit(envelope),
+                    None,
+                )
+            }
         };
         retain(
             state,
@@ -342,7 +351,9 @@ fn replay_commit_id(
             Some(committed.commit_id)
         }
         crate::IdempotencyOutcome::Append(crate::AppendOutcome::TailConflict { .. }) => {
-            if envelope.is_some() { return None; }
+            if envelope.is_some() {
+                return None;
+            }
             None
         }
     };

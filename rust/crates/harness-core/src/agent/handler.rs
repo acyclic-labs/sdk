@@ -366,7 +366,10 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             })
             .collect();
         for agent in woken {
-            effects.push(self.agents.wake(&Agents::<P>::actor(&delivery.actor, &agent)?));
+            effects.push(
+                self.agents
+                    .wake(&Agents::<P>::actor(&delivery.actor, &agent)?),
+            );
         }
         Ok(Transition {
             participant,

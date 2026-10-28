@@ -68,25 +68,42 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
             "ordinary head on native-only fixture"
         );
-        self.observation_tails.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.observation_tails
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let mut head = self.inner.head(path.clone()).await?;
-        if path.as_str().starts_with("harness/v3/projection-checkpoints/") {
-            let stale = self.stale_projection_head_tail.swap(0, std::sync::atomic::Ordering::SeqCst);
+        if path
+            .as_str()
+            .starts_with("harness/v3/projection-checkpoints/")
+        {
+            let stale = self
+                .stale_projection_head_tail
+                .swap(0, std::sync::atomic::Ordering::SeqCst);
             if stale != 0 {
                 head.tail = stale - 1;
                 head.durable = head.durable.min(head.tail);
                 head.last = if head.tail == 0 {
                     None
                 } else {
-                    futures::TryStreamExt::try_next(&mut self.inner.read(acyclic_stream::ReadRequest {
-                        path, from: head.tail - 1, limit: 1,
-                    }).await?).await?
+                    futures::TryStreamExt::try_next(
+                        &mut self
+                            .inner
+                            .read(acyclic_stream::ReadRequest {
+                                path,
+                                from: head.tail - 1,
+                                limit: 1,
+                            })
+                            .await?,
+                    )
+                    .await?
                 };
             }
         }
         #[cfg(feature = "filesystem")]
-        if let Some(cancellation) = self.history_cancel_after_tail.lock()
-            .map_err(|_| StreamError::Unavailable)?.take()
+        if let Some(cancellation) = self
+            .history_cancel_after_tail
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .take()
         {
             cancellation.cancel();
         }
@@ -278,8 +295,14 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         }
         Ok(Box::pin(futures::stream::iter(records.into_iter().map(Ok))))
     }
-    async fn follow(&self, request: acyclic_stream::FollowRequest) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
-        assert!(!self.native_only.load(std::sync::atomic::Ordering::SeqCst), "ordinary follow on native-only fixture");
+    async fn follow(
+        &self,
+        request: acyclic_stream::FollowRequest,
+    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
+        assert!(
+            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+            "ordinary follow on native-only fixture"
+        );
         self.inner.follow(request).await
     }
     async fn children_page(
@@ -531,7 +554,11 @@ fn corrupt_aggregate_receipt(outcome: &mut acyclic_stream::CommitOutcome, aggreg
         if aggregate_fault == 4 {
             receipt.appends.retain(|append| !aggregate(append));
         } else if aggregate_fault == 5 {
-            for append in receipt.appends.iter_mut().filter(|append| aggregate(append)) {
+            for append in receipt
+                .appends
+                .iter_mut()
+                .filter(|append| aggregate(append))
+            {
                 append.tail += 1;
             }
         }

@@ -186,9 +186,15 @@ impl StreamProvider for InjectedStream {
         Ok(observed)
     }
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        wire_codec::head_from_wire(self.call("head", wire::HeadRequest {
-            path: path.to_string(),
-        }).await?)
+        wire_codec::head_from_wire(
+            self.call(
+                "head",
+                wire::HeadRequest {
+                    path: path.to_string(),
+                },
+            )
+            .await?,
+        )
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
@@ -305,7 +311,10 @@ impl StreamProvider for InjectedStream {
                 .into_iter()
                 .map(|child| {
                     Ok(Child {
-                        origin: child.origin.map(wire_codec::fork_origin_from_wire).transpose()?,
+                        origin: child
+                            .origin
+                            .map(wire_codec::fork_origin_from_wire)
+                            .transpose()?,
                         path: wire_codec::path(child.path)?,
                         tail_record: child.tail_record.map(wire_codec::record).transpose()?,
                     })
@@ -325,7 +334,10 @@ impl StreamProvider for InjectedStream {
             .await?,
         )
     }
-    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
+    async fn follow(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<crate::FollowStream, StreamError> {
         self.cursor(
             "follow",
             wire::FollowRequest {
@@ -336,7 +348,8 @@ impl StreamProvider for InjectedStream {
             },
             request.preceding,
             request.from,
-        ).await
+        )
+        .await
     }
 }
 
@@ -364,15 +377,21 @@ impl super::WasmStream {
             "follow" => {
                 let input = super::decode::<wire::FollowRequest>(input)?;
                 let progress = input.progress;
-                let (path, from, filter) = wire_codec::follow_from_wire(input)
-                    .map_err(super::js_error)?;
+                let (path, from, filter) =
+                    wire_codec::follow_from_wire(input).map_err(super::js_error)?;
                 let anchor = if preceding.is_empty() {
                     None
                 } else {
                     Some(wire_codec::commit_id(preceding).map_err(super::js_error)?)
                 };
                 provider
-                    .follow(crate::FollowRequest { path, from, preceding: anchor, filter, progress })
+                    .follow(crate::FollowRequest {
+                        path,
+                        from,
+                        preceding: anchor,
+                        filter,
+                        progress,
+                    })
                     .await
                     .map_err(super::js_error)?
             }

@@ -65,13 +65,13 @@ impl StreamProvider for LocalStream {
             let mut head = self.inner.provider.head(path.clone()).await?;
             head.durable = self.durable_tail_for_accepted(path, head.tail)?;
             Ok(head)
-        }).await?
+        })
+        .await?
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.visible(self.inner.provider.tail(path)).await?
     }
-
 
     async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
         self.accepted(async {
@@ -178,16 +178,23 @@ impl StreamProvider for LocalStream {
         obs::finish(&observation.span, result)
     }
 
-    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
-        let crate::FollowRequest { path, from, preceding, filter, progress } = request;
+    async fn follow(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<crate::FollowStream, StreamError> {
+        let crate::FollowRequest {
+            path,
+            from,
+            preceding,
+            filter,
+            progress,
+        } = request;
         if progress {
             self.progress_from(path, from, preceding, filter).await
         } else {
             self.follow_from(path, from, preceding, filter).await
         }
     }
-
-
 
     async fn children_page(
         &self,

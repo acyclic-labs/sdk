@@ -1,5 +1,5 @@
-use futures::TryFutureExt as _;
 use super::*;
+use futures::TryFutureExt as _;
 
 #[test]
 fn cancelled_real_open_retains_ownership_until_journal_open_stops()
@@ -868,7 +868,8 @@ async fn local_follow_observes_lifetime_drop_and_late_error()
                 let parent = obs::OperationSpan::new(tracing::info_span!("origin_parent"));
                 parent.scope(async {
                     provider
-                        .follow(crate::FollowRequest::new(path, 1)).map_ok(crate::records_only)
+                        .follow(crate::FollowRequest::new(path, 1))
+                        .map_ok(crate::records_only)
                         .await
                 })
             },
@@ -935,7 +936,8 @@ async fn follow_out_of_range_is_rejected_at_registration() -> Result<(), Box<dyn
         .await?;
     assert!(matches!(
         provider
-            .follow(crate::FollowRequest::new(path, 2)).map_ok(crate::records_only)
+            .follow(crate::FollowRequest::new(path, 2))
+            .map_ok(crate::records_only)
             .await,
         Err(StreamError::OutOfRange)
     ));

@@ -13,8 +13,7 @@ use crate::guest::{
 };
 use acyclic_stream::{
     CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitReceipt, CommitRequest,
-    IdempotencyKey, Record, StreamError, StreamPath,
-    StreamProvider,
+    IdempotencyKey, Record, StreamError, StreamPath, StreamProvider,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
@@ -162,10 +161,7 @@ impl PreparedPublish {
         let Some(path) = &self.own else {
             return Ok(None);
         };
-        let mut appends = receipt
-            .appends
-            .iter()
-            .filter(|append| &append.path == path);
+        let mut appends = receipt.appends.iter().filter(|append| &append.path == path);
         let append = appends
             .next()
             .ok_or(Error::Invalid("receipt omits actor state"))?;

@@ -14,20 +14,21 @@ impl<P: StreamProvider + ?Sized> HistoryReader<P> {
                 "history follow byte bound must be positive".into(),
             ));
         }
-        let source = acyclic_stream::records_only(self
-            .client
-            .follow(acyclic_stream::FollowRequest {
-                path: self.path.clone(),
-                from: after_revision,
-                preceding: None,
-                filter: acyclic_stream::FollowFilter::default(),
-                progress: false,
-            })
-            .await
-            .map_err(|error| match error {
-                StreamError::NotFound => Error::NotFound("aggregate history".into()),
-                other => other.into(),
-            })?);
+        let source = acyclic_stream::records_only(
+            self.client
+                .follow(acyclic_stream::FollowRequest {
+                    path: self.path.clone(),
+                    from: after_revision,
+                    preceding: None,
+                    filter: acyclic_stream::FollowFilter::default(),
+                    progress: false,
+                })
+                .await
+                .map_err(|error| match error {
+                    StreamError::NotFound => Error::NotFound("aggregate history".into()),
+                    other => other.into(),
+                })?,
+        );
         Ok(Box::pin(stream::try_unfold(
             (source, self.verifier, after_revision),
             move |(mut source, verifier, revision)| async move {

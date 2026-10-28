@@ -1,11 +1,11 @@
 //! G40: drive the actual discovery loop twice, preserving only backend storage.
-use futures::TryFutureExt as _;
 use super::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_harness_core::agent::{ACTORS, AgentHost, AgentPath};
 use acyclic_stream::{
     StreamPath, StreamProvider,
     runtime::{Executor as _, PlatformExecutor},
 };
+use futures::TryFutureExt as _;
 use futures::future::Either;
 use std::sync::Arc;
 
@@ -18,7 +18,10 @@ async fn output(
     use futures::TryStreamExt as _;
     let provider = host.provider();
     let path = host.runtime().store().path(&host.actor(agent)?)?;
-    let mut changes = provider.follow(acyclic_stream::FollowRequest::new(path, 0)).map_ok(acyclic_stream::records_only).await?;
+    let mut changes = provider
+        .follow(acyclic_stream::FollowRequest::new(path, 0))
+        .map_ok(acyclic_stream::records_only)
+        .await?;
     loop {
         let values = vectors::values(&**provider, agent.conversation()?).await?;
         if let Some(value) = values.get(index) {

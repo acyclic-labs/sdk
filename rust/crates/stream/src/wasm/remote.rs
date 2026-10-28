@@ -92,9 +92,17 @@ impl StreamProvider for Remote {
         Ok(observed)
     }
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        let response = self.service().head(self.request(wire::HeadRequest {
-            path: path.to_string(),
-        }).await?).await.map_err(|error| wire_codec::status(&error))?.into_inner();
+        let response = self
+            .service()
+            .head(
+                self.request(wire::HeadRequest {
+                    path: path.to_string(),
+                })
+                .await?,
+            )
+            .await
+            .map_err(|error| wire_codec::status(&error))?
+            .into_inner();
         wire_codec::head_from_wire(response)
     }
 
@@ -199,7 +207,10 @@ impl StreamProvider for Remote {
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.sessions.read(request).await
     }
-    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
+    async fn follow(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<crate::FollowStream, StreamError> {
         self.sessions.follow(request).await
     }
 

@@ -3,14 +3,14 @@
 //! These are the exact commit shapes of the wave-2 agent model, expressed with
 //! public provider operations only: spawn (subtree fork + adoption record +
 //! companion writes), a closed inbox, inherited follows and fork-of-fork lineage.
-use futures::TryFutureExt as _;
 use super::fork::{absent, append, facts, key, path, values};
 use super::{Failure, History, Invariant};
 use crate::{
     ChildrenPageRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
-    CommittedEnvelope, IdempotencyOutcome, OwnedBytes, ReadRequest, Record,
-    StreamError, StreamPath, StreamProvider,
+    CommittedEnvelope, IdempotencyOutcome, OwnedBytes, ReadRequest, Record, StreamError,
+    StreamPath, StreamProvider,
 };
+use futures::TryFutureExt as _;
 use futures::{StreamExt as _, TryStreamExt as _};
 
 /// Never inherited by a spawned child.
@@ -496,7 +496,8 @@ pub(super) async fn inherited_follow<P: StreamProvider + ?Sized>(
     let missing = path(history, "/children/missing/conversation")?;
     match history
         .provider
-        .follow(crate::FollowRequest::new(missing.clone(), 0)).map_ok(crate::records_only)
+        .follow(crate::FollowRequest::new(missing.clone(), 0))
+        .map_ok(crate::records_only)
         .await
     {
         Err(StreamError::NotFound) => {}
@@ -530,14 +531,16 @@ pub(super) async fn inherited_follow<P: StreamProvider + ?Sized>(
         "follow_source",
         history
             .provider
-            .follow(crate::FollowRequest::new(source.clone(), 2)).map_ok(crate::records_only)
+            .follow(crate::FollowRequest::new(source.clone(), 2))
+            .map_ok(crate::records_only)
             .await,
     )?;
     let mut inherited_follow = history.result(
         "follow_inherited",
         history
             .provider
-            .follow(crate::FollowRequest::new(inherited.clone(), 1)).map_ok(crate::records_only)
+            .follow(crate::FollowRequest::new(inherited.clone(), 1))
+            .map_ok(crate::records_only)
             .await,
     )?;
     // Source first: a shared wake or shared history would surface it in the child.

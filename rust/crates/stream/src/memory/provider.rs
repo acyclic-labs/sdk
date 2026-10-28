@@ -51,16 +51,14 @@ fn last_record(stream: &PathState) -> Option<Record> {
     if let Some(window) = stream.prefix_window(from, stream.tail) {
         return window.records.records.get(window.start).cloned();
     }
-    HistoryWalk::new(stream.history.as_ref(), stream.tail, from).find_map(
-        |(history, ceiling)| {
-            if let History::Batch { records, .. } = history {
-                history_window(Arc::clone(records), ceiling, from)
-                    .and_then(|window| window.records.records.get(window.start).cloned())
-            } else {
-                None
-            }
-        },
-    )
+    HistoryWalk::new(stream.history.as_ref(), stream.tail, from).find_map(|(history, ceiling)| {
+        if let History::Batch { records, .. } = history {
+            history_window(Arc::clone(records), ceiling, from)
+                .and_then(|window| window.records.records.get(window.start).cloned())
+        } else {
+            None
+        }
+    })
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -117,7 +115,6 @@ impl StreamProvider for MemoryStream {
             .ok_or(StreamError::NotFound)
     }
 
-
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.append_inner(request).await.map(|(value, _)| value)
     }
@@ -149,16 +146,23 @@ impl StreamProvider for MemoryStream {
         .boxed())
     }
 
-    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
-        let crate::FollowRequest { path, from, preceding, filter, progress } = request;
+    async fn follow(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<crate::FollowStream, StreamError> {
+        let crate::FollowRequest {
+            path,
+            from,
+            preceding,
+            filter,
+            progress,
+        } = request;
         if progress {
             self.progress_from(path, from, preceding, filter).await
         } else {
             self.follow_from(path, from, preceding, filter).await
         }
     }
-
-
 
     async fn children_page(
         &self,
@@ -218,9 +222,16 @@ impl StreamProvider for MemoryStream {
                 let tail_record =
                     projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
                 let origin = state.paths.origin(&path)?;
-                let child = Child { path, tail_record, origin };
+                let child = Child {
+                    path,
+                    tail_record,
+                    origin,
+                };
                 let encoded = crate::wire::Child {
-                    origin: child.origin.clone().map(crate::wire_codec::fork_origin_to_wire),
+                    origin: child
+                        .origin
+                        .clone()
+                        .map(crate::wire_codec::fork_origin_to_wire),
                     path: child.path.to_string(),
                     tail_record: child
                         .tail_record
@@ -257,7 +268,6 @@ impl StreamProvider for MemoryStream {
             .await
             .map(|(value, _)| value)
     }
-
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.state
@@ -385,7 +395,6 @@ impl StreamProvider for MemoryStream {
         })
     }
 
-
     #[cfg(not(target_arch = "wasm32"))]
     fn native_inspect_idempotency(
         &self,
@@ -455,7 +464,8 @@ impl StreamProvider for MemoryStream {
                             let IdempotencyOutcome::Commit(value) = &replay.result else {
                                 return Err(E::from(StreamError::IdempotencyMismatch));
                             };
-                            return provider.receipt(value)
+                            return provider
+                                .receipt(value)
                                 .map(|(receipt, claim)| (CommitOutcome::Committed(receipt), claim))
                                 .map_err(E::from);
                         }

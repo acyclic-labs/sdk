@@ -20,9 +20,12 @@ pub fn encode(route: &str, input: &[u8], maximum_bytes: usize) -> Result<Vec<u8>
 pub(crate) fn value(route: &str, input: &[u8]) -> Result<Option<Value>> {
     let value = match route {
         "head" => {
-            let head = crate::wire_codec::head_to_wire(crate::wire_codec::head_from_wire(
-                wire::PathHead::decode(input).map_err(|_| "invalid_response")?,
-            ).map_err(|_| "invalid_response")?);
+            let head = crate::wire_codec::head_to_wire(
+                crate::wire_codec::head_from_wire(
+                    wire::PathHead::decode(input).map_err(|_| "invalid_response")?,
+                )
+                .map_err(|_| "invalid_response")?,
+            );
             json!({
                 "tail": head.tail.to_string(),
                 "last": head.last.as_ref().map(record_json),
@@ -201,7 +204,8 @@ fn conflict_value(value: &wire::CommitConflict) -> Result<Value> {
 fn commit_value(value: wire::CommitResponse) -> Result<Value> {
     Ok(match value.outcome.ok_or("invalid_response")? {
         wire::commit_response::Outcome::Committed(receipt) => {
-            crate::wire_codec::receipt_from_wire(receipt.clone()).map_err(|_| "invalid_response")?;
+            crate::wire_codec::receipt_from_wire(receipt.clone())
+                .map_err(|_| "invalid_response")?;
             json!({
                 "ok": true,
                 "commitId": STANDARD.encode(receipt.commit_id),

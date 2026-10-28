@@ -195,9 +195,7 @@ fn qualified(
     ) {
         return Ok(false);
     }
-    let acyclic_stream::IdempotencyOutcome::Commit(envelope) =
-        &observation.outcome
-    else {
+    let acyclic_stream::IdempotencyOutcome::Commit(envelope) = &observation.outcome else {
         return Ok(false);
     };
     let [acyclic_stream::CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
@@ -274,8 +272,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let result = self.authority_inspect(key, work).await;
         let mut actual = WorkCounters::UNCHARGED;
         if let Ok((Some(observation), _)) = &result
-            && let acyclic_stream::IdempotencyOutcome::Commit(envelope) =
-                &observation.outcome
+            && let acyclic_stream::IdempotencyOutcome::Commit(envelope) = &observation.outcome
         {
             for mutation in &envelope.mutations {
                 let records = match mutation {

@@ -159,7 +159,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }
 
-
     /// Canonical finite read; original causes and output custody are retained.
     #[cfg(not(target_arch = "wasm32"))]
     fn native_read(

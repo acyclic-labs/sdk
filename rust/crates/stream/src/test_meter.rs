@@ -433,7 +433,10 @@ impl NativeReadMeter for Meter {
                 .map_err(|_| std::io::ErrorKind::Other)?;
             self.codec_available(
                 &pending,
-                NativeCodecWork { copied, ..NativeCodecWork::default() },
+                NativeCodecWork {
+                    copied,
+                    ..NativeCodecWork::default()
+                },
             )?;
         }
         Ok(())

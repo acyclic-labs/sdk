@@ -22,8 +22,8 @@ use super::{
     Phase, Sender, StatusRecord, layout,
 };
 use acyclic_stream::{
-    CommitCondition, CommitConflict, CommitMutation, CommitOutcome, CommitRequest,
-    CommitReceipt, IdempotencyKey, StreamError, StreamPath, StreamProvider,
+    CommitCondition, CommitConflict, CommitMutation, CommitOutcome, CommitReceipt, CommitRequest,
+    IdempotencyKey, StreamError, StreamPath, StreamProvider,
 };
 
 /// Domain-separated idempotency key; one stable key per intent.
@@ -51,11 +51,7 @@ pub(crate) fn sender_text(sender: &Sender) -> String {
 /// Used for `Message`, `Cancel`, `Approval`, `ApprovalRequested`, `ChildDone` and
 /// `Hook`. The key binds the sender and intent, so a lost acknowledgement retries
 /// the identical request.
-pub fn send(
-    to: &AgentPath,
-    sender: &Sender,
-    record: &InboxRecord,
-) -> Result<CommitRequest, Error> {
+pub fn send(to: &AgentPath, sender: &Sender, record: &InboxRecord) -> Result<CommitRequest, Error> {
     let kind = match record {
         InboxRecord::ForkAdopted(_) => {
             return Err(Error::Record("ForkAdopted is written by spawn"));
@@ -114,11 +110,7 @@ fn intent_of(record: &InboxRecord) -> String {
 }
 
 /// One conditional commit closing the inbox of `target`.
-pub fn archive(
-    target: &AgentPath,
-    by: &Sender,
-    id: &IntentId,
-) -> Result<CommitRequest, Error> {
+pub fn archive(target: &AgentPath, by: &Sender, id: &IntentId) -> Result<CommitRequest, Error> {
     let control = Control {
         by: by.clone(),
         id: id.clone(),

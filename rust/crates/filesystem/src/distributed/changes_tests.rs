@@ -216,7 +216,17 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
         }],
         attributes: vec![],
     })?;
-    let mut follow = acyclic_stream::records_only(streams.follow(acyclic_stream::FollowRequest { path: path.clone(), from: 1, preceding: None, filter, progress: false }).await?);
+    let mut follow = acyclic_stream::records_only(
+        streams
+            .follow(acyclic_stream::FollowRequest {
+                path: path.clone(),
+                from: 1,
+                preceding: None,
+                filter,
+                progress: false,
+            })
+            .await?,
+    );
     workspace.write_text("/private", "undisclosed body").await?;
     assert!(futures::poll!(follow.next()).is_pending());
     workspace

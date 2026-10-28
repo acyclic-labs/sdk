@@ -1,8 +1,8 @@
 //! Bounded canonical protobuf codecs for retained Stream v1 facts.
 use crate::{
-    AppendOutcome, CommitId, CommittedEnvelope, CommittedMutation,
-    IdempotencyObservation, IdempotencyOutcome, MAX_ITEMS, MAX_RECORD_BYTES, Record, StreamError,
-    StreamPath, wire, wire_codec,
+    AppendOutcome, CommitId, CommittedEnvelope, CommittedMutation, IdempotencyObservation,
+    IdempotencyOutcome, MAX_ITEMS, MAX_RECORD_BYTES, Record, StreamError, StreamPath, wire,
+    wire_codec,
 };
 use prost::Message;
 

@@ -20,9 +20,9 @@ use acyclic_harness_core::{
 };
 use acyclic_stream::{
     AppendOutcome, AppendRequest, BoxProviderFuture, CommitCondition, CommitId, CommitMutation,
-    CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest,
-    IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
-    StreamError, StreamPath, StreamProvider,
+    CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
+    IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamError, StreamPath,
+    StreamProvider,
 };
 use std::sync::Arc;
 

@@ -318,7 +318,6 @@ mod source_bound_lost_ack {
             self.inner.tail(path).await
         }
 
-
         async fn append(
             &self,
             request: AppendRequest,
@@ -340,7 +339,10 @@ mod source_bound_lost_ack {
             self.inner.read(request).await
         }
 
-        async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, StreamError> {
+        async fn follow(
+            &self,
+            request: acyclic_stream::FollowRequest,
+        ) -> Result<acyclic_stream::FollowStream, StreamError> {
             self.inner.follow(request).await
         }
 

@@ -100,7 +100,6 @@ impl acyclic_stream::StreamProvider for YieldStream {
         self.inner.tail(path).await
     }
 
-
     async fn append(
         &self,
         request: acyclic_stream::AppendRequest,
@@ -125,7 +124,10 @@ impl acyclic_stream::StreamProvider for YieldStream {
         self.inner.read(request).await
     }
 
-    async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, acyclic_stream::StreamError> {
+    async fn follow(
+        &self,
+        request: acyclic_stream::FollowRequest,
+    ) -> Result<acyclic_stream::FollowStream, acyclic_stream::StreamError> {
         self.pause().await;
         self.inner.follow(request).await
     }

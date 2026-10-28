@@ -84,7 +84,10 @@ impl StreamProvider for Observed {
         record(("inspect", &key));
         self.0.inspect_idempotency(key).await
     }
-    async fn head(&self, path: StreamPath) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
+    async fn head(
+        &self,
+        path: StreamPath,
+    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
         record(("head", normalized_path(&path)));
         self.0.head(path).await
     }
@@ -112,7 +115,10 @@ impl StreamProvider for Observed {
         ));
         self.0.read(request).await
     }
-    async fn follow(&self, request: acyclic_stream::FollowRequest) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
+    async fn follow(
+        &self,
+        request: acyclic_stream::FollowRequest,
+    ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
         record(("follow", normalized_path(&request.path), request.from));
         self.0.follow(request).await
     }

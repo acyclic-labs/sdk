@@ -1,7 +1,7 @@
 //! Runs the unchanged suite and cross-session durability/CAS/notification checks.
-use futures::TryFutureExt as _;
 use acyclic_stream::{postgres::PostgresStream, *};
 use futures::StreamExt;
+use futures::TryFutureExt as _;
 use std::time::{Duration, Instant};
 #[path = "refusals.rs"]
 mod refusals;
@@ -28,7 +28,8 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     let receipt = provider.append(first.clone()).await?;
     assert_eq!(peer.append(first).await?, receipt);
     let mut follow = peer
-        .follow(acyclic_stream::FollowRequest::new(path.clone(), 1)).map_ok(acyclic_stream::records_only)
+        .follow(acyclic_stream::FollowRequest::new(path.clone(), 1))
+        .map_ok(acyclic_stream::records_only)
         .await?;
     let request = AppendRequest {
         path: path.clone(),
@@ -53,7 +54,8 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
     assert_eq!(record.sequence, 1);
     let observer = PostgresStream::connect(database, &namespace).await?;
     let mut remote = observer
-        .follow(acyclic_stream::FollowRequest::new(path.clone(), 2)).map_ok(acyclic_stream::records_only)
+        .follow(acyclic_stream::FollowRequest::new(path.clone(), 2))
+        .map_ok(acyclic_stream::records_only)
         .await?;
     provider
         .append(AppendRequest {
@@ -83,7 +85,14 @@ pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
         idempotency_key: IdempotencyKey::new(b"deadline-replay".to_vec())?,
     };
     let outcome = provider.commit(committed.clone()).await?;
-    assert_eq!(peer.commit(CommitRequest { deadline_unix_millis: Some(0), ..committed }).await?, outcome);
+    assert_eq!(
+        peer.commit(CommitRequest {
+            deadline_unix_millis: Some(0),
+            ..committed
+        })
+        .await?,
+        outcome
+    );
     let reopened = PostgresStream::connect(database, &namespace).await?;
     assert_eq!(reopened.tail(path).await?, 4);
     println!("Cross-session replay, exact CAS, LISTEN/NOTIFY and reopen checks passed");
@@ -109,13 +118,15 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
         else {
             return Err("initial append unexpectedly conflicted".into());
         };
-        let mut subscription = provider.follow(acyclic_stream::FollowRequest {
-            path: path.clone(),
-            from: 1,
-            preceding: anchored.then_some(receipt.commit_id),
-            filter: FollowFilter::default(),
-            progress,
-        }).await?;
+        let mut subscription = provider
+            .follow(acyclic_stream::FollowRequest {
+                path: path.clone(),
+                from: 1,
+                preceding: anchored.then_some(receipt.commit_id),
+                filter: FollowFilter::default(),
+                progress,
+            })
+            .await?;
         drop(provider);
         // A distinct provider must wake this subscription through LISTEN after
         // its creator's last handle is gone, including after a previous yield.
@@ -134,7 +145,9 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
                 .ok_or("subscription closed after dropping provider")??;
             assert!(matches!(update, FollowUpdate::Record(record) if record.sequence == sequence));
         }
-        println!("follow anchored={anchored} progress={progress} retains shared connections after its provider handle is dropped");
+        println!(
+            "follow anchored={anchored} progress={progress} retains shared connections after its provider handle is dropped"
+        );
     }
     Ok(())
 }
@@ -152,10 +165,17 @@ async fn listener_failure(database: &str) -> Result<(), Box<dyn std::error::Erro
         })
         .await?;
     let mut records = provider
-        .follow(acyclic_stream::FollowRequest::new(path.clone(), 1)).map_ok(acyclic_stream::records_only)
+        .follow(acyclic_stream::FollowRequest::new(path.clone(), 1))
+        .map_ok(acyclic_stream::records_only)
         .await?;
     let mut updates = provider
-        .follow(acyclic_stream::FollowRequest { path: path, from: 1, preceding: None, filter: FollowFilter::default(), progress: true })
+        .follow(acyclic_stream::FollowRequest {
+            path: path,
+            from: 1,
+            preceding: None,
+            filter: FollowFilter::default(),
+            progress: true,
+        })
         .await?;
     let (client, connection) = tokio_postgres::connect(database, tokio_postgres::NoTls).await?;
     let driver = tokio::spawn(connection);

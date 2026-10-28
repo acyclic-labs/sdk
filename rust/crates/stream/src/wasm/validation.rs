@@ -416,16 +416,28 @@ mod http {
         if ok {
             id(field(item, "commitId")?)?;
             set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
-            set(&result, "committedAtMicros", &bigint_js(field(item, "committedAtMicros")?)?)?;
-            set(&result, "appends", &array_js(field(item, "appends")?, |value| {
-                let range = object(value)?;
-                let result = Object::new();
-                set(&result, "path", &string_js(field(range, "path")?)?)?;
-                set(&result, "start", &bigint_js(field(range, "start")?)?)?;
-                set(&result, "tail", &bigint_js(field(range, "tail")?)?)?;
-                Ok(result.into())
-            })?)?;
-            set(&result, "forks", &array_js(field(item, "forks")?, fork_receipt_js)?)?;
+            set(
+                &result,
+                "committedAtMicros",
+                &bigint_js(field(item, "committedAtMicros")?)?,
+            )?;
+            set(
+                &result,
+                "appends",
+                &array_js(field(item, "appends")?, |value| {
+                    let range = object(value)?;
+                    let result = Object::new();
+                    set(&result, "path", &string_js(field(range, "path")?)?)?;
+                    set(&result, "start", &bigint_js(field(range, "start")?)?)?;
+                    set(&result, "tail", &bigint_js(field(range, "tail")?)?)?;
+                    Ok(result.into())
+                })?,
+            )?;
+            set(
+                &result,
+                "forks",
+                &array_js(field(item, "forks")?, fork_receipt_js)?,
+            )?;
         } else {
             if string(field(item, "code")?)? != "conflict" {
                 return Err("invalid commit conflict code");
@@ -511,7 +523,11 @@ mod http {
         u64_string(field(item, "committedAtMicros")?)?;
         let result = Object::new();
         set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
-        set(&result, "committedAtMicros", &bigint_js(field(item, "committedAtMicros")?)?)?;
+        set(
+            &result,
+            "committedAtMicros",
+            &bigint_js(field(item, "committedAtMicros")?)?,
+        )?;
         set(
             &result,
             "mutations",

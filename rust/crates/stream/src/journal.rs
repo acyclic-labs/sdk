@@ -38,7 +38,10 @@ pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<
 impl Command {
     #[cfg(any(
         all(feature = "postgres", not(target_arch = "wasm32")),
-        all(any(feature = "wasm", feature = "wasm-journal"), target_arch = "wasm32")
+        all(
+            any(feature = "wasm", feature = "wasm-journal"),
+            target_arch = "wasm32"
+        )
     ))]
     pub(crate) async fn has_replay(&self, provider: &MemoryStream) -> Result<bool, StreamError> {
         let key = match self {

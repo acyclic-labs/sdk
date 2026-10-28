@@ -3,9 +3,8 @@
 use super::*;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
-    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest,
-    IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamError,
-    StreamPath, StreamProvider,
+    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyObservation,
+    MemoryStream, ReadRequest, RecordStream, StreamError, StreamPath, StreamProvider,
 };
 use std::sync::Mutex;
 use tonic::Code;
@@ -73,7 +72,6 @@ impl StreamProvider for FaultStream {
         self.inner.inspect_idempotency(key).await
     }
 
-
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.inner.append(request).await
     }
@@ -82,7 +80,10 @@ impl StreamProvider for FaultStream {
         self.inner.fork(request).await
     }
 
-    async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, StreamError> {
+    async fn follow(
+        &self,
+        request: acyclic_stream::FollowRequest,
+    ) -> Result<acyclic_stream::FollowStream, StreamError> {
         self.inner.follow(request).await
     }
 

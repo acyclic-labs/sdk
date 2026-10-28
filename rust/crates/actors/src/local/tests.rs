@@ -1,8 +1,8 @@
 use super::*;
 use crate::guest::{CodecIdentity, Effect};
 use acyclic_stream::{LocalStream, MemoryStream, ReadRequest};
-use futures::TryStreamExt;
 use bytes::Bytes;
+use futures::TryStreamExt;
 use proptest::prelude::*;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;

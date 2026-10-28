@@ -422,11 +422,13 @@ async fn commit_retry<P: StreamProvider + ?Sized>(history: &History<'_, P>) -> R
     )?;
     let envelope = match &success {
         CommitOutcome::Committed(receipt) => fork::facts(history, receipt).await?,
-        CommitOutcome::Conflict(_) => return Err(Failure::Violation {
-            case: history.case,
-            step: "committed_facts",
-            invariant: Invariant::RecoveryMatchesReceipt,
-        }),
+        CommitOutcome::Conflict(_) => {
+            return Err(Failure::Violation {
+                case: history.case,
+                step: "committed_facts",
+                invariant: Invariant::RecoveryMatchesReceipt,
+            });
+        }
     };
     history
         .require_recovery(IdempotencyOutcome::Commit(envelope.clone()))
@@ -461,11 +463,13 @@ async fn absent_zero_tail<P: StreamProvider + ?Sized>(
     )?;
     let envelope = match &success {
         CommitOutcome::Committed(receipt) => fork::facts(history, receipt).await?,
-        CommitOutcome::Conflict(_) => return Err(Failure::Violation {
-            case: history.case,
-            step: "committed_facts",
-            invariant: Invariant::RecoveryMatchesReceipt,
-        }),
+        CommitOutcome::Conflict(_) => {
+            return Err(Failure::Violation {
+                case: history.case,
+                step: "committed_facts",
+                invariant: Invariant::RecoveryMatchesReceipt,
+            });
+        }
     };
     history
         .require_recovery(IdempotencyOutcome::Commit(envelope.clone()))

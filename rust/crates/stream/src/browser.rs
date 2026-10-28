@@ -297,7 +297,10 @@ impl BrowserStream {
             Command::Append(request) => Outcome::Append(cache.provider.append(request).await?),
             Command::Fork(request) => Outcome::Fork(cache.provider.fork(request).await?),
             Command::Commit(mut request) => {
-                request.deadline_unix_millis = deadline.into_iter().chain(request.deadline_unix_millis).min();
+                request.deadline_unix_millis = deadline
+                    .into_iter()
+                    .chain(request.deadline_unix_millis)
+                    .min();
                 Outcome::Commit(cache.provider.commit(request).await?)
             }
         };
@@ -405,7 +408,8 @@ impl StreamProvider for BrowserStream {
             let mut head = provider.head(path).await?;
             head.durable = head.tail;
             Ok(head)
-        }).await
+        })
+        .await
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
@@ -456,8 +460,17 @@ impl StreamProvider for BrowserStream {
         self.with_provider(async move |provider| provider.read_commit(id).await)
             .await
     }
-    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
-        let crate::FollowRequest { path, from, preceding, filter, progress } = request;
+    async fn follow(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<crate::FollowStream, StreamError> {
+        let crate::FollowRequest {
+            path,
+            from,
+            preceding,
+            filter,
+            progress,
+        } = request;
         if progress {
             self.progress_from(path, from, preceding, filter).await
         } else {

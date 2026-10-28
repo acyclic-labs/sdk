@@ -142,7 +142,10 @@ pub(crate) fn facts(
                 (tail(path)?.unwrap_or(0), records, &[][..])
             }
             CommitMutation::Fork {
-                at_tail, records, exclude, ..
+                at_tail,
+                records,
+                exclude,
+                ..
             } => (*at_tail, records, exclude.as_slice()),
         };
         let (records, exclude) = build(start, bodies, exclusions)?;

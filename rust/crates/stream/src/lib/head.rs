@@ -18,7 +18,10 @@ impl PathHead {
                 Some(record) => record.sequence.checked_add(1) != Some(self.tail),
                 None => self.tail != 0,
             }
-            || self.origin.as_ref().is_some_and(|origin| origin.forked_at > self.tail)
+            || self
+                .origin
+                .as_ref()
+                .is_some_and(|origin| origin.forked_at > self.tail)
         {
             return Err(StreamError::InvalidResponse);
         }

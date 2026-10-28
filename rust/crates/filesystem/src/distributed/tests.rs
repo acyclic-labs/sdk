@@ -676,7 +676,7 @@ impl ReleaseSpy {
                         records: vec![acyclic_stream::OwnedBytes::from_static(b"closed").into()],
                         if_tail: Some(1),
                         idempotency_key: stream_key(b"close-lease", path.as_str().as_bytes())
-                                .map_err(|_| StreamError::InvalidArgument)?,
+                            .map_err(|_| StreamError::InvalidArgument)?,
                     })
                     .await?;
             }
@@ -741,9 +741,7 @@ impl StreamProvider for ReleaseSpy {
                 observation.idempotency_key = stream_key(b"another-release", b"identity")
                     .map_err(|_| StreamError::InvalidArgument)?;
             }
-            if let IdempotencyOutcome::Commit(envelope) =
-                &mut observation.outcome
-            {
+            if let IdempotencyOutcome::Commit(envelope) = &mut observation.outcome {
                 if let Some(CommittedMutation::Append(append)) = envelope.mutations.first_mut() {
                     match self.corrupt_observation {
                         2 => append.path = StreamPath::new("other/gate")?,
@@ -823,14 +821,16 @@ impl StreamProvider for ReleaseSpy {
         self.finish_commit(result).await
     }
 
-
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.inner.append(request).await
     }
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         self.inner.fork(request).await
     }
-    async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, StreamError> {
+    async fn follow(
+        &self,
+        request: acyclic_stream::FollowRequest,
+    ) -> Result<acyclic_stream::FollowStream, StreamError> {
         self.inner.follow(request).await
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {

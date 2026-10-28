@@ -182,25 +182,53 @@ mod replay_tests {
         let first_key = IdempotencyKey::new(b"first".as_slice()).unwrap();
         let path = StreamPath::new("append-helper").unwrap();
         // The response is lost after the existing provider has accepted it.
-        let first = provider.append(AppendRequest {
-            path: path.clone(), records: vec!["first".into()], if_tail: None,
-            idempotency_key: first_key.clone(),
-        }).await.unwrap();
+        let first = provider
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec!["first".into()],
+                if_tail: None,
+                idempotency_key: first_key.clone(),
+            })
+            .await
+            .unwrap();
         let restored = Arc::new(MemoryStream::default());
-        restored.install_state(&provider.encode_state().await).await.unwrap();
+        restored
+            .install_state(&provider.encode_state().await)
+            .await
+            .unwrap();
         let provider = restored;
         let stream = Stream::new(provider.clone(), path.as_str()).unwrap();
-        assert_eq!(stream.append("first", first_key.clone()).await.unwrap(), first);
-        let observed = provider.inspect_idempotency(first_key).await.unwrap().unwrap();
+        assert_eq!(
+            stream.append("first", first_key.clone()).await.unwrap(),
+            first
+        );
+        let observed = provider
+            .inspect_idempotency(first_key)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(observed.outcome, IdempotencyOutcome::Append(first));
         let key = IdempotencyKey::new(b"retry".as_slice()).unwrap();
-        assert_eq!(stream.append_at("second", 0, key.clone()).await.unwrap(),
-            AppendOutcome::TailConflict { actual_tail: 1 });
-        assert!(provider.inspect_idempotency(key.clone()).await.unwrap().is_none());
+        assert_eq!(
+            stream.append_at("second", 0, key.clone()).await.unwrap(),
+            AppendOutcome::TailConflict { actual_tail: 1 }
+        );
+        assert!(
+            provider
+                .inspect_idempotency(key.clone())
+                .await
+                .unwrap()
+                .is_none()
+        );
         let accepted = stream.append_at("second", 1, key.clone()).await.unwrap();
-        assert_eq!(stream.append_at("second", 1, key.clone()).await.unwrap(), accepted);
-        assert_eq!(stream.append_at("changed", 1, key).await,
-            Err(StreamError::IdempotencyMismatch));
+        assert_eq!(
+            stream.append_at("second", 1, key.clone()).await.unwrap(),
+            accepted
+        );
+        assert_eq!(
+            stream.append_at("changed", 1, key).await,
+            Err(StreamError::IdempotencyMismatch)
+        );
         assert_eq!(provider.head(stream.path().clone()).await.unwrap().tail, 2);
     }
 

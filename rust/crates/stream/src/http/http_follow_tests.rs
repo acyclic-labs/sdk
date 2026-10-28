@@ -172,21 +172,27 @@ async fn head_refuses_incoherent_cuts_without_another_provider_request()
         (1, 0, Some(0), Some(2), false),
         (u64::MAX, 0, Some(u64::MAX), None, false),
     ] {
-        let origin = inherited.map(|cut| json!({
-            "source":"head/source", "forkedAt":cut.to_string(),
-            "commitId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-        }));
+        let origin = inherited.map(|cut| {
+            json!({
+                "source":"head/source", "forkedAt":cut.to_string(),
+                "commitId":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            })
+        });
         let server = Server::new(vec![Reply::ok(json!({
             "tail":tail.to_string(), "durable":durable.to_string(),
             "last":sequence.map(record), "origin":origin,
-        }))]).await;
+        }))])
+        .await;
         let actual = server.client.head(StreamPath::new("head/child")?).await;
         let wire = crate::wire::PathHead {
-            tail, durable,
-            last: sequence.map(|n| parse_record(&record(n))
-                .map(crate::wire_codec::record_wire)).transpose()?,
+            tail,
+            durable,
+            last: sequence
+                .map(|n| parse_record(&record(n)).map(crate::wire_codec::record_wire))
+                .transpose()?,
             origin: inherited.map(|forked_at| crate::wire::ForkOrigin {
-                source: "head/source".into(), forked_at,
+                source: "head/source".into(),
+                forked_at,
                 commit_id: Bytes::from_static(&[0; 32]),
             }),
         };

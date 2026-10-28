@@ -5,7 +5,6 @@
 //! state root. The suite creates actors with the companion create mutation,
 //! appends commands to their inboxes and observes their committed outboxes;
 //! only pause/resume and restart go through [`Backend`].
-use futures::TryFutureExt as _;
 use crate::addressing::ActorReference;
 use crate::guest::{
     AlarmChange, Checkpoint, CodecIdentity, Delivery, Effect, GuestError, GuestFuture, Handler,
@@ -18,6 +17,7 @@ use acyclic_stream::{
     ProviderPlatform, StreamError, StreamPath, StreamProvider, UnixMillisClock as _,
 };
 use bytes::Bytes;
+use futures::TryFutureExt as _;
 use futures::{FutureExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -337,12 +337,17 @@ impl<'a, T: Backend + ?Sized> Fixture<'a, T> {
         // The outbox is created by a publication, which always appends the
         // actor's state in the same commit: wake on state records until it exists.
         let mut state = provider
-            .follow(acyclic_stream::FollowRequest::new(self.target.store().path(&self.actor)?, 0)).map_ok(acyclic_stream::records_only)
+            .follow(acyclic_stream::FollowRequest::new(
+                self.target.store().path(&self.actor)?,
+                0,
+            ))
+            .map_ok(acyclic_stream::records_only)
             .await
             .map_err(Error::from)?;
         let mut follow = loop {
             match provider
-                .follow(acyclic_stream::FollowRequest::new(self.outbox.clone(), 0)).map_ok(acyclic_stream::records_only)
+                .follow(acyclic_stream::FollowRequest::new(self.outbox.clone(), 0))
+                .map_ok(acyclic_stream::records_only)
                 .await
             {
                 Ok(follow) => break follow,

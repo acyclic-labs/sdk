@@ -183,19 +183,26 @@ pub async fn follow_records<P: StreamProvider + ?Sized>(
     provider: &P,
     follow: &wire::SessionFollow,
     cursor: &wire::SessionCursor,
-) -> Result<impl futures::Stream<Item = Result<Record, StreamError>> + Unpin + crate::ProviderTask + use<P>, StreamError> {
+) -> Result<
+    impl futures::Stream<Item = Result<Record, StreamError>> + Unpin + crate::ProviderTask + use<P>,
+    StreamError,
+> {
     if follow.delivery != wire::SessionDelivery::All as i32 {
         return Err(StreamError::InvalidArgument);
     }
     let path = stream_path(&follow.resource)?;
     let preceding = record_anchor(cursor)?;
-    Ok(crate::records_only(provider.follow(crate::FollowRequest {
-        path,
-        from: if preceding.is_some() { cursor.next } else { 0 },
-        preceding,
-        filter: crate::FollowFilter::default(),
-        progress: false,
-    }).await?))
+    Ok(crate::records_only(
+        provider
+            .follow(crate::FollowRequest {
+                path,
+                from: if preceding.is_some() { cursor.next } else { 0 },
+                preceding,
+                filter: crate::FollowFilter::default(),
+                progress: false,
+            })
+            .await?,
+    ))
 }
 
 /// Validates a peer's ALL/LATEST data against the next received cursor.

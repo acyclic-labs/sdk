@@ -1,6 +1,6 @@
-use futures::TryFutureExt as _;
 use super::*;
 use crate::{CommitMutation, Record};
+use futures::TryFutureExt as _;
 use std::time::{Duration, Instant};
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 

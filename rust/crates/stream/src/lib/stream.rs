@@ -38,7 +38,6 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         self.provider.tail(self.path.clone()).await
     }
 
-
     /// Unconditionally appends one record.
     pub async fn append(
         &self,
@@ -122,14 +121,21 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         &self,
         from: u64,
         filter: crate::FollowFilter,
-    ) -> Result<impl futures::Stream<Item = Result<Record, StreamError>> + Unpin + ProviderTask + use<P>, StreamError> {
-        Ok(records_only(self.provider.follow(FollowRequest {
-            path: self.path.clone(),
-            from,
-            preceding: None,
-            filter,
-            progress: false,
-        }).await?))
+    ) -> Result<
+        impl futures::Stream<Item = Result<Record, StreamError>> + Unpin + ProviderTask + use<P>,
+        StreamError,
+    > {
+        Ok(records_only(
+            self.provider
+                .follow(FollowRequest {
+                    path: self.path.clone(),
+                    from,
+                    preceding: None,
+                    filter,
+                    progress: false,
+                })
+                .await?,
+        ))
     }
 }
 

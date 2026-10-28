@@ -10,8 +10,8 @@
 use super::*;
 use crate::guest::CodecIdentity;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, ForkReceipt,
-    ForkRequest, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
+    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, ForkReceipt, ForkRequest,
+    IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;

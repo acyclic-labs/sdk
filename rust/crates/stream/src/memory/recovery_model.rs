@@ -1,6 +1,6 @@
-use futures::TryFutureExt as _;
 use super::*;
 use futures::StreamExt as _;
+use futures::TryFutureExt as _;
 use loom::thread;
 use std::cell::Cell;
 use std::mem::ManuallyDrop;
@@ -166,7 +166,14 @@ fn subscription_and_append(omit_wake: bool) {
         });
         block_on(async {
             let mut stream = provider
-                .follow(crate::FollowRequest { path: path, from: 1, preceding: Some(anchor), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+                .follow(crate::FollowRequest {
+                    path: path,
+                    from: 1,
+                    preceding: Some(anchor),
+                    filter: crate::FollowFilter::default(),
+                    progress: false,
+                })
+                .map_ok(crate::records_only)
                 .await?;
             let record = stream.next().await.ok_or("follow ended")??;
             assert_eq!(record.sequence, 1);
@@ -200,7 +207,14 @@ fn subscription_and_recovery(retain_old: bool) {
         });
         block_on(async {
             match provider
-                .follow(crate::FollowRequest { path: path, from: 1, preceding: Some(anchor), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+                .follow(crate::FollowRequest {
+                    path: path,
+                    from: 1,
+                    preceding: Some(anchor),
+                    filter: crate::FollowFilter::default(),
+                    progress: false,
+                })
+                .map_ok(crate::records_only)
                 .await
             {
                 Ok(mut stream) => assert!(matches!(
@@ -346,7 +360,8 @@ pub fn session_registration_and_recovery_never_splice(omit_anchor: bool) {
             let cursor = wire_codec::session::record_cursor(1, anchor).unwrap();
             let registered = if omit_anchor {
                 provider
-                    .follow(crate::FollowRequest::new(path, cursor.next)).map_ok(crate::records_only)
+                    .follow(crate::FollowRequest::new(path, cursor.next))
+                    .map_ok(crate::records_only)
                     .await
             } else {
                 wire_codec::session::follow_records(&provider, &follow, &cursor).await
@@ -762,7 +777,9 @@ pub fn stable_intent_key(retain_conflicts: bool) {
             CommitOutcome::Committed(ref receipt) => {
                 assert_eq!(
                     observed.map(|observation| observation.outcome),
-                    Some(IdempotencyOutcome::Commit(block_on(provider.read_commit(receipt.commit_id))?)),
+                    Some(IdempotencyOutcome::Commit(block_on(
+                        provider.read_commit(receipt.commit_id)
+                    )?)),
                     "a committed intent must be recoverable"
                 );
                 first

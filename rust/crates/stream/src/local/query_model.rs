@@ -1,7 +1,7 @@
-use futures::TryFutureExt as _;
 use super::*;
 use crate::OwnedBytes as Bytes;
 use crate::verification::{block_on, check, check_with_bound};
+use futures::TryFutureExt as _;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 // Keep executor scheduling outside the model, but execute the entire production
@@ -122,7 +122,14 @@ pub(crate) fn accepted_queries_and_publication_have_no_lost_wakeup_or_durability
         });
         block_on(async {
             let mut follow = stream
-                .follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+                .follow(crate::FollowRequest {
+                    path: path.clone(),
+                    from: 1,
+                    preceding: Some(seed.commit_id),
+                    filter: crate::FollowFilter::default(),
+                    progress: false,
+                })
+                .map_ok(crate::records_only)
                 .await?;
             let record = follow.next().await.ok_or("follow ended")??;
             assert_eq!(record.value.as_slice(), b"accepted");
@@ -171,7 +178,14 @@ pub(crate) fn poison_wakes_checked_followers(omit_publication: bool) {
         });
         block_on(async {
             match stream
-                .follow(crate::FollowRequest { path: path, from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only)
+                .follow(crate::FollowRequest {
+                    path: path,
+                    from: 1,
+                    preceding: Some(seed.commit_id),
+                    filter: crate::FollowFilter::default(),
+                    progress: false,
+                })
+                .map_ok(crate::records_only)
                 .await
             {
                 Ok(mut follow) => assert!(matches!(
@@ -206,7 +220,17 @@ pub(crate) fn persist_wakes_parked_followers(omit_wake: bool) {
         let AppendOutcome::Committed(seed) = seed else {
             return Err("seed conflict".into());
         };
-        let mut follow = block_on(stream.follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(seed.commit_id), filter: crate::FollowFilter::default(), progress: false }).map_ok(crate::records_only))?;
+        let mut follow = block_on(
+            stream
+                .follow(crate::FollowRequest {
+                    path: path.clone(),
+                    from: 1,
+                    preceding: Some(seed.commit_id),
+                    filter: crate::FollowFilter::default(),
+                    progress: false,
+                })
+                .map_ok(crate::records_only),
+        )?;
         let pushed = Arc::new(Push(loom::sync::atomic::AtomicBool::new(false)));
         let waker = std::task::Waker::from(pushed.clone());
         let mut context = std::task::Context::from_waker(&waker);

@@ -1,7 +1,7 @@
-use futures::TryFutureExt as _;
 use super::super::*;
 use super::TestClock;
 use crate::journal::{Command, Outcome};
+use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn request(tail: u64) -> Result<AppendRequest, StreamError> {
@@ -94,7 +94,8 @@ async fn failed_or_cancelled_durability_never_installs_or_notifies() -> Result<(
     core.append(initial).await?;
     let append = request(1)?;
     let mut follow = core
-        .follow(crate::FollowRequest::new(append.path.clone(), 1)).map_ok(crate::records_only)
+        .follow(crate::FollowRequest::new(append.path.clone(), 1))
+        .map_ok(crate::records_only)
         .await?;
     let refused = core
         .apply_durable(Command::Append(append.clone()), None, async {

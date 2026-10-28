@@ -1,7 +1,6 @@
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::{
-    NativeOperationKind, NativeOperationReservation, NativeReadMeter,
-    ReadAllocation,
+    NativeOperationKind, NativeOperationReservation, NativeReadMeter, ReadAllocation,
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -113,12 +112,15 @@ impl MemoryStream {
                 .map(|mutation| {
                     let (records, exclusions) = match mutation {
                         CommitMutation::Append { records, .. } => (records, 0),
-                        CommitMutation::Fork { records, exclude, .. } => (
+                        CommitMutation::Fork {
+                            records, exclude, ..
+                        } => (
                             records,
                             exclude.capacity() * std::mem::size_of::<crate::RelativePath>(),
                         ),
                     };
-                    exclusions + records.capacity() * std::mem::size_of::<AppendRecord>()
+                    exclusions
+                        + records.capacity() * std::mem::size_of::<AppendRecord>()
                         + records
                             .iter()
                             .map(|record| record.headers.owned_bytes())

@@ -1,8 +1,6 @@
 //! One owner-fenced commit publishes the journal cut and its authenticated root.
 use super::*;
-use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, OwnedBytes, StreamPath,
-};
+use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, OwnedBytes, StreamPath};
 use checkpoint::{IndexState, Recovery};
 
 mod pages;

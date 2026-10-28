@@ -258,7 +258,6 @@ impl StreamProvider for TcpDropProbe {
         Err(StreamError::Unsupported)
     }
 
-
     async fn append(
         &self,
         _request: AppendRequest,
@@ -290,7 +289,6 @@ impl StreamProvider for TcpDropProbe {
         })
         .boxed())
     }
-
 
     async fn children_page(
         &self,

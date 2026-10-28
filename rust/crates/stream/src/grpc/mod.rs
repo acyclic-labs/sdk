@@ -25,8 +25,8 @@ use crate::wire_codec::{
 use crate::{
     AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
     CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError,
-    StreamPath, StreamProvider, wire,
+    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamPath,
+    StreamProvider, wire,
 };
 pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
@@ -87,9 +87,7 @@ impl<P> Service<P> {
     /// Binds the generated server to one semantic provider.
     #[must_use]
     pub fn new(provider: Arc<P>) -> Self {
-        Self {
-            provider,
-        }
+        Self { provider }
     }
 }
 

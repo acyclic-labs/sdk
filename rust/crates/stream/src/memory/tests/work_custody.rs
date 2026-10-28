@@ -47,8 +47,10 @@ fn native_commit_admits_original_context_before_its_unpolled_frame()
         };
         if limit != u64::MAX {
             let future = provider.native_commit(request, None, meter.original());
-            assert!(matches!(future, crate::NativeProviderFuture::Ready(Some(Err(ref error)))
-                if error.kind() == std::io::ErrorKind::OutOfMemory));
+            assert!(
+                matches!(future, crate::NativeProviderFuture::Ready(Some(Err(ref error)))
+                if error.kind() == std::io::ErrorKind::OutOfMemory)
+            );
             assert_eq!(meter.allocations.load(Ordering::SeqCst), limit);
             drop(future);
         } else {
@@ -58,9 +60,15 @@ fn native_commit_admits_original_context_before_its_unpolled_frame()
             });
             let future = future.ok_or("native constructor was not called")?;
             assert!(matches!(future, crate::NativeProviderFuture::Funded { .. }));
-            assert_eq!(physical.count_current, 2, "original context and sole future frame");
+            assert_eq!(
+                physical.count_current, 2,
+                "original context and sole future frame"
+            );
             assert_eq!(meter.allocations.load(Ordering::SeqCst), 2);
-            assert_eq!(meter.held.load(Ordering::SeqCst), u64::try_from(physical.bytes_current)?);
+            assert_eq!(
+                meter.held.load(Ordering::SeqCst),
+                u64::try_from(physical.bytes_current)?
+            );
             drop(future);
         }
         assert_eq!(meter.held.load(Ordering::SeqCst), 0);

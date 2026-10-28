@@ -68,7 +68,10 @@ impl MemoryStream {
         fact.start = expected;
         fact.end = expected.checked_add(1).ok_or(StreamError::LimitExceeded)?;
         fact.tail = fact.end;
-        fact.records.first_mut().ok_or(StreamError::Unavailable)?.sequence = expected;
+        fact.records
+            .first_mut()
+            .ok_or(StreamError::Unavailable)?
+            .sequence = expected;
         history_record(plan.histories.first_mut().ok_or(StreamError::Unavailable)?)?.sequence =
             expected;
         let namespace = self.namespace_reserve(&append(&plan.result).path)?;
@@ -195,19 +198,25 @@ impl MemoryStream {
                 };
                 let (mut value, claim) = prototype;
                 let target = envelope_append(&value);
-                let envelope = prepared_envelope(
-                    stored, maximum, &target.path, target.start, target.tail,
-                )?;
+                let envelope =
+                    prepared_envelope(stored, maximum, &target.path, target.start, target.tail)?;
                 let source = envelope_append(envelope);
                 let record = source.records.first().ok_or(StreamError::Unavailable)?;
-                *envelope_append_mut(&mut value).records.first_mut()
+                *envelope_append_mut(&mut value)
+                    .records
+                    .first_mut()
                     .ok_or(StreamError::Unavailable)? = record.clone();
                 value.commit_id = envelope.commit_id;
                 value.committed_at_micros = envelope.committed_at_micros;
+                observed = observed.take().or(record_codec(
+                    &mut codec,
+                    std::mem::size_of::<Record>() as u64,
+                    0,
+                )
+                .err());
                 observed = observed
                     .take()
-                    .or(record_codec(&mut codec, std::mem::size_of::<Record>() as u64, 0).err());
-                observed = observed.take().or(bytes.record(envelope_payload_bytes(envelope)).err());
+                    .or(bytes.record(envelope_payload_bytes(envelope)).err());
                 let (digest, hashed) = digest(
                     &recovery_conditions,
                     &source.path,
@@ -358,7 +367,9 @@ fn prepared_hash_bytes(request: &CommitRequest, maximum: usize) -> u64 {
 }
 
 fn bind_body(plan: &mut CommitPlan, body: crate::AppendRecord) -> Result<(), StreamError> {
-    let record = envelope_append_mut(&mut plan.envelope).records.first_mut()
+    let record = envelope_append_mut(&mut plan.envelope)
+        .records
+        .first_mut()
         .ok_or(StreamError::Unavailable)?;
     record.value = body.value.clone();
     record.headers = body.headers.clone();
@@ -435,7 +446,9 @@ fn copy_outcome(
 ) -> Result<(CommitOutcome, Allocation), StreamError> {
     let target = append(&output);
     let envelope = prepared_envelope(stored, maximum, &target.path, target.start, target.tail)?;
-    let CommitOutcome::Committed(receipt) = &mut output else { unreachable!() };
+    let CommitOutcome::Committed(receipt) = &mut output else {
+        unreachable!()
+    };
     receipt.commit_id = envelope.commit_id;
     receipt.committed_at_micros = envelope.committed_at_micros;
     Ok((output, output_claim))
@@ -463,8 +476,12 @@ fn prepared_envelope<'a>(
     let [record] = source.records.as_slice() else {
         return Err(StreamError::IdempotencyMismatch);
     };
-    if &source.path != path || source.start != start || source.end != tail || source.tail != tail
-        || record.sequence != start || record.commit_id != envelope.commit_id
+    if &source.path != path
+        || source.start != start
+        || source.end != tail
+        || source.tail != tail
+        || record.sequence != start
+        || record.commit_id != envelope.commit_id
         || record.committed_at_micros != envelope.committed_at_micros
     {
         return Err(StreamError::IdempotencyMismatch);

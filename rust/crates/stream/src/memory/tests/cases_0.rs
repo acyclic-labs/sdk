@@ -1,6 +1,6 @@
-use futures::TryFutureExt as _;
 use super::*;
 use crate::MAX_COMMAND_BYTES;
+use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[tokio::test]
@@ -211,17 +211,40 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
         idempotency_key: key(b"deadline-accepted")?,
     };
     assert_eq!(
-        provider.commit(CommitRequest { deadline_unix_millis: Some(100), ..request.clone() }).await,
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: Some(100),
+                ..request.clone()
+            })
+            .await,
         Err(StreamError::DeadlineElapsed)
     );
     assert_eq!(
-        provider.commit(CommitRequest { deadline_unix_millis: Some(99), ..request.clone() }).await,
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: Some(99),
+                ..request.clone()
+            })
+            .await,
         Err(StreamError::DeadlineElapsed)
     );
-    let committed = provider.commit(CommitRequest { deadline_unix_millis: Some(101), ..request.clone() }).await?;
+    let committed = provider
+        .commit(CommitRequest {
+            deadline_unix_millis: Some(101),
+            ..request.clone()
+        })
+        .await?;
     assert!(matches!(committed, CommitOutcome::Committed(_)));
     clock.0.store(1_000, Ordering::SeqCst);
-    assert_eq!(provider.commit(CommitRequest { deadline_unix_millis: Some(101), ..request }).await?, committed);
+    assert_eq!(
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: Some(101),
+                ..request
+            })
+            .await?,
+        committed
+    );
 
     let retryable = CommitRequest {
         deadline_unix_millis: None,
@@ -235,11 +258,21 @@ async fn provider_deadline_is_exclusive_and_replay_precedes_time() -> Result<(),
         idempotency_key: key(b"deadline-retry")?,
     };
     assert_eq!(
-        provider.commit(CommitRequest { deadline_unix_millis: Some(1_000), ..retryable.clone() }).await,
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: Some(1_000),
+                ..retryable.clone()
+            })
+            .await,
         Err(StreamError::DeadlineElapsed)
     );
     assert!(matches!(
-        provider.commit(CommitRequest { deadline_unix_millis: Some(1_001), ..retryable }).await?,
+        provider
+            .commit(CommitRequest {
+                deadline_unix_millis: Some(1_001),
+                ..retryable
+            })
+            .await?,
         CommitOutcome::Committed(_)
     ));
     Ok(())
@@ -338,7 +371,8 @@ async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
                 .await?;
         }
         let mut follow = provider
-            .follow(crate::FollowRequest::new(stream, 0)).map_ok(crate::records_only)
+            .follow(crate::FollowRequest::new(stream, 0))
+            .map_ok(crate::records_only)
             .await?;
         for expected in 0..count {
             let record = follow.next().await.ok_or(StreamError::Unavailable)??;
@@ -509,7 +543,8 @@ async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), Str
         path: StreamPath::new("retained").unwrap_or_else(|_| unreachable!()),
         records: vec![(Bytes::from_static(name)).into()],
         if_tail: None,
-        idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(name)).unwrap_or_else(|_| unreachable!()),
+        idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(name))
+            .unwrap_or_else(|_| unreachable!()),
     };
     let AppendOutcome::Committed(first) = provider.append(append(b"first")).await? else {
         return Err(StreamError::Unavailable);

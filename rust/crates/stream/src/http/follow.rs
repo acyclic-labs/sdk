@@ -41,9 +41,7 @@ fn parse_record(value: &Value) -> Result<Record, StreamError> {
     let attributes = field(value, "attributes")?
         .as_array()
         .ok_or(StreamError::Unavailable)?;
-    if keys.len() > crate::MAX_RECORD_KEYS
-        || attributes.len() > crate::MAX_RECORD_ATTRIBUTES
-    {
+    if keys.len() > crate::MAX_RECORD_KEYS || attributes.len() > crate::MAX_RECORD_ATTRIBUTES {
         return Err(StreamError::Unavailable);
     }
     let headers = crate::changes::record_headers(

@@ -32,21 +32,26 @@ fn envelope() -> wire::CommittedEnvelope {
 #[test]
 fn commit_encoder_emits_compact_receipt() -> Result<(), Box<dyn std::error::Error>> {
     let response = wire::CommitResponse {
-        outcome: Some(wire::commit_response::Outcome::Committed(wire::CommitReceipt {
-            commit_id: Bytes::from(vec![1; 32]),
-            committed_at_micros: 9007199254740993,
-            appends: vec![wire::AppendRange {
-                path: "events".into(),
-                start: 0,
-                tail: 1,
-            }],
-            forks: vec![],
-        })),
+        outcome: Some(wire::commit_response::Outcome::Committed(
+            wire::CommitReceipt {
+                commit_id: Bytes::from(vec![1; 32]),
+                committed_at_micros: 9007199254740993,
+                appends: vec![wire::AppendRange {
+                    path: "events".into(),
+                    start: 0,
+                    tail: 1,
+                }],
+                forks: vec![],
+            },
+        )),
     };
     let protobuf = response.encode_to_vec();
     let encoded = http_response::encode("commit", &protobuf, 4096)?;
     let json: serde_json::Value = serde_json::from_slice(&encoded)?;
-    assert_eq!(json.pointer("/appends/0/tail"), Some(&serde_json::json!("1")));
+    assert_eq!(
+        json.pointer("/appends/0/tail"),
+        Some(&serde_json::json!("1"))
+    );
     assert_eq!(
         json.get("committedAtMicros"),
         Some(&serde_json::json!("9007199254740993"))

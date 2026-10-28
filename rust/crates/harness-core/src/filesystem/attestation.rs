@@ -24,10 +24,9 @@ use super::TurnAdmission;
 use acyclic_native_runtime::NativeReadMeter;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, BoxProviderFuture, ChildrenPage, ChildrenPageRequest, CommitId,
-    CommitOutcome, CommitRequest, CommittedEnvelope, DurableReceipt, FollowStream,
-    ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, OperationClaims,
-    ProviderPlatform, ReadRequest, RecordStream, StreamError, StreamPath,
-    StreamProvider, StreamWatermarks,
+    CommitOutcome, CommitRequest, CommittedEnvelope, DurableReceipt, FollowStream, ForkReceipt,
+    ForkRequest, IdempotencyKey, IdempotencyObservation, OperationClaims, ProviderPlatform,
+    ReadRequest, RecordStream, StreamError, StreamPath, StreamProvider, StreamWatermarks,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_stream::{NativeProviderFuture, NativeRecordStream, PreparedNativeCommit};
@@ -201,7 +200,10 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.inner.read(request).await
     }
-    async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<FollowStream, StreamError> {
+    async fn follow(
+        &self,
+        request: acyclic_stream::FollowRequest,
+    ) -> Result<FollowStream, StreamError> {
         self.inner.follow(request).await
     }
     async fn children_page(
@@ -423,7 +425,10 @@ mod tests {
         ) -> Result<super::RecordStream, super::StreamError> {
             self.inner.read(request).await
         }
-        async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, super::StreamError> {
+        async fn follow(
+            &self,
+            request: acyclic_stream::FollowRequest,
+        ) -> Result<acyclic_stream::FollowStream, super::StreamError> {
             self.inner.follow(request).await
         }
         async fn commit(

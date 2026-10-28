@@ -74,7 +74,10 @@ pub async fn prompt_settled(
     let provider = agents.provider();
     let mut statuses = acyclic_stream::records_only(
         provider
-            .follow(acyclic_stream::FollowRequest::new(root.status().map_err(agent)?, 0))
+            .follow(acyclic_stream::FollowRequest::new(
+                root.status().map_err(agent)?,
+                0,
+            ))
             .await
             .map_err(stream)?,
     );

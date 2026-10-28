@@ -16,8 +16,8 @@ use crate::guest::{Delivery, Handler, Trigger};
 use acyclic_stream::query_sync::SyncMutex;
 use acyclic_stream::runtime::{Executor as _, PlatformExecutor};
 use acyclic_stream::{
-    AppendRequest, BoxProviderFuture, IdempotencyKey, ProviderPlatform, Record,
-    RecordStream, StreamError, StreamPath, StreamProvider, UnixMillisClock as _,
+    AppendRequest, BoxProviderFuture, IdempotencyKey, ProviderPlatform, Record, RecordStream,
+    StreamError, StreamPath, StreamProvider, UnixMillisClock as _,
 };
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
 pub use limits::RuntimeLimits;
@@ -391,7 +391,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .state()
             .and_then(|state| state.cursor("activation"))
             .ok_or(Error::Invalid("dispatcher has no activation cursor"))?;
-        let mut created = acyclic_stream::records_only(provider.follow(acyclic_stream::FollowRequest::new(root, from)).await?);
+        let mut created = acyclic_stream::records_only(
+            provider
+                .follow(acyclic_stream::FollowRequest::new(root, from))
+                .await?,
+        );
         let mut dispatcher = Some(dispatcher);
         let mut dispatching: Option<BoxProviderFuture<'_, Result<Snapshot, Error>>> = None;
         // The activation log is also every producer's wake entry: the cursor
@@ -487,8 +491,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     dispatcher = Some(result?);
                 }
                 Event::Work(work) => {
-                    let execution: BoxProviderFuture<'_, _> =
-                        Box::pin(self.execute(work));
+                    let execution: BoxProviderFuture<'_, _> = Box::pin(self.execute(work));
                     running.push(execution);
                 }
                 Event::Done(Err((actor, error))) => report(&actor, &error),
@@ -807,7 +810,9 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .await
         {
             Ok(follow) => {
-                inner.follows.insert(id.to_owned(), acyclic_stream::records_only(follow));
+                inner
+                    .follows
+                    .insert(id.to_owned(), acyclic_stream::records_only(follow));
                 Ok(true)
             }
             Err(StreamError::NotFound) => Ok(false),

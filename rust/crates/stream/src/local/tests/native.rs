@@ -350,8 +350,9 @@ async fn prepared_late_cancel_drains_original_frame_and_recovery_without_fresh_a
     let crate::IdempotencyOutcome::Commit(expected) = observed.outcome else {
         return Err("prepared operation changed canonical family".into());
     };
-    let CommitOutcome::Committed(receipt) = reopened.commit(request).await?
-        else { return Err("replay changed canonical family".into()); };
+    let CommitOutcome::Committed(receipt) = reopened.commit(request).await? else {
+        return Err("replay changed canonical family".into());
+    };
     assert!(receipt.matches_envelope(&expected));
     assert_eq!(reopened.read_commit(receipt.commit_id).await?, expected);
     meter.assert_refunded();
@@ -506,8 +507,15 @@ async fn native_lost_ack_drains_flush_and_reopens_original_identity()
     let crate::IdempotencyOutcome::Commit(outcome) = &accepted.outcome else {
         return Err("reopened an unrelated operation family".into());
     };
-    let CommitOutcome::Committed(receipt) = reopened.commit(CommitRequest { deadline_unix_millis: Some(0), ..request }).await?
-        else { return Err("replay changed canonical family".into()); };
+    let CommitOutcome::Committed(receipt) = reopened
+        .commit(CommitRequest {
+            deadline_unix_millis: Some(0),
+            ..request
+        })
+        .await?
+    else {
+        return Err("replay changed canonical family".into());
+    };
     assert!(receipt.matches_envelope(outcome));
     assert_eq!(&reopened.read_commit(receipt.commit_id).await?, outcome);
     drop(accepted);
@@ -561,8 +569,15 @@ async fn native_compaction_drains_accepted_controls_and_actual_close()
     let crate::IdempotencyOutcome::Commit(outcome) = &accepted.outcome else {
         return Err("snapshot retained an unrelated operation".into());
     };
-    let CommitOutcome::Committed(receipt) = reopened.commit(CommitRequest { deadline_unix_millis: Some(0), ..request }).await?
-        else { return Err("replay changed canonical family".into()); };
+    let CommitOutcome::Committed(receipt) = reopened
+        .commit(CommitRequest {
+            deadline_unix_millis: Some(0),
+            ..request
+        })
+        .await?
+    else {
+        return Err("replay changed canonical family".into());
+    };
     assert!(receipt.matches_envelope(outcome));
     assert_eq!(&reopened.read_commit(receipt.commit_id).await?, outcome);
     drop(accepted);

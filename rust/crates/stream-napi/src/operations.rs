@@ -35,10 +35,14 @@ pub(super) async fn head(
     let value = run_with_cancellation(
         async {
             let path = StreamPath::new(request.path).map_err(|error| stream_error(&error))?;
-            client.head(path).await.map_err(|error| stream_error(&error))
+            client
+                .head(path)
+                .await
+                .map_err(|error| stream_error(&error))
         },
         cancellation_state(cancellation),
-    ).await?;
+    )
+    .await?;
     encode(&wire_codec::head_to_wire(value), "head")
 }
 
@@ -63,7 +67,6 @@ pub(super) async fn tail(
         "tail",
     )
 }
-
 
 pub(super) async fn append(
     client: &Arc<grpc::Client>,
@@ -173,7 +176,10 @@ pub(super) async fn open_follow(
 }
 
 pub(super) fn record_frames(
-    records: impl futures::Stream<Item = std::result::Result<acyclic_stream::Record, acyclic_stream::StreamError>> + Send + 'static,
+    records: impl futures::Stream<
+        Item = std::result::Result<acyclic_stream::Record, acyclic_stream::StreamError>,
+    > + Send
+    + 'static,
 ) -> FollowFrames {
     records
         .map(|record| {
@@ -216,7 +222,12 @@ pub(super) async fn commit(
     let request = decode::<wire::CommitRequest>(&request, "commit")?;
     let request = wire_codec::commit_from_wire(request).map_err(|error| stream_error(&error))?;
     let value = run_with_cancellation(
-        async { client.commit(request).await.map_err(|error| stream_error(&error)) },
+        async {
+            client
+                .commit(request)
+                .await
+                .map_err(|error| stream_error(&error))
+        },
         cancellation_state(cancellation),
     )
     .await?;

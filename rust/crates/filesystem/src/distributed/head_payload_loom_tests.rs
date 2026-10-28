@@ -1,9 +1,9 @@
 use super::*;
 use crate::sync::atomic::{AtomicBool, Ordering};
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, ForkReceipt,
-    ForkRequest, IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
-    StreamError, StreamProvider,
+    AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, ForkReceipt, ForkRequest,
+    IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamError,
+    StreamProvider,
 };
 use std::cell::Cell;
 use std::future::Future;
@@ -133,7 +133,10 @@ impl StreamProvider for ModelStream {
     async fn fork(&self, _: ForkRequest) -> Result<ForkReceipt, StreamError> {
         Err(StreamError::Unsupported)
     }
-    async fn follow(&self, _request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, StreamError> {
+    async fn follow(
+        &self,
+        _request: acyclic_stream::FollowRequest,
+    ) -> Result<acyclic_stream::FollowStream, StreamError> {
         Err(StreamError::Unsupported)
     }
     async fn read_commit(&self, _: CommitId) -> Result<CommittedEnvelope, StreamError> {

@@ -90,7 +90,6 @@ impl acyclic_stream::StreamProvider for CutStream {
         self.inner.tail(path).await
     }
 
-
     async fn append(
         &self,
         request: acyclic_stream::AppendRequest,
@@ -121,7 +120,10 @@ impl acyclic_stream::StreamProvider for CutStream {
         self.inner.read(request).await
     }
 
-    async fn follow(&self, request: acyclic_stream::FollowRequest) -> Result<acyclic_stream::FollowStream, acyclic_stream::StreamError> {
+    async fn follow(
+        &self,
+        request: acyclic_stream::FollowRequest,
+    ) -> Result<acyclic_stream::FollowStream, acyclic_stream::StreamError> {
         if self.fails_now() {
             return Err(acyclic_stream::StreamError::Unavailable);
         }

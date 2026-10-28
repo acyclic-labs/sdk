@@ -56,9 +56,7 @@ pub(super) fn keyed_append(path: &str, tail: u64) -> Result<AppendRequest, Strea
         path: StreamPath::new(path)?,
         records: vec![(OwnedBytes::from_static(b"native-append-record")).into()],
         if_tail: Some(tail),
-        idempotency_key: IdempotencyKey::new(OwnedBytes::from(format!(
-            "{path}@{tail}"
-        )))?,
+        idempotency_key: IdempotencyKey::new(OwnedBytes::from(format!("{path}@{tail}")))?,
     })
 }
 

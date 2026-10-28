@@ -71,7 +71,9 @@ fn condition_len(condition: &CommitCondition) -> usize {
         CommitCondition::Tail { path, expected } => {
             block_len(path.as_str().len()) + uint_len((*expected != 0).then_some(*expected))
         }
-        CommitCondition::Absent { path } | CommitCondition::Present { path } => block_len(path.as_str().len()),
+        CommitCondition::Absent { path } | CommitCondition::Present { path } => {
+            block_len(path.as_str().len())
+        }
     })
 }
 #[cfg(any(
@@ -351,9 +353,7 @@ mod tests {
                 let request = CommitRequest {
                     deadline_unix_millis: (tail != 0).then_some(tail),
                     conditions: vec![
-                        CommitCondition::Present {
-                            path: path.clone(),
-                        },
+                        CommitCondition::Present { path: path.clone() },
                         CommitCondition::Absent {
                             path: destination.clone(),
                         },

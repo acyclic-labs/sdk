@@ -313,7 +313,10 @@ mod tests {
             idempotency_key: crate::IdempotencyKey::new(bytes::Bytes::from_static(b"identity"))?,
         };
         let mut wire = wire_codec::commit_to_wire(&request);
-        assert_eq!(wire_codec::commit_from_wire(wire.clone())?.deadline_unix_millis, request.deadline_unix_millis);
+        assert_eq!(
+            wire_codec::commit_from_wire(wire.clone())?.deadline_unix_millis,
+            request.deadline_unix_millis
+        );
         let projected: Value = serde_json::from_str(&encode("commit", &wire.encode_to_vec())?)?;
         assert_eq!(
             projected

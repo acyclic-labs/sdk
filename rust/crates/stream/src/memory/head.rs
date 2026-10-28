@@ -34,7 +34,11 @@ impl Namespace {
             } else {
                 StreamPath::new(format!("{}{relative}", origin.source.as_str()))?
             },
-            forked_at: if relative.is_empty() { origin.forked_at } else { source.data.tail },
+            forked_at: if relative.is_empty() {
+                origin.forked_at
+            } else {
+                source.data.tail
+            },
             commit_id: origin.commit_id,
         }))
     }

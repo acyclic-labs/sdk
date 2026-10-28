@@ -1,6 +1,6 @@
-use futures::TryFutureExt as _;
 use crate::*;
 use futures::StreamExt;
+use futures::TryFutureExt as _;
 use std::{
     sync::{
         Arc,
@@ -15,7 +15,13 @@ pub(crate) async fn qualify_progress(provider: &impl StreamProvider) -> TestResu
     let path = StreamPath::new("filtered")?;
     let first = append(provider, record("z", "alice")?).await?;
     let mut updates = provider
-        .follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(first), filter: filter()?, progress: true })
+        .follow(crate::FollowRequest {
+            path: path.clone(),
+            from: 1,
+            preceding: Some(first),
+            filter: filter()?,
+            progress: true,
+        })
         .await?;
     assert!(futures::poll!(updates.next()).is_pending());
     let skipped = append(provider, record("z", "alice")?).await?;
@@ -60,7 +66,13 @@ async fn qualify_resume(
 ) -> TestResult {
     // A checked resume at a skipped cut must lead to exactly the same match.
     let mut resumed = provider
-        .follow(crate::FollowRequest { path: path.clone(), from: next, preceding: Some(preceding), filter: filter()?, progress: true })
+        .follow(crate::FollowRequest {
+            path: path.clone(),
+            from: next,
+            preceding: Some(preceding),
+            filter: filter()?,
+            progress: true,
+        })
         .await?;
     for source in [updates, &mut resumed] {
         assert!(
@@ -70,7 +82,13 @@ async fn qualify_resume(
     }
     assert!(matches!(
         provider
-            .follow(crate::FollowRequest { path: path.clone(), from: next, preceding: Some(CommitId::from_bytes([0x55; 32])), filter: filter()?, progress: true })
+            .follow(crate::FollowRequest {
+                path: path.clone(),
+                from: next,
+                preceding: Some(CommitId::from_bytes([0x55; 32])),
+                filter: filter()?,
+                progress: true
+            })
             .await,
         Err(StreamError::PrefixNotRetained)
     ));
@@ -145,11 +163,18 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
     let path = StreamPath::new("filtered")?;
     let first = append(provider, record("z", "alice")?).await?;
     let mut follow = provider
-        .follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(first), filter: if omit {
+        .follow(crate::FollowRequest {
+            path: path.clone(),
+            from: 1,
+            preceding: Some(first),
+            filter: if omit {
                 FollowFilter::default()
             } else {
                 filter()?
-            }, progress: false }).map_ok(crate::records_only)
+            },
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await?;
     let probe = Arc::new(Wakes::default());
     let waker = Waker::from(probe.clone());
@@ -178,7 +203,14 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
     assert_eq!(matched.sequence, 3);
     assert_eq!(matched.headers, selected.headers);
     let mut resumed = provider
-        .follow(crate::FollowRequest { path: path.clone(), from: 3, preceding: Some(preceding), filter: filter()?, progress: false }).map_ok(crate::records_only)
+        .follow(crate::FollowRequest {
+            path: path.clone(),
+            from: 3,
+            preceding: Some(preceding),
+            filter: filter()?,
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await?;
     assert_eq!(resumed.next().await.ok_or("resume ended")??, matched);
     let mut read = provider

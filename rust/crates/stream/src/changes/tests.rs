@@ -1,7 +1,7 @@
-use futures::TryFutureExt as _;
 use super::*;
 use crate::{FollowFilter, MemoryStream, StreamPath, StreamProvider};
 use futures::StreamExt;
+use futures::TryFutureExt as _;
 
 pub(super) fn filter() -> FollowFilter {
     use acyclic_auth::{contract::*, testing as signed};
@@ -329,14 +329,31 @@ async fn qualify(provider: &impl StreamProvider) {
         })
         .await
         .unwrap();
-    let mut history = provider.follow(crate::FollowRequest { path: path.clone(), from: 0, preceding: None, filter: filter(), progress: false }).map_ok(crate::records_only).await.unwrap();
+    let mut history = provider
+        .follow(crate::FollowRequest {
+            path: path.clone(),
+            from: 0,
+            preceding: None,
+            filter: filter(),
+            progress: false,
+        })
+        .map_ok(crate::records_only)
+        .await
+        .unwrap();
     let first = history.next().await.unwrap().unwrap();
     assert_eq!(
         decode(&first.value, &first.headers).unwrap().entries.len(),
         1
     );
     let mut live = provider
-        .follow(crate::FollowRequest { path: path.clone(), from: 1, preceding: Some(first.commit_id), filter: filter(), progress: false }).map_ok(crate::records_only)
+        .follow(crate::FollowRequest {
+            path: path.clone(),
+            from: 1,
+            preceding: Some(first.commit_id),
+            filter: filter(),
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await
         .unwrap();
     assert!(futures::poll!(live.next()).is_pending());
@@ -359,7 +376,14 @@ async fn qualify(provider: &impl StreamProvider) {
     );
     assert_eq!(second.sequence, 1);
     let mut resumed = provider
-        .follow(crate::FollowRequest { path: path, from: 1, preceding: Some(first.commit_id), filter: filter(), progress: false }).map_ok(crate::records_only)
+        .follow(crate::FollowRequest {
+            path: path,
+            from: 1,
+            preceding: Some(first.commit_id),
+            filter: filter(),
+            progress: false,
+        })
+        .map_ok(crate::records_only)
         .await
         .unwrap();
     assert_eq!(resumed.next().await.unwrap().unwrap(), second);

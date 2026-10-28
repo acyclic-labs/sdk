@@ -107,9 +107,7 @@ async fn due_fire_wakes_follow_once_and_rejects_identity_reuse()
             path: inbox.clone(),
             records: vec![vec![0].into()],
             if_tail: None,
-            idempotency_key: acyclic_stream::IdempotencyKey::new(
-                b"initialize-inbox".to_vec(),
-            )?,
+            idempotency_key: acyclic_stream::IdempotencyKey::new(b"initialize-inbox".to_vec())?,
         })
         .await?;
     let mut follow = acyclic_stream::records_only(

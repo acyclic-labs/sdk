@@ -3,11 +3,11 @@ use super::*;
 mod output;
 mod prepared;
 mod work;
-pub(crate) use work::Work;
 pub use output::NativeStreamOutput;
 pub use output::{NativeProviderFuture, NativeRecordStream, NativeStreamResult};
 pub(crate) use prepared::NativeCommitRecordSlot;
 pub use prepared::PreparedNativeCommit;
+pub(crate) use work::Work;
 
 pub(crate) fn vector<T>(
     length: usize,
@@ -53,20 +53,29 @@ pub(crate) fn clone_envelope(
         for record in source {
             let mut bytes = if kind == acyclic_native_runtime::NativeOperationKind::Read {
                 Some(acyclic_native_runtime::NativeByteReservation::new(
-                    Arc::clone(meter), kind, record.payload_bytes(),
+                    Arc::clone(meter),
+                    kind,
+                    record.payload_bytes(),
                 )?)
-            } else { None };
+            } else {
+                None
+            };
             meter.admit_examination(1, std::mem::size_of::<Record>() as u64)?;
             records.push(record.clone());
-            let read = bytes.as_mut().map_or(Ok(()), |bytes| bytes.record(record.payload_bytes()));
+            let read = bytes
+                .as_mut()
+                .map_or(Ok(()), |bytes| bytes.record(record.payload_bytes()));
             let examined = meter.record_examination(1, std::mem::size_of::<Record>() as u64);
             read?;
             examined?;
         }
         mutations.push(match mutation {
             CommittedMutation::Append(append) => CommittedMutation::Append(CommittedAppend {
-                path: append.path.clone(), start: append.start, end: append.end,
-                tail: append.tail, records,
+                path: append.path.clone(),
+                start: append.start,
+                end: append.end,
+                tail: append.tail,
+                records,
             }),
             CommittedMutation::Fork(fork) => {
                 let mut exclude = vector(fork.exclude.len(), meter, &mut allocation)?;
@@ -77,11 +86,14 @@ pub(crate) fn clone_envelope(
                     meter.record_examination(1, copied)?;
                 }
                 CommittedMutation::Fork(CommittedFork {
-                    exclude, source: fork.source.clone(),
-                    destination: fork.destination.clone(), forked_at: fork.forked_at,
-                    tail: fork.tail, records,
+                    exclude,
+                    source: fork.source.clone(),
+                    destination: fork.destination.clone(),
+                    forked_at: fork.forked_at,
+                    tail: fork.tail,
+                    records,
                 })
-            },
+            }
         });
         meter.record_examination(1, 0)?;
     }
@@ -98,8 +110,11 @@ pub(crate) fn clone_outcome(
     meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
 ) -> std::io::Result<NativeStreamOutput<IdempotencyOutcome>> {
     match value {
-        IdempotencyOutcome::Commit(value) => clone_envelope(value, meter,
-            acyclic_native_runtime::NativeOperationKind::Read)
+        IdempotencyOutcome::Commit(value) => clone_envelope(
+            value,
+            meter,
+            acyclic_native_runtime::NativeOperationKind::Read,
+        )
         .map(|output| output.map(IdempotencyOutcome::Commit)),
         IdempotencyOutcome::Append(value) => Ok(NativeStreamOutput::new(
             IdempotencyOutcome::Append(value.clone()),

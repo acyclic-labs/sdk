@@ -218,14 +218,24 @@ impl HttpStream {
             let receipt = crate::CommitReceipt {
                 commit_id: parse_id(field(value, "commitId")?)?,
                 committed_at_micros: parse_u64(field(value, "committedAtMicros")?)?,
-                appends: field(value, "appends")?.as_array().ok_or(StreamError::Unavailable)?
-                    .iter().map(|range| Ok(crate::AppendRange {
-                        path: parse_path(field(range, "path")?)?,
-                        start: parse_u64(field(range, "start")?)?,
-                        tail: parse_u64(field(range, "tail")?)?,
-                    })).collect::<Result<_, StreamError>>()?,
-                forks: field(value, "forks")?.as_array().ok_or(StreamError::Unavailable)?
-                    .iter().map(parse_fork).collect::<Result<_, _>>()?,
+                appends: field(value, "appends")?
+                    .as_array()
+                    .ok_or(StreamError::Unavailable)?
+                    .iter()
+                    .map(|range| {
+                        Ok(crate::AppendRange {
+                            path: parse_path(field(range, "path")?)?,
+                            start: parse_u64(field(range, "start")?)?,
+                            tail: parse_u64(field(range, "tail")?)?,
+                        })
+                    })
+                    .collect::<Result<_, StreamError>>()?,
+                forks: field(value, "forks")?
+                    .as_array()
+                    .ok_or(StreamError::Unavailable)?
+                    .iter()
+                    .map(parse_fork)
+                    .collect::<Result<_, _>>()?,
             };
             receipt.validate().map_err(|_| StreamError::Unavailable)?;
             Ok(CommitOutcome::Committed(receipt))
@@ -297,9 +307,7 @@ impl StreamProvider for HttpStream {
         let outcome = match parse_string(&outcome["type"])? {
             "append" => IdempotencyOutcome::Append(parse_append(&outcome["outcome"])?),
             "fork" => IdempotencyOutcome::Fork(parse_fork(&outcome["receipt"])?),
-            "commit" => {
-                IdempotencyOutcome::Commit(parse_envelope(&outcome["outcome"])?)
-            }
+            "commit" => IdempotencyOutcome::Commit(parse_envelope(&outcome["outcome"])?),
             _ => return Err(StreamError::Unavailable),
         };
         Ok(Some(IdempotencyObservation {
@@ -309,18 +317,34 @@ impl StreamProvider for HttpStream {
         }))
     }
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        let value = self.request("head", wire::HeadRequest { path: path.to_string() }.encode_to_vec()).await?;
+        let value = self
+            .request(
+                "head",
+                wire::HeadRequest {
+                    path: path.to_string(),
+                }
+                .encode_to_vec(),
+            )
+            .await?;
         let head = crate::PathHead {
             tail: parse_u64(field(&value, "tail")?)?,
-            last: value.get("last").filter(|last| !last.is_null()).map(parse_record).transpose()?,
+            last: value
+                .get("last")
+                .filter(|last| !last.is_null())
+                .map(parse_record)
+                .transpose()?,
             durable: parse_u64(field(&value, "durable")?)?,
-            origin: value.get("origin").filter(|origin| !origin.is_null()).map(|origin| -> Result<crate::ForkOrigin, StreamError> {
-                Ok(crate::ForkOrigin {
-                    source: parse_path(field(origin, "source")?)?,
-                    forked_at: parse_u64(field(origin, "forkedAt")?)?,
-                    commit_id: parse_id(field(origin, "commitId")?)?,
+            origin: value
+                .get("origin")
+                .filter(|origin| !origin.is_null())
+                .map(|origin| -> Result<crate::ForkOrigin, StreamError> {
+                    Ok(crate::ForkOrigin {
+                        source: parse_path(field(origin, "source")?)?,
+                        forked_at: parse_u64(field(origin, "forkedAt")?)?,
+                        commit_id: parse_id(field(origin, "commitId")?)?,
+                    })
                 })
-            }).transpose()?,
+                .transpose()?,
         };
         head.validate()?;
         Ok(head)
@@ -377,7 +401,10 @@ impl StreamProvider for HttpStream {
         // Reads and pages share the follow session; no JSON round trips.
         self.session_client()?.read(request).await
     }
-    async fn follow(&self, request: crate::FollowRequest) -> Result<crate::FollowStream, StreamError> {
+    async fn follow(
+        &self,
+        request: crate::FollowRequest,
+    ) -> Result<crate::FollowStream, StreamError> {
         self.session_client()?.follow(request).await
     }
 

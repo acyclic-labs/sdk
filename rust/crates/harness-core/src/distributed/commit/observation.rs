@@ -21,8 +21,10 @@ pub(in crate::distributed) fn observe_commit(
     };
     let result = observer.acknowledged(acknowledgment.0, acknowledgment.1);
     if !operations::original_native_decode_mode(observer) {
-        let bytes = (receipt.appends.capacity() * std::mem::size_of::<acyclic_stream::AppendRange>()
-            + receipt.forks.capacity() * std::mem::size_of::<acyclic_stream::ForkReceipt>()) as u64;
+        let bytes = (receipt.appends.capacity()
+            * std::mem::size_of::<acyclic_stream::AppendRange>()
+            + receipt.forks.capacity() * std::mem::size_of::<acyclic_stream::ForkReceipt>())
+            as u64;
         observer.retain_owned(bytes)?;
         quota.adopt(bytes)?;
     }
@@ -78,7 +80,9 @@ pub(super) fn receipt(
     envelope: &acyclic_stream::CommittedEnvelope,
     quota: &mut CodecQuota<'_, '_>,
 ) -> Result<acyclic_stream::CommitReceipt> {
-    let append_count = envelope.mutations.iter()
+    let append_count = envelope
+        .mutations
+        .iter()
         .filter(|mutation| matches!(mutation, acyclic_stream::CommittedMutation::Append(_)))
         .count();
     let mut appends = Vec::new();

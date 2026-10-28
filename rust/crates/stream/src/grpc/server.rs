@@ -72,9 +72,14 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         unary(serve_span!("head"), async {
             check_command_size(&request)?;
             let path = path(request.into_inner().path).map_err(|error| error_status(&error))?;
-            let head = self.provider.head(path).await.map_err(|error| error_status(&error))?;
+            let head = self
+                .provider
+                .head(path)
+                .await
+                .map_err(|error| error_status(&error))?;
             Ok(wire_codec::head_to_wire(head))
-        }).await
+        })
+        .await
     }
 
     async fn tail(
@@ -205,8 +210,11 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             check_command_size(&request)?;
             let request = request.into_inner();
             let request = commit_from_wire(request).map_err(|error| error_status(&error))?;
-            let outcome = self.provider.commit(request).await
-            .map_err(|error| error_status(&error))?;
+            let outcome = self
+                .provider
+                .commit(request)
+                .await
+                .map_err(|error| error_status(&error))?;
             Ok(commit_outcome_to_wire(outcome))
         })
         .await
