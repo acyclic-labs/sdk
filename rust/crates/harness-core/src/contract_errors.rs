@@ -415,7 +415,8 @@ const fn machines_error_code(cause: &acyclic_machines::ProviderError) -> crate::
         Machines::Invalid(_) | Machines::Rejected(_) => ErrorCode::Invalid,
         Machines::Indeterminate(_)
         | Machines::OperationIndeterminate(_)
-        | Machines::CommandIndeterminate(_) => ErrorCode::Indeterminate,
+        | Machines::CommandIndeterminate(_)
+        | Machines::FileIndeterminate(_) => ErrorCode::Indeterminate,
         Machines::Cancelled => ErrorCode::Cancelled,
         Machines::Unavailable | Machines::Failed => ErrorCode::Storage,
     }

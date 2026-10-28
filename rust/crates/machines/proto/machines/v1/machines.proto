@@ -375,16 +375,42 @@ message ExecRequest {
   // 1..64 entries, no NUL, at most 4096 UTF-8 bytes each and 32768 total.
   // argv[0] is nonempty. Shell evaluation requires an explicit shell program.
   repeated string argv = 3;
-  // Command deadline in milliseconds, 1..60000.
+  // Positive command deadline in milliseconds. The caller authority's expiry
+  // remains an independent upper bound, even while no output is produced.
   uint32 timeout_ms = 4;
+  optional uint64 expiry_unix_ms = 5;
+  // Combined stdout/stderr allowance; absent is unbounded, zero allows no bytes.
+  optional uint64 maximum_output_bytes = 6;
+  // Guest working directory, never a path on the client host.
+  optional string cwd = 7;
+  // Exact binary standard input. EOF follows these bytes.
+  bytes stdin = 8;
+}
+enum ExecStopKind {
+  EXEC_STOP_KIND_UNSPECIFIED = 0;
+  EXEC_STOP_KIND_TIMEOUT = 1;
+  EXEC_STOP_KIND_EXPIRED = 2;
+  EXEC_STOP_KIND_OUTPUT_LIMIT = 3;
+  EXEC_STOP_KIND_CONTROL_STOPPED = 4;
+  EXEC_STOP_KIND_CAPTURE_FAILED = 5;
+}
+message ExecStop {
+  ExecStopKind kind = 1;
+  string message = 2;
+  // False preserves uncertainty about surviving guest processes.
+  bool cleanup_completed = 3;
 }
 message ExecOutput {
   MachineId machine = 1;
-  // Data is merged stdout/stderr in observed console order, 1..65536 bytes.
-  // Exactly one exit-code frame terminates the stream; no frame follows it.
+  // Protocol 1.2 separates stdout (data) and stderr. Each frame has 1..65536
+  // bytes and preserves its channel's exact order. Earlier protocol revisions
+  // must be refused before execution, not interpreted as separate channels.
+  // Exactly one exit-code or stopped frame terminates the stream.
   oneof output {
     bytes data = 2;
     int32 exit_code = 3;
+    bytes stderr = 4;
+    ExecStop stopped = 5;
   }
 }
 // Reads the live retained guest console, without a lifecycle operation identity.
@@ -404,7 +430,53 @@ message MachineOutput {
   bytes data = 3;
 }
 
+// Native guest IO; these are not lifecycle mutations or shell commands. The
+// server joins the caller's original account/incarnation and file grant before
+// touching the guest. One absolute deadline covers admission and completion.
+message FileAccess {
+  MachineId machine = 1;
+  // Absolute, NUL-free guest path, never a client host path.
+  string path = 2;
+  uint64 offset = 3;
+  uint64 deadline_unix_ms = 4;
+}
+message ReadFileRequest {
+  ProtocolVersion protocol = 1;
+  FileAccess access = 2;
+  // One chunk, 1..65536 bytes. The file itself has no size limit.
+  uint32 limit = 3;
+}
+message ReadFileResponse {
+  MachineId machine = 1;
+  uint64 offset = 2;
+  oneof result {
+    // Empty data is EOF; a short read is preserved exactly.
+    bytes data = 3;
+    // Nonzero POSIX errno from the native guest operation.
+    uint32 errno = 4;
+  }
+}
+message WriteFileRequest {
+  ProtocolVersion protocol = 1;
+  FileAccess access = 2;
+  // At most 65536 bytes. No shell or text encoding is involved.
+  bytes data = 3;
+  // Create if absent. Truncate first only when true, with offset zero.
+  bool truncate = 4;
+}
+message WriteFileResponse {
+  MachineId machine = 1;
+  uint64 offset = 2;
+  oneof result {
+    // A short write is preserved; a lost reply never authorizes redispatch.
+    uint32 written = 3;
+    uint32 errno = 4;
+  }
+}
+
 service MachinesService {
+  rpc ReadFile(ReadFileRequest) returns (ReadFileResponse) { option (acyclic.validation.v1.auth) = { action: "machines/read-file" extractor: "machines.read-file" }; }
+  rpc WriteFile(WriteFileRequest) returns (WriteFileResponse) { option (acyclic.validation.v1.auth) = { action: "machines/write-file" extractor: "machines.write-file" }; }
   rpc Exec(ExecRequest) returns (stream ExecOutput) { option (acyclic.validation.v1.auth) = { action: "machines/exec" extractor: "machines.exec" }; }
   rpc ReadOutput(ReadOutputRequest) returns (MachineOutput) { option (acyclic.validation.v1.auth) = { action: "machines/read-output" extractor: "machines.read-output" }; }
   rpc QualifyImage(QualifyImageRequest) returns (ImageQualification) { option (acyclic.validation.v1.auth) = { action: "machines/qualify" extractor: "machines.qualify-image" }; }

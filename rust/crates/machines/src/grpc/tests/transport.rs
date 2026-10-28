@@ -294,6 +294,88 @@ async fn remote_transport_rejects_plaintext_before_connecting() {
     )
     .await;
     assert!(matches!(result, Err(ProviderError::Invalid(_))));
+    for uri in [
+        "http://example.invalid",
+        "https://account@example.invalid",
+        "https://example.invalid?token=value",
+    ] {
+        let credential = CredentialProvider::new(|| async { Ok("fixture".into()) });
+        assert!(matches!(
+            GrpcProvider::connect_service(uri, credential, None).await,
+            Err(ProviderError::Invalid(_))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn public_https_service_uses_fresh_bearer_without_client_certificates()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tonic::transport::ServerTlsConfig;
+    let identity = rcgen::generate_simple_self_signed(["localhost".into()])?;
+    let pem = identity.cert.pem();
+    let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")?;
+    let operation = OperationId::parse("00000000-0000-0000-0000-000000000002")?;
+    let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
+    let state = operation_state(operation, wire::OperationStatus::Succeeded);
+    let service = OperationService {
+        guest: None,
+        expected_key: key,
+        expected_operation: operation,
+        recovered: recovered_suspend(operation, operation, machine),
+        inspected: state.clone(),
+        cancelled: state,
+        watch: WatchReply::Items(vec![]),
+    };
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let uri = format!("https://localhost:{}", listener.local_addr()?.port());
+    let (shutdown, closed) = tokio::sync::oneshot::channel();
+    let mut server = Server::builder().tls_config(ServerTlsConfig::new().identity(
+        Identity::from_pem(&pem, identity.signing_key.serialize_pem()),
+    ))?;
+    let task = tokio::spawn(async move {
+        server
+            .add_service(MachinesServiceServer::with_interceptor(
+                service,
+                |request: Request<()>| {
+                    if request
+                        .metadata()
+                        .get("authorization")
+                        .is_none_or(|value| value != "Bearer fixture")
+                    {
+                        return Err(Status::unauthenticated("account bearer required"));
+                    }
+                    Ok(request)
+                },
+            ))
+            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                let _ = closed.await;
+            })
+            .await
+    });
+    let resolutions = Arc::new(AtomicUsize::new(0));
+    let calls = resolutions.clone();
+    let credential = CredentialProvider::new(move || {
+        calls.fetch_add(1, Ordering::SeqCst);
+        std::future::ready(Ok("fixture".into()))
+    });
+    let result = async {
+        let provider =
+            GrpcProvider::connect_service(&uri, credential, Some(pem.as_bytes())).await?;
+        assert_eq!(resolutions.load(Ordering::SeqCst), 0);
+        assert_eq!(provider.recover_operation(key).await?, operation);
+        assert_eq!(
+            provider.inspect_operation(operation).await?.phase,
+            OperationPhase::Succeeded
+        );
+        assert_eq!(resolutions.load(Ordering::SeqCst), 2);
+        Ok::<(), ProviderError>(())
+    }
+    .await;
+    let _ = shutdown.send(());
+    task.await??;
+    result?;
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]

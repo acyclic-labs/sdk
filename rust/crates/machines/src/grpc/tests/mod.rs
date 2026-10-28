@@ -10,6 +10,7 @@ use wire::machines_service_server::{MachinesService, MachinesServiceServer};
 enum WatchReply {
     Reject(Code),
     Items(Vec<WatchItem>),
+    Delayed(wire::OperationState, Duration),
     Silent,
     Script(std::sync::Arc<std::sync::Mutex<ObservationScript>>),
 }
@@ -18,6 +19,7 @@ struct ObservationScript {
     watches: std::collections::VecDeque<WatchReply>,
     inspections: std::collections::VecDeque<Result<wire::OperationState, Code>>,
     calls: Vec<&'static str>,
+    started: Arc<tokio::sync::Notify>,
 }
 
 #[derive(Clone)]
@@ -159,6 +161,16 @@ operation_service! {
             }
             Err(Status::unimplemented("read_output"))
         }
+        async fn read_file(&self, request: Request<wire::ReadFileRequest>)
+            -> Result<Response<wire::ReadFileResponse>, Status> {
+            self.guest.as_ref().ok_or_else(|| Status::unimplemented("read_file"))?
+                .read_file(request)
+        }
+        async fn write_file(&self, request: Request<wire::WriteFileRequest>)
+            -> Result<Response<wire::WriteFileResponse>, Status> {
+            self.guest.as_ref().ok_or_else(|| Status::unimplemented("write_file"))?
+                .write_file(request)
+        }
     type WatchOperationStream = Pin<
         Box<dyn futures::Stream<Item = Result<wire::OperationState, Status>> + Send + 'static>,
     >;
@@ -172,6 +184,7 @@ operation_service! {
             WatchReply::Script(script) => {
                 let mut script = script.lock().expect("observation script");
                 script.calls.push("watch");
+                script.started.notify_one();
                 script
                     .watches
                     .pop_front()
@@ -189,6 +202,10 @@ operation_service! {
                 Ok(Response::new(Box::pin(stream::iter(items))))
             }
             WatchReply::Script(_) => Err(Status::internal("nested observation script")),
+            WatchReply::Delayed(value, delay) => Ok(Response::new(Box::pin(stream::once(async move {
+                tokio::time::sleep(delay).await;
+                Ok(value)
+            })))),
             WatchReply::Silent => Ok(Response::new(Box::pin(stream::pending()))),
         }
     }
@@ -222,6 +239,7 @@ fn scripted_operation_service(
         watches: watches.into(),
         inspections: inspections.into(),
         calls: Vec::new(),
+        started: Arc::new(tokio::sync::Notify::new()),
     }));
     (
         OperationService {

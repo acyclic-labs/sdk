@@ -5,6 +5,27 @@ impl MachinesProvider for SimulatedMachines {
     fn assurance(&self) -> ProviderAssurance {
         ProviderAssurance::ProcessLocalSimulation
     }
+    async fn read_file(
+        &self,
+        _machine: MachineId,
+        _access: FileAccess,
+        _limit: u32,
+    ) -> Result<FileRead, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "the simulator has no guest filesystem".into(),
+        ))
+    }
+    async fn write_file(
+        &self,
+        _machine: MachineId,
+        _access: FileAccess,
+        _data: Vec<u8>,
+        _truncate: bool,
+    ) -> Result<FileWrite, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "the simulator has no guest filesystem".into(),
+        ))
+    }
     async fn exec(
         &self,
         _machine: MachineId,

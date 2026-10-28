@@ -86,7 +86,6 @@
   "rust/crates/harness/docs/runtime-properties.md",
   "rust/crates/harness/docs/terminal.md",
   "rust/crates/inference/README.md",
-  "rust/crates/machines-daytona/README.md",
   "rust/crates/machines/README.md",
   "rust/crates/markdown/tests/fixtures/grammar.md",
   "rust/crates/markdown/tests/fixtures/literals.md",

@@ -28,66 +28,27 @@ pub(super) async fn wait(
 ) -> Result<(), ProviderError> {
     obs::finish(
         async {
-            let mut unknown_observations = 0;
-            loop {
-                match provider
-                    .client()
-                    .await
-                    .map_err(|_| ProviderError::Indeterminate(key))?
-                    .watch_operation(operation_request(operation))
-                    .await
-                {
-                    Ok(response) => {
-                        let mut stream = response.into_inner();
-                        loop {
-                            match tokio::time::timeout(WATCH_RECONCILE_INTERVAL, stream.message())
-                                .await
-                            {
-                                Ok(Ok(Some(value))) => {
-                                    let phase =
-                                        decode_operation_observation(&value, operation)?.phase;
-                                    unknown_observations = 0;
-                                    if let Some(outcome) = observed_outcome(key, phase) {
-                                        return outcome;
-                                    }
-                                }
-                                Ok(Err(error)) if !retryable_watch_error(&error) => {
-                                    return Err(watch_error(key, &error));
-                                }
-                                // Inspect the admitted operation after interruption; never resubmit.
-                                _ => break,
-                            }
-                        }
-                    }
-                    Err(error) if !retryable_watch_error(&error) => {
-                        return Err(watch_error(key, &error));
-                    }
-                    Err(_) => {}
+            let mut stream = provider
+                .client()
+                .await
+                .map_err(|_| ProviderError::Indeterminate(key))?
+                .watch_operation(operation_request(operation))
+                .await
+                .map_err(|error| watch_error(key, &error))?
+                .into_inner();
+            // The server owns completion. Quiet output does not authorize an
+            // inspection, another subscription or another mutation dispatch.
+            while let Some(value) = stream
+                .message()
+                .await
+                .map_err(|error| watch_error(key, &error))?
+            {
+                let phase = decode_operation_observation(&value, operation)?.phase;
+                if let Some(outcome) = observed_outcome(key, phase) {
+                    return outcome;
                 }
-                match provider
-                    .client()
-                    .await
-                    .map_err(|_| ProviderError::Indeterminate(key))?
-                    .inspect_operation(operation_request(operation))
-                    .await
-                {
-                    Ok(response) => {
-                        let phase =
-                            decode_operation_observation(&response.into_inner(), operation)?.phase;
-                        unknown_observations = 0;
-                        if let Some(outcome) = observed_outcome(key, phase) {
-                            return outcome;
-                        }
-                    }
-                    Err(error)
-                        if !retryable_observation_error(&error, &mut unknown_observations) =>
-                    {
-                        return Err(watch_error(key, &error));
-                    }
-                    Err(_) => {}
-                }
-                tokio::time::sleep(OBSERVATION_RETRY_DELAY).await;
             }
+            Err(ProviderError::Indeterminate(key))
         }
         .await,
     )
@@ -239,31 +200,6 @@ pub(super) fn validate_recovered_admission(
             "recovery operation identity was substituted".into(),
         ))
     }
-}
-
-pub(super) fn retryable_observation_error(
-    value: &tonic::Status,
-    unknown_observations: &mut u8,
-) -> bool {
-    match value.code() {
-        tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Cancelled => true,
-        // Repeated ambiguous errors return the retained recovery key.
-        tonic::Code::Unknown => {
-            *unknown_observations = unknown_observations.saturating_add(1);
-            *unknown_observations < MAX_CONSECUTIVE_UNKNOWN_INSPECTIONS
-        }
-        _ => false,
-    }
-}
-
-pub(super) fn retryable_watch_error(value: &tonic::Status) -> bool {
-    matches!(
-        value.code(),
-        tonic::Code::Unavailable
-            | tonic::Code::DeadlineExceeded
-            | tonic::Code::Cancelled
-            | tonic::Code::Unknown
-    )
 }
 
 pub(super) fn observed_outcome(

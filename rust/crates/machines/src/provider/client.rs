@@ -55,6 +55,29 @@ impl Machine {
     pub async fn exec(&self, command: ExecCommand) -> Result<ExecStream, ProviderError> {
         self.machines.provider.exec(self.id, command).await
     }
+    /// Reads one native guest-file chunk under its original deadline.
+    pub async fn read_file(
+        &self,
+        access: FileAccess,
+        limit: u32,
+    ) -> Result<FileRead, ProviderError> {
+        self.machines
+            .provider
+            .read_file(self.id, access, limit)
+            .await
+    }
+    /// Writes one native chunk; interruption never authorizes redispatch.
+    pub async fn write_file(
+        &self,
+        access: FileAccess,
+        data: Vec<u8>,
+        truncate: bool,
+    ) -> Result<FileWrite, ProviderError> {
+        self.machines
+            .provider
+            .write_file(self.id, access, data, truncate)
+            .await
+    }
     pub async fn read_output(
         &self,
         offset: u64,

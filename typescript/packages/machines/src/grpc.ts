@@ -36,11 +36,34 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
   return {
     machines: {
       ...machines,
+      async readFile(request: MessageInitShape<typeof wire.ReadFileRequestSchema>, callOptions?: CallOptions) {
+        const query = create(wire.ReadFileRequestSchema, request);
+        const access = checkFileAccess(query.access, query.limit);
+        if (query.limit < 1) throw new RangeError("file read chunk must be positive");
+        const result = await machines.readFile(query, fileOptions(access, callOptions));
+        checkFileResult(access, result);
+        if (result.result.case === "data") {
+          if (result.result.value.byteLength > query.limit) throw new ConnectError("file read exceeds requested chunk", Code.DataLoss);
+        } else if (result.result.case !== "errno" || result.result.value === 0) throw new ConnectError("file read terminal result is invalid", Code.DataLoss);
+        return result;
+      },
+      async writeFile(request: MessageInitShape<typeof wire.WriteFileRequestSchema>, callOptions?: CallOptions) {
+        const query = create(wire.WriteFileRequestSchema, request);
+        const access = checkFileAccess(query.access, query.data.byteLength);
+        if (query.truncate && access.offset !== 0n) throw new RangeError("file truncation requires offset zero");
+        const result = await machines.writeFile(query, fileOptions(access, callOptions));
+        checkFileResult(access, result);
+        if (result.result.case === "written") {
+          if (result.result.value > query.data.byteLength) throw new ConnectError("file write exceeds supplied chunk", Code.DataLoss);
+        } else if (result.result.case !== "errno" || result.result.value === 0) throw new ConnectError("file write terminal result is invalid", Code.DataLoss);
+        return result;
+      },
       async *exec(request: MessageInitShape<typeof wire.ExecRequestSchema>, callOptions?: CallOptions) {
         const query = create(wire.ExecRequestSchema, request);
         const lengths = query.argv.map(value => new TextEncoder().encode(value).byteLength);
         if (query.argv.length < 1 || query.argv.length > 64 || !query.argv[0] || query.argv.some(value => value.includes("\0")) || lengths.some(length => length > 4096) || lengths.reduce((sum, length) => sum + length, 0) > 32768) throw new RangeError("invalid exec argv");
-        if (!Number.isInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 60000) throw new RangeError("timeoutMs must be 1..60000");
+        if (!Number.isInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 0xffffffff) throw new RangeError("timeoutMs must be a positive uint32");
+        if (query.cwd !== undefined && (!query.cwd || query.cwd.includes("\0"))) throw new RangeError("cwd must be nonempty and NUL-free");
         const controller = new AbortController();
         const signal = callOptions?.signal;
         const abort = () => controller.abort(signal?.reason);
@@ -52,8 +75,12 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
             checkMachine(query.machine, frame.machine);
             if (exited) throw new ConnectError("exec frame follows terminal exit code", Code.DataLoss);
             if (frame.output.case === "exitCode") exited = true;
-            else if (frame.output.case !== "data" || frame.output.value.byteLength < 1 || frame.output.value.byteLength > MAX_OUTPUT_READ_BYTES) throw new ConnectError("invalid exec output frame", Code.DataLoss);
+            else if (frame.output.case === "stopped") {
+              if (![wire.ExecStopKind.TIMEOUT, wire.ExecStopKind.EXPIRED, wire.ExecStopKind.OUTPUT_LIMIT, wire.ExecStopKind.CONTROL_STOPPED, wire.ExecStopKind.CAPTURE_FAILED].includes(frame.output.value.kind)) throw new ConnectError("invalid exec stop kind", Code.DataLoss);
+              exited = true;
+            } else if ((frame.output.case !== "data" && frame.output.case !== "stderr") || frame.output.value.byteLength < 1 || frame.output.value.byteLength > MAX_OUTPUT_READ_BYTES) throw new ConnectError("invalid exec output frame", Code.DataLoss);
             yield frame;
+            if (exited) return;
           }
           if (!exited) throw new ConnectError("exec stream ended without exit code", Code.DataLoss);
         } finally {
@@ -78,4 +105,21 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
 
 function checkMachine(request: wire.MachineId | undefined, response: wire.MachineId | undefined): void {
   if (!request || !response || request.value.length !== response.value.length || request.value.some((byte, index) => byte !== response.value[index])) throw new ConnectError("response machine identity differs from request", Code.DataLoss);
+}
+
+function checkFileAccess(access: wire.FileAccess | undefined, length: number): wire.FileAccess {
+  if (!access || !access.machine || !access.path.startsWith("/") || access.path.includes("\0") || access.offset < 0n || access.offset > MAX_OFFSET || access.deadlineUnixMs < 1n || access.deadlineUnixMs > MAX_OFFSET) throw new RangeError("invalid absolute guest file access");
+  if (!Number.isInteger(length) || length < 0 || length > MAX_OUTPUT_READ_BYTES || access.offset + BigInt(length) > MAX_OFFSET) throw new RangeError("invalid guest file chunk range");
+  return access;
+}
+
+function fileOptions(access: wire.FileAccess, options?: CallOptions): CallOptions {
+  const remaining = access.deadlineUnixMs - BigInt(Date.now());
+  if (remaining <= 0n || remaining > BigInt(Number.MAX_SAFE_INTEGER)) throw new RangeError("file deadline expired or not representable by this transport");
+  return { ...options, timeoutMs: Math.min(Number(remaining), options?.timeoutMs ?? Infinity) };
+}
+
+function checkFileResult(access: wire.FileAccess, result: { machine?: wire.MachineId; offset: bigint }): void {
+  checkMachine(access.machine, result.machine);
+  if (access.offset !== result.offset) throw new ConnectError("file result offset substituted", Code.DataLoss);
 }

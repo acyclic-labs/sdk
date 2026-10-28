@@ -11,9 +11,6 @@ use tonic::{
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
-const WATCH_RECONCILE_INTERVAL: Duration = Duration::from_secs(60);
-const OBSERVATION_RETRY_DELAY: Duration = Duration::from_secs(1);
-const MAX_CONSECUTIVE_UNKNOWN_INSPECTIONS: u8 = 3;
 const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 /// Remote mutual-TLS identity. Key material is borrowed and never retained by the client.
@@ -103,6 +100,23 @@ impl GrpcProvider {
             .with_credential_provider(credential))
     }
 
+    /// Connects to a public HTTPS service using an account credential callback.
+    /// Public certificate roots are used unless an explicit private CA is added.
+    /// No client certificate or credential is sent into a guest.
+    pub async fn connect_service(
+        uri: &str,
+        credential: CredentialProvider,
+        ca: Option<&[u8]>,
+    ) -> Result<Self, ProviderError> {
+        let mut tls = ClientTlsConfig::new().with_webpki_roots();
+        if let Some(ca) = ca {
+            tls = tls.ca_certificate(Certificate::from_pem(ca));
+        }
+        Ok(Self::connect_authenticated(uri, tls, None)
+            .await?
+            .with_credential_provider(credential))
+    }
+
     async fn authorization(&self) -> Result<BearerAuth, ProviderError> {
         if let Some(provider) = &self.credential {
             let token = provider.resolve().await.map_err(|_| {
@@ -132,6 +146,21 @@ impl GrpcProvider {
         tls: Tls<'_>,
         token: Option<&str>,
     ) -> Result<Self, ProviderError> {
+        Self::connect_authenticated(
+            uri,
+            ClientTlsConfig::new()
+                .ca_certificate(Certificate::from_pem(tls.ca))
+                .identity(Identity::from_pem(tls.certificate, tls.private_key)),
+            token,
+        )
+        .await
+    }
+
+    async fn connect_authenticated(
+        uri: &str,
+        tls: ClientTlsConfig,
+        token: Option<&str>,
+    ) -> Result<Self, ProviderError> {
         let auth = token.map(BearerAuth::new).transpose()?.unwrap_or_default();
         if !uri.starts_with("https://") {
             return Err(ProviderError::Invalid(
@@ -142,12 +171,16 @@ impl GrpcProvider {
             .map_err(|_| ProviderError::Invalid("invalid Machines endpoint".into()))?
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(RPC_TIMEOUT)
-            .tls_config(
-                ClientTlsConfig::new()
-                    .ca_certificate(Certificate::from_pem(tls.ca))
-                    .identity(Identity::from_pem(tls.certificate, tls.private_key)),
-            )
+            .tls_config(tls)
             .map_err(|_| ProviderError::Invalid("invalid Machines TLS identity".into()))?;
+        if endpoint
+            .uri()
+            .authority()
+            .is_none_or(|value| value.as_str().contains('@'))
+            || endpoint.uri().query().is_some()
+        {
+            return Err(ProviderError::Invalid("Machines endpoint admission failed; recovery: use HTTPS without embedded credentials or a query".into()));
+        }
         let channel = endpoint
             .connect()
             .await
@@ -223,6 +256,9 @@ impl GrpcProvider {
 
 mod guest;
 use guest::*;
+mod deadline;
+use deadline::GuestDeadline;
+mod files;
 
 mod codec;
 mod provider;

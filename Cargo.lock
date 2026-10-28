@@ -774,6 +774,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-auth",
  "acyclic-grpc-observability",
+ "acyclic-native-runtime",
  "acyclic-proto-build",
  "acyclic-stream",
  "async-trait",
@@ -796,24 +797,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
-]
-
-[[package]]
-name = "acyclic-machines-daytona"
-version = "0.2.0"
-dependencies = [
- "acyclic-conformance",
- "acyclic-machines",
- "acyclic-native-runtime",
- "async-trait",
- "futures",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

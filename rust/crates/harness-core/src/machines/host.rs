@@ -75,6 +75,79 @@ impl MachinesHost {
             .map_err(|error| map_error(error, None))
     }
 
+    /// Dispatches one command in the admitted sandbox. Consume the returned
+    /// stream for output and its terminal exit; dropping it cancels the RPC.
+    /// An interrupted command is never submitted again by this adapter.
+    pub async fn exec(
+        &self,
+        sandbox: &SandboxRef,
+        command: acyclic_machines::ExecCommand,
+    ) -> Result<acyclic_machines::ExecStream> {
+        self.provider
+            .exec(self.machine_id(sandbox)?, command)
+            .await
+            .map_err(|error| map_error(error, None))
+    }
+
+    /// Reads one native guest-file chunk under the original absolute deadline.
+    pub async fn read_file(
+        &self,
+        sandbox: &SandboxRef,
+        access: acyclic_machines::FileAccess,
+        limit: u32,
+    ) -> Result<acyclic_machines::FileRead> {
+        self.provider
+            .read_file(self.machine_id(sandbox)?, access, limit)
+            .await
+            .map_err(|error| map_error(error, None))
+    }
+
+    /// Writes one native guest-file chunk without shell evaluation or retries.
+    pub async fn write_file(
+        &self,
+        sandbox: &SandboxRef,
+        access: acyclic_machines::FileAccess,
+        bytes: Vec<u8>,
+        truncate: bool,
+    ) -> Result<acyclic_machines::FileWrite> {
+        self.provider
+            .write_file(self.machine_id(sandbox)?, access, bytes, truncate)
+            .await
+            .map_err(|error| map_error(error, None))
+    }
+
+    /// Suspends the original machine under the caller's stable mutation key.
+    pub async fn suspend(
+        &self,
+        operation_id: OperationId,
+        idempotency_key: &IdempotencyKey,
+        sandbox: &SandboxRef,
+    ) -> Result<()> {
+        let machine = self.machine_id(sandbox)?;
+        match self.provider.suspend(machine, machines_key(idempotency_key)?).await
+            .map_err(|error| map_error(error, Some(operation_id)))?
+        {
+            MutationOutcome::Suspended(actual) if actual == machine => Ok(()),
+            _ => Err(Error::Storage("Machines substituted the suspension result; recovery: inspect the original operation".into())),
+        }
+    }
+
+    /// Deletes the original machine and retains uncertainty on a lost reply.
+    pub async fn destroy(
+        &self,
+        operation_id: OperationId,
+        idempotency_key: &IdempotencyKey,
+        sandbox: &SandboxRef,
+    ) -> Result<()> {
+        let machine = self.machine_id(sandbox)?;
+        match self.provider.destroy_machine(machine, machines_key(idempotency_key)?).await
+            .map_err(|error| map_error(error, Some(operation_id)))?
+        {
+            MutationOutcome::MachineDestroyed(actual) if actual == machine => Ok(()),
+            _ => Err(Error::Storage("Machines substituted the deletion result; recovery: inspect the original operation".into())),
+        }
+    }
+
     /// Creates one immutable checkpoint reference.
     pub async fn checkpoint(
         &self,
@@ -155,7 +228,7 @@ impl MachinesHost {
             .map_err(|_| Error::Invalid("machine image artifact key must be 32 bytes".into()))?;
         Image::custom(digest).map_err(|error| Error::Invalid(error.to_string()))
     }
-    fn machine_id(&self, reference: &SandboxRef) -> Result<MachineId> {
+    pub(super) fn machine_id(&self, reference: &SandboxRef) -> Result<MachineId> {
         parse_uuid(self.key(reference.as_resource())?, MachineId::parse)
     }
     pub(super) fn checkpoint_id(&self, reference: &CheckpointRef) -> Result<CheckpointId> {

@@ -12,7 +12,7 @@ import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 
 const caCertificate = readFileSync(new URL("./fixtures/server.pem", import.meta.url), "utf8");
 const key = readFileSync(new URL("./fixtures/server-key.pem", import.meta.url), "utf8");
-const protocol = { major: 1, minor: 1 };
+const protocol = { major: 1, minor: 2 };
 const identity = value => ({ value: new Uint8Array(16).fill(value) });
 const machine = identity(1);
 const operation = identity(2);
@@ -35,6 +35,43 @@ async function fixture(t, implementation) {
 function authenticate(context) {
   if (context.requestHeader.get("authorization") !== "Bearer fixture") throw new ConnectError("missing bearer", Code.Unauthenticated);
 }
+
+test("native binary file IO preserves ranges, short writes, errno and original identity", async t => {
+  const access = { machine, path: "/workspace/$(literal) ' file", offset: 9007199254740993n, deadlineUnixMs: BigInt(Date.now() + 60000) };
+  const data = new Uint8Array([0, 255, 10]);
+  const calls = [];
+  const { machines } = await fixture(t, {
+    readFile(query, context) {
+      authenticate(context);
+      calls.push("read");
+      assert.deepEqual(query.access, create(wire.FileAccessSchema, access));
+      if (query.limit === 1) return { machine, offset: access.offset, result: { case: "errno", value: 13 } };
+      if (query.limit === 2) return { machine: identity(99), offset: access.offset, result: { case: "data", value: data } };
+      return { machine, offset: access.offset, result: { case: "data", value: data } };
+    },
+    writeFile(query, context) {
+      authenticate(context);
+      calls.push("write");
+      assert.deepEqual(query.data, data);
+      if (query.truncate) throw new ConnectError("completion lost", Code.Unavailable);
+      return { machine, offset: query.access.offset, result: { case: "written", value: 2 } };
+    },
+  });
+  const read = await machines.readFile({ protocol, access, limit: 3 });
+  assert.deepEqual(read.result, { case: "data", value: data });
+  assert.deepEqual((await machines.readFile({ protocol, access, limit: 1 })).result, { case: "errno", value: 13 });
+  assert.deepEqual((await machines.writeFile({ protocol, access, data })).result, { case: "written", value: 2 });
+  await assert.rejects(machines.readFile({ protocol, access, limit: 2 }), error => error.code === Code.DataLoss);
+  const dispatched = calls.length;
+  for (const invalid of [
+    { ...access, path: "relative" }, { ...access, path: "/a\0b" },
+    { ...access, offset: (1n << 64n) - 1n }, { ...access, deadlineUnixMs: 1n },
+  ]) await assert.rejects(machines.readFile({ protocol, access: invalid, limit: 3 }), RangeError);
+  await assert.rejects(machines.writeFile({ protocol, access, data, truncate: true }), RangeError);
+  assert.equal(calls.length, dispatched);
+  await assert.rejects(machines.writeFile({ protocol, access: { ...access, offset: 0n }, data, truncate: true }), error => error.code === Code.Unavailable);
+  assert.equal(calls.length, dispatched + 1);
+});
 
 async function exec(client, request, options) {
   let exitCode;
@@ -156,6 +193,36 @@ test("exec yields output before the command completes", async t => {
   assert.equal((await iterator.next()).done, true);
 });
 
+test("exec carries binary stdin, cwd and authority and separates stderr before its stop receipt", async t => {
+  let cancelled;
+  const cancellation = new Promise(resolve => { cancelled = resolve; });
+  const request = {
+    protocol, machine, argv: ["bash", "--noprofile", "--norc", "-c", "command"],
+    timeoutMs: 300000, stdin: new Uint8Array([0, 255, 10]), cwd: "/workspace/sub directory",
+    expiryUnixMs: 4102444800000n, maximumOutputBytes: 4n,
+  };
+  const stopped = { kind: wire.ExecStopKind.EXPIRED, message: "scope elapsed", cleanupCompleted: true };
+  const { machines } = await fixture(t, {
+    async *exec(query, context) {
+      authenticate(context);
+      assert.deepEqual(query, create(wire.ExecRequestSchema, request));
+      context.signal.addEventListener("abort", cancelled, { once: true });
+      yield { machine, output: { case: "data", value: new Uint8Array([0, 255]) } };
+      yield { machine, output: { case: "stderr", value: new Uint8Array([254, 10]) } };
+      yield { machine, output: { case: "stopped", value: stopped } };
+      await cancellation;
+    },
+  });
+  const frames = [];
+  for await (const frame of machines.exec(request)) frames.push(frame.output);
+  assert.deepEqual(frames, [
+    { case: "data", value: new Uint8Array([0, 255]) },
+    { case: "stderr", value: new Uint8Array([254, 10]) },
+    { case: "stopped", value: create(wire.ExecStopSchema, stopped) },
+  ]);
+  await cancellation;
+});
+
 for (const mode of ["early-exit", "malformed"]) {
   test(`exec cancels ${mode} without canceling another active RPC`, { timeout: 5000 }, async t => {
     let cancelled;
@@ -197,7 +264,7 @@ for (const mode of ["early-exit", "malformed"]) {
   });
 }
 
-test("exec rejects incomplete, malformed and post-terminal streams", async t => {
+test("exec rejects incomplete and malformed streams and completes at its terminal event", async t => {
   const { machines } = await fixture(t, {
     async *exec(query) {
       const mode = query.argv[0];
@@ -215,8 +282,11 @@ test("exec rejects incomplete, malformed and post-terminal streams", async t => 
       yield { machine, output: mode === "duplicate" ? { case: "exitCode", value: 1 } : { case: "data", value: new Uint8Array([1]) } };
     },
   });
-  for (const mode of ["missing", "unknown", "empty", "oversized", "duplicate", "tail", "partial-error"]) {
+  for (const mode of ["missing", "unknown", "empty", "oversized", "partial-error"]) {
     await assert.rejects(exec(machines, { protocol, machine, argv: [mode], timeoutMs: 1000 }), error => error.code === (mode === "partial-error" ? Code.Unavailable : Code.DataLoss));
+  }
+  for (const mode of ["duplicate", "tail"]) {
+    assert.equal(await exec(machines, { protocol, machine, argv: [mode], timeoutMs: 1000 }), 0);
   }
 });
 
@@ -266,7 +336,8 @@ test("exec and console request bounds fail before reaching the server", async t 
   for (const argv of [[], [""], ["a\0b"], ["echo", "a\0b"], Array(65).fill("a"), ["é".repeat(2049)], Array(9).fill("a".repeat(4096))]) {
     await assert.rejects(exec(machines, { ...request, argv }), RangeError);
   }
-  for (const timeoutMs of [0, 60001, 1.5]) await assert.rejects(exec(machines, { ...request, timeoutMs }), RangeError);
+  for (const timeoutMs of [0, 0x100000000, 1.5]) await assert.rejects(exec(machines, { ...request, timeoutMs }), RangeError);
+  for (const cwd of ["", "a\0b"]) await assert.rejects(exec(machines, { ...request, cwd }), RangeError);
   for (const limit of [0, 65537, 1.5]) await assert.rejects(machines.readOutput({ protocol, machine, offset: 0n, limit }), RangeError);
   for (const offset of [-1n, 1n << 64n]) await assert.rejects(machines.readOutput({ protocol, machine, offset, limit: 1 }), RangeError);
   assert.equal(attempts, 0);

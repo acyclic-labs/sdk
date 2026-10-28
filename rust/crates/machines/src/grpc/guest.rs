@@ -46,6 +46,31 @@ pub(super) fn decode_exec_output(
             *exited = true;
             Ok(ExecOutput::ExitCode(code))
         }
+        Some(wire::exec_output::Output::Stderr(data))
+            if !data.is_empty() && data.len() <= MAX_OUTPUT_READ_BYTES as usize =>
+        {
+            Ok(ExecOutput::Stderr(data))
+        }
+        Some(wire::exec_output::Output::Stopped(stop)) => {
+            let kind =
+                match wire::ExecStopKind::try_from(stop.kind) {
+                    Ok(wire::ExecStopKind::Timeout) => ExecStopKind::Timeout,
+                    Ok(wire::ExecStopKind::Expired) => ExecStopKind::Expired,
+                    Ok(wire::ExecStopKind::OutputLimit) => ExecStopKind::OutputLimit,
+                    Ok(wire::ExecStopKind::ControlStopped) => ExecStopKind::ControlStopped,
+                    Ok(wire::ExecStopKind::CaptureFailed) => ExecStopKind::CaptureFailed,
+                    _ => return Err(ProviderError::Rejected(
+                        "exec stop kind is invalid; recovery: repair the producer's terminal frame"
+                            .into(),
+                    )),
+                };
+            *exited = true;
+            Ok(ExecOutput::Stopped(ExecStop {
+                kind,
+                message: stop.message,
+                cleanup_completed: stop.cleanup_completed,
+            }))
+        }
         _ => Err(ProviderError::Rejected("invalid exec output frame".into())),
     }
 }

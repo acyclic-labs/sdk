@@ -36,6 +36,16 @@ machine_mutations! {
         ProviderAssurance::CustomerHosted
     }
 
+    async fn read_file(&self, machine: MachineId, access: FileAccess, limit: u32)
+        -> Result<FileRead, ProviderError> {
+        self.guest_read_file(machine, access, limit).await
+    }
+
+    async fn write_file(&self, machine: MachineId, access: FileAccess, data: Vec<u8>, truncate: bool)
+        -> Result<FileWrite, ProviderError> {
+        self.guest_write_file(machine, access, data, truncate).await
+    }
+
     #[tracing::instrument(
         name = "acyclic.machines.exec",
         skip_all,
@@ -48,38 +58,43 @@ machine_mutations! {
     ) -> Result<ExecStream, ProviderError> {
         obs::finish(
             async {
-                let mut client = self.client().await?;
                 let timeout =
                     Duration::from_millis(u64::from(command.timeout_ms)) + Duration::from_secs(1);
-                let deadline = tokio::time::Instant::now() + timeout;
+                let deadline = GuestDeadline::new(timeout, command.expiry_unix_ms)?;
+                let mut client = deadline.run(self.client()).await
+                    .ok_or_else(|| ProviderError::Rejected("exec deadline expired during credential admission; recovery: obtain fresh authority before dispatch".into()))??;
                 let mut request = Request::new(wire::ExecRequest {
                     protocol: Some(protocol()),
                     machine: Some(encode_machine(machine)),
                     argv: command.argv,
                     timeout_ms: command.timeout_ms,
+                    expiry_unix_ms: command.expiry_unix_ms,
+                    maximum_output_bytes: command.maximum_output_bytes,
+                    cwd: command.cwd,
+                    stdin: command.stdin,
                 });
-                request.set_timeout(timeout);
-                let output = client.exec(request)
-                    .await
+                if prost::Message::encoded_len(request.get_ref()) > MAX_MESSAGE_BYTES {
+                    return Err(ProviderError::Invalid("exec request exceeds the transport frame; recovery: stream or split the input before dispatch".into()));
+                }
+                request.set_timeout(deadline.remaining());
+                let output = deadline.run(client.exec(request)).await
+                    .ok_or(ProviderError::CommandIndeterminate(machine))?
                     .map_err(|error| command_error(machine, &error))?
                     .into_inner();
                 let output = stream::try_unfold(
-                    (output, false),
-                    move |(mut output, mut exited)| async move {
-                        let frame = if exited {
-                            output.message().await
-                        } else {
-                            tokio::time::timeout_at(deadline, output.message())
-                                .await
-                                .map_err(|_| ProviderError::CommandIndeterminate(machine))?
+                    (output, false, deadline),
+                    move |(mut output, mut exited, deadline)| async move {
+                        if exited {
+                            return Ok(None);
                         }
+                        let frame = deadline.run(output.message()).await
+                            .ok_or(ProviderError::CommandIndeterminate(machine))?
                         .map_err(|error| command_stream_error(machine, exited, &error))?;
                         match frame {
-                            None if exited => Ok(None),
                             None => Err(ProviderError::CommandIndeterminate(machine)),
                             Some(frame) => {
                                 let frame = decode_exec_output(frame, machine, &mut exited)?;
-                                Ok(Some((frame, (output, exited))))
+                                Ok(Some((frame, (output, exited, deadline))))
                             }
                         }
                     },
