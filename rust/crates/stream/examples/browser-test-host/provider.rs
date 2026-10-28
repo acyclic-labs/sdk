@@ -21,8 +21,8 @@ impl Provider {
 }
 #[async_trait::async_trait]
 impl StreamProvider for Provider {
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        self.memory.operation_claims()
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(self.memory.context().operation_claims())
     }
 
     async fn inspect_idempotency(

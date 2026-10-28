@@ -173,11 +173,8 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl StreamProvider for MemoryStream {
-    fn has_exclusive_process_owner(&self) -> bool {
-        true
-    }
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        &self.operation_claims
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(&self.operation_claims).with_process_exclusion()
     }
 
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {

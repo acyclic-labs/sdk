@@ -81,8 +81,8 @@ mod probe {
 
     #[async_trait::async_trait]
     impl StreamProvider for Provider {
-        fn operation_claims(&self) -> &OperationClaims {
-            &self.claims
+        fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+            acyclic_stream::ProviderContext::new(&self.claims)
         }
         async fn inspect_idempotency(
             &self,

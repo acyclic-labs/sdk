@@ -38,10 +38,8 @@ impl<T: ?Sized> ProviderPlatform for T {}
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 /// Canonical provider contract. Placement and transport remain invisible.
 pub trait StreamProvider: ProviderPlatform + 'static {
-    /// Process-local live ownership shared by clones and forwarding adapters.
-    /// Distinct provider sessions are distinct owners; backend leases remain
-    /// responsible for exclusion across independently opened sessions.
-    fn operation_claims(&self) -> &crate::OperationClaims;
+    /// Session ownership and backend publication policy.
+    fn context(&self) -> ProviderContext<'_>;
     /// Atomically observes accepted history, its last record, durable cut and fork origin.
     async fn head(&self, path: StreamPath) -> Result<PathHead, StreamError>;
     /// Observes named heads, absence and a child page atomically at one snapshot.
@@ -50,16 +48,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     async fn heads(&self, request: HeadsRequest) -> Result<Heads, StreamError> {
         let _ = request;
         Err(StreamError::Unsupported)
-    }
-    /// Whether every mutation of this provider's storage shares these process
-    /// claims. Remote sessions must leave this false, even with local caches.
-    fn has_exclusive_process_owner(&self) -> bool {
-        false
-    }
-    /// Whether writes accepted in `deferring_durability` can be sealed by
-    /// `durability_barrier`. Unsupported sessions retain per-write durability.
-    fn supports_deferred_durability(&self) -> bool {
-        false
     }
     /// Makes every write accepted by this session before the call durable.
     /// Visibility and live delivery do not wait for this barrier.

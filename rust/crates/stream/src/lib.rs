@@ -215,6 +215,7 @@ pub use record_headers::{
     RecordAttributeIter, RecordAttributes, RecordHeaders,
 };
 
+include!("lib/provider_context.rs");
 include!("lib/provider.rs");
 
 include!("lib/stream.rs");

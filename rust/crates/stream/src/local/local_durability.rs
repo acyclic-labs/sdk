@@ -54,7 +54,7 @@ pub async fn deferring_provider_durability<P: StreamProvider + ?Sized, F: Future
 ) -> F::Output {
     DEFERRED
         .scope(
-            Deferral::Provider(provider.operation_claims().owner_identity()),
+            Deferral::Provider(provider.context().operation_claims().owner_identity()),
             future,
         )
         .await
@@ -64,6 +64,8 @@ fn deferred(provider: &LocalStream) -> bool {
     match current_deferral() {
         Deferral::Eager => false,
         Deferral::All => true,
-        Deferral::Provider(owner) => provider.operation_claims().owner_identity() == owner,
+        Deferral::Provider(owner) => {
+            provider.context().operation_claims().owner_identity() == owner
+        }
     }
 }

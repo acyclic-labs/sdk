@@ -201,8 +201,8 @@ impl JournalStream {
 
 #[async_trait(?Send)]
 impl StreamProvider for JournalStream {
-    fn operation_claims(&self) -> &OperationClaims {
-        &self.0.claims
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(&self.0.claims)
     }
     async fn inspect_idempotency(
         &self,

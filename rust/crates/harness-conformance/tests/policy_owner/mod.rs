@@ -16,8 +16,8 @@ fn object_store() -> acyclic_fs::MemoryObjectBackend {
 
 #[async_trait::async_trait]
 impl StreamProvider for Session {
-    fn operation_claims(&self) -> &OperationClaims {
-        &self.1
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(&self.1)
     }
     async fn inspect_idempotency(
         &self,

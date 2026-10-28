@@ -38,7 +38,8 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore>
     /// Requires a process-owned policy fence and the same backend owner.
     pub fn new(fs: Fs<A, O>, streams: Arc<P>) -> Result<Self, StreamError> {
         if !fs.has_process_policy_owner()
-            || fs.operation_claims().owner_identity() != streams.operation_claims().owner_identity()
+            || fs.operation_claims().owner_identity()
+                != streams.context().operation_claims().owner_identity()
         {
             return Err(StreamError::AccessDenied);
         }

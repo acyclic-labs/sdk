@@ -66,8 +66,8 @@ struct Counted {
 }
 #[async_trait::async_trait]
 impl StreamProvider for Arc<Counted> {
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        self.memory.operation_claims()
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(self.memory.context().operation_claims())
     }
 
     async fn inspect_idempotency(

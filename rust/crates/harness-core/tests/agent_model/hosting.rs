@@ -284,8 +284,8 @@ impl AttestedProvider for Evidence {
 
 #[async_trait::async_trait]
 impl StreamProvider for Evidence {
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        self.inner.operation_claims()
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
     }
     async fn inspect_idempotency(
         &self,

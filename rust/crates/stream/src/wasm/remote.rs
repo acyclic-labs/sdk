@@ -62,8 +62,8 @@ impl Remote {
 }
 #[async_trait(?Send)]
 impl StreamProvider for Remote {
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        &self.operation_claims
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(&self.operation_claims)
     }
 
     async fn inspect_idempotency(

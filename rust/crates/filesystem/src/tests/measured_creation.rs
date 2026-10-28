@@ -300,8 +300,8 @@ mod source_bound_lost_ack {
 
     #[async_trait::async_trait]
     impl StreamProvider for LostCreationAck {
-        fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-            self.inner.operation_claims()
+        fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+            acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
         }
 
         async fn inspect_idempotency(

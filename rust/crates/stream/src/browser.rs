@@ -307,8 +307,8 @@ impl BrowserStreamLimits {
 
 #[async_trait(?Send)]
 impl StreamProvider for BrowserStream {
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        &self.inner.operation_claims
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(&self.inner.operation_claims)
     }
 
     async fn inspect_idempotency(

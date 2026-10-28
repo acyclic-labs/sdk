@@ -367,8 +367,8 @@ impl PostgresStream {
 
 #[async_trait]
 impl StreamProvider for PostgresStream {
-    fn operation_claims(&self) -> &OperationClaims {
-        self.inner.core.operation_claims()
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(self.inner.core.context().operation_claims())
     }
     async fn inspect_idempotency(
         &self,

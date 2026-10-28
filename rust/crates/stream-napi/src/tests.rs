@@ -223,8 +223,8 @@ impl Drop for TcpDropped {
 
 #[async_trait]
 impl StreamProvider for TcpDropProbe {
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        &self.operation_claims
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(&self.operation_claims)
     }
 
     async fn inspect_idempotency(

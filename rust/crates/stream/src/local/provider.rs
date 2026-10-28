@@ -1,14 +1,9 @@
 #[async_trait]
 impl StreamProvider for LocalStream {
-    fn has_exclusive_process_owner(&self) -> bool {
-        true
-    }
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        self.inner.provider.operation_claims()
-    }
-
-    fn supports_deferred_durability(&self) -> bool {
-        true
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(self.inner.provider.context().operation_claims())
+            .with_process_exclusion()
+            .with_deferred_durability()
     }
 
     async fn durability_barrier(&self) -> Result<(), StreamError> {

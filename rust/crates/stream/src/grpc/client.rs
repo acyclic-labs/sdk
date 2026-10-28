@@ -56,8 +56,8 @@ impl Client {
 
 #[async_trait]
 impl StreamProvider for Client {
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        &self.operation_claims
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(&self.operation_claims)
     }
 
     async fn inspect_idempotency(

@@ -10,7 +10,7 @@ where
     pub(super) fn can_defer_durability(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            self.stream.supports_deferred_durability()
+            self.stream.context().deferred_durability()
                 && self.host.filesystem.supports_deferred_durability()
         }
         #[cfg(target_arch = "wasm32")]

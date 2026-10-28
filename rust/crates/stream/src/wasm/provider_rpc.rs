@@ -195,8 +195,8 @@ impl InjectedStream {
 }
 #[async_trait::async_trait(?Send)]
 impl StreamProvider for InjectedStream {
-    fn operation_claims(&self) -> &OperationClaims {
-        &self.claims
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(&self.claims)
     }
     async fn inspect_idempotency(
         &self,

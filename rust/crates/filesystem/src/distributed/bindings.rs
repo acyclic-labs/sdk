@@ -34,7 +34,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
     }
 
     fn policy_owner(&self) -> crate::PolicyOwner {
-        if self.provider.has_exclusive_process_owner() {
+        if self.provider.context().process_exclusion() {
             crate::PolicyOwner::ExclusiveProcess
         } else {
             crate::PolicyOwner::AtomicPublication
@@ -55,14 +55,14 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> AsyncAuthorityStore
         ))
     }
     fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        self.provider.operation_claims()
+        self.provider.context().operation_claims()
     }
     fn actor_scope(&self) -> [u8; 16] {
         self.placement.actor_scope()
     }
 
     fn supports_deferred_durability(&self) -> bool {
-        self.provider.supports_deferred_durability()
+        self.provider.context().deferred_durability()
     }
 
     async fn durability_barrier(

@@ -8,14 +8,8 @@ use std::{future::Future, sync::Arc};
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        self.inner().operation_claims()
-    }
-    fn has_exclusive_process_owner(&self) -> bool {
-        self.inner().has_exclusive_process_owner()
-    }
-    fn supports_deferred_durability(&self) -> bool {
-        self.inner().supports_deferred_durability()
+    fn context(&self) -> crate::ProviderContext<'_> {
+        self.inner().context()
     }
     async fn durability_barrier(&self) -> Result<(), StreamError> {
         self.record(RequestClass::Data);

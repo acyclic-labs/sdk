@@ -40,8 +40,8 @@ macro_rules! delegate {
     ($($name:ident($arg:ident: $input:ty) -> $output:ty;)*) => {
         #[async_trait::async_trait]
         impl StreamProvider for Faulty {
-            fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-                self.inner.operation_claims()
+            fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+                acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
             }
             $(async fn $name(&self, $arg: $input) -> Result<$output, StreamError> {
                 self.inner.$name($arg).await

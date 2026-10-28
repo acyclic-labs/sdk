@@ -695,8 +695,8 @@ impl StreamProvider for Refusing {
         self.refuse()
     }
 
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        &self.claims
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(&self.claims)
     }
     async fn inspect_idempotency(
         &self,

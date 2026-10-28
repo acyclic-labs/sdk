@@ -25,7 +25,7 @@ use acyclic_native_runtime::NativeReadMeter;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, BoxProviderFuture, ChildrenPage, ChildrenPageRequest, CommitId,
     CommitOutcome, CommitRequest, CommittedEnvelope, DurableReceipt, FollowStream, ForkReceipt,
-    ForkRequest, IdempotencyKey, IdempotencyObservation, OperationClaims, ProviderPlatform,
+    ForkRequest, IdempotencyKey, IdempotencyObservation, ProviderPlatform,
     ReadRequest, RecordStream, StreamError, StreamPath, StreamProvider, StreamWatermarks,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -137,14 +137,8 @@ fn commit_digest(request: &CommitRequest) -> Result<[u8; 32], StreamError> {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for Attested<P> {
-    fn operation_claims(&self) -> &OperationClaims {
-        self.inner.operation_claims()
-    }
-    fn has_exclusive_process_owner(&self) -> bool {
-        self.inner.has_exclusive_process_owner()
-    }
-    fn supports_deferred_durability(&self) -> bool {
-        self.inner.supports_deferred_durability()
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        self.inner.context()
     }
     async fn durability_barrier(&self) -> Result<(), StreamError> {
         self.inner.durability_barrier().await
@@ -401,8 +395,8 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[async_trait::async_trait]
     impl super::StreamProvider for Probe {
-        fn operation_claims(&self) -> &super::OperationClaims {
-            self.inner.operation_claims()
+        fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+            acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
         }
         async fn inspect_idempotency(
             &self,
