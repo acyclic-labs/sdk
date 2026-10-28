@@ -137,7 +137,7 @@ impl WasmAgentServer {
                     max_steps: options
                         .limits
                         .model_steps
-                        .map(u32::try_from)
+                        .map(|value| u32::try_from(value.get()))
                         .transpose()
                         .map_err(|_| {
                             js_error(Error::Invalid("model step limit exceeds u32".into()))

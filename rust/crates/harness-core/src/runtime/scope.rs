@@ -155,7 +155,10 @@ impl RuntimeScope {
             && limits.path_bytes <= self.limits.path_bytes
             && limits.attachments <= self.limits.attachments
             && limits.render_bytes <= self.limits.render_bytes
-            && narrows(self.limits.model_steps, limits.model_steps)
+            && narrows(
+                self.limits.model_steps.map(std::num::NonZeroUsize::get),
+                limits.model_steps.map(std::num::NonZeroUsize::get),
+            )
             && narrows(
                 self.limits
                     .model_events_per_step
