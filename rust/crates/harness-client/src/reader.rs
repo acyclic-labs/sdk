@@ -576,15 +576,21 @@ impl Reader {
         self.cache.retain_passed(|_, key| coverage.contains(key));
         let mut demand = Vec::new();
         let mut seen = BTreeSet::new();
-        for (want, priority) in wants {
-            let Some((key, paging)) = self.resolve(&want) else {
-                continue;
-            };
-            if seen.insert(key.clone()) {
-                demand.push((key, priority, paging));
+        // Deduplicate in priority order. A prefetch stated earlier must never
+        // suppress a visible need, including while prefetch is disabled.
+        for priority in [Priority::Visible, Priority::Prefetch] {
+            for (want, selected) in &wants {
+                if *selected != priority {
+                    continue;
+                }
+                let Some((key, paging)) = self.resolve(want) else {
+                    continue;
+                };
+                if seen.insert(key.clone()) {
+                    demand.push((key, priority, paging));
+                }
             }
         }
-        demand.sort_by_key(|(_, priority, _)| *priority);
         let wanted: BTreeSet<&OpKey> = demand.iter().map(|(key, ..)| key).collect();
         let stale: Vec<u64> = self
             .inflight
@@ -1316,6 +1322,30 @@ mod reader_tests {
         reader.set_follows(streams.clone());
         let followed: BTreeSet<_> = reader.follows().map(|(stream, _)| stream.clone()).collect();
         assert_eq!(followed, streams.into_iter().collect());
+    }
+
+    #[test]
+    fn visible_demand_wins_over_an_earlier_duplicate_prefetch() {
+        let mut reader = Reader::new(ReaderPolicy {
+            prefetch: false,
+            ..ReaderPolicy::default()
+        })
+        .unwrap();
+        let first = StreamPath::new("test/first-visible").unwrap();
+        let later = StreamPath::new("test/later-visible").unwrap();
+        let want = |stream: StreamPath| Want::Last { stream, count: 1 };
+        let ops = frame(
+            &mut reader,
+            0,
+            &[
+                (want(later.clone()), Priority::Prefetch),
+                (want(first.clone()), Priority::Visible),
+                (want(later.clone()), Priority::Visible),
+            ],
+        );
+        assert!(
+            matches!(ops.as_slice(), [Op::Tail { stream: a, .. }, Op::Tail { stream: b, .. }] if *a == first && *b == later)
+        );
     }
 
     #[test]
