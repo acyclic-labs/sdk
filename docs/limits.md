@@ -473,3 +473,400 @@ Check83 passed workspace/native and actual filesystem WASM all-targets on `7e297
 Check86 failed on a test-only missing Context import (`1793183850004-202072-57820f8a`, 10:40:12 UTC), fixed in signed `7926d078f1`. Check87 has passed native FS/NAPI and actual FS WASM all-targets on that head; owning cache runtime tests are still compiling. The subsequent native-claim changes are not covered by it.
 
 Check83 passed production filesystem generation, production WASM and TypeScript build/type checks, then failed the final compatibility hash check on Harness schema metadata (`1793182799052-197557-ced53d7f`, 10:41:00 UTC). No generated artifacts were copied back from that failed job. The manifest now attests the actual tracked Harness schema after main #1735; a new complete production run is still required for current cache/native-claim source.
+
+
+Check87 passed native FS/NAPI and actual FS WASM all-targets plus all 56 owning cache tests, including 2,112 concurrent readers, in 1.21 s on signed `7926d078f1` (`1793183999873-203345-445f3ed4`, 10:52:07 UTC). Check88 passed native runtime/FS/NAPI all-targets, actual FS WASM all-targets and all 23 claim tests in 0.02 s on signed `e370b53ae7` (`1793184731362-209307-ab118016`, 10:55:56 UTC). Neither receipt covers the subsequent kernel-wait/no-poll edits. Production artifacts, Windows and model builds still require current-source verification.
+
+## Polling audit
+
+The no-poll sweep is part of this same unfinished milestone. The first tracked-source scan found 375 timer/yield candidates in 207 files. This is an inventory, not a claim that all polling is removed: retries and readiness loops without explicit timer calls still require inspection. Transport-error backoff, absolute deadlines, intentional model scheduler interleavings and simulated fixture latency are distinct from application-state polling. Each pending candidate must be classified from its mechanism before completion.
+
+| Mechanism | File:line | Classification | Action |
+|---|---|---|---|
+| Quiet command expiry rechecks every 5 ms | `rust/crates/harness-core/src/filesystem/native_process/capture/owner.rs:97` | Readiness poll | Replaced with retained kernel signal wait on the existing owner wake. The original 30 s test failure deadline remains; production expiry is still the signed-scope alarm. Verification pending. |
+| Shared process signal blocking wait | `rust/crates/native-runtime/src/process_tree/wake.rs:75` | OS event wait | Unix descriptor wait and Windows manual-reset event share one deadline/chunk driver. No new thread/task, repeated state query or signal consumption. All waiters retain stop visibility. Verification pending. |
+| Capture control Pending exercise | `rust/crates/harness-core/src/filesystem/native_process/capture/tests.rs:181` | One-shot test scheduling | Keep: one timer drives the Pending branch, not a readiness recheck. |
+| Capture `check_every` | `rust/crates/native-runtime/src/process_tree/pump.rs:21` | Product readiness poll | Pending: replace periodic callback checks with retained control wakes and existing absolute deadline alarms; preserve finite original native funding/cancellation negatives. |
+| Python host fixture readiness | `plugin/tests/hosts/managed-session.py:99`; `plugin/tests/hosts/sandbox-commands.py:164` | Test readiness poll | Pending: primitive readiness notification while preserving process/profile ownership and cleanup. |
+| Shared admission ownership tests | `rust/crates/filesystem/src/core_state/tests/ownership.rs:118` | Test readiness poll | Pending: replace ready-file rechecks with a channel/OS event at the owning primitive. |
+| Windows projection settling | `rust/crates/filesystem/src/native_mount/windows.rs` | Product readiness poll | Pending: event-driven completion at projection primitive; no restored settlement timeout or original cancellation bypass. |
+
+The complete first-pass candidate inventory follows. “Inspect” is explicitly unfinished and does not imply a verified classification.
+
+| Candidate | File:line | Classification | Action |
+|---|---|---|---|
+| `if SLEEP: time.sleep(SLEEP)` | `arena/evals/variance/run.py:51` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `await new Promise((r) => setTimeout(r, delay));` | `arena/packages/arena/src/jev.ts:76` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const timer = setTimeout(() => { res.timedOut = true; p.kill("SIGKILL"); }, timeoutMs);` | `arena/packages/arena/src/opencode.ts:52` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `time.sleep(delay); delay *= 2; continue` | `arena/packages/jev/src/jev/backends/jev.py:100` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `time.sleep(self.latency_ms / 1000.0)` | `arena/packages/jev/src/jev/backends/mock.py:35` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `time.sleep(delay)` | `arena/packages/jev/src/jev/backends/openrouter.py:130` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `let delay = tokio::time::sleep(sleep);` | `plugin/identity/src/lib.rs:611` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `plugin/identity/src/mcp.rs:640` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `plugin/identity/src/mcp.rs:988` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `plugin/identity/src/tests/poll_clock.rs:72` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `time.sleep(30)` | `plugin/tests/hosts/managed-session.py:50` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `time.sleep(30)` | `plugin/tests/hosts/managed-session.py:84` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `assert time.monotonic()<deadline,'owner readiness';time.sleep(.01)` | `plugin/tests/hosts/managed-session.py:99` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `while not (view/'ready').exists():assert time.monotonic()<deadline,'child native write readiness';time.sleep(.01)` | `plugin/tests/hosts/managed-session.py:160` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `while not (view/'ready').exists():assert time.monotonic()<deadline,'blocked input readiness';time.sleep(.01)` | `plugin/tests/hosts/managed-session.py:170` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `time.sleep(0.01)` | `plugin/tests/hosts/sandbox-commands.py:164` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `time.sleep(.001)` | `plugin/tests/hosts/shared-mount-scale.py:99` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `timer = setTimeout(() => reject(new Error('MCP shutdown is blocked by cancelled signup')), 2000);` | `plugin/tests/identity-agent.test.mjs:231` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/actors/src/guest/state.rs:94` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/actors/src/guest/state.rs:144` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `sleep(deadline_unix_ms.saturating_sub(self.now_unix_ms()))` | `rust/crates/actors/src/local/runtime.rs:53` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `fn sleep(milliseconds: u64) -> BoxProviderFuture<'static, ()> {` | `rust/crates/actors/src/local/runtime.rs:58` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `PlatformExecutor.sleep(step).await;` | `rust/crates/actors/src/local/runtime.rs:63` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `futures::future::select(sleep(limits.handler_timeout_millis()), interrupted),` | `rust/crates/actors/src/local/runtime.rs:720` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `timer = setTimeout(() => reject(new Error("workerd startup exceeded 10 seconds")), 10_000);` | `rust/crates/conformance/cloudflare/run.mjs:32` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const timer = setTimeout(() => stopped.kill("SIGKILL"), 5000);` | `rust/crates/conformance/cloudflare/run.mjs:50` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `await new Promise(resolve => setTimeout(resolve, 100));` | `rust/crates/conformance/cloudflare/worker.ts:155` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `await new Promise(resolve => setTimeout(resolve, 20));` | `rust/crates/conformance/cloudflare/worker.ts:319` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(10));` | `rust/crates/conformance/src/bin/native_mount_qualify/io.rs:173` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(25));` | `rust/crates/conformance/src/bin/native_mount_qualify/io.rs:227` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(25));` | `rust/crates/conformance/src/bin/native_mount_qualify/io.rs:254` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(10));` | `rust/crates/conformance/src/bin/native_mount_qualify/recovery.rs:42` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_secs(1));` | `rust/crates/conformance/src/bin/native_mount_qualify/recovery.rs:128` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(2));` | `rust/crates/conformance/src/bin/qualify/tools/capture.rs:223` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_secs(seconds));` | `rust/crates/conformance/src/bin/qualify/tools/mounting.rs:277` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(50));` | `rust/crates/conformance/tests/graphcoder_backends.rs:351` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(20));` | `rust/crates/conformance/tests/graphcoder_backends.rs:390` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/access/projection.rs:267` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/access/projection.rs:303` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/cache/decoded_model.rs:31` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `tokio::task::yield_now().await;` | `rust/crates/filesystem/src/collection/tests.rs:417` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/core_state/owners/models.rs:14` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/core_state/owners/models.rs:67` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/core_state/owners/models.rs:75` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `tokio::task::yield_now().await;` | `rust/crates/filesystem/src/core_state/tests/ownership.rs:33` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/filesystem/src/core_state/tests/ownership.rs:35` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/filesystem/src/core_state/tests/ownership.rs:40` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(10));` | `rust/crates/filesystem/src/core_state/tests/ownership.rs:118` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(10));` | `rust/crates/filesystem/src/core_state/tests/ownership.rs:193` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/demand/context_loom_tests.rs:38` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/demand/context_loom_tests.rs:41` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `std::thread::sleep(std::time::Duration::from_millis(10));` | `rust/crates/filesystem/src/demand/tests.rs:101` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/facade/generation_cache.rs:80` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `tokio::task::yield_now().await;` | `rust/crates/filesystem/src/facade/local_root_tests.rs:73` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/filesystem/src/facade/local_root_tests.rs:81` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(5));` | `rust/crates/filesystem/src/fsevents/hub/tests.rs:74` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `Poll::Pending => loom::thread::yield_now(),` | `rust/crates/filesystem/src/git_compat/tests/model.rs:21` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/kernel/allocation/accounting.rs:396` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `tokio::task::yield_now().await;` | `rust/crates/filesystem/src/kernel/publication/combiner/composition/tests.rs:395` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/filesystem/src/kernel/publication/combiner/composition/tests.rs:412` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/filesystem/src/kernel/publication/combiner/composition/tests/prefix.rs:156` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/filesystem/src/kernel/publication/combiner/composition/tests/prefix.rs:254` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(5)).await;` | `rust/crates/filesystem/src/lazy_workspace/tests/mount.rs:487` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/native_capture/accounting.rs:37` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/native_capture/sparse_scan_loom.rs:52` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/native_capture/sparse_scan_loom.rs:87` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `let timer = tokio::time::sleep(std::time::Duration::ZERO);` | `rust/crates/filesystem/src/native_mount/adapter/runtime.rs:321` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/filesystem/src/native_mount/adapter/tests/namespace.rs:248` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/filesystem/src/native_mount/adapter/tests/namespace.rs:287` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(10));` | `rust/crates/filesystem/src/native_mount/adapter/tests/platform.rs:435` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(1)).await;` | `rust/crates/filesystem/src/native_mount/adapter/tests/runtime.rs:124` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(1)).await;` | `rust/crates/filesystem/src/native_mount/adapter/tests/runtime.rs:127` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(1)).await;` | `rust/crates/filesystem/src/native_mount/adapter/tests/runtime.rs:229` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(STOP_POLL_INTERVAL);` | `rust/crates/filesystem/src/native_mount/darwin_mount/cleanup.rs:202` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/native_mount/darwin_mount/tests/lifecycle.rs:91` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/native_mount/darwin_mount/tests/lifecycle.rs:111` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/native_mount/darwin_mount/tests/lifecycle.rs:388` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/native_mount/fence/models.rs:58` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/native_mount/fence/models.rs:102` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/native_mount/fence/models.rs:280` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `std::thread::sleep(Duration::from_millis(10));` | `rust/crates/filesystem/src/native_mount/fuse/lifecycle.rs:234` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(50));` | `rust/crates/filesystem/src/native_mount/fuse/tests/cache.rs:450` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/native_mount/fuse/tests/mount.rs:47` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(20));` | `rust/crates/filesystem/src/native_mount/lazy/tests/live_mount.rs:50` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(1));` | `rust/crates/filesystem/src/native_mount/materialize/restore/artifacts.rs:111` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(HELD_RETRY);` | `rust/crates/filesystem/src/native_mount/projfs/lifecycle.rs:39` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(300));` | `rust/crates/filesystem/src/native_mount/projfs/tests/mutations.rs:204` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(10)).await;` | `rust/crates/filesystem/src/native_mount/projfs/tests/notifications.rs:142` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(1));` | `rust/crates/filesystem/src/native_mount/recovery.rs:623` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(1));` | `rust/crates/filesystem/src/native_mount/recovery.rs:645` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(10));` | `rust/crates/filesystem/src/native_mount/tests/fence.rs:453` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(1));` | `rust/crates/filesystem/src/native_mount/tests/mod.rs:73` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(10));` | `rust/crates/filesystem/src/native_mount/tests/mod.rs:94` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/native_mount/view_ledger/tests.rs:301` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/operation_claim.rs:163` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `tokio::time::sleep(std::time::Duration::from_millis(5)).await;` | `rust/crates/filesystem/src/source.rs:363` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(1));` | `rust/crates/filesystem/src/source_watch/directory_changes/tests.rs:50` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(1));` | `rust/crates/filesystem/src/source_watch/directory_changes/tests.rs:460` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:526` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(1));` | `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:733` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(1));` | `rust/crates/filesystem/src/source_watch/fsevents/tests.rs:760` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:63` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:389` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:447` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:493` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:509` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:614` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:730` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(1));` | `rust/crates/filesystem/src/source_watch/inotify/tests.rs:1047` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(10));` | `rust/crates/filesystem/src/source_watch/tests.rs:133` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(10));` | `rust/crates/filesystem/src/source_watch/tests.rs:315` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(10));` | `rust/crates/filesystem/src/source_watch/tests.rs:355` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/source_watch/tests.rs:381` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(10));` | `rust/crates/filesystem/src/source_watch/tests.rs:489` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/source_watch/tests.rs:544` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/source_watch/tests.rs:584` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/filesystem/src/source_watch/tests.rs:615` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/filesystem/src/tests/facade/concurrency/owners.rs:968` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(10)).await;` | `rust/crates/filesystem/src/tests/facade/local.rs:35` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(50)).await;` | `rust/crates/filesystem/src/tests/facade/local.rs:165` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(50)).await;` | `rust/crates/filesystem/src/tests/facade/local.rs:169` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(50)).await;` | `rust/crates/filesystem/src/tests/facade/local.rs:518` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(100));` | `rust/crates/filesystem/src/tests/watch/mod.rs:627` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(10));` | `rust/crates/filesystem/src/tests/watch/mod.rs:658` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(10));` | `rust/crates/filesystem/src/tests/watch/mod.rs:705` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(100));` | `rust/crates/filesystem/src/tests/watch/mod.rs:777` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/filesystem/src/tests/workspace/creation_race.rs:56` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(5)).await;` | `rust/crates/filesystem/src/tests/workspace/publication/mod.rs:348` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(10));` | `rust/crates/filesystem/src/watch.rs:4789` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(10));` | `rust/crates/filesystem/src/watch.rs:4826` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/workspace/access_read_model.rs:182` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/filesystem/src/workspace/identity_loom.rs:16` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `tokio::time::sleep(Duration::from_millis(1)).await;` | `rust/crates/filesystem/tests/linux_ext4_perf.rs:1056` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(10));` | `rust/crates/filesystem/tests/macos_apfs_perf.rs:137` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tonic::body::Body::new(Trailers(Some(Box::pin(tokio::time::sleep(` | `rust/crates/grpc-observability/src/tests.rs:230` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `fn sleep(&self, _: u32) -> BoxProviderFuture<'static, ()> {` | `rust/crates/harness-client/src/session/viewport_tests.rs:22` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(3))` | `rust/crates/harness-core/src/filesystem/native_process/capture/tests.rs:181` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/harness-core/src/mcp/install/tests.rs:282` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(1));` | `rust/crates/harness-core/src/mcp/stdio/native/server/tests.rs:213` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `let timeout = PlatformExecutor.sleep(10_000);` | `rust/crates/harness-core/src/oidc.rs:102` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(1)).await;` | `rust/crates/harness-core/tests/agent_model/hosting.rs:526` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/harness-core/tests/skill_materializer_loom.rs:26` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `tokio::task::yield_now().await;` | `rust/crates/harness-providers/src/codex_failure_tests.rs:34` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/harness-providers/src/codex_tests.rs:27` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(head)).await;` | `rust/crates/harness-providers/src/deadline_tests.rs:28` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(gap)).await;` | `rust/crates/harness-providers/src/deadline_tests.rs:30` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `Box::pin(tokio::time::sleep(wait))` | `rust/crates/harness-providers/src/deadline_tests.rs:46` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(wait).await;` | `rust/crates/harness-providers/src/deadline_tests.rs:57` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `Box::pin(tokio::time::sleep(duration))` | `rust/crates/harness-providers/src/http.rs:225` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(duration).await;` | `rust/crates/harness-providers/src/http.rs:238` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `leak: () => globalThis.setTimeout(() => {}, 3600000),` | `rust/crates/harness-providers/src/http/browser_tests.rs:50` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/harness-providers/tests/models/credential_snapshot.rs:25` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/harness-providers/tests/models/refresh.rs:67` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/harness-providers/tests/models/refresh.rs:146` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `thread::yield_now();` | `rust/crates/harness-tui/src/term/console_owner.rs:473` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/harness-tui/src/term/lifecycle.rs:239` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/harness-tui/src/term/lifecycle.rs:306` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/harness-tui/src/term/lifecycle.rs:343` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `std::thread::sleep(` | `rust/crates/harness-tui/src/term/probe.rs:483` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(` | `rust/crates/harness-tui/src/term/session.rs:179` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(1).min(remaining));` | `rust/crates/harness-tui/src/term/tty_tests.rs:82` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/harness-tui/src/term/tty_tests.rs:153` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(20));` | `rust/crates/harness-tui/src/term/tty_tests.rs:171` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(1));` | `rust/crates/harness-tui/src/term/windows.rs:483` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(30));` | `rust/crates/harness-tui/tests/cases/terminal_signals.rs:204` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(1));` | `rust/crates/harness-tui/tests/cases/terminal_signals.rs:302` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(2));` | `rust/crates/harness-tui/tests/terminal_regions/native_profiles.rs:191` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(20));` | `rust/crates/harness/src/bin/graphcoder/tests/cli.rs:151` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `PlatformExecutor.sleep(u32::try_from(delay + 1)?).await;` | `rust/crates/harness/src/conformance/admission.rs:112` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `let timeout = PlatformExecutor.sleep(5_000);` | `rust/crates/harness/src/conformance/dispatcher.rs:46` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `let timeout = PlatformExecutor.sleep(5_000);` | `rust/crates/harness/src/conformance/interrupt.rs:58` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `PlatformExecutor.sleep(u32::try_from(delay + 1)?).await;` | `rust/crates/harness/src/conformance/roots.rs:159` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(10)).await;` | `rust/crates/harness/src/hosting_tests.rs:228` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `() = tokio::time::sleep(OUTPUT_FLUSH_INTERVAL) => {},` | `rust/crates/harness/src/local/checkout_tools/output.rs:193` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/checkout_tools/tests.rs:49` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/checkout_tools/tests.rs:54` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/checkout_tools/tests.rs:112` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/checkout_tools/tests.rs:118` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/checkout_tools/tests.rs:163` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/checkout_tools/tests.rs:178` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/checkout_tools/tests.rs:244` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/checkout_tools/tests.rs:286` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/harness/src/local/host_files/tests.rs:59` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/harness/src/local/host_files/tests.rs:204` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/harness/src/local/host_files/tests.rs:242` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/harness/src/local/host_process/children/tests.rs:37` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/harness/src/local/host_process/children/tests.rs:107` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/harness/src/local/host_process/children/tests.rs:115` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(20)).await;` | `rust/crates/harness/src/local/tests/agents.rs:63` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(20)).await;` | `rust/crates/harness/src/local/tests/agents.rs:405` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/workspace/bootstrap/loom_tests.rs:25` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/harness/src/local/workspace/bootstrap/tests.rs:17` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/workspace/projection/tests.rs:52` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/workspace/projection/tests.rs:82` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/workspace/projection/tests.rs:89` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/workspace/projection/tests.rs:99` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/workspace/projection/tests.rs:159` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/workspace/projection/tests.rs:201` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/workspace/projection/tests.rs:221` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/workspace/projection/tests.rs:228` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/workspace/projection/tests.rs:233` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/workspace/projection/tests.rs:380` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/harness/src/local/workspace/projection/tests.rs:432` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/harness/src/local/workspace/volumes/publication_tests.rs:394` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `let deadline = tokio::time::sleep(Duration::from_secs(30));` | `rust/crates/harness/tests/dst/driver.rs:67` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/harness/tests/e2e/case_workers.rs:193` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/harness/tests/e2e/case_workers.rs:410` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `format!("{time}sleep("),` | `rust/crates/harness/tests/e2e/deadline_tests.rs:13` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `["std::thread", "::sleep("].concat(),` | `rust/crates/harness/tests/e2e/deadline_tests.rs:16` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(20)).await;` | `rust/crates/harness/tests/e2e/local_skills.rs:67` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const deadline = setTimeout(() => {` | `rust/crates/harness/tests/fixtures/native-process-approval.mjs:135` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const deadline = setTimeout(() => {` | `rust/crates/harness/tests/scenarios/headless-submissions.mjs:17` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `let idle = tokio::time::sleep(quiet);` | `rust/crates/harness/tests/support/progress_guard.rs:64` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_secs(20)).await;` | `rust/crates/harness/tests/support/progress_guard_tests.rs:28` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/harness/tests/support/progress_runnable_tests.rs:10` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_secs(20)).await;` | `rust/crates/harness/tests/support/progress_runnable_tests.rs:24` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_secs(1)).await;` | `rust/crates/harness/tests/support/resume_readiness_tests.rs:12` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(1));` | `rust/crates/harness/tests/virtiofs.rs:135` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `pub poll_interval: Duration,` | `rust/crates/machines-daytona/src/lib.rs:72` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `poll_interval: Duration::from_millis(500),` | `rust/crates/machines-daytona/src/lib.rs:96` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(self.config.poll_interval).await;` | `rust/crates/machines-daytona/src/lib.rs:466` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(self.config.poll_interval).await;` | `rust/crates/machines-daytona/src/lib.rs:498` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `let mut backoff = self.config.poll_interval;` | `rust/crates/machines-daytona/src/lib.rs:782` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(backoff).await;` | `rust/crates/machines-daytona/src/lib.rs:802` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `self.config.poll_interval,` | `rust/crates/machines-daytona/src/lib.rs:1568` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `config.poll_interval = Duration::from_millis(1);` | `rust/crates/machines-daytona/src/lib.rs:1905` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(5)).await;` | `rust/crates/machines-daytona/src/mock.rs:92` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(poll).await;` | `rust/crates/machines-daytona/src/ops.rs:322` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(250)).await;` | `rust/crates/machines-daytona/tests/live.rs:74` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(500)).await;` | `rust/crates/machines-daytona/tests/live.rs:103` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(250)).await;` | `rust/crates/machines-daytona/tests/live.rs:215` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(OBSERVATION_RETRY_DELAY).await;` | `rust/crates/machines/src/grpc/recovery.rs:84` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(1010)).await;` | `rust/crates/machines/src/grpc/tests/guest_io.rs:144` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `_ = tokio::time::sleep(Duration::from_millis(10)) => {` | `rust/crates/machines/src/grpc/tests/recovery.rs:232` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(100)).await;` | `rust/crates/machines/src/grpc/tests/recovery.rs:242` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/native-runtime/src/claim/model.rs:175` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/native-runtime/src/claim/model.rs:247` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/native-runtime/src/claim/model.rs:277` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/native-runtime/src/claim/model.rs:535` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/native-runtime/src/claim/model.rs:646` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `std::thread::sleep(std::time::Duration::from_millis(5));` | `rust/crates/native-runtime/src/file_lock_tests.rs:202` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/native-runtime/src/obs/tests.rs:308` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/native-runtime/src/ownership/model.rs:12` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `loom::thread::yield_now();` | `rust/crates/native-runtime/src/ownership/model.rs:38` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `std::thread::sleep(Duration::from_millis(delay));` | `rust/crates/native-runtime/src/process_tree/capture_events_tests.rs:49` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(50));` | `rust/crates/native-runtime/src/process_tree/capture_events_tests.rs:145` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::sleep(Duration::from_millis(5));` | `rust/crates/native-runtime/src/process_tree/custody_tests.rs:126` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::sleep(Duration::from_millis(5));` | `rust/crates/native-runtime/src/process_tree/custody_tests.rs:396` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::sleep(Duration::from_millis(5));` | `rust/crates/native-runtime/src/process_tree/custody_tests.rs:637` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::sleep(Duration::from_millis(5));` | `rust/crates/native-runtime/src/process_tree/custody_tests.rs:689` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::sleep(Duration::from_millis(5));` | `rust/crates/native-runtime/src/process_tree/custody_tests.rs:823` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(20));` | `rust/crates/native-runtime/src/process_tree/events/tests.rs:41` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(Duration::from_millis(200));` | `rust/crates/native-runtime/src/process_tree/exit_wait/tests.rs:91` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `pub check_every: Option<Duration>,` | `rust/crates/native-runtime/src/process_tree/pump.rs:21` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `check_every: None,` | `rust/crates/native-runtime/src/process_tree/pump.rs:30` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `self.check_every = Some(interval);` | `rust/crates/native-runtime/src/process_tree/pump.rs:37` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `check_every: Option<Duration>,` | `rust/crates/native-runtime/src/process_tree/pump.rs:86` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `check_every: schedule.check_every,` | `rust/crates/native-runtime/src/process_tree/pump.rs:185` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `if self.check_every.is_none_or(\|_\| now >= self.next_check) {` | `rust/crates/native-runtime/src/process_tree/pump.rs:230` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `if let Some(interval) = self.check_every {` | `rust/crates/native-runtime/src/process_tree/pump.rs:232` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `let wake_at = match self.check_every {` | `rust/crates/native-runtime/src/process_tree/pump.rs:303` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/native-runtime/src/process_tree/scale_tests.rs:109` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/native-runtime/src/process_tree/storage_tests.rs:71` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/native-runtime/src/process_tree/storage_tests.rs:174` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/native-runtime/src/process_tree/storage_tests.rs:180` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/native-runtime/src/process_tree/tests.rs:91` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::sleep(Duration::from_millis(5));` | `rust/crates/native-runtime/src/process_tree/tests.rs:297` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::sleep(Duration::from_millis(500));` | `rust/crates/native-runtime/src/process_tree/tests.rs:308` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::sleep(Duration::from_millis(5));` | `rust/crates/native-runtime/src/process_tree/tests.rs:327` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::sleep(Duration::from_secs(30));` | `rust/crates/native-runtime/src/process_tree/tests.rs:372` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::sleep(Duration::from_secs(30));` | `rust/crates/native-runtime/src/process_tree/tests.rs:481` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::sleep(Duration::from_secs(30));` | `rust/crates/native-runtime/src/process_tree/tests.rs:506` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `None => thread::sleep(Duration::from_millis(1)),` | `rust/crates/native-runtime/src/process_tree/tests.rs:611` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/native-runtime/src/process_tree/tests.rs:768` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/native-runtime/src/process_tree/tests.rs:847` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `Ok(false) => thread::yield_now(),` | `rust/crates/native-runtime/src/process_tree/tests.rs:861` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::sleep(Duration::from_millis(1));` | `rust/crates/native-runtime/src/process_tree/tests.rs:1312` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(1));` | `rust/crates/native-runtime/src/process_tree/windows.rs:361` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(5));` | `rust/crates/native-runtime/src/process_tree/windows.rs:649` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/native-runtime/src/sync.rs:29` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `std::thread::sleep(Duration::from_millis(50));` | `rust/crates/native-runtime/src/task.rs:207` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `let timer = tokio::time::sleep(Duration::from_millis(10));` | `rust/crates/native-runtime/src/testing/clock.rs:155` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(delay)).await;` | `rust/crates/native-runtime/src/testing/clock.rs:194` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(1)).await;` | `rust/crates/native-runtime/src/testing/executor/tests.rs:252` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(2)).await;` | `rust/crates/native-runtime/src/testing/executor/tests.rs:263` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(1)).await;` | `rust/crates/native-runtime/src/testing/executor/tests.rs:302` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(2)).await;` | `rust/crates/native-runtime/src/testing/executor/tests.rs:308` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/native-runtime/src/testing/queue_model.rs:365` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/native-runtime/src/tests/mod.rs:29` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(100));` | `rust/crates/native-runtime/src/wall_alarm.rs:616` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/native-runtime/src/windows/terminal.rs:131` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::yield_now();` | `rust/crates/objects/src/physical/tests.rs:64` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(120)).await;` | `rust/crates/objects/src/v1/grpc_tests.rs:49` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(250)).await;` | `rust/crates/objects/src/v1/grpc_tests.rs:200` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(250)).await;` | `rust/crates/objects/src/v1/grpc_tests.rs:520` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(250)).await;` | `rust/crates/objects/src/v1/grpc_tests.rs:607` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(Duration::from_millis(300)).await;` | `rust/crates/objects/src/v1/grpc_tests.rs:621` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/objects/src/v1/memory/transaction/model.rs:159` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `tokio::task::yield_now().await;` | `rust/crates/stream-napi/src/tests.rs:75` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/stream-napi/src/tests.rs:129` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/stream/publication-models/change.rs:18` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `tokio::time::sleep(Duration::from_millis(100)).await;` | `rust/crates/stream/src/grpc/tests.rs:348` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/stream/src/grpc/tests.rs:511` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(200)).await;` | `rust/crates/stream/src/local/tests/cases_0.rs:222` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(5)).await;` | `rust/crates/stream/src/local/tests/cases_0.rs:289` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(1)).await;` | `rust/crates/stream/src/local/tests/descriptors.rs:63` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/stream/src/local/tests/native.rs:417` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/stream/src/local/tests/native.rs:470` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/stream/src/local/tests/ownership.rs:63` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/stream/src/local/tests/ownership.rs:105` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/stream/src/local/tests/ownership.rs:187` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/stream/src/local/tests/ownership.rs:201` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/stream/src/local/tests/wakeups.rs:149` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `rust/crates/stream/src/memory/recovery_model.rs:654` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/stream/src/memory/tests/parking.rs:104` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/stream/src/memory/tests/runtime_shutdown.rs:102` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()>;` | `rust/crates/stream/src/runtime.rs:33` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {` | `rust/crates/stream/src/runtime.rs:72` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(std::time::Duration::from_millis(u64::from(milliseconds))).await;` | `rust/crates/stream/src/runtime.rs:74` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `fn sleep(&self, milliseconds: u32) -> BoxProviderFuture<'static, ()> {` | `rust/crates/stream/src/runtime.rs:83` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::task::yield_now().await;` | `rust/crates/stream/src/session/authority_tests.rs:668` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `.scope(deadline::until(registration, self.executor.sleep(10_000)))` | `rust/crates/stream/src/session/client.rs:627` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `Err(StreamError::Unavailable) if recovering => executor.sleep(100).await,` | `rust/crates/stream/src/session/client/link.rs:84` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `executor.sleep(10).await;` | `rust/crates/stream/src/session/client/link.rs:343` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `executor.sleep(1_000),` | `rust/crates/stream/src/session/client/link.rs:371` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `Err(StreamError::Unavailable) if attempt < 2 => executor.sleep(10).await,` | `rust/crates/stream/src/session/client/link.rs:386` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `fn sleep(&self, milliseconds: u32) -> crate::BoxProviderFuture<'static, ()> {` | `rust/crates/stream/src/session/client/pool/retry_model.rs:12` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `fn sleep(&self, _: u32) -> BoxProviderFuture<'static, ()> {` | `rust/crates/stream/src/session/client/pool/route_searches.rs:46` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/crates/stream/src/session/client/progress/model.rs:14` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `tokio::task::yield_now().await;` | `rust/crates/stream/src/session/client/tests/tenk.rs:170` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `self.executor.sleep(10).await;` | `rust/crates/stream/src/session/interest.rs:425` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `crate::runtime::PlatformExecutor.sleep(milliseconds.min(f64::from(i32::MAX)) as u32)` | `rust/crates/stream/src/wasm/session_authority.rs:62` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `loom::thread::yield_now();` | `rust/verification/sdk-fixtures/model.rs:349` | Model scheduler interleaving | Keep explicit interleaving; inspect enclosing test for any separate readiness loop. |
+| `const deadline = setTimeout(() => { fail(new Error("browser qualification exceeded 9 seconds")); chrome.kill(); }, 9_000);` | `scripts/browser-test.mjs:66` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `std::thread::sleep(std::time::Duration::from_millis(5));` | `scripts/check-crate-tests.test.mjs:57` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `if (entries.length === 0) await new Promise(resolve => setTimeout(resolve, 10));` | `scripts/fixtures/installed-harness/test/browser-runtime.test.ts:47` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore',windowsHide:true});` | `scripts/graphcoder-e2e/helpers.test.mjs:50` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const timer = setTimeout(() => {` | `scripts/graphcoder-e2e/suite.mjs:11` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const result = captureCommand(process.execPath, ['-e', 'process.stdout.write("started"); setInterval(() => {}, 1000)'], { encoding: 'utf8', timeout: 2000, killSignal: 'SIGKILL' });` | `scripts/process-capture.test.mjs:69` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `await new Promise(resolveDelay => setTimeout(resolveDelay, 2_000));` | `scripts/publish-cargo-crates.mjs:133` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const timer = setTimeout(() => rejectFailure(new Error("held fetch cancellation exceeded the standard nine-second work budget")), 9000);` | `scripts/qualify-fetch-cancellation.mjs:60` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `'process.send(process.pid);setInterval(()=>{},1000)'],` | `scripts/qualify-main-green-debts.test.mjs:117` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `'process.stdout.write("ready\\n");setInterval(()=>{},1000)'], {` | `scripts/qualify-main-green-debts.test.mjs:195` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const timer = setTimeout(() => rejectFailure(new Error("web lifecycle exceeded the standard nine-second work budget")), 9000);` | `scripts/qualify-web-lifecycle.mjs:75` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `put("metadata", 'require("node:fs").writeFileSync("compiler.pid", String(process.pid)); setInterval(() => {}, 1000);');` | `scripts/test-contract-artifacts.mjs:141` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `while (!existsSync(join(root, "compiler.pid")) && performance.now() < deadline) await setTimeout(25);` | `scripts/test-contract-artifacts.mjs:144` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const timeout = setTimeout(() => child.kill("SIGKILL"), 8000);` | `scripts/test-graphcoder-pty.mjs:39` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const timeout = setTimeout(() => { for (const child of children) kill(child); }, 8000);` | `scripts/test-graphcoder-resume.mjs:63` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const deadlock = setTimeout(() => {` | `scripts/test-plan-qualification.mjs:388` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `tokio::time::sleep(RETRY_DELAY).await;` | `scripts/tests/fixtures/proof-policy/owner-handover-v2/streams/source/grpc/client.rs:425` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `thread::yield_now();` | `scripts/tests/fixtures/proof-policy/streams-checkpoint-v3/source/rust/crates/stream/src/memory/recovery_model.rs:621` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `await new Promise(resolve => setTimeout(resolve, 20));` | `typescript/packages/actors/test/actors.test.ts:178` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `await new Promise(resolve => setTimeout(resolve, 20));` | `typescript/packages/actors/test/actors.test.ts:208` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `signal?.addEventListener("abort", () => setTimeout(() => reject(new Error("late connect abort")), 25), { once: true });` | `typescript/packages/actors/test/actors.test.ts:233` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `while (Date.now() < end) { const result = await probe(); if (result !== undefined) return result; await new Promise(resolveDelay => setTimeout(resolveDelay, 50)); }` | `typescript/packages/actors/test/browser-http-conformance.mjs:196` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const keepAlive = setTimeout(() => {}, 1000);` | `typescript/packages/actors/test/credential-interleavings.mjs:95` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `setTimeout(() => {` | `typescript/packages/filesystem/test/browser-multitab.js:385` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `await new Promise((resolve) => setTimeout(resolve, 25));` | `typescript/packages/filesystem/test/browser-multitab.js:409` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `setTimeout(() => {` | `typescript/packages/filesystem/test/browser-multitab.js:545` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));` | `typescript/packages/filesystem/test/browser-qualify.mjs:116` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const timeout = setTimeout(() => reject(new Error(geckodriver did not listen: ${logs})), 30_000);` | `typescript/packages/filesystem/test/browser-qualify.mjs:169` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const raf = globalThis.requestAnimationFrame ?? ((run: () => void) => setTimeout(run, 16) as unknown as number);` | `typescript/packages/harness/src/explorer.ts:104` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `this.#timer = setTimeout(() => { this.#timer = undefined; this.schedule(); }, Number(wakeIn));` | `typescript/packages/harness/src/explorer.ts:118` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const timer = setTimeout(cancel, request.timeout_ms);` | `typescript/packages/harness/src/mcp-http.ts:18` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `await new Promise(resolve => setTimeout(resolve, 20));` | `typescript/packages/harness/test/browser-agents-fixture.mjs:56` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const timeout = setTimeout(() => controller.abort(), 30000);` | `typescript/packages/objects/src/v1-http.ts:78` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("invalid codec waited for peer EOF")), 2000); }),` | `typescript/packages/objects/test/v1-grpc-conformance.mjs:83` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const timer = codec === 0 ? undefined : setTimeout(done, 10);` | `typescript/packages/objects/test/v1-grpc-conformance.mjs:138` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("invalid codec RPC did not cancel")), 2000); }),` | `typescript/packages/objects/test/v1-grpc-conformance.mjs:219` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `const timer = setTimeout(() => controller.abort(new Error(missing ${mode} ${field})), 2000);` | `typescript/packages/stream/test/grpc-provider-conformance.mjs:34` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `return await Promise.race([iterator.next(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("record delivery stalled")), 250); })]);` | `typescript/packages/stream/test/grpc-provider-conformance.mjs:45` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `if (totalDeadline) globalThis.setTimeout(() => broken.abort(), 1000);` | `typescript/packages/stream/test/remote-history.browser.ts:30` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `setTimeout(fn: () => void, delay?: number, ...args: unknown[]) {` | `typescript/packages/stream/test/session-deadline-model-driver.ts:78` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `setInterval(() => {}, 1 << 30);` | `typescript/packages/stream/test/session-model-driver.ts:92` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| `setTimeout(callback: () => void, milliseconds?: number, ...args: unknown[]) {` | `typescript/packages/stream/test/session.test.ts:190` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |

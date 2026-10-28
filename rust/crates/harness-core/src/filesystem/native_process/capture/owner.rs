@@ -94,14 +94,14 @@ mod tests {
         let control = OwnerControl::open(now_unix_ms() + 50)?;
         control.check().map_err(storage)?;
         // Nothing checks or publishes: only the shared alarm can stop it.
-        let started = std::time::Instant::now();
-        while !control.0.stopped.load(Ordering::Acquire) {
-            assert!(
-                started.elapsed().as_secs() < 30,
-                "expiry never stopped the command"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        assert!(
+            control
+                .wake()
+                .wait(Some(std::time::Duration::from_secs(30)))
+                .map_err(storage)?,
+            "expiry never signalled the command"
+        );
+        assert!(control.0.stopped.load(Ordering::Acquire));
         assert!(control.check().is_err());
         Ok(())
     }
