@@ -18,9 +18,7 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
         }));
         let observed = validity.clone();
         let cache = CredentialCache::new(
-            move |_| async move {
-                CredentialSnapshot::new("synthetic".into(), revision, 100)
-            },
+            move |_| async move { CredentialSnapshot::new("synthetic".into(), revision, 100) },
             move || *observed.lock().unwrap(),
         );
         let lease = cache.resolve().await.unwrap();
@@ -50,7 +48,7 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
                 "account" => validity.revision = Some(CredentialRevision([2; 32])),
                 "expiry" => validity.now_unix_seconds = 100,
                 "unavailable" => validity.revision = None,
-                _ => {},
+                _ => {}
             }
         }
         release.send(()).unwrap();
@@ -62,7 +60,10 @@ async fn successful_reply_requires_the_original_credential_to_remain_current() {
             assert_eq!(error.code(), Code::Unauthenticated);
             assert!(std::error::Error::source(&error).is_some());
         }
-        assert!(watch.now_or_never().is_none(), "local refusal is not remote rejection");
+        assert!(
+            watch.now_or_never().is_none(),
+            "local refusal is not remote rejection"
+        );
         *validity.lock().unwrap() = CredentialValidity {
             now_unix_seconds: 1,
             revision: Some(revision),

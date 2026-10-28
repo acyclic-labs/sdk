@@ -27,6 +27,9 @@ time refuses rather than resurrecting a retired revocation.
 Delta publication time is distinct from the retirement floor. A targeted delta
 preserves unrelated historical admissions while applying current revocations
 to the exact affected key or block at every supported verification time.
+A complete checkpoint can retain the same retirement floor after a newer
+delta. It preserves publication time independently, so compaction neither
+retires unrelated history nor permits a backdated next delta.
 
 The owner must atomically persist the accepted frontier and state before
 acknowledgement, retain them across restart, and authenticate the current

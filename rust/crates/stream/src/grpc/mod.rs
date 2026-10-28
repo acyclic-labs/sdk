@@ -329,7 +329,9 @@ impl Client {
                     if result.is_ok() {
                         if let Some(lease) = &lease {
                             lease.check().map_err(|error| {
-                                let mut status = Status::unauthenticated("credential source unavailable or changed");
+                                let mut status = Status::unauthenticated(
+                                    "credential source unavailable or changed",
+                                );
                                 status.set_source(Arc::new(error));
                                 status
                             })?;
