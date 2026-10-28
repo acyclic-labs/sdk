@@ -195,10 +195,13 @@ impl Binding {
 #[ts(rename_all = "camelCase")]
 pub struct ActorLimits {
     #[wire(tag = 1, uint64)]
+    #[ts(optional)]
     handler_timeout_millis: Option<PositiveU64>,
     #[wire(tag = 2, uint64)]
+    #[ts(optional)]
     memory_bytes: Option<PositiveU64>,
     #[wire(tag = 3, uint64)]
+    #[ts(optional)]
     checkpoint_bytes: Option<PositiveU64>,
 }
 
