@@ -320,9 +320,18 @@ impl Client {
                         error.code() == Code::Unauthenticated
                             && std::error::Error::source(error).is_none()
                     }) {
-                        if let Some(lease) = lease {
+                        if let Some(lease) = &lease {
                             lease.reject().map_err(|_| {
                                 Status::unauthenticated("credential source unavailable")
+                            })?;
+                        }
+                    }
+                    if result.is_ok() {
+                        if let Some(lease) = &lease {
+                            lease.check().map_err(|error| {
+                                let mut status = Status::unauthenticated("credential source unavailable or changed");
+                                status.set_source(Arc::new(error));
+                                status
                             })?;
                         }
                     }

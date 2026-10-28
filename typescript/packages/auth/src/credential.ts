@@ -76,7 +76,13 @@ export interface CredentialRequest {
 export async function* credentialStream<T>(
   stream: AsyncIterable<T>, lease: CredentialRequest, rejected: (error: unknown) => boolean,
 ): AsyncIterable<T> {
-  try { yield* stream; }
+  try {
+    for await (const value of stream) {
+      lease.check();
+      yield value;
+    }
+    lease.check();
+  }
   catch (error) { if (rejected(error)) lease.reject(); throw error; }
 }
 

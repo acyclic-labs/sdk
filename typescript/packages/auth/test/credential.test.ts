@@ -148,3 +148,27 @@ test("stream trailers reject only their exact lease; denial and cancellation pre
   await expect(Array.fromAsync(credentialStream(response(unauthenticated), current, rejected))).rejects.toBe(unauthenticated);
   expect(() => current.check()).toThrow();
 });
+
+test("stream custody refuses changed records and completion and retires its iterator", async () => {
+  for (const completion of [false, true]) {
+    let revision = "first";
+    let retired = false;
+    const cache = new CredentialCache(async () => new CredentialSnapshot("synthetic", revision, 100),
+      () => ({ nowUnixSeconds: 1, revision }));
+    const lease = await resolveCredential(cache.provider);
+    async function* records() {
+      try {
+        yield 1;
+        revision = "second";
+        if (!completion) yield 2;
+      } finally { retired = true; }
+    }
+    const stream = credentialStream(records(), lease, () => false)[Symbol.asyncIterator]();
+    expect((await stream.next()).value).toBe(1);
+    await expect(stream.next()).rejects.toThrow("source changed or expired");
+    expect(retired).toBe(true);
+    // A current source remains usable after the old iterator is refused.
+    const current = await resolveCredential(cache.provider);
+    current.check();
+  }
+});

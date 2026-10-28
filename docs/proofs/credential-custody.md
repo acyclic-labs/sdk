@@ -81,6 +81,13 @@ it. Native tonic interceptors recheck leases after tonic readiness, before
 submitting to the transport. This does not make an atomic promise about a
 later remote receive or replace the server's admission check.
 
+Successful Actors replies, shared Auth channel calls, Stream unary replies and
+native session records recheck their retained lease before admitting the result.
+JavaScript Actors checks before decoding its returned bytes; shared JavaScript
+credential streams check each record and completion and retire their iterator
+on refusal. Tonic and Connect may decode wire messages before this check;
+predecode work admission remains a separate integration below.
+
 Auth owns the native TLS channel setup for platform roots, an exclusive private
 CA, or a custodian-supplied member/SVID verifier, with optional mutual TLS.
 Actors, Streams and Objects use it. Clones reuse tonic's maintained connection.

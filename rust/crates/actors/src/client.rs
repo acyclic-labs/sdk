@@ -455,6 +455,7 @@ macro_rules! client_operations {
                 let (input, lease) = self.request(input, None).await?;
                 let response = self.inner.clone().$method(input).await
                     .map(tonic::Response::into_inner).map_err(|status| request_error(status, lease.as_ref()))?;
+                if let Some(lease) = &lease { lease.check()?; }
                 Ok(response.try_into()?)
             }
             )*
@@ -484,6 +485,7 @@ macro_rules! client_operations {
                         let (input, lease) = self.request(input, authorization).await?;
                         let response = self.inner.clone().$method(input).await
                             .map(tonic::Response::into_inner).map_err(|status| request_error(status, lease.as_ref()))?;
+                        if let Some(lease) = &lease { lease.check()?; }
                         let output = domain::$output::try_from(response)?;
                         Ok(wire::$output::from(output).encode_to_vec())
                     }, )*

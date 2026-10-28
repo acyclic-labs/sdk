@@ -79,7 +79,7 @@ impl transport::Transport for Grpc {
             })?
             .into_inner();
             Ok(Box::pin(response.map(move |result| {
-                result.map_err(|error| {
+                let value = result.map_err(|error| {
                     if error.code() == tonic::Code::Unauthenticated
                         && std::error::Error::source(&error).is_none()
                     {
@@ -92,7 +92,11 @@ impl transport::Transport for Grpc {
                     } else {
                         grpc::status(&error)
                     }
-                })
+                })?;
+                if let Some(lease) = &lease {
+                    lease.check().map_err(|_| StreamError::AccessDenied)?;
+                }
+                Ok(value)
             })) as Response)
         })
     }

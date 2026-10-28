@@ -125,6 +125,9 @@ where
         }) {
             lease.reject().map_err(credential_error)?;
         }
+        if response.is_ok() {
+            lease.check().map_err(credential_error)?;
+        }
         response
     })
     .await

@@ -44,6 +44,7 @@ export function createObjectsV1GrpcClients(options: ObjectsV1GrpcOptions) {
     const rejected = (error: unknown) => error instanceof ConnectError && error.code === Code.Unauthenticated;
     try {
       const response = await next(request);
+      lease.check();
       return response.stream ? { ...response, message: credentialStream(response.message, lease, rejected) } : response;
     }
     catch (error) {
