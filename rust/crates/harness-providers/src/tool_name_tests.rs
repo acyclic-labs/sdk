@@ -460,13 +460,13 @@ async fn canonical_name_expansion_obeys_the_aggregate_parser_bound() -> Result<(
     };
     let mut ordinary = provider.generate(&prepared, dispatch);
     let error = ordinary.next().await.unwrap().unwrap_err();
-    assert!(error.to_string().contains("aggregate"));
+    assert!(error.to_string().contains("configured byte policy"));
     let work = native_tests::work(&acyclic_fs::CancellationToken::new())?;
     let mut native = provider
         .generate_with_native_work(&prepared, dispatch, &work)?
         .await?;
     let error = native.next().await.unwrap().unwrap_err();
-    assert!(error.to_string().contains("aggregate"));
+    assert!(error.to_string().contains("configured byte policy"));
     Ok(())
 }
 
