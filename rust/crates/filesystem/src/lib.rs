@@ -240,6 +240,8 @@ pub use foundation::{
     FileId, GenerationId, Head, MountId, OperationId, ProposedCommit, Sequence, VolumeId, WatchId,
     authority_commit_digest,
 };
+#[cfg(feature = "distributed")]
+pub use git_compat::{StreamGitCompatStore, StreamGitCompatStoreError};
 pub use git_compat::{
     GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureAuthenticationError,
     GitCaptureError, GitCaptureProof, GitCapturedGeneration, GitCommand, GitCommandOutput,

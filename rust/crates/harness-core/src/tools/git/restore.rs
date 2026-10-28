@@ -1,7 +1,10 @@
 use super::*;
 
-impl<F, Fut> WorkspaceGitExecutor<'_, F>
+impl<F, Fut, P, O, S> WorkspaceGitExecutor<'_, F, P, O, S>
 where
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+    S: CommandStore,
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = Result<(), Error>> + Send,
 {

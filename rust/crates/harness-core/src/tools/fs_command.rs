@@ -12,7 +12,7 @@ pub struct FsCommand {
 
 #[cfg(all(
     not(target_arch = "wasm32"),
-    any(test, all(feature = "filesystem-local", feature = "native-execution"))
+    any(test, feature = "filesystem")
 ))]
 pub(crate) fn agent_diff(args: &[String]) -> Option<&str> {
     match args {

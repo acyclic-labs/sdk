@@ -1,15 +1,18 @@
 //! Repository sources are authorized before exposing saved metadata or recovering an intent.
 use super::*;
 
-impl<F, Fut> WorkspaceGitExecutor<'_, F>
+impl<F, Fut, P, O, S> WorkspaceGitExecutor<'_, F, P, O, S>
 where
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+    S: CommandStore,
     F: Fn() -> Fut + Send + Sync,
     Fut: Future<Output = Result<(), Error>> + Send,
 {
     pub(super) async fn authorize_repository(&self) -> crate::Result<()> {
         let Some(state) = acyclic_fs::GitCompatStore::load(self.store, self.repository_id)
             .await
-            .map_err(Error::from)?
+            .map_err(S::error)?
         else {
             return Ok(());
         };

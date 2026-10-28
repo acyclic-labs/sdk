@@ -343,7 +343,7 @@ where
         let maximum_bytes = turns.limits.maximum_bytes;
         // The preset's policy binds before any agent runs under it.
         turns.approval_policy.bind().map_err(turn)?;
-        let turner = Arc::new(configure(FilesystemTurnHost::new(
+        let turner = FilesystemTurnHost::new(
             Arc::clone(&stream),
             Arc::clone(&volumes),
             issuer.clone(),
@@ -351,7 +351,13 @@ where
             turns.executors,
             turns.limits,
             turns.approval_policy,
-        )));
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        let turner = turner.with_workspace_tools({
+            let volumes = Arc::clone(&volumes);
+            Arc::new(move |agent, authority| Ok(Arc::new(super::FilesystemTools::new(Arc::clone(&volumes), agent, authority)?)))
+        });
+        let turner = Arc::new(configure(turner));
         let driver = ExecutorDriver::new(Arc::clone(&turner));
         // A host keeping state beside its volumes (a lazy checkout) chooses
         // each spawn's fork cut, so a child's project is a related fork.

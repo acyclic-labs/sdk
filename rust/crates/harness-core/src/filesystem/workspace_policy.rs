@@ -1,10 +1,11 @@
 use crate::{Error, Result};
 use acyclic_fs::{
-    DefaultTextMergeDriver, GitIgnorePolicy, LazyWorkspace, LocalAuthorityBackend,
-    LocalCoreStateStore, LocalObjectBackend, MergeDriverRegistry,
-    demand::native::NativeDemandSource,
+    DefaultTextMergeDriver, GitIgnorePolicy, MergeDriverRegistry,
 };
 use std::sync::Arc;
+#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+use acyclic_fs::{LazyWorkspace, LocalAuthorityBackend, LocalCoreStateStore, LocalObjectBackend, demand::native::NativeDemandSource};
+#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
 pub(super) type LocalLazyWorkspace = LazyWorkspace<
     LocalAuthorityBackend,
     LocalObjectBackend,
@@ -26,8 +27,8 @@ pub(crate) fn git_view_policy(ignore_text: &str) -> GitIgnorePolicy {
 }
 
 /// Loads text merge drivers and workspace attributes.
-pub(crate) async fn merge_drivers_for<'a>(
-    workspace: impl Into<crate::tools::git::View<'a>>,
+pub(crate) async fn merge_drivers_for<'a, P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static, O: acyclic_fs::AsyncObjectStore + 'static>(
+    workspace: impl Into<crate::tools::git::View<'a, P, O>>,
 ) -> Result<Arc<MergeDriverRegistry>> {
     let bytes = workspace
         .into()
@@ -50,8 +51,8 @@ pub(crate) async fn merge_drivers_for<'a>(
 }
 
 /// Loads ignores without reading or validating merge attributes.
-pub(crate) async fn ignore_for<'a>(
-    workspace: impl Into<crate::tools::git::View<'a>>,
+pub(crate) async fn ignore_for<'a, P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static, O: acyclic_fs::AsyncObjectStore + 'static>(
+    workspace: impl Into<crate::tools::git::View<'a, P, O>>,
 ) -> Result<GitIgnorePolicy> {
     let bytes = workspace
         .into()
