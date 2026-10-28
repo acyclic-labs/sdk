@@ -90,14 +90,9 @@ impl BackingPool {
     }
 
     pub(super) fn retain(&self, mut value: OwnedBytes, budget: usize) -> RecordBytes {
-        if let Some(backing) = value.backing()
-            && let Some(charge) = locked(&self.0).owners.get(&backing).and_then(Weak::upgrade)
-        {
-            return RecordBytes { value, charge };
-        }
         // Unknown transport capacity cannot be charged from its visible length.
         // A small slice must also not pin an allocation larger than the entire
-        // cache budget. Already shared owners above keep their existing charge.
+        // cache budget, even when an older view still holds that allocation.
         if value
             .retained_capacity()
             .is_none_or(|capacity| capacity > budget && capacity > value.len())

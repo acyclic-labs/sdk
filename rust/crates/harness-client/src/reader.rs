@@ -388,8 +388,11 @@ const MAX_REFUSED: usize = 64;
 pub struct Residency {
     /// Cache charge, never above the byte budget.
     pub cache_bytes: usize,
-    /// Charge of wanted values served uncached beside the budget.
+    /// Uncached charge, including payload retained by cloned views after eviction.
     pub passed_bytes: usize,
+    /// Unique payload capacity across cache, pass-throughs and cloned views.
+    /// Excludes ownership headers, allocator overhead and adapter copies.
+    pub backing_bytes: usize,
     /// Streams with retained facts.
     pub streams: usize,
     /// Cache entries.
@@ -559,6 +562,7 @@ impl Reader {
         Residency {
             cache_bytes: self.cache.bytes(),
             passed_bytes: self.cache.passed_bytes(),
+            backing_bytes: self.cache.backing_bytes(),
             streams: self.cache.streams(),
             cache_entries: self.cache.len(),
             requests: self.inflight.len(),

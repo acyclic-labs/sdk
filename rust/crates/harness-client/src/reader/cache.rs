@@ -1065,6 +1065,17 @@ mod tests {
         assert_eq!(cache.backing_bytes(), 8192);
         cache.retain_passed(|_, _| false);
         assert_eq!(cache.backing_bytes(), 0);
+
+        // After memory pressure, a new tiny record must not prolong an old
+        // giant view's allocation once that view leaves the viewport.
+        let mut cache = RecordCache::new(2 << 20, 16);
+        assert!(cache.insert_record(&stream, 0, root.clone(), None));
+        let old_view = cache.record(&stream, 0).unwrap().clone();
+        cache.set_budget(4096);
+        assert!(cache.insert_record(&stream, 1, root.slice(11..15), None));
+        assert_eq!(cache.backing_bytes(), (1 << 20) + 4);
+        drop(old_view);
+        assert_eq!(cache.backing_bytes(), 4);
     }
 
     #[test]

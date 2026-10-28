@@ -73,6 +73,8 @@ struct Health<'a> {
     connectivity: &'static str,
     retry_at: Option<u64>,
     cache_bytes: usize,
+    passed_bytes: usize,
+    backing_bytes: usize,
     requests: usize,
     follows: usize,
     wake_in: Option<u64>,
@@ -227,6 +229,8 @@ impl WasmExplorer {
             connectivity,
             retry_at,
             cache_bytes: residency.cache_bytes,
+            passed_bytes: residency.passed_bytes,
+            backing_bytes: residency.backing_bytes,
             requests: residency.requests,
             follows: residency.follows,
             wake_in: reader
