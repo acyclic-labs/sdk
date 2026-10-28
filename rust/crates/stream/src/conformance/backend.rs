@@ -1,6 +1,6 @@
 use super::{histories, verify_contract, wave1};
 use crate::{
-    AppendOutcome, AppendRequest, FollowFilter, OwnedBytes, ProviderPlatform, ReadRequest,
+    AppendOutcome, AppendRequest, IdempotencyKey, OwnedBytes, ProviderPlatform, ReadRequest,
     StreamError, StreamPath, StreamProvider, UnixMillisClock as _,
     testing::{Counted, RequestLedger, Requests},
 };
@@ -149,7 +149,9 @@ async fn workload(
             path: path.clone(),
             records: vec![OwnedBytes::from_static(b"warmup").into()],
             if_tail: Some(0),
-            idempotency_key: None,
+            idempotency_key: IdempotencyKey::new(
+                format!("conformance/{name}/warmup").into_bytes(),
+            )?,
         })
         .await?;
     if !matches!(warmup, AppendOutcome::Committed(ref receipt) if receipt.start == 0 && receipt.end == 1)
@@ -157,9 +159,11 @@ async fn workload(
         return Err(Failure::Invariant("warmup did not append exactly once"));
     }
     let before = ledger.requests();
-    let mut follow = provider
-        .follow(path.clone(), 1, FollowFilter::default())
-        .await?;
+    let mut follow = crate::records_only(
+        provider
+            .follow(crate::FollowRequest::new(path.clone(), 1))
+            .await?,
+    );
     budget("follow open", before, &ledger)?;
     let before = ledger.requests();
     let clock = crate::SystemUnixMillisClock;
@@ -173,7 +177,9 @@ async fn workload(
                 path: path.clone(),
                 records: vec![value.clone().into()],
                 if_tail: Some(sequence),
-                idempotency_key: None,
+                idempotency_key: IdempotencyKey::new(
+                    format!("conformance/{name}/{sequence}").into_bytes(),
+                )?,
             })
             .await?;
         budget("append", before, &ledger)?;

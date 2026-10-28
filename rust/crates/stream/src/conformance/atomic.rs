@@ -25,11 +25,13 @@ pub(super) async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamEr
             },
         ],
         idempotency_key: atomic_key.clone(),
+        deadline_unix_millis: None,
     };
     let committed = provider.commit(atomic.clone()).await?;
-    assert!(
-        matches!(&committed, crate::CommitOutcome::Committed(envelope) if envelope.mutations.len() == 2)
-    );
+    let crate::CommitOutcome::Committed(receipt) = &committed else {
+        return Err(StreamError::InvalidResponse);
+    };
+    assert_eq!(receipt.appends.len(), 2);
     assert_eq!(provider.commit(atomic).await?, committed);
     assert_eq!(provider.tail(first).await?, 1);
     assert_eq!(provider.tail(second).await?, 1);
@@ -37,10 +39,11 @@ pub(super) async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamEr
         .inspect_idempotency(atomic_key)
         .await?
         .ok_or(StreamError::InvalidResponse)?;
-    assert_eq!(
-        observed.outcome,
-        crate::IdempotencyOutcome::Commit(committed)
-    );
+    let crate::IdempotencyOutcome::Commit(envelope) = observed.outcome else {
+        return Err(StreamError::InvalidResponse);
+    };
+    assert_eq!(envelope.commit_id, receipt.commit_id);
+    assert_eq!(envelope.mutations.len(), 2);
     let deadline_path = StreamPath::new("conformance/deadline")?;
     let request = crate::CommitRequest {
         conditions: vec![crate::CommitCondition::Absent {
@@ -53,9 +56,10 @@ pub(super) async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamEr
         idempotency_key: crate::IdempotencyKey::new(crate::OwnedBytes::from_static(
             b"http-deadline",
         ))?,
+        deadline_unix_millis: Some(1),
     };
     assert_eq!(
-        provider.commit_before(request, 1).await,
+        provider.commit(request).await,
         Err(StreamError::DeadlineElapsed)
     );
     assert_eq!(
