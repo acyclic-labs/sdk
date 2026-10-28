@@ -8,7 +8,7 @@ use super::{
 
 /// Startup query deadline, shared by the entire batch, not by each query.
 pub const PROBE_TIMEOUT: Duration = Duration::from_millis(100);
-/// Protection for terminal reply frames and one startup polling batch.
+/// Protection for terminal reply frames and one startup query batch.
 /// Bracketed paste payloads use their own streaming decoder without this bound.
 pub const PROBE_LIMIT: usize = 16 * 1024;
 const GRAPHICS_ID: &str = "314159";
@@ -21,7 +21,7 @@ fn modes() -> impl Iterator<Item = u16> {
         .chain(super::restore::MOUSE_ENCODINGS)
 }
 
-/// Polling transport; implementations must honor the supplied absolute deadline.
+/// Event-driven transport honoring the supplied absolute deadline.
 pub trait ProbeIo {
     /// Native initialization established bounded margins and SU/SD support.
     fn native_scroll_regions(&self) -> bool {
@@ -30,7 +30,9 @@ pub trait ProbeIo {
 
     /// Write and flush the entire batch.
     fn send(&mut self, bytes: &[u8], deadline: Instant) -> io::Result<()>;
-    /// Return available bytes, or zero at EOF/deadline. Must not block past it.
+    /// Wait for bytes or a lifecycle event, returning zero at EOF/deadline.
+    /// Nonblocking device readiness belongs in the transport, which must not
+    /// expose WouldBlock or block past the supplied deadline.
     fn receive(&mut self, bytes: &mut [u8], deadline: Instant) -> io::Result<usize>;
     /// Install the initial mode snapshot before setup, when the transport owns
     /// a terminal lifecycle. Scripted transports need no lifecycle state.
@@ -479,13 +481,6 @@ pub fn detect(
             deadline,
         ) {
             Err(error) if error.kind() == io::ErrorKind::TimedOut => break,
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                std::thread::sleep(
-                    Duration::from_millis(1)
-                        .min(deadline.saturating_duration_since(Instant::now())),
-                );
-                continue;
-            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             result => result?,
         };
