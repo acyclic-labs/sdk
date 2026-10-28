@@ -18,7 +18,7 @@ use std::fmt::Write;
 /// Only the first 1 KiB is indexed. A bounded [start,end) containing this prefix
 /// contains all its extensions: projection cannot widen any representable range.
 pub(crate) struct PathKey {
-    bytes: [u8; acyclic_stream::MAX_RECORD_KEY_BYTES],
+    bytes: [u8; acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES],
     len: usize,
 }
 impl PathKey {
@@ -43,7 +43,7 @@ impl Write for PathKey {
 /// The indexed key of `path`.
 pub(crate) fn key(path: &NamespacePath, config: VolumeConfig) -> PathKey {
     let mut key = PathKey {
-        bytes: [0; acyclic_stream::MAX_RECORD_KEY_BYTES],
+        bytes: [0; acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES],
         len: 0,
     };
     for (index, name) in path.components().iter().enumerate() {
@@ -144,7 +144,7 @@ fn names_from_key(path: &NamespacePath, config: VolumeConfig) -> Option<NameEnco
         }
         joined += text_len(name)?;
     }
-    (joined < acyclic_stream::MAX_RECORD_KEY_BYTES).then_some(first)
+    (joined < acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES).then_some(first)
 }
 
 /// Exact encoded length of `change`'s metadata.
@@ -264,7 +264,7 @@ mod read {
                 let text = std::str::from_utf8(key).map_err(|_| Malformed)?;
                 if config.case_sensitivity == CaseSensitivity::ProfileFolded
                     || key.is_empty()
-                    || key.len() >= acyclic_stream::MAX_RECORD_KEY_BYTES
+                    || key.len() >= acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES
                 {
                     return Err(Malformed);
                 }
