@@ -16,8 +16,7 @@ use crate::{
     },
     core::{
         AggregateKind, Authority, AuthorityRoot, ExtensionAdmission, ExtensionConfiguration,
-        ExtensionDependency, ExtensionForkPolicy, ExtensionRecord, ExtensionStateMigration,
-        SchemaRegistry, Scope,
+        ExtensionDependency, ExtensionRecord, ExtensionStateMigration, Scope,
     },
     executor::ModelEventAdmission,
     interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
@@ -51,8 +50,6 @@ use json::*;
 mod model;
 use model::*;
 mod agent_authority;
-mod legacy_schema;
-use legacy_schema::schema_registry;
 mod tool;
 use tool::*;
 #[cfg(target_arch = "wasm32")]

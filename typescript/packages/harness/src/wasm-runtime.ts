@@ -21,7 +21,7 @@ export function assertBrowserWasmExports(value: unknown): void {
     throw new Error("harness WASM does not provide the required browser host exports");
   }
   const exports = value as Record<string, unknown>;
-  const authority = hasClass(exports, "WasmReducer", "wasmreducer", ["issueScope", "free"], true);
+  const authority = hasClass(exports, "WasmAgentAuthority", "wasmagentauthority", ["issueScope", "free"], true);
   const registry = hasClass(exports, "WasmAgentRegistry", "wasmagentregistry", ["registerTool", "configureModel", "free"], true);
   const agents = hasClass(exports, "WasmAgents", "wasmagents", [
     "create", "send", "cancel", "archive", "pause", "list", "read", "readFile", "free",

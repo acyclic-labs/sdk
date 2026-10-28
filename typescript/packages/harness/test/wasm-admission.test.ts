@@ -21,7 +21,7 @@ const clientConstructors = [
   ["WasmExplorer", "wasmexplorer_new"],
 ] as const;
 const browserConstructors = [
-  ["WasmReducer", "wasmreducer_new"],
+  ["WasmAgentAuthority", "wasmagentauthority_new"],
   ["WasmAgentRegistry", "wasmagentregistry_new"],
 ] as const;
 type Constructor = readonly [string, string];
