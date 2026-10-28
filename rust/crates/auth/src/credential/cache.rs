@@ -238,6 +238,8 @@ impl CredentialCache {
     }
 
     fn waiter(&self, validity: CredentialValidity) -> Result<Resolution, CredentialCacheError> {
+        // Declared before the guard so a retired flight drops outside the lock.
+        let mut _retired = None;
         let mut state = self
             .0
             .flight
@@ -251,6 +253,12 @@ impl CredentialCache {
             .filter(|snapshot| valid(snapshot, validity).is_ok())
         {
             return Ok(Resolution::Ready(snapshot));
+        }
+        // A published flight whose snapshot is no longer valid must not be
+        // joined: a paused waiter can keep it stored past expiry. Its waiters
+        // keep their own future clone; new callers start a fresh refresh.
+        if state.as_ref().is_some_and(|flight| flight.published) {
+            _retired = state.take();
         }
         if state.is_none() {
             let refresh = self.0.refresh.clone();
