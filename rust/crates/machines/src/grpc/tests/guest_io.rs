@@ -91,25 +91,19 @@ fn frame(machine: MachineId, output: wire::exec_output::Output) -> wire::ExecOut
 }
 
 #[test]
-fn command_bounds_are_checked_before_dispatch() {
+fn invalid_commands_are_rejected_before_dispatch() {
     for (argv, timeout) in [
         (vec![], 1),
         (vec!["".into()], 1),
         (vec!["a\0b".into()], 1),
-        (vec!["a".repeat(4097)], 1),
-        (vec!["a".into(); 65], 1),
-        (vec!["a".repeat(4096); 9], 1),
+        (vec!["printf".into(), "a\0b".into()], 1),
         (vec!["a".into()], 0),
-        (vec!["a".into()], 60_001),
     ] {
         assert!(matches!(
             ExecCommand::new(argv, timeout),
             Err(ProviderError::Invalid(_))
         ));
     }
-    let bounded = ExecCommand::new(vec!["é".repeat(2048); 8], 60_000).unwrap();
-    assert_eq!(bounded.argv().len(), 8);
-    assert_eq!(bounded.timeout_ms(), 60_000);
     assert!(ExecCommand::new(vec!["a".into(), "".into()], 1).is_ok());
 }
 
@@ -159,7 +153,18 @@ async fn exec_stream_preserves_values_and_completed_eof_after_deadline() {
 #[tokio::test]
 async fn exec_drop_and_bad_frame_release_only_their_rpc() {
     let (machine, io, shutdown, task) = fixture().await;
-    let active = machine.exec(command(60_000)).await.unwrap();
+    let mut argv = vec!["printf".into(), "é".repeat(4097)];
+    argv.extend(std::iter::repeat_n("a".repeat(512), 65));
+    let active = machine
+        .exec(ExecCommand::new(argv.clone(), u32::MAX).unwrap())
+        .await
+        .unwrap();
+    {
+        let commands = io.commands.lock().unwrap();
+        let accepted = commands.first().unwrap();
+        assert_eq!(accepted.argv, argv);
+        assert_eq!(accepted.timeout_ms, u32::MAX);
+    }
     let active_sender = io.sender();
     let stopped = machine.exec(command(60_000)).await.unwrap();
     let stopped_sender = io.sender();
