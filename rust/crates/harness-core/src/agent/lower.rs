@@ -153,6 +153,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             .map(|(path, records)| CommitMutation::Append { path, records }),
     );
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: builder.conditions.into_values().collect(),
         mutations,
         idempotency_key: key,

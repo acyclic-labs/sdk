@@ -1143,7 +1143,6 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
     runtime.track(address.clone())?;
     assert!(runtime.drain().await.is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(runtime.observed_cursor(&address, "inbox", &inbox), Some(1));
     provider
         .append(AppendRequest {
             path: inbox.clone(),
@@ -1174,7 +1173,6 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
     runtime.wake(&address);
     assert!(runtime.drain().await.is_empty());
     assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(runtime.observed_cursor(&address, "inbox", &inbox), Some(2));
     assert_eq!(
         records(&*provider, "out/retained").await?,
         vec![Bytes::from_static(b"r0"), Bytes::from_static(b"r1")]
@@ -1202,26 +1200,6 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
         "replaced placement must not invoke its handler"
     );
     assert_eq!(records(&*provider, "out/retained").await?.len(), 2);
-    Ok(())
-}
-
-#[tokio::test]
-async fn retained_cursor_never_blocks_control_admission() -> TestResult {
-    let provider = Arc::new(MemoryStream::default());
-    let store = Store::new(Arc::clone(&provider), root()?);
-    let address = spawn_with(&store, "control", &[b"emit"]).await?;
-    let inbox = StreamPath::new("agents/control")?;
-    let runtime = Runtime::new(
-        Store::new(provider, root()?),
-        Arc::new(Package::new()?),
-        Arc::new(Manual(AtomicU64::new(1))),
-    );
-    runtime.track(address.clone())?;
-    assert!(runtime.drain().await.is_empty());
-    assert_eq!(runtime.observed_cursor(&address, "inbox", &inbox), Some(1));
-    let slot = runtime.slot(&address).ok_or("missing actor slot")?;
-    let _running_handler = slot.inner.lock().await;
-    assert_eq!(runtime.observed_cursor(&address, "inbox", &inbox), None);
     Ok(())
 }
 

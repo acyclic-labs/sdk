@@ -1,15 +1,17 @@
 //! The three agent commit shapes. Each is exactly one Streams `CommitRequest`.
 //!
-//! - `send`: `Absent{<to>/closed}` + `Tail{<to>}` + `Append{<to>}`.
-//! - `archive`: `Absent{<to>/closed}` + `Tail{<to>}` + `Append{<to>, Archive}` +
+//! - `send`: `Absent{<to>/closed}` + `Present{<to>}` + `Append{<to>}`.
+//! - `archive`: `Absent{<to>/closed}` + `Present{<to>}` + `Append{<to>, Archive}` +
 //!   `Append{<to>/closed}`.
 //! - `spawn`: `Absent{<child>}` + `Fork{<parent> -> <parent>/children/<id>, exclude
 //!   NOT_INHERITED, records [ForkAdopted]}`; actor-state and volume contributions
 //!   join the same request through its public `conditions`/`mutations`.
 //!
-//! Streams requires a condition on every appended path, so a sender names the
-//! recipient inbox tail it observed. A `Tail` conflict on that inbox alone is
-//! re-decided by re-reading the tail; the key is unspent by any conflict.
+//! Streams requires a condition on every appended path. A sender names only the
+//! recipient inbox's existence (`Present`), so a send is one round trip with no
+//! prior read, and an exact retry stays identical after other appends. A
+//! `Missing` inbox means the agent was never created; the key is unspent by any
+//! conflict.
 //!
 //! Requests are pure values: a caller that composes them (the actor publishing its
 //! checkpoint, the filesystem contributing `fork_many`) extends the request and
@@ -21,7 +23,7 @@ use super::{
 };
 use acyclic_stream::{
     CommitCondition, CommitConflict, CommitMutation, CommitOutcome, CommitRequest,
-    CommittedEnvelope, IdempotencyKey, StreamError, StreamPath, StreamProvider,
+    CommitReceipt, IdempotencyKey, StreamError, StreamPath, StreamProvider,
 };
 
 /// Domain-separated idempotency key; one stable key per intent.
@@ -51,7 +53,6 @@ pub(crate) fn sender_text(sender: &Sender) -> String {
 /// the identical request.
 pub fn send(
     to: &AgentPath,
-    inbox_tail: u64,
     sender: &Sender,
     record: &InboxRecord,
 ) -> Result<CommitRequest, Error> {
@@ -69,14 +70,11 @@ pub fn send(
         InboxRecord::Spawn(_) => "spawn",
     };
     let intent = intent_of(record);
-    existing(inbox_tail)?;
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Absent { path: to.closed()? },
-            CommitCondition::Tail {
-                path: to.inbox()?,
-                expected: inbox_tail,
-            },
+            CommitCondition::Present { path: to.inbox()? },
         ],
         mutations: vec![CommitMutation::Append {
             path: to.inbox()?,
@@ -84,15 +82,6 @@ pub fn send(
         }],
         idempotency_key: intent_key(kind, &[to.as_str(), &sender_text(sender), &intent])?,
     })
-}
-
-/// Every inbox begins with `ForkAdopted`, so a live inbox tail is at least one,
-/// and `Tail{n >= 1}` never matches an absent path: a send cannot create an agent.
-fn existing(inbox_tail: u64) -> Result<(), Error> {
-    if inbox_tail == 0 {
-        return Err(Error::NoSuchAgent);
-    }
-    Ok(())
 }
 
 /// Observed inbox tail of `agent`; [`Error::NoSuchAgent`] when it was never created.
@@ -127,7 +116,6 @@ fn intent_of(record: &InboxRecord) -> String {
 /// One conditional commit closing the inbox of `target`.
 pub fn archive(
     target: &AgentPath,
-    inbox_tail: u64,
     by: &Sender,
     id: &IntentId,
 ) -> Result<CommitRequest, Error> {
@@ -135,16 +123,15 @@ pub fn archive(
         by: by.clone(),
         id: id.clone(),
     };
-    existing(inbox_tail)?;
     let closed = target.closed()?;
     Ok(CommitRequest {
+        deadline_unix_millis: None,
         conditions: vec![
             CommitCondition::Absent {
                 path: closed.clone(),
             },
-            CommitCondition::Tail {
+            CommitCondition::Present {
                 path: target.inbox()?,
-                expected: inbox_tail,
             },
         ],
         mutations: vec![
@@ -196,6 +183,7 @@ pub fn spawn(
     let record = InboxRecord::ForkAdopted(Box::new(adopted)).encode()?;
     Ok(Spawn {
         request: CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![
                 CommitCondition::Absent {
                     path: child.inbox()?,
@@ -245,6 +233,7 @@ pub fn create_root(intent: &IntentId, mut adopted: ForkAdopted) -> Result<Spawn,
     let inbox = child.inbox()?;
     Ok(Spawn {
         request: CommitRequest {
+            deadline_unix_millis: None,
             conditions: vec![
                 CommitCondition::Absent {
                     path: inbox.clone(),
@@ -270,11 +259,11 @@ pub fn create_root(intent: &IntentId, mut adopted: ForkAdopted) -> Result<Spawn,
 #[derive(Debug)]
 pub enum Submitted {
     /// Every mutation committed (also returned for an exact replay).
-    Committed(CommittedEnvelope),
+    Committed(CommitReceipt),
     /// A recipient inbox is closed; nothing changed and the key is unspent.
     RecipientClosed(Vec<StreamPath>),
-    /// Only recipient inbox tails moved; re-read them and re-decide.
-    InboxMoved(Vec<StreamPath>),
+    /// A recipient inbox does not exist: the agent was never created.
+    NoSuchAgent(Vec<StreamPath>),
     /// Another condition failed; nothing changed and the key is unspent.
     Conflict(Vec<CommitConflict>),
 }
@@ -287,7 +276,7 @@ pub async fn submit<P: StreamProvider + ?Sized>(
     request: CommitRequest,
 ) -> Result<Submitted, Error> {
     match provider.commit(request.clone()).await {
-        Ok(CommitOutcome::Committed(envelope)) => Ok(Submitted::Committed(envelope)),
+        Ok(CommitOutcome::Committed(receipt)) => Ok(Submitted::Committed(receipt)),
         Ok(CommitOutcome::Conflict(conflicts)) => Ok(classify(conflicts)),
         Err(StreamError::Unavailable | StreamError::DeadlineElapsed) => {
             Err(Error::Unknown(Box::new(request)))
@@ -296,28 +285,27 @@ pub async fn submit<P: StreamProvider + ?Sized>(
     }
 }
 
-/// Classifies a definitive conflict. Closed recipients win over moved tails: a
-/// closed inbox never reopens, so re-reading its tail cannot help.
+/// Classifies a definitive conflict. Closed recipients win over missing ones.
 fn classify(conflicts: Vec<CommitConflict>) -> Submitted {
     let mut closed = Vec::new();
-    let mut moved = Vec::new();
+    let mut missing = Vec::new();
     for conflict in &conflicts {
         match conflict {
             CommitConflict::Exists { path } if is_closed_marker(path) => closed.push(path.clone()),
-            CommitConflict::Tail { path, .. }
+            CommitConflict::Missing { path }
                 if AgentPath::try_from(path.as_str().to_owned()).is_ok() =>
             {
-                moved.push(path.clone());
+                missing.push(path.clone());
             }
             _ => return Submitted::Conflict(conflicts),
         }
     }
     if !closed.is_empty() {
         Submitted::RecipientClosed(closed)
-    } else if moved.is_empty() {
+    } else if missing.is_empty() {
         Submitted::Conflict(conflicts)
     } else {
-        Submitted::InboxMoved(moved)
+        Submitted::NoSuchAgent(missing)
     }
 }
 

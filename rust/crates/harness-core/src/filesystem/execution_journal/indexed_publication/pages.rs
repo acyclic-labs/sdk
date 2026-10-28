@@ -99,9 +99,10 @@ impl Cut<'_> {
             let held = crate::wire_codec::CodecQuota::from_retained(work, retained);
             let committed = match &outcome {
                 CommitOutcome::Conflict(_) => Ok(false),
-                CommitOutcome::Committed(envelope) => {
-                    if envelope.mutations.len() != 1
-                        || !confirms(envelope, self.pages, expected, batch)
+                CommitOutcome::Committed(receipt) => {
+                    if receipt.appends.len() != 1
+                        || !receipt.forks.is_empty()
+                        || !confirms(receipt, self.pages, expected, batch)
                     {
                         Err(Error::Indeterminate(self.operation))
                     } else {
@@ -176,21 +177,22 @@ impl Cut<'_> {
     ) -> Result<bool> {
         match outcome {
             CommitOutcome::Conflict(_) => Ok(false),
-            CommitOutcome::Committed(envelope) => {
-                if envelope.mutations.len() != 3
+            CommitOutcome::Committed(receipt) => {
+                if receipt.appends.len() != 3
+                    || !receipt.forks.is_empty()
                     || !confirms(
-                        envelope,
+                        receipt,
                         self.execution,
                         self.execution_tail,
                         std::slice::from_ref(observation),
                     )
                     || !confirms(
-                        envelope,
+                        receipt,
                         self.head,
                         self.head_tail,
                         std::slice::from_ref(checkpoint),
                     )
-                    || !confirms(envelope, self.pages, pages_tail, records)
+                    || !confirms(receipt, self.pages, pages_tail, records)
                 {
                     return Err(Error::Indeterminate(self.operation));
                 }

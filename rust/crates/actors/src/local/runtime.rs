@@ -292,29 +292,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         Ok(())
     }
 
-    /// A cursor retained from an actual state observation or commit receipt.
-    /// This is a past cut, not a freshness or authority check. Publication still
-    /// compares its tail and immutable anchor. Releasing the actor drops it.
-    /// Returns `None` while a delivery owns the slot; controls must never wait
-    /// for a handler to finish before they can append cancellation or input.
-    pub fn observed_cursor(
-        &self,
-        actor: &ActorReference,
-        subscription: &str,
-        path: &StreamPath,
-    ) -> Option<u64> {
-        let slot = self.slot(actor)?;
-        let inner = slot.inner.try_lock().ok()?;
-        inner
-            .observed
-            .as_ref()?
-            .state()?
-            .subscriptions()
-            .get(subscription)
-            .filter(|observed| &observed.path == path)
-            .map(|observed| observed.cursor)
-    }
-
     /// Run every currently ready or due actor to quiescence, then return the
     /// failures. Deterministic hosts and tests drive the runtime with this.
     pub async fn drain(&self) -> Vec<(ActorReference, Error)> {

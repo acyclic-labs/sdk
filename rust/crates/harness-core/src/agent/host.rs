@@ -9,7 +9,7 @@
 
 use super::{
     AgentHandler, AgentPath, Error, ForkAdopted, INBOX, InboxRecord, IntentId, Sender, Spawn,
-    SpawnOutcome, SpawnVolumes, Submitted, TurnDriver, archive, handler::Agents, inbox_tail, send,
+    SpawnOutcome, SpawnVolumes, Submitted, TurnDriver, archive, handler::Agents, send,
     submit,
 };
 use acyclic_actors::{
@@ -19,7 +19,7 @@ use acyclic_actors::{
     local::{Clock, Runtime, State, Store},
 };
 use acyclic_stream::{
-    CommitCondition, CommitRequest, CommittedMutation, FollowFilter, ReadRequest, StreamError,
+    CommitRequest, FollowFilter, ReadRequest, StreamError,
     StreamPath, StreamProvider,
 };
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -291,7 +291,7 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
         let created = self.prepare_root(intent, adopted)?;
         match submit(&*self.provider, created.request).await? {
             Submitted::Committed(_) => {}
-            Submitted::Conflict(_) | Submitted::InboxMoved(_) | Submitted::RecipientClosed(_) => {
+            Submitted::Conflict(_) | Submitted::NoSuchAgent(_) | Submitted::RecipientClosed(_) => {
                 return Err(Error::Record("agent exists with another creation"));
             }
         }
@@ -311,7 +311,7 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
         from: &Sender,
         record: &InboxRecord,
     ) -> Result<Delivered, Error> {
-        self.deliver(to, |tail| send(to, tail, from, record)).await
+        self.deliver(to, send(to, from, record)?).await
     }
 
     /// Close `target` and, through its cascade, its open descendants.
@@ -321,8 +321,7 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
         by: &Sender,
         id: &IntentId,
     ) -> Result<Delivered, Error> {
-        self.deliver(target, |tail| archive(target, tail, by, id))
-            .await
+        self.deliver(target, archive(target, by, id)?).await
     }
 
     /// Durably pause or resume one agent. A paused agent consumes nothing.
@@ -363,50 +362,24 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
             .map_err(actor_error)
     }
 
-    /// One inbox commit, independent of the observed inbox tail. A retained
-    /// canonical actor cursor proves an already-consumed inbox exists; cold
-    /// agents are checked once. An existing inbox cannot disappear. The closed
-    /// marker fences admission in the commit itself. Removing only the inbox
-    /// Tail condition makes exact intent retries identical after other appends,
-    /// while changed semantic bytes still fail the provider's digest check.
-    async fn deliver(
-        &self,
-        to: &AgentPath,
-        request: impl Fn(u64) -> Result<CommitRequest, Error>,
-    ) -> Result<Delivered, Error> {
-        loop {
-            let inbox = to.inbox()?;
-            let tail = match self
-                .runtime
-                .observed_cursor(&self.actor(to)?, INBOX, &inbox)
-            {
-                Some(cursor) if cursor > 0 => cursor,
-                _ => inbox_tail(&*self.provider, to).await?,
-            };
-            let mut request = request(tail)?;
-            request.conditions.retain(|condition| {
-                !matches!(condition, CommitCondition::Tail { path, .. } if path == &inbox)
-            });
-            match submit(&*self.provider, request).await {
-                Ok(Submitted::Committed(envelope)) => {
-                    return envelope
-                        .mutations
-                        .iter()
-                        .find_map(|mutation| match mutation {
-                            CommittedMutation::Append(append) if append.path == inbox => {
-                                Some(Delivered::Committed {
-                                    inbox: append.start,
-                                })
-                            }
-                            _ => None,
-                        })
-                        .ok_or(Error::Record("committed envelope omits the inbox append"));
-                }
-                Err(error) => return Err(error),
-                Ok(Submitted::RecipientClosed(_)) => return Ok(Delivered::Closed),
-                Ok(Submitted::InboxMoved(_)) => {}
-                Ok(Submitted::Conflict(_)) => return Err(Error::Record("inbox commit conflicted")),
-            }
+    /// One inbox commit with no prior read: `Present{inbox}` proves the agent
+    /// exists and `Absent{closed}` fences admission in the commit itself. An
+    /// exact intent retry is identical after other appends, while changed
+    /// semantic bytes still fail the provider's digest check.
+    async fn deliver(&self, to: &AgentPath, request: CommitRequest) -> Result<Delivered, Error> {
+        let inbox = to.inbox()?;
+        match submit(&*self.provider, request).await? {
+            Submitted::Committed(receipt) => receipt
+                .appends
+                .iter()
+                .find(|append| append.path == inbox)
+                .map(|append| Delivered::Committed {
+                    inbox: append.start,
+                })
+                .ok_or(Error::Record("commit receipt omits the inbox append")),
+            Submitted::RecipientClosed(_) => Ok(Delivered::Closed),
+            Submitted::NoSuchAgent(_) => Err(Error::NoSuchAgent),
+            Submitted::Conflict(_) => Err(Error::Record("inbox commit conflicted")),
         }
     }
 }

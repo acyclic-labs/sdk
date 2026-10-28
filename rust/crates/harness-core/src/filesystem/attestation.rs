@@ -173,6 +173,9 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.inner.tail(path).await
     }
+    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+        self.inner.head(path).await
+    }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         self.inner.watermarks(path).await
     }
@@ -395,6 +398,12 @@ mod tests {
         }
         async fn tail(&self, path: super::StreamPath) -> Result<u64, super::StreamError> {
             self.inner.tail(path).await
+        }
+        async fn head(
+            &self,
+            path: super::StreamPath,
+        ) -> Result<acyclic_stream::PathHead, super::StreamError> {
+            self.inner.head(path).await
         }
         async fn append(
             &self,
