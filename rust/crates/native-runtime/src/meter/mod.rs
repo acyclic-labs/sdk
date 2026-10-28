@@ -27,8 +27,9 @@ pub trait NativeReadMeter: Send + Sync {
     /// Checks the original request's cancellation and ownership conditions.
     fn check(&self) -> io::Result<()>;
     /// Returns a pre-existing owner of the same ledger, allowance, cancellation and limits, without request retirement custody.
-    /// Windows asynchronous process input requires this owner so accepted
-    /// transfers remain funded through completion after caller cancellation.
+    /// Borrowed Windows process capture requires this owner so accepted input
+    /// remains funded through completion after caller cancellation. Retained
+    /// ProcessTreeIo uses its supplied Arc directly, preserving accounting windows.
     fn allocation_owner(&self) -> Option<Arc<dyn NativeReadMeter>> {
         None
     }

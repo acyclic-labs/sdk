@@ -18,6 +18,110 @@ fn root() -> NativeMaterializationWork {
     NativeMaterializationWork::new(budget(), &crate::CancellationToken::new()).unwrap()
 }
 
+#[cfg(windows)]
+#[test]
+fn window_prompt_child() -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    if std::env::var_os("ACYCLIC_TEST_WINDOW_PROMPT").is_some() {
+        let mut input = Vec::new();
+        std::io::stdin().read_to_end(&mut input)?;
+        assert_eq!(input, b"original window prompt");
+        std::io::stdout().write_all(b"WINDOW_PROMPT_ACCEPTED")?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn windows_child_prompt_retains_the_actual_invocation_window() -> std::io::Result<()> {
+    use acyclic_native_runtime::{CaptureInput, ProcessInput, ProcessTreeStorage};
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    let prompt = b"original window prompt";
+    for queued in [true, false] {
+        let work = NativeMaterializationWork::new(
+            WorkBudget {
+                bytes_copied: 1 << 20,
+                ..budget()
+            },
+            &crate::CancellationToken::new(),
+        )
+        .unwrap();
+        let window = work.invocation_window().unwrap();
+        let meter = window.runtime_meter();
+        // This is the production window/base-view meter, whose allocation
+        // owner deliberately excludes the current operation window.
+        assert!(meter.allocation_owner().is_none());
+        let mut process = ProcessTreeStorage::new(&meter)?;
+        let mut command = Command::new(std::env::current_exe()?);
+        command
+            .args([
+                "--exact",
+                "materializer::window::tests::window_prompt_child",
+                "--nocapture",
+            ])
+            .env("ACYCLIC_TEST_WINDOW_PROMPT", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        process.spawn(&mut command, None)?;
+        let before = work.receipt().output_bytes;
+        if queued {
+            process.io(&meter)?.queue_stdin(prompt.to_vec())?;
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let ready = process.io(&meter)?.readiness()?;
+                    if process.io(&meter)?.pump_stdin()? {
+                        return Ok::<_, std::io::Error>(());
+                    }
+                    ready.await;
+                }
+            })
+            .await
+            .map_err(std::io::Error::other)??;
+            process.require_stdin_complete()?;
+        }
+        let _buffers = window.claim(8192, 2, WorkCounters::UNCHARGED).unwrap();
+        let output = process
+            .wait_with_output(
+                Duration::from_secs(3),
+                4096,
+                (!queued).then_some(CaptureInput::Literal(prompt)),
+                || Ok(()),
+                |_| Ok(ProcessInput::default()),
+                [
+                    Vec::with_capacity(4096),
+                    Vec::with_capacity(4096),
+                    Vec::new(),
+                ],
+            )
+            .map_err(|failure| failure.error)?;
+        assert!(output.status.success());
+        assert!(
+            output
+                .stdout
+                .windows(b"WINDOW_PROMPT_ACCEPTED".len())
+                .any(|bytes| bytes == b"WINDOW_PROMPT_ACCEPTED")
+        );
+        assert!(process.is_reaped());
+        assert_eq!(work.receipt().output_bytes - before, prompt.len() as u64);
+        assert_eq!(
+            window.remaining().unwrap().output_bytes,
+            budget().output_bytes - prompt.len() as u64
+        );
+        assert_eq!(
+            work.invocation_window()
+                .unwrap()
+                .remaining()
+                .unwrap()
+                .output_bytes,
+            budget().output_bytes
+        );
+    }
+    Ok(())
+}
+
 fn appends(count: u64) -> WorkCounters {
     WorkCounters {
         authority_records_appended: count,

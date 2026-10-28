@@ -15,7 +15,7 @@ fn event_capture_child() -> io::Result<()> {
         // The parent deliberately leaves this full pipe undrained until its
         // stdin write is pending and the original caller has cancelled.
         std::io::stderr().write_all(&[b'x'; 128 * 1024])?;
-        let mut bytes = [0; 64 * 1024];
+        let mut bytes = [0; 128 * 1024];
         std::io::stdin().read_exact(&mut bytes)?;
         assert!(bytes.iter().all(|byte| *byte == b'w'));
     } else if mode == "backpressure" {
@@ -85,8 +85,19 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
     let (recorded, completion) = std::sync::mpsc::channel();
     *meter.bytes_recorded.lock().unwrap() = Some(recorded);
     let pipe = process.child.as_mut().unwrap().stdin.as_mut().unwrap();
-    let (written, operation) =
-        platform::write_pipe(pipe, &mut process.writer, &bytes, Some(meter.as_ref()))?;
+    // One real unmetered fixture write fills the pipe before the measured
+    // write, rather than assuming an empty pipe cannot accept a full chunk.
+    let (prefilled, operation) =
+        platform::write_pipe(pipe, &mut process.writer, &bytes, None, None)?;
+    operation?;
+    assert_eq!(prefilled, Some(bytes.len()));
+    let (written, operation) = platform::write_pipe(
+        pipe,
+        &mut process.writer,
+        &bytes,
+        Some(meter.as_ref()),
+        None,
+    )?;
     operation?;
     assert_eq!(
         written, None,

@@ -53,6 +53,7 @@ pub(super) fn write_pipe(
     writer: &mut Writer,
     bytes: &[u8],
     meter: Option<&dyn crate::NativeReadMeter>,
+    owner: Option<&std::sync::Arc<dyn crate::NativeReadMeter>>,
 ) -> io::Result<(Option<usize>, io::Result<()>)> {
     let operation = if let Some(operation) = &writer.0 {
         std::sync::Arc::clone(operation)
@@ -78,12 +79,15 @@ pub(super) fn write_pipe(
     // reports the physical transfer, even if capture stops observing it.
     let reservation = meter
         .map(|meter| {
-            let owner = meter.allocation_owner().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    "asynchronous process input requires the original meter owner",
-                )
-            })?;
+            let owner = owner
+                .cloned()
+                .or_else(|| meter.allocation_owner())
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "asynchronous process input requires the original meter owner",
+                    )
+                })?;
             crate::NativeByteReservation::new(
                 owner,
                 crate::NativeOperationKind::Write,

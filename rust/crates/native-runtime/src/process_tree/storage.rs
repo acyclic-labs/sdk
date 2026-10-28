@@ -46,7 +46,7 @@ impl ProcessTreeIo<'_> {
     }
     /// Advances bounded nonblocking input delivery.
     pub fn pump_stdin(&mut self) -> io::Result<bool> {
-        self.tree.pump_stdin_controlled(Some(self.meter.as_ref()))
+        self.tree.pump_stdin_controlled(Some(&self.meter))
     }
     /// Arms one wait for this process's next readiness; see
     /// [`ProcessTree::readiness`].
@@ -232,13 +232,13 @@ impl ProcessTreeStorage {
             .map_err(ProcessCaptureFailure::before_capture)?
             .as_mut()
             .ok_or_else(|| ProcessCaptureFailure::before_capture(io::ErrorKind::NotFound.into()))?;
-        tree.wait_with_output(
+        tree.wait_with_output_controlled(
             timeout,
             max_bytes,
             input,
             check,
             observe,
-            Some(meter.as_ref()),
+            (Some(meter.as_ref()), Some(&meter)),
             Some(buffers),
             None,
         )
