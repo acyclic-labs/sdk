@@ -13,15 +13,17 @@
 //! scheduler, one deadline ([`Reader::next_deadline`]) and one cache serve
 //! every agent; idle agents cost nothing.
 
+mod backing;
 mod cache;
 mod driver;
 
+pub use backing::RecordBytes;
 use cache::Key;
 pub use cache::{Listing, RecordCache, SnapshotError};
 pub use driver::Driver;
 
+use acyclic_stream::OwnedBytes;
 use acyclic_stream::{CommitId, ForkOrigin, PathHead, StreamError, StreamPath};
-use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Finite budgets for one client, independent of the number of streams.
@@ -36,7 +38,8 @@ pub struct ReaderPolicy {
     pub streams: usize,
     /// Reads in flight, all priorities.
     pub requests: usize,
-    /// Of those, prefetch reads; visible reads always keep a slot.
+    /// Of those, prefetch reads; visible reads always keep a slot. New
+    /// visible work gets at most one request window's ordering advantage.
     pub prefetch_requests: usize,
     /// Live follows on the one multiplexed session.
     pub follows: usize,
@@ -119,7 +122,8 @@ impl ReaderPolicy {
     }
 }
 
-/// Visible needs always run before likely-next ones.
+/// Visible needs get a bounded head start over likely-next ones. Older
+/// prefetch work still runs under continuous visible arrivals.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Priority {
     /// On screen now.
@@ -220,7 +224,7 @@ pub struct Fetched {
     /// Stream position.
     pub sequence: u64,
     /// Record value.
-    pub value: Bytes,
+    pub value: OwnedBytes,
     /// Commit that introduced it; anchors a resumed follow.
     pub commit: CommitId,
 }
@@ -359,6 +363,14 @@ pub(super) enum HeadObservation {
     Invalid,
 }
 
+struct Demand {
+    priority: Priority,
+    paging: Paging,
+    /// Kept across frames; moved to the back after dispatch. Renderer
+    /// ordering cannot reset another need's accumulated wait.
+    ticket: u64,
+}
+
 /// Exact listing continuations at strided page indexes, so any page is
 /// reachable from a bounded walk even after its predecessor was evicted.
 struct Anchors {
@@ -370,15 +382,17 @@ struct Anchors {
 const MAX_ANCHORED_PARENTS: usize = 64;
 const MAX_ANCHORS: usize = 256;
 const MAX_REFUSED: usize = 64;
-const MAX_DEMAND: usize = 4096;
 
 /// Footprint of one client, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Residency {
     /// Cache charge, never above the byte budget.
     pub cache_bytes: usize,
-    /// Charge of wanted values served uncached beside the budget.
+    /// Uncached charge, including payload retained by cloned views after eviction.
     pub passed_bytes: usize,
+    /// Unique payload capacity across cache, pass-throughs and cloned views.
+    /// Excludes ownership headers, allocator overhead and adapter copies.
+    pub backing_bytes: usize,
     /// Streams with retained facts.
     pub streams: usize,
     /// Cache entries.
@@ -397,7 +411,8 @@ pub struct Residency {
 pub struct Reader {
     policy: ReaderPolicy,
     cache: RecordCache,
-    demand: Vec<(OpKey, Priority, Paging)>,
+    demand: BTreeMap<OpKey, Demand>,
+    next_ticket: u64,
     inflight: BTreeMap<u64, InFlight>,
     keys: BTreeMap<OpKey, u64>,
     cancelled: Vec<u64>,
@@ -430,7 +445,8 @@ impl Reader {
         Ok(Self {
             policy,
             cache: RecordCache::new(policy.cache_bytes, policy.streams),
-            demand: Vec::new(),
+            demand: BTreeMap::new(),
+            next_ticket: 0,
             inflight: BTreeMap::new(),
             keys: BTreeMap::new(),
             cancelled: Vec::new(),
@@ -546,6 +562,7 @@ impl Reader {
         Residency {
             cache_bytes: self.cache.bytes(),
             passed_bytes: self.cache.passed_bytes(),
+            backing_bytes: self.cache.backing_bytes(),
             streams: self.cache.streams(),
             cache_entries: self.cache.len(),
             requests: self.inflight.len(),
@@ -574,7 +591,8 @@ impl Reader {
         }
     }
 
-    /// Replace this frame's needs, in renderer order within each priority.
+    /// Replace this frame's needs, preserving the age of outstanding work.
+    /// Every need is retained; request credit bounds execution, not intent.
     /// Reads no longer needed at prefetch priority are cancelled. What the
     /// visible wants cover is marked displayed, so no insert evicts it, and
     /// passed-through values no want covers any longer are released.
@@ -589,26 +607,45 @@ impl Reader {
         }
         self.cache
             .retain_passed(|cache, key| wants.iter().any(|(want, _)| covers(cache, want, key)));
-        let mut demand = Vec::new();
-        let mut seen = BTreeSet::new();
+        let mut previous: BTreeMap<_, _> = std::mem::take(&mut self.demand)
+            .into_iter()
+            .map(|(key, demand)| (key, demand.ticket))
+            .collect();
+        let mut demand = BTreeMap::<OpKey, Demand>::new();
         for (want, priority) in wants {
-            if demand.len() >= MAX_DEMAND {
-                break;
-            }
             let Some((key, paging)) = self.resolve(&want) else {
                 continue;
             };
-            if seen.insert(key.clone()) {
-                demand.push((key, priority, paging));
+            if let Some(existing) = demand.get_mut(&key) {
+                existing.priority = existing.priority.min(priority);
+                continue;
+            }
+            let ticket = previous.remove(&key).unwrap_or_else(|| {
+                let ticket = self.next_ticket;
+                self.next_ticket += 1;
+                ticket
+            });
+            demand.insert(
+                key,
+                Demand {
+                    priority,
+                    paging,
+                    ticket,
+                },
+            );
+        }
+        // A prefetch becoming visible counts as visible immediately, rather
+        // than occupying prefetch credit until its original request ends.
+        for flight in self.inflight.values_mut() {
+            if let Some(wanted) = demand.get(&flight.key) {
+                flight.priority = wanted.priority;
             }
         }
-        demand.sort_by_key(|(_, priority, _)| *priority);
-        let wanted: BTreeSet<&OpKey> = demand.iter().map(|(key, ..)| key).collect();
         let stale: Vec<u64> = self
             .inflight
             .iter()
             .filter(|(_, flight)| {
-                flight.priority == Priority::Prefetch && !wanted.contains(&flight.key)
+                flight.priority == Priority::Prefetch && !demand.contains_key(&flight.key)
             })
             .map(|(id, _)| *id)
             .collect();
@@ -713,30 +750,25 @@ impl Reader {
 
     /// The highest page at or before `index` whose start is known.
     fn reachable(&self, parent: &StreamPath, index: u32) -> Option<(u32, Option<StreamPath>)> {
-        let anchors = self.anchors.get(parent);
-        let floor = anchors
-            .and_then(|anchors| anchors.at.range(..=index).next_back())
-            .map_or(0, |(at, _)| *at);
-        let mut page = index;
-        loop {
-            if page == 0 {
-                return Some((0, None));
-            }
-            if let Some(after) = anchors.and_then(|anchors| anchors.at.get(&page)) {
-                return Some((page, Some(after.clone())));
-            }
-            if let Some(previous) = self.cache.listing(parent, page - 1) {
-                return previous.next.clone().map(|next| (page, Some(next)));
-            }
-            if page <= floor {
-                break;
-            }
-            page -= 1;
+        let anchor = self
+            .anchors
+            .get(parent)
+            .and_then(|anchors| anchors.at.range(..=index).next_back());
+        let floor = anchor.map_or(0, |(at, _)| *at);
+        // Search retained pages instead of counting down from a potentially
+        // enormous logical offset through evicted pages.
+        let cached = self
+            .cache
+            .listings(parent)
+            .filter(|(page, _)| *page < index && *page >= floor)
+            .max_by_key(|(page, _)| *page);
+        if let Some((page, listing)) = cached {
+            return listing.next.clone().map(|next| (page + 1, Some(next)));
         }
-        Some((0, None))
+        Some(anchor.map_or((0, None), |(page, after)| (*page, Some(after.clone()))))
     }
 
-    /// Reads to start now, highest priority first, within every budget.
+    /// Reads to start now, in aged priority order, within every budget.
     pub fn poll(&mut self, now: u64) -> Vec<Op> {
         self.now = now;
         let mut ops = Vec::new();
@@ -750,6 +782,9 @@ impl Reader {
         } else {
             self.policy.requests
         };
+        if self.inflight.len() >= limit {
+            return ops;
+        }
         let prefetch =
             self.policy.prefetch && self.since.is_none() && now >= self.prefetch_paused_until;
         let mut prefetching = self
@@ -757,8 +792,21 @@ impl Reader {
             .values()
             .filter(|flight| flight.priority == Priority::Prefetch)
             .count();
-        let demand = std::mem::take(&mut self.demand);
-        for (key, priority, paging) in &demand {
+        let mut demand: Vec<_> = self.demand.iter_mut().collect();
+        demand.sort_by_key(|(_, demand)| {
+            let head_start = if demand.priority == Priority::Prefetch {
+                self.policy.requests as u128
+            } else {
+                0
+            };
+            (u128::from(demand.ticket) + head_start, demand.ticket)
+        });
+        for (key, pending) in demand {
+            let Demand {
+                priority,
+                paging,
+                ticket,
+            } = pending;
             if self.inflight.len() >= limit {
                 break;
             }
@@ -809,10 +857,11 @@ impl Reader {
                 },
             );
             self.keys.insert(key.clone(), id);
+            *ticket = self.next_ticket;
+            self.next_ticket += 1;
             self.issued += 1;
             ops.push(op);
         }
-        self.demand = demand;
         ops
     }
 
@@ -838,8 +887,23 @@ impl Reader {
         let protect = Some(self.frame_mark);
         let accepted = match (&flight.key, outcome) {
             (_, Outcome::Failed(Failure::Changed)) => {
-                // Not an outage: the next first page carries the new version.
+                // This witness covers the whole hierarchy, not just the page
+                // reporting it. Old continuations cannot be rebound to a new
+                // version by an intervening reply or another driver wake.
                 self.hierarchy = None;
+                self.cache.clear_listings();
+                self.anchors.clear();
+                self.demand
+                    .retain(|key, _| !matches!(key, OpKey::Children(..)));
+                let cancelled: Vec<_> = self
+                    .inflight
+                    .iter()
+                    .filter(|(_, flight)| matches!(flight.key, OpKey::Children(..)))
+                    .map(|(id, _)| *id)
+                    .collect();
+                for id in cancelled {
+                    self.cancel(id);
+                }
                 self.report_issue(flight.key.path(), ReadIssue::HierarchyChanged);
                 return;
             }
@@ -904,6 +968,9 @@ impl Reader {
             _ => false,
         };
         if accepted {
+            // The driver may wake again before the renderer plans its next
+            // frame. Completed work must not be dispatched a second time.
+            self.demand.remove(&flight.key);
             self.failures = 0;
             self.since = None;
             self.retry_at = 0;
@@ -961,7 +1028,7 @@ impl Reader {
             }
             // The asynchronous driver can poll again before the next UI frame
             // replans demand. Do not reissue those same obsolete boundaries.
-            self.demand.retain(|(key, _, _)| !later(key));
+            self.demand.retain(|key, _| !later(key));
             if let Some(anchors) = self.anchors.get_mut(parent) {
                 anchors.at.retain(|at, _| *at <= index);
             }
@@ -1223,6 +1290,7 @@ impl Reader {
 
     fn invalidate(&mut self, stream: &StreamPath, inherited: bool) {
         let affected = self.cache.remove_stream(stream, inherited);
+        self.demand.retain(|key, _| !affected.contains(key.path()));
         self.follows.retain(|path, _| !affected.contains(path));
         let cancelled: Vec<_> = self
             .inflight
@@ -1406,7 +1474,12 @@ mod reader_tests {
             forked_at: 1,
             commit_id: CommitId::from_bytes([9; 32]),
         };
-        let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+        let mut reader = Reader::new(ReaderPolicy {
+            requests: 2,
+            prefetch_requests: 1,
+            ..ReaderPolicy::default()
+        })
+        .unwrap();
         reader.cache.observe_origin(&source, None);
         reader.cache.observe_origin(&child, Some(origin.clone()));
         reader.cache.observe_tail(&child, 1);
@@ -1437,10 +1510,25 @@ mod reader_tests {
         assert_eq!(reader.cache.record(&source, 0).unwrap().as_ref(), b"new");
         reader.acknowledge_issue(&child);
         reader.cache.observe_origin(&child, Some(origin));
+        reader.plan([1, 2, 3].map(|from| {
+            (
+                Want::Range {
+                    stream: child.clone(),
+                    from,
+                    to: from + 1,
+                },
+                Priority::Visible,
+            )
+        }));
+        assert_eq!(reader.poll(0).len(), 2);
         // A checked follow's retention failure uses the same backing
         // invalidation as a conflicting Head, even without a new Head record.
         reader.replaced(&child);
         assert!(reader.cache.record(&source, 0).is_none());
+        // Both in-flight reads and the unsent third request use the old cut.
+        // Another driver wake must wait for the renderer to replan a Head.
+        assert_eq!(reader.take_cancelled().len(), 2);
+        assert!(reader.poll(1).is_empty());
     }
 
     #[test]
@@ -1496,6 +1584,114 @@ mod reader_tests {
             HeadObservation::Superseded
         );
         assert_eq!(reader.cache.fork(&stream), Some(&newer));
+    }
+
+    #[test]
+    fn all_4097_wants_complete_through_request_credit() {
+        let stream = StreamPath::new("test/many-wants").unwrap();
+        let mut reader = Reader::new(ReaderPolicy {
+            read_limit: 1,
+            ..ReaderPolicy::default()
+        })
+        .unwrap();
+        reader.cache.observe_origin(&stream, None);
+        reader.cache.observe_tail(&stream, 8194);
+        let wants: Vec<_> = (0..4097)
+            .map(|index| {
+                (
+                    Want::Range {
+                        stream: stream.clone(),
+                        from: index * 2,
+                        to: index * 2 + 1,
+                    },
+                    Priority::Visible,
+                )
+            })
+            .collect();
+        reader.begin_frame(0);
+        reader.plan(wants.iter().cloned());
+        assert_eq!(reader.residency().demand, 4097);
+        let mut completed = BTreeSet::new();
+        for now in 1..=4097 {
+            // The driver can consume successive credit windows before the
+            // renderer plans another frame. A completion retires that key.
+            let ops = reader.poll(now);
+            if ops.is_empty() {
+                break;
+            }
+            assert!(ops.len() <= reader.policy.requests);
+            for op in ops {
+                let Op::Read { id, from, .. } = op else {
+                    panic!("known-origin range read")
+                };
+                assert!(
+                    completed.insert(from),
+                    "already satisfied want was reissued"
+                );
+                reader.complete(id, Outcome::Records(vec![fetched(from, 1)]), now);
+            }
+        }
+        assert_eq!(completed.len(), wants.len());
+        assert!(reader.poll(4098).is_empty());
+        assert!(frame(&mut reader, 4098, &wants).is_empty());
+    }
+
+    #[test]
+    fn continuously_arriving_visible_wants_cannot_starve_older_prefetch() {
+        let old = StreamPath::new("test/old-prefetch").unwrap();
+        let mut reader = Reader::new(ReaderPolicy {
+            requests: 2,
+            prefetch_requests: 1,
+            ..ReaderPolicy::default()
+        })
+        .unwrap();
+        let mut served = false;
+        for now in 0..8 {
+            // Two fresh visible Heads always consume all request credit in
+            // the old strict-priority order. Reversing renderer order also
+            // must not discard the prefetch's age between frames.
+            let mut wants: Vec<_> = (0..2)
+                .map(|index| {
+                    (
+                        Want::Last {
+                            stream: StreamPath::new(format!("test/visible-{now}-{index}")).unwrap(),
+                            count: 1,
+                        },
+                        Priority::Visible,
+                    )
+                })
+                .collect();
+            wants.push((
+                Want::Last {
+                    stream: old.clone(),
+                    count: 1,
+                },
+                Priority::Prefetch,
+            ));
+            for op in frame(&mut reader, now, &wants) {
+                let Op::Head { id, stream } = op else {
+                    panic!("uncached Head")
+                };
+                served |= stream == old;
+                reader.complete(
+                    id,
+                    Outcome::Head(PathHead {
+                        tail: 0,
+                        last: None,
+                        durable: 0,
+                        origin: None,
+                    }),
+                    now,
+                );
+            }
+            if served {
+                break;
+            }
+        }
+        assert!(
+            served,
+            "older prefetch starved under continuous visible arrivals"
+        );
     }
 
     #[test]
@@ -1615,7 +1811,14 @@ mod reader_tests {
             },
         );
         reader.keys.insert(key.clone(), 7);
-        reader.demand.push((key, Priority::Visible, paging));
+        reader.demand.insert(
+            key,
+            Demand {
+                priority: Priority::Visible,
+                paging,
+                ticket: 0,
+            },
+        );
         reader.listed(&parent, 0, &Paging::default(), Vec::new(), Some(new), None);
         assert_eq!(reader.take_cancelled(), vec![7]);
         assert!(reader.poll(0).is_empty());
@@ -1652,7 +1855,7 @@ mod reader_tests {
         assert_eq!(ops.len(), 2);
         reader
             .cache
-            .insert_record(&stream, 0, Bytes::from_static(b"old"), None);
+            .insert_record(&stream, 0, OwnedBytes::from_static(b"old"), None);
         reader.cache.observe_origin(
             &child,
             Some(ForkOrigin {
@@ -1668,7 +1871,7 @@ mod reader_tests {
             ops[1].id(),
             Outcome::Records(vec![Fetched {
                 sequence: 10,
-                value: Bytes::from_static(b"late"),
+                value: OwnedBytes::from_static(b"late"),
                 commit: CommitId::from_bytes([1; 32]),
             }]),
             1,
@@ -1696,7 +1899,7 @@ mod reader_tests {
     fn fetched(sequence: u64, len: usize) -> Fetched {
         Fetched {
             sequence,
-            value: Bytes::from(vec![7; len]),
+            value: OwnedBytes::from(vec![7; len]),
             commit: CommitId::from_bytes([1; 32]),
         }
     }
@@ -1840,7 +2043,7 @@ mod reader_tests {
         let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
         reader
             .cache
-            .insert_record(&stream, 0, Bytes::from_static(b"old"), None);
+            .insert_record(&stream, 0, OwnedBytes::from_static(b"old"), None);
         reader.replaced(&stream);
         assert!(reader.cache.record(&stream, 0).is_none());
         assert_eq!(

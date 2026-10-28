@@ -21,6 +21,10 @@ export interface ExplorerHealth {
   connectivity: "online" | "degraded" | "offline";
   retryAt: bigint | null;
   cacheBytes: number;
+  /** Uncached charge, including Rust row views retained after eviction. */
+  passedBytes: number;
+  /** Unique Rust payload capacity; excludes allocator and JavaScript copies. */
+  backingBytes: number;
   requests: number;
   follows: number;
   /** Milliseconds until the reader's next deadline (a read timeout or retry). */
