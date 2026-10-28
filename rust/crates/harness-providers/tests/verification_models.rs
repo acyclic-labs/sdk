@@ -1,6 +1,6 @@
 //! Exhaustive model of the production usage calibration.
 #![cfg(not(target_arch = "wasm32"))]
-use crate::sync;
+use crate::{Adapter, sync};
 use sync::Arc;
 mod accounting {
     include!("../src/accounting.rs");
