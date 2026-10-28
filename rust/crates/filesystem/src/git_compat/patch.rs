@@ -91,16 +91,15 @@ pub(super) async fn apply_git_patch_at<
         let original = if patch.old_path.is_none() {
             acyclic_stream::OwnedBytes::from_static(b"")
         } else {
-            head
-                .read(
-                    &format!("/{path}"),
-                    MAXIMUM_PATCH_FILE_BYTES,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)?
+            head.read(
+                &format!("/{path}"),
+                MAXIMUM_PATCH_FILE_BYTES,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)?
         };
         let original = std::str::from_utf8(&original).map_err(|_| GitPatchError::NonText)?;
         let replacement = apply_unified_hunks(path, original, &patch.hunks)?;
@@ -182,8 +181,8 @@ fn parse_unified_patch(bytes: &[u8]) -> Result<Vec<UnifiedPatch<'_>>, GitPatchEr
             }
             let old_start = parse_hunk_old_start(line)?;
             let mut hunk_lines: Vec<&str> = Vec::new();
-            while let Some(line) = lines
-                .next_if(|line| !line.starts_with("@@ ") && !line.starts_with("--- "))
+            while let Some(line) =
+                lines.next_if(|line| !line.starts_with("@@ ") && !line.starts_with("--- "))
             {
                 if line.starts_with('\\') {
                     let previous = hunk_lines.last_mut().ok_or_else(|| {

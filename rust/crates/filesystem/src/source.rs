@@ -992,8 +992,7 @@ async fn replay_seal_operation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     session: &mut SourceSession<A, O>,
     key: IdempotencyKey,
 ) -> Result<Option<Generation<A, O>>, SourceError> {
-    let Some(fact) = replay_source_operation(session, key, SourceOperation::Seal).await?
-    else {
+    let Some(fact) = replay_source_operation(session, key, SourceOperation::Seal).await? else {
         return Ok(None);
     };
     match fact.state {

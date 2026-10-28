@@ -57,19 +57,13 @@ pub(crate) fn scope<T>(span: &OperationSpan, job: impl FnOnce() -> T) -> T {
 }
 
 /// Captures caller ancestry for worker attribution.
-#[cfg(all(
-    any(test, feature = "native-watch"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(any(test, feature = "native-watch"), not(target_arch = "wasm32")))]
 pub(crate) fn caller_context() -> OperationSpan {
     OperationSpan::new(tracing::Span::current())
 }
 
 /// Carries an explicitly selected operation/ancestry context through actual work.
-#[cfg(all(
-    any(test, feature = "native-watch"),
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(any(test, feature = "native-watch"), not(target_arch = "wasm32")))]
 pub(crate) fn in_context<T>(
     span: OperationSpan,
     job: impl FnOnce() -> T + Send + 'static,
