@@ -885,7 +885,10 @@ async fn optional_count_policies_preserve_unbounded_execution_and_finite_authori
             assert!(matches!(
                 executor
                     .clone()
-                    .with_limits(finite)
+                    .with_limits(Limits {
+                        model_steps: Some(1),
+                        ..limits
+                    })
                     .execute(input.clone(), &journal)
                     .await,
                 Err(Error::Invalid(_))
