@@ -33,6 +33,7 @@ pub struct McpHttpRequest {
     /// UTF-8 JSON-RPC message, or empty GET/DELETE body.
     pub body: Vec<u8>,
     /// Optional whole-exchange deadline.
+    #[cfg_attr(feature = "wasm", tsify(type = "bigint | null"))]
     pub timeout_ms: Option<u64>,
     /// Total response body allowance.
     pub maximum_response_bytes: Option<u32>,
