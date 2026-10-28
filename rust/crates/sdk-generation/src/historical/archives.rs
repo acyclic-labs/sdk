@@ -1,5 +1,8 @@
 use super::*;
 
+mod staged;
+pub(super) use staged::StagedArchive;
+
 /// Imports exact archives with their optional registry inventory.
 pub fn archive_plan(
     version: &str,
@@ -45,19 +48,17 @@ pub fn archive_plan(
         } else {
             registry_version(package, version)?
         };
-        let members = archive_members(&release, &archive)?;
+        let members = StagedArchive::read(&release, &archive, ArchiveLimits::default())?;
         let directory = format!("{}-{}", release.package, release.num);
-        for (member, bytes) in &members {
-            let logical = format!("{directory}/{member}");
-            crate::write_immutable(&source_root.join(&logical), bytes)
-                .map_err(|e| e.to_string())?;
-            plan.source_files
-                .insert(logical, crate::sha256_bytes(bytes));
-        }
-        let manifest = source_root.join(&directory).join("Cargo.toml");
-        if !members.contains_key("Cargo.toml") {
+        if !members.files.contains_key("Cargo.toml") {
             return Err("registry archive lacks its normalized Cargo manifest".into());
         }
+        let publisher_vcs = members.vcs()?;
+        members.publish(source_root, &directory)?;
+        for (member, digest) in &members.files {
+            plan.source_files.insert(format!("{directory}/{member}"), digest.clone());
+        }
+        let manifest = source_root.join(&directory).join("Cargo.toml");
         let lock = manifest.with_file_name("Cargo.lock");
         let config_directory = source_root.join(format!(".docs-producer/{directory}"));
         let config = config_directory.join("config.toml");
@@ -80,9 +81,9 @@ pub fn archive_plan(
             }
             validate_archive_inventory(&config_directory, &expected)?;
             let config_digest = crate::sha256_file(&config).map_err(|e| e.to_string())?;
-            let original_lock = match members.get("Cargo.lock") {
+            let original_lock = match members.files.get("Cargo.lock") {
                 Some(bytes) => OriginalLock::Published {
-                    sha256: crate::sha256_bytes(bytes),
+                    sha256: bytes.clone(),
                 },
                 None => OriginalLock::Absent,
             };
@@ -109,7 +110,7 @@ pub fn archive_plan(
                 original_lock,
                 producer,
             }
-        } else if members.contains_key("Cargo.lock") {
+        } else if members.files.contains_key("Cargo.lock") {
             ResolutionLock::Published {
                 sha256: crate::sha256_file(&lock).map_err(|e| e.to_string())?,
             }
@@ -160,13 +161,13 @@ pub fn archive_plan(
             package: release.package.clone(),
             version: release.num.clone(),
             registry_checksum: release.checksum.clone(),
-            publisher_vcs: archive_vcs(&members)?,
+            publisher_vcs,
             resolution_lock,
         };
         // Independently reread original members plus selected config/lock after
         // lock generation and metadata; command success cannot hide input drift.
         let (released, verified_files) =
-            verify_imported_archive(source_root, &release, &archive, &identity)?;
+            verify_staged_archive(source_root, &release, &archive, &identity, &members)?;
         plan.source_files.extend(verified_files);
         plan.released_packages.push(released);
         archive_sources.push(identity);
@@ -303,15 +304,34 @@ pub fn decode_archive_members_with_limits(
     version: &str,
     limits: ArchiveLimits,
 ) -> Result<BTreeMap<String, Vec<u8>>, String> {
-    validate_name(package)?;
-    validate_version(version)?;
     if bytes.len() as u64 > limits.compressed_bytes {
         return Err("registry archive compressed-byte limit exceeded".into());
     }
-    let reader: Box<dyn Read + '_> = if bytes.starts_with(&[0x1f, 0x8b]) {
-        Box::new(flate2::read::MultiGzDecoder::new(bytes))
+    let mut result = BTreeMap::new();
+    visit_archive_members(bytes, package, version, limits, |name, entry| {
+        let mut body = Vec::new();
+        entry.read_to_end(&mut body).map_err(|e| e.to_string())?;
+        result.insert(name.to_owned(), body);
+        Ok(())
+    })?;
+    Ok(result)
+}
+
+fn visit_archive_members<R: Read>(
+    bytes: R,
+    package: &str,
+    version: &str,
+    limits: ArchiveLimits,
+    mut visit: impl FnMut(&str, &mut dyn Read) -> Result<(), String>,
+) -> Result<(), String> {
+    validate_name(package)?;
+    validate_version(version)?;
+    let mut input = BufReader::new(bytes);
+    let compressed = input.fill_buf().map_err(|e| e.to_string())?.starts_with(&[0x1f, 0x8b]);
+    let reader: Box<dyn Read + '_> = if compressed {
+        Box::new(flate2::read::MultiGzDecoder::new(input))
     } else {
-        Box::new(bytes)
+        Box::new(input)
     };
     let mut reader = BufReader::new(ExpandedReader { reader, remaining: limits.expanded_bytes });
     if reader.fill_buf().map_err(|e| e.to_string())?.is_empty() {
@@ -320,7 +340,7 @@ pub fn decode_archive_members_with_limits(
     let mut archive = tar::Archive::new(reader);
     let directory = format!("{package}-{version}");
     let prefix = format!("{directory}/");
-    let mut result = BTreeMap::new();
+    let mut names = BTreeSet::new();
     for (index, entry) in archive.entries().map_err(|e| e.to_string())?.enumerate() {
         if index >= limits.members {
             return Err("registry archive member-count limit exceeded".into());
@@ -354,23 +374,23 @@ pub fn decode_archive_members_with_limits(
         if kind.is_dir() {
             continue;
         }
-        if relative.is_empty() || result.contains_key(relative) {
+        if relative.is_empty() || !names.insert(relative.to_owned()) {
             return Err("duplicate or empty registry archive member".into());
         }
         let relative = relative.to_owned();
-        let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-        result.insert(relative, bytes);
+        visit(&relative, &mut entry)?;
     }
     // Reading through the gzip trailer verifies the transport checksum too.
     std::io::copy(&mut archive.into_inner(), &mut std::io::sink()).map_err(|e| e.to_string())?;
-    Ok(result)
+    Ok(())
 }
 
 pub fn archive_vcs(members: &BTreeMap<String, Vec<u8>>) -> Result<Option<PublisherVcs>, String> {
-    let Some(bytes) = members.get(".cargo_vcs_info.json") else {
-        return Ok(None);
-    };
+    parse_archive_vcs(members.get(".cargo_vcs_info.json").map(Vec::as_slice))
+}
+
+fn parse_archive_vcs(bytes: Option<&[u8]>) -> Result<Option<PublisherVcs>, String> {
+    let Some(bytes) = bytes else { return Ok(None) };
     #[derive(Deserialize)]
     struct Git {
         sha1: String,
@@ -396,6 +416,17 @@ pub fn verify_imported_archive(
     archive: &Path,
     identity: &ArchiveSource,
 ) -> Result<(ReleasedPackage, BTreeMap<String, String>), String> {
+    let members = StagedArchive::read(release, archive, ArchiveLimits::default())?;
+    verify_staged_archive(root, release, archive, identity, &members)
+}
+
+fn verify_staged_archive(
+    root: &Path,
+    release: &RegistryVersion,
+    archive: &Path,
+    identity: &ArchiveSource,
+    members: &StagedArchive,
+) -> Result<(ReleasedPackage, BTreeMap<String, String>), String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
     if identity.package != release.package
         || identity.version != release.num
@@ -403,25 +434,23 @@ pub fn verify_imported_archive(
     {
         return Err("captured archive identity differs from retained registry facts".into());
     }
-    let members = archive_members(release, archive)?;
-    let vcs = archive_vcs(&members)?;
+    members.check_source(release, archive)?;
+    let vcs = members.vcs()?;
     if vcs != identity.publisher_vcs {
         return Err("publisher VCS facts differ from exact archive".into());
     }
     let directory = format!("{}-{}", release.package, release.num);
     let mut files = BTreeMap::new();
-    for (member, bytes) in &members {
+    for (member, digest) in &members.files {
         let path = format!("{directory}/{member}");
         let source = root.join(&path).canonicalize().map_err(|e| e.to_string())?;
-        if !source.starts_with(&root) || fs::read(&source).map_err(|e| e.to_string())? != *bytes {
+        if !source.starts_with(&root) || !members.matches(member, &source)? {
             return Err(format!("imported archive source differs: {path}"));
         }
-        files.insert(path, crate::sha256_bytes(bytes));
+        files.insert(path, digest.clone());
     }
     let lock_path = format!("{directory}/Cargo.lock");
-    let lock_digest = members
-        .get("Cargo.lock")
-        .map(|bytes| crate::sha256_bytes(bytes));
+    let lock_digest = members.files.get("Cargo.lock").cloned();
     match &identity.resolution_lock {
         ResolutionLock::Published { sha256 } if lock_digest.as_ref() == Some(sha256) => {}
         ResolutionLock::DocsProducer { sha256 }
