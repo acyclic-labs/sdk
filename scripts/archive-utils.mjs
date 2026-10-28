@@ -162,22 +162,31 @@ export async function readTarGzip(input, visit, options = /** @type {{ algorithm
 
 // Validate names before retaining individual files. The expanded tar itself is
 // never materialized; exact inventories and digests remain caller authority.
-export async function readPayloadEntries(visitEntries, { canonical, caseInsensitive = process.platform === "win32", declared, expected, regularOnly = false } = {}) {
-  const payload = new Map(), seen = new Set();
+export async function readPayloadEntries(visitEntries, { canonical, caseInsensitive = process.platform === "win32", declared, expected, regularOnly = false, retain = () => true, collectDigests = false } = {}) {
+  const payload = new Map(), digests = new Map(), seen = new Set();
+  let files = 0;
   const evidence = await visitEntries(async entry => {
     const name = entry.type === "5" ? entry.path.replace(/\/$/, "") : entry.path;
     const alias = caseInsensitive ? name.toLowerCase() : name;
     if (!canonical(name) || seen.has(alias) || (entry.type !== "0" && (declared || regularOnly || entry.type !== "5"))) throw new Error("unsafe or duplicate archive member");
     seen.add(alias);
     if (entry.type === "5") return;
+    files++;
     if (declared && !Object.hasOwn(declared, name)) throw new Error("archive inventory differs");
-    const body = await collectBody(entry);
-    if (declared && sha256(body) !== declared[name]) throw new Error("archive payload digest differs");
-    payload.set(name, body);
+    let digest;
+    if (retain(name)) {
+      const body = await collectBody(entry);
+      if (declared || collectDigests) digest = sha256(body);
+      payload.set(name, body);
+    } else {
+      digest = await hashBody(entry);
+    }
+    if (declared && digest !== declared[name]) throw new Error("archive payload digest differs");
+    if (digest !== undefined) digests.set(name, digest);
   });
   if (expected !== undefined && evidence.digest !== expected) throw new Error("archive digest differs");
-  if (!payload.size || (declared && payload.size !== Object.keys(declared).length)) throw new Error("archive inventory differs");
-  return { payload, ...evidence };
+  if (!files || (declared && files !== Object.keys(declared).length)) throw new Error("archive inventory differs");
+  return { payload, digests, ...evidence };
 }
 
 export async function readArchivePayload(input, options = {}) {
