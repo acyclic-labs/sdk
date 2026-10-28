@@ -1060,7 +1060,10 @@ describe("website Stream contract", () => {
 
   test("round-trips full uint64 positions and opaque identities through the HTTP wire codec", async () => {
     const maximum = 0xffff_ffff_ffff_ffffn;
-    const identity = idempotencyKey(new Uint8Array([0, 255, 128, 1]));
+    const identityBytes = new Uint8Array(16_385);
+    identityBytes.set([0, 255, 128, 1]);
+    identityBytes[identityBytes.length - 1] = 127;
+    const identity = idempotencyKey(identityBytes);
     let requestBody: unknown;
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
       requestBody = JSON.parse(String(init?.body));
