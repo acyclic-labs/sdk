@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 // Each dependency appears once, before its consumer; visited also breaks cycles.
@@ -6,7 +6,8 @@ export function packageClosure(root, selected) {
   const packages = new Set();
   const visited = new Set();
   const names = new Map(readdirSync(join(root, "typescript/packages"), { withFileTypes: true })
-    .filter(entry => entry.isDirectory()).map(entry => {
+    .filter(entry => entry.isDirectory()
+      && existsSync(join(root, "typescript/packages", entry.name, "package.json"))).map(entry => {
       const manifest = JSON.parse(readFileSync(join(root, "typescript/packages", entry.name, "package.json"), "utf8"));
       return [manifest.name, entry.name];
     }));
