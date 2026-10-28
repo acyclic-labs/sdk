@@ -28,6 +28,7 @@ struct Session {
     client: Client,
     cursor: i64,
     publish: Statement,
+    read_fenced: Statement,
 }
 
 struct Inner {
@@ -103,6 +104,12 @@ impl PostgresStream {
             )
             .await
             .map_err(unavailable)?;
+        let read_fenced = client
+            .prepare(
+                "SELECT revision, at_millis, command FROM acyclic_stream_read_fenced($1,$2,$3)",
+            )
+            .await
+            .map_err(unavailable)?;
         let (listener, mut notifications) = tokio_postgres::connect(database, NoTls)
             .await
             .map_err(unavailable)?;
@@ -162,6 +169,7 @@ impl PostgresStream {
                 client,
                 cursor: 0,
                 publish,
+                read_fenced,
             }),
             failed: AtomicBool::new(false),
             failure,
@@ -219,27 +227,33 @@ impl PostgresStream {
         &self,
         client: &impl GenericClient,
         cursor: &mut i64,
-    ) -> Result<(), StreamError> {
+        fenced: Option<&Statement>,
+    ) -> Result<u64, StreamError> {
         loop {
-            let rows = client.query(
-                "SELECT revision, at_millis, command FROM acyclic_stream_journal WHERE namespace=$1 AND revision>$2 ORDER BY revision LIMIT $3",
-                &[&self.inner.namespace, &*cursor, &PAGE],
-            ).await.map_err(unavailable)?;
-            if rows.is_empty() {
-                return Ok(());
-            }
+            let parameters: &[&(dyn tokio_postgres::types::ToSql + Sync)] =
+                &[&self.inner.namespace, &*cursor, &PAGE];
+            let rows = match fenced {
+                Some(statement) => client.query(statement, parameters).await,
+                None => client.query(
+                    "SELECT revision, at_millis, command FROM acyclic_stream_journal WHERE namespace=$1 AND revision>$2 ORDER BY revision LIMIT $3",
+                    parameters,
+                ).await,
+            }.map_err(unavailable)?;
+            let mut count = 0;
+            let mut planned = None;
             for row in rows {
-                let revision: i64 = row.get(0);
                 let millis: i64 = row.get(1);
+                let millis = u64::try_from(millis).map_err(unavailable)?;
+                let Some(revision) = row.get::<_, Option<i64>>(0) else {
+                    // The fenced page ends with its database clock sample.
+                    planned = Some(millis);
+                    continue;
+                };
                 let bytes: Vec<u8> = row.get(2);
-                self.inner.clock.0.store(
-                    u64::try_from(millis).map_err(unavailable)?,
-                    Ordering::Release,
-                );
+                self.inner.clock.0.store(millis, Ordering::Release);
                 let command = decode_command(&bytes).map_err(unavailable)?;
-                // Refusals are durable decisions too. Replaying them preserves
-                // the core's exact retry and conflict semantics without copying
-                // any admission or mutation mechanism into the adapter.
+                // Only accepted decisions reach the journal. The canonical
+                // replay retains their original identity and ordered effects.
                 if matches!(
                     replay(&self.inner.core, command).await,
                     Err(StreamError::Unavailable | StreamError::InvalidResponse)
@@ -248,6 +262,13 @@ impl PostgresStream {
                     return Err(unavailable("committed command could not be replayed"));
                 }
                 *cursor = revision;
+                count += 1;
+            }
+            if count < PAGE {
+                return match fenced {
+                    Some(_) => planned.ok_or(StreamError::InvalidResponse),
+                    None => Ok(0),
+                };
             }
         }
     }
@@ -256,7 +277,7 @@ impl PostgresStream {
         self.check()?;
         let mut session = self.inner.session.lock().await;
         let Session { client, cursor, .. } = &mut *session;
-        self.catch_up(client, cursor).await
+        self.catch_up(client, cursor, None).await.map(|_| ())
     }
 
     async fn apply(&self, command: Command) -> Result<Outcome, StreamError> {
@@ -303,6 +324,7 @@ impl PostgresStream {
             client,
             cursor,
             publish,
+            read_fenced,
         } = &mut *session;
         // Acquire the namespace lock before taking the catch-up snapshot. A
         // caller-configured repeatable-read default could otherwise preserve a
@@ -313,32 +335,19 @@ impl PostgresStream {
             .start()
             .await
             .map_err(unavailable)?;
-        // Hash collisions only serialize unrelated namespaces; they cannot
-        // weaken isolation. The lock is held through the durable SQL commit.
-        tx.execute(
-            "SELECT pg_advisory_xact_lock(hashtextextended($1, 1937006962))",
-            &[&self.inner.namespace],
-        )
-        .await
-        .map_err(unavailable)?;
-        self.catch_up(&tx, cursor).await?;
+        // One server call acquires the namespace lock, reads a bounded page
+        // after that wait and samples the planning clock. It keeps the fence
+        // through the same transaction's durable commit.
+        let at = self.catch_up(&tx, cursor, Some(read_fenced)).await?;
         // The shared core gives an existing retry receipt precedence over an
         // elapsed deadline, including cross-operation identity mismatches.
         if command.has_replay(&self.inner.core).await? {
             return self.apply(command).await;
         }
-        // Admission and the recorded commit time are the transaction's database
-        // clock, read before the canonical core plans. Replay restores exactly
-        // this time from the journal row.
-        let millis: i64 = tx
-            .query_one(
-                "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint",
-                &[],
-            )
-            .await
-            .map_err(unavailable)?
-            .get(0);
-        let at = u64::try_from(millis).map_err(unavailable)?;
+        // Replay restores this exact database-clock sample. The publication
+        // function also checks the actual clock after insertion, so replay CPU
+        // time cannot extend the acceptance deadline.
+        let millis = i64::try_from(at).map_err(unavailable)?;
         if deadline.is_some_and(|deadline| at >= deadline) {
             return Err(StreamError::DeadlineElapsed);
         }
@@ -489,9 +498,16 @@ impl StreamProvider for PostgresStream {
         &self,
         at_least: &crate::RevisionCut,
     ) -> Result<crate::Revision, StreamError> {
-        // A token was issued after its publication reached the journal, so a
-        // refreshed replica covers it.
-        self.refresh().await?;
+        self.check()?;
+        let revisions = &self.inner.core.revisions;
+        if revisions
+            .floor(at_least)?
+            .is_some_and(|floor| floor > revisions.current().index)
+        {
+            // A token was issued after its publication reached the journal.
+            // An already-applied floor needs no unrelated catch-up.
+            self.refresh().await?;
+        }
         self.inner.core.wait_applied(at_least).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
@@ -499,6 +515,13 @@ impl StreamProvider for PostgresStream {
         self.inner.core.read(request).await
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
+        self.check()?;
+        match self.inner.core.read_commit(id).await {
+            Err(StreamError::NotFound) => {}
+            result => return result,
+        }
+        // Success is immutable; only a missing envelope needs a fresh journal
+        // observation. A miss is never cached as an authoritative absence.
         self.refresh().await?;
         self.inner.core.read_commit(id).await
     }

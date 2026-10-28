@@ -46,14 +46,29 @@ cursor writes nothing. SQL does not interpret Stream conditions or retry keys.
 Installation needs PL/pgSQL and permission to create/replace and execute this
 function as well as the table permissions above.
 
-The current wrapper still takes its existing transaction fence and performs
-bounded catch-up before that call, then commits before exposing the canonical
-result. This is the first PLATFORM-9 change, not the one-round-trip target or
-closure of G07. Moving catch-up/replanning/batching into the one shared replica
-belongs with the shared Streams replica. Extraction must preserve the existing
-DG071 prepare/persist/install boundary; no condition evaluator moves to SQL.
-The separate BEGIN, lock, catch-up and COMMIT exchanges still exist. Delayed
-NOTIFY is a wake hint, not evidence that a read is fresh; reads still catch up.
+`acyclic_stream_read_fenced(namespace, after_revision, page_size)` acquires the
+transaction's namespace lock before obtaining a READ COMMITTED journal page and
+returns its database-clock sample. The canonical core replays each bounded page
+under that fence, then prepares the decision. An empty backlog now uses four
+sequential request/response stages: BEGIN, fenced page/clock, publication, COMMIT.
+Additional catch-up pages retain the fence and replace the planning clock sample;
+statement preparation and initial installation are outside this warm path.
+These are source-derived stages, not measured network messages or a throughput
+claim. The final publication function checks the actual database clock after
+insertion, so time spent replaying or planning cannot extend admission.
+
+An applied revision floor already covered by this replica needs no SQL query.
+`read_commit` similarly returns an already-retained immutable successful envelope
+without replaying unrelated progress; a missing envelope still refreshes before
+returning absence. These paths check replica health and introduce no receipt or
+negative cache. Mutable observations retain authoritative refresh. Delayed NOTIFY
+alone never establishes freshness or permits returning an uncovered revision.
+
+Portable catch-up/replanning/batching belongs with the shared Streams replica,
+whose owner retains G07's port. Extraction must preserve the DG071
+prepare/persist/install boundary, namespace generation and distinct physical
+journal cursor versus canonical revision index. No condition evaluator moves to
+SQL, and four stages do not constitute the one-round-trip target or G07 closure.
 
 Each opened provider owns two connections and three shared async tasks: one
 serialized query connection, one LISTEN connection, and one notification refresh
@@ -120,7 +135,7 @@ listener-loss checks, and the idle 100,000-stream/subscription check in 17.65 s
 (700 ms path creation), with two provider connections, four total tasks including
 the observer, one OS thread and 321,380 KiB RSS. Browser and Cloudflare host
 fixtures compiled for wasm. After #1705 and #1746, the adapter inventory is
-487 Rust lines plus 65 SQL lines. This exceeds the approximately 300-line budget;
+542 Rust lines plus 100 SQL lines. This exceeds the approximately 300-line budget;
 shared journal catch-up, dispatch and publication orchestration still need
 extraction under [follow-up #1629](https://github.com/acyclic-labs/sdk/issues/1629).
 
@@ -145,7 +160,7 @@ default GraphCoder compile. Evidence: job `1793132738027-89535-de4d1919`, log
 routing and synchronous resource refusal now close only their channel. This
 preserves ordinary follows; it does not supply the missing remote policy watch.
 
-## Audit v3 measurement plan
+## Audit v3b measurement plan
 
 No new SQL runtime, throughput, latency or freshness qualification is claimed.
 The compile-only refresh does not execute PL/pgSQL. Before claiming PLATFORM-9
@@ -158,18 +173,28 @@ flush/response boundaries and SQL executions, not just outer provider calls.
 
 | Workload | Measurements and unchanged controls |
 | --- | --- |
-| 1, 2, 4, 8, 16, 32, 64 writers; distinct paths in one namespace | Test shared-provider clones and independent provider processes separately. Record completed throughput, end-to-end p50/p99, SQL/protocol messages and namespace advisory-lock wait/hold time. Repeat with injected RTT 0/1/5/20 ms. Keep total inflight work bounded and report the single-query-connection limit. |
+| 1, 2, 4, 8, 16, 32, 64 writers; distinct paths in one namespace | Test shared-provider clones and independent provider processes separately. Record completed throughput, end-to-end p50/p99, SQL/protocol messages, session-mutex wait/hold and namespace advisory-lock wait/hold. Repeat with measured RTT 0.02/0.5/5 ms. Keep total inflight work bounded and report the single-query-connection limit. |
+| Retained immutable envelope and already-applied revision; unrelated journal backlog | Count actual SQL queries and transferred command bytes: successful local hits require none. Keep the six-stage sequential wrapper and unconditional refresh as negative controls at the same source/workload. A missing envelope still performs an authoritative read; a foreign incarnation still refuses. |
 | Conflicting paths and multi-stream commits | Preserve exactly one CAS winner and all-or-nothing conditions. Replay the same key after response loss and independent reopen; no new key or duplicate accepted command. Stale journal cursor and deadline-after-lock-wait publish no row/notification. |
 | Cancellation before send, after send, after commit; process crash | Retain original command bytes and native work custody. Reconcile a sent Unknown using the original key; inspect actual journal rows and immutable receipts, not only returned errors. Retain existing refused-command/DG071 oracles when adopting the shared replica. |
 | Delayed/lost notifications and stale grants | A delayed notification never establishes freshness. Keep the authoritative read/decision boundary and stale-grant AlreadyExists/privacy oracles in the canonical immutable Objects core. No polling or private grant cache. |
 
 Replay the sequential adapter as the negative control without changing workloads
-or budgets; report whether the stage/lock measurements detect it. Any later frame
-batching or refresh elision needs an ordered-observation proof and the same
-conflict, deadline, notification-loss and crash oracles. G20 transport/context is
-be-edge-owned; G24/G25 replication/blob contracts are Streams-owned; G30 uses the
-existing guest Placement. This adapter adds no framing, reconnect loop, private
-blob engine, or backend-specific filesystem branch.
+or budgets; report whether the stage/lock measurements detect it. PLATFORM-25's
+ordered native journal batching remains separate acceptance work: compare
+batch widths 1/16/256 and 1/32 writers, counting jobs, syscalls, copies, queue time,
+CPU and p99 on each supported OS. Batch 1 must restore the dispatch slope.
+Preserve original offset/byte/work ownership, grouped fsync, torn-tail recovery,
+short writes, dropped physical completion and cancelled observers. Shared native
+backend pipelining belongs in native-runtime, with the portable replica owner
+retaining the journal's visibility boundary. No such native batching or runtime
+qualification is claimed by this Postgres source change.
+
+Any further frame batching or mutable-read elision needs an ordered-observation
+proof and the same conflict, deadline, notification-loss and crash oracles. G20
+transport/context is Auth-owned; G24/G25 blob/closure belongs to Objects; G30 uses
+the existing guest Placement. This adapter adds no framing, reconnect loop,
+private blob engine, or backend-specific filesystem branch.
 
 ## Live steps
 
