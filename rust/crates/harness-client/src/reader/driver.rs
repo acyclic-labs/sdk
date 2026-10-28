@@ -17,6 +17,7 @@ use acyclic_stream::{
 use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
 use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::BTreeMap;
+use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -39,6 +40,7 @@ pub struct Driver<P: ?Sized> {
     /// Opens in flight, each cancelled once its stream or start is unwanted.
     pending: BTreeMap<StreamPath, (u64, AbortHandle)>,
     follows: BTreeMap<StreamPath, (u64, u64, RecordStream)>,
+    follow_after: Option<StreamPath>,
 }
 
 impl<P: StreamProvider + ?Sized> Driver<P> {
@@ -53,6 +55,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             opening: FuturesUnordered::new(),
             pending: BTreeMap::new(),
             follows: BTreeMap::new(),
+            follow_after: None,
         }
     }
 
@@ -254,29 +257,40 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         let mut ended = Vec::new();
         loop {
             let mut progressed = false;
-            for (path, (position, accepted, records)) in &mut self.follows {
-                if !reader.accepting() {
-                    break;
-                }
-                match records.poll_next_unpin(cx) {
-                    Poll::Ready(Some(Ok(record))) => {
-                        *position = record.sequence + 1;
-                        *accepted = (*accepted).max(record.sequence + 1);
-                        reader.deliver(path, fetched(&record), *accepted);
-                        progressed = true;
+            let after = self.follow_after.clone();
+            let passes = [
+                (after.as_ref().map_or(Unbounded, Excluded), Unbounded),
+                (Unbounded, after.as_ref().map_or(Unbounded, Included)),
+            ];
+            for bounds in passes.into_iter().take(1 + usize::from(after.is_some())) {
+                for (path, (position, accepted, records)) in self.follows.range_mut::<StreamPath, _>(bounds) {
+                    if !reader.accepting() {
+                        break;
                     }
-                    Poll::Ready(Some(Err(error))) => {
-                        failed(reader, path, &error, now);
-                        ended.push(path.clone());
+                    self.follow_after = Some(path.clone());
+                    match records.poll_next_unpin(cx) {
+                        Poll::Ready(Some(Ok(record))) => {
+                            *position = record.sequence + 1;
+                            *accepted = (*accepted).max(record.sequence + 1);
+                            reader.deliver(path, fetched(&record), *accepted);
+                            progressed = true;
+                        }
+                        Poll::Ready(Some(Err(error))) => {
+                            failed(reader, path, &error, now);
+                            ended.push(path.clone());
+                        }
+                        Poll::Ready(None) => ended.push(path.clone()),
+                        Poll::Pending => {}
                     }
-                    Poll::Ready(None) => ended.push(path.clone()),
-                    Poll::Pending => {}
                 }
             }
             for path in ended.drain(..) {
                 self.follows.remove(&path);
             }
             if !progressed || !reader.accepting() {
+                if progressed {
+                    cx.waker().wake_by_ref();
+                }
                 break;
             }
         }
