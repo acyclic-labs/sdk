@@ -106,67 +106,15 @@ pub fn capabilities_for_class(class: Option<&str>) -> Option<BTreeSet<Capability
 #[must_use]
 pub fn parse_rfc3339_ms(value: &str) -> Option<u64> {
     let value = value.trim();
-    let (date, rest) = value.split_once('T')?;
-    let mut parts = date.split('-');
-    let year: i64 = parts.next()?.parse().ok()?;
-    let month: u32 = parts.next()?.parse().ok()?;
-    let day: u32 = parts.next()?.parse().ok()?;
-    if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return None;
-    }
-    let time = rest
-        .strip_suffix('Z')
-        .or_else(|| rest.strip_suffix("+00:00"))
-        .or_else(|| rest.strip_suffix("-00:00"))?;
-    let (clock, fraction) = match time.split_once('.') {
-        Some((clock, fraction)) => (clock, Some(fraction)),
-        None => (time, None),
-    };
-    let mut parts = clock.split(':');
-    let hour: u64 = parts.next()?.parse().ok()?;
-    let minute: u64 = parts.next()?.parse().ok()?;
-    let second: u64 = parts.next()?.parse().ok()?;
-    if parts.next().is_some() || hour > 23 || minute > 59 || second > 60 {
-        return None;
-    }
-    let millis = match fraction {
-        Some(fraction) if !fraction.is_empty() && fraction.chars().all(|c| c.is_ascii_digit()) => {
-            let padded = format!("{fraction:0<3}");
-            padded.get(..3)?.parse::<u64>().ok()?
-        }
-        Some(_) => return None,
-        None => 0,
-    };
-    let days = days_from_civil(year, month, day);
-    let seconds = days
-        .checked_mul(86_400)?
-        .checked_add(i64::try_from(hour * 3_600 + minute * 60 + second).ok()?)?;
-    let seconds = u64::try_from(seconds).ok()?;
-    seconds.checked_mul(1_000)?.checked_add(millis)
-}
-
-/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's algorithm).
-fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let year = if month <= 2 { year - 1 } else { year };
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let year_of_era = year - era * 400;
-    let month_index = i64::from(if month > 2 { month - 3 } else { month + 9 });
-    let day_of_year = (153 * month_index + 2) / 5 + i64::from(day) - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    era * 146_097 + day_of_era - 719_468
-}
-
-/// Lowercase hex encoding of a byte slice.
-#[must_use]
-pub fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes
+    if !["Z", "+00:00", "-00:00"]
         .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
-            // Writing to a String cannot fail.
-            let _ = write!(out, "{byte:02x}");
-            out
-        })
+        .any(|suffix| value.ends_with(suffix))
+    {
+        return None;
+    }
+    let parsed =
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()?;
+    u64::try_from(parsed.unix_timestamp_nanos().div_euclid(1_000_000)).ok()
 }
 
 fn whole_minutes(duration: Duration) -> u64 {
@@ -265,7 +213,7 @@ pub fn network_fields(
     config: &DaytonaConfig,
     digest: &[u8; 32],
 ) -> Result<(Option<String>, Option<bool>), ProviderError> {
-    let key = hex(digest);
+    let key = hex::encode(digest);
     let policy = config.network_policies.get(&key).ok_or_else(|| {
         ProviderError::Unsupported(format!(
             "network policy {key} is not registered with this Daytona provider; it cannot enforce an unknown policy"
@@ -836,5 +784,13 @@ mod tests {
         );
         assert_eq!(parse_rfc3339_ms("2026-09-11T10:15:30+02:00"), None);
         assert_eq!(parse_rfc3339_ms("garbage"), None);
+        assert_eq!(parse_rfc3339_ms("2026-02-29T00:00:00Z"), None);
+        assert_eq!(parse_rfc3339_ms("2026-04-31T00:00:00Z"), None);
+        assert_eq!(parse_rfc3339_ms("1969-12-31T23:59:59.999Z"), None);
+        assert_eq!(parse_rfc3339_ms("1969-12-31T23:59:59.999999999Z"), None);
+        assert_eq!(
+            parse_rfc3339_ms("2024-02-29T00:00:00Z"),
+            Some(1_709_164_800_000)
+        );
     }
 }

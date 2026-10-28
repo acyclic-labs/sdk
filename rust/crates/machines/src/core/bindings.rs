@@ -267,11 +267,7 @@ impl OperationRegistry {
                 state.native = Some(native.clone());
             }
             mutations.push(self.journal.append(&machine_path, &state)?);
-            mutations.push(
-                self.journal
-                    .append(&operation_path, &Some(record.clone()))?,
-            );
-            mutations.push(self.journal.operation_log(&operation_path, &Some(record))?);
+            mutations.push(self.journal.append(&operation_path, &Some(record))?);
             if self
                 .journal
                 .publish(conditions, mutations, op.path, op.tail + 1)

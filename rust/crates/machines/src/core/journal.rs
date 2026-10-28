@@ -68,17 +68,6 @@ impl Journal {
         })
     }
 
-    pub fn operation_log<T: Serialize>(
-        &self,
-        suffix: &str,
-        value: &T,
-    ) -> Result<CommitMutation, ProviderError> {
-        self.append(
-            "ops",
-            &serde_json::json!({"operation":suffix.strip_prefix("ops/"),"record":value}),
-        )
-    }
-
     /// One atomic publication attempt. Only a definite conflict permits a new
     /// read/compute attempt; a lost reply must never redispatch a native action.
     pub async fn publish(
@@ -351,12 +340,8 @@ impl Journal {
             }
             mutations.push(CommitMutation::Append {
                 path: row.path.clone(),
-                records: vec![after.clone().into()],
+                records: vec![after.into()],
             });
-            if suffix.starts_with("ops/") {
-                // The account operation log and point projection settle in one commit.
-                mutations.push(self.operation_log(suffix, &value)?);
-            }
             if self
                 .publish(vec![condition], mutations, row.path, row.tail + 1)
                 .await?

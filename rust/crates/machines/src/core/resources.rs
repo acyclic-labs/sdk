@@ -223,10 +223,7 @@ impl OperationRegistry {
             changes.conditions.push(condition);
             changes
                 .mutations
-                .push(self.journal.append(&suffix, &Some(record.clone()))?);
-            changes
-                .mutations
-                .push(self.journal.operation_log(&suffix, &Some(record))?);
+                .push(self.journal.append(&suffix, &Some(record))?);
             if self
                 .journal
                 .publish(

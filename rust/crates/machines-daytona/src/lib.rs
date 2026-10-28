@@ -131,13 +131,13 @@ impl DaytonaConfig {
 
     /// Registers the snapshot that backs one image digest.
     pub fn register_snapshot(&mut self, digest: [u8; 32], snapshot: impl Into<String>) {
-        self.snapshots.insert(map::hex(&digest), snapshot.into());
+        self.snapshots.insert(hex::encode(&digest), snapshot.into());
     }
 
     /// Registers the outbound policy a network-policy digest commits to. Sandboxes whose
     /// contract carries `digest` are created with exactly this policy.
     pub fn register_network_policy(&mut self, digest: [u8; 32], policy: map::NetworkPolicy) {
-        self.network_policies.insert(map::hex(&digest), policy);
+        self.network_policies.insert(hex::encode(&digest), policy);
     }
 }
 
@@ -267,7 +267,7 @@ impl DaytonaProvider {
         match image {
             Image::Checkpoint(checkpoint) => Ok(checkpoint.to_string()),
             Image::ManagedOci(digest) | Image::Custom(digest) => {
-                let key = map::hex(&digest.as_bytes());
+                let key = hex::encode(&digest.as_bytes());
                 self.config.snapshots.get(&key).or(self.config.default_snapshot.as_ref()).cloned().ok_or_else(|| {
                     ProviderError::Unsupported(format!(
                         "image digest {key} is not registered as a Daytona snapshot and no default snapshot is configured"

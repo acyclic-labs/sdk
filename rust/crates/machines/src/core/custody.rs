@@ -75,8 +75,7 @@ impl OperationRegistry {
             // Unknown metadata has no public observation to project. Its typed
             // native address still remains owned until this acknowledgment.
             record.created.retain(|owned| *owned != resource_index);
-            mutations.push(self.journal.append(&suffix, &Some(record.clone()))?);
-            mutations.push(self.journal.operation_log(&suffix, &Some(record))?);
+            mutations.push(self.journal.append(&suffix, &Some(record))?);
             if self
                 .journal
                 .publish(conditions, mutations, op.path, op.tail + 1)
@@ -184,8 +183,7 @@ impl OperationRegistry {
             mutations.extend([
                 self.journal.append(&checkpoint_path, &Some(state))?,
                 self.journal.append(&link_path, &projection)?,
-                self.journal.append(&suffix, &Some(record.clone()))?,
-                self.journal.operation_log(&suffix, &Some(record))?,
+                self.journal.append(&suffix, &Some(record))?,
             ]);
             if self
                 .journal

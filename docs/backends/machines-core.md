@@ -41,8 +41,9 @@ and retains native status decoding in the wire adapter. Provider captures remain
 separate qualification work; internal owner vectors
 do not establish a live provider pass.
 
-Admission precedes native dispatch. A keyed conditional commit publishes the point
-projection and account operation log (`machines/<account>/ops`) together.
+Admission precedes native dispatch. A keyed conditional commit appends the
+operation revision to `machines/<account>/ops/<id>`. That one stream owns the
+operation history and its current projection; there is no account-wide copy.
 An identical successful retry returns the original result; a different intent is
 a conflict. A pending or unknown operation refuses redispatch. Recovery never
 infers success from a native resource's name or labels. Daytona's former
@@ -55,7 +56,7 @@ operations replay from Streams without another native dispatch.
 Core lifecycle methods return this value directly, on first execution and replay;
 `MachinesProvider` projects its public outcome at the backend composition boundary.
 A terminal transition publishes `ops/<id>/settlement` atomically with the mutable
-operation point/log. Later deletion acknowledgments cannot change its CommitId.
+operation revision. Later deletion acknowledgments cannot change its CommitId.
 Protocol 1.2 `Join` takes the original key and operation, and returns the same
 canonical publication as a one-result server stream. Send headers immediately;
 the single stream item awaits `join_settlement`, then the stream ends. This keeps
@@ -84,7 +85,7 @@ links identify known public projections without an account scan or another copy
 of every child in the bounded operation record. Each acknowledged deletion commits
 the debt release with Destroyed state/event or revoked checkpoint forkability.
 Native addresses occupy individual `ops/<id>/native` records, appended atomically
-with their hash-to-position projection and the operation point/log. The point
+with their hash-to-position projection and the operation revision. The point
 holds ordered compact positions, keeping a maximum-child operation within the
 existing 64 KiB bound even with long opaque addresses. Exact typed ledger records
 validate the hash projection; it grants no independent custody. Cleanup preserves
@@ -158,7 +159,7 @@ as every other adapter, replacing its former separate digest domain.
 
 The simulator's existing bounds (4096 operations, 1024 machine identities and
 4096 events per machine) are enforced by the shared core. Operation reservation
-and its point/log publication share one conditional Streams commit; definite
+and its operation publication share one conditional Streams commit; definite
 pre-dispatch refusals release the reservation in the same commit that forgets
 admission. Native machine capacity is checked while the simulator holds its
 physical-world lock. Event admission precedes canonical machine/event publication.

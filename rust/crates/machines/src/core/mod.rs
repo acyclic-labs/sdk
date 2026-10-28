@@ -258,10 +258,7 @@ impl OperationRegistry {
                 outcome: None,
             });
             let mut conditions = vec![condition];
-            let mut mutations = vec![
-                self.journal.append(&path, &record)?,
-                self.journal.operation_log(&path, &record)?,
-            ];
+            let mut mutations = vec![self.journal.append(&path, &record)?];
             if let Some(limit) = self.limits.operations {
                 let quota = self.journal.load::<u64>("limits/operations").await?;
                 conditions.push(quota.condition());
@@ -399,10 +396,7 @@ impl OperationRegistry {
             }
             let mut conditions = vec![condition];
             let empty: Option<StoredOperation> = None;
-            let mut mutations = vec![
-                self.journal.append(&path, &empty)?,
-                self.journal.operation_log(&path, &empty)?,
-            ];
+            let mut mutations = vec![self.journal.append(&path, &empty)?];
             if self.limits.operations.is_some() {
                 let quota = self.journal.load::<u64>("limits/operations").await?;
                 conditions.push(quota.condition());
