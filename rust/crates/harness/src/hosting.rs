@@ -79,6 +79,12 @@ pub trait Platform: ProviderPlatform + 'static {
         let _ = (key, text);
         Box::pin(async { Ok(None) })
     }
+
+    /// The approver principal the verified `principal` decides approvals as:
+    /// by default its own identity.
+    fn approver(&self, principal: &Principal) -> String {
+        principal.id.clone()
+    }
 }
 
 /// The routing URL of every agent command; a host dispatches on the command.
@@ -334,7 +340,13 @@ where
         })
     }
 
-    async fn dispatch(&self, command: &AgentCommand, by: &Sender) -> Result<AgentReply, Error> {
+    /// Runs `command` from `by`, who decides approvals as `approver`.
+    async fn dispatch(
+        &self,
+        command: &AgentCommand,
+        by: &Sender,
+        approver: &str,
+    ) -> Result<AgentReply, Error> {
         let agents = self.bound.agents();
         match command {
             AgentCommand::Bind {} => Ok(AgentBinding::reply(
@@ -529,13 +541,13 @@ where
                 reason,
             } => {
                 let agent = self.within_tree(agent)?;
-                let Sender::User { principal } = by else {
+                let Sender::User { .. } = by else {
                     return Err(Error::Record("a decision needs a human principal"));
                 };
                 Ok(AgentReply::Delivered {
                     delivery: self
                         .bound
-                        .decide(agent, id, binding, principal, *approved, reason.clone())
+                        .decide(agent, id, binding, approver, *approved, reason.clone())
                         .await?,
                 })
             }
@@ -649,7 +661,8 @@ where
             let by = Sender::User {
                 principal: principal.id.clone(),
             };
-            let result = server.dispatch(call.command(), &by).await;
+            let approver = server.platform.approver(&principal);
+            let result = server.dispatch(call.command(), &by, &approver).await;
             call.reply(&result).map_err(|_| StreamError::LimitExceeded)
         })
     }

@@ -106,6 +106,12 @@ impl crate::hosting::Platform for LocalUser {
                 .await
         })
     }
+
+    /// The local user is the tree's one human: it answers as the default
+    /// human approver, the one a tool hook's escalation asks.
+    fn approver(&self, _: &Principal) -> String {
+        crate::approvals::HUMAN_APPROVER.to_owned()
+    }
 }
 
 /// What the local harness adds to each stock turn: its context manifest,
