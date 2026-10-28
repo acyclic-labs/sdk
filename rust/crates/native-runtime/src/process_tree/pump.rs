@@ -4,38 +4,25 @@
 //! When nothing more can move, it returns, and the caller arms one wait on
 //! exactly the sources that can make progress: the open output pipes, stdin
 //! while input remains, the child's exit until it is observed, and the next
-//! check or the deadline. A synchronous caller parks on that wait; an async
+//! owner control signal or the deadline. A synchronous caller parks on that wait; an async
 //! caller awaits it, holding no thread while the child runs.
 
 use super::events::{self, Source};
 use super::*;
 use std::process::{ChildStderr, ChildStdout};
 
-/// When a capture stops and how often it rechecks its owner.
+/// The absolute lifetime policy of a capture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CaptureSchedule {
     /// The capture fails with `TimedOut` once this much time has passed.
     pub timeout: Duration,
-    /// Also run the check this often while nothing else happens. `None`
-    /// checks only when output, input, exit or the deadline wakes capture.
-    pub check_every: Option<Duration>,
 }
 
 impl CaptureSchedule {
     /// A capture bounded by `timeout` that checks only on its own events.
     #[must_use]
     pub const fn new(timeout: Duration) -> Self {
-        Self {
-            timeout,
-            check_every: None,
-        }
-    }
-
-    /// Also checks every `interval` while the child is quiet.
-    #[must_use]
-    pub const fn checking_every(mut self, interval: Duration) -> Self {
-        self.check_every = Some(interval);
-        self
+        Self { timeout }
     }
 }
 
@@ -83,8 +70,6 @@ pub struct CaptureOutcome<H> {
 
 pub(super) struct Pump<'a> {
     deadline: Instant,
-    check_every: Option<Duration>,
-    next_check: Instant,
     remaining: usize,
     output: [Vec<u8>; 2],
     input: Option<PendingStdin<'a>>,
@@ -182,8 +167,6 @@ impl<'a> Pump<'a> {
         };
         Ok(Self {
             deadline,
-            check_every: schedule.check_every,
-            next_check: now,
             remaining: max_bytes,
             output,
             input,
@@ -226,13 +209,7 @@ impl<'a> Pump<'a> {
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<bool> {
         loop {
-            let now = capture_now();
-            if self.check_every.is_none_or(|_| now >= self.next_check) {
-                check()?;
-                if let Some(interval) = self.check_every {
-                    self.next_check = capture_now() + interval;
-                }
-            }
+            check()?;
             let mut progressed = self
                 .input
                 .as_mut()
@@ -300,10 +277,7 @@ impl<'a> Pump<'a> {
         tree: &mut ProcessTree,
         wakes: Option<&[ProcessWake]>,
     ) -> io::Result<events::Wait> {
-        let wake_at = match self.check_every {
-            Some(_) => self.next_check.min(self.deadline),
-            None => self.deadline,
-        };
+        let wake_at = self.deadline;
         // The capture clock is frozen in some tests; the hub runs on wall
         // time, so arm the same remaining interval from now.
         let wake_at = Instant::now() + wake_at.saturating_duration_since(capture_now());
