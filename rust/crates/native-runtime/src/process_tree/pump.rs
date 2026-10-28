@@ -72,7 +72,7 @@ pub struct CaptureOutcome<H> {
 
 pub(super) struct Pump<'a> {
     deadline: Option<Instant>,
-    remaining: usize,
+    remaining: Option<usize>,
     output: [Vec<u8>; 2],
     input: Option<PendingStdin<'a>>,
     stdout: Option<ChildStdout>,
@@ -114,7 +114,7 @@ impl<'a> Pump<'a> {
     pub(super) fn new(
         tree: &mut ProcessTree,
         schedule: CaptureSchedule,
-        max_bytes: usize,
+        max_bytes: Option<usize>,
         input: Option<PendingStdin<'a>>,
         meter: Option<&dyn crate::NativeReadMeter>,
         output: [Vec<u8>; 2],
@@ -420,7 +420,7 @@ impl<'a> Pump<'a> {
     }
 
     /// Bytes captured so far, for the operation span.
-    pub(super) fn captured(&self, max_bytes: usize) -> usize {
-        max_bytes - self.remaining
+    pub(super) fn captured(&self) -> usize {
+        self.output.iter().map(Vec::len).sum()
     }
 }
