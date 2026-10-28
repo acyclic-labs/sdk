@@ -204,7 +204,7 @@ impl LocalHarness {
                     max_steps: self
                         .limits
                         .model_steps
-                        .map(u32::try_from)
+                        .map(|value| u32::try_from(value.get()))
                         .transpose()
                         .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
                     history_turns: None,
@@ -276,7 +276,7 @@ impl LocalHarness {
                 max_steps: self
                     .limits
                     .model_steps
-                    .map(u32::try_from)
+                    .map(|value| u32::try_from(value.get()))
                     .transpose()
                     .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?,
                 history_turns: None,
