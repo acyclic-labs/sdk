@@ -14,12 +14,16 @@ const config :Workerd.Config = (
       bindings = [
         (name = "SUITE", durableObjectNamespace = "Suite"),
         (name = "LEDGER", durableObjectNamespace = "Ledger"),
-        (name = "AGENT", durableObjectNamespace = "Agent")
+        (name = "AGENT", durableObjectNamespace = "Agent"),
+        (name = "ACTORS", durableObjectNamespace = "Actors"),
+        (name = "ACTOR", durableObjectNamespace = "Actor")
       ],
       durableObjectNamespaces = [
         (className = "Suite", uniqueKey = "acyclic-conformance-suite", enableSql = true),
         (className = "Ledger", uniqueKey = "acyclic-conformance-ledger", enableSql = true),
-        (className = "Agent", uniqueKey = "acyclic-conformance-agent", enableSql = true)
+        (className = "Agent", uniqueKey = "acyclic-conformance-agent", enableSql = true),
+        (className = "Actors", uniqueKey = "acyclic-conformance-actors", enableSql = true),
+        (className = "Actor", uniqueKey = "acyclic-conformance-actor", enableSql = true)
       ],
       durableObjectStorage = (localDisk = "data")
     )),

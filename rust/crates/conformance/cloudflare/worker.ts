@@ -1,5 +1,7 @@
 import { ModelLifecycle, modelObservations } from "../fixtures/model-lifecycle.js";
 import { DurableObject } from "cloudflare:workers";
+export { Actor, Actors } from "./actors.js";
+import type { Actor, Actors } from "./actors.js";
 import { initSync, qualifyCloudflare, qualifyCloudflareRpc, qualifyJournalDeadline, appendWakeRecord, spawnAdoptionFixture,
   hostFixtureGrants, hostFixtureTrust, hostFixtureCredential, hostFixtureModelEvents, hostFixtureTool } from "./generated/acyclic_cloudflare_conformance.js";
 import wasm from "./generated/acyclic_cloudflare_conformance_bg.wasm";
@@ -127,6 +129,8 @@ export class Agent extends DurableObject {
 }
 
 interface Env {
+  ACTORS: DurableObjectNamespace<Actors>;
+  ACTOR: DurableObjectNamespace<Actor>;
   SUITE: DurableObjectNamespace<Suite>;
   LEDGER: DurableObjectNamespace<Ledger>;
   AGENT: DurableObjectNamespace<Agent>;
@@ -201,6 +205,11 @@ export class Suite extends DurableObject {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname === "/actors") {
+      const verified = await env.ACTORS.getByName(crypto.randomUUID()).run(false);
+      const measured = await env.ACTORS.getByName(crypto.randomUUID()).run(true);
+      return Response.json({ actors: "passed", verified, measured });
+    }
     if (new URL(request.url).pathname === "/creation-interrupted") {
       const agent = env.AGENT.getByName("saved-creating");
       let interrupted = false;

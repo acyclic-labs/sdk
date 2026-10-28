@@ -115,7 +115,7 @@ export class EventStreamLedger implements StreamLedger {
 }
 
 /** Convert any pull-based RPC stream into the canonical injected-provider port. */
-export function streamLedgerPort(ledger: StreamLedger, actor: string) {
+export function streamLedgerPort(ledger: Pick<StreamLedger, "dispatch" | "open">, actor: string) {
   return {
     dispatch: (operation: string, input: Uint8Array) => ledger.dispatch(actor, operation, input),
     async open(operation: string, input: Uint8Array, preceding: Uint8Array) {

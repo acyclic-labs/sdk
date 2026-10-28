@@ -61,6 +61,10 @@ async function main() {
     const output = await response.text();
     if (!response.ok) throw new Error(`HTTP ${response.status}: ${output}`);
     console.log(`workerd SQLite: ${output}`);
+    const actors = await fetch("http://127.0.0.1:15420/actors");
+    const actorsOutput = await actors.text();
+    if (!actors.ok) throw new Error(`actors HTTP ${actors.status}: ${actorsOutput}`);
+    console.log(`workerd Actors (shared full suite, separate benchmark domain): ${actorsOutput}`);
     const deadline = await fetch("http://127.0.0.1:15420/deadline");
     const deadlineOutput = await deadline.text();
     if (!deadline.ok) throw new Error(`deadline HTTP ${deadline.status}: ${deadlineOutput}`);
