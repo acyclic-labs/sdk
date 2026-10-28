@@ -63,7 +63,7 @@ async fn canonical_cut_survives_followup_steps_and_reopen_before_stages() -> Res
             },
             messages: selected,
         }),
-        max_steps: 3,
+        max_steps: Some(3),
     };
     let execution = StockExecution::ordinary(&executor);
     execution.ensure_started(&journal, &input).await?;

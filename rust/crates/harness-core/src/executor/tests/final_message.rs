@@ -136,7 +136,7 @@ proptest! {
             Capabilities::new(["tool:call:example.echo"]), Limits::default())?, allowed()?)?;
         let journal = Journal::default();
         let input = TurnInput { operation_id: OperationId::new(), input: ModelContent::Text("x".into()),
-            selected_context: None, max_steps: 4 };
+            selected_context: None, max_steps: Some(4) };
         let actual = futures::executor::block_on(executor.execute(input.clone(), &journal))?;
         let expected = completed.unwrap_or_else(|| final_chunks.concat());
         prop_assert_eq!(&actual.text, &expected);
