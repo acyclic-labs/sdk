@@ -21,6 +21,8 @@ selectSecretReference("MODEL_KEY", parsed.reference);
 
 These functions call the existing Rust constructors. There is no URL normalization, percent decoding, fixed path depth, implicit scope, alias interpretation or secret-value access. Selection admits the environment property separately. A valid reference grants no authority to resolve it: the host must still check the admitted source/binding and effective capability ceiling. Full-manifest validation remains available.
 
+The standalone WASM exports inspect JavaScript string/array lengths before copying input into Rust. Their admission follows the original 256-byte reference and 63-byte environment-name ceilings; UTF-16 length is a conservative preliminary check, followed by the unchanged ASCII grammar. Formatting visits a bounded snapshot of the array length and admits each segment against the remaining reference budget. Invalid input throws an `Error` named `SecretReferenceError` with `code: "invalid_argument"` and a schema `path`; diagnostics never include submitted bytes. This bounds input copying, without claiming exact allocator usage or qualifying the source-only Node/browser vectors.
+
 ## On-demand evidence plan
 
 No measurements below are supplied by compilation. Execute only the selected comparison on the appropriate host, retaining exact source/configuration, commands, raw outputs and receipt identity.

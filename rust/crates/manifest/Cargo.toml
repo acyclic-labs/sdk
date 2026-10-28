@@ -24,6 +24,7 @@ schemars = "=1.2.2"
 ts-rs = "=12.0.1"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys.workspace = true
 wasm-bindgen.workspace = true
 
 [dev-dependencies]

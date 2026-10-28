@@ -914,6 +914,7 @@ dependencies = [
  "acyclic-stream",
  "bytes",
  "futures",
+ "js-sys",
  "proptest",
  "prost",
  "prost-reflect",

@@ -29,4 +29,13 @@ test("standalone secret projection uses the same bounded Rust grammar", () => {
     `secrets:/${"x".repeat(64)}`, `secrets:/${"a".repeat(63)}/${"b".repeat(63)}/${"c".repeat(63)}/${"d".repeat(57)}`]) assert.throws(() => parseSecretReference(reference));
   assert.throws(() => formatSecretReference(["a/b"]));
   assert.throws(() => selectSecretReference("NOT-AN-ENV-NAME", "secrets:/a"));
+  const refusal = error => error instanceof Error && error.name === "SecretReferenceError"
+    && error.code === "invalid_argument" && typeof error.path === "string";
+  assert.throws(() => parseSecretReference("x".repeat(1_048_576)), refusal);
+  assert.throws(() => formatSecretReference(new Array(0xffff_ffff)), refusal);
+  assert.throws(() => formatSecretReference(["a", "b".repeat(1_048_576)]), refusal);
+  assert.throws(() => selectSecretReference("N".repeat(1_048_576), "secrets:/a"), refusal);
+  const coercion = { toString() { throw new Error("input must not be coerced"); } };
+  assert.throws(() => parseSecretReference(coercion), refusal);
+  assert.throws(() => formatSecretReference([coercion]), refusal);
 });
