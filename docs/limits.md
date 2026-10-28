@@ -1105,3 +1105,5 @@ The Python common option-count ceiling is now deleted; hosted endpoint capacity/
 |---|---|---|---|
 | Python HTTP/model default120s | `arena/packages/jev/src/jev/backends/http.py:17`; `backends/{jev,openrouter}.py:_default_post` (removed) | 1 | Delete implicit request deadlines. HttpBackend's optional timeout remains an explicit caller knob; model post injection and user-configured standard-library socket policy remain. |
 | Gate / CLI default8s | `arena/packages/jev/src/jev/gate.py:70`; `cli.py:151` (removed) | 1 | Default to no whole-evaluation deadline. Keep explicit timeout_s / --timeout and its existing fail-open negative. Thread.join waits for the actual completion event; no readiness polling is introduced. Backend errors still produce the existing fail-open decision. |
+
+The option-tree regression uses an independent weighted-leaf probability oracle across1003 options. It checks the actual conditional-composition implementation against the flat mathematical distribution and accounts for every request, token and dollar; it is not live provider/model calibration proof.
