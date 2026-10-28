@@ -384,7 +384,7 @@ where
         }
     }
 
-    /// Drives the upload toward a `Completing(requested)` terminal intent, retrying CAS conflicts up to the configured bound.
+    /// Drives the upload toward a `Completing(requested)` terminal intent, yielding and retrying the same operation after actual CAS conflicts.
     async fn admit_multipart_completion_intent(
         &self,
         workspace: &Workspace<A, O>,
@@ -393,7 +393,7 @@ where
         operation: IdempotencyKey,
         requested: &[(u32, String)],
     ) -> S3Result<MultipartCompletionIntent> {
-        for _ in 0..self.limits.maximum_multipart_cas_retries {
+        loop {
             let mut snapshot = self.multipart_snapshot(workspace, upload_id).await?;
             if snapshot.key != key {
                 return Err(s3s::s3_error!(NoSuchUpload));
@@ -435,11 +435,13 @@ where
                     }
                 }
             }
+            acyclic_stream::runtime::yield_now()
+                .await
+                .map_err(|error| stream_write_error(&error))?;
         }
-        Err(s3s::s3_error!(SlowDown))
     }
 
-    /// Drives the upload from a `Completing` intent to a `Completed` terminal record, retrying CAS conflicts up to the configured bound.
+    /// Drives the upload from a `Completing` intent to a `Completed` terminal record, yielding and retrying the same operation after actual CAS conflicts.
     async fn terminalize_multipart_completion(
         &self,
         workspace: &Workspace<A, O>,
@@ -447,12 +449,12 @@ where
         operation: IdempotencyKey,
         requested: &[(u32, String)],
         generation: crate::GenerationId,
-    ) -> S3Result<bool> {
-        for _ in 0..self.limits.maximum_multipart_cas_retries {
+    ) -> S3Result {
+        loop {
             let latest = self.multipart_snapshot(workspace, upload_id).await?;
             match latest.terminal {
                 Some(MultipartTerminal::Completed(existing)) if existing == generation => {
-                    return Ok(true);
+                    return Ok(());
                 }
                 Some(MultipartTerminal::Completing(ref existing))
                     if existing.as_slice() == requested =>
@@ -472,12 +474,14 @@ where
                         )
                         .await?
                     {
-                        return Ok(true);
+                        return Ok(());
                     }
                 }
                 _ => return Err(s3s::s3_error!(InternalError)),
             }
+            acyclic_stream::runtime::yield_now()
+                .await
+                .map_err(|error| stream_write_error(&error))?;
         }
-        Ok(false)
     }
 }
