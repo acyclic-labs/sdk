@@ -85,8 +85,8 @@ pub(super) fn receipt(
     let mut forks = Vec::new();
     quota.reserve(append_count, &mut appends)?;
     quota.reserve(envelope.mutations.len() - append_count, &mut forks)?;
-    acyclic_stream::CommitReceipt::project(envelope, appends, forks, |bytes| {
-        if let Some(io) = quota.work().as_deref_mut() {
+    acyclic_stream::CommitReceipt::project(envelope, appends, forks, |bytes, copied| {
+        if !copied && let Some(io) = quota.work().as_deref_mut() {
             io.copy_bytes(bytes as u64)?;
         }
         Ok::<(), Error>(())

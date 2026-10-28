@@ -14,11 +14,18 @@ impl MemoryStream {
         let (appends, mut allocation) = self.vector(append_count)?;
         let (forks, claim) = self.vector(envelope.mutations.len() - append_count)?;
         self.absorb(&mut allocation, claim)?;
-        let receipt = crate::CommitReceipt::project(envelope, appends, forks, |_| {
+        let receipt = crate::CommitReceipt::project(envelope, appends, forks, |bytes, copied| {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = &self.work {
-                work.record(inspect(&work.meter, || ()))?;
+                if copied {
+                    work.record(work.meter.record_examination(0, bytes as u64))?;
+                } else {
+                    work.record(inspect(&work.meter, || ()))?;
+                    work.record(work.meter.admit_examination(0, bytes as u64))?;
+                }
             }
+            #[cfg(target_arch = "wasm32")]
+            let _ = (bytes, copied);
             Ok::<(), StreamError>(())
         })?;
         Ok((receipt, allocation))

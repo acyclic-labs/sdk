@@ -25,13 +25,14 @@ pub struct CommitReceipt {
 
 impl CommitReceipt {
     /// Projects retained facts into empty, caller-funded metadata buffers.
-    /// Never grows either buffer. `visit` admits each actual metadata copy;
-    /// its error is preserved so bounded callers keep their original custody.
+    /// Never grows either buffer. `visit(bytes, copied)` runs before each copy
+    /// with `copied = false`, then after it with `copied = true`. Both failures
+    /// retain the caller's original cause and allocation custody.
     pub fn project<E: From<StreamError>>(
         envelope: &CommittedEnvelope,
         mut appends: Vec<AppendRange>,
         mut forks: Vec<ForkReceipt>,
-        mut visit: impl FnMut(usize) -> Result<(), E>,
+        mut visit: impl FnMut(usize, bool) -> Result<(), E>,
     ) -> Result<Self, E> {
         if !appends.is_empty() || !forks.is_empty() {
             return Err(StreamError::InvalidArgument.into());
@@ -42,20 +43,24 @@ impl CommitReceipt {
                     if appends.len() == appends.capacity() {
                         return Err(StreamError::LimitExceeded.into());
                     }
-                    visit(std::mem::size_of::<AppendRange>())?;
+                    let bytes = std::mem::size_of::<AppendRange>();
+                    visit(bytes, false)?;
                     appends.push(AppendRange {
                         path: append.path.clone(), start: append.start, tail: append.tail,
                     });
+                    visit(bytes, true)?;
                 }
                 CommittedMutation::Fork(fork) => {
                     if forks.len() == forks.capacity() {
                         return Err(StreamError::LimitExceeded.into());
                     }
-                    visit(std::mem::size_of::<ForkReceipt>())?;
+                    let bytes = std::mem::size_of::<ForkReceipt>();
+                    visit(bytes, false)?;
                     forks.push(ForkReceipt {
                         source: fork.source.clone(), destination: fork.destination.clone(),
                         forked_at: fork.forked_at, tail: fork.tail, commit_id: envelope.commit_id,
                     });
+                    visit(bytes, true)?;
                 }
             }
         }

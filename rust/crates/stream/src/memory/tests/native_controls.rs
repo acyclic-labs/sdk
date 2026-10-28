@@ -7,6 +7,68 @@ use std::sync::atomic::Ordering;
 type MemoryResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[tokio::test]
+async fn native_receipt_replay_records_actual_metadata_copies_and_original_refusals()
+-> MemoryResult<()> {
+    let provider = MemoryStream::default();
+    let source = StreamPath::new("receipt-copy/a")?;
+    let destination = StreamPath::new("receipt-copy/z")?;
+    provider.append(AppendRequest {
+        path: source.clone(), records: vec![OwnedBytes::from_static(b"seed").into()],
+        if_tail: Some(0), idempotency_key: Some(IdempotencyKey::new("receipt-copy-seed")?),
+    }).await?;
+    let request = CommitRequest {
+        deadline_unix_millis: None,
+        conditions: vec![
+            CommitCondition::Tail { path: source.clone(), expected: 1 },
+            CommitCondition::Absent { path: destination.clone() },
+        ],
+        mutations: vec![
+            CommitMutation::Append {
+                path: source.clone(), records: vec![OwnedBytes::from_static(b"next").into()],
+            },
+            CommitMutation::Fork {
+                source: source.clone(), destination: destination.clone(), at_tail: 1,
+                exclude: Vec::new(), records: Vec::new(),
+            },
+        ],
+        idempotency_key: IdempotencyKey::new("receipt-copy")?,
+    };
+    let accepted = provider.commit(request.clone()).await?;
+    assert!(matches!(&accepted, CommitOutcome::Committed(_)));
+    for refusal in 0..3 {
+        let meter = Arc::new(Meter::local());
+        meter.cancelled.store(refusal == 1, Ordering::SeqCst);
+        meter.cancel_on_copy.store(refusal == 2, Ordering::SeqCst);
+        let result = provider.native_commit(request.clone(), None, meter.original()).await;
+        let expected_copied = match refusal {
+            0 => {
+                let output = result??;
+                assert_eq!(output.value(), &accepted);
+                let expected = (std::mem::size_of::<crate::AppendRange>()
+                    + std::mem::size_of::<ForkReceipt>()) as u64;
+                assert_eq!(meter.held.load(Ordering::SeqCst), expected);
+                drop(output);
+                expected
+            }
+            _ => {
+                assert!(matches!(result, Err(error)
+                    if error.kind() == std::io::ErrorKind::Interrupted
+                        && error.get_ref().is_some_and(|cause|
+                            cause.downcast_ref::<crate::test_meter::NativeDenial>()
+                                .is_some_and(|cause| cause.0 == "cancelled"))));
+                if refusal == 1 { 0 } else { std::mem::size_of::<crate::AppendRange>() as u64 }
+            }
+        };
+        assert_eq!(meter.copied.load(Ordering::SeqCst), expected_copied);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+        assert_eq!(provider.tail(source.clone()).await?, 2);
+        assert_eq!(provider.tail(destination.clone()).await?, 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_commit_owns_admitted_and_retained_fork_exclusions() -> MemoryResult<()> {
     let provider = MemoryStream::default();
     let source = StreamPath::new("resident-source")?;
