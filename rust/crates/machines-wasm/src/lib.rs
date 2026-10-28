@@ -142,7 +142,7 @@ pub fn normalize_identity(kind: String, value: String) -> Result<String, JsValue
 #[wasm_bindgen(js_name = validateTransportOptions)]
 pub fn validate_transport_options(
     #[wasm_bindgen(unchecked_param_type = "string")] token: &JsValue,
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_response_bytes: &JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_response_bytes: &JsValue,
 ) -> Result<(), JsValue> {
     let token = token.as_string().ok_or_else(|| {
         js_error(
@@ -163,11 +163,14 @@ pub fn validate_transport_options(
     validate_maximum_response_bytes(maximum_response_bytes)
 }
 
-/// Validates the response bound without requiring a credential before renewal.
+/// Validates an optional response policy without requiring a credential before renewal.
 #[wasm_bindgen(js_name = validateMaximumResponseBytes)]
 pub fn validate_maximum_response_bytes(
-    #[wasm_bindgen(unchecked_param_type = "number")] maximum_response_bytes: &JsValue,
+    #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_response_bytes: &JsValue,
 ) -> Result<(), JsValue> {
+    if maximum_response_bytes.is_undefined() {
+        return Ok(());
+    }
     let maximum = maximum_response_bytes.as_f64().ok_or_else(|| {
         js_error(
             "invalid-maximum",
