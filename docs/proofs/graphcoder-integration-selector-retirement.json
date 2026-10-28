@@ -1,0 +1,292 @@
+{
+  "schema_version": 1,
+  "owner": "del-tooling",
+  "decision": "Remove only orphan on-demand qualifier filters for merged product retirements. No test body is deleted by this routing correction.",
+  "retirements": [
+    {
+      "pr": 1593,
+      "commit": "8306ec747b75f5304197f2cea6fcdec5cde03c00",
+      "parent": "a52093dc6d871165adef437aae1c9cd81166c100",
+      "prefixes": [
+        "file_query::diffs::",
+        "file_query::diff_tree::"
+      ],
+      "source_files": [
+        {
+          "path": "rust/crates/harness/tests/file_query/diffs.rs",
+          "blob": "01e3ee57a3ed7f8a18957d58ac946dbdc4e454fc",
+          "bytes": 25174,
+          "sha256": "8fffba1f8e75d5244d3d930fdb65b266ed40a0285671fced4a544b57c68c3b0f",
+          "declared_functions": [
+            "large_equal_length_edits_keep_other_rows_inside_the_query_budget",
+            "oversized_edits_and_restorations_match_the_baseline_without_body_reads",
+            "diff_query_omits_large_bodies_and_follows_resize_then_delete",
+            "diff_query_snapshots_and_follow_reconstruct_every_endpoint",
+            "diff_query_rejects_truncation_instead_of_publishing_partial_paths",
+            "native_range_restoration_removes_oversized_row_on_follow_and_reopen",
+            "bounded_restoration_comparison_preserves_other_rows_and_reopen"
+          ]
+        },
+        {
+          "path": "rust/crates/harness/tests/file_query/diff_tree.rs",
+          "blob": "fce098e4460b83d1bbfdba10b4a615e68cfb4551",
+          "bytes": 13747,
+          "sha256": "b70c3b609f25f3255313ef8f2dd8f764e8e82e6c3f8ebf7b1c4bea205daaa16a",
+          "declared_functions": [
+            "workspace",
+            "begin",
+            "commit",
+            "moved_directories_expand_descendants_and_retire_previous_rows",
+            "root_metadata_does_not_interrupt_file_diffs_or_replay",
+            "one_changed_path_in_a_cold_large_checkout_keeps_its_own_work_bound",
+            "directory_replacement_and_restoration_preserve_both_endpoints"
+          ]
+        },
+        {
+          "path": "rust/crates/harness/tests/cases/file_query.rs",
+          "blob": "c8ecf14fdcf0b08e57e65ad849af187650aec71d",
+          "bytes": 26684,
+          "sha256": "55386e38b9e5448ed47b47123f85f7a1f7ea53812dffb4f6691fee0f5a55018f",
+          "declared_functions": [
+            "next",
+            "ordinary_plan_names_and_non_markdown_files_follow_without_consuming_matches",
+            "empty_stem_publications_preserve_live_and_snapshot_plan_views",
+            "one_matching_plan_with_unrelated_entries_stays_live",
+            "new",
+            "counted",
+            "with_filesystem",
+            "with_class",
+            "write",
+            "ignored",
+            "ignored_plan_entries_never_fail_snapshot_or_follow",
+            "editing_one_of_a_hundred_files_reads_only_its_content",
+            "single_file_query_retains_its_value_across_unrelated_revisions",
+            "ordinary_file_query_folds_atomic_replacements_removals_and_duplicate_replay",
+            "ordinary_file_query_resumes_every_revision_and_resets_incompatible_cursors",
+            "ordinary_file_queries_keep_authority_work_and_selection_bounds",
+            "project_and_agent_queries_preserve_signed_authority"
+          ]
+        },
+        {
+          "path": "rust/crates/harness/Cargo.toml",
+          "blob": "d68477047d1ed6b99d985495d84c40ae61465b64",
+          "bytes": 9971,
+          "sha256": "7151151d1a6056b270b1bfbb94a743308cc490a7d696cb29127803eaff87270c",
+          "declared_functions": []
+        }
+      ],
+      "archive": {
+        "path": "D:\\lane-scratch\\del-tooling\\m3\\retired-selector-source\\file-query-parent-a52093dc6d.tar",
+        "source": "a52093dc6d871165adef437aae1c9cd81166c100",
+        "members": [
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust/crates/harness/Cargo.toml",
+          "rust/crates/harness/tests",
+          "rust/crates/harness/src/client"
+        ],
+        "sha256": "8a1d75232b0c1b55c475288b816215891c5a88535d0e1618ea5e2633cd7040de",
+        "bytes": 5212160,
+        "inventory": "D:\\lane-scratch\\del-tooling\\m3\\retired-selector-source\\file-query-parent-a52093dc6d-inventory.json",
+        "files": 1304
+      }
+    },
+    {
+      "pr": 1588,
+      "commit": "86c89643385086b1b1131878ce15b6d03092b4f6",
+      "parent": "c047c11883cd1cec3dc069c50edef36e4b1c0361",
+      "prefixes": [
+        "view::diff::tests::",
+        "settlement_",
+        "three_prompts_"
+      ],
+      "source_files": [
+        {
+          "path": "rust/crates/harness/src/bin/graphcoder/tests/tui.rs",
+          "blob": "0d9bc153145712e981724eec580d3b249d1bd6a7",
+          "bytes": 14264,
+          "sha256": "359c028b89e92d25688f820b6220de1c949bf7b572fbdaae5d83b186ffb2c076",
+          "declared_functions": [
+            "answer",
+            "total_lines",
+            "screen_lines",
+            "columns",
+            "exit",
+            "drop",
+            "settled",
+            "advance",
+            "visible",
+            "until",
+            "three_prompts_in_the_tui_continue_one_conversation",
+            "a_blocked_task_exits_the_tui_nonzero",
+            "conversation",
+            "responses",
+            "launch",
+            "drive",
+            "check_requests",
+            "settlement_uses_current_cells_across_any_byte_boundary"
+          ]
+        },
+        {
+          "path": "rust/crates/harness/src/bin/graphcoder/view/diff.rs",
+          "blob": "0efbf43dab1a109b51f229755393d20254cb225e",
+          "bytes": 3777,
+          "sha256": "203ef3675a430ff07997343aa700df466140b7bc085596f0b17f64d9bf30ea3d",
+          "declared_functions": [
+            "new",
+            "needs_refresh",
+            "select",
+            "stream",
+            "failed",
+            "selection_failed",
+            "close",
+            "recovers",
+            "failed_stream_reopens_on_later_presentation"
+          ]
+        },
+        {
+          "path": "rust/crates/harness/src/bin/graphcoder/Cargo.toml",
+          "blob": "b3a6fc18cedcfeaa8e2fac9d03da9ca8fbd18cee",
+          "bytes": 1489,
+          "sha256": "7d5e2a1440dabe681718b830541dbbf48e29328263572c6624ea367c7a55774f",
+          "declared_functions": []
+        }
+      ],
+      "archive": {
+        "path": "D:\\lane-scratch\\del-tooling\\m3\\retired-selector-source\\graphcoder-parent-c047c11883.tar",
+        "source": "c047c11883cd1cec3dc069c50edef36e4b1c0361",
+        "members": [
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust/crates/harness/Cargo.toml",
+          "rust/crates/harness/src/bin/graphcoder",
+          "rust/crates/harness/src/bin/graphcoder.rs"
+        ],
+        "sha256": "facb1610d782d64dfe22bd95264d18591af2c9dd1eb8f6836e32dbd4a46a9f72",
+        "bytes": 686080,
+        "inventory": "D:\\lane-scratch\\del-tooling\\m3\\retired-selector-source\\graphcoder-parent-c047c11883-inventory.json",
+        "files": 48
+      }
+    },
+    {
+      "pr": 1644,
+      "commit": "8078fa93ebcc59eb039019cfc9541c38dadd646c",
+      "parent": "3b37d404357dc422e3c42da42b6e619be79fa7e1",
+      "prefixes": [
+        "files::",
+        "tools::"
+      ],
+      "source_files": [
+        {
+          "path": "rust/crates/harness-search/src/files.rs",
+          "blob": "30c9437a431e25bfe9039382f674fa926b3b0318",
+          "bytes": 21256,
+          "sha256": "b0eea36b814d0ba121dd9b543865b8afd82d099b4c200a002486fc9a0f020ecb",
+          "declared_functions": [
+            "attempt",
+            "ready",
+            "file",
+            "storage",
+            "encode",
+            "request",
+            "admit_request_for_test"
+          ]
+        },
+        {
+          "path": "rust/crates/harness-search/src/files/tests.rs",
+          "blob": "fb881896259f3771590b77565f37ce253fdb5995",
+          "bytes": 28049,
+          "sha256": "c9084bea04a019fd0835ef39419c48477080385e99eec6936ed019cfa9879d87",
+          "declared_functions": [
+            "shared_coordinator_tail_advance",
+            "completed_response_survives_another_task_advancing_the_coordinator_tail",
+            "negative_control_detects_discarding_a_completed_response",
+            "published",
+            "search_file_scenarios",
+            "host_worker_follows_requests_and_clients_follow_results",
+            "replaced_owner_settles_started_request_without_redispatch_and_fences_stale_worker",
+            "supports_native_search",
+            "file_worker_preserves_native_provider_custody_and_terminal_replay",
+            "request_file_types_keep_host_ownership_and_reset_legacy_cursors",
+            "malformed_native_requests_publish_rejections_and_worker_keeps_following"
+          ]
+        },
+        {
+          "path": "rust/crates/harness-search/src/tool.rs",
+          "blob": "cfe2523f8414eb5a2092e91991529498e4b1f928",
+          "bytes": 7899,
+          "sha256": "93808c4b598c8dde964a1874d17e0de3c5d8bee89d3034749bbafdc7f9ed118b",
+          "declared_functions": [
+            "run",
+            "authorize",
+            "resumable_machine_identity",
+            "supports_native_execution"
+          ]
+        },
+        {
+          "path": "rust/crates/harness-search/src/tool/tests.rs",
+          "blob": "bc222d8cccf7e724b809e4a6dc5f1b99ec0f5315",
+          "bytes": 2367,
+          "sha256": "52c5e7b4e47dd13b52967525d2f6d1d5d6f66c65d6e9d5526c2e4e3484f817c2",
+          "declared_functions": [
+            "registered_contract_accepts_every_retained_outcome",
+            "nesting_a_root_schema_loses_its_reference_scope_negative_control"
+          ]
+        },
+        {
+          "path": "rust/crates/harness-search/src/lib.rs",
+          "blob": "95bd32e10e030de1dd05930f6b303d007e73149d",
+          "bytes": 5755,
+          "sha256": "e1a49ec2f9327a95273bd9ebf2eccd427b30148f54f6f94ee10c5b83b56f342b",
+          "declared_functions": [
+            "default_results",
+            "validate",
+            "validate_with_work",
+            "supports_native_search",
+            "error",
+            "rejection"
+          ]
+        },
+        {
+          "path": "rust/crates/harness-search/Cargo.toml",
+          "blob": "39b70bdd83b132ca92ff70b0bdb1e00b5a1093ec",
+          "bytes": 2660,
+          "sha256": "2d1fac0f846222b8674ff13b5d7f63d1727fe627f78deec0136eccd31f35e22f",
+          "declared_functions": []
+        }
+      ],
+      "archive": {
+        "path": "D:\\lane-scratch\\del-tooling\\m3\\retired-selector-source\\search-parent-3b37d40435.tar",
+        "source": "3b37d404357dc422e3c42da42b6e619be79fa7e1",
+        "members": [
+          "Cargo.toml",
+          "Cargo.lock",
+          "rust/crates/harness-search"
+        ],
+        "sha256": "7d01abd98d5b427bceb92bb3d32d396e069e956f808e2ff7712a4b49d474fed4",
+        "bytes": 532480,
+        "inventory": "D:\\lane-scratch\\del-tooling\\m3\\retired-selector-source\\search-parent-3b37d40435-inventory.json",
+        "files": 41
+      }
+    }
+  ],
+  "retained_live_routing": {
+    "harness_integration": [
+      "client_diff::"
+    ],
+    "search_library": [
+      "config::",
+      "web::executor::tests::"
+    ],
+    "graphcoder_library": [
+      "args::tests::"
+    ],
+    "graphcoder_cli": [
+      "a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly",
+      "jsonl_prompts_share_one_conversation_and_exit_once_settled",
+      "catalog_errors_fail_through_the_binary"
+    ]
+  },
+  "routing_change": "GraphCoder argument tests live in the library after #1742, not its thin executable. Current CLI cases use the shipping binary; they do not replace or qualify the retired TUI/settlement contracts. Every live filter retains exact-name/nonempty refusal.",
+  "qualification": "Static source and original Git archive identities only. Original tests, properties, corpus and negative controls remain captured and Git-addressed; reconstruct them using their original full parent checkout. No test execution, inferred proof pass, replacement equivalence, current discovered-case inventory, performance or deletion credit. Historical signer trust is not upgraded by this new mapping."
+}

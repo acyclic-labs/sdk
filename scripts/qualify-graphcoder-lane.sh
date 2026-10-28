@@ -9,13 +9,13 @@ cargo test --locked -p acyclic-harness-core --features "$core_features" --lib --
 cargo test --locked -p acyclic-harness --features "$features" --lib --no-run --message-format=json |
   python3 scripts/qualify-graphcoder-artifact.py local::checkout_tools::capture::tests::
 cargo test --locked -p acyclic-harness --features "$features" --test main --no-run --message-format=json |
-  python3 scripts/qualify-graphcoder-artifact.py file_query::diffs:: file_query::diff_tree:: client_diff::
+  python3 scripts/qualify-graphcoder-artifact.py client_diff::
 cargo test --locked -p acyclic-harness-search --features filesystem,search-http,test-support --lib --no-run --message-format=json |
-  python3 scripts/qualify-graphcoder-artifact.py config:: files:: tools:: web::executor::tests::
-cargo test --locked -p graphcoder --features "$binary_features" --bin graphcoder --no-run --message-format=json |
-  python3 scripts/qualify-graphcoder-artifact.py args::tests view::diff::tests::
-cargo test --locked -p graphcoder --features "$binary_features" --test tui --no-run --message-format=json |
-  python3 scripts/qualify-graphcoder-artifact.py settlement_ three_prompts_
+  python3 scripts/qualify-graphcoder-artifact.py config:: web::executor::tests::
+cargo test --locked -p graphcoder --features "$binary_features" --lib --no-run --message-format=json |
+  python3 scripts/qualify-graphcoder-artifact.py args::tests::
+cargo test --locked -p graphcoder --features "$binary_features" --test cli --no-run --message-format=json |
+  python3 scripts/qualify-graphcoder-artifact.py a_prompt_runs_one_agent_turn_and_its_operation_replays_exactly jsonl_prompts_share_one_conversation_and_exit_once_settled catalog_errors_fail_through_the_binary
 cargo test --locked -p harness-mock-model --bin harness-mock-model recorder::tests::
 bun install --cwd scripts/graphcoder-pty --frozen-lockfile
 node --test scripts/graphcoder-e2e/*.test.mjs
