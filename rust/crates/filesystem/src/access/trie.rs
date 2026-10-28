@@ -788,7 +788,7 @@ fn alphabet(nfa: &Nfa) -> Result<(Vec<char>, char), InvalidPolicy> {
         .collect();
     alphabet.insert('/');
     // One representative for every character not named literally.
-    let other = (1..=0x10ffff)
+    let other = (0..=0x10ffff)
         .filter_map(char::from_u32)
         .find(|ch| !alphabet.contains(ch))
         .ok_or(InvalidPolicy("exhausted glob alphabet"))?;
