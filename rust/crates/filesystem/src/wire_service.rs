@@ -51,8 +51,9 @@ pub struct FilesystemWireLimits {
     pub maximum_transaction_mutations: u32,
     /// Largest directory, diff, or transfer page.
     pub maximum_page_items: u32,
-    /// Longest accepted lifetime for a scoped deployment credential.
-    pub maximum_credential_seconds: u64,
+    /// Optional deployment-selected credential lifetime policy. Authority expiry
+    /// always bounds the resulting credential, including when this is absent.
+    pub maximum_credential_seconds: Option<std::num::NonZeroU64>,
 }
 
 impl Default for FilesystemWireLimits {
@@ -62,7 +63,7 @@ impl Default for FilesystemWireLimits {
             maximum_response_bytes: DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES,
             maximum_transaction_mutations: 2_048,
             maximum_page_items: DEFAULT_HOSTED_MAXIMUM_PAGE_ITEMS,
-            maximum_credential_seconds: 3_600,
+            maximum_credential_seconds: None,
         }
     }
 }
@@ -241,7 +242,6 @@ impl<A, O> FilesystemWireService<A, O> {
             || limits.maximum_response_bytes == 0
             || limits.maximum_transaction_mutations == 0
             || limits.maximum_page_items == 0
-            || limits.maximum_credential_seconds == 0
         {
             return Err(Status::invalid_argument(
                 "filesystem wire bounds must be nonzero",
