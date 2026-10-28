@@ -5,6 +5,7 @@ fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
     let (commands, receiver) = mpsc::channel(1);
     (
         Client {
+            registration_timeout: None,
             connections: super::super::super::Connections::new(),
             executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),
             commands,
@@ -15,7 +16,8 @@ fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
             attempt_epoch: Arc::new(AtomicU64::new(0)),
             abandoned: Arc::new(gate::Gate::new()),
             revisions: Arc::default(),
-        },
+        }
+        .with_registration_timeout(Some(10_000)),
         receiver,
     )
 }
