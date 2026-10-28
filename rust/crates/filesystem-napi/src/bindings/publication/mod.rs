@@ -56,7 +56,7 @@ impl NativeCheckout {
     pub async fn checkpoint(&self) -> Result<NativeCheckpointResult> {
         let checkout = Box::pin(self.inner.lock()).await;
         let receipt = checkout
-            .checkpoint(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
+            .checkpoint(acyclic_fs::WorkBudget::UNBOUNDED, &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_checkpoint_receipt(&receipt)
@@ -67,7 +67,7 @@ impl NativeCheckout {
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .refresh_head(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
+            .refresh_head(acyclic_fs::WorkBudget::UNBOUNDED, &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_checkpoint_receipt(&receipt)
@@ -78,7 +78,7 @@ impl NativeCheckout {
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .refresh_live(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
+            .refresh_live(acyclic_fs::WorkBudget::UNBOUNDED, &self.cancellation)
             .await
             .map_err(napi_error)?;
         encode_checkpoint_receipt(&receipt)
@@ -98,7 +98,7 @@ impl NativeCheckout {
                 None,
                 None,
                 acyclic_fs::PublicationPermit::Unrestricted,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
                 |_| async {
                     acyclic_fs::FsResult::Ok(acyclic_fs::OperationReceipt {
@@ -145,7 +145,7 @@ impl NativeCheckout {
                 operation_id,
                 maximum_attempts,
                 maximum_conflicts,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await;
@@ -203,7 +203,7 @@ impl NativeCheckout {
                 operation_id,
                 maximum_attempts,
                 maximum_conflicts,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await;

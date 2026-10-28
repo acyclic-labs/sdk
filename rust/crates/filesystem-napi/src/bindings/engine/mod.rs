@@ -184,7 +184,7 @@ impl NativeFs {
             .inner
             .create_volume(
                 config,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -205,7 +205,7 @@ impl NativeFs {
             .create_volume_with_id(
                 volume_id,
                 config,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -220,7 +220,7 @@ impl NativeFs {
             .inner
             .open_volume(
                 volume_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -239,7 +239,7 @@ impl NativeFs {
             .export_object(
                 decode_object_id(&object_id)?,
                 bigint_u64(&maximum_bytes, "maximumBytes")?,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -261,7 +261,7 @@ impl NativeFs {
             .import_object(
                 decode_object_id(&object_id)?,
                 bytes.to_vec(),
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -287,7 +287,7 @@ impl NativeFs {
                 TransferCursor::new(bigint_u64(&cursor, "cursor")?),
                 maximum_objects,
                 bigint_u64(&maximum_object_bytes, "maximumObjectBytes")?,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -330,7 +330,7 @@ impl NativeFs {
                 TransferCursor::new(bigint_u64(&cursor, "cursor")?),
                 &objects,
                 maximum_objects,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
@@ -354,7 +354,7 @@ impl NativeFs {
             .restore_volume(
                 &manifest,
                 operation_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )
             .await
