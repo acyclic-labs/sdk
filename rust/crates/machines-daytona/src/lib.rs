@@ -26,7 +26,7 @@ use acyclic_machines::{
     MAX_EVENT_PAGE_SIZE, MAX_PAGE_SIZE, MachineContract, MachineId, MachineObservation,
     MachineOutput, MachinePage, MachineState, MachinesProvider, MutationOutcome, OperationId,
     OperationObservation, OperationPhase, OperationStream, ProviderAssurance, ProviderError,
-    SuspensionPolicy, UsageReceipt,
+    SuspensionPolicy, UsageReceipt, page_limit,
 };
 use async_trait::async_trait;
 use futures::StreamExt as _;
@@ -1104,11 +1104,7 @@ impl MachinesProvider for DaytonaProvider {
         after: Option<MachineId>,
         limit: u32,
     ) -> Result<MachinePage, ProviderError> {
-        if limit == 0 || limit > MAX_PAGE_SIZE {
-            return Err(ProviderError::Invalid(
-                "machine page limit must be 1..=256".into(),
-            ));
-        }
+        let limit = page_limit(limit, MAX_PAGE_SIZE)?;
         let limit = usize::try_from(limit)
             .map_err(|_| ProviderError::Invalid("invalid page limit".into()))?;
         let mut merged: BTreeMap<MachineId, MachineObservation> = self
@@ -1454,11 +1450,7 @@ impl MachinesProvider for DaytonaProvider {
         after_sequence: Option<u64>,
         limit: u32,
     ) -> Result<EventPage, ProviderError> {
-        if limit == 0 || limit > MAX_EVENT_PAGE_SIZE {
-            return Err(ProviderError::Invalid(
-                "event page limit must be 1..=1024".into(),
-            ));
-        }
+        let limit = page_limit(limit, MAX_EVENT_PAGE_SIZE)?;
         // One poll per call: refreshing the observation appends a state event on change.
         self.fetch_machine(machine).await?;
         let limit = usize::try_from(limit)
