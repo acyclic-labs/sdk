@@ -340,11 +340,6 @@ impl StreamProvider for HttpStream {
                 .await?,
         )
     }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        Ok(StreamBounds {
-            tail: self.tail(path).await?,
-        })
-    }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         self.session_client()?.watermarks(path).await
     }

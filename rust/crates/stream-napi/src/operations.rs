@@ -64,31 +64,6 @@ pub(super) async fn tail(
     )
 }
 
-pub(super) async fn bounds(
-    client: &Arc<grpc::Client>,
-    request: Buffer,
-    cancellation: Option<&NativeStreamCancellation>,
-) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
-    let request = decode::<wire::TailRequest>(&request, "bounds")?;
-    let value = run_with_cancellation(
-        async {
-            let path = StreamPath::new(&request.path).map_err(|error| stream_error(&error))?;
-            client
-                .bounds(path)
-                .await
-                .map_err(|error| stream_error(&error))
-        },
-        cancellation_state(cancellation),
-    )
-    .await?;
-    encode(
-        &wire::TailResponse {
-            tail: value.tail,
-            ..Default::default()
-        },
-        "bounds",
-    )
-}
 
 pub(super) async fn append(
     client: &Arc<grpc::Client>,

@@ -429,9 +429,6 @@ impl StreamProvider for JournalStream {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.query(async move |p| p.tail(path).await).await
     }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.query(async move |p| p.bounds(path).await).await
-    }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         let tail = self.tail(path).await?;
         Ok(StreamWatermarks {

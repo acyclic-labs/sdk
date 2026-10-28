@@ -40,9 +40,6 @@ impl StreamProvider for Provider {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.memory.tail(path).await
     }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.memory.bounds(path).await
-    }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         let accepted = self.memory.tail(path.clone()).await?;
         Ok(StreamWatermarks {

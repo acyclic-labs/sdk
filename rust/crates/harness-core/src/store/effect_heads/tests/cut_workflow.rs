@@ -91,10 +91,6 @@ impl StreamProvider for Observed {
         record(("tail", normalized_path(&path)));
         self.0.tail(path).await
     }
-    async fn bounds(&self, path: StreamPath) -> std::result::Result<StreamBounds, StreamError> {
-        record(("bounds", normalized_path(&path)));
-        self.0.bounds(path).await
-    }
     async fn append(
         &self,
         request: AppendRequest,

@@ -38,10 +38,6 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         self.provider.tail(self.path.clone()).await
     }
 
-    /// Exact retained replay window observed atomically by the provider.
-    pub async fn bounds(&self) -> Result<StreamBounds, StreamError> {
-        self.provider.bounds(self.path.clone()).await
-    }
 
     /// Unconditionally appends one record.
     pub async fn append(

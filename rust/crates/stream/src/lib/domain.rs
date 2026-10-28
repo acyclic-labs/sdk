@@ -209,13 +209,6 @@ pub struct FollowRequest {
     pub progress: bool,
 }
 
-/// One atomic replay boundary. `tail` is the next sequence and may advance
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StreamBounds {
-    /// Exclusive end of the currently committed history.
-    pub tail: u64,
-}
-
 /// Accepted visibility and confirmed persistence at one observation cut.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamWatermarks {

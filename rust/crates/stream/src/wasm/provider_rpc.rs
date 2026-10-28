@@ -194,11 +194,6 @@ impl StreamProvider for InjectedStream {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         Ok(self.watermarks(path).await?.accepted)
     }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        Ok(StreamBounds {
-            tail: self.tail(path).await?,
-        })
-    }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         wire_codec::watermarks_from_wire(
             self.call(

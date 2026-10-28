@@ -113,13 +113,13 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                     durable: Some(watermarks.durable),
                 });
             }
-            let bounds = self
+            let tail = self
                 .provider
-                .bounds(path)
+                .tail(path)
                 .await
                 .map_err(|error| error_status(&error))?;
             Ok(wire::TailResponse {
-                tail: bounds.tail,
+                tail,
                 durable: None,
             })
         })

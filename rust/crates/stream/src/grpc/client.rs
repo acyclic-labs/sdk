@@ -102,11 +102,6 @@ impl StreamProvider for Client {
         decode_response(response, |response| Ok(response.tail))
     }
 
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        Ok(StreamBounds {
-            tail: self.tail(path).await?,
-        })
-    }
 
     async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
         let response = self

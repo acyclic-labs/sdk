@@ -2,7 +2,7 @@ use super::*;
 use crate::{
     AppendOutcome, AppendRequest, CommitCondition, CommitId, CommitMutation, CommitOutcome,
     CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, ReadRequest, StreamBounds,
+    IdempotencyObservation, ReadRequest,
 };
 use futures::TryFutureExt as _;
 use futures::{
@@ -35,9 +35,6 @@ impl StreamProvider for Owners {
     }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.memory.tail(path).await
-    }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.memory.bounds(path).await
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.memory.append(request).await

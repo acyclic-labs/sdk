@@ -10,7 +10,7 @@ use crate::{
 
 use acyclic_stream::{
     CommitCondition, CommitReceipt, CommitRequest, IdempotencyKey,
-    OwnedBytes, ReadRequest, Record, RecordStream, StreamBounds, StreamError, StreamPath,
+    OwnedBytes, ReadRequest, Record, RecordStream, StreamError, StreamPath,
     StreamProvider,
 };
 

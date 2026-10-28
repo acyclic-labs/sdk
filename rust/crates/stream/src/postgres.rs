@@ -405,10 +405,6 @@ impl StreamProvider for PostgresStream {
         self.refresh().await?;
         self.inner.core.tail(path).await
     }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.refresh().await?;
-        self.inner.core.bounds(path).await
-    }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         let tail = self.tail(path).await?;
         Ok(StreamWatermarks {

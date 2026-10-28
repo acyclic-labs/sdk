@@ -114,11 +114,6 @@ impl StreamProvider for Remote {
             .into_inner()
             .tail)
     }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        Ok(StreamBounds {
-            tail: self.tail(path).await?,
-        })
-    }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         let body = wire::TailRequest {
             path: path.to_string(),

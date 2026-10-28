@@ -421,10 +421,6 @@ impl StreamProvider for BrowserStream {
             durable: accepted,
         })
     }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.with_provider(async move |provider| provider.bounds(path).await)
-            .await
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         match self.execute(Command::Append(request), None).await? {
             Outcome::Append(value) => Ok(value),

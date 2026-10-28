@@ -3,7 +3,7 @@ mod reconnect;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
     CommitRequest, CommittedEnvelope, ForkRequest, IdempotencyKey, IdempotencyObservation,
-    ReadRequest, RecordStream, StreamBounds, StreamProvider,
+    ReadRequest, RecordStream, StreamProvider,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -251,9 +251,6 @@ impl StreamProvider for TcpDropProbe {
         Err(StreamError::Unsupported)
     }
 
-    async fn bounds(&self, _path: StreamPath) -> std::result::Result<StreamBounds, StreamError> {
-        Err(StreamError::Unsupported)
-    }
 
     async fn append(
         &self,

@@ -616,15 +616,6 @@ impl NativeStreamClient {
         operation_result(tail(&self.provider, request, cancellation)).await
     }
 
-    /// Observes the canonical atomic replay bound for one stream path.
-    #[napi(js_name = "boundsResult")]
-    pub async fn bounds_result(
-        &self,
-        request: Buffer,
-        cancellation: Option<&NativeStreamCancellation>,
-    ) -> Result<NativeStreamOperationResult> {
-        operation_result(bounds(&self.provider, request, cancellation)).await
-    }
 
     /// Executes a canonical append request.
     #[napi(js_name = "appendResult")]

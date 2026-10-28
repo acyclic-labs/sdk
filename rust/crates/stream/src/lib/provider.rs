@@ -83,8 +83,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     ) -> Result<Option<IdempotencyObservation>, StreamError>;
     /// Current next sequence.
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError>;
-    /// Atomically observes both ends of the retained replay window.
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError>;
     /// Observes accepted visibility and a confirmed durable prefix. Implementations
     /// with independent persistence report its watermark without awaiting a flush.
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
@@ -161,16 +159,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
     }
 
-    /// Canonical retained-window observation on the original ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_bounds(
-        &self,
-        path: StreamPath,
-        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, StreamBounds> {
-        let _ = path;
-        NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
-    }
 
     /// Canonical finite read; original causes and output custody are retained.
     #[cfg(not(target_arch = "wasm32"))]

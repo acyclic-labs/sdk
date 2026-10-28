@@ -117,11 +117,6 @@ impl StreamProvider for MemoryStream {
             .ok_or(StreamError::NotFound)
     }
 
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        let state = self.state.read().await;
-        let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
-        Ok(StreamBounds { tail: stream.tail })
-    }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.append_inner(request).await.map(|(value, _)| value)
@@ -390,25 +385,6 @@ impl StreamProvider for MemoryStream {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_bounds(
-        &self,
-        path: StreamPath,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, StreamBounds> {
-        crate::NativeProviderFuture::new(&Arc::clone(&meter), async move {
-            let state = self.state.read().await;
-            let value = inspect(&meter, || {
-                state
-                    .paths
-                    .get(&path)
-                    .map(|path| StreamBounds { tail: path.tail })
-            })?;
-            Ok(value
-                .ok_or(StreamError::NotFound)
-                .map(|value| crate::NativeStreamOutput::new(value, ReadAllocation::empty(&meter))))
-        })
-    }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn native_inspect_idempotency(

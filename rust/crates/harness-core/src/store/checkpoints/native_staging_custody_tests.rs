@@ -60,9 +60,8 @@ async fn competing_immutable_identity_recovers_or_rejects_without_retained_sourc
         assert_eq!(io.into_custody()?.bytes(), 0);
         assert_eq!(
             client
-                .bounds(acyclic_stream::StreamPath::new(path.as_str())?)
-                .await?
-                .tail,
+                .tail(acyclic_stream::StreamPath::new(path.as_str())?)
+                .await?,
             1
         );
         drop(client);

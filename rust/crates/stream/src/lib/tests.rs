@@ -110,9 +110,6 @@ mod replay_tests {
         async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
             self.inner.tail(path).await
         }
-        async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-            self.inner.bounds(path).await
-        }
         async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
             self.inner.append(request).await
         }

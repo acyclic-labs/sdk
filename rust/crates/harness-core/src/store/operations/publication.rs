@@ -116,7 +116,7 @@ impl IndexedPublication {
         if let Some(io) = request.1.work().as_deref() {
             io.check_cancellation()?;
         }
-        let absent = match bounds_with_work(client, &self.path, request.1.work()).await? {
+        let absent = match tail_result_with_work(client, &self.path, request.1.work()).await? {
             Ok(_) => false,
             Err(StreamError::NotFound) if self.expected_tail == 0 => true,
             Err(error) => return Err(stream_error_with_work(error, request.1.work())),

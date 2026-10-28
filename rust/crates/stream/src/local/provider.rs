@@ -81,9 +81,6 @@ impl StreamProvider for LocalStream {
         self.visible(self.inner.provider.tail(path)).await?
     }
 
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.visible(self.inner.provider.bounds(path)).await?
-    }
 
     async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
         self.accepted(async {
@@ -245,18 +242,6 @@ impl StreamProvider for LocalStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::new(&original, async move {
             self.visible(self.inner.provider.native_tail(path, meter))
-                .await
-                .unwrap_or_else(|error| Ok(Err(error)))
-        })
-    }
-    fn native_bounds(
-        &self,
-        path: StreamPath,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, StreamBounds> {
-        let original = Arc::clone(&meter);
-        crate::NativeProviderFuture::new(&original, async move {
-            self.visible(self.inner.provider.native_bounds(path, meter))
                 .await
                 .unwrap_or_else(|error| Ok(Err(error)))
         })
