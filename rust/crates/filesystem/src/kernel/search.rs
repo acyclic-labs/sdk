@@ -2,29 +2,11 @@
 
 use std::cmp::Ordering;
 
-fn examine<T>(
-    item: &T,
-    accounting: &mut super::allocation::KernelAccounting<'_>,
-    compare: &mut impl FnMut(&T) -> Ordering,
-) -> Result<Ordering, crate::FsError> {
-    let delta = crate::WorkCounters {
-        items_examined: 1,
-        ..crate::WorkCounters::UNCHARGED
-    };
-    accounting.admit(delta)?;
-    let ordering = compare(item);
-    accounting.record_completed(delta)?;
-    Ok(ordering)
-}
-
 pub(crate) fn binary_search_with_accounting<T>(
     items: &[T],
     accounting: &mut super::allocation::KernelAccounting<'_>,
     compare: impl FnMut(&T) -> Ordering,
 ) -> Result<Result<usize, usize>, crate::FsError> {
-    if items.is_empty() {
-        return Ok(Err(0));
-    }
     binary_search_from_with_accounting(items, 0, accounting, compare)
 }
 
@@ -37,30 +19,47 @@ pub(crate) fn binary_search_from_with_accounting<T>(
     accounting: &mut super::allocation::KernelAccounting<'_>,
     mut compare: impl FnMut(&T) -> Ordering,
 ) -> Result<Result<usize, usize>, crate::FsError> {
-    if known_before > items.len() {
+    binary_search_indexed_with_accounting(items.len(), known_before, accounting, |index| {
+        items
+            .get(index)
+            .map(&mut compare)
+            .ok_or(crate::FsError::InvalidDiff)
+    })
+}
+
+/// The same probe plan for any rank-addressable collection. Navigation to a
+/// rank examines integer topology only; payload comparison follows admission.
+pub(crate) fn binary_search_indexed_with_accounting(
+    len: usize,
+    known_before: usize,
+    accounting: &mut super::allocation::KernelAccounting<'_>,
+    mut compare: impl FnMut(usize) -> Result<Ordering, crate::FsError>,
+) -> Result<Result<usize, usize>, crate::FsError> {
+    if known_before > len {
         return Err(crate::FsError::InvalidDiff);
     }
-    if known_before == items.len() {
-        // An inferred append still belongs to an admitted invocation.
+    if known_before == len {
         accounting.check()?;
         return Ok(Err(known_before));
     }
-    let (mut base, mut rest) = (0_usize, items);
-    while let Some((lower, upper)) = rest.split_at_checked(rest.len() / 2)
-        && let Some((middle, higher)) = upper.split_first()
-    {
-        let index = base + lower.len();
+    let (mut base, mut end) = (0_usize, len);
+    let delta = crate::WorkCounters {
+        items_examined: 1,
+        ..crate::WorkCounters::UNCHARGED
+    };
+    while base < end {
+        let index = base + (end - base) / 2;
         let ordering = if index < known_before {
             Ordering::Less
         } else {
-            examine(middle, accounting, &mut compare)?
+            accounting.admit(delta)?;
+            let ordering = compare(index)?;
+            accounting.record_completed(delta)?;
+            ordering
         };
         match ordering {
-            Ordering::Less => {
-                base = index + 1;
-                rest = higher;
-            }
-            Ordering::Greater => rest = lower,
+            Ordering::Less => base = index + 1,
+            Ordering::Greater => end = index,
             Ordering::Equal => return Ok(Ok(index)),
         }
     }
