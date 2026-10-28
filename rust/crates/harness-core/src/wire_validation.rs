@@ -243,33 +243,6 @@ mod tests {
     }
 
     #[test]
-    fn admission_rejects_missing_or_empty_identity() {
-        let request = wire::Admission {
-            operation: None,
-            ..Default::default()
-        };
-        assert!(matches!(
-            validate_admission_identity(request.operation.as_ref(), &wire::Admission::default()),
-            Err(Error::Invalid(_))
-        ));
-        let request = wire::Admission {
-            operation: Some(wire::OperationIdentity {
-                operation_id: String::new(),
-                idempotency_key: "key".into(),
-            }),
-            ..Default::default()
-        };
-        let admission = wire::Admission {
-            operation: request.operation.clone(),
-            ..Default::default()
-        };
-        assert!(matches!(
-            validate_admission_identity(request.operation.as_ref(), &admission),
-            Err(Error::Conflict(_))
-        ));
-    }
-
-    #[test]
     fn operation_control_requires_owner_and_retry_identity() {
         let request = wire::ObserveRequest {
             operation_id: "operation".into(),

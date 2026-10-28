@@ -12,15 +12,6 @@ use crate::{
     wire_codec::{COMPILED_PROTOCOL, decode_authority, decode_scope, validate_protocol},
 };
 
-/// Whether a replay stops at its opening cut or remains subscribed to appends.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReplayMode {
-    /// Finite inspection of events committed when replay opens.
-    Snapshot,
-    /// Replay followed by every later accepted event.
-    Follow,
-}
-
 /// Requires every replay request to carry the exact negotiated wire identity.
 pub fn validate_resume_protocol(request: &wire::ResumeRequest) -> Result<()> {
     validate_request_protocol(request.protocol.as_ref())

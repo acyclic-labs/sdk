@@ -129,7 +129,9 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
     let mut foreign = delivery.clone();
     foreign.actor = ActorReference::new(b"account", b"agents", id(9).as_str().as_bytes())?;
     assert!(matches!(
-        handler.on_record(foreign, Some(checkpoint), CancellationToken::new()).await,
+        handler
+            .on_record(foreign, Some(checkpoint), CancellationToken::new())
+            .await,
         Err(acyclic_actors::guest::GuestError::Handler(_))
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
