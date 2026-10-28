@@ -1,5 +1,5 @@
 import { fromBinary } from "@bufbuild/protobuf";
-import { ReadResponseSchema, RecordBatchSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
+import { Codec, ReadResponseSchema, RecordBatchSchema } from "../../stream/generated/proto/stream/v1/stream_pb.js";
 import init, { AgentGuest, WasmAgentProviders, WasmAgentRegistry, WasmAgents, WasmAgentAuthority, decodeClientJson } from "../generated/wasm/acyclic_harness_wasm.js";
 
 // Test composition only: the real Rust agent host over IndexedDB providers.
@@ -29,6 +29,7 @@ export async function agentsFixture(id, reply, initialize = init) {
     preset: { model: null, prompt: null, tools: [], web_tools: false, max_steps: null, max_children: null, approval_policy: { approvers: [{ kind: "rules", principal: "browser-user", rules: [], fallback: "allow" }] } },
   };
   const failures = [];
+  const active = new Set();
   return { owner, registry, requests, failures, options,
     open: () => WasmAgents.open(options, owner, registry, (actor, error) => failures.push({ actor, error })),
     // Host-injected storage, the guest artifact's entry over it, and a host
@@ -37,7 +38,15 @@ export async function agentsFixture(id, reply, initialize = init) {
     // The fixture holds `owner`'s custody: its guest is the tree's root.
     guest: providers => AgentGuest.open(providers, options, owner, registry, { kind: "root" }),
     hosting: (providers, guest) => WasmAgents.openHosting(providers, options, owner, guest.manifest(),
-      (delivery, signal, interrupt) => guest.onRecord(delivery, signal, interrupt), (actor, error) => failures.push({ actor, error })),
+      (delivery, signal, interrupt) => {
+        const result = guest.onRecord(delivery, signal, interrupt);
+        active.add(result);
+        void result.then(() => active.delete(result), () => active.delete(result));
+        return result;
+      }, (actor, error) => failures.push({ actor, error })),
+    // Host cancellation starts retirement; each guest callback's returned
+    // promise fences the borrowed WASM handle before its caller frees it.
+    close: async agents => { agents?.free(); await Promise.allSettled(active); },
     free: () => { registry.free(); owner.free(); } };
 }
 
@@ -59,7 +68,7 @@ export async function until(agents, agent, stream, test) {
       const bytes = await cursor.next();
       if (bytes === null) throw new Error(`${stream} ended before its condition`);
       const frame = fromBinary(ReadResponseSchema, bytes);
-      if (frame.codec !== 0 || frame.decodedLength !== BigInt(frame.data.length)) {
+      if (frame.codec !== Codec.NONE || frame.decodedLength !== BigInt(frame.data.length)) {
         throw new Error("agent follow returned a malformed canonical frame");
       }
       for (const record of fromBinary(RecordBatchSchema, frame.data).records) {
