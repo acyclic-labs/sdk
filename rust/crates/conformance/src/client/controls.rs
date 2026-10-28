@@ -128,7 +128,7 @@ pub async fn verify<P: acyclic_stream::StreamProvider + ?Sized>(
                     "unknown_custody" => matches!(expected, Err(AgentControlFailure::Unknown(_))),
                     "root" => matches!(
                         (&command, &expected),
-                        (AgentCommand::Root, Ok(AgentReply::Root { .. }))
+                        (AgentCommand::Root {}, Ok(AgentReply::Root { .. }))
                     ),
                     "prompt" | "prompt_after_cancel" => matches!(
                         (&command, &expected),

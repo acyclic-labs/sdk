@@ -118,11 +118,12 @@ impl<'de> Deserialize<'de> for AgentPageRequest {
 #[cfg_attr(feature = "wasm", tsify(large_number_types_as_bigints))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum AgentCommand {
+    // Empty struct variants enforce deny_unknown_fields for fieldless commands too.
     /// Discover the binding of the tree this endpoint serves the session's
     /// credential, sent with [`crate::AgentBinding::discovery`].
-    Bind,
+    Bind {},
     /// Discover the root admitted by this session's credential.
-    Root,
+    Root {},
     /// Stage canonical user input and send one message with caller-owned intent.
     Prompt {
         /// Exact recipient; selection changes cannot retarget a prepared command.

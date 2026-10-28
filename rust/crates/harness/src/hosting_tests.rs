@@ -187,7 +187,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     let root = server.root().clone();
 
     assert!(matches!(
-        call(&client, "agents", &AgentCommand::Root).await?,
+        call(&client, "agents", &AgentCommand::Root {}).await?,
         Ok(AgentReply::Root { agent }) if agent == root
     ));
     let children = AgentCommand::Children {
@@ -286,12 +286,16 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
     ));
     // Another namespace never reaches dispatch, and owner denial is final.
     assert!(
-        call(&client, "elsewhere", &AgentCommand::Root)
+        call(&client, "elsewhere", &AgentCommand::Root {})
             .await
             .is_err()
     );
     owner.0.store(true, Ordering::SeqCst);
-    assert!(call(&client, "agents", &AgentCommand::Root).await.is_err());
+    assert!(
+        call(&client, "agents", &AgentCommand::Root {})
+            .await
+            .is_err()
+    );
     runner.abort();
     Ok(())
 }
