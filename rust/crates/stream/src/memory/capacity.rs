@@ -26,17 +26,19 @@ fn reserve_records(
     limits: MemoryLimits,
 ) -> Result<(), StreamError> {
     let (pending, payload) = reserved(state);
-    if state
-        .record_count
-        .saturating_add(pending)
-        .saturating_add(records)
-        > limits.records
-        || state
+    if limits.records.is_some_and(|limit| {
+        state
+            .record_count
+            .saturating_add(pending)
+            .saturating_add(records)
+            > limit
+    }) || limits.payload_bytes.is_some_and(|limit| {
+        state
             .payload_bytes
             .saturating_add(payload)
             .saturating_add(bytes)
-            > limits.payload_bytes
-    {
+            > limit
+    }) {
         return Err(StreamError::Capacity);
     }
     Ok(())
@@ -93,8 +95,12 @@ fn reserve_paths(
         .fold((0usize, 0usize), |(count, bytes), (_, end)| {
             (count + 1, bytes.saturating_add(end))
         });
-    if state.paths.len().saturating_add(count) > limits.paths
-        || state.path_bytes.saturating_add(bytes) > limits.path_bytes
+    if limits
+        .paths
+        .is_some_and(|limit| state.paths.len().saturating_add(count) > limit)
+        || limits
+            .path_bytes
+            .is_some_and(|limit| state.path_bytes.saturating_add(bytes) > limit)
     {
         Err(StreamError::Capacity)
     } else {
@@ -142,18 +148,20 @@ fn reserve_coordinated(
             );
         }
     }
-    if state
-        .paths
-        .len()
-        .saturating_add(new_paths)
-        .saturating_add(inherited_paths)
-        > limits.paths
-        || state
+    if limits.paths.is_some_and(|limit| {
+        state
+            .paths
+            .len()
+            .saturating_add(new_paths)
+            .saturating_add(inherited_paths)
+            > limit
+    }) || limits.path_bytes.is_some_and(|limit| {
+        state
             .path_bytes
             .saturating_add(path_bytes)
             .saturating_add(inherited_bytes)
-            > limits.path_bytes
-    {
+            > limit
+    }) {
         return Err(StreamError::Capacity);
     }
     reserve_records(state, records, bytes, limits)
@@ -194,8 +202,12 @@ fn reserve_fork(
         ),
         |(count, bytes), (_, end)| (count + 1, bytes.saturating_add(end)),
     );
-    if state.paths.len().saturating_add(count) > limits.paths
-        || state.path_bytes.saturating_add(bytes) > limits.path_bytes
+    if limits
+        .paths
+        .is_some_and(|limit| state.paths.len().saturating_add(count) > limit)
+        || limits
+            .path_bytes
+            .is_some_and(|limit| state.path_bytes.saturating_add(bytes) > limit)
     {
         return Err(StreamError::Capacity);
     }

@@ -234,7 +234,7 @@ async fn fixture(
     });
     let (read, write) = tokio::io::split(client);
     let client =
-        StdioMcpTransport::bind(read, write, 4096, Duration::from_millis(50), None).await?;
+        StdioMcpTransport::bind(read, write, Some(4096), Duration::from_millis(50), None).await?;
     Ok((client, server))
 }
 

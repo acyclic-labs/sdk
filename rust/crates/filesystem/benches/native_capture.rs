@@ -102,7 +102,7 @@ fn capture_workload(bencher: divan::Bencher, count: u32, bytes: usize, sparse: b
     let options = CaptureOptions {
         source_root: source.path().to_owned(),
         expected_root_identity: capture_root_identity(source.path()).unwrap(),
-        maximum_paths: count,
+        maximum_paths: Some(count),
         maximum_extent_spans: 8,
     };
     runtime.block_on(async {

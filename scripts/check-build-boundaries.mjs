@@ -1,7 +1,7 @@
+import { commandOutput } from "./process-capture.mjs";
 import assert from 'node:assert/strict';
-import {execFileSync} from 'node:child_process';
 
-const metadata = JSON.parse(execFileSync('cargo', ['metadata', '--locked', '--no-deps', '--format-version=1'], {encoding: 'utf8'}));
+const metadata = JSON.parse(commandOutput('cargo', ['metadata', '--locked', '--no-deps', '--format-version=1'], {encoding: 'utf8'}));
 const members = new Set(metadata.workspace_members);
 const packages = new Map(metadata.packages.filter(pkg => members.has(pkg.id)).map(pkg => [pkg.name, pkg]));
 const boundaries = new Map([

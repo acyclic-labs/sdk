@@ -627,38 +627,33 @@ impl Projector {
         }
     }
 
-    pub(super) fn settle(&self) -> Result<(), NativeMountError> {
+    pub(super) fn settle(
+        &self,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
         let mut state = lock_recover(&self.state);
         let target = state.notified;
-        let mut deadline = None;
-        while !state.stopping
-            && (state.processed < target
-                || state.relisting
-                || !state.stale.is_empty()
-                || !state.pending.is_empty()
-                || !state.vacated.is_empty())
-        {
-            if state.processed < target || state.relisting || !state.stale.is_empty() {
+        let pending = |state: &ProjectorState| {
+            !state.stopping
+                && (state.processed < target
+                    || state.relisting
+                    || !state.stale.is_empty()
+                    || !state.pending.is_empty()
+                    || !state.vacated.is_empty())
+        };
+        while pending(&state) {
+            // A held placeholder delays publication. Poll the original stop
+            // signal without borrowing its ledger under the projector lock.
+            drop(state);
+            work.remaining()?;
+            state = lock_recover(&self.state);
+            if pending(&state) {
                 state = self
                     .changed
-                    .wait(state)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                continue;
+                    .wait_timeout(state, std::time::Duration::from_millis(100))
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .0;
             }
-            let deadline =
-                *deadline.get_or_insert_with(|| self.clock.instant() + HELD_SETTLE_LIMIT);
-            let remaining = deadline.saturating_duration_since(self.clock.instant());
-            if remaining.is_zero() {
-                let held = state.pending.keys().next().cloned();
-                return Err(NativeMountError::Driver(format!(
-                    "a superseded placeholder is held open and cannot be replaced: {held:?}"
-                )));
-            }
-            state = self
-                .changed
-                .wait_timeout(state, remaining)
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .0;
         }
         state
             .failure

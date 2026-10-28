@@ -395,8 +395,6 @@ fn oversized_merge_preserves_original(
     original["agent_identity"] = json!("m".repeat(metadata));
     let original = serde_json::to_vec_pretty(&original).unwrap();
     transport.response = json!({"access_token":"r".repeat(access)});
-    prop_assert!(original.len() as u64 <= MAX_AUTH_BYTES);
-    prop_assert!(serde_json::to_vec(&transport.response).unwrap().len() as u64 <= MAX_AUTH_BYTES);
     let mut private = crate::credential_file::create(root.path()).unwrap();
     private.as_file_mut().write_all(&original).unwrap();
     private

@@ -211,11 +211,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                     {
                         state.file_folds.ensure_for_push(usize::MAX, accounting)?;
                         let (name, mut allocation) = super::persistent_io::clone_key::<TreeFormat>(
-                            name,
-                            limits.maximum_name_bytes,
-                            accounting,
-                            None,
-                            0,
+                            name, accounting, None, 0,
                         )?;
                         let bytes = TreeFormat::key_owned_bytes(&name);
                         state.file_folds.value.push(FileFold {
@@ -240,11 +236,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                             .conflicts
                             .ensure_for_push(maximum_conflicts as usize, accounting)?;
                         let (name, mut allocation) = super::persistent_io::clone_key::<TreeFormat>(
-                            name,
-                            limits.maximum_name_bytes,
-                            accounting,
-                            None,
-                            0,
+                            name, accounting, None, 0,
                         )?;
                         let bytes = TreeFormat::key_owned_bytes(&name);
                         state
@@ -266,11 +258,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                     mutations.ensure_for_push(usize::MAX, accounting)?;
                     let (mutation, mut allocation, bytes) = if let Some(entry) = resolved {
                         let (entry, allocation) = super::persistent_io::clone_value::<TreeFormat>(
-                            entry,
-                            limits.maximum_name_bytes,
-                            accounting,
-                            None,
-                            0,
+                            entry, accounting, None, 0,
                         )?;
                         let bytes = TreeFormat::value_owned_bytes(&entry);
                         let mutation = if let Some(before) = ours_value {
@@ -284,11 +272,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                         (mutation, allocation, bytes)
                     } else {
                         let (name, allocation) = super::persistent_io::clone_key::<TreeFormat>(
-                            name,
-                            limits.maximum_name_bytes,
-                            accounting,
-                            None,
-                            0,
+                            name, accounting, None, 0,
                         )?;
                         let bytes = TreeFormat::key_owned_bytes(&name);
                         (
@@ -318,7 +302,6 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                     store,
                     ours_entries,
                     &mutations.value,
-                    maximum,
                     limits,
                     accounting,
                     cancellation,

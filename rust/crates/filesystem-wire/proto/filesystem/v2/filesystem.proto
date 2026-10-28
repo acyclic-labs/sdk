@@ -514,7 +514,7 @@ message RebaseRequest {
   reserved 2;
   uint32 maximum_conflicts = 3;
   OperationOptions operation = 4;
-  uint32 maximum_generations = 5;
+  optional uint32 maximum_generations = 5;
   uint32 maximum_changes = 6;
 }
 message FileConflict {
@@ -573,7 +573,7 @@ message PlanJoinRequest {
   GenerationRef target = 2;
   uint32 maximum_changes = 3;
   uint32 maximum_conflicts = 4;
-  uint32 maximum_generations = 5;
+  optional uint32 maximum_generations = 5;
   JoinHistory history = 6;
 }
 message JoinPlan {
@@ -584,7 +584,7 @@ message JoinPlan {
   repeated Conflict conflicts = 5;
   bool truncated = 6;
   GenerationRef common_ancestor = 7;
-  uint32 maximum_generations = 8;
+  optional uint32 maximum_generations = 8;
   uint32 maximum_changes = 9;
   uint32 maximum_conflicts = 10;
   JoinHistory history = 11;

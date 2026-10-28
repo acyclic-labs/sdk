@@ -33,11 +33,6 @@ pub(super) async fn read_selected<
         if length > maximum_bytes {
             return Err(WorkspaceError::ReadLimitExceeded);
         }
-        if length > checkout.value.volume_config().limits.maximum_read_bytes {
-            return Err(
-                crate::FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange).into(),
-            );
-        }
         let range = crate::ByteRange { offset: 0, length };
         checkout
             .value
@@ -70,9 +65,6 @@ pub(super) async fn read_range<
         let (mut checkout, path) = workspace
             .open_read_path(selector, path, &mut accounting, cancellation)
             .await?;
-        if range.length > checkout.value.volume_config().limits.maximum_read_bytes {
-            return Err(FsError::FileRead(crate::kernel::FileRangeReadError::InvalidRange).into());
-        }
         let record = checkout
             .value
             .lookup_no_follow_with_accounting(&path.value, &mut accounting, cancellation, true)

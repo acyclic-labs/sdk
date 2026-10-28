@@ -58,7 +58,7 @@ fn volume_creation_is_canonical_bounded_and_catalog_free() -> Result<(), Box<dyn
 #[test]
 fn invalid_config_and_object_kind_fail_closed() {
     let mut invalid = config();
-    invalid.limits.maximum_path_bytes = 0;
+    invalid.limits.maximum_directory_page_entries = 0;
     assert!(matches!(
         encode_volume_created(
             VolumeCreated {
