@@ -414,7 +414,7 @@ impl MachinesProvider for SimulatedMachines {
     }
     async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
         self.ops
-            .record_for_key(key)
+            .inspect(crate::core::operation_id(key))
             .await?
             .map(|record| record.id)
             .ok_or_else(|| ProviderError::NotFound(key.to_string()))

@@ -77,29 +77,6 @@ struct StoredCheckpoint {
     native: Option<NativeBinding>,
 }
 
-/// Native resource ownership and the admitted intent, retained across restarts.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct OperationRecord {
-    pub id: OperationId,
-    pub key: IdempotencyKey,
-    pub intent_digest: [u8; 32],
-    pub provider: Option<String>,
-    pub created: Vec<NativeResource>,
-    pub targets: Vec<String>,
-    pub phase: OperationPhase,
-    pub outcome: Option<MutationOutcome>,
-}
-
-impl OperationRecord {
-    #[must_use]
-    pub const fn observation(&self) -> OperationObservation {
-        OperationObservation {
-            id: self.id,
-            phase: self.phase,
-        }
-    }
-}
-
 /// The point projection stays bounded even when a fork result spans many records.
 #[derive(Clone, Serialize, Deserialize)]
 struct StoredOperation {
@@ -412,39 +389,6 @@ impl OperationRegistry {
                 return Ok(());
             }
         }
-    }
-
-    pub async fn record(&self, id: OperationId) -> Result<Option<OperationRecord>, ProviderError> {
-        let Some(record) = self
-            .journal
-            .load::<StoredOperation>(&format!("ops/{id}"))
-            .await?
-            .value
-        else {
-            return Ok(None);
-        };
-        let outcome = match &record.outcome {
-            Some(blob) => Some(self.journal.outcome(id, blob).await?),
-            None => None,
-        };
-        let (created, targets) = self.custody(&record).await?;
-        Ok(Some(OperationRecord {
-            id: record.id,
-            key: record.key,
-            intent_digest: record.intent_digest,
-            provider: record.provider,
-            created,
-            targets,
-            phase: record.phase,
-            outcome,
-        }))
-    }
-
-    pub async fn record_for_key(
-        &self,
-        key: IdempotencyKey,
-    ) -> Result<Option<OperationRecord>, ProviderError> {
-        self.record(operation_id(key)).await
     }
 
     pub async fn inspect(

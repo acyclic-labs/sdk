@@ -781,7 +781,7 @@ mod tests {
             provider
                 .core()
                 .operations()
-                .record_for_key(key)
+                .inspect(ops::operation_id(key))
                 .await
                 .unwrap()
                 .is_none()
@@ -1773,11 +1773,9 @@ mod tests {
             provider
                 .core()
                 .operations()
-                .record(operation)
+                .created(operation)
                 .await
-                .unwrap()
-                .unwrap()
-                .created,
+                .unwrap(),
             [NativeResource::Machine("a".into())]
         );
         provider.cancel(operation).await.unwrap();
@@ -1789,11 +1787,9 @@ mod tests {
             provider
                 .core()
                 .operations()
-                .record(operation)
+                .created(operation)
                 .await
                 .unwrap()
-                .unwrap()
-                .created
                 .is_empty()
         );
     }

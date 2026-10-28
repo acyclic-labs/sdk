@@ -422,7 +422,7 @@ impl<D: Backend> MachinesProvider for D {
     async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
         self.core()
             .operations
-            .record_for_key(key)
+            .inspect(operation_id(key))
             .await?
             .map(|record| record.id)
             .ok_or_else(|| ProviderError::NotFound(key.to_string()))

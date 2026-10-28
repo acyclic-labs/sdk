@@ -53,6 +53,19 @@ fn fresh(admission: Admission) -> Result<OperationId, ProviderError> {
     }
 }
 
+async fn custody(
+    core: &OperationRegistry,
+    operation: OperationId,
+) -> Result<(Vec<NativeResource>, Vec<String>), ProviderError> {
+    let record = core
+        .journal
+        .load::<StoredOperation>(&format!("ops/{operation}"))
+        .await?
+        .value
+        .ok_or_else(|| ProviderError::NotFound(operation.to_string()))?;
+    core.custody(&record).await
+}
+
 #[tokio::test]
 async fn restart_preserves_success_and_exact_settlement_identity() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -225,7 +238,7 @@ async fn before_dispatch_refusal_can_release_key_but_unknown_outcome_cannot() ->
         .await,
         Err(ProviderError::Unsupported(_))
     ));
-    assert!(core.record_for_key(key).await?.is_none());
+    assert!(core.inspect(operation_id(key)).await?.is_none());
     assert!(matches!(
         core.apply(
             key,
@@ -715,10 +728,8 @@ async fn shared_transition_reopens_exact_result_without_native_dispatch_or_read(
         MutationOutcome::SuspensionPolicySet(machine, SuspensionPolicy::Manual),
     );
     assert_eq!(
-        core.record_for_key(policy_key)
-            .await?
-            .map(|record| record.targets),
-        Some(vec!["opaque-running-vm".into()])
+        custody(&core, operation_id(policy_key)).await?.1,
+        ["opaque-running-vm"]
     );
     core.mark_destroyed(machine, 7).await?;
     assert_eq!(
@@ -1277,15 +1288,12 @@ async fn shared_destruction_reopens_bindings_guards_children_and_replays_exactly
     let checkpoint_settlement = core.settled(checkpoint_key).await?;
     // The target is the opaque creation address, not the logical checkpoint UUID.
     assert_eq!(
-        core.record_for_key(checkpoint_key)
+        custody(&core, operation_id(checkpoint_key)).await?.1,
+        [core
+            .native_checkpoint_binding(checkpoint.id, "internal")
             .await?
-            .map(|record| record.targets),
-        Some(vec![
-            core.native_checkpoint_binding(checkpoint.id, "internal")
-                .await?
-                .ok_or("missing checkpoint binding")?
-                .handle
-        ])
+            .ok_or("missing checkpoint binding")?
+            .handle]
     );
     let mutations = native.mutations.load(Ordering::SeqCst);
     let mut live_child = value.clone();
@@ -1306,10 +1314,8 @@ async fn shared_destruction_reopens_bindings_guards_children_and_replays_exactly
     core.destroy_machine(&native, value.id, machine_key, 12)
         .await?;
     assert_eq!(
-        core.record_for_key(machine_key)
-            .await?
-            .map(|record| record.targets),
-        Some(vec!["opaque-created-vm".into()])
+        custody(&core, operation_id(machine_key)).await?.1,
+        ["opaque-created-vm"]
     );
     let machine_settlement = core.settled(machine_key).await?;
     let mutations = native.mutations.load(Ordering::SeqCst);
@@ -1710,36 +1716,28 @@ async fn owned_fork_sources_are_not_copied_into_existing_targets() -> TestResult
     assert!(serde_json::to_vec(&record)?.len() <= acyclic_stream::MAX_RECORD_BYTES);
     drop(core);
     let core = OperationRegistry::new(streams, "account")?;
-    let record = core
-        .record(operation)
-        .await?
-        .ok_or("missing reopened custody")?;
-    assert_eq!(record.targets, ["existing-parent"]);
-    assert_eq!(record.created.len(), MAX_FORK_CHILDREN as usize);
+    let (created, targets) = custody(&core, operation).await?;
+    assert_eq!(targets, ["existing-parent"]);
+    assert_eq!(created.len(), MAX_FORK_CHILDREN as usize);
     assert!(
-        record
-            .created
+        created
             .first()
             .is_some_and(|value| value.handle().starts_with("opaque-0000-"))
     );
     assert!(
-        record
-            .created
+        created
             .last()
             .is_some_and(|value| value.handle().starts_with("opaque-1023-"))
     );
-    let first = record.created.first().ok_or("missing first resource")?;
-    let last = record.created.last().ok_or("missing last resource")?;
+    let first = created.first().ok_or("missing first resource")?;
+    let last = created.last().ok_or("missing last resource")?;
     core.deleted(operation, first).await?;
     core.deleted(operation, last).await?;
     assert_eq!(
         core.created(operation).await?.len(),
         MAX_FORK_CHILDREN as usize - 2
     );
-    assert_eq!(
-        core.record(operation).await?.map(|value| value.targets),
-        Some(vec!["existing-parent".into()])
-    );
+    assert_eq!(custody(&core, operation).await?.1, ["existing-parent"]);
     Ok(())
 }
 
