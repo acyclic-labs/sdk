@@ -5,6 +5,7 @@ const FINITE_CONTENT_BUDGET: acyclic_fs::WorkBudget =
     acyclic_fs::performance::work_budget(100_000, 16_000_000);
 
 mod access;
+mod approvals;
 mod content;
 mod publication_cost;
 mod publication_evidence;

@@ -3,10 +3,11 @@
 use crate::contract::capability;
 use crate::filesystem::{
     FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
-    FilesystemHost,
+    FilesystemHost, agent_internal::AgentInternalFiles,
 };
 use crate::{
     AgentId, Capabilities, ConversationId, Error, OperationId, Result,
+    approvals::{AgentApprovalPolicy, AgentApprovals, ApprovalFiles, ApprovalPolicy},
     conversation::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, VolumeClass, VolumeOperation,
         VolumeOwner, VolumeRef,
@@ -69,6 +70,24 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     Ok((host, volume))
 }
 
+/// The one harness approval owner over `files` under `policy`, for an agent
+/// with no parent.
+fn agent_approvals(
+    files: &Arc<dyn ApprovalFiles>,
+    policy: ApprovalPolicy,
+    maximum_file_bytes: u64,
+) -> Result<Arc<AgentApprovals>> {
+    let limits = Limits {
+        file_bytes: maximum_file_bytes,
+        ..Limits::default()
+    };
+    let policy = AgentApprovalPolicy::new(policy, None, Default::default(), limits)?;
+    Ok(Arc::new(AgentApprovals::new(
+        Arc::clone(files),
+        Arc::new(policy),
+    )))
+}
+
 /// A fully bound journal and owner-private file volume.
 ///
 /// The journal runs on any [`StreamProvider`]: [`MemoryStream`] by default, or a
@@ -80,6 +99,7 @@ pub struct MemoryHarnessStorage<
     O: 'static = MemoryObjectBackend,
 > {
     journal: Arc<FilesystemExecutionJournal<P, A, O>>,
+    approval_files: Arc<dyn ApprovalFiles>,
     content_verifier: Arc<FilesystemContentVerifier<A, O>>,
     publisher: Arc<FilesystemContentPublisher<A, O>>,
     host: Arc<FilesystemHost<A, O>>,
@@ -216,6 +236,20 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
             maximum_file_bytes,
             None,
         )?;
+        // Approvals are the agent's own files on its private volume, as for
+        // every hosted agent; only where those files live differs.
+        let approval_files: Arc<dyn ApprovalFiles> = Arc::new(AgentInternalFiles::new(
+            Arc::clone(&host),
+            volume.clone(),
+            crate::conversation::ContentGrant::verify(
+                &verifier,
+                &scope,
+                &volume,
+                VolumeOperation::Write,
+                u64::MAX,
+                &mut None,
+            )?,
+        ));
         let journal = Arc::new(
             FilesystemExecutionJournal::new(
                 stream.clone(),
@@ -228,7 +262,12 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
                     io: None,
                 },
             )?
-            .with_input_verifier(input.clone()),
+            .with_input_verifier(input.clone())
+            .with_agent_approvals(agent_approvals(
+                &approval_files,
+                ApprovalPolicy::default(),
+                maximum_file_bytes,
+            )?),
         );
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(&host),
@@ -240,6 +279,7 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
         )?;
         Ok(Self {
             journal,
+            approval_files,
             content_verifier: input,
             publisher,
             host,
@@ -254,6 +294,19 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
             conversation,
             maximum_file_bytes,
         })
+    }
+
+    /// Runs every approval under `policy`, normally the caller's preset
+    /// approval policy (`Preset::approval_policy`). Without it the storage
+    /// uses the harness default policy chain. Binds before the journal is
+    /// shared, so every approval of this storage sees one policy.
+    pub fn with_approval_policy(mut self, policy: ApprovalPolicy) -> Result<Self> {
+        let approvals = agent_approvals(&self.approval_files, policy, self.maximum_file_bytes)?;
+        let journal = Arc::try_unwrap(self.journal).map_err(|_| {
+            Error::Conflict("approval policy must be bound before the journal is shared".into())
+        })?;
+        self.journal = Arc::new(journal.with_agent_approvals(approvals));
+        Ok(self)
     }
 
     /// Supplies the exact ref-only journal required by `HarnessBuilder`.
