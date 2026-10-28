@@ -55,18 +55,13 @@ impl MemoryStream {
             retain_pending_read: false,
         }
     }
-    /// Rebinds this fresh provider's revisions to a stable storage scope with
-    /// a new incarnation, so a reopened store never honours an older token.
-    #[must_use]
-    pub(crate) fn in_scope(mut self, scope: crate::RevisionScope) -> Self {
-        let incarnation = u128::from_be_bytes(uuid::Uuid::new_v4().into_bytes());
-        self.revisions = Arc::new(crate::AppliedRevisions::new(scope, incarnation, 0));
-        self
-    }
-
     /// Rebinds to an externally owned authority: replicas replaying one shared
     /// journal in one order, or a store whose incarnation outlives a process,
     /// issue and honour the same tokens.
+    #[cfg(any(
+        feature = "local",
+        all(feature = "postgres", not(target_arch = "wasm32"))
+    ))]
     #[must_use]
     pub(crate) fn with_authority(mut self, scope: crate::RevisionScope, incarnation: u128) -> Self {
         self.revisions = Arc::new(crate::AppliedRevisions::new(scope, incarnation, 0));

@@ -59,3 +59,33 @@ fn read_snapshot(
         state: state.to_vec(),
     }))
 }
+
+/// The store's revision incarnation. It survives every reopen, so tokens and
+/// replayed receipts issued before a restart keep the incarnation they were
+/// committed at. A fresh or wiped store issues a new one, so tokens from
+/// earlier data refuse; so does a store whose record was removed, which only
+/// refuses older tokens. A damaged record is corrupt.
+fn incarnation(root: &Path, fresh: bool) -> Result<u128, LocalStreamError> {
+    let path = root.join(INCARNATION_FILE);
+    if !fresh {
+        match std::fs::read(&path) {
+            Ok(recorded) => {
+                let recorded = <[u8; 16]>::try_from(recorded.as_slice())
+                    .map_err(|_| LocalStreamError::Corrupt)?;
+                return Ok(u128::from_be_bytes(recorded));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let incarnation = u128::from_be_bytes(uuid::Uuid::new_v4().into_bytes());
+    let temporary = root.join(INCARNATION_TEMPORARY);
+    {
+        let mut file = File::create(&temporary)?;
+        acyclic_native_runtime::write_file_all(&mut file, &incarnation.to_be_bytes())?;
+        sync_file(&file, LocalDurability::FullFlush)?;
+    }
+    acyclic_native_runtime::rename_file(&temporary, &path)?;
+    sync_directory(&path, LocalDurability::FullFlush)?;
+    Ok(incarnation)
+}

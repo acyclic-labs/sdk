@@ -581,11 +581,16 @@ impl Client {
             return Err(StreamError::InvalidArgument);
         }
         let resume = subscription.resume.ok_or(StreamError::InvalidArgument)?;
-        let kind = subscription.kind.ok_or(StreamError::InvalidArgument)?;
-        match &kind {
-            Kind::Follow(follow) => wire_codec::session::validate_follow(follow, &resume)?,
+        let mut kind = subscription.kind.ok_or(StreamError::InvalidArgument)?;
+        match &mut kind {
+            Kind::Follow(follow) => {
+                wire_codec::session::validate_follow(follow, &resume)?;
+                let explicit = wire_codec::cut_from_wire(std::mem::take(&mut follow.at_least))?;
+                follow.at_least = wire_codec::cut_to_wire(&self.revisions.floor(&explicit));
+            }
             _ => return Err(StreamError::Unsupported),
         }
+        let revisions = Arc::clone(&self.revisions);
         Ok(super::runtime::boxed(
             self.open_subscription(
                 kind,
@@ -595,10 +600,13 @@ impl Client {
                 subscription.filter,
                 subscription.credential,
             )
-            .await?
-            .map(|item| match item? {
-                Received::Frame(frame) => Ok(frame),
-                _ => Err(StreamError::Unavailable),
+            .await
+            .inspect_err(|error| self.revisions.refused(error))?
+            .map(move |item| {
+                match item.inspect_err(|error| revisions.refused(error))? {
+                    Received::Frame(frame) => Ok(frame),
+                    _ => Err(StreamError::Unavailable),
+                }
             }),
         ))
     }

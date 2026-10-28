@@ -53,6 +53,8 @@ const LOCK_FILE: &str = "stream.lock";
 const JOURNAL_FILE: &str = "stream.journal";
 const SNAPSHOT_FILE: &str = "stream.snapshot";
 const SNAPSHOT_TEMPORARY: &str = "stream.snapshot.tmp";
+const INCARNATION_FILE: &str = "stream.incarnation";
+const INCARNATION_TEMPORARY: &str = "stream.incarnation.tmp";
 const FRAME_CHECKSUM_BYTES: usize = 32;
 const REPLAY_PIPELINE_COMMANDS: usize = 32;
 

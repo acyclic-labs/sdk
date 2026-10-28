@@ -275,15 +275,19 @@ impl AppliedRevisions {
         self.applied.send_modify(|applied| applied.closed = true);
     }
 
-    /// Selects this authority's participant of `cut`. This scope in another
-    /// incarnation is foreign: that floor is unprovable after a reset. Other
-    /// scopes are other participants' cuts, enforced by their own authorities.
+    /// Selects this authority's floor from `cut`. A token naming another
+    /// scope, or this scope in another incarnation, is foreign: this authority
+    /// cannot prove it. A multi-authority router hands each participant only
+    /// its own entry of the cut.
     pub fn floor(&self, cut: &RevisionCut) -> Result<Option<u64>, StreamError> {
-        match cut.get(&self.scope) {
-            None => Ok(None),
-            Some(revision) if revision.incarnation == self.incarnation => Ok(Some(revision.index)),
-            Some(_) => Err(StreamError::RevisionForeign),
+        let mut floor = None;
+        for revision in cut.iter() {
+            if revision.scope != self.scope || revision.incarnation != self.incarnation {
+                return Err(StreamError::RevisionForeign);
+            }
+            floor = Some(revision.index);
         }
+        Ok(floor)
     }
 
     /// Returns the applied revision once it covers `cut`. Parks on the applied
@@ -305,6 +309,24 @@ impl AppliedRevisions {
                 .changed()
                 .await
                 .map_err(|_| StreamError::Unavailable)?;
+        }
+    }
+
+    /// Waits until this authority applies `revision`, ends, or `deadline`
+    /// resolves first, which refuses as [`StreamError::DeadlineElapsed`]. The
+    /// deadline is any timer future, so every runtime and replica adapter
+    /// shares this one park: a foreign token refuses before parking.
+    pub async fn wait_applied(
+        &self,
+        revision: &Revision,
+        deadline: impl Future<Output = ()>,
+    ) -> Result<Revision, StreamError> {
+        let cut = RevisionCut::of(revision.clone());
+        let applied = std::pin::pin!(self.wait(&cut));
+        let deadline = std::pin::pin!(deadline);
+        match futures::future::select(applied, deadline).await {
+            futures::future::Either::Left((applied, _)) => applied,
+            futures::future::Either::Right(((), _)) => Err(StreamError::DeadlineElapsed),
         }
     }
 
@@ -346,10 +368,15 @@ mod tests {
             authority.wait(&RevisionCut::of(foreign)).await,
             Err(StreamError::RevisionForeign)
         );
-        // Another participant's cut constrains only its own authority.
-        let other = AppliedRevisions::in_process().at(u64::MAX);
+        // Another scope is foreign too, even at a covered index.
+        let other = AppliedRevisions::in_process().at(0);
         assert_eq!(
             authority.wait(&RevisionCut::of(other)).await,
+            Err(StreamError::RevisionForeign)
+        );
+        // Negative control: no minimum serves the local cut at once.
+        assert_eq!(
+            authority.wait(&RevisionCut::default()).await,
             Ok(authority.at(2))
         );
 
@@ -361,5 +388,57 @@ mod tests {
         tokio::task::yield_now().await;
         authority.close();
         assert_eq!(closing.await.unwrap(), Err(StreamError::Unavailable));
+    }
+
+    #[test]
+    fn a_reconnect_to_a_lagging_replica_never_lowers_the_floor() {
+        let first = AppliedRevisions::in_process();
+        let second = AppliedRevisions::in_process();
+        let tracker = RevisionTracker::default();
+        tracker.observe(&first.at(5));
+        tracker.observe(&second.at(2));
+        // A resumed open on a replica that served an older cut.
+        tracker.observe(&first.at(3));
+        let floor = tracker.floor(&RevisionCut::default());
+        assert_eq!(floor.get(first.scope()), Some(&first.at(5)));
+        // Each authority keeps its own participant, never a max.
+        assert_eq!(floor.get(second.scope()), Some(&second.at(2)));
+        // An explicit lower minimum does not lower it either.
+        let floor = tracker.floor(&RevisionCut::of(first.at(1)));
+        assert_eq!(floor.get(first.scope()), Some(&first.at(5)));
+        // Negative control: only a refusal drops the floor.
+        tracker.refused(&StreamError::Unavailable);
+        assert_eq!(tracker.floor(&RevisionCut::default()).iter().len(), 2);
+        tracker.refused(&StreamError::RevisionForeign);
+        assert_eq!(tracker.floor(&RevisionCut::default()).iter().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn wait_applied_bounds_a_parked_read_by_its_deadline() {
+        let authority = AppliedRevisions::in_process();
+        // A lagging replica parks past its deadline.
+        assert_eq!(
+            authority
+                .wait_applied(&authority.at(1), std::future::ready(()))
+                .await,
+            Err(StreamError::DeadlineElapsed)
+        );
+        // Negative control: an applied minimum serves before any deadline.
+        authority.advance(1);
+        assert_eq!(
+            authority
+                .wait_applied(&authority.at(1), std::future::pending())
+                .await,
+            Ok(authority.at(1))
+        );
+        // A foreign token refuses before parking, even with no deadline.
+        let mut foreign = authority.at(1);
+        foreign.incarnation ^= 1;
+        assert_eq!(
+            authority
+                .wait_applied(&foreign, std::future::pending())
+                .await,
+            Err(StreamError::RevisionForeign)
+        );
     }
 }

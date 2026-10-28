@@ -611,7 +611,7 @@ describe("website Stream contract", () => {
     await withBrowserDefault(async (input, init) => {
       await selection;
       const route = new URL(String(input)).pathname.split("/").pop();
-      if (route === "tail") return new Response('"0"');
+      if (route === "tail") return new Response('{"tail":"0"}');
       requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
       return new Response("[]");
     }, async () => {
@@ -815,7 +815,7 @@ describe("website Stream contract", () => {
     expect(localReads).toBe(1);
 
     let hostedReads = 0;
-    const remote = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => new Response(new URL(String(input)).pathname.endsWith("/tail") ? '"0"' : "[]") });
+    const remote = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => new Response(new URL(String(input)).pathname.endsWith("/tail") ? '{"tail":"0"}' : "[]") });
     const hostedOptions = { get from() { hostedReads += 1; return 0n; }, limit: 1 };
     for await (const _record of remote.read("events", hostedOptions)) { /* consume */ }
     expect(hostedReads).toBe(1);
@@ -951,7 +951,7 @@ describe("website Stream contract", () => {
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => {
       const route = new URL(String(input)).pathname.split("/").pop();
       routes.push(route!);
-      return route === "read" ? new Response("[]") : new Response('"1"');
+      return route === "read" ? new Response("[]") : new Response('{"tail":"1"}');
     } });
     await expect(provider.read("events", { from: 2n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "out_of_range" });
     expect(routes).toEqual(["tail"]);

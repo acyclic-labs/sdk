@@ -125,7 +125,11 @@ export class GrpcStreamProvider implements StreamProvider {
     this.#acknowledgeDeliveries = options.acknowledgeDeliveries !== false;
   }
   async #call<T>(operation: string, call: () => Promise<T>): Promise<T> {
-    try { return await call(); } catch (error) { throw providerError(error, operation); }
+    try { return await call(); } catch (error) {
+      const failure = providerError(error, operation);
+      this.#sessions.refused(failure);
+      throw failure;
+    }
   }
   #project<T>(operation: string, bytes: Uint8Array): T {
     try { return projectMemoryResponse(operation, bytes) as T; }
@@ -145,7 +149,10 @@ export class GrpcStreamProvider implements StreamProvider {
   }
   async tail(path: string): Promise<bigint> {
     await validateWireRequest({ kind: "tail", path });
-    return (await this.#call("tail", () => this.#client.tail(fromBinary(wire.TailRequestSchema, wireRequest({ kind: "tail", path }))))).tail;
+    const request = wireRequest({ kind: "tail", path, atLeast: this.#sessions.revisionFloor() });
+    const response = await this.#call("tail", () => this.#client.tail(fromBinary(wire.TailRequestSchema, request)));
+    this.#sessions.observe(response.applied);
+    return response.tail;
   }
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> {
     const records = values.map(value => value.slice());
@@ -153,20 +160,25 @@ export class GrpcStreamProvider implements StreamProvider {
     await validateAppend(path, records, authored);
     const request = fromBinary(wire.AppendRequestSchema, wireAppendRequest(path, records, authored));
     const response = await this.#call("append", () => this.#client.append(request));
-    return this.#project("append", toBinary(wire.AppendResponseSchema, response));
+    const result = this.#project<AppendResult>("append", toBinary(wire.AppendResponseSchema, response));
+    if (result.ok) this.#sessions.observe(result.revision);
+    return result;
   }
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> {
     const request = { kind: "fork" as const, source, destination, ...(options === undefined ? {} : { options: structuredClone(options) }) };
     await validateWireRequest(request);
     const response = await this.#call("fork", () => this.#client.fork(fromBinary(wire.ForkRequestSchema, wireRequest(request))));
-    return this.#project("fork", toBinary(wire.ForkReceiptSchema, response));
+    const receipt = this.#project<ForkReceipt>("fork", toBinary(wire.ForkReceiptSchema, response));
+    this.#sessions.observe(receipt.revision);
+    return receipt;
   }
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
     const request = { kind: "read" as const, path, from: options.from, limit: options.limit };
     await validateWireRequest(request);
     const controller = new AbortController();
     try {
-      yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)), { signal: controller.signal }), request.from, request.limit);
+      const input = wireRequest({ ...request, atLeast: this.#sessions.revisionFloor() });
+      yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, input), { signal: controller.signal }), request.from, request.limit);
     } finally { controller.abort(); }
   }
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
@@ -186,6 +198,7 @@ export class GrpcStreamProvider implements StreamProvider {
     try {
       for await (const response of frames) {
         if (signal?.aborted) return;
+        this.#sessions.observe(response.applied);
         const values = readResponseRecords(response);
         if (remaining !== undefined && values.length > remaining) throw new StreamError("invalid_response", "read exceeds requested limit");
         const records = values.map((value, index) => checkedRecord(value, next + BigInt(index)));
@@ -197,7 +210,10 @@ export class GrpcStreamProvider implements StreamProvider {
         }
       }
     } catch (error) {
-      if (!signal?.aborted) throw providerError(error, operation);
+      if (signal?.aborted) return;
+      const failure = providerError(error, operation);
+      this.#sessions.refused(failure);
+      throw failure;
     }
   }
 
@@ -215,7 +231,9 @@ export class GrpcStreamProvider implements StreamProvider {
   async commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult> {
     const input = await normalizeWireCommitBytes(structuredClone(request), structuredClone(options));
     const response = await this.#call("commit", () => this.#client.commit(fromBinary(wire.CommitRequestSchema, input)));
-    return this.#project("commit", toBinary(wire.CommitResponseSchema, response));
+    const result = this.#project<CommitResult>("commit", toBinary(wire.CommitResponseSchema, response));
+    if (result.ok) this.#sessions.observe(result.revision);
+    return result;
   }
   async readCommit(id: CommitId): Promise<CommittedEnvelope> {
     const request = fromBinary(wire.ReadCommitRequestSchema, wireReadCommitRequest(id));

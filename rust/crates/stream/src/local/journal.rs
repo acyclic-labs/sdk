@@ -6,7 +6,18 @@ impl Journal {
         span: &tracing::Span,
     ) -> Result<Self, LocalStreamError> {
         let claim = lock_root(root, limits)?;
-        let epoch = match read_snapshot(root, limits)? {
+        let snapshot = read_snapshot(root, limits)?;
+        let journal_bytes = match std::fs::metadata(root.join(JOURNAL_FILE)) {
+            Ok(metadata) => metadata.len(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(error) => return Err(error.into()),
+        };
+        // A store holding no snapshot and no whole journal header has issued
+        // no publication, so it starts a new incarnation.
+        let fresh = snapshot.is_none() && journal_bytes < HEADER_BYTES as u64;
+        blocking_send(recovered, Recovered::Incarnation(incarnation(root, fresh)?))
+            .map_err(|_| LocalStreamError::Executor)?;
+        let epoch = match snapshot {
             Some(snapshot) => {
                 blocking_send(
                     recovered,

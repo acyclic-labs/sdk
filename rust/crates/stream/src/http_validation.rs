@@ -42,6 +42,16 @@ fn array(value: &Value) -> Result<&Vec<Value>> {
     value.as_array().ok_or("expected array")
 }
 
+fn validate_revision(value: &Value) -> Result {
+    let item = object(value)?;
+    bytes(field(item, "scope")?)?;
+    if bytes(field(item, "incarnation")?)?.len() != 16 {
+        return Err("invalid revision incarnation");
+    }
+    u64_string(field(item, "index")?)?;
+    Ok(())
+}
+
 fn path(value: &Value) -> Result {
     let value = string(value)?;
     crate::StreamPath::new(value)
@@ -341,9 +351,14 @@ pub fn validate(route: &str, value: &Value) -> Result {
             }
             Ok(())
         }
-        Some("sequence") => {
-            u64_string(value)?;
-            Ok(())
+        Some("tail") => {
+            let item = object(value)?;
+            u64_string(field(item, "tail")?)?;
+            // The applied revision the host served, when it tracks revisions.
+            match item.get("applied") {
+                None | Some(Value::Null) => Ok(()),
+                Some(applied) => validate_revision(applied),
+            }
         }
         Some("append") => validate_append_result(value),
         Some("fork") => validate_fork_receipt(value),

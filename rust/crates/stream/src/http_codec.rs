@@ -233,28 +233,26 @@ fn request_json(route: &str, input: &[u8]) -> Result<Value> {
             let request = wire::TailRequest::decode(input).map_err(|_| "invalid_argument")?;
             wire_codec::cut_from_wire(request.at_least.clone()).map_err(|error| error.code())?;
             let path = wire_codec::path(request.path).map_err(|_| "invalid_path")?;
-            let mut value = json!({ "path": path.to_string() });
-            // The minimum cut, one entry per authority; the host serves at or above it.
-            if !request.at_least.is_empty() {
-                value["atLeast"] = request
-                    .at_least
-                    .iter()
-                    .map(|revision| crate::http_response::revision_json(Some(revision)))
-                    .collect();
-            }
-            Ok(value)
+            Ok(with_at_least(
+                json!({ "path": path.to_string() }),
+                &request.at_least,
+            ))
         }
         "append" => request_json_append(input),
         "fork" => request_json_fork(input),
         "read" => {
             let request = wire::ReadRequest::decode(input).map_err(|_| "invalid_argument")?;
+            let at_least = request.at_least.clone();
             let request = wire_codec::read_from_wire(request).map_err(|error| error.code())?;
             memory::validate_limit(request.limit).map_err(|error| error.code())?;
-            Ok(json!({
-                "path": request.path.to_string(),
-                "from": request.from.to_string(),
-                "limit": request.limit,
-            }))
+            Ok(with_at_least(
+                json!({
+                    "path": request.path.to_string(),
+                    "from": request.from.to_string(),
+                    "limit": request.limit,
+                }),
+                &at_least,
+            ))
         }
         "children/page" => {
             let request =
@@ -339,4 +337,15 @@ mod tests {
         assert!(projected.pointer("/options/deadlineUnixMillis").is_none());
         Ok(())
     }
+}
+
+/// Adds the minimum cut, one entry per authority; the host serves at or above it.
+fn with_at_least(mut value: Value, at_least: &[wire::Revision]) -> Value {
+    if !at_least.is_empty() {
+        value["atLeast"] = at_least
+            .iter()
+            .map(|revision| crate::http_response::revision_json(Some(revision)))
+            .collect();
+    }
+    value
 }

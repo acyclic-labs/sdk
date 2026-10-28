@@ -13,4 +13,5 @@ mod compaction;
 mod durability;
 mod durability_retries;
 mod receipts;
+mod revisions;
 mod watermarks;

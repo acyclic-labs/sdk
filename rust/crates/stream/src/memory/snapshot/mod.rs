@@ -123,7 +123,7 @@ fn encode(state: &State) -> Vec<u8> {
                     .unwrap_or_else(|_| unreachable!("retained keys were admitted")),
                 request_digest: replay.digest,
                 outcome: replay.result.clone(),
-                // A snapshot outlives this incarnation; replay rebinds its revisions.
+                // The store's durable incarnation rebinds the retained index on replay.
                 revision: None,
             });
             put_bytes(&mut out, &observation.encode_to_vec());

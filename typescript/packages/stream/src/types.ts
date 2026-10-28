@@ -17,6 +17,7 @@ import type {
   ForkRequest as WireForkRequest, ReadRequest as WireReadRequest,
   Record as WireRecord, TailConflict as WireTailConflict,
   CreateTokenRequest as WireCreateTokenRequest, TokenGrant as WireTokenGrant,
+  Revision as WireRevision,
 } from "../generated/proto/stream/v1/stream_pb.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type { TokenOperation } from "./token-operations.js";
@@ -44,6 +45,10 @@ type _CommitConflictKinds = AssertNever<Exclude<CommitConflictKind, "tail" | "ex
 declare const streamIdentityBrand: unique symbol;
 /** Exact unsigned 64-bit protocol position. */
 export type Sequence = WireRecord["sequence"];
+/** A committed position of one authority incarnation; never a stream offset. */
+export type Revision = PublicWire<WireRevision>;
+/** A stream tail and the applied revision the host served it at, when it tracks revisions. */
+export interface TailResult { readonly tail: Sequence; readonly applied?: Revision }
 /** Opaque stable 32-byte commit identity. */
 export type CommitId = Uint8Array & { readonly [streamIdentityBrand]: "CommitId" };
 /** Opaque non-empty caller retry identity, bounded by the canonical Stream contract. */

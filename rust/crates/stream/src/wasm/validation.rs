@@ -646,7 +646,15 @@ mod http {
             .find_map(|(candidate, kind)| (*candidate == route).then_some(*kind))
         {
             Some("empty") => Ok(JsValue::UNDEFINED),
-            Some("sequence") => bigint_js(value),
+            Some("tail") => {
+                let item = object(value)?;
+                let result = Object::new();
+                set(&result, "tail", &bigint_js(field(item, "tail")?)?)?;
+                if let Some(applied) = item.get("applied").filter(|value| !value.is_null()) {
+                    set(&result, "applied", &revision_js(applied)?)?;
+                }
+                Ok(result.into())
+            }
             Some("head") => head_js(value),
             Some("append") => append_result_js(value),
             Some("fork") => fork_receipt_js(value),

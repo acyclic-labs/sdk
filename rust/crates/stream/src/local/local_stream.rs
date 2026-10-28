@@ -93,15 +93,19 @@ impl LocalStream {
             source: Arc::clone(&clock),
             pinned: Mutex::new(None),
         });
-        let provider = MemoryStream::new_with_commit_clock(
+        let mut provider = MemoryStream::new_with_commit_clock(
             limits.memory,
             clock,
             Arc::clone(&commit_clock) as _,
-        )
-        .in_scope(scope);
+        );
         let mut replay_error = None;
         while let Some(recovered) = receiver.recv().await {
             let replayed = match recovered {
+                // Arrives first, before any state is installed or replayed.
+                Recovered::Incarnation(incarnation) => {
+                    provider = provider.with_authority(scope.clone(), incarnation);
+                    continue;
+                }
                 Recovered::Validate(complete) => {
                     let _ = complete.send(replay_error.is_none());
                     continue;

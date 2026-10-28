@@ -368,12 +368,14 @@ impl StreamProvider for HttpStream {
             at_least: wire_codec::cut_to_wire(&revisions.floor(&crate::RevisionCut::default())),
             ..Default::default()
         };
-        parse_u64(
-            &self
-                .request("tail", body.encode_to_vec())
-                .await
-                .inspect_err(|error| revisions.refused(error))?,
-        )
+        let value = self
+            .request("tail", body.encode_to_vec())
+            .await
+            .inspect_err(|error| revisions.refused(error))?;
+        if let Some(applied) = value.get("applied").filter(|value| !value.is_null()) {
+            revisions.observe(&parse_revision(applied)?);
+        }
+        parse_u64(field(&value, "tail")?)
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         self.session_client()?.watermarks(path).await

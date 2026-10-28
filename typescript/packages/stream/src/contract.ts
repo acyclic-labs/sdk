@@ -9,7 +9,7 @@ import {
   CreateTokenRequestSchema, RecordBatchSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
 import type { ReadResponse, Record as WireRecord } from "../generated/proto/stream/v1/stream_pb.js";
-import type { AppendOptions, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitRequest } from "./types.js";
+import type { AppendOptions, CommitOptions, CreateTokenRequest, ForkOptions, IdempotencyKey, ProviderCommitRequest, Revision } from "./types.js";
 import { StreamError, commitId, idempotencyKey } from "./types.js";
 import type { HttpRoute } from "./http-contract.js";
 
@@ -92,9 +92,9 @@ function validationError(error: unknown, operation: "append" | "commit" | "reque
 
 type WireRequest =
   | { readonly kind: "head"; readonly path: string }
-  | { readonly kind: "tail"; readonly path: string }
+  | { readonly kind: "tail"; readonly path: string; readonly atLeast?: readonly Revision[] }
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
-  | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number }
+  | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number; readonly atLeast?: readonly Revision[] }
   | { readonly kind: "follow"; readonly path: string; readonly from: bigint }
   | { readonly kind: "children_page"; readonly tailStream?: string; readonly parent?: string; readonly after?: string; readonly hierarchyVersion?: Uint8Array; readonly limit: number };
 
@@ -130,7 +130,7 @@ export function wireRequest(request: WireRequest): Uint8Array {
         return toBinary(HeadRequestSchema, create(HeadRequestSchema, { path: request.path }));
       case "tail":
         requirePathType(request.path);
-        return toBinary(TailRequestSchema, create(TailRequestSchema, { path: request.path }));
+        return toBinary(TailRequestSchema, create(TailRequestSchema, { path: request.path, atLeast: [...(request.atLeast ?? [])] }));
       case "fork":
         requirePathType(request.source);
         requirePathType(request.destination);
@@ -145,7 +145,7 @@ export function wireRequest(request: WireRequest): Uint8Array {
         requirePathType(request.path);
         requireSequenceType(request.from);
         requireLimitType(request.limit);
-        return toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: request.path, from: request.from, limit: request.limit }));
+        return toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: request.path, from: request.from, limit: request.limit, atLeast: [...(request.atLeast ?? [])] }));
       case "follow":
         requirePathType(request.path);
         requireSequenceType(request.from);
