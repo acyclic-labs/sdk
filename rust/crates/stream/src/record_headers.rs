@@ -12,8 +12,6 @@ pub(crate) use prepared::{PreparedHeaderControls, PreparedHeaders};
 
 /// Maximum indexed keys in one record.
 pub const MAX_RECORD_KEYS: usize = 64;
-/// Maximum bytes in one indexed key.
-pub const MAX_RECORD_KEY_BYTES: usize = 1024;
 /// Maximum single-valued attributes in one record.
 pub const MAX_RECORD_ATTRIBUTES: usize = 16;
 
