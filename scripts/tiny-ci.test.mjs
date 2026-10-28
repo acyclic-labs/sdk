@@ -167,7 +167,7 @@ test('heavy workflows are reachable only through the release caller',()=>{
   assert.doesNotMatch(triggers(read(name)),/workflow_dispatch:/,name);
  }
  const policy=fs.readFileSync('scripts/qualify-ci.sh','utf8').match(/  policy\)([\s\S]*?)    ;;/)?.[1]??assert.fail('missing policy lane');
- assert.match(policy,/^    node scripts\/static-ci\.mjs$/m);
+ assert.match(policy,/^    node --experimental-vm-modules scripts\/static-ci\.mjs$/m);
 });
 
 test('all artifact uploads expire after three days, or thirty for release runs; coverage expires after one',()=>{
