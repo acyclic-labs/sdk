@@ -4,7 +4,7 @@ use super::NativeMountError;
 use super::packet_buffers::PacketBuffers;
 use super::packet_session::PacketSession;
 use super::vring_control::{QueueKick, VringControl};
-use super::vring_packet::{QueueProgress, serve_vring_packet};
+use super::vring_packet::{QueueProgress, VringScratch, serve_vring_packet};
 use acyclic_native_runtime::ProcessWake;
 use std::io;
 use std::os::fd::{AsRawFd, BorrowedFd};
@@ -61,6 +61,7 @@ fn batch(
             Err(error) => return Err(error.into()),
         }
         let memory = memory.as_ref().ok_or(libc::EPROTO)?;
+        let mut scratch = VringScratch::new(memory, &control.work)?;
         queue
             .queue
             .disable_notification(memory.memory().as_ref())
@@ -74,7 +75,7 @@ fn batch(
             match serve_vring_packet(
                 session,
                 &mut queue,
-                memory,
+                &mut scratch,
                 buffers,
                 &control.work,
                 index == 0,
