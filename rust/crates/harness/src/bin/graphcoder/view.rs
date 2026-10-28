@@ -4,7 +4,7 @@ use acyclic_harness::local::{Event, agent_conversation::Conversation};
 use acyclic_harness::{
     agent::{IntentId, Phase},
     tui::{
-        Action, AppAction, Editor, InputEffect, PromptInput, Screen, TranscriptRows, Viewport,
+        Action, AppAction, InputEffect, PromptInput, Screen, TranscriptRows, Viewport,
         key_event::InputEvent,
         ratatui::{
             layout::{Position, Rect, Size},
@@ -19,8 +19,6 @@ use std::{sync::Arc, time::Instant};
 
 type Failure = Box<dyn std::error::Error>;
 
-/// Settled turns shown when a conversation reopens.
-const HISTORY: u64 = 64;
 /// Rows of the newest tool call's output shown while the agent works.
 const OUTPUT_ROWS: usize = 8;
 
@@ -34,7 +32,6 @@ struct View {
     failure: Option<String>,
     /// Rows scrolled back from the live tail.
     back: usize,
-    width: u16,
     pending_dirty: bool,
     search: Option<(String, usize)>,
 }
@@ -61,9 +58,9 @@ impl View {
                     .position(|(pending, _)| *pending == entry.inbox)
                     .map(|at| self.pending.remove(at).1);
                 if let Some(text) = sent.or(prompt) {
-                    self.transcript.push(true, &text);
+                    self.transcript.push(true, &text)?;
                 }
-                self.transcript.push(false, &answer);
+                self.transcript.push(false, &answer)?;
                 self.pending_dirty = true;
             }
             Event::Failed(error) => self.failure = Some(error),
@@ -81,16 +78,15 @@ impl View {
         Ok(())
     }
 
-    /// Append and transient-prompt changes leave settled rows wrapped once.
-    fn rows(&mut self, width: u16) -> &[Line<'static>] {
-        if self.pending_dirty || self.width != width {
-            self.width = width;
-            self.transcript.rows(width);
+    /// Update the shared row index only when source or terminal width changes.
+    fn prepare(&mut self, width: u16) -> Result<(), Failure> {
+        self.transcript.set_width(width)?;
+        if self.pending_dirty {
             self.transcript
-                .pending(self.pending.iter().map(|(_, text)| text.as_str()));
+                .pending(self.pending.iter().map(|(_, text)| text.as_str()))?;
             self.pending_dirty = false;
         }
-        self.transcript.rows(width)
+        Ok(())
     }
 
     fn status(&self) -> String {
@@ -105,9 +101,6 @@ impl View {
                 self.failure.as_deref().unwrap_or_default()
             ),
             _ if self.busy() => "working · Esc or Ctrl+C interrupts".into(),
-            _ if self.transcript.truncated() => {
-                "earlier transcript omitted · Ctrl+F finds prompt text".into()
-            }
             _ => "Enter sends · Ctrl+F finds prompt text · Ctrl+D quits".into(),
         }
     }
@@ -145,10 +138,9 @@ pub async fn run(conversation: Arc<Conversation>, inline: bool) -> Result<u8, Fa
     let (tty, output) = tty.split();
     let mut terminal = FrameTerminal::new(output, size()?)?;
     let mut keys = terminal_events(tty);
-    let from = conversation.settled().await?.saturating_sub(HISTORY);
     // Its settled turns, its phase and, while it works, the newest tool
     // call's output.
-    let mut events = conversation.observe(from).await?;
+    let mut events = conversation.observe(0).await?;
     let mut view = View::default();
     let mut output_rows = Vec::new();
     let mut input = PromptInput::default();
@@ -160,22 +152,30 @@ pub async fn run(conversation: Arc<Conversation>, inline: bool) -> Result<u8, Fa
         let busy = view.busy();
         input.busy = busy;
         let back = view.back;
+        view.prepare(size.width.saturating_sub(1))?;
         let (areas, page) = {
             let status = Line::raw(view.status());
-            let screen = Screen {
+            let mut screen = Screen {
                 header: Line::styled("graphcoder", Style::default().add_modifier(Modifier::DIM)),
-                transcript: view.rows(size.width.saturating_sub(1)),
                 terminal: if busy { &output_rows[..] } else { &[] },
                 status,
                 ..Screen::default()
             };
             let area = Rect::from((Position::ORIGIN, size));
-            let scroll = screen.tail_scroll(area, &input).saturating_sub(back);
             let mut areas = screen.areas(area, &input);
+            let page = usize::from(areas.transcript.height).max(1);
+            let total = view.transcript.len();
+            let scroll = total
+                .saturating_add(usize::from(busy))
+                .saturating_sub(page)
+                .saturating_sub(back);
+            let end = scroll.saturating_add(page).min(total);
+            screen.hidden_tail = end < total;
+            screen.transcript = view.transcript.window(scroll..end)?;
             terminal.draw(size, |frame| {
-                areas = screen.render(frame, &input, &mut viewport, scroll, now);
+                areas = screen.render(frame, &input, &mut viewport, 0, now);
             })?;
-            (areas, usize::from(areas.transcript.height).max(1))
+            (areas, page)
         };
         tokio::select! {
             event = events.next() => {
@@ -203,13 +203,6 @@ pub async fn run(conversation: Arc<Conversation>, inline: bool) -> Result<u8, Fa
                                     conversation.decide(&id, approved).await?;
                                     continue;
                                 }
-                                if view.pending.len() >= HISTORY as usize
-                                    || text.len().saturating_add(view.pending.iter().map(|(_, text)| text.len()).sum::<usize>()) > 1024 * 1024
-                                {
-                                    view.failure = Some("pending prompt display is full; wait for a turn to settle".into());
-                                    input.editor = Editor::new(&text);
-                                    continue;
-                                }
                                 let id = acyclic_harness::OperationId::new().to_string();
                                 let inbox = conversation.send(&id, &text).await?;
                                 view.pending.push((inbox, text));
@@ -229,9 +222,11 @@ pub async fn run(conversation: Arc<Conversation>, inline: bool) -> Result<u8, Fa
                                 let before = view.search.as_ref()
                                     .filter(|(previous, _)| previous == query)
                                     .map_or(view.transcript.len(), |(_, row)| *row);
-                                if let Some(row) = view.transcript.find(query, before)
-                                    .or_else(|| view.transcript.find(query, view.transcript.len()))
-                                {
+                                let found = match view.transcript.find(query, before)? {
+                                    Some(row) => Some(row),
+                                    None => view.transcript.find(query, view.transcript.len())?,
+                                };
+                                if let Some(row) = found {
                                     view.back = view.transcript.len().saturating_sub(row + page);
                                     view.search = Some((query.to_owned(), row));
                                 }
