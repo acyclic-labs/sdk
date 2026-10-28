@@ -12,7 +12,7 @@ use tonic::metadata::{Ascii, MetadataValue};
 #[derive(Clone)]
 pub struct BearerAuth(Option<MetadataValue<Ascii>>);
 impl BearerAuth {
-    /// Validates a bounded bearer credential and marks its metadata sensitive.
+    /// Validates a bearer credential and marks its metadata sensitive.
     pub fn new(token: &str) -> Result<Self, Error> {
         let invalid = || Error::Configuration("invalid bearer credential".to_owned());
         if !crate::valid_token(token) {
