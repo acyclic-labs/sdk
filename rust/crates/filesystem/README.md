@@ -110,6 +110,12 @@ original-work native head dispatch. Multiple
 observations are optimistic facts, not a coherent G05 snapshot. Legacy `seal`
 retains its policy bridge until callers migrate.
 
+The live Streams operation-window adapter reads its state and exact record
+identity through `head`, and carries that `Head` fence into the state/lease CAS.
+Missing state uses `Absent`; empty, corrupt, foreign-workspace or mismatched
+revision records refuse. The replacement is encoded once for both its retry
+identity and record. This adapter's caller-context migration remains G49 work.
+
 Generation facts retain two bounded windows. Once a window is forgotten, a
 missing fact is Unknown and uses the existing durable lookup; it cannot establish
 absence. The shared actor registry keeps exact weak registrations for live
@@ -155,6 +161,7 @@ artifact location. Keep cold, reopened-warm and newly-created-warm paths separat
 | Mounted routing/checkpoints, 1–100k mounts and caller in-flight credit 1/8/64 | Component lookup probes, started checkpoints, retained futures/results, RSS and completion latency | Nested/Unicode/partial-component paths and same-volume distinct mounts retain routing/EXDEV; one failure stops scheduling and drains started work without publishing or consuming edits |
 | Full subtree fork across file count/history/depth | Root PUTs, activation/fork commits, lineage writes and retained paths | Source advances; lost reply; child cannot read unrelated roots. Filtered fork tree work is counted separately |
 | Tool lifecycle and long tools with renewals | Baseline 10 control calls plus 5 per renewal, retained paths, alarms/probes and physical starts | Exact expiry/superseded actor state despite delayed alarm; queued stale write; crash during final reconcile |
+| Operation-window reads on absent/active/renewed state | Counted provider head/data calls and transport bytes against the former tail+read path | Empty/corrupt/foreign/revision-mismatched state refuses; a stale CAS cannot replace a renewed lease |
 | Lost reply/expired idempotency lookup | Original outcome identity, data/control recovery calls, duplicate effects | Permanent record is authoritative; missing/retention-lost history stays error/Unknown, never replay permission |
 
 New unit cases cover stale-root/policy atomicity, cross-provider refusal,

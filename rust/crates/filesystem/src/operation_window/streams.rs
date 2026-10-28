@@ -1,7 +1,9 @@
 //! Atomic window and exact-expiry gate transactions on Streams.
 use super::*;
 use acyclic_stream::StreamProviderExt as _;
-use futures::StreamExt as _;
+
+#[cfg(test)]
+mod tests;
 
 /// Operation-window state stored beside generation authority in one Stream
 /// provider. Each lease owns an immutable gate stream: opening creates tail 1,
@@ -45,6 +47,54 @@ pub enum StreamOperationWindowStoreError {
 }
 
 #[cfg(any(test, feature = "distributed"))]
+impl<P: acyclic_stream::StreamProvider + ?Sized> StreamOperationWindowStore<P> {
+    // The decoded state and its publication fence come from one atomic head.
+    // An empty or corrupt stream must never stand in for authoritative absence.
+    async fn observe(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> Result<
+        (
+            Option<OperationWindowSnapshot>,
+            acyclic_stream::CommitCondition,
+        ),
+        StreamOperationWindowStoreError,
+    > {
+        let path = stream_window_path(workspace_id)?;
+        let head = match self.provider.head(path.clone()).await {
+            Ok(head) => head,
+            Err(acyclic_stream::StreamError::NotFound) => {
+                return Ok((None, acyclic_stream::CommitCondition::Absent { path }));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let record = head.last.ok_or_else(|| {
+            StreamOperationWindowStoreError::Corrupt("window stream is empty".to_owned())
+        })?;
+        if record.sequence.checked_add(1) != Some(head.tail) || head.durable > head.tail {
+            return Err(StreamOperationWindowStoreError::Corrupt(
+                "window head does not match its record".to_owned(),
+            ));
+        }
+        let snapshot: OperationWindowSnapshot = serde_json::from_slice(&record.value)
+            .map_err(|error| StreamOperationWindowStoreError::Corrupt(error.to_string()))?;
+        if snapshot.revision != head.tail || !snapshot.is_valid_for(workspace_id) {
+            return Err(StreamOperationWindowStoreError::Corrupt(
+                "window revision does not match its stream tail".to_owned(),
+            ));
+        }
+        Ok((
+            Some(snapshot),
+            acyclic_stream::CommitCondition::Head {
+                path,
+                expected: head.tail,
+                commit_id: record.commit_id,
+            },
+        ))
+    }
+}
+
+#[cfg(any(test, feature = "distributed"))]
 impl<P: acyclic_stream::StreamProvider + ?Sized> OperationWindowStore
     for StreamOperationWindowStore<P>
 {
@@ -54,38 +104,9 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> OperationWindowStore
         &self,
         workspace_id: WorkspaceId,
     ) -> Result<Option<OperationWindowSnapshot>, Self::Error> {
-        let path = stream_window_path(workspace_id)?;
-        let tail = match self.provider.tail(path.clone()).await {
-            Ok(tail) => tail,
-            Err(acyclic_stream::StreamError::NotFound) => return Ok(None),
-            Err(error) => return Err(error.into()),
-        };
-        if tail == 0 {
-            return Err(StreamOperationWindowStoreError::Corrupt(
-                "window stream is empty".to_owned(),
-            ));
-        }
-        let mut records = self
-            .provider
-            .read(acyclic_stream::ReadRequest {
-                key: None,
-                path,
-                from: tail - 1,
-                limit: 1,
-                at_least: Default::default(),
-            })
-            .await?;
-        let record = records.next().await.transpose()?.ok_or_else(|| {
-            StreamOperationWindowStoreError::Corrupt("window stream tail has no record".to_owned())
-        })?;
-        let snapshot: OperationWindowSnapshot = serde_json::from_slice(&record.value)
-            .map_err(|error| StreamOperationWindowStoreError::Corrupt(error.to_string()))?;
-        if snapshot.revision != tail || !snapshot.is_valid_for(workspace_id) {
-            return Err(StreamOperationWindowStoreError::Corrupt(
-                "window revision does not match its stream tail".to_owned(),
-            ));
-        }
-        Ok(Some(snapshot))
+        self.observe(workspace_id)
+            .await
+            .map(|(snapshot, _)| snapshot)
     }
 
     async fn compare_and_swap(
@@ -101,7 +122,7 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> OperationWindowStore
                 "replacement identity or revision is invalid".to_owned(),
             ));
         }
-        let current = self.load(workspace_id).await?;
+        let (current, condition) = self.observe(workspace_id).await?;
         if current.as_ref().map_or(0, |snapshot| snapshot.revision) != expected_revision {
             return Ok(false);
         }
@@ -110,18 +131,15 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> OperationWindowStore
             .map_or_else(BTreeMap::new, |snapshot| phase_leases(&snapshot.phase));
         let after = phase_leases(&replacement.phase);
         let state_path = stream_window_path(workspace_id)?;
-        let mut conditions = vec![if expected_revision == 0 {
-            acyclic_stream::CommitCondition::Absent {
-                path: state_path.clone(),
-            }
-        } else {
-            acyclic_stream::CommitCondition::Tail {
-                path: state_path.clone(),
-                expected: expected_revision,
-            }
-        }];
+        let mut conditions = vec![condition];
         let encoded = serde_json::to_vec(&replacement)
             .map_err(|error| StreamOperationWindowStoreError::Corrupt(error.to_string()))?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"acyclic-operation-window-cas-v1\0");
+        hasher.update(&workspace_id.into_bytes());
+        hasher.update(&expected_revision.to_le_bytes());
+        hasher.update(&encoded);
+        let key = acyclic_stream::IdempotencyKey::new(hasher.finalize().as_bytes().to_vec())?;
         let mut mutations = vec![acyclic_stream::CommitMutation::Append {
             path: state_path,
             records: vec![encoded.into()],
@@ -163,15 +181,6 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> OperationWindowStore
                 records: vec![acyclic_stream::OwnedBytes::from_static(b"fenced").into()],
             });
         }
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"acyclic-operation-window-cas-v1\0");
-        hasher.update(&workspace_id.into_bytes());
-        hasher.update(&expected_revision.to_le_bytes());
-        hasher.update(
-            &serde_json::to_vec(&replacement)
-                .map_err(|error| StreamOperationWindowStoreError::Corrupt(error.to_string()))?,
-        );
-        let key = acyclic_stream::IdempotencyKey::new(hasher.finalize().as_bytes().to_vec())?;
         match self
             .provider
             .commit(acyclic_stream::CommitRequest {
