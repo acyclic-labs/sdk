@@ -103,6 +103,6 @@ test("Objects v1 HTTP bounds a call by the caller's deadline alone", async () =>
   await assert.rejects(new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs: 20, fetch: hanging }).usage(), fail(wire.ErrorCode.DEADLINE_ELAPSED));
   // Negative control: a reply inside a long caller deadline is served.
   const late = async () => { await new Promise(resolve => setTimeout(resolve, 50)); return replying(json("UsageResponse", wire.UsageResponseSchema, { blobs: 2n }))(); };
-  assert.equal((await new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs: 0x7fff_ffff, fetch: late }).usage()).blobs, 2n);
-  for (const timeoutMs of [0, 0x8000_0000, 1.5]) assert.throws(() => new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs }), RangeError);
+  assert.equal((await new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs: 0x8000_0000, fetch: late }).usage()).blobs, 2n);
+  for (const timeoutMs of [0, -1, Infinity, 1.5]) assert.throws(() => new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs }), RangeError);
 });
