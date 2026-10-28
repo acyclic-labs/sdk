@@ -175,21 +175,21 @@ impl WasmMcpHttpInitialization {
 
 #[wasm_bindgen]
 impl WasmMcpHttpTransport {
-    /// Binds finite platform I/O and an optional host-provided session without effects.
+    /// Binds caller-selected platform I/O policies and an optional host-provided session.
     #[wasm_bindgen(constructor)]
     pub fn new(
         #[wasm_bindgen(unchecked_param_type = "McpBrowserHttpProvider")] provider: Function,
         endpoint: String,
         session: Option<String>,
         #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_bytes: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "number")] timeout_ms: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | undefined")] timeout_ms: JsValue,
     ) -> std::result::Result<Self, JsValue> {
         HttpMcpTransport::new(
             Arc::new(BrowserProvider(provider)),
             endpoint,
             session,
             from_js::<Option<u32>>(maximum_bytes)?,
-            from_js(timeout_ms)?,
+            from_js::<Option<u64>>(timeout_ms)?,
             None,
         )
         .map(Self)
