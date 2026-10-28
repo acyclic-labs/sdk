@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Run selected suites from Cargo's exact test artifact without rebuilding."""
 import json
+import hashlib
 import subprocess
 import sys
 
@@ -48,13 +49,24 @@ except (OSError, subprocess.CalledProcessError) as error:
 tests = [line.removesuffix(": test") for line in listed.splitlines()
          if line.endswith(": test")]
 whole_suite = "--suite" in sys.argv[1:]
-prefixes = [argument for argument in sys.argv[1:] if argument != "--suite"]
+inventory_only = "--inventory" in sys.argv[1:]
+prefixes = [argument for argument in sys.argv[1:]
+            if argument not in ("--suite", "--inventory")]
 if not prefixes:
     fail("artifact-selector", "qualification requires explicit test filters")
 for prefix in prefixes:
     if not any(name.startswith(prefix) for name in tests):
         fail("artifact-selector", f"no tests matched qualification filter {prefix}")
 selected = [name for name in tests if name.startswith(tuple(prefixes))]
+if inventory_only:
+    names = sorted(tests)
+    print(json.dumps({"executable": executable, "discovered": names,
+                      "selected": sorted(selected),
+                      "filters": {prefix: sum(name.startswith(prefix) for name in tests)
+                                  for prefix in prefixes},
+                      "case_ids_sha256": hashlib.sha256(
+                          "\n".join(names).encode()).hexdigest()}))
+    sys.exit(0)
 print(f"Test executable: {executable}", flush=True)
 groups = [selected] if whole_suite else [[name] for name in selected]
 for names in groups:
