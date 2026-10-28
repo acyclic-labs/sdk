@@ -8,7 +8,14 @@ impl ObjectContentStore {
     ) -> Result<Digest> {
         let length = body.len() as u64;
         let digest = Digest::of(&body);
-        match self.objects.put(body, references).await.map_err(storage)? {
+        let put = self.objects.put(body, references).await.map_err(|error| {
+            if error.code == acyclic_objects::wire::ErrorCode::Conflict {
+                Error::Conflict("upload identity belongs to different content".into())
+            } else {
+                storage(error)
+            }
+        })?;
+        match put {
             acyclic_objects::Put::Created { verified }
             | acyclic_objects::Put::AlreadyExists { verified }
                 if verified.digest == digest && verified.length == length =>
@@ -40,7 +47,7 @@ impl ContentPublisher for ObjectContentStore {
 
     fn stage<'a>(
         &'a self,
-        _operation_id: OperationId,
+        operation_id: OperationId,
         path: &'a str,
         bytes: &'a [u8],
         media_type: &'a str,
@@ -68,7 +75,6 @@ impl ContentPublisher for ObjectContentStore {
             }
             let descriptor = FileDescriptor::from_bytes(bytes, media_type, &mut None)?;
             validate_content_path(path, &mut None)?;
-            // Staging is idempotent by content, so no per-operation intent is kept.
             let content = self
                 .publish(
                     acyclic_stream::OwnedBytes::copy_from_slice(bytes),
@@ -83,13 +89,22 @@ impl ContentPublisher for ObjectContentStore {
                 display_name.to_owned(),
                 &mut None,
             )?;
-            // The record binds the descriptor and name to the content; retaining
-            // it keeps both through collection.
+            // The record binds the descriptor and name to the content. The
+            // intent's bytes name only the operation and its one reference is
+            // the record, so a retry naming other content conflicts; retaining
+            // it keeps all three through collection.
             let record = self
                 .publish(self.record(&reference)?.into(), vec![content])
                 .await?;
+            let intent = format!(
+                "harness-upload-intent-v1:{}:{operation_id}",
+                self.volume.storage_name(&mut None)?
+            );
+            let intent = self
+                .publish(intent.into_bytes().into(), vec![record])
+                .await?;
             self.objects
-                .retain(&self.root()?, vec![record])
+                .retain(&self.root()?, vec![intent])
                 .await
                 .map_err(storage)?;
             Ok((reference, None))

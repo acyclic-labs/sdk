@@ -6,6 +6,68 @@ use crate::{
     resources::ProviderRef,
 };
 use acyclic_objects::MemoryObjects;
+
+#[tokio::test]
+async fn an_upload_retry_naming_other_content_is_refused() -> Result<()> {
+    let objects = Arc::new(MemoryObjects::memory());
+    let owner = AgentId::from_bytes([7; 16]);
+    let volume = VolumeRef::new(
+        ProviderRef::new("local".into(), "objects".into(), "1".into(), &mut None)?,
+        "harness-content".into(),
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(owner),
+        &mut None,
+    )?;
+    let issuer = AuthorityRoot::new(
+        "objects-test",
+        [9; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "objects-test".into(),
+        },
+    );
+    let owner_scope = issuer.bootstrap_scope(
+        "owner",
+        &Capabilities::new([
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        Some(owner),
+        &mut None,
+    )?;
+    let owner_store = ObjectContentStore::new(
+        objects,
+        volume.provider().clone(),
+        volume.clone(),
+        (
+            issuer.verifier(&mut None).expect("verifier copy"),
+            owner_scope.clone(),
+        ),
+        owner_scope,
+        4_096,
+    )?;
+    let stage = |operation: u8, path: &'static str, bytes: &'static [u8]| {
+        owner_store.stage(
+            OperationId::from_bytes([operation; 16]),
+            path,
+            bytes,
+            "text/plain",
+            "one.txt",
+            crate::conversation::ContentAccess::default(),
+        )
+    };
+    let file = stage(10, "notes/one.txt", b"owner bytes")?.await?.0;
+    assert_eq!(stage(10, "notes/one.txt", b"owner bytes")?.await?.0, file);
+    for (path, bytes) in [
+        ("notes/one.txt", &b"other bytes"[..]),
+        ("notes/two.txt", b"owner bytes"),
+    ] {
+        let conflicting = stage(10, path, bytes)?.await;
+        assert!(matches!(conflicting, Err(Error::Conflict(_))));
+    }
+    assert_eq!(stage(42, "notes/one.txt", b"owner bytes")?.await?.0, file);
+    Ok(())
+}
 #[tokio::test]
 async fn lazy_mount_routes_registered_volumes_and_requires_exact_grant() -> Result<()> {
     let objects = Arc::new(MemoryObjects::memory());

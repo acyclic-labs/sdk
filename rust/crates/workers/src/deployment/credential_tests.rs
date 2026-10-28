@@ -41,3 +41,26 @@ fn credential_failure_covers_publication_and_every_lifecycle_operation() {
             })
         }).unwrap();
 }
+
+#[tokio::test]
+async fn published_code_survives_collection_until_unpublished() {
+    let actors = http::Client::with_credential_provider(
+        "https://actors.invalid",
+        CredentialProvider::new(|| std::future::ready(Ok(String::new()))),
+        1024,
+    )
+    .unwrap();
+    let client = Client::new(actors, acyclic_objects::MemoryObjects::memory());
+    let code = bytes::Bytes::from_static(b"module");
+    let digest = client.publish(code.clone()).await.unwrap();
+    let blob = acyclic_objects::Digest::of(&code);
+    for _ in 0..2 {
+        client.objects.collect().await.unwrap();
+    }
+    assert_eq!(client.objects.head(blob).await.unwrap().length, 6);
+    assert!(client.unpublish(&digest).await.unwrap());
+    for _ in 0..2 {
+        client.objects.collect().await.unwrap();
+    }
+    assert!(client.objects.head(blob).await.is_err());
+}

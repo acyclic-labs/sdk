@@ -47,13 +47,21 @@ impl Client<acyclic_objects::http::HttpObjects> {
 #[cfg(test)]
 mod credential_tests;
 
+/// The root retaining one published module.
+fn code_root(digest: &[u8; 32]) -> Result<acyclic_objects::RootId, Error> {
+    Ok(acyclic_objects::RootId::new(
+        format!("worker-code:sha256:{}", hex::encode(digest)).into_bytes(),
+    )?)
+}
+
 impl<P: Blobs> Client<P> {
     /// Compose clients over the account's Objects and Actors services.
     pub fn new(actors: http::Client, objects: P) -> Self {
         Self { actors, objects }
     }
 
-    /// Publish exact module bytes as an account blob and return the SHA-256
+    /// Publish exact module bytes as an account blob, retained under the
+    /// code's own root until [`Client::unpublish`], and return the SHA-256
     /// that deployments name.
     ///
     /// Publication is idempotent by content.
@@ -63,19 +71,31 @@ impl<P: Blobs> Client<P> {
     /// store could not confirm it; repeating the call is safe.
     pub async fn publish(&self, code: bytes::Bytes) -> Result<[u8; 32], Error> {
         let digest: [u8; 32] = Sha256::digest(&code).into();
-        if self
+        let Some(blob) = self
             .objects
             .put(code.into(), Vec::new())
             .await?
             .verified()
-            .is_none()
-        {
+            .map(|verified| verified.digest)
+        else {
             return Err(acyclic_objects::Error::from(
                 acyclic_objects::wire::ErrorCode::OutcomeUnknown,
             )
             .into());
-        }
+        };
+        self.objects
+            .retain(&code_root(&digest)?, vec![blob])
+            .await?;
         Ok(digest)
+    }
+
+    /// Release published module bytes once no deployment names them; a
+    /// later collection then reclaims them.
+    ///
+    /// # Errors
+    /// Returns the Objects release failure.
+    pub async fn unpublish(&self, digest: &[u8; 32]) -> Result<bool, Error> {
+        Ok(self.objects.release(&code_root(digest)?).await?)
     }
 
     /// Deploy a named module exporting default.fetch without an actor export.
