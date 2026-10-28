@@ -223,7 +223,7 @@ pub(super) fn resolve(case: &ProviderCase, transport: Arc<Recorded>) -> Result<R
                 response_field: TokenCountField::InputTokens,
                 framing_tokens: 0,
             }),
-            max_event_bytes: 4096,
+            max_event_bytes: Some(4096),
             retry: acyclic_harness_providers::RetrySpec::DEFAULT,
             timeouts: acyclic_harness_providers::TimeoutSpec::DEFAULT,
         },
