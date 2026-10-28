@@ -1307,3 +1307,10 @@ Check165 passed native whole-workspace all-target compilation on signed2e1ce69f5
 The branch is rebased onto main#1747 bf7956ffcc. The overlapping Objects gRPC conflict preserves its canonical RevisionTracker, request floors, reply revisions and stale/foreign refusal controls while removing default deadlines. No read-your-writes mechanism or source credit is counted twice.
 
 Physical source quiescence now retires accepted native work, allocation and owner fields before decrementing the producer count or waking the joiner, outside the gate lock. A deterministic real original-meter control holds the accepted owner's destructor and verifies the source cannot publish completion early. Existing finite caller refusal/poll-bank and last-alias physical join controls remain unchanged. The10ms caller-poll mechanism is still pending a funded event replacement; this custody repair does not claim to remove it. Qualification pending.
+
+
+| Constant / limit | File:line | Category | Action |
+|---|---|---|---|
+| Browser session ingress1024 and WebSocket aggregate buffered1MiB | `typescript/packages/stream/src/session-websocket.ts:24,56`; `src/session-queue.ts:13` | 1 deleted; explicit3 retained | Browser ingress selects no count policy and grows the shared FIFO geometrically at amortized O(1) per item; it keeps no consumed references. Explicit send-credit windows still delay writers and preserve cancellation/FIFO ownership. Delete the aggregate bufferedAmount refusal; per-frame validation remains pending shared logical-value streaming. Added burst/wrapped-growth/discard control; all original finite queue cancellation/order/work models remain. Qualification pending. |
+
+The post-1747 Objects raw schema digest is bound to its actual current bytes (sha256:cfd0c3b0956033cae13f9e8db39ddb3b691a2a8d3a8756ea6fec57033130ce3e). Canonical descriptor regeneration for this merged schema and the new SessionHello is still pending bb2; no descriptor digest is fabricated.
