@@ -78,11 +78,23 @@ where
         path: &str,
         maximum_bytes: u64,
     ) -> Result<Option<Vec<u8>>> {
-        let read = self
-            .head()
-            .await?
+        Self::read_at(
+            &self.head().await?,
+            &format!("/{}", internal(path)),
+            maximum_bytes,
+        )
+        .await
+    }
+
+    /// The bytes of volume file `path` in `head`, if it exists.
+    async fn read_at(
+        head: &acyclic_fs::Generation<A, O>,
+        path: &str,
+        maximum_bytes: u64,
+    ) -> Result<Option<Vec<u8>>> {
+        let read = head
             .read(
-                &format!("/{}", internal(path)),
+                path,
                 maximum_bytes,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
@@ -142,15 +154,19 @@ where
     /// The names of the files in internal directory `path`, in name order;
     /// empty when the directory does not exist.
     pub(in crate::filesystem) async fn list(&self, path: &str) -> Result<Vec<String>> {
-        let head = self.head().await?;
-        let directory = format!("/{}", internal(path));
+        Self::list_at(&self.head().await?, &format!("/{}", internal(path))).await
+    }
+
+    /// The names of the entries of volume directory `directory` in `head`,
+    /// in name order; empty when the directory does not exist.
+    async fn list_at(head: &acyclic_fs::Generation<A, O>, directory: &str) -> Result<Vec<String>> {
         let cancellation = CancellationToken::new();
         let mut names = Vec::new();
         let mut after = None;
         loop {
             let page = match head
                 .list_directory(
-                    &directory,
+                    directory,
                     after.as_ref(),
                     PAGE,
                     WorkBudget::UNBOUNDED,
@@ -213,6 +229,34 @@ where
                     None,
                 )
                 .await
+        })
+    }
+
+    fn partial(&self, turn: OperationId) -> BoxProviderFuture<'_, Result<String>> {
+        Box::pin(async move {
+            // The live reply of the turn's newest model dispatch: dispatch
+            // directories are time-ordered names, reply chunks zero-padded
+            // sequence names, so name order is staging order.
+            let head = self.head().await?;
+            let turn = format!("/{}/{turn}", super::TOOL_OUTPUT);
+            for dispatch in Self::list_at(&head, &turn).await?.iter().rev() {
+                let reply = format!("{turn}/{dispatch}/reply");
+                let chunks = Self::list_at(&head, &reply).await?;
+                if chunks.is_empty() {
+                    continue;
+                }
+                let mut text = Vec::new();
+                for chunk in chunks {
+                    if let Some(bytes) =
+                        Self::read_at(&head, &format!("{reply}/{chunk}"), u64::MAX).await?
+                    {
+                        text.extend_from_slice(&bytes);
+                    }
+                }
+                return String::from_utf8(text)
+                    .map_err(|_| crate::Error::Storage("live reply is not UTF-8".into()));
+            }
+            Ok(String::new())
         })
     }
 }

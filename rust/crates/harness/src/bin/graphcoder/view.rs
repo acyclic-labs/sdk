@@ -1,9 +1,12 @@
 //! The interactive terminal: one conversation's settled turns, its pending
 //! prompts, its streaming answer and its phase, over the shared prompt
 //! editor and screen widgets.
-use acyclic_harness::local::{Event, agent_conversation::Conversation};
+use acyclic_harness::local::{
+    Event,
+    agent_conversation::{Conversation, checkpoint},
+};
 use acyclic_harness::{
-    agent::{AgentOutcome, IntentId, Phase},
+    agent::{AgentOutcome, ContextAction, IntentId, Phase, TurnOutcome},
     client::commands::{
         CommandCatalog, CommandQuery, CommandRequest, CommandResolution, DEFAULT_COMMANDS_JSON,
     },
@@ -29,6 +32,8 @@ const HISTORY: u64 = 64;
 const OUTPUT_ROWS: usize = 8;
 /// What an interrupted turn shows in its place.
 const CANCELLED: &str = "interaction cancelled";
+const COMPACTED: &str = "Compacted conversation";
+const REWOUND: &str = "Rewound to selected checkpoint";
 
 /// How the session ended, as the process exit code: the last turn
 /// succeeded, failed, or was cancelled.
@@ -55,6 +60,14 @@ struct View {
     transcript: TranscriptRows,
     /// Sent prompts not yet settled, by inbox sequence.
     pending: Vec<(u64, String)>,
+    /// Sent compactions, rewinds and clears not yet settled, by inbox
+    /// sequence.
+    checkpoints: Vec<u64>,
+    /// Inbox sequences below this were shown by a cancel's stop: their
+    /// cancelled entries are not shown again.
+    cancel_shown: u64,
+    /// A cancelled entry already marked its turn's stop.
+    cancel_marked: bool,
     /// The running turn's answer while it streams.
     reply: String,
     phase: Option<Phase>,
@@ -84,7 +97,9 @@ struct View {
 
 impl View {
     fn busy(&self) -> bool {
-        !self.pending.is_empty() || matches!(self.phase, Some(Phase::Running))
+        !self.pending.is_empty()
+            || !self.checkpoints.is_empty()
+            || matches!(self.phase, Some(Phase::Running))
     }
 
     fn approval(&self) -> Option<&IntentId> {
@@ -97,20 +112,48 @@ impl View {
     async fn apply(&mut self, conversation: &Conversation, event: Event) -> Result<(), Failure> {
         match event {
             Event::Turn(entry) => {
-                let (prompt, answer) = conversation.turn(&entry).await?;
+                self.pending_dirty = true;
+                self.checkpoints.retain(|inbox| *inbox != entry.inbox);
+                if let Some(action) = checkpoint(&entry) {
+                    match action {
+                        ContextAction::Compact { .. } => self.transcript.push(false, COMPACTED),
+                        ContextAction::Rewind => self.transcript.push(false, REWOUND),
+                        // A cleared conversation shows nothing before it.
+                        ContextAction::Clear => self.transcript = TranscriptRows::default(),
+                    }
+                    self.outcome = Outcome::Settled;
+                    self.ring = true;
+                    return Ok(());
+                }
+                // A cancelled checkpoint selects nothing and shows nothing.
+                if entry.input.context().is_some() {
+                    return Ok(());
+                }
+                let cancelled = entry.outcome == TurnOutcome::Cancelled;
                 let sent = self
                     .pending
                     .iter()
                     .position(|(pending, _)| *pending == entry.inbox)
                     .map(|at| self.pending.remove(at).1);
+                if cancelled && entry.inbox < self.cancel_shown {
+                    return Ok(());
+                }
+                let (prompt, answer) = conversation.turn(&entry).await?;
                 if let Some(text) = sent.or(prompt) {
                     self.transcript.push(true, &text);
                 }
-                self.transcript.push(false, &answer);
+                if !answer.is_empty() {
+                    self.transcript.push(false, &answer);
+                }
                 self.reply.clear();
-                self.outcome = Outcome::Settled;
+                if cancelled {
+                    self.transcript.push(false, CANCELLED);
+                    self.outcome = Outcome::Cancelled;
+                    self.cancel_marked = true;
+                } else {
+                    self.outcome = Outcome::Settled;
+                }
                 self.ring = true;
-                self.pending_dirty = true;
             }
             Event::Failed(error) => self.failure = Some(error),
             Event::Output => return Ok(()),
@@ -147,7 +190,10 @@ impl View {
                         for prompt in dropped {
                             self.transcript.push(true, &prompt);
                         }
-                        self.interrupted();
+                        self.cancel_shown = status.cursor;
+                        if !std::mem::take(&mut self.cancel_marked) {
+                            self.interrupted();
+                        }
                         // A cancelled approval fails its task; the next
                         // prompt clears the report.
                         if matches!(self.phase, Some(Phase::WaitingApproval { .. })) {
@@ -160,6 +206,33 @@ impl View {
                 self.phase = Some(status.phase);
             }
         }
+        Ok(())
+    }
+
+    /// Runs a submitted or confirmed command; a compaction, rewind or clear
+    /// shows when its checkpoint settles.
+    async fn request(
+        &mut self,
+        conversation: &Conversation,
+        request: CommandRequest,
+    ) -> Result<(), Failure> {
+        let id = acyclic_harness::OperationId::new().to_string();
+        let inbox = match &request {
+            CommandRequest::Compact { instructions } => {
+                let instructions = instructions.trim();
+                conversation
+                    .compact(&id, (!instructions.is_empty()).then_some(instructions))
+                    .await?
+            }
+            CommandRequest::Rewind => conversation.rewind(&id).await?,
+            CommandRequest::ClearAll => conversation.clear_all(&id).await?,
+            _ => {
+                self.notice = Some(format!("{request:?} is not available in this view"));
+                return Ok(());
+            }
+        };
+        self.checkpoints.push(inbox);
+        self.pending_dirty = true;
         Ok(())
     }
 
@@ -455,7 +528,7 @@ pub async fn run(
                                 }
                                 if let Some(request) = view.confirm.take() {
                                     if matches!(text.trim(), "y" | "Y" | "yes") {
-                                        view.notice = Some(format!("{request:?} is not available yet"));
+                                        view.request(&conversation, request).await?;
                                     }
                                     continue;
                                 }
@@ -475,6 +548,10 @@ pub async fn run(
                                     }
                                     Ok(Some(CommandResolution::Confirm { request })) => {
                                         view.confirm = Some(request);
+                                        continue;
+                                    }
+                                    Ok(Some(CommandResolution::Submit { request })) => {
+                                        view.request(&conversation, request).await?;
                                         continue;
                                     }
                                     Ok(Some(_)) => {
