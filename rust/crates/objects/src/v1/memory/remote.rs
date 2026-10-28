@@ -4,8 +4,6 @@ use super::*;
 use crate::body::{ImmutableBodies, RemoteBody};
 use futures::future::BoxFuture;
 
-pub(in crate::v1) use super::durable::RECORD_LIMIT as RECORD_BYTES;
-
 fn unavailable(_: impl std::fmt::Debug) -> Error {
     Unavailable.into()
 }
@@ -100,7 +98,7 @@ impl MemoryObjects {
     }
 
     /// Externalize newly written leaves and encode only retained state/receipts.
-    /// Pages use the same records, ordering, bounds and funded codec as local
+    /// Pages use the same records, ordering and funded codec as local
     /// checkpoints. Sequence is in the root so unchanged pages remain reusable.
     pub(in crate::v1) async fn snapshot(
         &self,
@@ -152,9 +150,6 @@ impl MemoryObjects {
                 pending = Pending::new(0, None);
             }
             pending.insert(record, custody).map_err(unavailable)?;
-            if pending.encoded_len() > RECORD_BYTES {
-                return Err(QuotaExceeded.into());
-            }
             Ok(())
         })?;
         if pending.has_changes() {
@@ -169,42 +164,52 @@ impl MemoryObjects {
         *self.lock_state()? = state;
         Ok((sequence, pages))
     }
+}
 
-    pub(in crate::v1) fn load_snapshot(
-        pages: Vec<Vec<u8>>,
+/// Incremental replay keeps one metadata page live alongside the candidate state.
+/// Only finish exposes the candidate, after every page and cursor is validated.
+pub(in crate::v1) struct SnapshotLoader {
+    core: MemoryObjects,
+    state: State,
+    sequence: u64,
+    cursor_key: [u8; 32],
+    source: Arc<dyn ImmutableBodies>,
+}
+
+impl SnapshotLoader {
+    pub(in crate::v1) fn new(
         sequence: u64,
         cursor_key: [u8; 32],
         source: Arc<dyn ImmutableBodies>,
     ) -> Result<Self, Error> {
-        let core = Self::new(MemoryOptions::default())?;
-        let mut state = State::default();
-        if core
-            .options
-            .maximum_entries
-            .is_some_and(|limit| pages.len() > limit)
-        {
+        Ok(Self {
+            core: MemoryObjects::new(MemoryOptions::default())?,
+            state: State::default(),
+            sequence,
+            cursor_key,
+            source,
+        })
+    }
+
+    pub(in crate::v1) fn page(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        let delta = Delta::decode(bytes).map_err(unavailable)?;
+        if delta.sequence != 0 || delta.ordinal != 0 || !delta.inline_data.is_empty() {
             return Err(Unavailable.into());
         }
-        for bytes in pages {
-            if bytes.len() > RECORD_BYTES {
-                return Err(Unavailable.into());
-            }
-            let delta = Delta::decode(bytes.as_slice()).map_err(unavailable)?;
-            if delta.sequence != 0 || delta.ordinal != 0 || !delta.inline_data.is_empty() {
-                return Err(Unavailable.into());
-            }
-            durable::apply(
-                &mut state,
-                delta,
-                &|records, length| restore(records, length, &source),
-                core.options,
-                core.options.maximum_bytes.map(|value| value as u64),
-            )
-            .map_err(unavailable)?;
-        }
-        state.sequence = sequence;
-        *core.lock_state()? = state;
-        core.replay_cursor_key(cursor_key)?;
-        Ok(core)
+        durable::apply(
+            &mut self.state,
+            delta,
+            &|records, length| restore(records, length, &self.source),
+            self.core.options,
+            self.core.options.maximum_bytes.map(|value| value as u64),
+        )
+        .map_err(unavailable)
+    }
+
+    pub(in crate::v1) fn finish(mut self) -> Result<MemoryObjects, Error> {
+        self.state.sequence = self.sequence;
+        *self.core.lock_state()? = self.state;
+        self.core.replay_cursor_key(self.cursor_key)?;
+        Ok(self.core)
     }
 }

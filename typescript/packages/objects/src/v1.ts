@@ -58,7 +58,7 @@ export abstract class ObjectsV1Provider {
   async get(value: wire.GetObjectRequest, maximumBytes: bigint): Promise<ObjectValue> {
     await ensureObjectsWasm();
     try {
-      if (maximumBytes < 0n || maximumBytes > 0xffff_ffffn) throw new ObjectsV1Error(wire.ErrorCode.INVALID_ARGUMENT);
+      if (maximumBytes < 0n || maximumBytes > 0xffff_ffff_ffff_ffffn) throw new ObjectsV1Error(wire.ErrorCode.INVALID_ARGUMENT);
       const bytes = toBinary(wire.GetObjectRequestSchema, value);
       validate_objects_v1_request("objects/get", bytes, 0n);
       const frames = await this.invoke("objects/get", bytes, new Uint8Array(0), maximumBytes);
@@ -92,13 +92,13 @@ export abstract class ObjectsV1Provider {
   }
 }
 
-/** The bounded Rust reference provider, usable in browsers, Node, and Bun. */
+/** The Rust reference provider, with optional caller-selected capacity. */
 export class MemoryObjectsV1 extends ObjectsV1Provider {
   private constructor(private readonly memory: ObjectsV1Memory) { super(); }
-  static async create(maximumBytes = 64n * 1024n * 1024n, maximumEntries = 10000): Promise<MemoryObjectsV1> {
+  static async create(maximumBytes?: bigint, maximumEntries?: number): Promise<MemoryObjectsV1> {
     await ensureObjectsWasm();
-    if (!Number.isSafeInteger(maximumEntries) || maximumEntries < 1 || maximumEntries > 0xffff_ffff) throw new ObjectsV1Error(wire.ErrorCode.INVALID_ARGUMENT);
-    if (maximumBytes < 0n || maximumBytes > 0xffff_ffffn) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
+    if (maximumEntries !== undefined && (!Number.isSafeInteger(maximumEntries) || maximumEntries < 1 || maximumEntries > 0xffff_ffff)) throw new ObjectsV1Error(wire.ErrorCode.INVALID_ARGUMENT);
+    if (maximumBytes !== undefined && (maximumBytes < 0n || maximumBytes > 0xffff_ffffn)) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
     try { return new MemoryObjectsV1(new ObjectsV1Memory(maximumBytes, maximumEntries)); }
     catch (error) { throw objectsV1Error(error); }
   }

@@ -97,8 +97,7 @@ pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/acyclic.objects.v1.rs"));
 }
 
-/// Largest caller-supplied PEM CA, client certificate, or private key.
-#[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
+#[cfg(any(feature = "json", feature = "grpc", feature = "http"))]
 /// Canonical Objects v1 descriptor, including streaming service definitions.
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-objects-v1.bin"));

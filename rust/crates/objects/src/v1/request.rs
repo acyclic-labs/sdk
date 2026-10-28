@@ -19,7 +19,7 @@ impl UploadFraming {
             .size
             .checked_add(bytes.len() as u64)
             .ok_or(Error::from(wire::ErrorCode::QuotaExceeded))?;
-        upload_length(self.size)
+        Ok(())
     }
     /// Accepts exactly one explicit true completion marker.
     pub fn complete(&mut self, complete: bool) -> Result<(), Error> {
@@ -38,19 +38,8 @@ impl UploadFraming {
     }
 }
 
-/// Checks the maximum decoded size of a single PUT or multipart part.
-pub fn upload_length(size: u64) -> Result<(), Error> {
-    if size > 5 * 1024 * 1024 * 1024 {
-        return Err(wire::ErrorCode::QuotaExceeded.into());
-    }
-    Ok(())
-}
-
 /// Validates a canonical binary request before any transport or provider side effect.
 pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<(), Error> {
-    if bytes.len() > 16 * 1024 * 1024 {
-        return Err(wire::ErrorCode::QuotaExceeded.into());
-    }
     if body_length != 0 && !matches!(route, "objects/put" | "multipart/upload-part") {
         return Err(InvalidArgument.into());
     }
@@ -71,7 +60,6 @@ pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<()
         }
         "objects/put" => {
             put(&decode!(PutObjectHeader))?;
-            upload_length(body_length)?;
         }
         "objects/get" => {
             get(&decode!(GetObjectRequest))?;
@@ -93,7 +81,6 @@ pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<()
         }
         "multipart/upload-part" => {
             upload_part(&decode!(UploadPartHeader))?;
-            upload_length(body_length)?;
         }
         "multipart/list-parts" => {
             list_parts(&decode!(ListPartsRequest))?;
@@ -109,9 +96,6 @@ pub fn validate_binary(route: &str, bytes: &[u8], body_length: u64) -> Result<()
     Ok(())
 }
 pub(crate) fn head(query: &wire::HeadObjectRequest) -> Result<&str, Error> {
-    if query.encoded_len() > 16 * 1024 * 1024 {
-        return Err(wire::ErrorCode::QuotaExceeded.into());
-    }
     let name = bucket(&query.bucket)?;
     key(&query.object_key)?;
     read_filters(&query.if_match, &query.if_none_match)?;
@@ -120,11 +104,8 @@ pub(crate) fn head(query: &wire::HeadObjectRequest) -> Result<&str, Error> {
 
 /// Validates a prefix restore without consulting the serving retention window.
 pub fn restore(query: &wire::RestoreObjectsRequest) -> Result<&str, Error> {
-    if query.encoded_len() > 16 * 1024 * 1024 {
-        return Err(wire::ErrorCode::QuotaExceeded.into());
-    }
     let name = bucket(&query.bucket)?;
-    if query.prefix.len() > 1024 || query.prefix.contains('\0') {
+    if query.prefix.contains('\0') {
         return Err(InvalidArgument.into());
     }
     let at = query.at.as_ref().ok_or(Error::from(InvalidArgument))?;
@@ -152,16 +133,10 @@ pub fn restore_digest(query: &wire::RestoreObjectsRequest) -> Result<[u8; 32], E
 }
 
 pub(crate) fn list(query: &wire::ListObjectsRequest) -> Result<(&str, usize), Error> {
-    if query.encoded_len() > 16 * 1024 * 1024 {
-        return Err(wire::ErrorCode::QuotaExceeded.into());
-    }
     let name = bucket(&query.bucket)?;
     let limit = page_size(query.page_size)?;
-    if query.prefix.len() > 1024
-        || query.delimiter.len() > 1024
-        || query.prefix.contains('\0')
+    if query.prefix.contains('\0')
         || query.delimiter.contains('\0')
-        || query.continuation_token.len() > 8192
         || query.continuation_token.contains('\0')
     {
         return Err(InvalidArgument.into());
@@ -170,23 +145,14 @@ pub(crate) fn list(query: &wire::ListObjectsRequest) -> Result<(&str, usize), Er
 }
 
 pub(crate) fn list_parts(query: &wire::ListPartsRequest) -> Result<(&str, usize), Error> {
-    if query.encoded_len() > 16 * 1024 * 1024 {
-        return Err(wire::ErrorCode::QuotaExceeded.into());
-    }
     let name = bucket(&query.bucket)?;
     key(&query.object_key)?;
     upload_id(&query.upload_id)?;
     let limit = page_size(query.page_size)?;
-    if query.after_part_number > 10_000 {
-        return Err(InvalidArgument.into());
-    }
     Ok((name, limit))
 }
 
 pub(crate) fn get(query: &wire::GetObjectRequest) -> Result<&str, Error> {
-    if prost::Message::encoded_len(query) > 16 * 1024 * 1024 {
-        return Err(wire::ErrorCode::QuotaExceeded.into());
-    }
     let name = bucket(&query.bucket)?;
     key(&query.object_key)?;
     read_filters(&query.if_match, &query.if_none_match)?;
@@ -236,7 +202,6 @@ pub(crate) fn put(header: &wire::PutObjectHeader) -> Result<&str, Error> {
 /// Validates a PUT and hashes its complete decoded body without the retry key.
 pub fn put_digest(header: &wire::PutObjectHeader, body: &[u8]) -> Result<[u8; 32], Error> {
     put(header)?;
-    upload_length(body.len() as u64)?;
     let mut normalized = header.clone();
     normalized.mutation = None;
     Ok(finish_digest(
@@ -252,7 +217,7 @@ pub(crate) fn upload_part(header: &wire::UploadPartHeader) -> Result<(), Error> 
     key(&header.object_key)?;
     upload_id(&header.upload_id)?;
     identity(&header.mutation)?;
-    if !(1..=10_000).contains(&header.part_number) {
+    if header.part_number == 0 {
         return Err(InvalidArgument.into());
     }
     Ok(())
@@ -260,7 +225,6 @@ pub(crate) fn upload_part(header: &wire::UploadPartHeader) -> Result<(), Error> 
 /// Validates a multipart publication and hashes its decoded body without the retry key.
 pub fn upload_part_digest(header: &wire::UploadPartHeader, body: &[u8]) -> Result<[u8; 32], Error> {
     upload_part(header)?;
-    upload_length(body.len() as u64)?;
     let mut normalized = header.clone();
     normalized.mutation = None;
     Ok(finish_digest(
@@ -315,17 +279,14 @@ pub fn complete_multipart_digest(
     upload_id(&value.upload_id)?;
     preconditions(&value.preconditions)?;
     identity(&value.mutation)?;
-    if value.parts.is_empty() || value.parts.len() > 10_000 {
+    if value.parts.is_empty() {
         return Err(InvalidArgument.into());
     }
     let mut previous = 0;
     for part in &value.parts {
         if part.part_number <= previous
-            || part.part_number > 10_000
             || part.etag.is_empty()
-            || part.etag.len() > 8192
             || part.etag.contains(['\r', '\n', '\0'])
-            || part.size > 5 * 1024 * 1024 * 1024
         {
             return Err(InvalidArgument.into());
         }
@@ -346,10 +307,10 @@ pub fn abort_multipart_digest(value: &wire::AbortMultipartRequest) -> Result<[u8
     Ok(message_digest("abort_multipart", &value))
 }
 
-/// Validates an S3 general-purpose logical bucket name, including dotted names.
+/// Validates a logical bucket name, including dotted names.
 pub fn bucket_name(name: &str) -> Result<(), Error> {
     let edge = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
-    if !(3..=63).contains(&name.len())
+    if name.len() < 3
         || !name.as_bytes().first().is_some_and(|byte| edge(*byte))
         || !name.as_bytes().last().is_some_and(|byte| edge(*byte))
         || !name
@@ -376,10 +337,7 @@ pub fn bucket(value: &Option<wire::BucketRef>) -> Result<&str, Error> {
 }
 /// Checks a nonempty UTF-8 object key without normalizing slashes or dot segments.
 pub fn key(value: &str) -> Result<(), Error> {
-    if value.is_empty()
-        || value.len() > wire::ObjectsLimit::MaxKeyBytes as usize
-        || value.contains('\0')
-    {
+    if value.is_empty() || value.contains('\0') {
         return Err(InvalidArgument.into());
     }
     Ok(())
@@ -387,9 +345,7 @@ pub fn key(value: &str) -> Result<(), Error> {
 /// Validates an optional caller retry identity; no expiry is inferred by this validator.
 pub fn identity(value: &Option<wire::MutationIdentity>) -> Result<(), Error> {
     if value.as_ref().is_some_and(|value| {
-        value.idempotency_key.is_empty()
-            || value.idempotency_key.len() > wire::ObjectsLimit::MaxIdempotencyKeyBytes as usize
-            || value.idempotency_key.contains('\0')
+        value.idempotency_key.is_empty() || value.idempotency_key.contains('\0')
     }) {
         return Err(InvalidArgument.into());
     }
@@ -402,7 +358,7 @@ pub fn preconditions(value: &Option<wire::Preconditions>) -> Result<(), Error> {
         Some(value) => match &value.condition {
             Some(wire::preconditions::Condition::IfAbsent(true)) => Ok(()),
             Some(wire::preconditions::Condition::IfMatch(etag))
-                if !etag.is_empty() && etag.len() <= 8192 && !etag.contains(['\r', '\n', '\0']) =>
+                if !etag.is_empty() && !etag.contains(['\r', '\n', '\0']) =>
             {
                 Ok(())
             }
@@ -410,7 +366,7 @@ pub fn preconditions(value: &Option<wire::Preconditions>) -> Result<(), Error> {
         },
     }
 }
-/// Checks metadata widths and rejects invalid header values before any mutation.
+/// Rejects invalid metadata names and header values before any mutation.
 pub fn metadata(value: &Option<wire::ObjectMetadata>) -> Result<(), Error> {
     let Some(value) = value else {
         return Ok(());
@@ -427,15 +383,13 @@ pub fn metadata(value: &Option<wire::ObjectMetadata>) -> Result<(), Error> {
             .bytes()
             .all(|byte| byte == b'\t' || (0x20..=0x7e).contains(&byte))
     };
-    if fixed.iter().map(|value| value.len()).sum::<usize>() > 8192
-        || fixed.iter().any(|value| !header_value(value))
+    if fixed.iter().any(|value| !header_value(value))
         || value
             .expires_unix_seconds
             .is_some_and(|seconds| !(-62_167_219_200..=253_402_300_799).contains(&seconds))
     {
         return Err(InvalidArgument.into());
     }
-    let mut bytes = 0_usize;
     let mut names = std::collections::BTreeSet::new();
     for (key, value) in &value.user {
         if key.is_empty()
@@ -464,39 +418,32 @@ pub fn metadata(value: &Option<wire::ObjectMetadata>) -> Result<(), Error> {
         {
             return Err(InvalidArgument.into());
         }
-        bytes = bytes.saturating_add(key.len()).saturating_add(value.len());
-    }
-    if bytes > wire::ObjectsLimit::MaxUserMetadataBytes as usize {
-        return Err(InvalidArgument.into());
     }
     Ok(())
 }
 /// Validates opaque retry/read handles before provider lookup or transport encoding.
 pub fn upload_id(value: &str) -> Result<(), Error> {
-    if value.is_empty() || value.len() > 8192 || value.contains(['\r', '\n', '\0']) {
+    if value.is_empty() || value.contains(['\r', '\n', '\0']) {
         return Err(InvalidArgument.into());
     }
     Ok(())
 }
-/// Checks bounded conditional read headers. Empty strings mean no condition.
+/// Checks conditional read header grammar. Empty strings mean no condition.
 pub fn read_filters(if_match: &str, if_none_match: &str) -> Result<(), Error> {
     if [if_match, if_none_match]
         .iter()
-        .any(|value| value.len() > 8192 || value.contains(['\r', '\n', '\0']))
+        .any(|value| value.contains(['\r', '\n', '\0']))
     {
         return Err(InvalidArgument.into());
     }
     Ok(())
 }
-/// Returns the default S3 page size or validates a caller-supplied bound.
+/// Chooses one listing page; larger requests continue through the returned cursor.
 pub fn page_size(value: u32) -> Result<usize, Error> {
-    if value > wire::ObjectsLimit::MaxPageEntries as u32 {
-        return Err(InvalidArgument.into());
-    }
     Ok(if value == 0 {
         wire::ObjectsLimit::MaxPageEntries as usize
     } else {
-        value as usize
+        value.min(wire::ObjectsLimit::MaxPageEntries as u32) as usize
     })
 }
 /// Resolves one range against a complete representation without integer overflow.
@@ -554,12 +501,42 @@ mod tests {
         assert_ne!(put_digest(&header, b"different")?, expected);
         changed_identity.object_key = "different".into();
         assert_ne!(put_digest(&changed_identity, b"whole-body")?, expected);
+        Ok(())
+    }
+    #[test]
+    fn logical_multipart_and_handle_widths_do_not_inherit_physical_s3_caps() -> Result<(), Error> {
+        let mut request = wire::CompleteMultipartRequest {
+            bucket: Some(wire::BucketRef {
+                name: "logical-".repeat(64),
+            }),
+            object_key: "key/".repeat(1025),
+            upload_id: "upload".repeat(2049),
+            parts: (1..=10_001)
+                .map(|part_number| wire::UploadedPart {
+                    part_number,
+                    etag: format!("part-{part_number}"),
+                    size: 6 * 1024 * 1024 * 1024,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        assert!(complete_multipart_digest(&request).is_ok());
+        request
+            .parts
+            .last_mut()
+            .ok_or(Error::from(InvalidArgument))?
+            .part_number = u32::MAX;
+        assert!(complete_multipart_digest(&request).is_ok());
         assert_eq!(
-            upload_length(5 * 1024 * 1024 * 1024 + 1)
-                .err()
-                .map(|error| error.code),
-            Some(wire::ErrorCode::QuotaExceeded)
+            page_size(u32::MAX)?,
+            wire::ObjectsLimit::MaxPageEntries as usize
         );
+        request
+            .parts
+            .last_mut()
+            .ok_or(Error::from(InvalidArgument))?
+            .part_number = 1;
+        assert!(complete_multipart_digest(&request).is_err());
         Ok(())
     }
     #[test]

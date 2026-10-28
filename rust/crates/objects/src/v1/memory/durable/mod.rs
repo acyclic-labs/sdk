@@ -11,7 +11,6 @@ pub(super) mod packing;
 pub(super) mod protocol;
 mod publication;
 pub(super) const PACK_LIMIT: usize = 64 * 1024;
-pub(in crate::v1) const RECORD_LIMIT: usize = 2 * 1024 * 1024;
 mod replay;
 pub(super) mod snapshot;
 use protocol::*;

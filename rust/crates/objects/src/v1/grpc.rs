@@ -16,7 +16,6 @@ use tonic::{
 
 const MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const MAX_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
 #[cfg(test)]
 mod credential_tests;
@@ -75,7 +74,7 @@ impl GrpcObjects {
         mut self,
         timeout: std::time::Duration,
     ) -> Result<Self, ConnectError> {
-        if timeout.is_zero() || timeout > MAX_TRANSFER_TIMEOUT {
+        if timeout.is_zero() {
             return Err(ConnectError::InvalidConfiguration);
         }
         self.transfer_timeout = timeout;
@@ -150,8 +149,6 @@ impl GrpcObjects {
         };
         let channel = endpoint
             .connect_timeout(std::time::Duration::from_secs(10))
-            // Requests carry their own deadlines; this ceiling admits the largest transfer budget.
-            .timeout(MAX_TRANSFER_TIMEOUT)
             .connect()
             .await?;
         Ok(Self {

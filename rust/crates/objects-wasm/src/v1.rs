@@ -44,12 +44,20 @@ pub fn validate_objects_v1_request(
     request::validate_binary(route, bytes, body_length).map_err(error)
 }
 #[wasm_bindgen]
-pub fn encode_objects_v1_json(name: &str, bytes: &[u8], maximum: f64) -> Result<Vec<u8>, JsValue> {
-    json::encode_binary(name, bytes, byte_limit(maximum)?).map_err(error)
+pub fn encode_objects_v1_json(
+    name: &str,
+    bytes: &[u8],
+    maximum: Option<f64>,
+) -> Result<Vec<u8>, JsValue> {
+    json::encode_binary(name, bytes, maximum.map(byte_limit).transpose()?).map_err(error)
 }
 #[wasm_bindgen]
-pub fn decode_objects_v1_json(name: &str, bytes: &[u8], maximum: f64) -> Result<Vec<u8>, JsValue> {
-    json::decode_binary(name, bytes, byte_limit(maximum)?).map_err(error)
+pub fn decode_objects_v1_json(
+    name: &str,
+    bytes: &[u8],
+    maximum: Option<f64>,
+) -> Result<Vec<u8>, JsValue> {
+    json::decode_binary(name, bytes, maximum.map(byte_limit).transpose()?).map_err(error)
 }
 #[wasm_bindgen]
 pub fn objects_v1_http_type(route: &str, output: bool) -> Result<String, JsValue> {
@@ -92,10 +100,15 @@ pub struct ObjectsV1Memory {
 #[wasm_bindgen]
 impl ObjectsV1Memory {
     #[wasm_bindgen(constructor)]
-    pub fn new(maximum_bytes: u64, maximum_entries: usize) -> Result<Self, JsValue> {
+    pub fn new(
+        maximum_bytes: Option<u64>,
+        maximum_entries: Option<usize>,
+    ) -> Result<Self, JsValue> {
         Ok(Self {
             inner: MemoryObjects::new(MemoryOptions {
-                maximum_bytes: usize::try_from(maximum_bytes)
+                maximum_bytes: maximum_bytes
+                    .map(usize::try_from)
+                    .transpose()
                     .map_err(|_| error(wire::ErrorCode::QuotaExceeded.into()))?,
                 maximum_entries,
             })

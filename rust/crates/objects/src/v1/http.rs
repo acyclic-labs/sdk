@@ -26,7 +26,6 @@ fn credential_header(token: &str) -> Result<HeaderValue, Error> {
 
 /// One NDJSON line, bounded by the base64 of one compressed 8 MiB body frame.
 const JSON_FRAME_BYTES: usize = 12 * 1024 * 1024;
-const REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
 #[cfg(test)]
 mod credential_tests;
@@ -348,9 +347,6 @@ impl HttpObjects {
                     .find(|(path, _, _)| *path == route)
                     .ok_or(Error::from(wire::ErrorCode::InvalidArgument))?;
                 let bytes = json::encode(input, &value)?;
-                if bytes.len() > REQUEST_BYTES {
-                    return Err(wire::ErrorCode::QuotaExceeded.into());
-                }
                 let response = self.post(route, "application/json", bytes.into()).await?;
                 validate(value, self.decode(output, response).await?)
             },
@@ -373,9 +369,6 @@ impl HttpObjects {
             async {
                 request::get(&query)?;
                 let bytes = json::encode("GetObjectRequest", &query)?;
-                if bytes.len() > REQUEST_BYTES {
-                    return Err(wire::ErrorCode::QuotaExceeded.into());
-                }
                 let reply = self
                     .post("objects/get", "application/json", bytes.into())
                     .await?;
@@ -393,7 +386,7 @@ impl HttpObjects {
                     total: 0,
                     maximum: self.maximum,
                 };
-                let first = reader.next().await?.ok_or_else(response::invalid)?;
+                let first = reader.next(None).await?.ok_or_else(response::invalid)?;
                 let header = match first.frame {
                     Some(wire::get_object_response::Frame::Header(header)) => header,
                     frame => return Err(response::reject_frame(frame)),
@@ -401,7 +394,7 @@ impl HttpObjects {
                 let remaining = response::get_header(&header, &query.range, maximum_bytes)?;
                 let body =
                     stream::try_unfold((reader, remaining), |(mut reader, remaining)| async move {
-                        let Some(frame) = reader.next().await? else {
+                        let Some(frame) = reader.next(Some(JSON_FRAME_BYTES)).await? else {
                             return if remaining == 0 {
                                 Ok(None)
                             } else {
@@ -442,9 +435,6 @@ fn media_type(response: &Response, expected: &str) -> Result<(), Error> {
 fn line(name: &str, frame: &impl Message) -> Result<Bytes, Error> {
     let mut bytes = json::encode(name, frame)?;
     bytes.push(b'\n');
-    if bytes.len() > JSON_FRAME_BYTES {
-        return Err(wire::ErrorCode::QuotaExceeded.into());
-    }
     Ok(bytes.into())
 }
 struct Frames {
@@ -455,7 +445,10 @@ struct Frames {
     maximum: usize,
 }
 impl Frames {
-    async fn next(&mut self) -> Result<Option<wire::GetObjectResponse>, Error> {
+    async fn next(
+        &mut self,
+        maximum_frame: Option<usize>,
+    ) -> Result<Option<wire::GetObjectResponse>, Error> {
         loop {
             if self.chunk.is_empty() {
                 let Some(chunk) = self.reply.chunk().await.map_err(|_| response::invalid())? else {
@@ -473,15 +466,19 @@ impl Frames {
             }
             let newline = self.chunk.iter().position(|byte| *byte == b'\n');
             let size = newline.map_or(self.chunk.len(), |index| index + 1);
-            if size > JSON_FRAME_BYTES.saturating_sub(self.pending.len()) {
+            if maximum_frame.is_some_and(|limit| size > limit.saturating_sub(self.pending.len())) {
                 return Err(response::invalid());
             }
             self.pending.extend_from_slice(&self.chunk.split_to(size));
             if newline.is_some() {
                 self.pending.pop();
                 let bytes = self.pending.strip_suffix(b"\r").unwrap_or(&self.pending);
-                let frame = json::decode("GetObjectResponse", bytes, JSON_FRAME_BYTES)
-                    .map_err(|_| response::invalid())?;
+                let frame = json::decode(
+                    "GetObjectResponse",
+                    bytes,
+                    maximum_frame.unwrap_or(bytes.len()),
+                )
+                .map_err(|_| response::invalid())?;
                 self.pending.clear();
                 return Ok(Some(frame));
             }

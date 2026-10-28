@@ -565,11 +565,6 @@ impl ObjectsProvider for MemoryObjects {
             async {
                 let name = request::bucket(&query.bucket)?;
                 request::key(&query.object_key)?;
-                if !(1..=10_000).contains(&query.part_number)
-                    || body.len() as u64 > 5 * 1024 * 1024 * 1024
-                {
-                    return Err(InvalidArgument.into());
-                }
                 self.mutate(
                     request::upload_part_digest(&query, &body)?,
                     &query.mutation,
@@ -608,7 +603,7 @@ impl ObjectsProvider for MemoryObjects {
                 let value = upload(&state, name, &query.object_key, &query.upload_id)?;
                 let mut parts = value
                     .parts
-                    .range(query.after_part_number + 1..)
+                    .range((Bound::Excluded(query.after_part_number), Bound::Unbounded))
                     .map(|(_, part)| part);
                 let page: Vec<_> = parts
                     .by_ref()

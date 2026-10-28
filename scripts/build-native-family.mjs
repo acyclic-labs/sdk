@@ -139,7 +139,7 @@ function sourceRevision() {
   return revision;
 }
 
-function commandOutput(command, args) {
+function trimmedCommandOutput(command, args) {
   return commandOutput(command, args, {
     cwd: root,
     encoding: "utf8",
@@ -283,7 +283,7 @@ function deterministicRustflags(sourceRoot, targetDir, target, /** @type {{plain
  */
 function darwinAppleLdPaths(target, sdkRoot = null) {
   if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return null;
-  const sdk = sdkRoot ?? commandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
+  const sdk = sdkRoot ?? trimmedCommandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
   if (typeof sdk !== "string" || sdk.length === 0) throw new Error("Darwin Apple ld requires a macOS SDK");
   return {
     linkerEnvironment: targetEnvName(target, "LINKER"),
@@ -308,12 +308,12 @@ function configureDarwinAppleLd(target, { sdkRoot: suppliedSdkRoot, driver: supp
   const paths = darwinAppleLdPaths(target, suppliedSdkRoot);
   if (paths === null) throw new Error("Apple ld configuration requires a Darwin target");
   if (!linkerExists(paths.linker)) throw new Error(`Apple ld is unavailable at ${paths.linker}`);
-  const sdkRoot = suppliedSdkRoot ?? commandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
+  const sdkRoot = suppliedSdkRoot ?? trimmedCommandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
   const sdkSelector = sdkRoot ?? "macosx";
-  const driver = suppliedDriver ?? commandOutput("xcrun", ["--sdk", sdkSelector, "--find", "clang"]);
+  const driver = suppliedDriver ?? trimmedCommandOutput("xcrun", ["--sdk", sdkSelector, "--find", "clang"]);
   // Rust's objcopy loads libLLVM from the selected toolchain's sysroot,
   // outside its own bin/../lib search path on Darwin.
-  const rustLibraryPath = resolve(suppliedRustSysroot ?? commandOutput("rustc", ["--print", "sysroot"]), "lib");
+  const rustLibraryPath = resolve(suppliedRustSysroot ?? trimmedCommandOutput("rustc", ["--print", "sysroot"]), "lib");
   const priorTargetLinker = envValue(paths.linkerEnvironment);
   const priorSdkRoot = envValue("SDKROOT");
   const priorLoader = envValue("DYLD_LIBRARY_PATH");
@@ -401,17 +401,17 @@ function darwinRustObjcopyIdentity(target, commands = { output: commandOutput, o
 
 function appleToolchainIdentity(target, environment) {
   const rustObjcopy = darwinRustObjcopyIdentity(target);
-  const sdkPath = envValue("SDKROOT", environment) ?? commandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
+  const sdkPath = envValue("SDKROOT", environment) ?? trimmedCommandOutput("xcrun", ["--sdk", "macosx", "--show-sdk-path"]);
   const sdkSelector = sdkPath ?? "macosx";
   return {
     sdk: {
       path: sdkPath,
-      version: commandOutput("xcrun", ["--sdk", sdkSelector, "--show-sdk-version"]),
-      build: commandOutput("xcrun", ["--sdk", sdkSelector, "--show-sdk-build-version"]),
+      version: trimmedCommandOutput("xcrun", ["--sdk", sdkSelector, "--show-sdk-version"]),
+      build: trimmedCommandOutput("xcrun", ["--sdk", sdkSelector, "--show-sdk-build-version"]),
     },
-    clang: executableIdentity("xcrun", ["--sdk", sdkSelector, "clang", "--version"], commandOutput("xcrun", ["--sdk", sdkSelector, "--find", "clang"])),
+    clang: executableIdentity("xcrun", ["--sdk", sdkSelector, "clang", "--version"], trimmedCommandOutput("xcrun", ["--sdk", sdkSelector, "--find", "clang"])),
     ld: executableIdentity("/usr/bin/ld", ["-v"], "/usr/bin/ld"),
-    codesign: executableFileIdentity("codesign", commandOutput("xcrun", ["--find", "codesign"])),
+    codesign: executableFileIdentity("codesign", trimmedCommandOutput("xcrun", ["--find", "codesign"])),
     rust_objcopy: rustObjcopy,
   };
 }
@@ -920,7 +920,7 @@ async function bundleArtifacts(output) {
 
 function signDarwinAddon(output, target, /** @type {string|null} */ codesignExecutable = null) {
   if (typeof target !== "string" || !target.endsWith("-apple-darwin")) return null;
-  const signer = codesignExecutable ?? commandOutput("xcrun", ["--find", "codesign"]);
+  const signer = codesignExecutable ?? trimmedCommandOutput("xcrun", ["--find", "codesign"]);
   const name = readdir(output).then(entries => entries.find(entry => entry.endsWith(".node")));
   return name.then(async artifactName => {
     if (artifactName === undefined) throw new Error(`native bundle ${output} has no Darwin addon to sign`);

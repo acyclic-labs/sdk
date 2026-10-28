@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 const MAGIC: &[u8] = b"ACYCLIC-OBJECTS-V1-LOCAL\0\x01";
-pub(super) use super::durable::RECORD_LIMIT;
+pub(super) use super::durable::PACK_LIMIT;
 const MINIMUM_MAINTENANCE_INLINE_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Failure to open or recover local Objects storage.

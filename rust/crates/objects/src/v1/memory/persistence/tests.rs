@@ -746,3 +746,68 @@ async fn a_journal_reopened_after_closing_appends_after_its_frames()
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn large_logical_metadata_survives_commit_checkpoint_and_exact_retry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let core = seeded(root.path()).await?;
+    let key = "long-key-".repeat(513);
+    let mut query = put(&key);
+    query.metadata = Some(wire::ObjectMetadata {
+        content_type: "a".repeat(3 * 1024 * 1024),
+        user: [("user-field".into(), "b".repeat(4097))].into(),
+        ..Default::default()
+    });
+    let expected = core
+        .put(query.clone(), OwnedBytes::from_static(b"metadata"))
+        .await?;
+    drop(core);
+    let core = reopen(root.path())?;
+    assert_eq!(
+        core.head(wire::HeadObjectRequest {
+            bucket: bucket(),
+            object_key: key.clone(),
+            ..Default::default()
+        })
+        .await?
+        .object,
+        Some(expected.clone())
+    );
+    core.collect_local_garbage(200)?;
+    drop(core);
+    let core = reopen(root.path())?;
+    assert_eq!(
+        core.get(get(bucket(), &key), 8).await?.into_body(),
+        OwnedBytes::from_static(b"metadata")
+    );
+    let journal = root.path().join("mutations.log");
+    let before = fs::metadata(&journal)?.len();
+    assert_eq!(
+        core.put(query, OwnedBytes::from_static(b"metadata"))
+            .await?,
+        expected
+    );
+    assert_eq!(fs::metadata(journal)?.len(), before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn absent_frame_bytes_are_repaired_before_allocating_the_declared_payload()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    drop(seeded(root.path()).await?);
+    let path = root.path().join("mutations.log");
+    let before = fs::read(&path)?;
+    let mut torn = before.clone();
+    torn.extend_from_slice(&u32::MAX.to_le_bytes());
+    torn.extend_from_slice(&[0; 32]);
+    fs::write(&path, torn)?;
+    let core = reopen(root.path())?;
+    assert_eq!(fs::read(path)?, before);
+    assert_eq!(
+        core.get(get(bucket(), "retained"), 6).await?.into_body(),
+        OwnedBytes::from_static(b"before")
+    );
+    Ok(())
+}

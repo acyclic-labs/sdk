@@ -105,7 +105,7 @@ pub fn timestamp(value: &prost_types::Timestamp) -> Result<(), Error> {
 pub fn object_info(value: &wire::ObjectInfo) -> Result<(), Error> {
     let timestamp = value.last_modified.as_ref().ok_or_else(invalid)?;
     self::timestamp(timestamp)?;
-    if value.etag.is_empty() || value.etag.len() > 8192 || value.etag.contains(['\r', '\n', '\0']) {
+    if value.etag.is_empty() || value.etag.contains(['\r', '\n', '\0']) {
         return Err(invalid());
     }
     request::metadata(&value.metadata).map_err(|_| invalid())
@@ -141,7 +141,6 @@ pub(crate) fn part(value: &wire::UploadedPart, number: u32, length: u64) -> Resu
     if value.part_number != number
         || value.size != length
         || value.etag.is_empty()
-        || value.etag.len() > 8192
         || value.etag.contains(['\r', '\n', '\0'])
     {
         return Err(invalid());
@@ -158,11 +157,8 @@ pub fn parts(
     let mut previous = query.after_part_number;
     for part in &response.parts {
         if part.part_number <= previous
-            || part.part_number > 10_000
             || part.etag.is_empty()
-            || part.etag.len() > 8192
             || part.etag.contains(['\r', '\n', '\0'])
-            || part.size > 5 * 1024 * 1024 * 1024
         {
             return Err(invalid());
         }
@@ -185,7 +181,6 @@ pub fn listing(
     let limit = request::page_size(query.page_size)?;
     if response.entries.len() + response.common_prefixes.len() > limit
         || response.is_truncated == response.continuation_token.is_empty()
-        || response.continuation_token.len() > 8192
     {
         return Err(invalid());
     }

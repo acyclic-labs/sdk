@@ -146,7 +146,6 @@ impl Checkpoint {
         let replacement = Pending::new(self.pending.delta.sequence, self.pending.meter());
         // Values and their original ledger move together and retire together.
         let mut pending = std::mem::replace(&mut self.pending, replacement);
-        // Multipart frames must fit the authenticated record limit.
         pending.delta.ordinal = self
             .operations
             .checked_add(1)
@@ -156,11 +155,10 @@ impl Checkpoint {
             .bytes
             .checked_add(36 + length as u64)
             .ok_or(Error::from(QuotaExceeded))?;
-        if length > RECORD_LIMIT
-            || self
-                .limits
-                .maximum_journal_bytes
-                .is_some_and(|limit| end > limit)
+        if self
+            .limits
+            .maximum_journal_bytes
+            .is_some_and(|limit| end > limit)
             || self
                 .limits
                 .maximum_journal_operations

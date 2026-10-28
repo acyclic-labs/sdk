@@ -264,7 +264,6 @@ impl MemoryObjects {
         meter: &Arc<dyn NativeReadMeter>,
     ) -> Result<ObjectsPutReceipt, NativeObjectsError> {
         request::put(&query)?;
-        request::upload_length(body.len() as u64)?;
         let digest = put_digest_measured(&mut query, &body, meter)?;
         let name = query
             .bucket
@@ -395,7 +394,7 @@ pub(super) fn put_group_sizes(
         while requests
             .next_if(|(query, body)| {
                 let total = bytes.saturating_add(persistence::put_record_bytes(query, body));
-                let fits = bytes == 0 || total <= persistence::RECORD_LIMIT;
+                let fits = bytes == 0 || total <= persistence::PACK_LIMIT;
                 if fits {
                     bytes = total;
                 }

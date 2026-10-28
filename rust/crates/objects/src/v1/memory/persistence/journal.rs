@@ -79,11 +79,10 @@ impl Journal {
                     .bytes
                     .checked_add(36 + record.len() as u64)
                     .ok_or(Error::from(QuotaExceeded))?;
-                if record.len() > RECORD_LIMIT
-                    || self
-                        .limits
-                        .maximum_journal_bytes
-                        .is_some_and(|limit| end > limit)
+                if self
+                    .limits
+                    .maximum_journal_bytes
+                    .is_some_and(|limit| end > limit)
                 {
                     return Err(Error::from(QuotaExceeded).into());
                 }

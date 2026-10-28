@@ -38,13 +38,29 @@ pub(super) struct Stored {
     pub(super) info: SharedInfo,
     pub(super) body: StoredBody,
 }
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub(super) struct Upload {
     pub(super) bucket: SharedInfo<String>,
     pub(super) key: SharedInfo<String>,
     pub(super) metadata: SharedInfo<Option<wire::ObjectMetadata>>,
     pub(super) parts: OrdMap<u32, (SharedInfo<wire::UploadedPart>, StoredBody)>,
 }
+// Nested persistent maps must compare through their changed subtrees; ordinary
+// ordered iteration would revisit every preceding object/part on each update.
+impl PartialEq for Bucket {
+    fn eq(&self, other: &Self) -> bool {
+        self.info == other.info && self.objects.diff(&other.objects).next().is_none()
+    }
+}
+impl PartialEq for Upload {
+    fn eq(&self, other: &Self) -> bool {
+        self.bucket == other.bucket
+            && self.key == other.key
+            && self.metadata == other.metadata
+            && self.parts.diff(&other.parts).next().is_none()
+    }
+}
+
 #[derive(Clone, PartialEq)]
 pub(super) struct Receipt {
     pub(super) digest: [u8; 32],
@@ -56,18 +72,18 @@ pub(super) struct Receipt {
 
 /// Updates stored bytes from changed persistent subtrees.
 pub(super) fn stored_bytes(before: &State, next: &mut State) -> Option<usize> {
-    let sum = |bucket: &Bucket| {
-        bucket.objects.values().try_fold(0_usize, |total, object| {
-            total.checked_add(object.body.len())
-        })
-    };
     let (mut added, mut removed) = (0_usize, 0_usize);
-    for (name, bucket) in &next.buckets {
-        let Some(old) = before.buckets.get(name) else {
-            added = added.checked_add(sum(bucket)?)?;
-            continue;
+    for change in before.buckets.diff(&next.buckets) {
+        let empty = OrdMap::new();
+        let (old, new) = match change {
+            imbl::ordmap::DiffItem::Add(_, bucket) => (&empty, &bucket.objects),
+            imbl::ordmap::DiffItem::Update {
+                old: (_, old),
+                new: (_, new),
+            } => (&old.objects, &new.objects),
+            imbl::ordmap::DiffItem::Remove(_, bucket) => (&bucket.objects, &empty),
         };
-        for item in old.objects.diff(&bucket.objects) {
+        for item in old.diff(new) {
             let (old, new) = match item {
                 imbl::ordmap::DiffItem::Add(_, new) => (0, new.body.len()),
                 imbl::ordmap::DiffItem::Update {
@@ -78,11 +94,6 @@ pub(super) fn stored_bytes(before: &State, next: &mut State) -> Option<usize> {
             };
             added = added.checked_add(new)?;
             removed = removed.checked_add(old)?;
-        }
-    }
-    for (name, bucket) in &before.buckets {
-        if !next.buckets.contains_key(name) {
-            removed = removed.checked_add(sum(bucket)?)?;
         }
     }
     for change in before.uploads.diff(&next.uploads) {

@@ -201,10 +201,14 @@ pub(in crate::v1::memory) fn validate_state(
         || options
             .maximum_entries
             .is_some_and(|limit| next.entry_count() > limit)
-        || next
-            .uploads
-            .values()
-            .any(|upload| !next.buckets.contains_key(upload.bucket.as_str()))
+        || (before
+            .buckets
+            .diff(&next.buckets)
+            .any(|change| matches!(change, imbl::ordmap::DiffItem::Remove(..)))
+            && next
+                .uploads
+                .values()
+                .any(|upload| !next.buckets.contains_key(upload.bucket.as_str())))
     {
         return Err(RestoreError);
     }

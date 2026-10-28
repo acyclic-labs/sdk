@@ -1,5 +1,5 @@
 //! Shared bounded upload framing and source-failure cancellation.
-use super::{Error, UploadBody, request, wire};
+use super::{Error, UploadBody, wire};
 use acyclic_stream::OwnedBytes;
 use futures::{
     StreamExt,
@@ -74,10 +74,6 @@ pub(super) fn chunks(body: UploadBody) -> (UploadBody, Arc<State>) {
                         length = length
                             .checked_add(bytes.len() as u64)
                             .ok_or(Error::from(wire::ErrorCode::QuotaExceeded))
-                            .and_then(|size| {
-                                request::upload_length(size)?;
-                                Ok(size)
-                            })
                             .map_err(fail)?;
                         pending = bytes;
                     }

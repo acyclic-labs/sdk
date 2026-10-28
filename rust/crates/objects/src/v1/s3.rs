@@ -15,7 +15,11 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 const PART: usize = 5 * 1024 * 1024;
-const MAX_METADATA: usize = super::memory::remote::RECORD_BYTES;
+// A transport chunk, never a total page-count ceiling.
+const MANIFEST_PAGE_ITEMS: usize = 512;
+// Each page identity and the next link encode as a tag, a one-byte length,
+// and a 32-byte digest. Roots are smaller than this fixed control page.
+const MANIFEST_PAGE_BYTES: usize = (MANIFEST_PAGE_ITEMS + 1) * 34;
 
 /// Endpoint capabilities, configured by the host rather than a vendor name.
 #[derive(Clone, Copy, Debug)]
@@ -42,8 +46,18 @@ struct Head {
 struct Root {
     #[prost(uint64, tag = "1")]
     sequence: u64,
-    #[prost(bytes = "vec", repeated, tag = "2")]
+    #[prost(bytes = "vec", tag = "2")]
+    manifest: Vec<u8>,
+    #[prost(uint64, tag = "3")]
+    page_count: u64,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct ManifestPage {
+    #[prost(bytes = "vec", repeated, tag = "1")]
     pages: Vec<Vec<u8>>,
+    #[prost(bytes = "vec", tag = "2")]
+    next: Vec<u8>,
 }
 
 struct Command {
@@ -176,25 +190,11 @@ impl S3Objects {
         let bytes = self.inner.transport.metadata("roots", &head.node).await?;
         let root = Root::decode(bytes.as_slice()).map_err(backend)?;
 
-        let mut pages = Vec::with_capacity(root.pages.len());
-        for page in root.pages {
-            if page.len() != 32 {
-                return Err(backend("invalid metadata page identity"));
-            }
-            pages.push(
-                self.inner
-                    .transport
-                    .metadata("pages", &hex::encode(page))
-                    .await?,
-            );
-        }
-        let source: Arc<dyn ImmutableBodies> = self.inner.transport.clone();
-        let core = MemoryObjects::load_snapshot(
-            pages,
-            root.sequence,
-            head.cursor_key.as_slice().try_into().map_err(backend)?,
-            source,
-        )?;
+        let core = self
+            .inner
+            .transport
+            .load_snapshot(&root, &head.cursor_key)
+            .await?;
         cache.core = core;
         cache.node = head.node.clone();
         Ok(())
@@ -260,7 +260,7 @@ impl S3Objects {
         body: OwnedBytes,
     ) -> Result<Vec<u8>, Error> {
         let mut cache = self.inner.cache.lock().await;
-        for _ in 0..8 {
+        loop {
             let (mut head, version) = self.read_head().await?;
             self.refresh(&mut cache, &head).await?;
             let now = std::time::SystemTime::now()
@@ -279,22 +279,12 @@ impl S3Objects {
             let result = Self::apply(&staged, command).await?;
             let source: Arc<dyn ImmutableBodies> = self.inner.transport.clone();
             let (sequence, pages) = staged.snapshot(source).await?;
-            let mut root = Root {
-                sequence,
-                pages: Vec::with_capacity(pages.len()),
-            };
-            for bytes in pages {
-                let id = blake3::hash(&bytes);
-                self.inner
-                    .transport
-                    .write("pages", &id.to_hex().to_string(), bytes.into())
-                    .await?;
-                root.pages.push(id.as_bytes().to_vec());
-            }
+            let root = self
+                .inner
+                .transport
+                .persist_snapshot(sequence, pages)
+                .await?;
             let bytes = root.encode_to_vec();
-            if bytes.len() > MAX_METADATA {
-                return Err(backend("current-state root exceeds metadata bound"));
-            }
             let node = blake3::hash(&bytes).to_hex().to_string();
             self.inner
                 .transport
@@ -324,9 +314,6 @@ impl S3Objects {
                 Err(error) => return Err(backend(error)),
             }
         }
-        Err(backend(
-            "conditional publication contention; retry the same mutation identity",
-        ))
     }
 
     async fn read<T>(
@@ -346,6 +333,80 @@ impl Transport {
             .fold(self.prefix.clone(), |path, segment| path.join(segment))
     }
 
+    async fn persist_snapshot(
+        &self,
+        sequence: u64,
+        mut pages: Vec<Vec<u8>>,
+    ) -> Result<Root, Error> {
+        let page_count = u64::try_from(pages.len()).map_err(backend)?;
+        let mut manifest = Vec::new();
+        // Build backwards so each immutable manifest names the already durable
+        // suffix. A failed candidate never replaces the published root.
+        for chunk in pages.rchunks_mut(MANIFEST_PAGE_ITEMS) {
+            let mut page = ManifestPage {
+                pages: Vec::with_capacity(chunk.len()),
+                next: manifest,
+            };
+            for bytes in chunk {
+                let bytes = std::mem::take(bytes);
+                let id = blake3::hash(&bytes);
+                self.write("pages", &id.to_hex().to_string(), bytes.into())
+                    .await?;
+                page.pages.push(id.as_bytes().to_vec());
+            }
+            let bytes = page.encode_to_vec();
+            let id = blake3::hash(&bytes);
+            self.write("manifests", &id.to_hex().to_string(), bytes.into())
+                .await?;
+            manifest = id.as_bytes().to_vec();
+        }
+        Ok(Root {
+            sequence,
+            manifest,
+            page_count,
+        })
+    }
+
+    async fn load_snapshot(
+        self: &Arc<Self>,
+        root: &Root,
+        cursor_key: &[u8],
+    ) -> Result<MemoryObjects, Error> {
+        let mut remaining = root.page_count;
+        let mut next = root.manifest.clone();
+        let source: Arc<dyn ImmutableBodies> = self.clone();
+        let mut loader = super::memory::remote::SnapshotLoader::new(
+            root.sequence,
+            cursor_key.try_into().map_err(backend)?,
+            source,
+        )?;
+        while remaining != 0 {
+            if next.len() != 32 {
+                return Err(backend("invalid manifest identity"));
+            }
+            let bytes = self.metadata("manifests", &hex::encode(&next)).await?;
+            let page = ManifestPage::decode(bytes.as_slice()).map_err(backend)?;
+            if page.pages.is_empty() || page.pages.len() > MANIFEST_PAGE_ITEMS {
+                return Err(backend("invalid manifest page"));
+            }
+            remaining = remaining
+                .checked_sub(u64::try_from(page.pages.len()).map_err(backend)?)
+                .ok_or_else(|| backend("manifest page count mismatch"))?;
+            for id in page.pages {
+                if id.len() != 32 {
+                    return Err(backend("invalid metadata page identity"));
+                }
+                let bytes = self.metadata("pages", &hex::encode(id)).await?;
+                loader.page(&bytes)?;
+            }
+            next = page.next;
+        }
+        if !next.is_empty() {
+            return Err(backend("manifest page count mismatch"));
+        }
+        loader.finish()
+    }
+
     async fn metadata(&self, kind: &str, id: &str) -> Result<Vec<u8>, Error> {
         if id.len() != 64 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(backend("invalid metadata identity"));
@@ -355,8 +416,8 @@ impl Transport {
             .get(&self.path(&format!("{kind}/{id}")))
             .await
             .map_err(backend)?;
-        if result.meta.size > MAX_METADATA as u64 {
-            return Err(backend("oversized metadata page"));
+        if kind != "pages" && result.meta.size > MANIFEST_PAGE_BYTES as u64 {
+            return Err(backend("invalid metadata control page size"));
         }
         let bytes = result.bytes().await.map_err(backend)?;
         if blake3::hash(&bytes).to_hex().as_str() != id {
@@ -577,3 +638,6 @@ impl ObjectsProvider for S3Objects {
         .await
     }
 }
+
+#[cfg(test)]
+mod tests;

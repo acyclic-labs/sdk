@@ -194,8 +194,19 @@ pub(super) fn replay(
                     .try_into()
                     .map_err(corrupt)?,
             ) as usize;
-            if !(1..=RECORD_LIMIT).contains(&size) {
+            if size == 0 {
                 return Err(LocalOpenError::Corrupt);
+            }
+            // A torn or hostile length prefix must not cause an allocation for
+            // bytes that are absent from the original file.
+            if size as u64 > end.saturating_sub(file.stream_position()?) {
+                return repair_tail(
+                    file,
+                    start,
+                    std::io::Error::from(std::io::ErrorKind::UnexpectedEof),
+                    limits,
+                )
+                .map(|()| (state, operations, inline_bytes));
             }
             let mut encoded = vec![0; size];
             if let Err(error) = file.read_exact(&mut encoded) {

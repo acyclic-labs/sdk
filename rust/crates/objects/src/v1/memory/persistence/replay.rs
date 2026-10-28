@@ -5,7 +5,7 @@ pub(super) fn restore_body(
     root: &Arc<crate::physical::LocalRoot>,
     expected: u64,
 ) -> Result<StoredBody, LocalOpenError> {
-    if records.is_empty() || records.len() > 10_000 {
+    if records.is_empty() {
         return Err(LocalOpenError::Corrupt);
     }
     let mut length = 0usize;

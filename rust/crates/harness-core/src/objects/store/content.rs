@@ -15,11 +15,6 @@ impl ObjectContentStore {
             path,
             content
         );
-        if key.len() > acyclic_objects::wire::ObjectsLimit::MaxKeyBytes as usize {
-            return Err(Error::Invalid(
-                "Objects content key exceeds provider limit".into(),
-            ));
-        }
         Ok(key)
     }
 
