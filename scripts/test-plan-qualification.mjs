@@ -247,6 +247,18 @@ test("Windows package and clippy compilation use sixteen CPUs while cross-check 
 });
 
 
+test("clippy refuses invalid worker counts before Cargo can start", () => {
+  for (const args of [["0"], ["-1"], ["NaN"], ["1.5"], ["Infinity"], ["9007199254740992"], ["1", "unexpected"]]) {
+    const result = spawnSync(process.execPath, ["scripts/clippy-feature-sets.mjs", ...args], {
+      encoding: "utf8", env: { ...process.env, PATH: "" },
+    });
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, /STEP_FAILED clippy-workers: WORKERS must be a positive safe integer/);
+    assert.match(result.stderr, /recovery: node scripts\/clippy-feature-sets\.mjs 1/);
+    assert.equal(result.stdout, "");
+  }
+});
+
 test("four clippy workers retain every feature invocation and fail when any worker fails", async () => {
   const source = readFileSync("scripts/clippy-feature-sets.mjs", "utf8").replace('import { spawn } from "node:child_process";', "");
   const execute = async (workers, failFirst = false) => {

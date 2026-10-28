@@ -59,6 +59,9 @@ const libraryOnly = [
 // so Cargo's build lock never serializes them; a shared compiler cache still
 // deduplicates their dependencies.
 const workers = Number(process.argv[2] ?? 1);
+if (process.argv.length > 3 || !Number.isSafeInteger(workers) || workers < 1) {
+  throw new Error("STEP_FAILED clippy-workers: WORKERS must be a positive safe integer; recovery: node scripts/clippy-feature-sets.mjs 1");
+}
 const sets = [...withTests.map(set => [...set, "--all-targets"]), ...libraryOnly];
 let failed = 0;
 
