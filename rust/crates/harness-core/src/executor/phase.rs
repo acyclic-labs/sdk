@@ -174,7 +174,7 @@ impl<'a> PreparedPhase<'a> {
         if let Some(barrier) = self.barrier {
             let result = acyclic_stream::deferring_durability(future).await;
             // Includes errors and the winning branch of a cancellation race.
-            barrier.await?;
+            crate::obs::waiting("journal-durability", "prepared-phase", barrier).await?;
             return result;
         }
         let _ = self.barrier;

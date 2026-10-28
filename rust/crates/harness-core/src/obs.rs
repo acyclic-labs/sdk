@@ -1,5 +1,21 @@
 //! Tracing glue for `docs/observability.md`.
 
+pub(crate) fn waiting<F: Future>(
+    primitive: &'static str,
+    key: impl std::fmt::Display,
+    future: F,
+) -> impl Future<Output = F::Output> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        acyclic_native_runtime::obs::waiting(primitive, key, future)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (primitive, key);
+        future
+    }
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use acyclic_native_runtime::obs::OperationSpan;
 #[cfg(not(target_arch = "wasm32"))]

@@ -10,17 +10,19 @@ use std::sync::{Arc, PoisonError};
 use crate::OwnedBytes as Bytes;
 use crate::query_sync::{RwLock, SyncMutex as Mutex, watch};
 use acyclic_native_runtime::OwnershipAnchor;
+#[cfg(not(loom))]
+use acyclic_native_runtime::spawn_persistence as spawn_blocking;
 #[cfg(all(not(loom), feature = "test-support"))]
-use acyclic_native_runtime::testing::{spawn, spawn_blocking};
+use acyclic_native_runtime::testing::spawn;
 use async_trait::async_trait;
 use futures::{StreamExt as _, stream};
 #[cfg(loom)]
 use query_model::{spawn, spawn_blocking};
 use sha2::{Digest as _, Sha256};
 use thiserror::Error;
-use tokio::sync::mpsc;
 #[cfg(all(not(loom), not(feature = "test-support")))]
-use tokio::{spawn, task::spawn_blocking};
+use tokio::spawn;
+use tokio::sync::mpsc;
 
 #[cfg(loom)]
 pub(crate) mod parking_model;

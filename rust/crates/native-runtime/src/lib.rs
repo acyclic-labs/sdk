@@ -133,7 +133,10 @@ pub(crate) use blocking::{
     PreparedWake, inline_blocking_allowed, measured_completion_meter, task_completion,
     wait_measured_completion,
 };
-pub use task::{AbortHandle, TaskHandle, TaskSpawner, coordination_runtime, spawn, spawn_blocking};
+pub use task::{
+    AbortHandle, TaskHandle, TaskSpawner, coordination_runtime, spawn, spawn_blocking,
+    spawn_persistence,
+};
 mod completion;
 pub use completion::NativeCompletion;
 #[cfg(any(windows, target_os = "linux"))]

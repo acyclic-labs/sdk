@@ -284,7 +284,13 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 ExecutionProgress::Ready(output) => {
                     let bytes = crate::contract::canonical_json_bytes(&output)
                         .map_err(|error| host_error(error.into()))?;
-                    let output = open.outputs.stage(turn, &bytes).await.map_err(host_error)?;
+                    let output = crate::obs::waiting(
+                        "output-commit",
+                        turn,
+                        open.outputs.stage(turn, &bytes),
+                    )
+                    .await
+                    .map_err(host_error)?;
                     // An active goal continues the agent through its own inbox.
                     let goal = match &open.goal {
                         Some(goal) => super::goal::settle(agent, &input, turn, &**goal).await?,

@@ -2,6 +2,81 @@ use super::*;
 use proptest::prelude::*;
 
 #[test]
+fn committed_completion_does_not_wait_for_transport_close() -> Result<()> {
+    use futures::FutureExt as _;
+
+    for (completed, closed) in [(true, false), (false, true), (false, false)] {
+        let mut events = vec![ScriptedEvent::Event(ModelEvent::MessageCompleted {
+            text: "done".into(),
+        })];
+        if completed {
+            events.push(ScriptedEvent::Event(ModelEvent::Completed {
+                metadata: Value::Null,
+            }));
+        }
+        if !closed {
+            events.push(ScriptedEvent::Pending {});
+        }
+        let provider = Arc::new(ScriptedModelProvider::new([
+            tool_turn([echo_call("call", json!({}))]),
+            ScriptedTurn::Events(events),
+        ]));
+        let executor = uncompacted_executor(
+            Model::new(
+                "fixture".into(),
+                "completion".into(),
+                "1".into(),
+                Value::Null,
+            )?,
+            provider.clone(),
+            ContextPipeline::default(),
+            echo_tools(
+                Arc::new(FakeTool(AtomicUsize::new(0))),
+                json!({"type":"object"}),
+                json!({}),
+                crate::tool::json_projection_schema(json!({})),
+            )?,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            allowed()?,
+        )?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("hello".into()),
+            selected_context: None,
+            max_steps: 2,
+        };
+        let result = executor.execute(input.clone(), &journal).now_or_never();
+        if completed {
+            let output = result.expect("committed completion waited for transport closure")?;
+            assert_eq!(output.text, "done");
+            assert_eq!(output.steps, 2);
+            let replay = executor
+                .execute(input, &journal)
+                .now_or_never()
+                .expect("settled replay waited")?;
+            assert_eq!(replay, output);
+        } else if closed {
+            assert!(
+                matches!(result, Some(Err(Error::Indeterminate(id))) if id == input.operation_id)
+            );
+        } else {
+            assert!(
+                result.is_none(),
+                "an open response without completion cannot settle"
+            );
+        }
+        assert_eq!(provider.requests().len(), 2);
+    }
+    Ok(())
+}
+
+#[test]
 fn authoritative_messages_do_not_bypass_stream_admission() -> Result<()> {
     let limits = Limits {
         file_bytes: 4,
