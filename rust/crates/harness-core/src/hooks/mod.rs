@@ -231,9 +231,7 @@ impl Hooks {
 // A static partition keeps total live capture storage bounded without a lock,
 // scheduling-dependent output truncation, or delaying concurrent hook dispatch.
 fn capture_quota(maximum: u64, count: usize) -> usize {
-    usize::try_from(maximum / (count.max(1) as u64))
-        .unwrap_or(usize::MAX)
-        .min(65_536)
+    usize::try_from(maximum / (count.max(1) as u64)).unwrap_or(usize::MAX)
 }
 
 pub(crate) fn report(event: HookEvent, output: &HookOutput) {
