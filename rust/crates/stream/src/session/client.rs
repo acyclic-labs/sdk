@@ -16,6 +16,7 @@ use transport::Endpoint;
 mod admissions;
 mod application;
 mod call;
+mod commands;
 use admissions::Admissions;
 pub use application::{ApplicationDelivery, ApplicationSubscription};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
@@ -80,7 +81,7 @@ const FRAME_BYTES: u64 = crate::MAX_RECORD_BYTES as u64 + 128;
 pub struct Client {
     connections: super::Connections,
     executor: std::sync::Arc<dyn crate::runtime::Executor>,
-    commands: mpsc::Sender<Command>,
+    commands: commands::Sender,
     removed: Arc<signal::Signal<u64>>,
     next_id: Arc<AtomicU64>,
     active: Arc<AtomicU64>,
@@ -239,7 +240,7 @@ struct Pool {
     attempt_epoch: Arc<AtomicU64>,
     abandoned: Arc<gate::Gate>,
     dial_epoch: u64,
-    commands: mpsc::Receiver<Command>,
+    commands: commands::Receiver,
     removed: Arc<signal::Signal<u64>>,
     released: ReleaseSender,
     release_sender: ReleaseSender,
@@ -286,7 +287,7 @@ impl Client {
         executor: std::sync::Arc<dyn crate::runtime::Executor>,
         revisions: Arc<crate::RevisionTracker>,
     ) -> Self {
-        let (commands, receiver) = mpsc::channel(crate::MAX_ITEMS);
+        let (commands, receiver) = commands::channel(crate::MAX_ITEMS);
         let connections = super::Connections::new();
         // Drop produces at most one removal per admitted channel; it must never block.
         let removed = Arc::new(signal::Signal::new());
@@ -354,7 +355,7 @@ impl Client {
         self.registration_timeout = milliseconds;
         self
     }
-    /// Registers or renews a bounded capability slot on every physical session.
+    /// Registers or renews a capability slot on every physical session.
     /// Empty bytes drop it. Registration is ordered before subsequent opens;
     /// the server rechecks bound channels and reports refusal on those channels.
     pub fn register_credential(&self, slot: u32, credential: Bytes) -> Result<(), StreamError> {
@@ -369,12 +370,7 @@ impl Client {
         if frame.encoded_len() > crate::MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
-        self.commands
-            .try_send(Command::Credential { slot, credential })
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => StreamError::Capacity,
-                mpsc::error::TrySendError::Closed(_) => StreamError::Unavailable,
-            })
+        self.commands.credential(slot, credential)
     }
     /// Observes successful handshakes without depending on further task records.
     #[must_use]
@@ -456,7 +452,6 @@ impl Client {
         &self,
         request: crate::FollowRequest,
         acknowledge: bool,
-
     ) -> Result<
         impl futures::Stream<Item = Result<crate::FollowUpdate, StreamError>> + 'static + use<>,
         StreamError,

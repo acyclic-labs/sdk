@@ -29,8 +29,7 @@ impl Pool {
                 0,
                 Body::Credential(wire::SessionCredential { slot, credential }),
             );
-            let bytes = value.encoded_len();
-            link.sender.push(value, bytes)?;
+            link.sender.push(value)?;
         }
         self.links.insert(node.clone(), link);
         self.read(node.clone(), response);
@@ -128,10 +127,8 @@ impl Pool {
         {
             wire_codec::session::grant_credit(&mut link.credit, grant)?;
         }
-        let bytes = value.encoded_len();
-        if let Err(error) = link.sender.push(value, bytes) {
-            // A full control queue cannot safely retain remote interests after
-            // cancellation. Evict this node's session, never the shared pool.
+        if let Err(error) = link.sender.push(value) {
+            // A closed transport ends only this node's session.
             self.fail_link(node, &error);
         }
         Ok(())
@@ -202,8 +199,7 @@ impl Pool {
                 remove: Vec::new(),
             }),
         );
-        let bytes = value.encoded_len();
-        match link.sender.push(value, bytes) {
+        match link.sender.push(value) {
             Ok(()) => link.revision = revision,
             Err(error) => self.reject(id, error),
         }
@@ -399,18 +395,12 @@ async fn handshake(
     identity: Bytes,
     credentials: BTreeMap<u32, Bytes>,
 ) -> Result<Ready, StreamError> {
-    let sender = Arc::new(Outbound::new(crate::MAX_ITEMS, crate::MAX_COMMAND_BYTES));
+    let sender = Arc::new(Outbound::new());
     let credit = wire::SessionWindow {
         bytes: crate::MAX_COMMAND_BYTES as u64,
         frames: u32::try_from(crate::MAX_ITEMS).map_err(|_| StreamError::Capacity)?,
     };
     let opening_credentials = credentials.clone();
-    let credentials = match credentials.keys().next_back().copied() {
-        Some(last) => (0..=last)
-            .map(|slot| credentials.get(&slot).cloned().unwrap_or_default())
-            .collect::<Vec<_>>(),
-        None => vec![],
-    };
     let hello = frame(
         0,
         0,
@@ -420,14 +410,12 @@ async fn handshake(
             destination_node: destination.into(),
             receive_bytes: credit.bytes,
             receive_frames: credit.frames,
-            credentials,
         }),
     );
     let bytes = hello.encoded_len();
     if bytes > crate::MAX_COMMAND_BYTES {
         return Err(StreamError::LimitExceeded);
     }
-    sender.push(hello, bytes)?;
     // Ownership is installed before either credential or connection I/O await.
     let link = Link {
         opening_credentials,
@@ -441,10 +429,23 @@ async fn handshake(
         epoch: 0,
         credit,
     };
-    let input: transport::Requests = Box::pin(stream::unfold(
-        Arc::clone(&link.sender),
-        |sender| async move { sender.next().await.ok().map(|frame| (frame, sender)) },
-    ));
+    // Initial slots are streamed sparsely, before rotations and interests.
+    // No aggregate Hello or maximum-slot-sized array is materialized.
+    let initial = stream::iter(credentials.into_iter().map(|(slot, credential)| {
+        frame(
+            0,
+            0,
+            Body::Credential(wire::SessionCredential { slot, credential }),
+        )
+    }));
+    let controls = stream::unfold(Arc::clone(&link.sender), |sender| async move {
+        sender.next().await.ok().map(|frame| (frame, sender))
+    });
+    let input: transport::Requests = Box::pin(
+        stream::once(future::ready(hello))
+            .chain(initial)
+            .chain(controls),
+    );
     let mut response = link.channel.session(input).await?;
     let welcome = response
         .next()
