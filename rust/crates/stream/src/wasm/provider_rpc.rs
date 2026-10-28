@@ -231,25 +231,7 @@ impl StreamProvider for InjectedStream {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         Ok(self.watermarks(path).await?.accepted)
     }
-    async fn wait_applied(
-        &self,
-        at_least: &crate::RevisionCut,
-    ) -> Result<crate::Revision, StreamError> {
-        let applied: wire::Revision = self
-            .call(
-                "wait_applied",
-                wire::WaitAppliedRequest {
-                    at_least: wire_codec::cut_to_wire(at_least),
-                },
-            )
-            .await?;
-        let applied = wire_codec::revision_from_wire(applied)?;
-        // The host's applied revision must prove the cut it waited for.
-        if !at_least.proven_by(Some(&applied)) {
-            return Err(StreamError::InvalidResponse);
-        }
-        Ok(applied)
-    }
+
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         wire_codec::watermarks_from_wire(
             self.call(

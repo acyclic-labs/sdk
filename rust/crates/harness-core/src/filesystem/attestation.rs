@@ -166,12 +166,6 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.inner.tail(path).await
     }
-    async fn wait_applied(
-        &self,
-        at_least: &acyclic_stream::RevisionCut,
-    ) -> Result<acyclic_stream::Revision, StreamError> {
-        self.inner.wait_applied(at_least).await
-    }
 
     async fn heads(
         &self,

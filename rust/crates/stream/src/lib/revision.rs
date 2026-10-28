@@ -5,6 +5,7 @@
 //! scopes or incarnations, and a stream offset is never a revision.
 use crate::OwnedBytes as Bytes;
 use crate::StreamError;
+use crate::StreamProviderExt as _;
 use crate::query_sync::watch;
 
 /// Opaque identity of the authority that orders revisions.

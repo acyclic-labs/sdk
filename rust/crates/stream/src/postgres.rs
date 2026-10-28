@@ -378,7 +378,19 @@ impl StreamProvider for PostgresStream {
         self.inner.core.inspect_idempotency(key).await
     }
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
-        self.refresh().await?;
+        request.validate()?;
+        self.check()?;
+        let revisions = &self.inner.core.revisions;
+        if !request.paths.is_empty()
+            || request.children.is_some()
+            || revisions
+                .floor(&request.at_least)?
+                .is_some_and(|floor| floor > revisions.current().index)
+        {
+            // Named observations refresh their snapshot. A covered revision
+            // wait needs no unrelated journal read or server clock request.
+            self.refresh().await?;
+        }
         let mut view = self.inner.core.heads(request).await?;
         for head in view.heads.iter_mut().flatten() {
             head.durable = head.tail;
@@ -416,22 +428,7 @@ impl StreamProvider for PostgresStream {
             _ => Err(StreamError::InvalidResponse),
         }
     }
-    async fn wait_applied(
-        &self,
-        at_least: &crate::RevisionCut,
-    ) -> Result<crate::Revision, StreamError> {
-        self.check()?;
-        let revisions = &self.inner.core.revisions;
-        if revisions
-            .floor(at_least)?
-            .is_some_and(|floor| floor > revisions.current().index)
-        {
-            // A token was issued after its publication reached the journal.
-            // An already-applied floor needs no unrelated catch-up.
-            self.refresh().await?;
-        }
-        self.inner.core.wait_applied(at_least).await
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.refresh().await?;
         self.inner.core.read(request).await

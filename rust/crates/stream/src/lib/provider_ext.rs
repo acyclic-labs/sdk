@@ -7,6 +7,12 @@ pub trait StreamProviderExt: StreamProvider {
         &self,
         path: StreamPath,
     ) -> impl std::future::Future<Output = Result<PathHead, StreamError>> + ProviderTask;
+
+    /// Waits for the authority snapshot to cover the caller's minimum cut.
+    fn wait_applied(
+        &self,
+        at_least: &RevisionCut,
+    ) -> impl std::future::Future<Output = Result<Revision, StreamError>> + ProviderTask;
 }
 
 impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
@@ -28,6 +34,29 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
             let head = view.heads.pop().flatten().ok_or(StreamError::NotFound)?;
             head.validate()?;
             Ok(head)
+        }
+    }
+
+    fn wait_applied(
+        &self,
+        at_least: &RevisionCut,
+    ) -> impl std::future::Future<Output = Result<Revision, StreamError>> + ProviderTask {
+        async move {
+            let view = self
+                .heads(HeadsRequest {
+                    paths: Vec::new(),
+                    children: None,
+                    limit: 1,
+                    at_least: at_least.clone(),
+                })
+                .await?;
+            if !view.heads.is_empty()
+                || view.children.is_some()
+                || !at_least.proven_by(Some(&view.snapshot))
+            {
+                return Err(StreamError::InvalidResponse);
+            }
+            Ok(view.snapshot)
         }
     }
 }

@@ -164,13 +164,6 @@ impl StreamProvider for LocalStream {
         .await
     }
 
-    async fn wait_applied(
-        &self,
-        at_least: &crate::RevisionCut,
-    ) -> Result<crate::Revision, StreamError> {
-        self.inner.provider.revisions.wait(at_least).await
-    }
-
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let span = obs::OperationSpan::new(tracing::info_span!(
             "acyclic.stream.fork",

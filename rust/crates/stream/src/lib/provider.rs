@@ -73,15 +73,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     ) -> Result<Option<IdempotencyObservation>, StreamError>;
     /// Current next sequence.
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError>;
-    /// Returns this authority's applied revision once it covers `at_least`,
-    /// parking on the one applied notification otherwise. A foreign scope's
-    /// incarnation refuses with [`StreamError::RevisionForeign`]. Providers
-    /// that issue no revisions refuse as unsupported; reads still forward the
-    /// cut they carry.
-    async fn wait_applied(&self, at_least: &RevisionCut) -> Result<Revision, StreamError> {
-        let _ = at_least;
-        Err(StreamError::Unsupported)
-    }
     /// Observes accepted visibility and a confirmed durable prefix. Implementations
     /// with independent persistence report its watermark without awaiting a flush.
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {

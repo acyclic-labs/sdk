@@ -320,7 +320,7 @@ impl StreamProvider for BrowserStream {
     }
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
         if !request.at_least.is_empty() {
-            self.wait_applied(&request.at_least).await?;
+            self.wait_revision(&request.at_least).await?;
         }
         self.with_provider(async move |provider| {
             let mut view = provider.heads(request).await?;
@@ -366,19 +366,10 @@ impl StreamProvider for BrowserStream {
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         if !request.at_least.is_empty() {
-            self.wait_applied(&request.at_least).await?;
+            self.wait_revision(&request.at_least).await?;
         }
         self.with_provider(async move |provider| provider.read(request).await)
             .await
-    }
-    async fn wait_applied(
-        &self,
-        at_least: &crate::RevisionCut,
-    ) -> Result<crate::Revision, StreamError> {
-        // Park on the durable authority outside the cache lock, so writes can
-        // advance it. Refresh first: another tab's commits reach it by replay.
-        self.with_provider(async |_| Ok(())).await?;
-        self.inner.revisions.wait(at_least).await
     }
 
     async fn children_page(
@@ -406,7 +397,7 @@ impl StreamProvider for BrowserStream {
             at_least,
         } = request;
         if !at_least.is_empty() {
-            self.wait_applied(&at_least).await?;
+            self.wait_revision(&at_least).await?;
         }
         if progress {
             self.progress_from(path, from, preceding, when_absent, filter)
@@ -415,5 +406,17 @@ impl StreamProvider for BrowserStream {
             self.follow_from(path, from, preceding, when_absent, filter)
                 .await
         }
+    }
+}
+
+impl BrowserStream {
+    async fn wait_revision(
+        &self,
+        at_least: &crate::RevisionCut,
+    ) -> Result<crate::Revision, StreamError> {
+        // Park on the durable authority outside the cache lock, so writes can
+        // advance it. Refresh first: another tab's commits reach it by replay.
+        self.with_provider(async |_| Ok(())).await?;
+        self.inner.revisions.wait(at_least).await
     }
 }

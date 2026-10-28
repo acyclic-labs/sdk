@@ -67,13 +67,7 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().fork(request).await
     }
-    async fn wait_applied(
-        &self,
-        at_least: &crate::RevisionCut,
-    ) -> Result<crate::Revision, StreamError> {
-        self.record(RequestClass::Head);
-        self.inner().wait_applied(at_least).await
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.record(RequestClass::Data);
         self.inner().read(request).await

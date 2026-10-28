@@ -245,13 +245,6 @@ impl StreamProvider for MemoryStream {
         self.append_inner(request).await.map(|(value, _)| value)
     }
 
-    async fn wait_applied(
-        &self,
-        at_least: &crate::RevisionCut,
-    ) -> Result<crate::Revision, StreamError> {
-        self.revisions.wait(at_least).await
-    }
-
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
         let mut state = self.state.write().await;
         self.plan_fork_locked(&mut state, &request)?
