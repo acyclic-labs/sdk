@@ -406,7 +406,7 @@ fn bounded_index_prefix_never_authorizes_an_extension_outside_a_range() -> TestR
     let config = VolumeConfig::portable(crate::Lifecycle::Ephemeral);
     let mut components = Vec::new();
     for _ in 0..6 {
-        components.push(LogicalName::new(NameEncoding::Utf8, vec![b'x'; 240], 255)?);
+        components.push(LogicalName::new(NameEncoding::Utf8, vec![b'x'; 240])?);
     }
     let path = NamespacePath::new(components, config.limits)?;
     let key = crate::publication_changes::entry::key(&path, config);

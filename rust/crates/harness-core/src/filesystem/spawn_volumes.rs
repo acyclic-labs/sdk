@@ -8,8 +8,8 @@
 use super::FilesystemHost;
 use crate::{
     agent::{
-        AgentPath, AgentRecord as _, AgentState, Error, InboxRecord, IntentId, MAX_OPEN_CHILDREN,
-        Out, SpawnVolumes, VolumeBinding,
+        AgentPath, AgentRecord as _, AgentState, Error, InboxRecord, IntentId, Out, SpawnVolumes,
+        VolumeBinding,
     },
     conversation::{ContentAccess, ContentPublisher, FileRef, VolumeClass, VolumeOwner, VolumeRef},
     core::AuthorityRoot,
@@ -35,7 +35,7 @@ pub struct FilesystemSpawnVolumes<P: ?Sized + 'static, O: 'static> {
     host: Arc<Host<P, O>>,
     issuer: AuthorityRoot,
     admission: super::TurnAdmission,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     cuts: Option<Arc<dyn ForkCuts>>,
 }
 
@@ -57,20 +57,20 @@ pub trait ForkCuts: acyclic_stream::ProviderPlatform + 'static {
 impl<P: ?Sized, O> FilesystemSpawnVolumes<P, O> {
     /// Volumes on `host`, whose authority must be the agents' stream
     /// provider; `issuer` is the agents' signing custody, which stages each
-    /// child's brief of at most `maximum_bytes` under the child's own authority,
+    /// child's brief under the child's own authority, with an optional byte allowance,
     /// derived from `admission` like the child's turns.
     #[must_use]
     pub fn new(
         host: Arc<Host<P, O>>,
         issuer: AuthorityRoot,
         admission: super::TurnAdmission,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
     ) -> Self {
         Self {
             host,
             issuer,
             admission,
-            maximum_bytes,
+            maximum_bytes: maximum_bytes.into(),
             cuts: None,
         }
     }
@@ -194,18 +194,15 @@ struct Requested {
 fn children(
     parent: &AgentState,
     requested: &[Requested],
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 ) -> Result<(Vec<Vec<VolumeBinding>>, Vec<Planned>), Error> {
-    if requested.len() > MAX_OPEN_CHILDREN {
-        return Err(Error::Record("spawn requests too many children"));
-    }
     let mut bindings = Vec::with_capacity(requested.len());
     let mut planned = Vec::new();
     for Requested { intent, brief } in requested {
-        if brief
-            .as_ref()
-            .is_some_and(|brief| u64::try_from(brief.len()).map_or(true, |len| len > maximum_bytes))
-        {
+        if brief.as_ref().is_some_and(|brief| {
+            maximum_bytes
+                .is_some_and(|maximum| u64::try_from(brief.len()).map_or(true, |len| len > maximum))
+        }) {
             return Err(Error::Record("spawn brief exceeds its bound"));
         }
         let child = parent.path.child(&crate::agent::AgentId::derive(
@@ -330,13 +327,24 @@ where
                 .map_err(|failure| invalid(super::map_error(failure.error)))?
                 .value
                 .ok_or(Error::Record("spawned private volume was not created"))?;
+            let maximum = match self.maximum_bytes {
+                Some(maximum) => maximum,
+                None => match generation
+                    .stat(BRIEF_PATH, WorkBudget::UNBOUNDED, &cancellation)
+                    .await
+                {
+                    Ok(receipt) => receipt.value.logical_bytes.unwrap_or(0).max(1),
+                    Err(failure) => {
+                        let error = super::map_error(failure.error);
+                        if error.code() == crate::wire::ErrorCode::NotFound {
+                            return Ok(None);
+                        }
+                        return Err(invalid(error));
+                    }
+                },
+            };
             let bytes = match generation
-                .read(
-                    BRIEF_PATH,
-                    self.maximum_bytes,
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                )
+                .read(BRIEF_PATH, maximum, WorkBudget::UNBOUNDED, &cancellation)
                 .await
             {
                 Ok(receipt) => receipt.value,

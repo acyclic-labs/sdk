@@ -11,13 +11,6 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
-/// Maximum normalized UTF-8 path length admitted by the Harness protocol:
-/// the common `PATH_MAX`. With [`MAX_LABEL_BYTES`] it bounds every file and
-/// volume reference, so every record that carries one has a static size bound.
-pub const MAX_PATH_BYTES: usize = 4096;
-/// Maximum UTF-8 bytes in a file or volume label, display name, provider
-/// identity part or media type: the common file-name limit.
-pub const MAX_LABEL_BYTES: usize = 255;
 /// Largest integer that can be represented exactly by a JavaScript number.
 pub const MAX_EXACT_JS_INTEGER: u64 = (1_u64 << 53) - 1;
 #[allow(clippy::cast_precision_loss, reason = "2^53 - 1 is exact in f64")]
@@ -473,7 +466,6 @@ fn validate_label(
         io.check_cancellation()?;
     }
     if value.is_empty()
-        || value.len() as u64 > MAX_LABEL_BYTES as u64
         || value.chars().any(char::is_control)
         || value.contains('/')
         || value.contains('\\')
@@ -498,7 +490,6 @@ pub fn validate_content_path(
         io.check_cancellation()?;
     }
     if path.is_empty()
-        || path.len() as u64 > MAX_PATH_BYTES as u64
         || path.starts_with('/')
         || path.contains('\\')
         || path.chars().any(char::is_control)

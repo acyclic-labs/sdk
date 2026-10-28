@@ -144,13 +144,13 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         &self,
         mut edit: impl FnMut(&mut GitCompatState) -> Result<T, GitCompatError<S::Error>>,
     ) -> Result<T, GitCompatError<S::Error>> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let mut state = self.load().await?;
             let output = edit(&mut state)?;
             if self.publish(state).await? {
                 return Ok(output);
             }
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(GitCompatError::Contended)
     }
 }

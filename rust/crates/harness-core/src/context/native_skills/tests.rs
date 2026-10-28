@@ -45,14 +45,15 @@ async fn retained_records_share_one_sync_on_the_native_io_service() -> Result<()
         .await?;
     assert_eq!(skills.len(), 2);
     let mut exhausted = DiscoveryWork::default();
-    exhausted.entries = exhausted.limits.entries;
+    exhausted.limits.entries = Some(1);
+    exhausted.entries = 1;
     assert!(matches!(
         sources.user_catalog(&mut exhausted)?.await,
         Err(Error::Invalid(_))
     ));
     let mut narrow = DiscoveryWork {
         limits: crate::context::ContextDiscoveryLimits {
-            header_bytes: 1,
+            header_bytes: Some(1),
             ..Default::default()
         },
         ..Default::default()

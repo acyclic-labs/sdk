@@ -33,7 +33,7 @@ async fn root_capture_publishes_metadata_and_children() -> Result<(), Box<dyn st
         &CaptureOptions {
             source_root: source.path().to_path_buf(),
             expected_root_identity: capture_root_identity(source.path())?,
-            maximum_paths: 100,
+            maximum_paths: Some(100),
             maximum_extent_spans: 100,
         },
         WorkBudget::UNBOUNDED,

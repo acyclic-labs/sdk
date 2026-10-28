@@ -28,7 +28,6 @@ pub(super) async fn wait(
 ) -> Result<(), ProviderError> {
     obs::finish(
         async {
-            let mut unknown_observations = 0;
             loop {
                 match provider
                     .client()
@@ -46,7 +45,6 @@ pub(super) async fn wait(
                                 Ok(Ok(Some(value))) => {
                                     let phase =
                                         decode_operation_observation(&value, operation)?.phase;
-                                    unknown_observations = 0;
                                     if let Some(outcome) = observed_outcome(key, phase) {
                                         return outcome;
                                     }
@@ -74,14 +72,11 @@ pub(super) async fn wait(
                     Ok(response) => {
                         let phase =
                             decode_operation_observation(&response.into_inner(), operation)?.phase;
-                        unknown_observations = 0;
                         if let Some(outcome) = observed_outcome(key, phase) {
                             return outcome;
                         }
                     }
-                    Err(error)
-                        if !retryable_observation_error(&error, &mut unknown_observations) =>
-                    {
+                    Err(error) if !retryable_watch_error(&error) => {
                         return Err(watch_error(key, &error));
                     }
                     Err(_) => {}
@@ -189,14 +184,8 @@ pub(super) fn fork_children(
     values: &[wire::MachineId],
     source: Option<MachineId>,
 ) -> Result<Vec<MachineId>, ProviderError> {
-    if values.is_empty()
-        || values.len()
-            > usize::try_from(MAX_FORK_CHILDREN)
-                .map_err(|_| ProviderError::Invalid("invalid fork bound".into()))?
-    {
-        return Err(ProviderError::Rejected(
-            "fork child set is outside the public bound".into(),
-        ));
+    if values.is_empty() {
+        return Err(ProviderError::Rejected("fork returned no children".into()));
     }
     let mut seen = BTreeSet::new();
     let mut children = Vec::with_capacity(values.len());
@@ -238,21 +227,6 @@ pub(super) fn validate_recovered_admission(
         Err(ProviderError::Rejected(
             "recovery operation identity was substituted".into(),
         ))
-    }
-}
-
-pub(super) fn retryable_observation_error(
-    value: &tonic::Status,
-    unknown_observations: &mut u8,
-) -> bool {
-    match value.code() {
-        tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Cancelled => true,
-        // Repeated ambiguous errors return the retained recovery key.
-        tonic::Code::Unknown => {
-            *unknown_observations = unknown_observations.saturating_add(1);
-            *unknown_observations < MAX_CONSECUTIVE_UNKNOWN_INSPECTIONS
-        }
-        _ => false,
     }
 }
 

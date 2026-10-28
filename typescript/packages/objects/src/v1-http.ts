@@ -16,8 +16,8 @@ export interface ObjectsV1HttpOptions extends CredentialOptions {
 export class HttpObjectsV1 extends ObjectsV1Provider {
   private readonly credential: CredentialProvider;
   private readonly endpoint: URL;
-  private readonly maximumResponse: number;
-  private readonly maximumRequest: number;
+  private readonly maximumResponse: number | undefined;
+  private readonly maximumRequest: number | undefined;
   private readonly fetcher: typeof globalThis.fetch;
   private readonly observer: AcyclicObserver | undefined;
   constructor(options: ObjectsV1HttpOptions) {
@@ -25,9 +25,9 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     const endpoint = new URL(options.endpoint);
     if ((endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname))) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("invalid Objects HTTP endpoint");
     this.credential = credentialProvider(options);
-    this.maximumResponse = options.maximumResponseBytes ?? 64 * 1024 * 1024;
-    this.maximumRequest = options.maximumRequestBytes ?? 64 * 1024 * 1024;
-    for (const maximum of [this.maximumResponse, this.maximumRequest]) if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 0xffff_ffff) throw new RangeError("wire limit must be a positive uint32");
+    this.maximumResponse = options.maximumResponseBytes;
+    this.maximumRequest = options.maximumRequestBytes;
+    for (const maximum of [this.maximumResponse, this.maximumRequest]) if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 1)) throw new RangeError("wire limit must be a positive safe integer");
     endpoint.pathname = endpoint.pathname.replace(/\/$/, "") + "/v1/objects/";
     this.endpoint = endpoint;
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -39,7 +39,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
   private async send(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint, sizes?: OperationSizes): Promise<readonly Uint8Array[]> {
     const requestType = objects_v1_http_type(route, false);
     const responseType = objects_v1_http_type(route, true);
-    const decodeResponse = (data: Uint8Array, maximum: number) => {
+    const decodeResponse = (data: Uint8Array, maximum?: number) => {
       try { return decode_objects_v1_json(responseType, data, maximum); }
       catch (error) { throw new ObjectsV1Error(objectsV1Error(error).code === wire.ErrorCode.QUOTA_EXCEEDED ? wire.ErrorCode.QUOTA_EXCEEDED : wire.ErrorCode.UNAVAILABLE); }
     };
@@ -48,7 +48,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
     let requestSize = 0;
     const add = (value: Uint8Array) => {
       requestSize += value.byteLength + (streaming ? 1 : 0);
-      if (requestSize > this.maximumRequest) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
+      if (this.maximumRequest !== undefined && requestSize > this.maximumRequest) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
       payloads.push(value);
       if (streaming) payloads.push(new Uint8Array([10]));
     };
@@ -57,7 +57,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
       const header = put
         ? toBinary(wire.PutObjectRequestSchema, create(wire.PutObjectRequestSchema, { frame: { case: "header", value: fromBinary(wire.PutObjectHeaderSchema, bytes) } }))
         : toBinary(wire.UploadPartRequestSchema, create(wire.UploadPartRequestSchema, { frame: { case: "header", value: fromBinary(wire.UploadPartHeaderSchema, bytes) } }));
-      add(encode_objects_v1_json(requestType, header, 128 * 1024));
+      add(encode_objects_v1_json(requestType, header));
       for (let offset = 0; offset < body.byteLength; offset += 65536) {
         const chunk = body.subarray(offset, offset + 65536);
         const frame = put
@@ -69,7 +69,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
         ? toBinary(wire.PutObjectRequestSchema, create(wire.PutObjectRequestSchema, { frame: { case: "complete", value: true } }))
         : toBinary(wire.UploadPartRequestSchema, create(wire.UploadPartRequestSchema, { frame: { case: "complete", value: true } }));
       add(encode_objects_v1_json(requestType, complete, 128 * 1024));
-    } else add(encode_objects_v1_json(requestType, bytes, 16 * 1024 * 1024));
+    } else add(encode_objects_v1_json(requestType, bytes));
     const request = new Uint8Array(requestSize);
     let offset = 0;
     for (const part of payloads) { request.set(part, offset); offset += part.byteLength; }
@@ -84,8 +84,6 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
         if (response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/x-ndjson") throw new ObjectsV1Error(wire.ErrorCode.UNAVAILABLE);
         reader = response.body?.getReader();
         const frames: Uint8Array[] = [];
-        // One NDJSON line, bounded by the base64 of one compressed 8 MiB body frame.
-        const lineLimit = 12 * 1024 * 1024;
         let line = new Uint8Array(64 * 1024);
         let lineLength = 0;
         let wireSize = 0;
@@ -95,15 +93,18 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
           const { done, value } = await reader.read();
           if (done) break;
           wireSize += value.byteLength;
-          if (wireSize > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
+          if (this.maximumResponse !== undefined && wireSize > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
           for (let start = 0; ;) {
             const newline = value.indexOf(10, start);
             const end = newline < 0 ? value.byteLength : newline;
             const fragment = value.subarray(start, end);
             const needed = lineLength + fragment.byteLength;
-            if (needed > lineLimit) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
+            // Metadata is a logical value; subsequent body frames are chunks.
+            const lineLimit = expected === undefined ? undefined : 12 * 1024 * 1024;
+            if (lineLimit !== undefined && needed > lineLimit) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
             if (needed > line.byteLength) {
-              const grown = new Uint8Array(Math.min(lineLimit, Math.max(needed, line.byteLength * 2)));
+              const capacity = Math.max(needed, line.byteLength * 2);
+              const grown = new Uint8Array(lineLimit === undefined ? capacity : Math.min(lineLimit, capacity));
               grown.set(line.subarray(0, lineLength));
               line = grown;
             }
@@ -140,7 +141,7 @@ export class HttpObjectsV1 extends ObjectsV1Provider {
         const { done, value } = await reader.read();
         if (done) break;
         size += value.byteLength;
-        if (size > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
+        if (this.maximumResponse !== undefined && size > this.maximumResponse) throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
         chunks.push(value);
       }
       if (sizes) sizes.responseBytes = size;
