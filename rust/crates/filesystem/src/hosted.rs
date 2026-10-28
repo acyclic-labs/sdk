@@ -45,10 +45,10 @@ pub struct HostedFsOptions {
     pub maximum_response_bytes: usize,
     /// Maximum encoded request size sent by this client.
     pub maximum_request_bytes: usize,
-    /// Connection deadline.
-    pub connect_timeout: Duration,
-    /// Per-request transport deadline.
-    pub request_timeout: Duration,
+    /// Optional caller-selected connection deadline.
+    pub connect_timeout: Option<Duration>,
+    /// Optional caller-selected per-request transport deadline.
+    pub request_timeout: Option<Duration>,
 }
 
 impl std::fmt::Debug for HostedFsOptions {
@@ -70,7 +70,7 @@ impl std::fmt::Debug for HostedFsOptions {
 }
 
 impl HostedFsOptions {
-    /// Creates bounded hosted options with conservative transport defaults.
+    /// Creates hosted options with transport frame sizing and no operation deadline.
     #[must_use]
     pub fn new(endpoint: impl Into<String>, bearer_token: impl Into<String>) -> Self {
         Self {
@@ -80,8 +80,8 @@ impl HostedFsOptions {
             maximum_response_bytes: usize::try_from(DEFAULT_HOSTED_MAXIMUM_RESPONSE_BYTES)
                 .unwrap_or(usize::MAX),
             maximum_request_bytes: 16 * 1024 * 1024,
-            connect_timeout: Duration::from_secs(10),
-            request_timeout: Duration::from_secs(30),
+            connect_timeout: None,
+            request_timeout: None,
         }
     }
 
@@ -244,9 +244,13 @@ impl HostedFs {
             Some(credential_header(&options.bearer_token)?)
         };
         let is_https = options.endpoint.starts_with("https://");
-        let mut endpoint = Endpoint::new(options.endpoint)?
-            .connect_timeout(options.connect_timeout)
-            .timeout(options.request_timeout);
+        let mut endpoint = Endpoint::new(options.endpoint)?;
+        if let Some(timeout) = options.connect_timeout {
+            endpoint = endpoint.connect_timeout(timeout);
+        }
+        if let Some(timeout) = options.request_timeout {
+            endpoint = endpoint.timeout(timeout);
+        }
         if let Some(certificate) = options.ca_certificate_pem {
             if !is_https {
                 return Err(HostedFsError::InvalidOptions(

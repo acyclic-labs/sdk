@@ -49,8 +49,8 @@ pub struct ReaderPolicy {
     pub lag: u64,
     /// Follow deliveries folded per frame; the rest wait on session credit.
     pub deliveries: usize,
-    /// A read unanswered after this is failed and its slot reused.
-    pub timeout_ms: u64,
+    /// Optional caller-selected deadline before a read is retried.
+    pub timeout_ms: Option<u64>,
     /// First retry delay after a failure.
     pub backoff_min_ms: u64,
     /// Longest retry delay.
@@ -73,7 +73,7 @@ impl Default for ReaderPolicy {
             listing_limit: 64,
             lag: 16,
             deliveries: 256,
-            timeout_ms: 10_000,
+            timeout_ms: None,
             backoff_min_ms: 250,
             backoff_max_ms: 8_000,
             offline_after: 3,
@@ -105,7 +105,7 @@ impl ReaderPolicy {
             && self.listing_limit > 0
             && self.lag >= 1
             && self.deliveries > 0
-            && self.timeout_ms > 0
+            && self.timeout_ms.is_none_or(|timeout| timeout > 0)
             && self.backoff_min_ms > 0
             && self.backoff_min_ms <= self.backoff_max_ms
             && self.offline_after > 0;
@@ -342,7 +342,7 @@ struct Paging {
 struct InFlight {
     key: OpKey,
     priority: Priority,
-    deadline: u64,
+    deadline: Option<u64>,
     issued: u64,
     paging: Paging,
 }
@@ -549,7 +549,7 @@ impl Reader {
         let overdue: Vec<u64> = self
             .inflight
             .iter()
-            .filter(|(_, flight)| flight.deadline <= now)
+            .filter(|(_, flight)| flight.deadline.is_some_and(|deadline| deadline <= now))
             .map(|(id, _)| *id)
             .collect();
         for id in overdue {
@@ -785,7 +785,10 @@ impl Reader {
                 InFlight {
                     key: key.clone(),
                     priority: *priority,
-                    deadline: now.saturating_add(self.policy.timeout_ms),
+                    deadline: self
+                        .policy
+                        .timeout_ms
+                        .map(|timeout| now.saturating_add(timeout)),
                     issued: now,
                     paging: paging.clone(),
                 },
@@ -1169,7 +1172,11 @@ impl Reader {
     /// is armed while reads are wanted or a wanted follow waits to reopen.
     #[must_use]
     pub fn next_deadline(&self) -> Option<u64> {
-        let read = self.inflight.values().map(|flight| flight.deadline).min();
+        let read = self
+            .inflight
+            .values()
+            .filter_map(|flight| flight.deadline)
+            .min();
         let waiting = !self.demand.is_empty() || (self.follow_backoff && !self.follows.is_empty());
         let retry = (waiting && self.retry_at > self.now).then_some(self.retry_at);
         match (read, retry) {
@@ -1316,8 +1323,13 @@ mod reader_tests {
         }));
         let ops = reader.poll(0);
         assert_eq!(ops.len(), streams.len());
+        reader.begin_frame(20_000);
+        assert!(
+            reader.take_cancelled().is_empty(),
+            "slow reads retain their original credit"
+        );
         for op in ops {
-            reader.complete(op.id(), Outcome::Tail(0), 0);
+            reader.complete(op.id(), Outcome::Tail(0), 20_000);
         }
         reader.set_follows(streams.clone());
         let followed: BTreeSet<_> = reader.follows().map(|(stream, _)| stream.clone()).collect();
@@ -1443,7 +1455,7 @@ mod reader_tests {
             InFlight {
                 key: key.clone(),
                 priority: Priority::Visible,
-                deadline: 100,
+                deadline: Some(100),
                 issued: 0,
                 paging: paging.clone(),
             },
