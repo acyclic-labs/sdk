@@ -22,7 +22,7 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
     pub(super) async fn records(
         &self,
         ids: &[FileId],
-        maximum_entries: u32,
+        maximum_entries: Option<u32>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(NamespaceRecordSearch, KernelOwnedAllocation), FsError> {
@@ -33,7 +33,7 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
             },
             accounting.claim_owned(0, 0)?,
         );
-        if ids.is_empty() || maximum_entries == 0 {
+        if ids.is_empty() || maximum_entries == Some(0) {
             return Ok(matches);
         }
         matches.0.complete = super::reverse_traversal::collect_namespace(
@@ -50,7 +50,7 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
 
     pub(super) async fn all_records(
         &self,
-        maximum_entries: u32,
+        maximum_entries: Option<u32>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(NamespaceRecordSearch, KernelOwnedAllocation), FsError> {
@@ -61,7 +61,7 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
             },
             accounting.claim_owned(0, 0)?,
         );
-        if maximum_entries == 0 {
+        if maximum_entries == Some(0) {
             return Ok(matches);
         }
         matches.0.complete = super::reverse_traversal::collect_namespace(
@@ -79,7 +79,7 @@ impl<O: AsyncObjectStore> NamespaceView<'_, O> {
     pub(super) async fn descendants(
         &self,
         path: &NamespacePath,
-        maximum_entries: u32,
+        maximum_entries: Option<u32>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<(NamespaceRecordSearch, KernelOwnedAllocation), FsError> {

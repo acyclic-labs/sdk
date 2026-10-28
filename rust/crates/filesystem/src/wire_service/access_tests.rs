@@ -171,7 +171,7 @@ async fn export_revocation_cut(
                 },
             ))],
             operation: operation(2),
-            maximum_conflicts: 8,
+            maximum_conflicts: Some(8),
         }))
         .await?
         .into_inner()
