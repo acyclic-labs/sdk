@@ -65,7 +65,7 @@ impl ActorsDomain {
             .provider()
             .read(ReadRequest {
                 path: self.store.root().clone(),
-                at_least: None,
+                at_least: Default::default(),
                 from,
                 limit: 256,
             })

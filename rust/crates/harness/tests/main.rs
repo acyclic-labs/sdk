@@ -16,6 +16,7 @@ mod progress_registry;
 mod stall;
 
 #[cfg(feature = "test-support")]
+#[cfg(not(loom))]
 mod history_selection;
 #[cfg(feature = "test-support")]
 #[cfg(not(loom))]
