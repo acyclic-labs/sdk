@@ -19,7 +19,7 @@ use crate::{
         ExtensionDependency, ExtensionRecord, ExtensionStateMigration, Scope,
     },
     executor::ModelEventAdmission,
-    interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
+    interaction::{ApprovalBinding, InteractionResolution, InteractionTicket},
     model::{ModelContent, ModelEvent, ModelMessage},
     projection::{SelectedModelContext, select_model_context, validate_model_context_selection},
     resources::{ProviderRef, ResourceRef},

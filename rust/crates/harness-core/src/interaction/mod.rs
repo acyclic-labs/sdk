@@ -23,8 +23,6 @@ mod outcome;
 pub use outcome::InteractionOutcome;
 mod resolution;
 pub use resolution::InteractionResolution;
-mod receipt;
-pub use receipt::ResolutionReceipt;
 mod request;
 pub use request::{ApprovalRoute, ApprovalSubject, ChoiceOption, Interaction};
 mod response;

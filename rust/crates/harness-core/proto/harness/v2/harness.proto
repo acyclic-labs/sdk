@@ -323,15 +323,6 @@ message InteractionResolution {
   FileRef detail = 4;
 }
 
-message ResolutionReceipt {
-  string id = 1;
-  uint64 version = 2;
-  string operation_id = 3;
-  uint64 conversation_revision = 4;
-  bool replayed = 5;
-  InteractionOutcome outcome = 6;
-}
-
 message Attachment {
   FileRef file = 1;
   optional string label = 2;
