@@ -149,7 +149,6 @@ pub(super) async fn bench_inner(
         source,
         NativeWatchOptions {
             limits: VolumeLimits::default(),
-            maximum_queued_changes: 65_536,
             recursive: true,
         },
     )

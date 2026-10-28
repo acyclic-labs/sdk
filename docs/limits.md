@@ -1167,3 +1167,9 @@ Canonical descriptor and Stream contract generation passed on `dabc96ee038356b37
 | Constant or policy | File:line | Category | Action |
 |---|---|---|---|
 | `MemoryAuthorityStore.maximum_payload_bytes` implicit16MiB | `rust/crates/filesystem/src/memory/authority/mod.rs:92,176` | 1 → optional caller policy | Default None; public constructor accepts an optional positive finite byte policy. Shared append/first-record validation checks only a selected policy. Original allocation/work/fencing/publication custody is unchanged; complete large-record replay regression added, existing explicit2-byte/refusal/replay and native accounting controls retained. No second storage path or additional copy. |
+
+
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
+| `maximum_queued_changes`16,384 /65,536 | `rust/crates/filesystem/src/watch.rs:220`; `source.rs:38`; `kernel/source_state.rs:43`; FS NAPI and TypeScript source/watch options | 1 deleted | Delete count policies, hidden invalidation predicates and forced-cap saturation tests across all OS adapters and bindings. One shared geometrically growing queue retains original allocation admission/custody and actual allocation-failure recovery. Address-sized occupancy; caller page hints still split delivery. Native loss/root/rename/identity/finite-work controls remain. Persisted source format remains v1, with no migration. Complete65,537-change FIFO and callback regressions plus unbounded-channel property retain delivery semantics. Affected qualification pending. |
+| `RETAINED_SLOTS`64 | `rust/crates/filesystem/src/watch_queue.rs:14` | 2 / cache storage policy | Keep the small empty-queue backing cache. Larger drained backing is freed with its original allocation custody; it never refuses an item. Idle watch allocates no queue backing. |
