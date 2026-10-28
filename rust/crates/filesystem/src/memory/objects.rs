@@ -96,13 +96,13 @@ impl MemoryObjectStore {
             .objects
             .write()
             .map_err(|_| ObjectStoreError::Corrupt)?;
-        // Reuse the shared funded batch identity table. It verifies repeated
-        // ids without rescanning all earlier writes and retires before storage grows.
+        // The shared funded identity primitive verifies duplicates without
+        // rescanning the batch. Temporary nodes retire before storage grows.
         let mut batch = if writes.len() > 1 {
-            Some(crate::logical_objects::index::Index::new(
-                writes.len(),
-                accounting,
-            )?)
+            Some(crate::kernel::allocation::fixed_index::FixedIndex::<
+                &OwnedBytes,
+                33,
+            >::default())
         } else {
             None
         };
@@ -121,26 +121,30 @@ impl MemoryObjectStore {
                         continue;
                     }
                 }
-                if let Some(previous) = batch
-                    .as_mut()
-                    .map(|batch| batch.insert(write.object_id, write, accounting))
-                    .transpose()?
-                    .flatten()
-                {
-                    if previous.bytes != write.bytes {
+                if let Some(batch) = &mut batch {
+                    let mut inserted = false;
+                    let previous = batch.get_or_try_insert_with(
+                        write.object_id.to_bytes(),
+                        accounting,
+                        |_| {
+                            inserted = true;
+                            Ok(&write.bytes)
+                        },
+                    )?;
+                    if *previous != &write.bytes {
                         return Err(ObjectStoreError::Corrupt.into());
                     }
-                } else {
-                    written = written
-                        .checked_add(write.bytes.len() as u64)
-                        .ok_or(WorkError::Overflow)?;
+                    if !inserted {
+                        continue;
+                    }
                 }
+                written = written
+                    .checked_add(write.bytes.len() as u64)
+                    .ok_or(WorkError::Overflow)?;
             }
             Ok::<_, FsError>(written)
         })();
-        if let Some(batch) = batch {
-            batch.release(accounting)?;
-        }
+        drop(batch);
         let written = prepared?;
         accounting.admit(WorkCounters {
             backend_write_operations: 1,
