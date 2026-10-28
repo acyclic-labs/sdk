@@ -619,13 +619,12 @@ impl Pool {
                 wire_codec::session::follow_sequence(follow.delivery, route.received, &data)?
             }
             (Kind::ActorCall(_), Some(Item::ActorCall(_)))
-            | (Kind::ChildrenPage(_), Some(Item::ChildrenPage(_))) => {
-                wire_codec::session::actor_call_sequence(
-                    route.received,
-                    &route.received_opaque,
-                    &data,
-                )?
-            }
+            | (Kind::ChildrenPage(_), Some(Item::ChildrenPage(_)))
+            | (Kind::Heads(_), Some(Item::Heads(_))) => wire_codec::session::actor_call_sequence(
+                route.received,
+                &route.received_opaque,
+                &data,
+            )?,
             _ => return Err(StreamError::Unavailable),
         };
         route.received = after.next;
@@ -634,7 +633,7 @@ impl Pool {
             Received::Frame(frame(id, generation, Body::Data(data)))
         } else if matches!(
             route.kind,
-            Kind::Follow(_) | Kind::ActorCall(_) | Kind::ChildrenPage(_)
+            Kind::Follow(_) | Kind::ActorCall(_) | Kind::ChildrenPage(_) | Kind::Heads(_)
         ) {
             Received::Data(data)
         } else {

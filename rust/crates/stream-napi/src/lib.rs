@@ -569,6 +569,16 @@ impl NativeStreamClient {
         operation_result(inspect_idempotency(&self.provider, request, cancellation)).await
     }
 
+    /// Executes a coherent mixed view at one authority snapshot.
+    #[napi(js_name = "headsResult")]
+    pub async fn heads_result(
+        &self,
+        request: Buffer,
+        cancellation: Option<&NativeStreamCancellation>,
+    ) -> Result<NativeStreamOperationResult> {
+        operation_result(heads(&self.provider, request, cancellation)).await
+    }
+
     /// Executes one atomic canonical head observation.
     #[napi(js_name = "headResult")]
     pub async fn head_result(

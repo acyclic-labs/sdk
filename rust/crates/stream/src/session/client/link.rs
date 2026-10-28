@@ -230,7 +230,11 @@ impl Pool {
         self.send(node, frame(0, 0, Body::Window(grant)))
     }
     pub(super) fn grant(&mut self, id: u64) -> Result<(), StreamError> {
-        let Some(route) = self.routes.get_mut(&id).filter(|route| route.opened) else {
+        let Some(route) = self
+            .routes
+            .get_mut(&id)
+            .filter(|route| route.opened && route.live())
+        else {
             return Ok(());
         };
         let capacity = u32::try_from(route.records.capacity())

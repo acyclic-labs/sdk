@@ -100,6 +100,26 @@ message HeadRequest {
   string path = 1;
 }
 
+// All observations, including absence, belong to one authority snapshot.
+message HeadsRequest {
+  repeated string paths = 1;
+  ChildrenPageRequest children = 2;
+  uint32 limit = 3;
+  repeated Revision at_least = 4;
+}
+
+message HeadObservation {
+  // Absent means this path did not exist at the snapshot, never authorization denial.
+  PathHead head = 1;
+}
+
+message HeadsResponse {
+  Revision snapshot = 1;
+  // In exact request order, including explicit absent observations.
+  repeated HeadObservation heads = 2;
+  ChildrenPageResponse children = 3;
+}
+
 message ForkOrigin {
   string source = 1;
   uint64 forked_at = 2;
@@ -457,6 +477,9 @@ service StreamService {
       action: "streams/read"
       resource: "streams:/{path}"
     };
+  }
+  rpc Heads(HeadsRequest) returns (HeadsResponse) {
+    option (acyclic.validation.v1.auth) = {extractor: "streams.coherent-view"};
   }
   rpc Tail(TailRequest) returns (TailResponse) {
     option (acyclic.validation.v1.auth) = {

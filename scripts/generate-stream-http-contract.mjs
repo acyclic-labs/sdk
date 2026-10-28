@@ -1,6 +1,6 @@
 const KINDS = new Set([
   "observation", "tail", "head", "append", "fork",
-  "read", "children_page", "commit", "envelope", "token", "empty",
+  "heads", "read", "children_page", "commit", "envelope", "token", "empty",
 ]);
 
 export const rust = [["acyclic-stream", "bin", "stream-http-contract"]];
@@ -22,7 +22,7 @@ export function render([stdout]) {
   const source = `${header}import { decodeHttpResponse as decodeHttpResponseWasm } from "../generated/wasm/acyclic_stream_wasm.js";
 import type {
   AccessToken, AppendResult, ChildrenPage, CommittedEnvelope, EncodedRecord, ForkReceipt,
-  IdempotencyObservation, CommitResult, ReadResult, TailResult, PathHead,
+  IdempotencyObservation, CommitResult, ReadResult, TailResult, PathHead, Heads,
 } from "./types.js";
 
 type HttpResponseContract = {
@@ -36,6 +36,7 @@ type HttpResponseByKind = {
   observation: IdempotencyObservation | undefined;
   tail: TailResult;
   head: PathHead;
+  heads: Heads;
   append: AppendResult;
   fork: ForkReceipt;
   read: ReadResult;

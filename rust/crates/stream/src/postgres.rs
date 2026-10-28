@@ -457,6 +457,15 @@ impl StreamProvider for PostgresStream {
         self.refresh().await?;
         self.inner.core.inspect_idempotency(key).await
     }
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        self.refresh().await?;
+        let mut view = self.inner.core.heads(request).await?;
+        for head in view.heads.iter_mut().flatten() {
+            head.durable = head.tail;
+        }
+        Ok(view)
+    }
+
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
         self.refresh().await?;
         let mut head = self.inner.core.head(path).await?;

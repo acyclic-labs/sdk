@@ -60,6 +60,40 @@ impl StreamProvider for LocalStream {
             .await?
     }
 
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        self.inner
+            .provider
+            .revisions
+            .wait(&request.at_least)
+            .await?;
+        self.accepted(async {
+            let paths = request.paths.clone();
+            let mut view = self.inner.provider.heads(request).await?;
+            let synced = self
+                .inner
+                .synced
+                .borrow()
+                .flushed
+                .is_some_and(|cut| cut >= *self.inner.revision.borrow());
+            let mut tails = self
+                .inner
+                .durable_tails
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?;
+            for (path, head) in paths.into_iter().zip(&mut view.heads) {
+                if let Some(head) = head {
+                    let durable = tails.entry(path).or_default();
+                    if synced {
+                        *durable = (*durable).max(head.tail);
+                    }
+                    head.durable = (*durable).min(head.tail);
+                }
+            }
+            Ok(view)
+        })
+        .await?
+    }
+
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
         self.accepted(async {
             let mut head = self.inner.provider.head(path.clone()).await?;

@@ -5,7 +5,7 @@ import {
   AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitMutationSchema, CommitRequestSchema,
   ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
-  ReadRequestSchema, FollowRequestSchema, HeadRequestSchema,
+  ReadRequestSchema, FollowRequestSchema, HeadRequestSchema, HeadsRequestSchema,
   ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
   CreateTokenRequestSchema, RecordBatchSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
@@ -92,6 +92,7 @@ function validationError(error: unknown, operation: "append" | "commit" | "reque
 }
 
 type WireRequest =
+  | ({ readonly kind: "heads" } & import("./types.js").HeadsRequest)
   | { readonly kind: "head"; readonly path: string }
   | { readonly kind: "tail"; readonly path: string; readonly atLeast?: readonly Revision[] }
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
@@ -126,6 +127,14 @@ export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array 
 
 export function wireRequest(request: WireRequest): Uint8Array {
   switch (request.kind) {
+      case "heads": {
+        if (!Array.isArray(request.paths) || !Number.isInteger(request.limit) || request.limit < 1 || request.limit > 0xffff_ffff) throw new StreamError("invalid_argument", "heads requires paths and a positive uint32 budget");
+        request.paths.forEach(requirePathType);
+        return toBinary(HeadsRequestSchema, create(HeadsRequestSchema, {
+          paths: [...request.paths], limit: request.limit, atLeast: [...(request.atLeast ?? [])],
+          ...(request.children === undefined ? {} : { children: fromBinary(ChildrenPageRequestSchema, wireRequest({ kind: "children_page", ...request.children })) }),
+        }));
+      }
       case "head":
         requirePathType(request.path);
         return toBinary(HeadRequestSchema, create(HeadRequestSchema, { path: request.path }));

@@ -113,6 +113,10 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
     let result = check_command_size(input)
         .map_err(|_| StreamError::LimitExceeded)
         .and_then(|_| match kind {
+            "heads" => wire::HeadsRequest::decode(input)
+                .map_err(|_| StreamError::InvalidArgument)
+                .and_then(wire_codec::heads_from_wire)
+                .map(|_| ()),
             "head" => wire::HeadRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(|request| wire_codec::path(request.path).map(|_| ())),
@@ -164,7 +168,7 @@ mod http {
             "inspect_idempotency" => "idempotency/inspect",
             "read_commit" => "commits/read",
             "children_page" => "children/page",
-            "head" | "append" | "fork" | "commit" => operation,
+            "head" | "heads" | "append" | "fork" | "commit" => operation,
             _ => return Err("invalid_argument"),
         };
         match crate::http_response::value(route, input)? {
@@ -656,6 +660,26 @@ mod http {
                 set(&result, "tail", &bigint_js(field(item, "tail")?)?)?;
                 if let Some(applied) = item.get("applied").filter(|value| !value.is_null()) {
                     set(&result, "applied", &revision_js(applied)?)?;
+                }
+                Ok(result.into())
+            }
+            Some("heads") => {
+                let item = object(value)?;
+                let result = Object::new();
+                set(&result, "snapshot", &revision_js(field(item, "snapshot")?)?)?;
+                set(
+                    &result,
+                    "heads",
+                    &array_js(field(item, "heads")?, |head| {
+                        if head.is_null() {
+                            Ok(JsValue::UNDEFINED)
+                        } else {
+                            head_js(head)
+                        }
+                    })?,
+                )?;
+                if let Some(page) = item.get("children").filter(|value| !value.is_null()) {
+                    set(&result, "children", &children_page_js(page)?)?;
                 }
                 Ok(result.into())
             }

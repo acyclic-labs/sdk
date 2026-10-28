@@ -197,6 +197,15 @@ impl StreamProvider for InjectedStream {
         }
         Ok(observed)
     }
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        let view = wire_codec::heads_from_response(
+            self.call("heads", wire_codec::heads_request_to_wire(request.clone()))
+                .await?,
+        )?;
+        view.validate_for(&request)?;
+        Ok(view)
+    }
+
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
         wire_codec::head_from_wire(
             self.call(

@@ -52,6 +52,29 @@ impl Client {
         )
     }
 
+    /// Observes named heads and children at one cut, on the shared credited session.
+    pub async fn heads(
+        &self,
+        mut request: crate::HeadsRequest,
+        credential: u32,
+    ) -> Result<crate::Heads, StreamError> {
+        request.validate()?;
+        request.at_least = self.revisions.floor(&request.at_least);
+        let reply = self
+            .reply(
+                Kind::Heads(wire_codec::heads_request_to_wire(request.clone())),
+                credential,
+                wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
+            )
+            .await?;
+        let view = wire_codec::heads_from_response(
+            wire::HeadsResponse::decode(reply).map_err(|_| StreamError::InvalidResponse)?,
+        )?;
+        view.validate_for(&request)?;
+        self.revisions.observe(&view.snapshot);
+        Ok(view)
+    }
+
     async fn reply(
         &self,
         kind: Kind,

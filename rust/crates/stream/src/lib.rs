@@ -31,10 +31,12 @@ pub mod grpc;
 #[cfg(not(target_arch = "wasm32"))]
 mod head_tests;
 pub mod http_response;
+mod pending;
 pub mod persistence;
 #[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
 pub mod postgres;
 pub mod preparation;
+pub use pending::Pending;
 pub mod request;
 pub mod runtime;
 #[cfg(any(
@@ -164,6 +166,7 @@ pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
 /// Route-to-response families for the hosted HTTP projection.
 pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
     ("head", "head"),
+    ("heads", "heads"),
     ("idempotency/inspect", "observation"),
     ("tail", "tail"),
     ("append", "append"),

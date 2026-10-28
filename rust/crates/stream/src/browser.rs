@@ -468,6 +468,20 @@ impl StreamProvider for BrowserStream {
         self.with_provider(async move |provider| provider.inspect_idempotency(key).await)
             .await
     }
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        if !request.at_least.is_empty() {
+            self.wait_applied(&request.at_least).await?;
+        }
+        self.with_provider(async move |provider| {
+            let mut view = provider.heads(request).await?;
+            for head in view.heads.iter_mut().flatten() {
+                head.durable = head.tail;
+            }
+            Ok(view)
+        })
+        .await
+    }
+
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
         self.with_provider(async move |provider| {
             let mut head = provider.head(path).await?;

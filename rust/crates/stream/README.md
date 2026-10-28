@@ -47,6 +47,30 @@ Harness status publishers use `StatusRecord::append_record`, retaining their
 existing JSON encoding and declaring attention on approval, host and terminal
 transitions.
 
+`heads(paths, children, limit)` captures named heads, named absence and an optional
+child page at one authority revision. The caller supplies the total result budget;
+named observations consume one slot each and the remaining slots bound children.
+The hierarchy continuation retains its existing revision fence. A refused named
+path refuses the entire view; it never appears as absence. Remote adapters carry
+this operation intact through the shared session rather than composing head calls.
+
+`Stream::submit` returns an owned `'static` `Pending` for one canonical Commit.
+Submission transfers custody to the executor immediately. Cloned handles share
+one result; cancelling or dropping a waiter never withdraws or retries the write.
+The handle retains the exact keyed request for recovery of an ambiguous outcome.
+Staged publication uses the same `Pending::submit` once its Commit is ready.
+
+`session::Client::deliveries` supplies application-owned ALL/LATEST decisions on
+the existing pool. Persist a delivery's proposed v1 checkpoint atomically with
+the consumer's effects or discard decision, then call `commit` or `discard`.
+Returning transport credit alone never advances this checkpoint. An abandoned
+delivery ends the interest without completion; recovery starts at the last durable
+consumer checkpoint. An outstanding decision backpressures the next delivery.
+Reconnect fences old handles: completing one returns false and the current
+generation replays the item. Consumer effects therefore use their retained
+identity on replay. TypeScript `StreamSessions.deliveries` uses the same Rust
+handle and exposes the same explicit decision methods.
+
 The follow-up measurement plan compares 1, 8 and 64 observations and logical
 backlogs of 10^6 through 10^9 records. Report lock acquisitions, retained RAM,
 first-output latency and work during cancellation, withheld application completion
