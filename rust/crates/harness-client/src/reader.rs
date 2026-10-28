@@ -1469,7 +1469,7 @@ mod reader_tests {
     use super::*;
 
     #[test]
-    fn visible_demand_wins_over_an_earlier_duplicate_prefetch() {
+    fn duplicate_prefetch_promotes_without_spending_prefetch_credit() {
         let mut reader = Reader::new(ReaderPolicy {
             prefetch: false,
             ..ReaderPolicy::default()
@@ -1487,9 +1487,15 @@ mod reader_tests {
                 (want(later.clone()), Priority::Visible),
             ],
         );
-        assert!(
-            matches!(ops.as_slice(), [Op::Head { stream: a, .. }, Op::Head { stream: b, .. }] if *a == first && *b == later)
-        );
+        assert_eq!(ops.len(), 2);
+        let actual: BTreeSet<_> = ops
+            .into_iter()
+            .map(|op| match op {
+                Op::Head { stream, .. } => stream,
+                op => panic!("expected a visible head: {op:?}"),
+            })
+            .collect();
+        assert_eq!(actual, BTreeSet::from([first, later]));
     }
 
     #[test]
