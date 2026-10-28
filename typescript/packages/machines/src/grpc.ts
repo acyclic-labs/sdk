@@ -113,8 +113,8 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
 // Transport pulls only the current frame. Argument boundaries and process stdin
 // are separate; commandComplete alone authorizes launch on the original session.
 async function* execInput(start: wire.ExecStart, argv: readonly string[], stdin: Uint8Array): AsyncIterable<wire.ExecInput> {
-  const frame = (input: MessageInitShape<typeof wire.ExecInputSchema>["input"]) => create(wire.ExecInputSchema, { input });
-  yield frame({ case: "start", value: start });
+  const frame = (init: MessageInitShape<typeof wire.ExecInputSchema>) => create(wire.ExecInputSchema, init);
+  yield frame({ input: { case: "start", value: start } });
   const encoder = new TextEncoder();
   for (const argument of argv) {
     let offset = 0;
@@ -124,12 +124,12 @@ async function* execInput(start: wire.ExecStart, argv: readonly string[], stdin:
       const bytes = new Uint8Array(Math.min(65_536, (end - offset) * 3));
       const { read, written } = encoder.encodeInto(argument.slice(offset, end), bytes);
       offset += read;
-      yield frame({ case: "argument", value: { data: bytes.subarray(0, written), end: offset === argument.length } });
+      yield frame({ input: { case: "argument", value: { data: bytes.subarray(0, written), end: offset === argument.length } } });
     } while (offset < argument.length);
   }
-  yield frame({ case: "commandComplete", value: {} });
-  for (let offset = 0; offset < stdin.byteLength; offset += 65_536) yield frame({ case: "stdin", value: stdin.subarray(offset, offset + 65_536) });
-  yield frame({ case: "stdinEof", value: {} });
+  yield frame({ input: { case: "commandComplete", value: {} } });
+  for (let offset = 0; offset < stdin.byteLength; offset += 65_536) yield frame({ input: { case: "stdin", value: stdin.subarray(offset, offset + 65_536) } });
+  yield frame({ input: { case: "stdinEof", value: {} } });
 }
 
 function checkIdentity(request: { value: Uint8Array } | undefined, response: { value: Uint8Array } | undefined, kind: string): void {
