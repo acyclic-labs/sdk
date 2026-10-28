@@ -19,7 +19,6 @@ import type {
   CreateTokenRequest as WireCreateTokenRequest, TokenGrant as WireTokenGrant,
   Revision as WireRevision,
 } from "../generated/proto/stream/v1/stream_pb.js";
-import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import type { TokenOperation } from "./token-operations.js";
 import type { StreamErrorCode as RustStreamErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 export type { TokenOperation } from "./token-operations.js";
