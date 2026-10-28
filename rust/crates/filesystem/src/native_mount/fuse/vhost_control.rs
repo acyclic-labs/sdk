@@ -4,7 +4,7 @@
 use super::vring_control::{FEATURES, QUEUE_COUNT, VringControl};
 use super::{Arc, NativeMountError};
 use std::fs::File;
-use vhost::backend::VhostUserMemoryRegionBase;
+use vhost::VhostUserMemoryRegionBase;
 use vhost::vhost_user::{
     Error, GpuBackend, Result, VhostUserBackendReqHandlerMut,
     message::{
