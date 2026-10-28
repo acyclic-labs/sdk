@@ -1,3 +1,4 @@
+import { grpcDeadlines } from "@acyclic-labs/actors/deadline";
 import { credentialProvider, type CredentialOptions } from "@acyclic-labs/actors/credential";
 import { rootCertificates } from "node:tls";
 import { create, type MessageInitShape } from "@bufbuild/protobuf";
@@ -19,19 +20,19 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
   const endpoint = new URL(options.endpoint);
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
   const credential = credentialProvider(options);
-  const maximum = options.maximumMessageBytes ?? 64 * 1024 * 1024;
-  if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
-  if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
+  const maximum = options.maximumMessageBytes;
+  if (maximum !== undefined && (!Number.isSafeInteger(maximum) || maximum < 1)) throw new RangeError("maximumMessageBytes must be a positive safe integer");
+  if (options.caCertificate !== undefined && options.caCertificate.length === 0) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
     request.header.set("authorization", `Bearer ${await credential(request.signal)}`);
     return next(request);
   };
   const session = new Http2SessionManager(endpoint, {}, options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] });
-  const transport = createGrpcTransport({
-    sessionManager: session, baseUrl: endpoint.href, defaultTimeoutMs: 30000,
+  const transport = grpcDeadlines(createGrpcTransport({
+    sessionManager: session, baseUrl: endpoint.href,
     acceptCompression: [], interceptors: [authenticate],
-    readMaxBytes: maximum, writeMaxBytes: maximum,
-  });
+    ...(maximum === undefined ? {} : { readMaxBytes: maximum, writeMaxBytes: maximum }),
+  }), () => new ConnectError("the operation timed out", Code.DeadlineExceeded));
   const machines = createClient(wire.MachinesService, transport);
   return {
     machines: {
