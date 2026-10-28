@@ -139,7 +139,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
         let cancellation = work.cancellation();
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
-        let name = inputs.mutation_attribute_name(name, self.config.profile, self.config.limits)?;
+        let name = inputs.mutation_attribute_name(name, self.config.profile)?;
         let observation = self
             .checkout
             .observe(
@@ -459,7 +459,6 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             runtime: self.runtime.clone(),
             cancellation: self.cancellation.clone(),
             profile: self.config.profile,
-            limits: self.config.limits,
         }))
     }
 
@@ -586,7 +585,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
             .map_err(MountSourceError::from)?;
         let decision = checkout
             .rebase_head(
-                self.config.limits.maximum_checkout_dependencies,
+                self.config.limits.maximum_directory_page_entries,
                 WorkBudget::UNBOUNDED,
                 &self.cancellation,
             )

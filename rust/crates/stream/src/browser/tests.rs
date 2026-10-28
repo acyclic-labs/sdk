@@ -195,7 +195,7 @@ async fn follow_recovers_its_cache_without_exposing_rejected_records() {
     let provider = BrowserStream::open(
         &name(),
         BrowserStreamLimits {
-            commands: 2,
+            commands: Some(2),
             ..Default::default()
         },
     )

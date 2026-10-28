@@ -275,10 +275,10 @@ impl Fixture {
             }],
             policy: ContextDiscoveryPolicy::default(),
             limits: ContextDiscoveryLimits {
-                entries: 64,
-                directories: 8,
-                header_bytes: 256,
-                instruction_bytes: 512,
+                entries: Some(64),
+                directories: Some(8),
+                header_bytes: Some(256),
+                instruction_bytes: Some(512),
             },
         }
     }
@@ -478,12 +478,12 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
         Err(Error::Conflict(message)) if message == "discovered skill names are repeated"
     ));
     declaration.policy.skill_name = None;
-    declaration.limits.entries = 1;
+    declaration.limits.entries = Some(1);
     assert!(matches!(
         declaration.capture(fixture.reader.as_ref()).await,
         Err(Error::Invalid(_))
     ));
-    declaration.limits.entries = 64;
+    declaration.limits.entries = Some(64);
     let scope = fixture
         .issuer
         .bootstrap_scope(
@@ -644,8 +644,17 @@ async fn admitted_frontmatter_has_no_extra_size_or_node_ceilings() -> Result<()>
             .map(Vec::len),
         Some(3_000)
     );
+    fixture
+        .put("skills/a/SKILL.md", prefix.as_bytes(), "large")
+        .await?;
+    declaration.limits = ContextDiscoveryLimits::default();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    let discovered = first_skill(&captured)?;
+    assert_eq!(discovered.name, metadata.name);
+    assert_eq!(discovered.description, metadata.description);
+    assert_eq!(discovered.fields, metadata.fields);
     declaration.skills.clear();
-    declaration.limits.header_bytes = 65_537;
+    declaration.limits.header_bytes = Some(65_537);
     assert!(
         declaration
             .capture(fixture.reader.as_ref())

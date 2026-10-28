@@ -8,7 +8,8 @@ use super::{
 
 /// Startup query deadline, shared by the entire batch, not by each query.
 pub const PROBE_TIMEOUT: Duration = Duration::from_millis(100);
-/// Bound both hostile reply strings and startup input buffering.
+/// Protection for terminal reply frames and one startup polling batch.
+/// Bracketed paste payloads use their own streaming decoder without this bound.
 pub const PROBE_LIMIT: usize = 16 * 1024;
 const GRAPHICS_ID: &str = "314159";
 const INDEPENDENT_MODES: [u16; 5] = [2026, 2027, 1004, 2004, 1049];

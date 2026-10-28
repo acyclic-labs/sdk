@@ -54,7 +54,7 @@ impl InputBuffers<'_, '_> {
         let mut owned = self.vec(names.len())?;
         for name in names {
             self.items(1)?;
-            owned.push(copy_name(name.encoding(), name.as_bytes(), limits, self)?);
+            owned.push(copy_name(name.encoding(), name.as_bytes(), self)?);
         }
         NamespacePath::new(owned, limits).map_err(MountSourceError::NamespacePath)
     }

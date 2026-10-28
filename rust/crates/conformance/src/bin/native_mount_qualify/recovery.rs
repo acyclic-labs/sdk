@@ -34,21 +34,10 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
     )?;
     let deadline = Instant::now() + Duration::from_secs(30);
     while !ready.exists() && Instant::now() < deadline {
-        if captured_child_output_exceeds_limit(&child)? {
-            child.process.terminate(None)?;
-            return Err(
-                format!("crash child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into(),
-            );
-        }
         if let Some(status) = child.process.try_wait(None)? {
-            let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
-            return Err(format!(
-                "crash child exited before readiness ({}): {}{}",
-                output.status,
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            )
-            .into());
+            let output = captured_child_output(status, child)?;
+            output.write_diagnostics("crash child exited before readiness")?;
+            return Err(format!("crash child exited before readiness ({status})").into());
         }
         std::thread::sleep(Duration::from_millis(10));
     }

@@ -180,13 +180,7 @@ impl<F: Format> Machine<'_, F> {
             .value
             .get_mut(ordinal)
             .ok_or_else(|| query_error(Error::InvalidRouting))?;
-        let (cloned, allocation) = persistent_io::clone_value::<F>(
-            value,
-            self.limits.maximum_name_bytes,
-            accounting,
-            None,
-            0,
-        )?;
+        let (cloned, allocation) = persistent_io::clone_value::<F>(value, accounting, None, 0)?;
         let bytes = F::value_owned_bytes(&cloned);
         let cloned = Owned::new(cloned, allocation, bytes);
         let copied = WorkCounters {
@@ -268,27 +262,17 @@ impl<F: Format> Machine<'_, F> {
                 }
                 end += 1;
             }
-            let (lower, lower_allocation) = persistent_io::clone_key::<F>(
-                &child.first,
-                self.limits.maximum_name_bytes,
-                accounting,
-                None,
-                0,
-            )?;
+            let (lower, lower_allocation) =
+                persistent_io::clone_key::<F>(&child.first, accounting, None, 0)?;
             let lower_bytes = F::key_owned_bytes(&lower);
             let lower = Owned::new(lower, lower_allocation, lower_bytes);
             let upper = match upper_ref {
-                Some(key) => persistent_io::clone_key::<F>(
-                    key,
-                    self.limits.maximum_name_bytes,
-                    accounting,
-                    None,
-                    0,
-                )
-                .map(|(key, allocation)| {
-                    let bytes = F::key_owned_bytes(&key);
-                    Some(Owned::new(key, allocation, bytes))
-                }),
+                Some(key) => persistent_io::clone_key::<F>(key, accounting, None, 0).map(
+                    |(key, allocation)| {
+                        let bytes = F::key_owned_bytes(&key);
+                        Some(Owned::new(key, allocation, bytes))
+                    },
+                ),
                 None => Ok(None),
             };
             let upper = match upper {

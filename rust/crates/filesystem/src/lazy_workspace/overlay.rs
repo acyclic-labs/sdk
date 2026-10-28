@@ -13,7 +13,7 @@ impl<
         change: LazyOverlayChange,
         ctx: &mut KernelAccounting<'_>,
     ) -> Result<(), LazyWorkspaceError> {
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let state = self.state(ctx).await?;
             let overlay = self
                 .insert_overlay(state.overlay, path, change.clone(), ctx)
@@ -31,8 +31,12 @@ impl<
             {
                 return Ok(());
             }
+            ctx.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(LazyWorkspaceError::Concurrent)
     }
 
     pub(super) async fn insert_overlay(

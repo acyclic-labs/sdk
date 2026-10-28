@@ -38,13 +38,9 @@ pub(super) fn run_supervised_case(case: &str, timeout: Duration) -> Result<(), F
     if output.status.success() {
         Ok(())
     } else {
-        Err(format!(
-            "qualification worker {case} failed ({}): {}{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into())
+        let status = output.status;
+        output.write_diagnostics(&format!("qualification worker {case}"))?;
+        Err(format!("qualification worker {case} failed ({status})").into())
     }
 }
 
@@ -68,89 +64,91 @@ pub(super) fn spawn_captured_child(command: &mut Command) -> Result<CapturedChil
     })
 }
 
+pub(super) struct CapturedOutput {
+    pub(super) status: std::process::ExitStatus,
+    stdout: File,
+    stderr: File,
+}
+
+impl CapturedOutput {
+    /// Streams complete diagnostics from the spool without retaining the output.
+    pub(super) fn write_diagnostics(mut self, label: &str) -> Result<(), Failure> {
+        write_child_diagnostics(
+            &format!("{label} ({})", self.status),
+            &mut self.stdout,
+            &mut self.stderr,
+        )
+    }
+}
+
+fn write_child_diagnostics(
+    label: &str,
+    stdout: &mut File,
+    stderr: &mut File,
+) -> Result<(), Failure> {
+    let mut destination = std::io::stderr().lock();
+    writeln!(destination, "{label}:")?;
+    stdout.seek(SeekFrom::Start(0))?;
+    std::io::copy(stdout, &mut destination)?;
+    stderr.seek(SeekFrom::Start(0))?;
+    std::io::copy(stderr, &mut destination)?;
+    Ok(())
+}
+
 pub(super) fn capture_child(
     command: &mut Command,
     timeout: Duration,
-) -> Result<std::process::Output, Failure> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    ProcessTree::spawn(command)?
-        .wait_with_output(
-            timeout,
-            usize::try_from(MAX_CHILD_OUTPUT_BYTES)?,
-            None,
-            || Ok(()),
-            |_| Ok(acyclic_native_runtime::ProcessInput::default()),
-            None,
-            None,
-            None,
-        )
-        .map_err(|failure| {
-            format!(
-                "child capture failed: {}; cleanup_completed={}; stdout={} stderr={}",
-                failure.error,
-                failure.cleanup_completed,
-                String::from_utf8_lossy(&failure.stdout),
-                String::from_utf8_lossy(&failure.stderr)
+) -> Result<CapturedOutput, Failure> {
+    let mut child = spawn_captured_child(command)?;
+    match child.process.wait(timeout) {
+        Ok(status) => captured_child_output(status, child),
+        Err(error) => {
+            let cleanup = child.process.terminate(None);
+            let diagnostics = if cleanup.is_ok() {
+                write_child_diagnostics(
+                    "child capture failed",
+                    &mut child.stdout,
+                    &mut child.stderr,
+                )
+            } else {
+                Ok(())
+            };
+            Err(format!(
+                "child capture failed: {error}; cleanup={cleanup:?}; diagnostics={diagnostics:?}"
             )
-            .into()
-        })
+            .into())
+        }
+    }
 }
 
 pub(super) fn captured_child_output(
     status: std::process::ExitStatus,
-    stdout: &mut File,
-    stderr: &mut File,
-) -> Result<std::process::Output, Failure> {
-    if stdout
-        .metadata()?
-        .len()
-        .saturating_add(stderr.metadata()?.len())
-        > MAX_CHILD_OUTPUT_BYTES
-    {
-        return Err(format!("child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into());
-    }
-    fn read(file: &mut File) -> Result<Vec<u8>, Failure> {
-        file.seek(SeekFrom::Start(0))?;
-        let mut bytes = Vec::new();
-        file.take(MAX_CHILD_OUTPUT_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_CHILD_OUTPUT_BYTES {
-            return Err(format!("child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into());
-        }
-        Ok(bytes)
-    }
-    Ok(std::process::Output {
+    mut child: CapturedChild,
+) -> Result<CapturedOutput, Failure> {
+    // Reap all descendants before reading the spool, including descendants that
+    // outlived a successful direct child. Retain containment until cleanup ends.
+    child.process.terminate(None)?;
+    Ok(CapturedOutput {
         status,
-        stdout: read(stdout)?,
-        stderr: read(stderr)?,
+        stdout: child.stdout,
+        stderr: child.stderr,
     })
-}
-
-pub(super) fn captured_child_output_exceeds_limit(child: &CapturedChild) -> Result<bool, Failure> {
-    Ok(child
-        .stdout
-        .metadata()?
-        .len()
-        .saturating_add(child.stderr.metadata()?.len())
-        > MAX_CHILD_OUTPUT_BYTES)
 }
 
 fn append_child_failure(
     failures: &mut Vec<String>,
     label: &str,
-    result: Result<std::process::Output, Failure>,
+    result: Result<CapturedOutput, Failure>,
 ) {
     match result {
         Ok(output) if output.status.success() => {}
-        Ok(output) => failures.push(format!(
-            "{label} failed ({}): {}{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )),
+        Ok(output) => {
+            let status = output.status;
+            if let Err(error) = output.write_diagnostics(label) {
+                failures.push(format!("{label} diagnostics failed: {error}"));
+            }
+            failures.push(format!("{label} failed ({status})"));
+        }
         Err(error) => failures.push(format!("{label} failed: {error}")),
     }
 }
@@ -164,7 +162,7 @@ fn verify_empty_mount_directory(mount: &Path) -> Result<(), Failure> {
 
 pub(super) fn finish_mounted_child(
     label: &str,
-    child: Result<std::process::Output, Failure>,
+    child: Result<CapturedOutput, Failure>,
     observed: Result<(), Failure>,
     synced: Result<(), Failure>,
     detached: Result<(), Failure>,

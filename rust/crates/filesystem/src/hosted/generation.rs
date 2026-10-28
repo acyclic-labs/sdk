@@ -203,14 +203,11 @@ impl HostedGeneration {
         &self,
         target: &HostedGeneration,
         history: wire::JoinHistory,
-        maximum_generations: u32,
+        maximum_generations: impl Into<Option<u32>>,
         maximum_changes: u32,
         maximum_conflicts: u32,
     ) -> Result<wire::JoinPlan, HostedFsError> {
         self.workspace.filesystem.require_owner(&target.workspace)?;
-        self.workspace
-            .filesystem
-            .require_page_bound(maximum_generations, "join generations")?;
         self.workspace
             .filesystem
             .require_page_bound(maximum_changes, "join changes")?;
@@ -227,7 +224,7 @@ impl HostedGeneration {
                         target: Some(target.reference.clone()),
                         maximum_changes,
                         maximum_conflicts,
-                        maximum_generations,
+                        maximum_generations: maximum_generations.into(),
                         history: history as i32,
                     })
                     .await?,

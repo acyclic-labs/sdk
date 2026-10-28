@@ -302,7 +302,7 @@ async fn journal_capacity_rejects_before_mutating_visible_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let limits = LocalStreamLimits {
-        journal_bytes: u64::try_from(HEADER_BYTES).map_err(std::io::Error::other)?,
+        journal_bytes: Some(u64::try_from(HEADER_BYTES).map_err(std::io::Error::other)?),
         ..LocalStreamLimits::default()
     };
     let provider = LocalStream::open(directory.path(), limits).await?;
@@ -418,7 +418,7 @@ async fn a_zero_filled_or_garbage_last_frame_is_a_torn_tail()
 
 fn compacting_limits() -> LocalStreamLimits {
     LocalStreamLimits {
-        journal_operations: 8,
+        compaction_operations: 8,
         ..LocalStreamLimits::default()
     }
 }

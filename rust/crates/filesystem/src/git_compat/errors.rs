@@ -35,9 +35,9 @@ pub enum GitCompatError<E: std::error::Error + 'static> {
         /// Stable explanation of the unsupported capability.
         reason: String,
     },
-    /// Optimistic state contention exceeded the bounded retry policy.
-    #[error("Git compatibility state remained contended")]
-    Contended,
+    /// The host scheduler could not resume a contended publication.
+    #[error(transparent)]
+    Scheduling(#[from] acyclic_stream::StreamError),
     /// Another sequencer transition must be completed or aborted first.
     #[error("Git compatibility transition {0:?} is still pending")]
     TransitionPending(GitTransitionId),

@@ -255,19 +255,6 @@ fn host_error(error: crate::Error) -> Error {
 }
 
 /// The children `effects` spawn that `agent` does not already have open.
-fn reserved(agent: &AgentState, effects: Vec<super::TurnEffect>) -> usize {
-    effects
-        .into_iter()
-        .filter_map(|effect| match effect {
-            super::TurnEffect::Spawn { intent, .. } => {
-                super::TurnEffect::child(&agent.path, &intent).ok()
-            }
-            _ => None,
-        })
-        .filter(|child| !agent.open_children.contains(child))
-        .collect::<std::collections::BTreeSet<_>>()
-        .len()
-}
 
 /// Every settled turn commits its already-recorded actions, including a turn
 /// whose later model call fails. Pending or uncertain turns retain their journal.
@@ -318,7 +305,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 // A pending cancel or archive drops this turn when admitted;
                 // until then the agent takes no further step of it.
                 return Ok(TurnStep {
-                    reserved_children: 0,
                     checkpoint: None,
                     outs: Vec::new(),
                     wait: Wait::Input,
@@ -326,7 +312,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 });
             }
             let failed = |message: &str| TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: Vec::new(),
                 wait: Wait::Done(AgentOutcome::Failed {
@@ -380,7 +365,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     outs.push(Out::Conversation(entry.encode()?));
                     outs.extend(goal);
                     TurnStep {
-                        reserved_children: 0,
                         checkpoint: None,
                         outs,
                         wait,
@@ -406,16 +390,8 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         }],
                         _ => Vec::new(),
                     };
-                    // The paused turn's recorded spawns keep their slots.
-                    let reserved_children = match &open.effects {
-                        Some(effects) => {
-                            reserved(agent, effects.recorded().await.map_err(host_error)?)
-                        }
-                        None => 0,
-                    };
                     return Ok(TurnStep {
                         checkpoint: Some(encode(&Queued { inbox, input })?),
-                        reserved_children,
                         outs,
                         wait: Wait::Approval(id),
                         drops: None,

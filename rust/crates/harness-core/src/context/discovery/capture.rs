@@ -17,9 +17,9 @@ pub struct DiscoveredContext {
 #[derive(Clone, Copy, Default)]
 pub struct DiscoveryWork {
     #[doc(hidden)]
-    pub entries: u32,
+    pub entries: u64,
     #[doc(hidden)]
-    pub directories: u32,
+    pub directories: u64,
     #[doc(hidden)]
     pub limits: ContextDiscoveryLimits,
 }
