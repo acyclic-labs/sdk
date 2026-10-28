@@ -27,9 +27,9 @@ wait on the runtime's token, replacing `TurnStop` and its second inbox follow.
 The strict guest manifest carries the same filters. `onRecord` takes separate
 abort and cooperative-interrupt signals, so a cancelled guest can settle while
 a timed-out guest is aborted. The adapter retains only its existing primitives.
-Multiple filtered subscriptions share a polling budget; sustained earlier input
-can delay a later subscription's interrupt. Fair polling is tracked in
-[#1710](https://github.com/acyclic-labs/sdk/issues/1710). AgentHandler uses one inbox.
+Multiple filtered subscriptions share a polling budget and rotate the starting
+subscription after budget exhaustion (#1710). Lookahead keeps the original cut
+and releases provider futures on cancellation. AgentHandler uses one inbox.
 
 Validation commands on bb2: `scripts/check-actor-runtime.sh`, actor and
 agent-model tests, and `scripts/qualify-host-serving.sh`. The shared actor suite
@@ -57,6 +57,47 @@ The artifact state encoding and codec version remain the same. Both old and
 new checkpoints take their authoritative inbox cut from Actors' state.
 G50 adds wire refusal and record/alarm reopen controls. Its validation is a
 bb2 compile-only check; the earlier execution receipts above apply to #1709,
-not this ABI change. Active-work bounds, fair interrupt polling, wake indexing
-and acknowledged control freshness remain separate v3 work. No throughput or
-zero-control claim follows from carrying a loaded cut.
+not this ABI change. No throughput or zero-control claim follows from carrying
+a loaded cut.
+
+G55 adds `Runtime::with_limits(RuntimeLimits::new(active, work)?)`. Defaults are
+64 admitted deliveries and 64 steps per batch. One admission semaphore is shared
+by continuous dispatch and event-owned delivery. Continuous dispatch allocates
+at most `active` execution futures; dormant and queued actors retain keys.
+Every batch releases admission and the actor lock. A hot actor rejoins the ready
+queue at the back; an event-owned drain continues across batches until quiescent.
+Dispatcher event classes rotate, and immediate work yields to the executor
+without an additional timer. Due-index lock work is bounded by `work`; unchanged
+alarm/index tuples retain the waiter without rewriting the index. Popped retries
+and suspended alarms still reinstall their committed generation.
+
+The G55 controls cover gated active admission in both hosting modes, cancellation
+of admitted futures followed by exact-input replay, hot-actor batch fairness,
+alarm no-op/retry/resume behavior and a later interrupt behind hot first input.
+Only compilation is requested for this milestone; these controls have not been
+executed. Scale qualification remains 100k dormant/simultaneously ready actors,
+1/8/64 producers, active futures/RSS, alarm lock hold, control sends, foreign-tenant
+restart churn and last-subscription cancellation. Wake indexing and acknowledged
+control freshness remain open; the real per-handler pause/placement observation
+and original invocation oracles are unchanged.
+
+An event-owned platform can now open `acyclic_actors::hosting::Host` with its
+original `Store`, exact actor, arbitrary `Handler`, clock and runtime limits.
+It creates no background task and runs no guest work at open. `wake_paths()`
+projects the actor's state and subscription routing paths; `pause()` persists
+the original fence while a delivery is running. The platform registers routing
+before the final input recheck, retains event/recovery custody through `wake()`
+and persists its returned alarm before completing the native event. Reopen
+uses the same root/provider and takes a fresh placement through the same runtime.
+
+The browser wasm artifact exports `WasmActorHost.open(stream, root, actorBytes,
+manifestBytes, onRecord, active, work)`. It accepts any strict Actors wire
+Handler, independently of the harness AgentGuest/AgentHost composition. Its
+`pause`, `wakePaths` and `wake` calls delegate to the shared host. The existing
+guest callback bridge provides cooperative interruption and abort-on-timeout.
+The platform remains responsible for authenticating the exact actor, routing
+committed changes and native alarms, and keeping the event/recovery alarm alive.
+This factory supplies a production binding for the unchanged hosted Actors
+Package suite; compilation of the binding or a native strict-wire control is
+not a hosted DO conformance result. Workerd qualification remains with the
+conformance owner and has not been run for this milestone.

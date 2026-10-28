@@ -217,6 +217,110 @@ struct CapturesCuts {
     deliveries: std::sync::Mutex<Vec<Delivery>>,
 }
 
+#[tokio::test]
+async fn generic_event_host_runs_the_original_package_over_strict_wire() -> TestResult {
+    use crate::{guest::wire, hosting::Host};
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "generic-event", &[b"emit", b"set 100"]).await?;
+    let package = Arc::new(CapturesCuts {
+        package: Package::new()?,
+        deliveries: std::sync::Mutex::new(Vec::new()),
+    });
+    let remote = || -> Result<Arc<dyn Handler>, crate::guest::GuestError> {
+        let manifest = wire::decode_manifest(&wire::encode_manifest(package.manifest()))?;
+        let package = Arc::clone(&package);
+        Ok(Arc::new(wire::Remote::new(
+            manifest,
+            move |bytes, cancellation| {
+                let package = Arc::clone(&package);
+                Box::pin(async move {
+                    let (delivery, checkpoint) = wire::decode_delivery(&bytes)?;
+                    let transition = package
+                        .on_record(delivery, checkpoint.as_ref(), cancellation)
+                        .await?;
+                    wire::encode_transition(&transition)
+                }) as GuestFuture<'static, Vec<u8>>
+            },
+        )))
+    };
+    let clock = Arc::new(Manual(AtomicU64::new(1)));
+    let open = || -> Result<Host<MemoryStream>, Box<dyn std::error::Error>> {
+        Ok(Host::new(
+            Store::new(Arc::clone(&provider), root()?),
+            address.clone(),
+            remote()?,
+            Arc::clone(&clock) as Arc<dyn Clock>,
+            RuntimeLimits::new(1, 1)?,
+        ))
+    };
+    let host = open()?;
+    assert_eq!(host.actor(), &address);
+    assert_eq!(host.store().root(), store.root());
+    assert!(Arc::ptr_eq(host.store().provider(), &provider));
+    assert_eq!(host.clock().now_unix_ms(), 1);
+    assert!(
+        package
+            .deliveries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty(),
+        "opening does not invoke the package"
+    );
+    assert_eq!(
+        host.wake_paths().await?,
+        vec![
+            StreamPath::new("agents/generic-event")?,
+            store.path(&address)?
+        ]
+    );
+    host.pause(true).await?;
+    assert_eq!(host.wake().await?, None);
+    assert!(
+        package
+            .deliveries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty(),
+        "a durable pause fences actual package entry"
+    );
+    host.pause(false).await?;
+    assert_eq!(host.wake().await?, Some(101));
+    let first = store.load(&address).await?;
+    assert_eq!(
+        first.state().and_then(|state| state.cursor("inbox")),
+        Some(2)
+    );
+    drop(host);
+    clock.0.store(101, Ordering::SeqCst);
+    let reopened = open()?;
+    assert_eq!(reopened.wake().await?, None);
+    assert_eq!(
+        reopened.wake().await?,
+        None,
+        "repeated wake must not repeat the alarm"
+    );
+    let second = store.load(&address).await?;
+    assert!(second.state().map(State::epoch) > first.state().map(State::epoch));
+    assert_eq!(
+        records(&*provider, "out/generic-event").await?,
+        vec![Bytes::from_static(b"r0"), Bytes::from_static(b"a1")]
+    );
+    let deliveries = package
+        .deliveries
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(deliveries.len(), 3);
+    let alarm = deliveries.last().ok_or("missing alarm delivery")?;
+    assert!(matches!(alarm.trigger, Trigger::Alarm { .. }));
+    assert_eq!(alarm.record, None);
+    assert_eq!(
+        alarm.subscriptions.get("inbox").map(|cut| cut.cursor),
+        Some(2)
+    );
+    Ok(())
+}
+
 impl Handler for CapturesCuts {
     fn manifest(&self) -> &Manifest {
         self.package.manifest()
@@ -628,6 +732,240 @@ async fn spawn_with<P: StreamProvider + ?Sized>(
     })?;
     PreparedPublish::settle(&store.provider().commit(prepared.into_request()?).await?)?;
     Ok(address)
+}
+
+struct ActiveAttempt<'a>(&'a std::sync::atomic::AtomicUsize);
+impl Drop for ActiveAttempt<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+struct Gated {
+    package: Package,
+    active: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+    gate: tokio::sync::Semaphore,
+}
+impl Handler for Gated {
+    fn manifest(&self) -> &Manifest {
+        self.package.manifest()
+    }
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        async move {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            let _attempt = ActiveAttempt(&self.active);
+            self.peak.fetch_max(active, Ordering::SeqCst);
+            self.gate
+                .acquire()
+                .await
+                .map_err(|_| crate::guest::GuestError::Handler("test gate closed".into()))?
+                .forget();
+            self.package
+                .on_record(delivery, checkpoint, cancellation)
+                .await
+        }
+        .boxed()
+    }
+}
+
+async fn bounded_admission_and_abort(event_owned: bool) -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let handler = Arc::new(Gated {
+        package: Package::new()?,
+        active: std::sync::atomic::AtomicUsize::new(0),
+        peak: std::sync::atomic::AtomicUsize::new(0),
+        gate: tokio::sync::Semaphore::new(0),
+    });
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        handler.clone(),
+        Arc::new(SystemClock),
+    )
+    .with_limits(RuntimeLimits::new(2, 2)?);
+    let mut actors = Vec::new();
+    for index in 0..6 {
+        let address = spawn_with(&store, &format!("bounded-{index}"), &[b"emit"]).await?;
+        runtime.track(address.clone())?;
+        actors.push(address);
+    }
+    {
+        let events = FuturesUnordered::new();
+        for address in &actors {
+            events.push(runtime.drain_actor(address));
+        }
+        let mut host = Box::pin(runtime.run(|_, error| panic!("host failed: {error}")));
+        let mut events = events;
+        poll_fn(|context| {
+            if event_owned {
+                assert!(events.poll_next_unpin(context).is_pending());
+            } else {
+                assert!(host.as_mut().poll(context).is_pending());
+            }
+            if handler.active.load(Ordering::SeqCst) == 2 {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        assert_eq!(handler.peak.load(Ordering::SeqCst), 2);
+        assert_eq!(runtime.admission.available_permits(), 0);
+        for address in &actors {
+            assert_eq!(
+                store
+                    .load(address)
+                    .await?
+                    .state()
+                    .and_then(|state| state.cursor("inbox")),
+                Some(0)
+            );
+        }
+        // Drop a real in-flight handler, provider follows and admission waiters.
+        // Its claim may be durable; its input and effect must remain untouched.
+    }
+    assert_eq!(handler.active.load(Ordering::SeqCst), 0);
+    assert_eq!(runtime.admission.available_permits(), 2);
+    handler.gate.add_permits(actors.len());
+    for address in &actors {
+        runtime.wake(address);
+    }
+    assert!(runtime.drain().await.is_empty());
+    for index in 0..actors.len() {
+        assert_eq!(
+            records(&*provider, &format!("out/bounded-{index}")).await?,
+            vec![Bytes::from_static(b"r0")]
+        );
+    }
+    assert_eq!(handler.peak.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn continuous_host_bounds_admission_and_aborted_delivery_releases_it() -> TestResult {
+    bounded_admission_and_abort(false).await
+}
+
+#[tokio::test]
+async fn concurrent_event_hosts_share_admission_and_aborted_delivery_releases_it() -> TestResult {
+    bounded_admission_and_abort(true).await
+}
+
+#[tokio::test]
+async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let hot = spawn_with(&store, "hot", &[b"emit".as_slice(); 8]).await?;
+    let cold = spawn_with(&store, "cold", &[b"emit"]).await?;
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_limits(RuntimeLimits::new(1, 2)?);
+    runtime.track(hot.clone())?;
+    runtime.track(cold.clone())?;
+    let work = runtime.ready.take().ok_or("missing initial hot work")?;
+    assert_eq!(work.key(), &hot);
+    runtime
+        .execute(work, Inputs::Follow)
+        .await
+        .map_err(|(_, error)| error)?;
+    assert_eq!(
+        store
+            .load(&hot)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(1)
+    );
+    let work = runtime.ready.take().ok_or("missing cold work")?;
+    assert_eq!(work.key(), &cold, "a hot actor must rejoin at the back");
+    runtime
+        .execute(work, Inputs::Follow)
+        .await
+        .map_err(|(_, error)| error)?;
+    assert_eq!(
+        records(&*provider, "out/cold").await?,
+        vec![Bytes::from_static(b"r0")]
+    );
+    assert_eq!(
+        records(&*provider, "out/hot").await?,
+        vec![Bytes::from_static(b"r0")]
+    );
+    runtime.drain_actor(&hot).await?;
+    assert_eq!(
+        store
+            .load(&hot)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(8)
+    );
+    assert_eq!(records(&*provider, "out/hot").await?.len(), 8);
+    Ok(())
+}
+
+#[tokio::test]
+async fn event_batch_yield_retains_placement_until_completion_or_abort() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let address = spawn_with(&store, "event-lease", &[b"emit"]).await?;
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_limits(RuntimeLimits::new(1, 1)?);
+    runtime.track(address.clone())?;
+    {
+        let delivery = runtime.drain_actor(&address);
+        futures::pin_mut!(delivery);
+        assert!(
+            delivery
+                .as_mut()
+                .poll(&mut Context::from_waker(futures::task::noop_waker_ref()))
+                .is_pending()
+        );
+        assert_eq!(
+            runtime.admission.available_permits(),
+            1,
+            "the next actor may enter during the yield"
+        );
+        assert!(
+            !runtime.release(&address),
+            "the unfinished event still owns placement"
+        );
+        assert_eq!(
+            store
+                .load(&address)
+                .await?
+                .state()
+                .and_then(|state| state.cursor("inbox")),
+            Some(0)
+        );
+    }
+    assert!(
+        runtime.release(&address),
+        "aborting the event releases its placement guard"
+    );
+    runtime.track(address.clone())?;
+    runtime.drain_actor(&address).await?;
+    assert_eq!(
+        records(&*provider, "out/event-lease").await?,
+        vec![Bytes::from_static(b"r0")]
+    );
+    assert!(
+        runtime.release(&address),
+        "a completed event releases its placement guard"
+    );
+    Ok(())
 }
 
 /// A paused actor's overdue alarm leaves the due index (no wake loop) but

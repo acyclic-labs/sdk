@@ -5,7 +5,7 @@ mod record;
 pub use record::{STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD};
 mod runtime;
 pub use crate::guest::Subscription;
-pub use runtime::{Clock, Runtime, SystemClock};
+pub use runtime::{Clock, Runtime, RuntimeLimits, SystemClock};
 
 use crate::addressing::ActorReference;
 use crate::guest::{
