@@ -29,12 +29,16 @@
 //! by wall clock: the collection that creates revision `n` keeps every blob
 //! admitted at `n - 1` or later, so a put protects its blob for one full
 //! collection after it returns, within which a retain or a referencing put
-//! must pin it. A put admits before writing its payload, and collection
-//! removes a payload without its envelope only once its admission is fenced:
-//! a put stalled across a whole collection pass before its envelope may lose
-//! its payload, and closing that needs its envelope create conditioned on
-//! revision. An index key of a holder that crashed before committing pins its
-//! child; it never refuses wrongly in the unsafe direction.
+//! must pin it. A put admits, creates its envelope pending, writes its
+//! payload, then publishes by conditionally replacing its exact pending
+//! bytes. Collection revokes a pending envelope only once its admission is
+//! fenced, by conditionally removing those same bytes, and only then removes
+//! the payload. One of the two conditional writes wins, so a put stalled
+//! across any number of collections either publishes a payload no collector
+//! removed or reports its outcome unknown; it never reports a lost payload
+//! created. A put re-admits when collection advanced while it ran. An index
+//! key of a holder that crashed before committing pins its child; it never
+//! refuses wrongly in the unsafe direction.
 use crate::blob::{Envelope, corrupt, decode_batch, encode_batch, invalid};
 use crate::{
     ByteRange, Collection, Delete, Deletion, Digest, Error, Head, Kind, Manifest, Medium,
@@ -439,8 +443,9 @@ impl<M: Medium> Account<M> {
     }
 
     /// Admits `digest` at the current revision, confirmed by reading the
-    /// revision again after the write. `None` means a write's outcome is unknown.
-    async fn admit(&self, digest: &Digest) -> Result<Option<()>, Error> {
+    /// revision again after the write, and returns that revision. `None`
+    /// means a write's outcome is unknown.
+    async fn admit(&self, digest: &Digest) -> Result<Option<u64>, Error> {
         let mut revision = self.revision().await?;
         loop {
             let key = format!("{}{}", self.admission_prefix(revision), digest.to_hex());
@@ -451,7 +456,7 @@ impl<M: Medium> Account<M> {
             }
             let current = self.revision().await?;
             if current == revision {
-                return Ok(Some(()));
+                return Ok(Some(revision));
             }
             revision = current;
         }
@@ -495,6 +500,13 @@ impl<M: Medium> Account<M> {
         let Some((observed, envelope)) = self.stored_envelope(&digest).await? else {
             return Ok(Delete::Absent);
         };
+        if envelope.pending {
+            // Its put owns it until collection fences the put's admission.
+            return match fence {
+                Some(_) => self.revoke(digest, &key, &observed, &envelope, fence).await,
+                None => Ok(Delete::Absent),
+            };
+        }
         if self.held(&digest, fence).await? {
             return Ok(Delete::Referenced);
         }
@@ -552,11 +564,48 @@ impl<M: Medium> Account<M> {
         }
     }
 
+    /// The published envelope of `digest`; a pending one is not yet a blob.
     async fn envelope(&self, digest: &Digest) -> Result<Option<Envelope>, Error> {
         Ok(self
             .stored_envelope(digest)
             .await?
-            .map(|(_, envelope)| envelope))
+            .map(|(_, envelope)| envelope)
+            .filter(|envelope| !envelope.pending))
+    }
+
+    /// Revokes a pending envelope whose put's admission is fenced, then
+    /// removes that put's payload and keys. Its put's publication replaces
+    /// the same exact bytes, so exactly one of the two succeeds.
+    async fn revoke(
+        &self,
+        digest: Digest,
+        key: &str,
+        observed: &[u8],
+        envelope: &Envelope,
+        fence: Option<u64>,
+    ) -> Result<Delete, Error> {
+        if self.held(&digest, fence).await? {
+            return Ok(Delete::Referenced);
+        }
+        if !self.medium.remove_if(key, observed).await.map_err(moved)? {
+            return Err(ErrorCode::OutcomeUnknown.into());
+        }
+        self.clear(&digest, envelope).await?;
+        Ok(Delete::Absent)
+    }
+
+    /// Removes the payload and index keys of a pending version no longer on
+    /// its envelope key; no publication of that version can follow.
+    async fn clear(&self, digest: &Digest, envelope: &Envelope) -> Result<(), Error> {
+        self.medium
+            .remove(&self.payload_key(digest, &envelope.version))
+            .await
+            .map_err(medium)?;
+        self.unreference(
+            &envelope.references,
+            &Self::envelope_tag(digest, &envelope.version),
+        )
+        .await
     }
 
     /// The envelope with the exact bytes a conditional write must match.
@@ -617,10 +666,50 @@ impl<M: Medium> Account<M> {
                 return Err(error);
             }
         }
-        // Admit before the payload exists: collection keeps a payload admitted
-        // since its fence even before its envelope appears.
-        if self.admit(&digest).await?.is_none() {
+        // Admit before anything exists: collection keeps what was admitted
+        // since its fence, and revokes only what it fenced.
+        let Some(admitted) = self.admit(&digest).await? else {
             return Ok(Put::Unknown);
+        };
+        let key = self.envelope_key(&digest);
+        let pending = Envelope {
+            pending: true,
+            ..envelope.clone()
+        }
+        .encode();
+        match self.medium.create(&key, pending.clone().into()).await {
+            Ok(true) => {}
+            Ok(false) => match self.stored_envelope(&digest).await? {
+                // An abandoned or concurrent put's pending envelope: take it
+                // over by its exact bytes. That put's publication then never
+                // matches, so its payload and keys are cleared here.
+                Some((observed, abandoned)) if abandoned.pending => {
+                    match self
+                        .medium
+                        .replace(&key, &observed, pending.clone().into())
+                        .await
+                    {
+                        Ok(true) => {
+                            self.clear(&digest, &abandoned).await?;
+                        }
+                        Ok(false) | Err(MediumError::Ambiguous(_)) => {
+                            self.unreference(&envelope.references, &tag).await?;
+                            return Ok(Put::Unknown);
+                        }
+                        Err(error) => return Err(medium(error)),
+                    }
+                }
+                // An equal put won; these keys are this one's.
+                _ => {
+                    self.unreference(&envelope.references, &tag).await?;
+                    return match self.envelope(&digest).await? {
+                        Some(existing) => self.existing(digest, &existing, &envelope).await,
+                        None => Ok(Put::Unknown),
+                    };
+                }
+            },
+            Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
+            Err(error) => return Err(medium(error)),
         }
         let payload = self.payload_key(&digest, &envelope.version);
         match self.medium.create(&payload, stored).await {
@@ -628,29 +717,42 @@ impl<M: Medium> Account<M> {
             Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
             Err(error) => return Err(medium(error)),
         }
-        let verified = Verified {
-            digest,
-            length: envelope.length,
-            revision: None,
-        };
+        // Publishes only while no collector revoked the pending bytes.
         match self
             .medium
-            .create(&self.envelope_key(&digest), envelope.encode().into())
+            .replace(&key, &pending, envelope.encode().into())
             .await
         {
-            Ok(true) => Ok(Put::Created { verified }),
+            Ok(true) => {}
             Ok(false) => {
-                // An equal put won; this one's payload and keys are its own.
+                // Collection fenced this put and owns its removal.
                 self.medium.remove(&payload).await.map_err(medium)?;
                 self.unreference(&envelope.references, &tag).await?;
-                match self.envelope(&digest).await? {
-                    Some(existing) => self.existing(digest, &existing, &envelope).await,
-                    None => Ok(Put::Unknown),
-                }
+                return Ok(Put::Unknown);
             }
-            Err(MediumError::Ambiguous(_)) => Ok(Put::Unknown),
-            Err(error) => Err(medium(error)),
+            Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
+            Err(error) => return Err(medium(error)),
         }
+        // The blob stays protected for a full collection after this returns.
+        // Collection advanced while this put ran: re-admit, then confirm the
+        // published version survived, as an existing blob's put does.
+        if self.revision().await? != admitted {
+            if self.admit(&digest).await?.is_none() {
+                return Ok(Put::Unknown);
+            }
+            match self.envelope(&digest).await? {
+                Some(current) if current.version == envelope.version && current.dying.is_none() => {
+                }
+                _ => return Ok(Put::Unknown),
+            }
+        }
+        Ok(Put::Created {
+            verified: Verified {
+                digest,
+                length: envelope.length,
+                revision: None,
+            },
+        })
     }
 
     /// An envelope observed present is durable unless a deleter holds it.
@@ -857,6 +959,7 @@ impl<M: Medium> Account<M> {
                 // Assigned by `publish`.
                 version: [0; 16],
                 dying: None,
+                pending: false,
             },
         )
         .await
@@ -900,6 +1003,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 // Assigned by `publish`.
                 version: [0; 16],
                 dying: None,
+                pending: false,
             },
         )
         .await
@@ -948,15 +1052,26 @@ impl<M: Medium> crate::Blobs for Account<M> {
         let served = self.issued().await?.applied.current();
         let after = after.map(|digest| self.envelope_key(&digest));
         let limit = usize::try_from(limit).map_err(|_| invalid())?;
-        let keys = self
-            .medium
-            .list(&format!("{}e/", self.prefix), after.as_deref(), limit)
-            .await
-            .map_err(medium)?;
-        let digests = keys
-            .iter()
-            .map(|(key, _)| self.digest_from_key(key))
-            .collect::<Result<Vec<_>, _>>()?;
+        // Pending envelopes are not blobs: page past them to a full page.
+        let mut digests = Vec::new();
+        let mut cursor = after;
+        loop {
+            let wanted = limit - digests.len();
+            let keys = self
+                .medium
+                .list(&format!("{}e/", self.prefix), cursor.as_deref(), wanted)
+                .await
+                .map_err(medium)?;
+            for (key, size) in &keys {
+                if Envelope::published_size(*size) {
+                    digests.push(self.digest_from_key(key)?);
+                }
+            }
+            if keys.len() < wanted || digests.len() == limit {
+                break;
+            }
+            cursor = keys.last().map(|(key, _)| key.clone());
+        }
         let next = (digests.len() == limit)
             .then(|| digests.last().copied())
             .flatten();
@@ -1102,14 +1217,16 @@ impl<M: Medium> crate::Blobs for Account<M> {
             if marked.contains(&digest) || self.admitted(&digest, fence).await? {
                 continue;
             }
-            match self.envelope(&digest).await? {
-                Some(envelope) if envelope.version == version => {
+            match self.stored_envelope(&digest).await? {
+                // A pending one is revoked before its payload goes.
+                Some((_, envelope)) if envelope.version == version => {
                     if self.sweep(digest, fence).await? == Delete::Deleted {
                         collection.swept += 1;
                         collection.swept_bytes += size;
                     }
                 }
-                // Its put failed, lost to an equal put, or its deleter stopped.
+                // Its put was revoked, lost to an equal put, or its deleter
+                // stopped: no publication of this version can follow.
                 _ => {
                     self.medium.remove(&key).await.map_err(medium)?;
                     collection.swept_bytes += size;
