@@ -388,11 +388,11 @@ mod source_bound_lost_ack {
             armed: AtomicBool::new(true),
             committed: AtomicUsize::new(0),
         });
-        let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+        let objects = acyclic_objects::MemoryObjects::memory();
         let objects = Arc::new(objects);
         let fs = Fs::new(
             StreamAuthorityStore::new(fault.clone()),
-            LogicalObjectStore::new(objects.clone(), bucket.clone()),
+            LogicalObjectStore::new(objects.clone()),
             EmbeddedCapabilities::MEMORY,
         );
         let directory = tempfile::tempdir()?;
@@ -474,7 +474,7 @@ mod source_bound_lost_ack {
         drop(fault);
 
         // Reconstruct both production adapters, without the fault wrapper.
-        let reopened = Fs::from_memory_providers(stream, objects, bucket);
+        let reopened = Fs::from_memory_providers(stream, objects);
         let source = Arc::new(
             NativeDemandSource::open(
                 std::borrow::Cow::Owned(directory.path().to_path_buf()),

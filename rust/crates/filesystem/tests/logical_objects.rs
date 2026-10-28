@@ -9,7 +9,7 @@ use acyclic_fs::storage::{
     ObjectId, ObjectKind, ObjectReadRequest, ObjectStoreError, ObjectWrite, object_digest,
 };
 use acyclic_fs::{AsyncObjectStore, CancellationToken, LogicalObjectStore, WorkBudget};
-use acyclic_objects::v1::{MemoryObjects, MemoryOptions, ObjectsProvider, wire};
+use acyclic_objects::{Blobs, Delete, MemoryObjects};
 use acyclic_stream::OwnedBytes;
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ fn write(bytes: &'static [u8]) -> ObjectWrite {
     ObjectWrite {
         object_id: ObjectId {
             kind: ObjectKind::BlobChunk,
-            digest: object_digest(ObjectKind::BlobChunk, &bytes),
+            digest: object_digest(&bytes),
         },
         bytes,
     }
@@ -27,10 +27,9 @@ fn write(bytes: &'static [u8]) -> ObjectWrite {
 #[tokio::test]
 async fn v2_batches_preserve_filesystem_content_identity_and_backend_accounting()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (provider, bucket) = MemoryObjects::with_bucket("fs-memory", MemoryOptions::default())?;
-    let provider = Arc::new(provider);
+    let provider = Arc::new(MemoryObjects::memory());
     let store =
-        LogicalObjectStore::new(Arc::clone(&provider), bucket.clone()).with_object_limit(8)?;
+        LogicalObjectStore::new(Arc::clone(&provider)).with_object_limit(8)?;
     let writes = [write(b"first"), write(b"second"), write(b"first")];
     let cancel = CancellationToken::new();
     let result = {
@@ -99,7 +98,7 @@ async fn v2_batches_preserve_filesystem_content_identity_and_backend_accounting(
             present.work.object_bytes_read,
             present.work.bytes_hashed
         ),
-        (1, 5, 5)
+        (1, 0, 0)
     );
     let replay = {
         let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
@@ -112,26 +111,18 @@ async fn v2_batches_preserve_filesystem_content_identity_and_backend_accounting(
             replay.work.backend_write_operations,
             replay.work.backend_read_operations
         ),
-        (1, 2)
+        (1, 0)
     );
-    let listed = provider
-        .list(wire::ListObjectsRequest {
-            bucket: Some(bucket),
-            page_size: 10,
-            ..Default::default()
-        })
-        .await?;
-    assert_eq!(listed.entries.len(), 2);
+    assert_eq!(provider.list(None, 10).await?.digests.len(), 2);
     Ok(())
 }
 
 #[tokio::test]
 async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publication()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (provider, bucket) = MemoryObjects::with_bucket("fs-memory", MemoryOptions::default())?;
-    let provider = Arc::new(provider);
+    let provider = Arc::new(MemoryObjects::memory());
     let store =
-        LogicalObjectStore::new(Arc::clone(&provider), bucket.clone()).with_object_limit(4)?;
+        LogicalObjectStore::new(Arc::clone(&provider)).with_object_limit(4)?;
     let cancel = CancellationToken::new();
     let oversized = write(b"oversized");
     let failure = provider_receipt!(
@@ -179,93 +170,39 @@ async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publicati
         .map(|failure| failure.error),
         Some(ObjectStoreError::Cancelled)
     ));
-    let listed = provider
-        .list(wire::ListObjectsRequest {
-            bucket: Some(bucket),
-            page_size: 10,
-            ..Default::default()
-        })
-        .await?;
-    assert!(listed.entries.is_empty());
+    assert!(provider.list(None, 10).await?.digests.is_empty());
     Ok(())
 }
 
 #[tokio::test]
-async fn v2_fs_never_accepts_substituted_content_or_replays_collected_bytes()
+async fn v2_fs_republishes_collected_bytes()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (provider, bucket) = MemoryObjects::with_bucket("fs-memory", MemoryOptions::default())?;
-    let provider = Arc::new(provider);
-    let store = LogicalObjectStore::new(Arc::clone(&provider), bucket.clone());
+    let provider = Arc::new(MemoryObjects::memory());
+    let store = LogicalObjectStore::new(Arc::clone(&provider));
     let wanted = write(b"real");
     let cancel = CancellationToken::new();
-    let key = format!(
-        "fs/v1/{}/{}",
-        wanted.object_id.kind.canonical_tag(),
-        hex::encode(wanted.object_id.digest.as_bytes())
-    );
-    provider
-        .put(
-            wire::PutObjectHeader {
-                bucket: Some(bucket.clone()),
-                object_key: key.clone(),
-                ..Default::default()
-            },
-            OwnedBytes::from_static(b"fake"),
-        )
-        .await?;
-    assert!(matches!(
+    let blob = acyclic_objects::Digest::from_bytes(*wanted.object_id.digest.as_bytes());
+    for _ in 0..2 {
         provider_receipt!(
             store,
             put(wanted.object_id, wanted.bytes.clone()),
             WorkBudget::UNBOUNDED,
             &cancel
         )
-        .err()
-        .map(|failure| failure.error),
-        Some(ObjectStoreError::Corrupt)
-    ));
-    assert!(matches!(
-        provider_receipt!(
-            store,
-            read(wanted.object_id, 4),
-            WorkBudget::UNBOUNDED,
-            &cancel
-        )
-        .err()
-        .map(|failure| failure.error),
-        Some(ObjectStoreError::Corrupt)
-    ));
-    assert!(matches!(
-        {
-            let mut work = acyclic_fs::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancel);
-            let result = store.contains(wanted.object_id, &mut work).await;
-            work.receipt(result)
-        }
-        .err()
-        .map(|failure| failure.error),
-        Some(ObjectStoreError::Corrupt)
-    ));
-    provider
-        .delete(wire::DeleteObjectRequest {
-            bucket: Some(bucket.clone()),
-            object_key: key.clone(),
-            ..Default::default()
-        })
-        .await?;
-    provider_receipt!(
-        store,
-        put(wanted.object_id, wanted.bytes.clone()),
-        WorkBudget::UNBOUNDED,
-        &cancel
-    )
-    .map_err(|failure| failure.error)?;
-    provider
-        .delete(wire::DeleteObjectRequest {
-            bucket: Some(bucket),
-            object_key: key,
-            ..Default::default()
-        })
-        .await?;
+        .map_err(|failure| failure.error)?;
+        assert_eq!(provider.delete(blob).await?, Delete::Deleted);
+        assert!(matches!(
+            provider_receipt!(
+                store,
+                read(wanted.object_id, 4),
+                WorkBudget::UNBOUNDED,
+                &cancel
+            )
+            .err()
+            .map(|failure| failure.error),
+            Some(ObjectStoreError::Missing)
+        ));
+    }
     provider_receipt!(
         store,
         put(wanted.object_id, wanted.bytes.clone()),

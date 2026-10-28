@@ -20,6 +20,8 @@ harness = false
 required-features = ["local"]
 
 [features]
+# Request accounting over `acyclic_stream::testing::Counted`.
+conformance = ["acyclic-stream/conformance"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support"]
 default = ["grpc"]
 grpc = ["dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/time"]

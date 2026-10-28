@@ -172,8 +172,8 @@ async fn current_objects_and_offline_authority_cannot_substitute_for_original_pr
         .write_text("/file", "different current head")
         .await?;
     let id = volume_authority_id(workspace.id().volume_id());
-    let (empty, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-    let current_only = crate::LogicalObjectStore::new(Arc::new(empty), bucket);
+    let empty = acyclic_objects::MemoryObjects::memory();
+    let current_only = crate::LogicalObjectStore::new(Arc::new(empty));
     assert!(matches!(
         page(
             &authority,

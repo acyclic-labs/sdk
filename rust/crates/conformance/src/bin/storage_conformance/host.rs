@@ -1,14 +1,10 @@
 //! Backend provisioning only: all host vectors and assertions stay in the suite.
 use acyclic_agent_host_conformance::{Backend, Objects, Result, Storage};
-use acyclic_objects::{
-    ObjectsProvider as _,
-    s3::{Capabilities, S3Objects},
-    wire,
-};
+use acyclic_objects::{Store, s3::S3Medium};
 use acyclic_stream::{
     BoxProviderFuture, LocalStream, LocalStreamLimits, StreamProvider, postgres::PostgresStream,
 };
-use object_store::{ObjectStore, path::Path};
+use object_store::ObjectStore;
 use std::{sync::Arc, time::Instant};
 
 #[path = "endpoint.rs"]
@@ -17,7 +13,6 @@ mod endpoint;
 struct Providers {
     database: Option<String>,
     objects: Option<Arc<dyn ObjectStore>>,
-    capabilities: Capabilities,
 }
 
 struct Domain {
@@ -32,7 +27,6 @@ impl Providers {
             providers: Providers {
                 database: self.database.clone(),
                 objects: self.objects.clone(),
-                capabilities: self.capabilities,
             },
             namespace: uuid::Uuid::new_v4().to_string(),
             directory: tempfile::tempdir()?,
@@ -85,25 +79,9 @@ impl Storage for Domain {
             let Some(store) = &self.providers.objects else {
                 return Ok(Objects::memory());
             };
-            let provider = Arc::new(
-                S3Objects::open(
-                    store.clone(),
-                    Path::from(format!("agent-host/{}", self.namespace)),
-                    self.providers.capabilities,
-                )
-                .await?,
-            );
-            let bucket = provider
-                .create_bucket(wire::CreateBucketRequest {
-                    name: "host".into(),
-                    mutation: None,
-                })
-                .await?
-                .bucket
-                .ok_or("host bucket identity missing")?;
+            let medium = S3Medium::new(store.clone(), &format!("agent-host/{}", self.namespace));
             Ok(Objects {
-                provider,
-                bucket,
+                provider: Arc::new(Store::new(medium).account(b"host")?),
                 capabilities: acyclic_fs::EmbeddedCapabilities { durable: true },
             })
         })
@@ -113,7 +91,6 @@ impl Storage for Domain {
 pub async fn verify(
     database: &str,
     store: Arc<dyn ObjectStore>,
-    capabilities: Capabilities,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
     let store: Arc<dyn ObjectStore> = if std::env::var_os("STORAGE_IO_TRACE").is_some() {
         Arc::new(super::s3::observed_store::ObservedStore {
@@ -121,7 +98,7 @@ pub async fn verify(
             body_bytes: 0.into(),
             body_gets: 0.into(),
             metadata_bytes: 0.into(),
-            head_updates: 0.into(),
+            envelope_creates: 0.into(),
         })
     } else {
         store
@@ -135,7 +112,6 @@ pub async fn verify(
         let providers = Providers {
             database,
             objects,
-            capabilities,
         };
         acyclic_agent_host_conformance::verify(&providers)
             .await

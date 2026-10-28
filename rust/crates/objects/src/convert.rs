@@ -1,8 +1,11 @@
 //! Exact conversions between the public Rust types and their wire messages.
 use crate::blob::invalid;
+#[cfg(objects_server)]
+use crate::Part;
+#[cfg(objects_client)]
+use crate::{Retained, Usage};
 use crate::{
-    ByteRange, Collection, Delete, Digest, Error, Head, Kind, Manifest, Page, Part, Put, Retained,
-    Usage, Verified, wire,
+    ByteRange, Collection, Delete, Digest, Error, Head, Kind, Manifest, Page, Put, Verified, wire,
 };
 
 impl From<Digest> for wire::Digest {
@@ -25,6 +28,7 @@ pub(crate) fn wire_digests(values: &[Digest]) -> Vec<wire::Digest> {
     values.iter().copied().map(Into::into).collect()
 }
 
+#[cfg(objects_client)]
 pub(crate) fn range(range: ByteRange) -> wire::ByteRange {
     wire::ByteRange {
         start: range.start,
@@ -32,7 +36,7 @@ pub(crate) fn range(range: ByteRange) -> wire::ByteRange {
     }
 }
 
-#[cfg(feature = "grpc")]
+#[cfg(objects_server)]
 pub(crate) fn from_range(range: Option<&wire::ByteRange>) -> ByteRange {
     range.map_or(ByteRange::FULL, |range| ByteRange {
         start: range.start,
@@ -40,6 +44,7 @@ pub(crate) fn from_range(range: Option<&wire::ByteRange>) -> ByteRange {
     })
 }
 
+#[cfg(objects_client)]
 pub(crate) fn manifest(manifest: &Manifest) -> wire::Manifest {
     wire::Manifest {
         parts: manifest
@@ -54,7 +59,7 @@ pub(crate) fn manifest(manifest: &Manifest) -> wire::Manifest {
     }
 }
 
-#[cfg(feature = "grpc")]
+#[cfg(objects_server)]
 pub(crate) fn from_manifest(manifest: Option<&wire::Manifest>) -> Result<Manifest, Error> {
     let manifest = manifest.ok_or_else(invalid)?;
     Ok(Manifest {
@@ -72,6 +77,7 @@ pub(crate) fn from_manifest(manifest: Option<&wire::Manifest>) -> Result<Manifes
     })
 }
 
+#[cfg(objects_client)]
 fn verified(value: &wire::Verified) -> Result<Verified, Error> {
     Ok(Verified {
         digest: digest(value.digest.as_ref())?,
@@ -79,7 +85,7 @@ fn verified(value: &wire::Verified) -> Result<Verified, Error> {
     })
 }
 
-#[cfg(feature = "grpc")]
+#[cfg(objects_server)]
 fn wire_verified(value: &Verified) -> wire::Verified {
     wire::Verified {
         digest: Some(value.digest.into()),
@@ -87,6 +93,7 @@ fn wire_verified(value: &Verified) -> wire::Verified {
     }
 }
 
+#[cfg(objects_client)]
 pub(crate) fn put(value: &wire::PutResponse) -> Result<Put, Error> {
     use wire::put_response::Outcome;
     match value.outcome.as_ref().ok_or_else(invalid)? {
@@ -101,7 +108,7 @@ pub(crate) fn put(value: &wire::PutResponse) -> Result<Put, Error> {
     }
 }
 
-#[cfg(feature = "grpc")]
+#[cfg(objects_server)]
 pub(crate) fn wire_put(value: &Put) -> wire::PutResponse {
     use wire::put_response::Outcome;
     wire::PutResponse {
@@ -113,6 +120,7 @@ pub(crate) fn wire_put(value: &Put) -> wire::PutResponse {
     }
 }
 
+#[cfg(objects_client)]
 pub(crate) fn head(value: &wire::BlobInfo) -> Result<Head, Error> {
     Ok(Head {
         digest: digest(value.digest.as_ref())?,
@@ -126,7 +134,7 @@ pub(crate) fn head(value: &wire::BlobInfo) -> Result<Head, Error> {
     })
 }
 
-#[cfg(feature = "grpc")]
+#[cfg(objects_server)]
 pub(crate) fn wire_head(value: &Head) -> wire::BlobInfo {
     wire::BlobInfo {
         digest: Some(value.digest.into()),
@@ -139,6 +147,7 @@ pub(crate) fn wire_head(value: &Head) -> wire::BlobInfo {
     }
 }
 
+#[cfg(objects_client)]
 pub(crate) fn delete(value: &wire::DeleteBlobResponse) -> Result<Delete, Error> {
     match wire::DeleteStatus::try_from(value.status).map_err(|_| invalid())? {
         wire::DeleteStatus::Deleted => Ok(Delete::Deleted),
@@ -148,7 +157,7 @@ pub(crate) fn delete(value: &wire::DeleteBlobResponse) -> Result<Delete, Error> 
     }
 }
 
-#[cfg(feature = "grpc")]
+#[cfg(objects_server)]
 pub(crate) fn wire_delete(value: Delete) -> wire::DeleteBlobResponse {
     wire::DeleteBlobResponse {
         status: match value {
@@ -159,6 +168,7 @@ pub(crate) fn wire_delete(value: Delete) -> wire::DeleteBlobResponse {
     }
 }
 
+#[cfg(objects_client)]
 pub(crate) fn page(value: &wire::ListBlobsResponse) -> Result<Page, Error> {
     let page = Page {
         digests: digests(&value.digests)?,
@@ -175,7 +185,7 @@ pub(crate) fn page(value: &wire::ListBlobsResponse) -> Result<Page, Error> {
     Ok(page)
 }
 
-#[cfg(feature = "grpc")]
+#[cfg(objects_server)]
 pub(crate) fn wire_page(value: &Page) -> wire::ListBlobsResponse {
     wire::ListBlobsResponse {
         digests: wire_digests(&value.digests),
@@ -183,12 +193,14 @@ pub(crate) fn wire_page(value: &Page) -> wire::ListBlobsResponse {
     }
 }
 
+#[cfg(objects_client)]
 pub(crate) fn retained(value: &wire::RetainResponse) -> Retained {
     Retained {
         references: value.references,
     }
 }
 
+#[cfg(objects_client)]
 pub(crate) fn collection(value: &wire::CollectResponse) -> Collection {
     Collection {
         epoch: value.epoch,
@@ -198,7 +210,7 @@ pub(crate) fn collection(value: &wire::CollectResponse) -> Collection {
     }
 }
 
-#[cfg(feature = "grpc")]
+#[cfg(objects_server)]
 pub(crate) fn wire_collection(value: &Collection) -> wire::CollectResponse {
     wire::CollectResponse {
         epoch: value.epoch,
@@ -208,6 +220,7 @@ pub(crate) fn wire_collection(value: &Collection) -> wire::CollectResponse {
     }
 }
 
+#[cfg(objects_client)]
 pub(crate) fn usage(value: &wire::UsageResponse) -> Usage {
     Usage {
         blobs: value.blobs,
@@ -216,6 +229,7 @@ pub(crate) fn usage(value: &wire::UsageResponse) -> Usage {
 }
 
 /// Checks a remote read against its request before exposing it.
+#[cfg(objects_client)]
 pub(crate) fn object(
     value: wire::GetBlobResponse,
     requested: Digest,

@@ -9,7 +9,7 @@ pub(super) type BrowserAuthority =
 pub(super) enum BrowserObjects {
     IndexedDb(IndexedDbObjectStore),
     Opfs(OpfsAcceleratedObjectStore),
-    Memory(LogicalObjectStore<acyclic_objects::v1::MemoryObjects>),
+    Memory(LogicalObjectStore<acyclic_objects::MemoryObjects>),
 }
 
 macro_rules! forward {

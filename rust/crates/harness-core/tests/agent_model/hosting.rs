@@ -42,7 +42,7 @@ impl TurnExecutors for Never {
     }
 }
 
-type Objects = LogicalObjectStore<acyclic_objects::v1::MemoryObjects>;
+type Objects = LogicalObjectStore<acyclic_objects::MemoryObjects>;
 
 fn provider() -> Result<ProviderRef> {
     Ok(ProviderRef::new(
@@ -119,25 +119,14 @@ async fn guest_admission_refuses_wrong_volume_provider_and_hosted_mapping_before
     Ok(())
 }
 
-/// The volumes' object bucket, to observe what preparation writes.
-struct Bucket(
-    Arc<acyclic_objects::v1::MemoryObjects>,
-    acyclic_objects::v1::wire::BucketRef,
-);
+/// The volumes' blobs, to observe what preparation writes.
+struct Bucket(Arc<acyclic_objects::MemoryObjects>);
 
 impl Bucket {
-    /// How many objects the bucket holds.
+    /// How many blobs the account holds.
     async fn objects(&self) -> Result<usize> {
-        use acyclic_objects::v1::ObjectsProvider as _;
-        Ok(self
-            .0
-            .list(acyclic_objects::v1::wire::ListObjectsRequest {
-                bucket: Some(self.1.clone()),
-                ..Default::default()
-            })
-            .await?
-            .entries
-            .len())
+        use acyclic_objects::Blobs as _;
+        Ok(self.0.list(None, 1).await?.digests.len())
     }
 }
 
@@ -146,16 +135,16 @@ fn placement<P: 'static>(stream: &Arc<P>) -> Result<Placement<P, Objects>> {
     Ok(placed(stream)?.0)
 }
 
-/// The one placement over `stream`, and its object bucket.
+/// The one placement over `stream`, and its blobs.
 fn placed<P: 'static>(stream: &Arc<P>) -> Result<(Placement<P, Objects>, Bucket)> {
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = acyclic_objects::MemoryObjects::memory();
     let objects = Arc::new(objects);
-    let observed = Bucket(objects.clone(), bucket.clone());
+    let observed = Bucket(objects.clone());
     Ok((
         Placement {
             filesystem: acyclic_fs::Fs::new(
                 acyclic_fs::StreamAuthorityStore::new(stream.clone()),
-                LogicalObjectStore::new(objects, bucket),
+                LogicalObjectStore::new(objects),
                 EmbeddedCapabilities::MEMORY,
             ),
             provider: provider()?,

@@ -18,7 +18,7 @@ async fn object(
     let bytes = OwnedBytes::from(vec![byte; 64]);
     let object_id = ObjectId {
         kind: ObjectKind::Blob,
-        digest: object_digest(ObjectKind::Blob, &bytes),
+        digest: object_digest(&bytes),
     };
     AsyncObjectStore::put(
         store,

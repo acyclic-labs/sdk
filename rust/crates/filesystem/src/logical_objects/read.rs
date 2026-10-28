@@ -25,36 +25,16 @@ fn completed_bytes(error: &ObjectStoreError) -> Result<u64, WorkError> {
     Ok(0)
 }
 #[cfg(not(target_arch = "wasm32"))]
-fn native_payload_bytes(error: &acyclic_objects::v1::NativeObjectsError) -> Result<u64, WorkError> {
-    use acyclic_objects::v1::NativeObjectsCause;
-    if !error.has_payload()
-        && let NativeObjectsCause::SharedFailure(shared) = &error.cause
-    {
-        return native_payload_bytes(shared.error());
-    }
-    [error.object.as_ref(), error.secondary_object.as_ref()]
-        .into_iter()
-        .flatten()
-        .try_fold(
-            error
-                .transport_chunk
-                .as_ref()
-                .map_or(0, |body| body.len() as u64),
-            |total, object| {
-                total
-                    .checked_add(object.body().len() as u64)
-                    .ok_or(WorkError::Overflow)
-            },
-        )
+fn native_payload_bytes(error: &acyclic_objects::NativeObjectsError) -> Result<u64, WorkError> {
+    Ok(error.object.as_ref().map_or(0, |object| object.body().len() as u64))
 }
-impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
+impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
     pub(super) async fn fetch(
         &self,
         id: ObjectId,
         maximum: u64,
         work: &mut KernelAccounting<'_>,
     ) -> Result<(ObjectRead, KernelOwnedAllocation), crate::FsError> {
-        let ((request, _), custody) = read_request(&self.bucket, id, maximum, work)?;
         let remaining = work.remaining()?;
         #[cfg(not(target_arch = "wasm32"))]
         let native = work.native_work().is_some();
@@ -73,14 +53,15 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
         } else {
             work.claim_owned(maximum, 0)?
         };
+        let custody = guard(work)?;
         let result = match work {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
+                let original = *original;
                 let future = self
                     .provider
                     .get_native(
-                        packet(request, custody, original)?,
-                        maximum,
+                        packet((blob(id), ByteRange::FULL, maximum), custody, original)?,
                         original.runtime_meter(),
                     )
                     .map_err(native_error)?;
@@ -91,11 +72,6 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
                 future.await.map_err(native_error)
             }
             _ => {
-                let bytes = request.object_key.capacity() as u64
-                    + request
-                        .bucket
-                        .as_ref()
-                        .map_or(0, |bucket| bucket.name.capacity() as u64);
                 work.charge(WorkCounters {
                     object_probes: 1,
                     backend_read_operations: 1,
@@ -103,10 +79,10 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
                 })?;
                 let result = self
                     .provider
-                    .get(request, maximum)
+                    .get(blob(id), ByteRange::FULL, maximum)
                     .await
                     .map_err(service_error);
-                release(work, custody, bytes)?;
+                release(work, custody, 0)?;
                 result
             }
         };
@@ -123,27 +99,12 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
             completed?;
             return Err(ObjectStoreError::TooLarge { observed, maximum }.into());
         }
-        let control = if native {
-            None
-        } else {
+        if !native {
             work.release_owned(&mut body_custody, maximum - observed)?;
-            let bytes = value
-                .header()
-                .object
-                .as_ref()
-                .map(info_bytes)
-                .transpose()?
-                .unwrap_or(0);
-            let (allocation, late) = work.record_actual_owned(bytes)?;
-            late?;
-            Some((allocation, bytes))
-        };
+        }
         completed?;
         hash(id, value.body(), observed, work)?;
         let body = value.into_body();
-        if let Some((allocation, bytes)) = control {
-            release(work, allocation, bytes)?;
-        }
         Ok((
             ObjectRead {
                 retention: retained(&body, work),
@@ -161,34 +122,19 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
         if requests.is_empty() {
             return Err(ObjectStoreError::EmptyReadBatch.into());
         }
-        let (mut incoming, mut custody) = vector::<GetRequest>(requests.len(), work)?;
-        let mut request_bytes = (incoming.capacity() * size_of::<GetRequest>()) as u64;
+        let (mut incoming, custody) = vector::<GetRequest>(requests.len(), work)?;
+        let request_bytes = (incoming.capacity() * size_of::<GetRequest>()) as u64;
         for request in requests {
-            let (value, mut allocation) = read_request(
-                &self.bucket,
-                request.object_id,
+            incoming.push((
+                blob(request.object_id),
+                ByteRange::FULL,
                 request.maximum_bytes.min(self.maximum_object_bytes),
-                work,
-            )?;
-            request_bytes = request_bytes
-                .checked_add(value.0.object_key.capacity() as u64)
-                .and_then(|bytes| {
-                    bytes.checked_add(
-                        value
-                            .0
-                            .bucket
-                            .as_ref()
-                            .map_or(0, |bucket| bucket.name.capacity() as u64),
-                    )
-                })
-                .ok_or(WorkError::Overflow)?;
-            custody.absorb(&mut allocation)?;
-            incoming.push(value);
+            ));
         }
         let (mut values, output) = vector::<ObjectRead>(requests.len(), work)?;
         let remaining = work.remaining()?;
         let total = incoming.iter().try_fold(0u64, |total, request| {
-            total.checked_add(request.1).ok_or(WorkError::Overflow)
+            total.checked_add(request.2).ok_or(WorkError::Overflow)
         })?;
         #[cfg(not(target_arch = "wasm32"))]
         let native = work.native_work().is_some();
@@ -219,12 +165,13 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
         };
         let mut left = quota;
         for request in &mut incoming {
-            request.1 = request.1.min(left);
-            left -= request.1;
+            request.2 = request.2.min(left);
+            left -= request.2;
         }
         match work {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
+                let original = *original;
                 let future = self
                     .provider
                     .get_batch_native(
@@ -254,22 +201,7 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
                 })?;
                 let results = self.provider.get_batch(incoming).await;
                 release(work, custody, request_bytes)?;
-                let records = results.iter().try_fold(
-                    (results.capacity() * size_of::<Result<Object, Error>>()) as u64,
-                    |total, value| {
-                        total
-                            .checked_add(
-                                value
-                                    .as_ref()
-                                    .ok()
-                                    .and_then(|value| value.header().object.as_ref())
-                                    .map(info_bytes)
-                                    .transpose()?
-                                    .unwrap_or(0),
-                            )
-                            .ok_or_else(|| crate::FsError::from(WorkError::Overflow))
-                    },
-                )?;
+                let records = (results.capacity() * size_of::<Result<Object, Error>>()) as u64;
                 let (controls, late) = work.record_actual_owned(records)?;
                 let result = self.finish_reads(
                     results
@@ -376,7 +308,7 @@ pub(super) fn hash(
         ..WorkCounters::UNCHARGED
     };
     work.admit(delta)?;
-    let digest = object_digest(id.kind, bytes);
+    let digest = object_digest(bytes);
     let completed = work.record_completed(delta);
     if digest != id.digest {
         return Err(ObjectStoreError::Corrupt.into());

@@ -439,7 +439,7 @@ async fn single_page_read_authenticates_decode_and_releases_backend_ownership()
     let malformed = OwnedBytes::from_static(b"not a canonical tree page");
     let malformed_id = ObjectId {
         kind: ObjectKind::TreePage,
-        digest: object_digest(ObjectKind::TreePage, &malformed),
+        digest: object_digest(&malformed),
     };
     AsyncObjectStore::put(
         &store,
@@ -492,7 +492,7 @@ async fn shape_valid_malformed_tree_page_releases_decoded_allocation()
     *malformed.last_mut().ok_or("encoded tree page is empty")? = u8::MAX;
     let object = ObjectId {
         kind: ObjectKind::TreePage,
-        digest: object_digest(ObjectKind::TreePage, &malformed),
+        digest: object_digest(&malformed),
     };
     AsyncObjectStore::put(
         &store,
@@ -809,7 +809,7 @@ async fn late_batch_decode_failure_releases_every_pending_allocation()
     let malformed = OwnedBytes::from_static(b"not a canonical tree page");
     let second = ObjectId {
         kind: ObjectKind::TreePage,
-        digest: object_digest(ObjectKind::TreePage, &malformed),
+        digest: object_digest(&malformed),
     };
     AsyncObjectStore::put(
         &store,

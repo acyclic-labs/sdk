@@ -24,12 +24,12 @@ fn fixture() -> (
     MemoryObjectBackend,
 ) {
     let stream = Arc::new(acyclic_stream::MemoryStream::default());
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = acyclic_objects::MemoryObjects::memory();
     let objects = Arc::new(objects);
     (
-        Fs::from_memory_providers(stream.clone(), objects.clone(), bucket.clone()),
+        Fs::from_memory_providers(stream.clone(), objects.clone()),
         StreamAuthorityStore::new(stream),
-        crate::LogicalObjectStore::new(objects, bucket),
+        crate::LogicalObjectStore::new(objects),
     )
 }
 

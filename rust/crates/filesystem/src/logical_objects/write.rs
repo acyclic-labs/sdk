@@ -1,5 +1,5 @@
 use super::*;
-impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
+impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
     pub(super) fn validate_write(
         &self,
         id: ObjectId,
@@ -9,13 +9,11 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
         work.check()?;
         self.limit(bytes.len() as u64)?;
         let delta = WorkCounters {
-            bytes_hashed: (bytes.len() as u64)
-                .checked_add(crate::OBJECT_DIGEST_ENVELOPE_BYTES)
-                .ok_or(WorkError::Overflow)?,
+            bytes_hashed: bytes.len() as u64,
             ..WorkCounters::UNCHARGED
         };
         work.admit(delta)?;
-        let digest = object_digest(id.kind, bytes);
+        let digest = object_digest(bytes);
         let completed = work.record_completed(delta);
         if digest != id.digest {
             return Err(ObjectStoreError::DigestMismatch.into());
@@ -41,87 +39,39 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
         work.check()?;
         let length = bytes.len() as u64;
         self.limit(length)?;
-        let (request, custody) = put_request(&self.bucket, id, bytes, work)?;
+        let custody = guard(work)?;
         work.admit(WorkCounters {
             object_bytes_written: length,
             ..WorkCounters::UNCHARGED
         })?;
-        let result: Result<u64, ObjectStoreError> = match work {
+        let put = match work {
             #[cfg(not(target_arch = "wasm32"))]
-            KernelAccounting::NativeOriginal { work: original, .. } => self
-                .provider
-                .put_native(
-                    packet(request, custody, original)?,
-                    original.runtime_meter(),
-                )
-                .map_err(native_error)?
-                .await
-                .map(|info| info.info().size)
-                .map_err(native_error),
+            KernelAccounting::NativeOriginal { work: original, .. } => {
+                let original = *original;
+                let receipt = self
+                    .provider
+                    .put_native(
+                        packet((bytes, Vec::new()), custody, original)?,
+                        original.runtime_meter(),
+                    )
+                    .map_err(native_error)?
+                    .await
+                    .map_err(native_error)?;
+                *receipt.put()
+            }
             _ => {
-                let bytes = request.0.object_key.capacity() as u64
-                    + request
-                        .0
-                        .bucket
-                        .as_ref()
-                        .map_or(0, |bucket| bucket.name.capacity() as u64)
-                    + request
-                        .0
-                        .metadata
-                        .as_ref()
-                        .map_or(0, |metadata| metadata.content_type.capacity() as u64);
                 work.charge(WorkCounters {
                     backend_write_operations: 1,
                     ..WorkCounters::UNCHARGED
                 })?;
-                let result = self.provider.put(request.0, request.1).await;
-                release(work, custody, bytes)?;
-                match result {
-                    Ok(info) => {
-                        record_write(work, length)?;
-                        let bytes = info_bytes(&info)?;
-                        let (custody, late) = work.record_actual_owned(bytes)?;
-                        let size = info.size;
-                        drop(info);
-                        release(work, custody, bytes)?;
-                        if size != length {
-                            return Err(ObjectStoreError::Corrupt.into());
-                        }
-                        late?;
-                        return work.check();
-                    }
-                    Err(error) => Err(ObjectStoreError::LogicalObjects(error)),
-                }
+                let put = self.provider.put(bytes, Vec::new()).await;
+                release(work, custody, 0)?;
+                put.map_err(ObjectStoreError::LogicalObjects)?
             }
         };
-        match result {
-            Ok(size) => {
-                record_write(work, length)?;
-                if size != length {
-                    return Err(ObjectStoreError::Corrupt.into());
-                }
-            }
-            Err(error) if precondition(&error) => self.verify_existing(id, length, work).await?,
-            Err(error) => return Err(error.into()),
-        }
+        settle(id, length, put)?;
+        record_write(work, length)?;
         work.check()
-    }
-    async fn verify_existing(
-        &self,
-        id: ObjectId,
-        length: u64,
-        work: &mut KernelAccounting<'_>,
-    ) -> Result<(), crate::FsError> {
-        let (read, custody) = self.fetch(id, length, work).await?;
-        let actual = read.bytes.len() as u64;
-        drop(read);
-        if work.standalone_parts().is_some() {
-            release(work, custody, actual)?;
-        }
-        if actual != length {
-            return Err(ObjectStoreError::Corrupt.into());
-        }
-        record_write(work, length)
     }
     pub(super) async fn publish_batch<const HASHED: bool, T, V>(
         &self,
@@ -136,18 +86,8 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
         if writes.is_empty() {
             return Err(ObjectStoreError::EmptyWriteBatch.into());
         }
-        let (mut requests, mut custody) = vector::<PutRequest>(writes.len(), work)?;
-        let (mut unique, unique_custody) = vector::<Option<&T>>(writes.len(), work)?;
-        // Different object kinds cannot have equal ObjectIds. Remember kind
-        // membership in registers; only repeated kinds need an identity table.
-        // The existing unique list supplies the seed if promotion is necessary.
-        let mut kinds = [0u64; 4];
-        let mut index = None;
-        #[cfg(all(test, feature = "memory"))]
-        if super::tests::eager_index() {
-            index = Some(super::index::Index::new(writes.len(), work)?);
-        }
-        let mut request_bytes = (requests.capacity() * size_of::<PutRequest>()) as u64;
+        let (mut requests, custody) = vector::<PutRequest>(writes.len(), work)?;
+        let request_bytes = (requests.capacity() * size_of::<PutRequest>()) as u64;
         let mut total = 0u64;
         for write in writes {
             let (id, body) = parts(write);
@@ -158,66 +98,11 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
             } else {
                 self.validate_write(id, body, work)?;
             }
-            #[cfg(all(test, feature = "memory"))]
-            super::tests::replay_duplicate_scan(&unique, id, parts, work)?;
-            let tag = usize::from(id.kind.canonical_tag());
-            let bit = 1u64 << (tag % 64);
-            if index.is_none() && kinds[tag / 64] & bit != 0 {
-                let mut promoted = super::index::Index::new(writes.len(), work)?;
-                for previous in unique.iter().flatten() {
-                    if promoted
-                        .insert(parts(previous).0, *previous, work)?
-                        .is_some()
-                    {
-                        return Err(ObjectStoreError::Corrupt.into());
-                    }
-                }
-                index = Some(promoted);
-            }
-            if let Some(index) = &mut index
-                && let Some(previous) = index.insert(id, write, work)?
-            {
-                work.charge(WorkCounters {
-                    items_examined: 1,
-                    ..WorkCounters::UNCHARGED
-                })?;
-                if parts(previous).1 != body {
-                    return Err(ObjectStoreError::DigestMismatch.into());
-                }
-                continue;
-            }
-            kinds[tag / 64] |= bit;
-            let (request, mut allocation) = put_request(&self.bucket, id, body.clone(), work)?;
-            request_bytes = request_bytes
-                .checked_add(request.0.object_key.capacity() as u64)
-                .and_then(|bytes| {
-                    bytes.checked_add(
-                        request
-                            .0
-                            .bucket
-                            .as_ref()
-                            .map_or(0, |bucket| bucket.name.capacity() as u64),
-                    )
-                })
-                .and_then(|bytes| {
-                    bytes.checked_add(
-                        request
-                            .0
-                            .metadata
-                            .as_ref()
-                            .map_or(0, |metadata| metadata.content_type.capacity() as u64),
-                    )
-                })
-                .ok_or(WorkError::Overflow)?;
-            custody.absorb(&mut allocation)?;
-            requests.push(request);
-            unique.push(Some(write));
+            // Equal identities carry equal bytes; the store dedupes them.
+            requests.push((body.clone(), Vec::new()));
             total = total
                 .checked_add(body.len() as u64)
                 .ok_or(WorkError::Overflow)?;
-        }
-        if let Some(index) = index {
-            index.release(work)?;
         }
         work.admit(WorkCounters {
             object_bytes_written: total,
@@ -226,6 +111,7 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
         let result = match work {
             #[cfg(not(target_arch = "wasm32"))]
             KernelAccounting::NativeOriginal { work: original, .. } => {
+                let original = *original;
                 let results = self
                     .provider
                     .put_batch_native(
@@ -235,13 +121,12 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
                     .map_err(native_error)?
                     .await
                     .map_err(native_error)?;
-                self.finish_writes(
-                    results.map(|value| value.map(|info| info.info().size).map_err(native_error)),
-                    &mut unique,
+                finish_writes(
+                    results.map(|value| value.map(|receipt| *receipt.put()).map_err(native_error)),
+                    writes,
                     parts,
                     work,
                 )
-                .await
             }
             _ => {
                 work.charge(WorkCounters {
@@ -250,86 +135,62 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
                 })?;
                 let results = self.provider.put_batch(requests).await;
                 release(work, custody, request_bytes)?;
-                let bytes = results.iter().try_fold(
-                    (results.capacity() * size_of::<Result<wire::ObjectInfo, Error>>()) as u64,
-                    |total, value| {
-                        total
-                            .checked_add(
-                                value
-                                    .as_ref()
-                                    .ok()
-                                    .map(info_bytes)
-                                    .transpose()?
-                                    .unwrap_or(0),
-                            )
-                            .ok_or_else(|| crate::FsError::from(WorkError::Overflow))
-                    },
-                )?;
+                let bytes = (results.capacity() * size_of::<Result<Put, Error>>()) as u64;
                 let (controls, late) = work.record_actual_owned(bytes)?;
-                let result = self
-                    .finish_writes(
-                        results.into_iter().map(|value| {
-                            value
-                                .map(|info| info.size)
-                                .map_err(ObjectStoreError::LogicalObjects)
-                        }),
-                        &mut unique,
-                        parts,
-                        work,
-                    )
-                    .await;
+                let result = finish_writes(
+                    results
+                        .into_iter()
+                        .map(|value| value.map_err(ObjectStoreError::LogicalObjects)),
+                    writes,
+                    parts,
+                    work,
+                );
                 release(work, controls, bytes)?;
                 result.and(late)
             }
         };
-        let bytes = (unique.capacity() * size_of::<Option<&T>>()) as u64;
-        drop(unique);
-        release(work, unique_custody, bytes)?;
         result?;
         work.check()
     }
-    async fn finish_writes<T, V>(
-        &self,
-        results: impl ExactSizeIterator<Item = Result<u64, ObjectStoreError>>,
-        unique: &mut [Option<&T>],
-        parts: V,
-        work: &mut KernelAccounting<'_>,
-    ) -> Result<(), crate::FsError>
-    where
-        V: Copy + for<'a> Fn(&'a T) -> (ObjectId, &'a OwnedBytes),
-    {
-        let count_valid = results.len() == unique.len();
-        let mut failure = None;
-        for (write, result) in unique.iter_mut().zip(results) {
-            let length = parts(write.ok_or(ObjectStoreError::Corrupt)?).1.len() as u64;
-            match result {
-                Ok(size) => {
-                    record_write(work, length)?;
-                    if size != length && failure.is_none() {
-                        failure = Some(ObjectStoreError::Corrupt);
-                    }
-                    *write = None;
-                }
-                Err(error) if precondition(&error) => {}
-                Err(error) => {
-                    if failure.is_none() {
-                        failure = Some(error);
-                    }
-                    *write = None;
-                }
+}
+
+/// Accepts only a verified outcome for exactly these bytes.
+fn settle(id: ObjectId, length: u64, put: Put) -> Result<(), ObjectStoreError> {
+    match put.verified() {
+        Some(verified) if verified.digest == blob(id) && verified.length == length => Ok(()),
+        Some(_) => Err(ObjectStoreError::Corrupt),
+        None => Err(ObjectStoreError::LogicalObjects(
+            wire::ErrorCode::OutcomeUnknown.into(),
+        )),
+    }
+}
+
+fn finish_writes<T, V>(
+    results: impl ExactSizeIterator<Item = Result<Put, ObjectStoreError>>,
+    writes: &[T],
+    parts: V,
+    work: &mut KernelAccounting<'_>,
+) -> Result<(), crate::FsError>
+where
+    V: Copy + for<'a> Fn(&'a T) -> (ObjectId, &'a OwnedBytes),
+{
+    if results.len() != writes.len() {
+        return Err(ObjectStoreError::Corrupt.into());
+    }
+    let mut failure = None;
+    for (write, result) in writes.iter().zip(results) {
+        let (id, body) = parts(write);
+        let length = body.len() as u64;
+        match result.and_then(|put| settle(id, length, put)) {
+            Ok(()) => record_write(work, length)?,
+            Err(error) => {
+                failure.get_or_insert(error);
             }
         }
-        if !count_valid {
-            return Err(ObjectStoreError::Corrupt.into());
-        }
-        if let Some(error) = failure {
-            return Err(error.into());
-        }
-        for write in unique.iter().flatten() {
-            let (id, body) = parts(write);
-            self.verify_existing(id, body.len() as u64, work).await?;
-        }
-        Ok(())
+    }
+    match failure {
+        Some(error) => Err(error.into()),
+        None => Ok(()),
     }
 }
 

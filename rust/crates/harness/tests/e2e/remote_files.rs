@@ -2,7 +2,7 @@
 use super::{TestResult, execution, scenario::Scenario, scenario_data};
 use acyclic_fs::{EmbeddedCapabilities, Fs, LogicalObjectStore, StreamAuthorityStore};
 use acyclic_harness::{AgentId, filesystem::MemoryHarnessStorage};
-use acyclic_objects::v1::{MemoryObjects, MemoryOptions, ObjectsProvider, grpc::GrpcObjects, wire};
+use acyclic_objects::{Blobs, MemoryObjects, grpc::GrpcObjects};
 use acyclic_stream::{MemoryStream, StreamProvider, grpc::Client};
 use serde::Deserialize;
 use serde_json::Value;
@@ -10,22 +10,14 @@ use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 type ServiceFs<P, O> = Fs<StreamAuthorityStore<P>, LogicalObjectStore<O>>;
 
-async fn filesystem<P: StreamProvider, O: ObjectsProvider + 'static>(
+async fn filesystem<P: StreamProvider, O: Blobs + 'static>(
     stream: Arc<P>,
     objects: Arc<O>,
     durable: bool,
 ) -> TestResult<ServiceFs<P, O>> {
-    let bucket = objects
-        .create_bucket(wire::CreateBucketRequest {
-            name: "harness-files".into(),
-            mutation: None,
-        })
-        .await?
-        .bucket
-        .ok_or("created bucket has no identity")?;
     Ok(Fs::new(
         StreamAuthorityStore::new(stream),
-        LogicalObjectStore::new(objects, bucket),
+        LogicalObjectStore::new(objects),
         EmbeddedCapabilities { durable },
     ))
 }
@@ -59,7 +51,7 @@ fn cases() -> TestResult<Vec<(PathBuf, Value)>> {
     Ok(cases)
 }
 
-async fn compare<P: StreamProvider, O: ObjectsProvider + 'static>(
+async fn compare<P: StreamProvider, O: Blobs + 'static>(
     stream: Arc<P>,
     filesystem: ServiceFs<P, O>,
 ) -> TestResult<usize> {
@@ -97,7 +89,7 @@ async fn compare<P: StreamProvider, O: ObjectsProvider + 'static>(
 #[tokio::test]
 async fn service_backed_files_match_and_wrong_file_bytes_are_rejected() -> TestResult {
     let stream = Arc::new(MemoryStream::default());
-    let objects = Arc::new(MemoryObjects::new(MemoryOptions::default())?);
+    let objects = Arc::new(MemoryObjects::memory());
     let files = filesystem(stream.clone(), objects, false).await?;
     assert!(compare(stream.clone(), files.clone()).await? > 0);
     let (_, mut wrong) = cases()?
@@ -127,7 +119,7 @@ proptest::proptest! {
             .enable_all().build().map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
         runtime.block_on(async {
             let stream = Arc::new(MemoryStream::default());
-            let objects = Arc::new(MemoryObjects::new(MemoryOptions::default())?);
+            let objects = Arc::new(MemoryObjects::memory());
             let files = filesystem(stream.clone(), objects, false).await?;
             let storage = MemoryHarnessStorage::from_providers(
                 AgentId::new(), 1_048_576, files, stream,

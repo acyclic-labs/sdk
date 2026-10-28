@@ -42,11 +42,7 @@ pub enum FsError {
     /// Durable local Objects initialization or recovery failed.
     #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     #[error(transparent)]
-    LocalObjects(#[from] acyclic_objects::v1::local::LocalOpenError),
-    /// The canonical filesystem Objects bucket could not be opened.
-    #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
-    #[error("local filesystem Objects bucket initialization failed: {0}")]
-    LocalObjectsBucket(acyclic_objects::v1::Error),
+    LocalObjects(#[from] acyclic_objects::local::LocalOpenError),
     /// Local provider root setup failed before either canonical provider opened.
     #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
     #[error("local filesystem root setup failed: {0}")]

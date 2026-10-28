@@ -200,11 +200,10 @@ kernel_cases! { decode: CanonicalDecodeError {
 }}
 
 #[test]
-fn native_objects_with_retained_payload_keep_the_service_failure() {
-    let mut error = acyclic_objects::v1::NativeObjectsError::from(
-        acyclic_objects::v1::Error::from(acyclic_objects::v1::wire::ErrorCode::AccessDenied),
-    );
-    error.transport_chunk = Some(bytes::Bytes::from_static(b"already admitted payload"));
+fn native_objects_keep_the_service_failure() {
+    let error = acyclic_objects::NativeObjectsError::from(acyclic_objects::Error::from(
+        acyclic_objects::wire::ErrorCode::AccessDenied,
+    ));
     assert!(std::error::Error::source(&error).is_none());
     assert_eq!(
         status(&object(ObjectStoreError::NativeObjects(error))).code(),

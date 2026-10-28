@@ -14,11 +14,11 @@ fn fixture() -> (GenerationExportManifest, [acyclic_stream::OwnedBytes; 2]) {
     let root_body = acyclic_stream::OwnedBytes::from_static(b"transfer-root");
     let chunk_id = ObjectId {
         kind: ObjectKind::BlobChunk,
-        digest: object_digest(ObjectKind::BlobChunk, &chunk),
+        digest: object_digest(&chunk),
     };
     let root_id = ObjectId {
         kind: ObjectKind::GenerationRoot,
-        digest: object_digest(ObjectKind::GenerationRoot, &root_body),
+        digest: object_digest(&root_body),
     };
     (
         GenerationExportManifest {

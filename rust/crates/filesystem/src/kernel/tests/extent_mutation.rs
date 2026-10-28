@@ -600,7 +600,7 @@ async fn page_encoding_and_hashing_are_separately_admitted_before_storage()
     assert!(matches!(project_extent_error(hash_error),
         ExtentMutationError::Work(WorkError::BudgetExceeded {
             counter: "bytes_hashed", observed, maximum: 0,
-        }) if observed == encoded_length + OBJECT_DIGEST_ENVELOPE_BYTES
+        }) if observed == encoded_length
     ));
     assert_eq!(hash_limited.spent().bytes_encoded, encoded_length);
     assert_eq!(hash_limited.spent().bytes_hashed, 0);
@@ -644,7 +644,7 @@ async fn shape_valid_malformed_page_releases_decoded_allocation()
     malformed[23..31].fill(0);
     let malformed_id = ObjectId {
         kind: ObjectKind::ExtentPage,
-        digest: object_digest(ObjectKind::ExtentPage, &malformed),
+        digest: object_digest(&malformed),
     };
     AsyncObjectStore::put(
         &store,

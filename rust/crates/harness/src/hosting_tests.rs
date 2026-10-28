@@ -117,7 +117,7 @@ async fn call(
 #[tokio::test]
 async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Result {
     let stream = Arc::new(MemoryStream::default());
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = acyclic_objects::MemoryObjects::memory();
     let bound = Bound::local_root(
         AuthorityRoot::new(
             "agents",
@@ -130,7 +130,7 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         Placement {
             filesystem: acyclic_fs::Fs::new(
                 acyclic_fs::StreamAuthorityStore::new(stream.clone()),
-                LogicalObjectStore::new(Arc::new(objects), bucket),
+                LogicalObjectStore::new(Arc::new(objects)),
                 EmbeddedCapabilities::MEMORY,
             ),
             provider: provider()?,

@@ -1,9 +1,5 @@
 //! Binary adapter: generated public messages and Rust rules remain authoritative.
-use acyclic_objects::v1::{
-    Error, MemoryObjects, MemoryOptions, ObjectsProvider, json, request, wire,
-};
-use acyclic_stream::OwnedBytes;
-use prost::Message;
+use acyclic_objects::{Error, MemoryObjects, json, wire};
 use wasm_bindgen::prelude::*;
 
 /// Throws an `Error` named `ObjectsV1Error` carrying the numeric wire `code`.
@@ -26,23 +22,7 @@ fn byte_limit(value: f64) -> Result<usize, JsValue> {
     }
     Ok(value as usize)
 }
-fn decode<T: Message + Default>(bytes: &[u8]) -> Result<T, JsValue> {
-    T::decode(bytes).map_err(|_| error(wire::ErrorCode::InvalidArgument.into()))
-}
-fn frames(value: &impl Message) -> js_sys::Array {
-    let result = js_sys::Array::new();
-    result.push(&js_sys::Uint8Array::from(value.encode_to_vec().as_slice()));
-    result
-}
 
-#[wasm_bindgen]
-pub fn validate_objects_v1_request(
-    route: &str,
-    bytes: &[u8],
-    body_length: u64,
-) -> Result<(), JsValue> {
-    request::validate_binary(route, bytes, body_length).map_err(error)
-}
 #[wasm_bindgen]
 pub fn encode_objects_v1_json(name: &str, bytes: &[u8], maximum: f64) -> Result<Vec<u8>, JsValue> {
     json::encode_binary(name, bytes, byte_limit(maximum)?).map_err(error)
@@ -53,38 +33,14 @@ pub fn decode_objects_v1_json(name: &str, bytes: &[u8], maximum: f64) -> Result<
 }
 #[wasm_bindgen]
 pub fn objects_v1_http_type(route: &str, output: bool) -> Result<String, JsValue> {
-    let (_, input, response) = acyclic_objects::v1::HTTP_ROUTES
+    let (_, input, response) = acyclic_objects::HTTP_ROUTES
         .iter()
         .find(|(name, _, _)| *name == route)
         .ok_or_else(|| error(wire::ErrorCode::InvalidArgument.into()))?;
     Ok(if output { *response } else { *input }.to_owned())
 }
-#[wasm_bindgen]
-pub fn validate_objects_v1_response(
-    route: &str,
-    query: &[u8],
-    bytes: &[u8],
-    body_length: u64,
-) -> Result<(), JsValue> {
-    acyclic_objects::v1::response::validate_binary(route, query, bytes, body_length).map_err(error)
-}
-#[wasm_bindgen]
-pub fn validate_objects_v1_get_header(
-    query: &[u8],
-    bytes: &[u8],
-    maximum: u64,
-) -> Result<u64, JsValue> {
-    acyclic_objects::v1::response::validate_get_header(query, bytes, maximum).map_err(error)
-}
 
-/// Decodes one encoded download `Body` frame of at most `remaining` selected bytes.
-#[wasm_bindgen]
-pub fn decode_objects_v1_body(frame: &[u8], remaining: u64) -> Result<Vec<u8>, JsValue> {
-    let frame =
-        wire::Body::decode(frame).map_err(|_| error(wire::ErrorCode::Unavailable.into()))?;
-    acyclic_objects::v1::response::body(frame, remaining).map_err(error)
-}
-
+/// One in-memory account served through the canonical route dispatch.
 #[wasm_bindgen]
 pub struct ObjectsV1Memory {
     inner: MemoryObjects,
@@ -92,77 +48,22 @@ pub struct ObjectsV1Memory {
 #[wasm_bindgen]
 impl ObjectsV1Memory {
     #[wasm_bindgen(constructor)]
-    pub fn new(maximum_bytes: u64, maximum_entries: usize) -> Result<Self, JsValue> {
-        Ok(Self {
-            inner: MemoryObjects::new(MemoryOptions {
-                maximum_bytes: usize::try_from(maximum_bytes)
-                    .map_err(|_| error(wire::ErrorCode::QuotaExceeded.into()))?,
-                maximum_entries,
-            })
-            .map_err(error)?,
-        })
-    }
-    pub async fn invoke(
-        &self,
-        route: String,
-        bytes: Vec<u8>,
-        body: Vec<u8>,
-        maximum: u64,
-    ) -> Result<js_sys::Array, JsValue> {
-        request::validate_binary(&route, &bytes, body.len() as u64).map_err(error)?;
-        macro_rules! unary {
-            ($method:ident) => {
-                frames(&self.inner.$method(decode(&bytes)?).await.map_err(error)?)
-            };
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: MemoryObjects::memory(),
         }
-        Ok(match route.as_str() {
-            "buckets/create" => unary!(create_bucket),
-            "buckets/head" => unary!(head_bucket),
-            "buckets/delete" => unary!(delete_bucket),
-            "objects/put" => frames(
-                &self
-                    .inner
-                    .put(decode(&bytes)?, OwnedBytes::from(body))
-                    .await
-                    .map_err(error)?,
-            ),
-            "objects/head" => unary!(head),
-            "objects/delete" => unary!(delete),
-            "objects/restore" => unary!(restore),
-            "objects/list" => unary!(list),
-            "multipart/create" => unary!(create_multipart),
-            "multipart/upload-part" => frames(
-                &self
-                    .inner
-                    .upload_part(decode(&bytes)?, OwnedBytes::from(body))
-                    .await
-                    .map_err(error)?,
-            ),
-            "multipart/list-parts" => unary!(list_parts),
-            "multipart/complete" => unary!(complete_multipart),
-            "multipart/abort" => unary!(abort_multipart),
-            "objects/get" => {
-                let object = self
-                    .inner
-                    .get(decode(&bytes)?, maximum)
-                    .await
-                    .map_err(error)?;
-                let result = frames(&wire::GetObjectResponse {
-                    frame: Some(wire::get_object_response::Frame::Header(
-                        object.header().clone(),
-                    )),
-                });
-                for chunk in object.body().chunks(65_536) {
-                    let value = wire::GetObjectResponse {
-                        frame: Some(wire::get_object_response::Frame::Body(
-                            acyclic_objects::v1::response::plain_body(chunk.to_vec()),
-                        )),
-                    };
-                    result.push(&js_sys::Uint8Array::from(value.encode_to_vec().as_slice()));
-                }
-                result
-            }
-            _ => return Err(error(wire::ErrorCode::InvalidArgument.into())),
-        })
+    }
+    /// Serves one route's binary input message, returning its binary output.
+    pub async fn invoke(&self, route: String, bytes: Vec<u8>) -> Result<Vec<u8>, JsValue> {
+        acyclic_objects::route::invoke(&self.inner, &route, &bytes)
+            .await
+            .map_err(error)
+    }
+}
+
+impl Default for ObjectsV1Memory {
+    fn default() -> Self {
+        Self::new()
     }
 }

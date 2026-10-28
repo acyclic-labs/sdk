@@ -350,7 +350,7 @@ pub fn tree_page_id(page: &TreePage, maximum_items: u32) -> Result<ObjectId, Can
     )?;
     Ok(ObjectId {
         kind: ObjectKind::TreePage,
-        digest: object_digest(ObjectKind::TreePage, &bytes),
+        digest: object_digest(&bytes),
     })
 }
 

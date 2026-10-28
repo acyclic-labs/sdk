@@ -3,7 +3,7 @@ use super::*;
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, Fs, LogicalObjectStore, StreamAuthorityStore,
 };
-use acyclic_objects::v1::{MemoryObjects, MemoryOptions};
+use acyclic_objects::MemoryObjects;
 
 async fn row<P, A, O>(name: &str, files: Fs<A, O>, stream: Arc<P>) -> TestResult
 where
@@ -49,19 +49,10 @@ async fn files<P: StreamProvider>(name: &str, stream: Arc<P>) -> TestResult {
     // Remote authority and local Objects are independently bound. Public remote
     // Objects batches and an Actors host are separate, explicit qualification gaps.
     let authority = loopback(Arc::new(MemoryStream::default())).await?;
-    let objects = Arc::new(MemoryObjects::new(MemoryOptions::default())?);
-    use acyclic_objects::v1::ObjectsProvider as _;
-    let bucket = objects
-        .create_bucket(acyclic_objects::v1::wire::CreateBucketRequest {
-            name: "matrix-files".into(),
-            mutation: None,
-        })
-        .await?
-        .bucket
-        .ok_or("matrix bucket missing")?;
+    let objects = Arc::new(MemoryObjects::memory());
     let remote_authority = Fs::new(
         StreamAuthorityStore::new(authority.client.clone()),
-        LogicalObjectStore::new(objects, bucket),
+        LogicalObjectStore::new(objects),
         acyclic_fs::EmbeddedCapabilities::MEMORY,
     );
     row(&format!("grpc-authority/{name}"), remote_authority, stream).await

@@ -25,7 +25,7 @@ use acyclic_fs::{
     CaptureOptions, MaterializeOptions, capture_baseline, capture_root_identity,
     materialize_checkout,
 };
-use acyclic_objects::LocalDurability as ObjectsDurability;
+use acyclic_objects::local::LocalDurability as ObjectsDurability;
 use acyclic_stream::LocalDurability as StreamDurability;
 
 pub(super) fn is_command(command: &str) -> bool {

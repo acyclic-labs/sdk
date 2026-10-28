@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use thiserror::Error;
 
 type ReferenceAuthority = crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>;
-type ReferenceObjects = crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>;
+type ReferenceObjects = crate::LogicalObjectStore<acyclic_objects::MemoryObjects>;
 
 /// One exact simulator interception point.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -179,7 +179,7 @@ const SIMULATION_OPERATION_COUNT: usize = SimulationOperation::ObjectContains as
 #[derive(Clone)]
 pub struct Simulation<
     A = crate::distributed::StreamAuthorityStore<acyclic_stream::MemoryStream>,
-    O = crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
+    O = crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
 > {
     state: Arc<Mutex<State>>,
     authority: Arc<A>,
@@ -327,10 +327,10 @@ pub struct SimulatedStore<T> {
 
 fn reference_backends() -> (ReferenceAuthority, ReferenceObjects) {
     let streams = Arc::new(acyclic_stream::MemoryStream::default());
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = acyclic_objects::MemoryObjects::memory();
     (
         crate::distributed::StreamAuthorityStore::new(streams),
-        crate::LogicalObjectStore::new(Arc::new(objects), bucket),
+        crate::LogicalObjectStore::new(Arc::new(objects)),
     )
 }
 

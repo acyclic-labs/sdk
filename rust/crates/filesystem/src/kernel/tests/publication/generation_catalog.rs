@@ -235,7 +235,7 @@ async fn fixture_with_fence(
             let bytes = encode_generation_root(&candidate, accept, allocation_failed)?;
             root = ObjectId {
                 kind: ObjectKind::GenerationRoot,
-                digest: object_digest(ObjectKind::GenerationRoot, &bytes),
+                digest: object_digest(&bytes),
             };
             objects
                 .put(root, acyclic_stream::OwnedBytes::from(bytes), &mut work)

@@ -2,7 +2,7 @@
 
 use acyclic_fs::storage::ObjectWrite;
 use acyclic_fs::{
-    AsyncObjectStore, CancellationToken, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId,
+    AsyncObjectStore, CancellationToken, ObjectFailure, ObjectId,
     ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError, WorkBudget,
     WorkCounters, object_digest,
 };
@@ -213,7 +213,7 @@ impl OpfsAcceleratedObjectStore {
             .map_err(|error| ObjectFailure::new(rejected(&error), work))?;
         let bytes = OwnedBytes::from(Uint8Array::new(&buffer).to_vec());
         if u64::try_from(bytes.len()).ok() != Some(length)
-            || object_digest(object_id.kind, &bytes) != object_id.digest
+            || object_digest(&bytes) != object_id.digest
         {
             return Err(ObjectFailure::new(ObjectStoreError::Corrupt, work));
         }
@@ -326,9 +326,7 @@ fn materialize_work(length: u64) -> Result<WorkCounters, acyclic_fs::WorkError> 
     Ok(WorkCounters {
         backend_read_operations: 1,
         object_bytes_read: length,
-        bytes_hashed: length
-            .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
-            .ok_or(acyclic_fs::WorkError::Overflow)?,
+        bytes_hashed: length,
         bytes_copied: copied,
         allocation_operations: 2 * u64::from(length != 0),
         peak_allocation_bytes: copied,
@@ -341,7 +339,7 @@ fn put_work(bytes: &OwnedBytes) -> WorkCounters {
     WorkCounters {
         backend_write_operations: 1,
         object_bytes_written: length,
-        bytes_hashed: length.saturating_add(OBJECT_DIGEST_ENVELOPE_BYTES),
+        bytes_hashed: length,
         bytes_copied: length,
         allocation_operations: u64::from(length != 0),
         peak_allocation_bytes: length,

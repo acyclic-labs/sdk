@@ -11,7 +11,7 @@ fn object(byte: u8) -> ObjectId {
     let bytes = [byte; 16];
     ObjectId {
         kind: ObjectKind::BlobChunk,
-        digest: object_digest(ObjectKind::BlobChunk, &bytes),
+        digest: object_digest(&bytes),
     }
 }
 

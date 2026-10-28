@@ -41,7 +41,7 @@ fn blob_leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::er
     );
     let page_id = blob_page_id(&page, 1)?;
     assert_eq!(page_id.kind, ObjectKind::Blob);
-    assert_eq!(page_id.digest, object_digest(ObjectKind::Blob, &expected));
+    assert_eq!(page_id.digest, object_digest(&expected));
 
     let internal = BlobPage {
         first_offset: 0,
@@ -69,7 +69,7 @@ fn blob_leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::er
     );
     assert_eq!(
         blob_page_id(&internal, 1)?.digest,
-        object_digest(ObjectKind::Blob, &internal_bytes)
+        object_digest(&internal_bytes)
     );
     Ok(())
 }

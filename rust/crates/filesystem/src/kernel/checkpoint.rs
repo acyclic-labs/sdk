@@ -8,7 +8,7 @@ use crate::cancellation::CancellationToken;
 use crate::foundation::{GenerationId, usize_to_u64};
 use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
-    HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
+    HashedObject, ObjectId, ObjectKind, ObjectStoreError,
 };
 use std::mem::size_of;
 use thiserror::Error;
@@ -165,9 +165,7 @@ pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>
                 return Ok(object);
             }
             let hashing = WorkCounters {
-                bytes_hashed: usize_to_u64(encoded.value.len())
-                    .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
-                    .ok_or(WorkError::Overflow)?,
+                bytes_hashed: usize_to_u64(encoded.value.len()),
                 ..WorkCounters::UNCHARGED
             };
             accounting.admit(hashing)?;

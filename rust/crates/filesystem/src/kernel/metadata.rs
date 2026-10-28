@@ -296,7 +296,7 @@ pub fn file_metadata_id(metadata: FileMetadata) -> Result<ObjectId, CanonicalDec
     )?;
     Ok(ObjectId {
         kind: ObjectKind::Metadata,
-        digest: object_digest(ObjectKind::Metadata, &bytes),
+        digest: object_digest(&bytes),
     })
 }
 

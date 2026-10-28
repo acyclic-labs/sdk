@@ -193,10 +193,10 @@ async fn independent_git_patches_share_one_append_and_recover_each_operation() {
     use std::sync::Arc;
 
     let stream = Arc::new(acyclic_stream::MemoryStream::default());
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = acyclic_objects::MemoryObjects::memory();
     let fs = Fs::new(
         crate::StreamAuthorityStore::new(Arc::clone(&stream)),
-        crate::LogicalObjectStore::new(Arc::new(objects), bucket),
+        crate::LogicalObjectStore::new(Arc::new(objects)),
         crate::EmbeddedCapabilities::MEMORY,
     );
     let workspace = unbounded!(fs, create_workspace("git-group")).expect("workspace");

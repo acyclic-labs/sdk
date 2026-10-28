@@ -185,11 +185,11 @@ async fn stock(broken: bool) -> Result<()> {
             retention: Default::default(),
         },
     );
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = acyclic_objects::MemoryObjects::memory();
     let filesystem = acyclic_fs::Fs::new(
         acyclic_fs::MemoryAuthorityBackend::new(Arc::new(acyclic_stream::MemoryStream::default())),
         acyclic_fs::CachedObjectStore::new(
-            acyclic_fs::LogicalObjectStore::new(Arc::new(objects), bucket),
+            acyclic_fs::LogicalObjectStore::new(Arc::new(objects)),
             Default::default(),
         )
         .map_err(|_| invalid("fixture cache"))?,

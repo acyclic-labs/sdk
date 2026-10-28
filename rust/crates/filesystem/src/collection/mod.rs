@@ -29,10 +29,11 @@ pub struct Collection {
 #[derive(Default)]
 struct State {
     sweeps: u64,
-    swept: HashMap<ObjectId, u64>,
+    // Keyed by blob digest: objects of different kinds with equal bytes share one blob.
+    swept: HashMap<crate::Digest, u64>,
     collections: VecDeque<u64>,
     forgotten: u64,
-    admitted: Option<HashSet<ObjectId>>,
+    admitted: Option<HashSet<crate::Digest>>,
 }
 
 #[derive(Clone, Debug)]
@@ -115,7 +116,7 @@ impl Collection {
                     !staged(object)
                         && state
                             .swept
-                            .get(object)
+                            .get(&object.digest)
                             .is_some_and(|swept| *swept > proven_at)
                 }));
         if refused {
@@ -124,7 +125,7 @@ impl Collection {
             ));
         }
         if let Some(admitted) = &mut state.admitted {
-            admitted.extend(closure.iter().copied());
+            admitted.extend(closure.iter().map(|object| object.digest));
         }
         Ok(hold)
     }
@@ -157,7 +158,7 @@ impl Collection {
 
     pub(crate) fn writing(&self, _unswept: &Unswept, objects: impl IntoIterator<Item = ObjectId>) {
         if let Some(admitted) = &mut self.state().admitted {
-            admitted.extend(objects);
+            admitted.extend(objects.into_iter().map(|object| object.digest));
         }
     }
 
@@ -176,8 +177,8 @@ impl Collection {
 impl Collecting {
     pub(crate) async fn sweepable(
         &self,
-        batch: Vec<ObjectId>,
-    ) -> (tokio::sync::OwnedRwLockWriteGuard<()>, Vec<ObjectId>) {
+        batch: Vec<crate::Digest>,
+    ) -> (tokio::sync::OwnedRwLockWriteGuard<()>, Vec<crate::Digest>) {
         let guard = Arc::clone(&self.collection.gate).write_owned().await;
         let state = self.collection.state();
         let sweepable = batch
@@ -192,7 +193,7 @@ impl Collecting {
         (guard, sweepable)
     }
 
-    pub(crate) fn sweeping(&self, object: ObjectId) {
+    pub(crate) fn sweeping(&self, object: crate::Digest) {
         let mut state = self.collection.state();
         state.sweeps += 1;
         let sweep = state.sweeps;

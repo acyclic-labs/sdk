@@ -12,7 +12,7 @@ pub struct ObservedStore {
     pub body_bytes: AtomicUsize,
     pub body_gets: AtomicUsize,
     pub metadata_bytes: AtomicUsize,
-    pub head_updates: AtomicUsize,
+    pub envelope_creates: AtomicUsize,
 }
 
 impl std::fmt::Display for ObservedStore {
@@ -29,7 +29,9 @@ impl ObjectStore for ObservedStore {
         payload: PutPayload,
         opts: PutOptions,
     ) -> Result<PutResult> {
-        let update = path.filename() == Some("head") && matches!(&opts.mode, PutMode::Update(_));
+        // Envelopes live at `<account>/e/...`; creating one is a blob's commit point.
+        let commit = path.parts().any(|part| part.as_ref() == "e")
+            && matches!(&opts.mode, PutMode::Create);
         let started = std::time::Instant::now();
         let result = self.inner.put_opts(path, payload, opts).await;
         if std::env::var_os("STORAGE_IO_TRACE").is_some() {
@@ -39,8 +41,8 @@ impl ObjectStore for ObservedStore {
                 result.is_ok()
             );
         }
-        if update && result.is_ok() {
-            self.head_updates.fetch_add(1, Ordering::Relaxed);
+        if commit && result.is_ok() {
+            self.envelope_creates.fetch_add(1, Ordering::Relaxed);
         }
         result
     }
@@ -54,9 +56,8 @@ impl ObjectStore for ObservedStore {
     async fn get_opts(&self, path: &Path, opts: GetOptions) -> Result<GetResult> {
         let started = std::time::Instant::now();
         let result = self.inner.get_opts(path, opts).await?;
-        let is_body = path
-            .parent()
-            .is_some_and(|parent| parent.filename() == Some("bodies"));
+        // Payloads live at `<account>/p/<shard>/<digest>`; envelopes and roots elsewhere.
+        let is_body = path.parts().any(|part| part.as_ref() == "p");
         // Consume the actual response to count transferred bytes, then pass
         // those same bytes to the adapter. Never infer bytes from the request.
         let meta = result.meta.clone();

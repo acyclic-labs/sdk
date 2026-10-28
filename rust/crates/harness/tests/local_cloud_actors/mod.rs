@@ -1,6 +1,6 @@
 //! SDK Actors operations against the real local-cloud service.
 use acyclic_actors::{grpc, wire};
-use acyclic_objects::v1::{ObjectsProvider as _, grpc::GrpcObjects, wire as objects};
+use acyclic_objects::{Blobs as _, grpc::GrpcObjects};
 use acyclic_stream::{AppendOutcome, AppendRequest, StreamPath, StreamProvider as _};
 use futures::StreamExt as _;
 use prost::Message as _;
@@ -425,29 +425,12 @@ async fn published_actor(endpoints: &Endpoints) -> TestResult<grpc::Client> {
         None,
     )
     .await?;
-    let bucket = objects
-        .create_bucket(objects::CreateBucketRequest {
-            name: "actors-code".into(),
-            mutation: Some(objects::MutationIdentity {
-                idempotency_key: "sdk-actors-code-bucket".into(),
-            }),
-        })
-        .await?
-        .bucket
-        .ok_or("code bucket omitted")?;
+    // Code is an account blob; deployments still name its SHA-256.
     for code in [CODE, CODE_V2] {
-        let hash: String = digest(code)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
         objects
             .put(
-                objects::PutObjectHeader {
-                    bucket: Some(bucket.clone()),
-                    object_key: format!("sha256/{hash}"),
-                    ..Default::default()
-                },
                 acyclic_stream::OwnedBytes::copy_from_slice(code.trim_end_matches('\n').as_bytes()),
+                Vec::new(),
             )
             .await?;
     }

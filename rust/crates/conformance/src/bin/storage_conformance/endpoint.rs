@@ -19,7 +19,7 @@ use acyclic_harness::{
     tool::ToolRegistry,
 };
 use acyclic_harness_client::{AgentCommand, ConnectionOptions};
-use acyclic_objects::{ObjectsProvider, wire};
+use acyclic_objects::{Blobs, MemoryObjects, Store, s3::S3Medium};
 use acyclic_stream::{BoxProviderStream, StreamProvider};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
@@ -86,47 +86,25 @@ pub(super) async fn verify<P: StreamProvider + 'static>(
 ) -> Result {
     match &domain.providers.objects {
         Some(store) => {
-            let prefix = object_store::path::Path::from(format!("agent-host/{}", domain.namespace));
-            let provider = acyclic_objects::s3::S3Objects::open(
-                store.clone(),
-                prefix.clone(),
-                domain.providers.capabilities,
-            )
-            .await?;
-            let bucket = provider
-                .create_bucket(wire::CreateBucketRequest {
-                    name: "endpoint".into(),
-                    mutation: None,
-                })
-                .await?
-                .bucket
-                .ok_or("endpoint bucket missing")?;
+            let prefix = format!("agent-host/{}", domain.namespace);
             verify_pair(
                 domain,
                 reopen,
                 async || {
                     Ok(Arc::new(
-                        acyclic_objects::s3::S3Objects::open(
-                            store.clone(),
-                            prefix.clone(),
-                            domain.providers.capabilities,
-                        )
-                        .await?,
+                        Store::new(S3Medium::new(store.clone(), &prefix)).account(b"endpoint")?,
                     ))
                 },
-                bucket,
                 acyclic_fs::EmbeddedCapabilities { durable: true },
             )
             .await
         }
         None => {
-            let (provider, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
-            let provider = Arc::new(provider);
+            let provider = Arc::new(MemoryObjects::memory());
             verify_pair(
                 domain,
                 reopen,
                 async || Ok(provider.clone()),
-                bucket,
                 acyclic_fs::EmbeddedCapabilities::MEMORY,
             )
             .await
@@ -134,18 +112,17 @@ pub(super) async fn verify<P: StreamProvider + 'static>(
     }
 }
 
-async fn verify_pair<P: StreamProvider + 'static, Q: ObjectsProvider + 'static>(
+async fn verify_pair<P: StreamProvider + 'static, Q: Blobs + 'static>(
     domain: &Domain,
     reopen: impl AsyncFn() -> Result<Arc<P>>,
     reopen_objects: impl AsyncFn() -> Result<Arc<Q>>,
-    bucket: wire::BucketRef,
     capabilities: acyclic_fs::EmbeddedCapabilities,
 ) -> Result {
     let mut saved = None;
     for phase in 0..2 {
         let objects = acyclic_fs::staged_objects::StagedObjects::open(
             acyclic_fs::CachedObjectStore::new(
-                acyclic_fs::LogicalObjectStore::new(reopen_objects().await?, bucket.clone()),
+                acyclic_fs::LogicalObjectStore::new(reopen_objects().await?),
                 acyclic_fs::ObjectCacheOptions::default(),
             )?,
             domain.directory.path().join("staging"),

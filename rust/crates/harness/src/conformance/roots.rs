@@ -161,7 +161,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         _ => {}
     }
     let objects = storage.objects().await?;
-    let observed = (objects.provider.clone(), objects.bucket.clone());
+    let observed = objects.provider.clone();
     let capabilities = objects.capabilities;
     let bound = Bound::admitted(
         issuer,
@@ -234,15 +234,8 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         (_, Ok(_)) => Err(format!("{case:?}: admission prepared a root it does not cover").into()),
         (_, Err(_)) => {
             // A refusal writes no volume object either.
-            let (objects, bucket) = observed;
-            let written = objects
-                .list(acyclic_objects::v1::wire::ListObjectsRequest {
-                    bucket: Some(bucket),
-                    ..Default::default()
-                })
-                .await?
-                .entries
-                .len();
+            use acyclic_objects::Blobs as _;
+            let written = observed.list(None, 1).await?.digests.len();
             if written != 0 {
                 return Err(
                     format!("{case:?}: a refused admission wrote {written} objects").into(),

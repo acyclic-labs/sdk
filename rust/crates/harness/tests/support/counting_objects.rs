@@ -40,9 +40,9 @@ pub(super) struct CountingObjects {
 
 impl Default for CountingObjects {
     fn default() -> Self {
-        let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+        let objects = acyclic_objects::MemoryObjects::memory();
         Self {
-            inner: Arc::new(MemoryObjectBackend::new(Arc::new(objects), bucket)),
+            inner: Arc::new(MemoryObjectBackend::new(Arc::new(objects))),
             reads: Arc::default(),
             content_reads: Arc::default(),
             pause: Arc::default(),

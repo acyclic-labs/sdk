@@ -411,123 +411,46 @@ fn reply<T>(value: Result<T, Error>) -> Reply<T> {
     value.map(tonic::Response::new).map_err(status)
 }
 
-fn root(bytes: Vec<u8>) -> Result<RootId, tonic::Status> {
-    RootId::new(bytes).map_err(status)
-}
-
 #[tonic::async_trait]
 impl wire::blobs_service_server::BlobsService for BlobsServer {
     async fn put_blob(&self, request: Request<wire::PutBlobRequest>) -> Reply<wire::PutResponse> {
         let blobs = self.account(&request)?;
-        let request = request.into_inner();
-        let expected = convert::digest(request.digest.as_ref()).map_err(status)?;
-        if Digest::of(&request.body) != expected {
-            return Err(status(wire::ErrorCode::DigestMismatch.into()));
-        }
-        let references = convert::digests(&request.references).map_err(status)?;
-        reply(blobs.put(request.body.into(), references).await.map(|put| convert::wire_put(&put)))
+        reply(crate::route::put_blob(&*blobs, request.into_inner()).await)
     }
-
-    async fn put_manifest(
-        &self,
-        request: Request<wire::PutManifestRequest>,
-    ) -> Reply<wire::PutResponse> {
+    async fn put_manifest(&self, request: Request<wire::PutManifestRequest>) -> Reply<wire::PutResponse> {
         let blobs = self.account(&request)?;
-        let manifest = convert::from_manifest(request.get_ref().manifest.as_ref()).map_err(status)?;
-        reply(blobs.put_manifest(manifest).await.map(|put| convert::wire_put(&put)))
+        reply(crate::route::put_manifest(&*blobs, request.into_inner()).await)
     }
-
-    async fn get_blob(
-        &self,
-        request: Request<wire::GetBlobRequest>,
-    ) -> Reply<wire::GetBlobResponse> {
+    async fn get_blob(&self, request: Request<wire::GetBlobRequest>) -> Reply<wire::GetBlobResponse> {
         let blobs = self.account(&request)?;
-        let request = request.into_inner();
-        let digest = convert::digest(request.digest.as_ref()).map_err(status)?;
-        let range = convert::from_range(request.range.as_ref());
-        reply(
-            blobs
-                .get(digest, range, request.maximum_bytes)
-                .await
-                .map(|object| wire::GetBlobResponse {
-                    info: Some(convert::wire_head(object.head())),
-                    start: object.start(),
-                    body: object.into_body().to_vec(),
-                }),
-        )
+        reply(crate::route::get_blob(&*blobs, request.into_inner()).await)
     }
-
     async fn head_blob(&self, request: Request<wire::HeadBlobRequest>) -> Reply<wire::BlobInfo> {
         let blobs = self.account(&request)?;
-        let digest = convert::digest(request.get_ref().digest.as_ref()).map_err(status)?;
-        reply(blobs.head(digest).await.map(|head| convert::wire_head(&head)))
+        reply(crate::route::head_blob(&*blobs, request.into_inner()).await)
     }
-
-    async fn delete_blob(
-        &self,
-        request: Request<wire::DeleteBlobRequest>,
-    ) -> Reply<wire::DeleteBlobResponse> {
+    async fn delete_blob(&self, request: Request<wire::DeleteBlobRequest>) -> Reply<wire::DeleteBlobResponse> {
         let blobs = self.account(&request)?;
-        let digest = convert::digest(request.get_ref().digest.as_ref()).map_err(status)?;
-        reply(blobs.delete(digest).await.map(convert::wire_delete))
+        reply(crate::route::delete_blob(&*blobs, request.into_inner()).await)
     }
-
-    async fn list_blobs(
-        &self,
-        request: Request<wire::ListBlobsRequest>,
-    ) -> Reply<wire::ListBlobsResponse> {
+    async fn list_blobs(&self, request: Request<wire::ListBlobsRequest>) -> Reply<wire::ListBlobsResponse> {
         let blobs = self.account(&request)?;
-        let after = request
-            .get_ref()
-            .after
-            .as_ref()
-            .map(|after| convert::digest(Some(after)))
-            .transpose()
-            .map_err(status)?;
-        reply(
-            blobs
-                .list(after, request.get_ref().limit)
-                .await
-                .map(|page| convert::wire_page(&page)),
-        )
+        reply(crate::route::list_blobs(&*blobs, request.into_inner()).await)
     }
-
     async fn retain(&self, request: Request<wire::RetainRequest>) -> Reply<wire::RetainResponse> {
         let blobs = self.account(&request)?;
-        let request = request.into_inner();
-        let references = convert::digests(&request.references).map_err(status)?;
-        let root = root(request.root)?;
-        reply(
-            blobs
-                .retain(&root, references)
-                .await
-                .map(|retained| wire::RetainResponse {
-                    references: retained.references,
-                }),
-        )
+        reply(crate::route::retain(&*blobs, request.into_inner()).await)
     }
-
     async fn release(&self, request: Request<wire::ReleaseRequest>) -> Reply<wire::ReleaseResponse> {
         let blobs = self.account(&request)?;
-        let root = root(request.into_inner().root)?;
-        reply(
-            blobs
-                .release(&root)
-                .await
-                .map(|existed| wire::ReleaseResponse { existed }),
-        )
+        reply(crate::route::release(&*blobs, request.into_inner()).await)
     }
-
     async fn collect(&self, request: Request<wire::CollectRequest>) -> Reply<wire::CollectResponse> {
         let blobs = self.account(&request)?;
-        reply(blobs.collect().await.map(|collection| convert::wire_collection(&collection)))
+        reply(crate::route::collect(&*blobs, request.into_inner()).await)
     }
-
     async fn usage(&self, request: Request<wire::UsageRequest>) -> Reply<wire::UsageResponse> {
         let blobs = self.account(&request)?;
-        reply(blobs.usage().await.map(|usage| wire::UsageResponse {
-            blobs: usage.blobs,
-            unique_bytes: usage.unique_bytes,
-        }))
+        reply(crate::route::usage(&*blobs, request.into_inner()).await)
     }
 }

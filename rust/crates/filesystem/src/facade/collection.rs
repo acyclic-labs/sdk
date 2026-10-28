@@ -9,10 +9,6 @@ pub struct LocalGarbageCollection {
     pub examined: u64,
     /// Unreachable immutable filesystem object versions removed.
     pub removed: u64,
-    /// Physical body segments removed after logical reclamation.
-    pub segments_removed: u64,
-    /// Crash-left temporary body publications removed.
-    pub temporary_files_removed: u64,
 }
 
 /// Limits that admit every page either admits.
@@ -112,9 +108,14 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             }
             marker.set_limits(shadow_limits);
             marker.lineage_roots().await.map_err(mark_error)?;
+            let marked = marker
+                .marked()
+                .iter()
+                .map(|object| object.digest)
+                .collect::<std::collections::HashSet<_>>();
             let unmarked = candidates
                 .into_iter()
-                .filter(|(object, _)| !marker.marked().contains(object))
+                .filter(|digest| !marked.contains(digest))
                 .collect::<Vec<_>>();
             drop(marker);
             self.sweep_local_objects(&collecting, unmarked, cancellation)
@@ -122,96 +123,60 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
         })
         .await
     }
-    /// Every current filesystem key and its conditional-deletion validator.
+    /// Every stored blob digest.
     pub(super) async fn local_object_candidates(
         &self,
         cancellation: &CancellationToken,
-    ) -> Result<Vec<(ObjectId, String)>, FsError> {
+    ) -> Result<Vec<crate::Digest>, FsError> {
         let provider = self.inner.objects.inner().inner().provider();
-        let bucket = self.inner.objects.inner().inner().bucket().clone();
-        let mut continuation = String::new();
-        let mut versions = Vec::new();
+        let mut after = None;
+        let mut digests = Vec::new();
         loop {
             cancellation.check()?;
             let page = provider
-                .list(acyclic_objects::v1::wire::ListObjectsRequest {
-                    bucket: Some(bucket.clone()),
-                    prefix: "fs/v1/".to_owned(),
-                    page_size: 256,
-                    continuation_token: continuation,
-                    ..Default::default()
-                })
+                .list(after, 1024)
                 .await
-                .map_err(FsError::LocalObjectsBucket)?;
-            for entry in page.entries {
-                let version = entry
-                    .object
-                    .ok_or(FsError::Object(ObjectStoreError::Corrupt))?;
-                let object = crate::distributed::object_id_from_key(&entry.object_key)
-                    .ok_or(FsError::Object(ObjectStoreError::Corrupt))?;
-                versions.push((object, version.etag));
-            }
-            continuation = page.continuation_token;
-            if continuation.is_empty() {
-                return Ok(versions);
+                .map_err(|error| FsError::Object(ObjectStoreError::LogicalObjects(error)))?;
+            digests.extend(
+                page.digests
+                    .iter()
+                    .map(|digest| crate::Digest::from_bytes(*digest.as_bytes())),
+            );
+            match page.next {
+                Some(next) => after = Some(next),
+                None => return Ok(digests),
             }
         }
     }
-    /// Deletes `unmarked` in batches, each under the collection gate, then
+    /// Deletes `unmarked` in batches, each under the collection gate.
     pub(super) async fn sweep_local_objects(
         &self,
         collecting: &crate::collection::Collecting,
-        unmarked: Vec<(ObjectId, String)>,
+        unmarked: Vec<crate::Digest>,
         cancellation: &CancellationToken,
     ) -> Result<LocalGarbageCollection, FsError> {
         const BATCH: usize = 256;
         let provider = self.inner.objects.inner().inner().provider();
-        let bucket = self.inner.objects.inner().inner().bucket().clone();
         let examined = u64::try_from(unmarked.len()).unwrap_or(u64::MAX);
-        let mut candidates = unmarked
-            .into_iter()
-            .collect::<std::collections::HashMap<_, _>>();
         let mut removed = 0_u64;
-        let objects = candidates.keys().copied().collect::<Vec<_>>();
-        for batch in objects.chunks(BATCH) {
+        for batch in unmarked.chunks(BATCH) {
             cancellation.check()?;
             let (_gate, sweepable) = collecting.sweepable(batch.to_vec()).await;
-            for object in sweepable {
-                let Some(etag) = candidates.remove(&object) else {
-                    continue;
-                };
-                collecting.sweeping(object);
+            for digest in sweepable {
+                collecting.sweeping(digest);
                 let deleted = provider
-                    .delete(acyclic_objects::v1::wire::DeleteObjectRequest {
-                        bucket: Some(bucket.clone()),
-                        object_key: crate::distributed::object_key(object),
-                        preconditions: Some(acyclic_objects::v1::wire::Preconditions {
-                            condition: Some(
-                                acyclic_objects::v1::wire::preconditions::Condition::IfMatch(etag),
-                            ),
-                        }),
-                        mutation: None,
-                    })
+                    .delete(acyclic_objects::Digest::from_bytes(digest.into_bytes()))
                     .await
-                    .map_err(FsError::LocalObjectsBucket);
+                    .map_err(|error| FsError::Object(ObjectStoreError::LogicalObjects(error)));
                 self.inner.objects.inner().clear()?;
-                if deleted?.existed {
+                if deleted? == acyclic_objects::Delete::Deleted {
                     removed = removed.saturating_add(1);
                 }
             }
             // A cached copy of a swept object must not stand in for it.
             self.inner.objects.inner().clear()?;
         }
-        let physical = provider
-            .collect_garbage(u64::MAX)
-            .await
-            .map_err(FsError::LocalObjects)?;
-        Ok(LocalGarbageCollection {
-            examined,
-            removed,
-            segments_removed: physical.segments_removed,
-            temporary_files_removed: physical.temporary_files_removed,
-        })
+        Ok(LocalGarbageCollection { examined, removed })
     }
     /// Marks every live generation of every authority, releasing the
     pub(super) async fn mark_local_authorities(

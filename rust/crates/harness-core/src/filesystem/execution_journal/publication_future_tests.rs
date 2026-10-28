@@ -65,14 +65,12 @@ async fn fixture_with_filesystem(
 #[tokio::test]
 async fn separately_composed_journals_exclude_the_same_live_operation() -> Result<()> {
     let provider = acyclic_stream::MemoryStream::default();
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = acyclic_objects::MemoryObjects::memory();
     let objects = Arc::new(objects);
     let first_fs = acyclic_fs::Fs::from_memory_providers(
         Arc::new(provider.clone()),
-        objects.clone(),
-        bucket.clone(),
-    );
-    let second_fs = acyclic_fs::Fs::from_memory_providers(Arc::new(provider), objects, bucket);
+        objects.clone());
+    let second_fs = acyclic_fs::Fs::from_memory_providers(Arc::new(provider), objects);
     let (first, _runtime) = fixture_with_filesystem(first_fs).await?;
     let second = FilesystemExecutionJournal::new(
         first.stream.clone(),

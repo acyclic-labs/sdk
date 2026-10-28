@@ -268,7 +268,6 @@ async fn check_rejected_group_reply(native: bool) -> TestResult {
         },
         crate::LogicalObjectStore::new(
             Arc::clone(volume.fs.inner.objects.provider()),
-            volume.fs.inner.objects.bucket().clone(),
         ),
         EmbeddedCapabilities::MEMORY,
     );
@@ -455,7 +454,6 @@ async fn check_committed_volume_witness(native: bool, overlapping_read: bool) ->
         },
         crate::LogicalObjectStore::new(
             Arc::clone(volume.fs.inner.objects.provider()),
-            volume.fs.inner.objects.bucket().clone(),
         ),
         EmbeddedCapabilities::MEMORY,
     );
@@ -624,7 +622,6 @@ async fn check_successor_intake(
         },
         crate::LogicalObjectStore::new(
             Arc::clone(volume.fs.inner.objects.provider()),
-            volume.fs.inner.objects.bucket().clone(),
         ),
         EmbeddedCapabilities::MEMORY,
     );
@@ -814,7 +811,6 @@ async fn check_owned_append_client_drop(native: bool, explicit_cancellation: boo
             },
             crate::LogicalObjectStore::new(
                 Arc::clone(volume.fs.inner.objects.provider()),
-                volume.fs.inner.objects.bucket().clone(),
             ),
             EmbeddedCapabilities::MEMORY,
         );
@@ -937,7 +933,6 @@ async fn check_composition_custody(native: bool) -> TestResult {
         },
         crate::LogicalObjectStore::new(
             Arc::clone(volume.fs.inner.objects.provider()),
-            volume.fs.inner.objects.bucket().clone(),
         ),
         EmbeddedCapabilities::MEMORY,
     );

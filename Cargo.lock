@@ -935,9 +935,7 @@ name = "acyclic-objects-wasm"
 version = "0.2.0"
 dependencies = [
  "acyclic-objects",
- "acyclic-stream",
  "js-sys",
- "prost",
  "wasm-bindgen",
  "wasm-bindgen-futures",
 ]

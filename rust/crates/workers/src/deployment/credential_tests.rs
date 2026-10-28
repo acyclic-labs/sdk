@@ -16,15 +16,15 @@ fn credential_failure_covers_publication_and_every_lifecycle_operation() {
             runtime.block_on(async {
                 let count = Arc::new(AtomicUsize::new(0));
                 let calls = count.clone();
-                let client = Client::with_credential_provider("https://actors.invalid", "https://objects.invalid", "workers".into(),
+                let client = Client::with_credential_provider("https://actors.invalid", "https://objects.invalid",
                     CredentialProvider::new(move || {
                         calls.fetch_add(1, Ordering::Relaxed);
                         std::future::ready(Ok(String::new()))
                     }), 1024).unwrap();
                 for operation in &operations {
                     let denied = match operation {
-                        0 => matches!(client.publish(bytes::Bytes::from_static(b"module"), "publish".into()).await,
-                            Err(Error::Objects(error)) if error.code == objects::ErrorCode::AccessDenied),
+                        0 => matches!(client.publish(bytes::Bytes::from_static(b"module")).await,
+                            Err(Error::Objects(error)) if error.code == acyclic_objects::wire::ErrorCode::AccessDenied),
                         1 => matches!(client.invoke(&wire::InvokeWorkerRequest {
                             worker_name: "worker-a".into(), method: "POST".into(), url: "/".into(), ..Default::default()
                         }).await, Err(Error::Actors(http::Error::Credential(_)))),

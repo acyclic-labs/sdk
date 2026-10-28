@@ -9,7 +9,7 @@ async fn rejection_precedes_storage_work() -> Result<(), Box<dyn std::error::Err
             length: 1,
             content: ObjectId {
                 kind: ObjectKind::Metadata,
-                digest: object_digest(ObjectKind::Metadata, b"wrong"),
+                digest: object_digest(b"wrong"),
             },
             content_offset: 0,
         },

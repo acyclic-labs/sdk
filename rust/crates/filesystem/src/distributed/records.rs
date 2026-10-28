@@ -1,26 +1,5 @@
 use super::*;
 
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "local")))]
-pub(crate) fn object_key(object_id: ObjectId) -> String {
-    format!(
-        "fs/v1/{}/{}",
-        object_id.kind.canonical_tag(),
-        hex::encode(object_id.digest.as_bytes())
-    )
-}
-
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
-pub(crate) fn object_id_from_key(key: &str) -> Option<ObjectId> {
-    let (tag, digest) = key.strip_prefix("fs/v1/")?.split_once('/')?;
-    let kind = crate::storage::ObjectKind::from_canonical_tag(tag.parse().ok()?).ok()?;
-    let digest = <[u8; 32]>::try_from(hex::decode(digest).ok()?).ok()?;
-    let object = ObjectId {
-        kind,
-        digest: crate::foundation::Digest::from_bytes(digest),
-    };
-    (object_key(object) == key).then_some(object)
-}
-
 pub(super) fn decode_publication_gate(
     value: &[u8],
 ) -> Result<Option<OperationId>, AuthorityStoreError> {

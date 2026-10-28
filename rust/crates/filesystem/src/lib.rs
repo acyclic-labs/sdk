@@ -171,7 +171,7 @@ pub mod workspace_context_wire;
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
 pub use acyclic_native_runtime::{RenameMode, durable_rename};
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
-pub use acyclic_objects::{LocalDurability as LocalObjectsDurability, LocalObjectsLimits};
+pub use acyclic_objects::local::{LocalDurability as LocalObjectsDurability, LocalObjectsLimits};
 /// Scopes authority writes that survive a crash of this process but wait
 /// for [`LocalFs::flush_deferred_authority`] to survive a power loss.
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
@@ -381,7 +381,7 @@ pub use speculation::{
 pub use storage::{
     AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStoreError, ByteRange,
     CreateAuthorityOutcome, FenceOutcome, GuardedAppend, HashedObject,
-    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId, ObjectKind, ObjectRead,
+    ObjectFailure, ObjectId, ObjectKind, ObjectRead,
     ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError, PublicationPermit,
     PublicationReservation, ReplayLimit, ReservationOutcome, object_digest,
 };

@@ -105,7 +105,7 @@ fn leaf_internal_shape_length_and_identity_are_exact() -> Result<(), Box<dyn std
     assert_eq!(leaf_id.kind, ObjectKind::ExtentPage);
     assert_eq!(
         leaf_id.digest,
-        object_digest(ObjectKind::ExtentPage, &leaf_bytes)
+        object_digest(&leaf_bytes)
     );
 
     let internal = ExtentPage::Internal(vec![ExtentChild {

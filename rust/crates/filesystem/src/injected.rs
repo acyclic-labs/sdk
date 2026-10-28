@@ -2,7 +2,7 @@
 use crate::{
     AsyncObjectStore, AuthorityWork, ObjectId, ObjectRead, ObjectReadRequest, ObjectStoreError,
     PublicationHold, PublicationScope, WorkCounters,
-    storage::{OBJECT_DIGEST_ENVELOPE_BYTES, ObjectReadRetention, ObjectWrite, object_digest},
+    storage::{ObjectReadRetention, ObjectWrite, object_digest},
 };
 use acyclic_stream::OwnedBytes;
 use js_sys::{Array, Uint8Array};
@@ -118,10 +118,10 @@ impl AsyncObjectStore for InjectedObjectStore {
             let length = write.bytes.len() as u64;
             self.bound(length, self.maximum)?;
             work.charge(WorkCounters {
-                bytes_hashed: length + OBJECT_DIGEST_ENVELOPE_BYTES,
+                bytes_hashed: length,
                 ..WorkCounters::UNCHARGED
             })?;
-            if object_digest(write.object_id.kind, &write.bytes) != write.object_id.digest {
+            if object_digest(&write.bytes) != write.object_id.digest {
                 return Err(ObjectStoreError::DigestMismatch);
             }
         }
@@ -181,7 +181,7 @@ impl AsyncObjectStore for InjectedObjectStore {
         work.charge(WorkCounters {
             backend_read_operations: 1,
             object_bytes_read: length,
-            bytes_hashed: length + OBJECT_DIGEST_ENVELOPE_BYTES,
+            bytes_hashed: length,
             bytes_copied: length * 2,
             allocation_operations: 2,
             peak_allocation_bytes: length * 2,
@@ -199,7 +199,7 @@ impl AsyncObjectStore for InjectedObjectStore {
             return Err(ObjectStoreError::Corrupt);
         }
         let bytes = value.to_vec();
-        if object_digest(id.kind, &bytes) != id.digest {
+        if object_digest(&bytes) != id.digest {
             return Err(ObjectStoreError::Corrupt);
         }
         work.check()?;

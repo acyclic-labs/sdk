@@ -60,16 +60,14 @@ pub type Result<T = ()> = std::result::Result<T, Failure>;
 
 /// Object primitives used by the filesystem-backed host vectors.
 pub struct Objects {
-    /// The configured Objects provider, shared through the public seam.
-    pub provider: Arc<dyn acyclic_objects::ObjectsProvider>,
-    /// An empty logical bucket belonging only to this vector.
-    pub bucket: acyclic_objects::wire::BucketRef,
+    /// An empty blob account belonging only to this vector.
+    pub provider: Arc<dyn acyclic_objects::Blobs>,
     /// The provider's declared durability.
     pub capabilities: acyclic_fs::EmbeddedCapabilities,
 }
 
 type CachedObjects = acyclic_fs::CachedObjectStore<
-    acyclic_fs::LogicalObjectStore<dyn acyclic_objects::ObjectsProvider>,
+    acyclic_fs::LogicalObjectStore<dyn acyclic_objects::Blobs>,
 >;
 /// The canonical native publication staging and immutable cache.
 #[cfg(not(target_arch = "wasm32"))]
@@ -82,7 +80,7 @@ impl Objects {
     /// Use the shared filesystem composition; native writes stage until publication.
     pub fn into_store(self, storage: &dyn Storage) -> Result<ObjectStore> {
         let cached = acyclic_fs::CachedObjectStore::new(
-            acyclic_fs::LogicalObjectStore::new(self.provider, self.bucket),
+            acyclic_fs::LogicalObjectStore::new(self.provider),
             acyclic_fs::ObjectCacheOptions::default(),
         )?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -99,10 +97,8 @@ impl Objects {
 
     /// The original memory object fixture, for stream-only qualification.
     pub fn memory() -> Self {
-        let (provider, bucket) = acyclic_objects::MemoryObjects::with_default_bucket();
         Self {
-            provider: Arc::new(provider),
-            bucket,
+            provider: Arc::new(acyclic_objects::MemoryObjects::memory()),
             capabilities: acyclic_fs::EmbeddedCapabilities::MEMORY,
         }
     }

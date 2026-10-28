@@ -176,7 +176,7 @@ pub fn blob_page_id(page: &BlobPage, maximum_items: u32) -> Result<ObjectId, Can
     )?;
     Ok(ObjectId {
         kind: ObjectKind::Blob,
-        digest: object_digest(ObjectKind::Blob, &bytes),
+        digest: object_digest(&bytes),
     })
 }
 

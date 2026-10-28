@@ -190,10 +190,10 @@ async fn archives_bind_original_publication_creation_and_retention_and_reject_fo
             8,
         ),
     ] {
-        let (empty, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+        let empty = acyclic_objects::MemoryObjects::memory();
         let genuine = evidence(&objects, authority_id, record, original_root, config).await?;
         let mut archive = Archive {
-            empty: crate::LogicalObjectStore::new(Arc::new(empty), bucket),
+            empty: crate::LogicalObjectStore::new(Arc::new(empty)),
             authority: authority_id,
             digest: record.digest,
             evidence: genuine.clone(),

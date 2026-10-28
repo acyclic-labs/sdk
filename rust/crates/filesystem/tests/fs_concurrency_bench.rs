@@ -68,8 +68,8 @@ async fn run(writers: usize, same_file: bool) -> Result {
     acyclic_native_runtime::initialize_native_io_services()?;
     let cancel = CancellationToken::new();
     let stream = Arc::new(acyclic_stream::MemoryStream::default());
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-    let fs = Fs::from_memory_providers(Arc::clone(&stream), Arc::new(objects), bucket);
+    let objects = acyclic_objects::MemoryObjects::memory();
+    let fs = Fs::from_memory_providers(Arc::clone(&stream), Arc::new(objects));
     let volume = fs
         .create_volume(VolumeConfig::portable(Lifecycle::Ephemeral), B, &cancel)
         .await?

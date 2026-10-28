@@ -5,7 +5,7 @@
     reason = "test fixtures fail immediately on invalid setup"
 )]
 use acyclic_actors::{FILE_DESCRIPTOR_SET, http, wire};
-use acyclic_objects::{MemoryObjects, MemoryOptions, ObjectsProvider, wire as objects};
+use acyclic_objects::{Blobs, ByteRange, MemoryObjects};
 use acyclic_workers::deployment::Client;
 use axum::{Json, Router, extract::State, http::HeaderMap, routing::post};
 use bytes::Bytes;
@@ -111,17 +111,10 @@ async fn worker_publication_and_named_deployment_contract() {
             .await
             .expect("valid Cloud fixture");
     });
-    let objects = MemoryObjects::new(MemoryOptions::default()).expect("valid Cloud fixture");
-    objects
-        .create_bucket(objects::CreateBucketRequest {
-            name: "actors-code".into(),
-            mutation: None,
-        })
-        .await
-        .expect("valid Cloud fixture");
+    let objects = std::sync::Arc::new(MemoryObjects::memory());
     let actors =
         http::Client::new(&endpoint, "fixture-token", 1 << 20).expect("valid Cloud fixture");
-    let client = Client::new(actors, objects.clone(), "actors-code".into());
+    let client = Client::new(actors, objects.clone());
     let code = Bytes::from(
         field(&golden, "/code")
             .as_str()
@@ -129,7 +122,7 @@ async fn worker_publication_and_named_deployment_contract() {
             .to_owned(),
     );
     let digest = client
-        .publish(code.clone(), "publish-code".into())
+        .publish(code.clone())
         .await
         .expect("valid Cloud fixture");
     assert_eq!(
@@ -140,16 +133,8 @@ async fn worker_publication_and_named_deployment_contract() {
     );
     let published = objects
         .get(
-            objects::GetObjectRequest {
-                bucket: Some(objects::BucketRef {
-                    name: "actors-code".into(),
-                }),
-                object_key: field(&golden, "/publish/request/objectKey")
-                    .as_str()
-                    .expect("valid Cloud fixture")
-                    .into(),
-                ..Default::default()
-            },
+            acyclic_objects::Digest::of(&code),
+            ByteRange::FULL,
             4096,
         )
         .await
@@ -202,20 +187,4 @@ async fn worker_publication_and_named_deployment_contract() {
         ["deploy", "invoke", "delete"]
     );
     server.abort();
-}
-
-#[tokio::test]
-async fn publication_failure_preserves_the_objects_error() {
-    let objects = MemoryObjects::new(MemoryOptions::default()).expect("valid Cloud fixture");
-    let actors = http::Client::new("http://127.0.0.1:1234", "fixture-token", 4096)
-        .expect("valid Cloud fixture");
-    let client = Client::new(actors, objects, "actors-code".into());
-    let error = client
-        .publish(Bytes::from_static(b"code"), "publish".into())
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(error, acyclic_workers::deployment::Error::Objects(error)
-        if error.code == objects::ErrorCode::NotFound)
-    );
 }

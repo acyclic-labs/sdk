@@ -262,9 +262,7 @@ pub(super) fn hashed_blob_object(
             .map_err(Into::into);
     }
     let hash = WorkCounters {
-        bytes_hashed: usize_to_u64(bytes.len())
-            .checked_add(crate::storage::OBJECT_DIGEST_ENVELOPE_BYTES)
-            .ok_or(WorkError::Overflow)?,
+        bytes_hashed: usize_to_u64(bytes.len()),
         ..WorkCounters::UNCHARGED
     };
     accounting.admit(hash)?;

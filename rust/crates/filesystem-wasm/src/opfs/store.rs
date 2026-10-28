@@ -27,7 +27,7 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
             let work = put_work(&bytes);
             work.verify(budget)
                 .map_err(|error| ObjectFailure::before_work(error.into()))?;
-            if object_digest(object_id.kind, &bytes) != object_id.digest {
+            if object_digest(&bytes) != object_id.digest {
                 return Err(ObjectFailure::new(ObjectStoreError::DigestMismatch, work));
             }
             self.write(object_id, &bytes, cancellation)

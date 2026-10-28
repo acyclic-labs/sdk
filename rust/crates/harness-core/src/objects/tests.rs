@@ -1,4 +1,3 @@
-use super::store::storage;
 use super::*;
 use crate::{
     AgentId, Capabilities,
@@ -6,29 +5,12 @@ use crate::{
     core::{AggregateKind, Authority, AuthorityRoot},
     resources::ProviderRef,
 };
-use acyclic_objects::v1::{MemoryObjects, MemoryOptions};
-
+use acyclic_objects::MemoryObjects;
 #[tokio::test]
-async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Result<()> {
-    let objects = Arc::new(MemoryObjects::new(MemoryOptions::default()).map_err(storage)?);
-    let bucket_a = objects
-        .create_bucket(wire::CreateBucketRequest {
-            name: "harness-owner-a".into(),
-            mutation: None,
-        })
-        .await
-        .map_err(storage)?
-        .bucket
-        .ok_or_else(|| Error::Storage("bucket identity is missing".into()))?;
-    let bucket_b = objects
-        .create_bucket(wire::CreateBucketRequest {
-            name: "harness-owner-b".into(),
-            mutation: None,
-        })
-        .await
-        .map_err(storage)?
-        .bucket
-        .ok_or_else(|| Error::Storage("bucket identity is missing".into()))?;
+async fn lazy_mount_routes_registered_volumes_and_requires_exact_grant() -> Result<()> {
+    let objects = Arc::new(MemoryObjects::memory());
+    let name_a = "harness-owner-a";
+    let name_b = "harness-owner-b";
     let owner_a = AgentId::from_bytes([31; 16]);
     let owner_b = AgentId::from_bytes([32; 16]);
     let attached = AgentId::from_bytes([33; 16]);
@@ -43,14 +25,14 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
     let provider = ProviderRef::new("local".into(), "objects".into(), "1".into(), &mut None)?;
     let volume_a = VolumeRef::new(
         provider.clone(),
-        bucket_a.name.clone(),
+        name_a.into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(owner_a),
         &mut None,
     )?;
     let volume_b = VolumeRef::new(
         provider.clone(),
-        bucket_b.name.clone(),
+        name_b.into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(owner_b),
         &mut None,
@@ -75,7 +57,6 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
     )?;
     let owner_store_a = ObjectContentStore::new(
         objects.clone(),
-        bucket_a.clone(),
         provider.clone(),
         volume_a.clone(),
         (
@@ -84,11 +65,9 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         ),
         owner_scope_a.clone(),
         4_096,
-    )
-    .await?;
+    )?;
     let owner_store_b = ObjectContentStore::new(
         objects.clone(),
-        bucket_b.clone(),
         provider.clone(),
         volume_b.clone(),
         (
@@ -97,8 +76,7 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         ),
         owner_scope_b.clone(),
         4_096,
-    )
-    .await?;
+    )?;
     let file_a = owner_store_a
         .stage(
             OperationId::from_bytes([35; 16]),
@@ -127,7 +105,6 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         issuer.delegate_private_file_read(&owner_scope_b, attached, "attached-b", &file_b)?;
     let attached_a = ObjectContentStore::new(
         objects.clone(),
-        bucket_a.clone(),
         provider.clone(),
         volume_a.clone(),
         (
@@ -136,11 +113,9 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         ),
         attached_a_scope,
         4_096,
-    )
-    .await?;
+    )?;
     let attached_b = ObjectContentStore::new(
         objects.clone(),
-        bucket_b.clone(),
         provider.clone(),
         volume_b.clone(),
         (
@@ -149,8 +124,7 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         ),
         attached_b_scope,
         4_096,
-    )
-    .await?;
+    )?;
     let resolver = ObjectContentMountResolver::new(vec![attached_a, attached_b])?;
     let (grant_a, reader_a) = resolver.mount(&file_a).await?;
     grant_a.require_file_read(&file_a, None)?;
@@ -179,7 +153,6 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
     )?;
     let denied_store = ObjectContentStore::new(
         objects,
-        bucket_a,
         provider,
         volume_a,
         (
@@ -188,8 +161,7 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         ),
         no_grant,
         4_096,
-    )
-    .await?;
+    )?;
     let denied = ObjectContentMountResolver::new(vec![denied_store])?;
     assert!(denied.mount(&file_a).await.is_err());
     Ok(())

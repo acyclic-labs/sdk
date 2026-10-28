@@ -5,10 +5,6 @@ const ID: &str = "sdk-paused-poison";
 const SOURCE: &str = "e2e-root/sdk-paused-poison";
 const POISON: &str = include_str!("poison.mjs");
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 fn configuration() -> wire::DeploymentRequest {
     let mut request = create();
     request.name = NS.into();
@@ -113,24 +109,10 @@ async fn published_poison_actor(
         None,
     )
     .await?;
-    let bucket = objects
-        .create_bucket(objects::CreateBucketRequest {
-            name: "actors-code".into(),
-            mutation: Some(objects::MutationIdentity {
-                idempotency_key: "sdk-actors-code-bucket".into(),
-            }),
-        })
-        .await?
-        .bucket
-        .ok_or("code bucket omitted")?;
     objects
         .put(
-            objects::PutObjectHeader {
-                bucket: Some(bucket),
-                object_key: format!("sha256/{}", hex(&request.code_sha256)),
-                ..Default::default()
-            },
             acyclic_stream::OwnedBytes::copy_from_slice(POISON.trim_end_matches('\n').as_bytes()),
+            Vec::new(),
         )
         .await?;
     let remote = &endpoints.actors.remote;

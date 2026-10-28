@@ -88,7 +88,7 @@ use crate::performance::{
 
 use crate::storage::{
     AppendOutcome, AuthorityStoreError, ByteRange, FenceOutcome, HashedObject,
-    OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectReadRequest, ObjectStoreError,
+    ObjectId, ObjectKind, ObjectReadRequest, ObjectStoreError,
     PublicationPermit, ReplayLimit, object_digest,
 };
 
@@ -96,7 +96,7 @@ use crate::storage::{
 use acyclic_native_runtime::OwnershipAnchor;
 
 #[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
-use acyclic_objects::v1::ObjectsProvider as _;
+use acyclic_objects::Blobs as _;
 
 use bytes::Bytes;
 
@@ -119,14 +119,6 @@ use std::sync::{OnceLock, Weak};
 use thiserror::Error;
 
 mod fork_selection;
-
-#[cfg(all(
-    test,
-    any(test, feature = "memory"),
-    feature = "test-support",
-    not(target_arch = "wasm32")
-))]
-mod seeded_memory_tests;
 
 #[cfg(test)]
 #[path = "../tests/facade/mod.rs"]

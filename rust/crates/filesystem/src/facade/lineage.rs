@@ -128,13 +128,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 crate::kernel::encode_generation_root(&normalized.0, observe, allocation_error)
             })?;
         let hashing = WorkCounters {
-            bytes_hashed: (encoded.0.len() as u64)
-                .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
-                .ok_or(WorkError::Overflow)?,
+            bytes_hashed: (encoded.0.len() as u64),
             ..WorkCounters::UNCHARGED
         };
         accounting.admit(hashing)?;
-        let digest = object_digest(ObjectKind::GenerationRoot, &encoded.0);
+        let digest = object_digest(&encoded.0);
         accounting.record_completed(hashing)?;
         Ok(GenerationId::new(digest))
     }

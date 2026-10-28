@@ -306,9 +306,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         let capacity = encoded.0.capacity() as u64;
         let hashing = WorkCounters {
-            bytes_hashed: (encoded.0.len() as u64)
-                .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
-                .ok_or(WorkError::Overflow)?,
+            bytes_hashed: (encoded.0.len() as u64),
             ..WorkCounters::UNCHARGED
         };
         let owner = WorkCounters {

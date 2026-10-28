@@ -2,8 +2,7 @@
 
 use crate::storage::ObjectWrite;
 use crate::{
-    AsyncObjectStore, AuthorityStoreError, CancellationToken, OBJECT_DIGEST_ENVELOPE_BYTES,
-    ObjectId, ObjectRead, ObjectReadRetention, ObjectStoreError, WorkCounters, object_digest,
+    AsyncObjectStore, AuthorityStoreError, CancellationToken, ObjectId, ObjectRead, ObjectReadRetention, ObjectStoreError, WorkCounters, object_digest,
 };
 use acyclic_stream::OwnedBytes;
 use indexed_db_futures::database::Database;
@@ -183,7 +182,7 @@ impl IndexedDbObjectStore {
         length: u64,
     ) -> Result<ObjectRead, ObjectStoreError> {
         let bytes = OwnedBytes::from(io.blob_bytes(blob, length).await.map_err(object_error)?);
-        if object_digest(id.kind, &bytes) != id.digest {
+        if object_digest(&bytes) != id.digest {
             return Err(ObjectStoreError::Corrupt);
         }
         Ok(ObjectRead {

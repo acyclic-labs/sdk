@@ -22,8 +22,8 @@ use acyclic_fs::model::{FilesystemProfile, VolumeLimits};
 use acyclic_fs::native_mount::{MountOptions, NativeMountKind, probe_native_mount};
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{CancellationToken, Fs, LocalOptions};
-use acyclic_objects::LocalObjectsLimits;
-use acyclic_objects::v1::{ObjectsProvider, local::LocalObjects, wire};
+use acyclic_objects::local::LocalObjectsLimits;
+use acyclic_objects::{Blobs, ByteRange, Digest, LocalObjects, Store};
 use acyclic_stream::{AppendOutcome, IdempotencyKey, LocalStream, LocalStreamLimits};
 use bytes::Bytes;
 use futures::StreamExt as _;
@@ -82,15 +82,16 @@ async fn qualify_stream_local(root: PathBuf) -> Result<(), String> {
 }
 
 async fn qualify_objects_local(root: PathBuf) -> Result<(), String> {
-    let provider = LocalObjects::open(root, LocalObjectsLimits::default(), None)
+    let store = Store::new(
+        acyclic_objects::LocalMedium::open(root, LocalObjectsLimits::default(), None)
+            .await
+            .map_err(|error| error.to_string())?,
+    );
+    let first = store.account(b"first").map_err(|error| error.to_string())?;
+    let second = store.account(b"second").map_err(|error| error.to_string())?;
+    acyclic_objects::conformance::verify(&first, &second, "conformance")
         .await
-        .map_err(|error| error.to_string())?;
-    acyclic_objects::v1::conformance::verify(&acyclic_objects::v1::conformance::Fixture::new(
-        provider,
-        "conformance",
-    ))
-    .await
-    .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())
 }
 
 async fn qualify_filesystem_local(root: PathBuf) -> Result<(), String> {

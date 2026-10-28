@@ -149,10 +149,6 @@ mod state_tests;
 pub use placement::AuthorityPlacement;
 mod records;
 mod reservations;
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
-pub(crate) use records::object_id_from_key;
-#[cfg(all(not(target_arch = "wasm32"), any(test, feature = "local")))]
-pub(crate) use records::object_key;
 use records::*;
 mod accounting;
 #[cfg(test)]

@@ -34,14 +34,14 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 WorkCounters {
                     object_probes: 1,
                     backend_read_operations: 1,
-                    bytes_hashed: length + OBJECT_DIGEST_ENVELOPE_BYTES,
+                    bytes_hashed: length,
                     allocation_operations: 1,
                     peak_allocation_bytes: OBJECT_KEY_BYTES,
                     ..Default::default()
                 },
             )
             .map_err(object_error)?;
-            if object_digest(write.object_id.kind, &write.bytes) != write.object_id.digest {
+            if object_digest(&write.bytes) != write.object_id.digest {
                 return Err(ObjectStoreError::DigestMismatch);
             }
         }
@@ -153,7 +153,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             io,
             WorkCounters {
                 object_bytes_read: length,
-                bytes_hashed: length + OBJECT_DIGEST_ENVELOPE_BYTES,
+                bytes_hashed: length,
                 bytes_copied: length * 2,
                 allocation_operations: 2 * u64::from(length != 0),
                 peak_allocation_bytes: OBJECT_KEY_BYTES + length * 2,
@@ -237,7 +237,7 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 io,
                 WorkCounters {
                     object_bytes_read: length,
-                    bytes_hashed: length + OBJECT_DIGEST_ENVELOPE_BYTES,
+                    bytes_hashed: length,
                     bytes_copied: length * 2,
                     allocation_operations: 2 * u64::from(length != 0),
                     peak_allocation_bytes: retained + OBJECT_KEY_BYTES + length * 2,

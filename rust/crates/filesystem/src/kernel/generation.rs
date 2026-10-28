@@ -242,7 +242,7 @@ pub fn generation_root_id(
     )?;
     let object = ObjectId {
         kind: ObjectKind::GenerationRoot,
-        digest: object_digest(ObjectKind::GenerationRoot, &bytes),
+        digest: object_digest(&bytes),
     };
     Ok((object, GenerationId::new(object.digest)))
 }

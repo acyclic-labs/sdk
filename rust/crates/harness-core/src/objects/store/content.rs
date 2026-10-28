@@ -1,26 +1,24 @@
 use super::*;
+
+/// The record blob binding one file's descriptor and display name to its content.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct ContentRecord {
+    pub(super) descriptor: FileDescriptor,
+    pub(super) display_name: String,
+    pub(super) content: String,
+}
+
 impl ObjectContentStore {
-    pub(super) fn key(&self, path: &str, content: &str) -> Result<String> {
-        validate_content_path(path, &mut None)?;
-        if content.len() != 64
-            || !content
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return Err(Error::Invalid("Objects content identity is invalid".into()));
-        }
-        let key = format!(
-            "{}/{}/@content/{}",
-            self.volume.storage_name(&mut None)?,
-            path,
-            content
-        );
-        if key.len() > acyclic_objects::wire::ObjectsLimit::MaxKeyBytes as usize {
-            return Err(Error::Invalid(
-                "Objects content key exceeds provider limit".into(),
+    /// The content blob a file's version names.
+    pub(super) fn content_digest(&self, file: &FileRef) -> Result<Digest> {
+        file.validate(&mut None)?;
+        if file.volume() != &self.volume || file.descriptor().byte_length() > self.maximum_bytes {
+            return Err(Error::Unauthorized(
+                "file is outside this Objects binding".into(),
             ));
         }
-        Ok(key)
+        Digest::from_hex(file.version())
+            .map_err(|_| Error::Invalid("Objects file version is not a blob digest".into()))
     }
 
     pub(super) async fn read_exact(
@@ -37,94 +35,58 @@ impl ObjectContentStore {
         file: &FileRef,
         maximum_bytes: u64,
     ) -> Result<acyclic_stream::OwnedBytes> {
-        self.read_representation(file, maximum_bytes, true)
-            .await
-            .map(acyclic_objects::v1::Object::into_body)
-    }
-
-    pub(super) fn content_key(&self, file: &FileRef) -> Result<String> {
-        file.validate(&mut None)?;
-        if file.volume() != &self.volume || file.descriptor().byte_length() > self.maximum_bytes {
-            return Err(Error::Unauthorized(
-                "file is outside this Objects binding".into(),
-            ));
-        }
-        self.key(
-            file.path(),
-            &content_identity(file.descriptor(), file.display_name())?,
-        )
-    }
-
-    pub(super) async fn read_representation(
-        &self,
-        file: &FileRef,
-        maximum_bytes: u64,
-        pinned: bool,
-    ) -> Result<acyclic_objects::v1::Object> {
         let read = self
             .objects
             .get(
-                wire::GetObjectRequest {
-                    bucket: Some(self.bucket.clone()),
-                    object_key: self.content_key(file)?,
-                    ..Default::default()
-                },
+                self.content_digest(file)?,
+                ByteRange::FULL,
                 maximum_bytes.min(self.maximum_bytes),
             )
             .await
             .map_err(storage)?;
-        let info = read
-            .header()
-            .object
-            .as_ref()
-            .ok_or_else(|| Error::Storage("Objects returned no content metadata".into()))?;
-        self.verify_metadata(file, info, pinned)?;
-        acyclic_objects::v1::response::get_header(read.header(), &None, maximum_bytes)
-            .map_err(storage)?;
+        self.verify_length(file, read.head().length)?;
         file.descriptor().verify(read.body(), &mut None)?;
-        Ok(read)
+        Ok(read.into_body())
     }
 
-    pub(super) fn verify_metadata(
-        &self,
-        file: &FileRef,
-        info: &wire::ObjectInfo,
-        pinned: bool,
-    ) -> Result<()> {
-        if info.size != file.descriptor().byte_length()
-            || info.metadata.as_ref().is_none_or(|metadata| {
-                metadata.content_type != file.descriptor().media_type()
-                    || metadata
-                        .user
-                        .get("harness-display-name")
-                        .is_none_or(|name| name != file.display_name())
-            })
-        {
-            return Err(Error::Storage(
-                "Objects returned another file length or metadata".into(),
-            ));
-        }
-        if pinned && file.version() != representation_identity(file, &info.etag)? {
-            return Err(Error::Conflict(
-                "Objects representation was replaced".into(),
-            ));
+    pub(super) fn verify_length(&self, file: &FileRef, length: u64) -> Result<()> {
+        if length != file.descriptor().byte_length() {
+            return Err(Error::Storage("Objects returned another file length".into()));
         }
         Ok(())
     }
 
-    /// Selects this bucket's immutable content as an artifact without copying it.
+    /// Selects this volume's immutable content as an artifact without copying it.
     pub fn artifact_ref(&self, file: &FileRef) -> Result<ArtifactRef> {
         file.validate(&mut None)?;
         if file.volume() != &self.volume {
             return Err(Error::Unauthorized(
-                "artifact file is outside this Objects bucket".into(),
+                "artifact file is outside this Objects volume".into(),
             ));
         }
+        let record = self.record(file)?;
         ArtifactRef::new(
             self.volume.provider().clone(),
-            self.content_key(file)?.into_bytes(),
+            format!(
+                "{}/{}/@content/{}",
+                self.volume.storage_name(&mut None)?,
+                file.path(),
+                Digest::of(&record).to_hex()
+            )
+            .into_bytes(),
             None,
         )
+    }
+
+    pub(super) fn record(&self, file: &FileRef) -> Result<Vec<u8>> {
+        let content = self.content_digest(file)?;
+        // A struct encodes deterministically: fixed field order, no maps.
+        serde_json::to_vec(&ContentRecord {
+            descriptor: file.descriptor().clone(),
+            display_name: file.display_name().to_owned(),
+            content: content.to_hex(),
+        })
+        .map_err(|_| Error::Invalid("Objects content record is not encodable".into()))
     }
 }
 
@@ -132,35 +94,8 @@ impl ObjectContentStore {
     clippy::needless_pass_by_value,
     reason = "maps the owned provider error at async boundaries"
 )]
-pub(in crate::objects) fn storage(error: acyclic_objects::v1::Error) -> Error {
+pub(in crate::objects) fn storage(error: acyclic_objects::Error) -> Error {
     Error::Storage(error.to_string())
-}
-
-pub(in crate::objects) fn content_identity(
-    descriptor: &FileDescriptor,
-    display_name: &str,
-) -> Result<String> {
-    Ok(
-        blake3::Hash::from_bytes(crate::executor::json::canonical_json_digest(
-            &(descriptor, display_name),
-            u64::MAX,
-            &mut None,
-        )?)
-        .to_hex()
-        .to_string(),
-    )
-}
-
-pub(super) fn representation_identity(file: &FileRef, etag: &str) -> Result<String> {
-    Ok(
-        blake3::Hash::from_bytes(crate::executor::json::canonical_json_digest(
-            &(file.descriptor(), file.display_name(), etag),
-            u64::MAX,
-            &mut None,
-        )?)
-        .to_hex()
-        .to_string(),
-    )
 }
 
 impl ContentResidencyVerifier for ObjectContentStore {

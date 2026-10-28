@@ -144,9 +144,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                     work.cancellation
                         .check()
                         .map_err(|_| ObjectStoreError::Cancelled)?;
-                    let hashed = length
-                        .checked_add(crate::OBJECT_DIGEST_ENVELOPE_BYTES)
-                        .ok_or(crate::WorkError::Overflow)?;
+                    let hashed = length;
                     native.admit(WorkCounters {
                         object_bytes_read: length,
                         bytes_hashed: hashed,
@@ -171,7 +169,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                         bytes_hashed: hashed,
                         ..WorkCounters::UNCHARGED
                     })?;
-                    if crate::storage::object_digest(id.kind, &bytes) != id.digest {
+                    if crate::storage::object_digest(&bytes) != id.digest {
                         return Err(ObjectStoreError::Corrupt);
                     }
                     writes.push(ObjectWrite {

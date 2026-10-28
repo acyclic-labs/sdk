@@ -100,7 +100,6 @@ async fn public_checkouts_batch_disjoint_edits_and_recover_each_original_operati
         crate::StreamAuthorityStore::new(volume.fs.inner.authority.provider()),
         crate::LogicalObjectStore::new(
             Arc::clone(volume.fs.inner.objects.provider()),
-            volume.fs.inner.objects.bucket().clone(),
         ),
         EmbeddedCapabilities::MEMORY,
     );

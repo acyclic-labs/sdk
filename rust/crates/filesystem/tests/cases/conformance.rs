@@ -1,11 +1,9 @@
 //! Disposable reference adapter for the shared public filesystem suite.
 use acyclic_fs::{EmbeddedCapabilities, conformance::*};
 async fn memory() -> Result<impl Backend, Failure> {
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
     Ok(from_providers(
         acyclic_stream::MemoryStream::default(),
-        objects,
-        bucket,
+        acyclic_objects::MemoryObjects::memory(),
         EmbeddedCapabilities::MEMORY,
     ))
 }
@@ -14,7 +12,7 @@ suite!(public_memory_suite, memory);
 #[cfg(feature = "local")]
 mod local {
     use super::*;
-    use acyclic_objects::v1::{ObjectsProvider as _, local::LocalObjects, wire};
+    use acyclic_objects::{LocalMedium, LocalObjects, Store};
     use acyclic_stream::{
         LocalStream,
         testing::{Counted, RequestLedger},
@@ -43,21 +41,14 @@ mod local {
         let directory = tempfile::tempdir()?;
         let stream =
             LocalStream::open(directory.path().join("streams"), Default::default()).await?;
-        let objects =
-            LocalObjects::open(directory.path().join("objects"), Default::default(), None).await?;
-        let bucket = objects
-            .create_bucket(wire::CreateBucketRequest {
-                name: "filesystem-conformance".into(),
-                mutation: None,
-            })
-            .await?;
+        let objects = Store::new(
+            LocalMedium::open(directory.path().join("objects"), Default::default(), None).await?,
+        )
+        .account(b"filesystem-conformance")?;
         Ok(DurableBackend {
             fixture: from_providers(
                 stream,
                 objects,
-                bucket
-                    .bucket
-                    .ok_or("created bucket has no public reference")?,
                 EmbeddedCapabilities { durable: true },
             ),
             _directory: directory,

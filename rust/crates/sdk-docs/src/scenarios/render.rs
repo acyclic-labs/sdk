@@ -12,7 +12,6 @@ pub fn render_typescript(
             ScenarioKind::MachinesTypescriptConsumer => render_machines_typescript(execution),
             ScenarioKind::ActorsTypescriptConsumer => render_actors_typescript(execution),
             ScenarioKind::StreamTypescriptConsumer => render_stream_typescript(execution),
-            ScenarioKind::ObjectsTypescriptConsumer => render_objects_typescript(execution),
             ScenarioKind::InferenceContractDefaults => render_inference_typescript(execution),
             _ => unreachable!("filtered scenario kind must have a TypeScript renderer"),
         })
@@ -231,26 +230,6 @@ fn render_machines_typescript(execution: &ScenarioExecution) -> Result<TypeScrip
         scenario_id: execution.scenario.id,
         package: "@acyclic-labs/machines",
         path: "generated/scenarios/machines/typescript-consumer.ts",
-        source_sha256: execution.source_sha256.clone(),
-        rust_output_sha256: execution.stdout_sha256.clone(),
-        source,
-    })
-}
-
-fn render_objects_typescript(execution: &ScenarioExecution) -> Result<TypeScriptSnippet, Error> {
-    let value = scenario_output(execution)?;
-    let bucket = string_field(&value, "bucket")?;
-    let key = string_field(&value, "key")?;
-    let body = string_field(&value, "body")?;
-    let size = number_field(&value, "size")?;
-    let source = format!(
-        "// Generated from Rust scenario {}.\n// Rust output SHA256: {}\nimport {{ create }} from \"@bufbuild/protobuf\";\nimport {{ BucketRefSchema, CreateBucketRequestSchema, GetObjectRequestSchema, MemoryObjectsV1, PutObjectHeaderSchema }} from \"@acyclic-labs/objects/v1\";\n\nconst bucket = {bucket:?};\nconst key = {key:?};\nconst body = new TextEncoder().encode({body:?});\nconst provider = await MemoryObjectsV1.create();\nawait provider.createBucket(create(CreateBucketRequestSchema, {{ name: bucket }}));\nconst written = await provider.put(create(PutObjectHeaderSchema, {{ bucket: create(BucketRefSchema, {{ name: bucket }}), objectKey: key }}), body);\nif (written.size !== BigInt(\"{size}\")) throw new Error(\"Rust Objects size parity failed\");\nconst selected = await provider.get(create(GetObjectRequestSchema, {{ bucket: create(BucketRefSchema, {{ name: bucket }}), objectKey: key }}), 1024n);\nif (new TextDecoder().decode(selected.body) !== {body:?}) throw new Error(\"Rust Objects body parity failed\");\nconsole.log(JSON.stringify({{ bucket, key, size: Number(written.size) }}));\n",
-        execution.scenario.id, execution.stdout_sha256,
-    );
-    Ok(TypeScriptSnippet {
-        scenario_id: execution.scenario.id,
-        package: "@acyclic-labs/objects",
-        path: "generated/scenarios/objects/typescript-consumer.ts",
         source_sha256: execution.source_sha256.clone(),
         rust_output_sha256: execution.stdout_sha256.clone(),
         source,

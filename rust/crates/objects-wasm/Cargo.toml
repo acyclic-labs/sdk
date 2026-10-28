@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "WebAssembly bindings for the canonical Objects memory provider"
+description = "WebAssembly bindings for the canonical Objects blob memory provider"
 publish = false
 
 [lib]
@@ -13,8 +13,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false, features = ["json"] }
-acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
-prost.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys.workspace = true

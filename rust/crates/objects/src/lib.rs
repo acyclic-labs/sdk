@@ -4,7 +4,9 @@ pub use acyclic_auth::addressing;
 
 mod blob;
 pub mod conformance;
-#[cfg(all(any(feature = "grpc", feature = "http"), not(target_arch = "wasm32")))]
+#[cfg(feature = "conformance")]
+mod counted;
+#[cfg(any(objects_client, objects_server))]
 mod convert;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub mod grpc;
@@ -21,6 +23,8 @@ mod native;
 mod native_error;
 mod ownership;
 mod provider;
+#[cfg(objects_server)]
+pub mod route;
 #[cfg(all(feature = "s3", not(target_arch = "wasm32")))]
 pub mod s3;
 mod store;

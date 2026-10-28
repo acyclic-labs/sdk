@@ -17,7 +17,7 @@ use crate::{
     resources::{ArtifactRef, ProviderRef},
     runtime::ContentBindings,
 };
-use acyclic_objects::v1::{ObjectsProvider, wire};
+use acyclic_objects::{Blobs, ByteRange, Digest};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -26,7 +26,5 @@ mod store;
 pub use store::ObjectContentStore;
 mod mount;
 pub use mount::ObjectContentMountResolver;
-#[cfg(test)]
-mod range_tests;
 #[cfg(test)]
 mod tests;

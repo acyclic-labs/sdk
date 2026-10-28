@@ -569,7 +569,7 @@ pub fn file_table_page_id(
     )?;
     Ok(ObjectId {
         kind: ObjectKind::FileTablePage,
-        digest: object_digest(ObjectKind::FileTablePage, &bytes),
+        digest: object_digest(&bytes),
     })
 }
 

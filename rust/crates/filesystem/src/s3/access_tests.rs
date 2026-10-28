@@ -39,9 +39,9 @@ struct Objects {
 
 impl Default for Objects {
     fn default() -> Self {
-        let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+        let objects = acyclic_objects::MemoryObjects::memory();
         Self {
-            inner: crate::MemoryObjectBackend::new(Arc::new(objects), bucket),
+            inner: crate::MemoryObjectBackend::new(Arc::new(objects)),
             reads: AtomicUsize::new(0),
             pause: crate::sync::Mutex::new(None),
         }

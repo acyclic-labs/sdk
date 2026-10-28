@@ -12,7 +12,7 @@ use tonic::Code;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 type Service = FilesystemWireService<
     crate::StreamAuthorityStore<FaultStream>,
-    crate::LogicalObjectStore<acyclic_objects::v1::MemoryObjects>,
+    crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,
 >;
 
 #[derive(Default)]
@@ -101,10 +101,10 @@ impl StreamProvider for FaultStream {
 
 fn service() -> Result<(Service, Arc<FaultStream>), Status> {
     let stream = Arc::new(FaultStream::default());
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
+    let objects = acyclic_objects::MemoryObjects::memory();
     let fs = Fs::new(
         crate::StreamAuthorityStore::new(stream.clone()),
-        crate::LogicalObjectStore::new(Arc::new(objects), bucket),
+        crate::LogicalObjectStore::new(Arc::new(objects)),
         crate::EmbeddedCapabilities::MEMORY,
     );
     Ok((

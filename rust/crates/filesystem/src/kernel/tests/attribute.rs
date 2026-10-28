@@ -129,7 +129,7 @@ fn every_attribute_page_shape_and_identity_is_canonical() -> Result<(), Box<dyn 
         assert_eq!(object_id.kind, ObjectKind::AttributePage);
         assert_eq!(
             object_id.digest,
-            object_digest(ObjectKind::AttributePage, &encoded)
+            object_digest(&encoded)
         );
     }
     assert_eq!(

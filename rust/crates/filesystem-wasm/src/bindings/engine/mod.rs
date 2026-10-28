@@ -48,7 +48,6 @@ pub(in crate::bindings) enum Acceleration {
 #[serde(rename_all = "camelCase")]
 pub(in crate::bindings) struct MemoryOptions {
     pub(in crate::bindings) maximum_object_bytes: u64,
-    pub(in crate::bindings) maximum_memory_bytes: u64,
     pub(in crate::bindings) object_cache: BrowserObjectCacheOptions,
 }
 
@@ -426,7 +425,6 @@ pub fn open_memory_fs(options: JsValue) -> Result<BrowserFs, JsValue> {
     let options: MemoryOptions = serde_wasm_bindgen::from_value(options).map_err(js_error)?;
     let engine = memory_engine(
         options.maximum_object_bytes,
-        options.maximum_memory_bytes,
         browser_object_cache_options(&options.object_cache),
     )?;
     Ok(browser_fs(engine, "memory", "memory"))
@@ -458,34 +456,19 @@ pub(in crate::bindings) fn browser_fs(
 
 pub(in crate::bindings) fn memory_engine(
     maximum_object_bytes: u64,
-    maximum_memory_bytes: u64,
     cache: ObjectCacheOptions,
 ) -> Result<Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>, JsValue> {
     let streams: Arc<dyn acyclic_stream::StreamProvider> =
         Arc::new(acyclic_stream::MemoryStream::default());
-    if maximum_object_bytes == 0
-        || maximum_object_bytes > maximum_memory_bytes
-        || usize::try_from(maximum_object_bytes).is_err()
-    {
+    if maximum_object_bytes == 0 || usize::try_from(maximum_object_bytes).is_err() {
         return Err(js_error("invalid memory object limit"));
     }
-    let maximum_bytes = usize::try_from(maximum_memory_bytes).map_err(js_error)?;
-    if maximum_bytes == 0 {
-        return Err(js_error("invalid memory byte limit"));
-    }
-    let (objects, bucket) = acyclic_objects::v1::MemoryObjects::with_bucket(
-        "acyclic-fs-wasm-memory",
-        acyclic_objects::v1::MemoryOptions {
-            maximum_bytes,
-            maximum_entries: usize::MAX,
-        },
-    )
-    .map_err(js_error)?;
+    let objects = acyclic_objects::MemoryObjects::memory();
     Ok(Fs::new(
         StreamAuthorityStore::new(streams),
         CachedObjectStore::new(
             BrowserObjects::Memory(
-                LogicalObjectStore::new(Arc::new(objects), bucket)
+                LogicalObjectStore::new(Arc::new(objects))
                     .with_object_limit(maximum_object_bytes)
                     .map_err(js_error)?,
             ),
