@@ -4,7 +4,7 @@
 pub mod testing;
 use super::*;
 use acyclic_auth::{
-    authority::{PolicyDecision, Request, Target},
+    authority::{PolicyDecision, Request, Scope, Target},
     verify::{self, Trust, VerifiedCapability, VerifyError},
 };
 
@@ -220,22 +220,25 @@ impl Authority {
             cpu_millis: 0,
             memory_bytes: 0,
         };
-        if binding
+        let scope = if binding
             .resource_authorization
             .as_ref()
             .is_some_and(|value| value.action == "actors/invoke")
         {
-            capability.authorize(snapshot.trust.as_ref(), &request, PolicyDecision::Allow)
+            Scope::Exact
         } else if binding.resource_authorization.is_some() {
-            capability.authorize_resource_follow(
+            Scope::ResourceFollow
+        } else {
+            Scope::Follow
+        };
+        capability
+            .authorize(
                 snapshot.trust.as_ref(),
                 &request,
                 PolicyDecision::Allow,
+                scope,
             )
-        } else {
-            capability.authorize_follow(snapshot.trust.as_ref(), &request, PolicyDecision::Allow)
-        }
-        .map_err(Rejection::from)?;
+            .map_err(Rejection::from)?;
         Ok(())
     }
     fn filter(

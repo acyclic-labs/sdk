@@ -97,21 +97,21 @@ proptest! {
         let mut root=root();root.certificates.as_mut().unwrap().keys.first_mut().unwrap().key.grants=grants(&prefix_name,true,"fs/read");
         let attrs=RecordAttributes::default();let usage=limits(None);
         let r=request(Target::Resource {action:"fs/read",resource:&resource_name},&attrs,&usage);
-        prop_assert_eq!(permits(&[root.clone()],&r,PolicyDecision::Allow).is_ok(),resource.starts_with(&prefix));
+        prop_assert_eq!(permits(&[root.clone()],&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(),resource.starts_with(&prefix));
         let mut descendant=prefix;descendant.extend(resource);
         let name=encode(&descendant);
         let inside=request(Target::Resource {action:"fs/read",resource:&name},&attrs,&usage);
-        prop_assert!(permits(&[root],&inside,PolicyDecision::Allow).is_ok());
+        prop_assert!(permits(&[root],&inside,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
     }
     #[test]
     fn a_bucket_prefix_never_grants_a_sibling(suffix in "[a-z]{1,10}") {
         let mut root=root();root.certificates.as_mut().unwrap().keys.first_mut().unwrap().key.grants=grants("objects:/logs",true,"objects/get");
         let blocks=vec![root];let attrs=RecordAttributes::default();let usage=limits(None);
         for resource in ["objects:/logs","objects:/logs/key"] {
-            prop_assert!(permits(&blocks,&request(Target::Resource {action:"objects/get",resource},&attrs,&usage),PolicyDecision::Allow).is_ok(), "bucket and descendants must be permitted");
+            prop_assert!(permits(&blocks,&request(Target::Resource {action:"objects/get",resource},&attrs,&usage),PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(), "bucket and descendants must be permitted");
         }
         let resource=format!("objects:/logs-{suffix}");
-        prop_assert!(!permits(&blocks,&request(Target::Resource {action:"objects/get",resource:&resource},&attrs,&usage),PolicyDecision::Allow).is_ok(), "sibling bucket must be denied");
+        prop_assert!(!permits(&blocks,&request(Target::Resource {action:"objects/get",resource:&resource},&attrs,&usage),PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(), "sibling bucket must be denied");
     }
     #[test]
     fn dns_socket_intersections_never_widen(label in "[a-z]{1,12}", other in "[a-z]{1,12}", port in 1..=65535u16, lower in 1..=65535u16, width in 0..100u16) {
@@ -126,31 +126,31 @@ proptest! {
         certificates.keys.push(next);
         let attrs=RecordAttributes::default();let usage=limits(None);
         let r=request(Target::Websocket(Destination {host:Host::Dns(&host),port}),&attrs,&usage);
-        prop_assert_eq!(permits(&certified,&r,PolicyDecision::Allow).is_ok(),port>=lower && port<=upper);
-        prop_assert!(permits(&parent,&r,PolicyDecision::Allow).is_ok());
-        prop_assert_eq!(permits(&child,&r,PolicyDecision::Allow).is_ok(),port>=lower && port<=upper);
+        prop_assert_eq!(permits(&certified,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(),port>=lower && port<=upper);
+        prop_assert!(permits(&parent,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
+        prop_assert_eq!(permits(&child,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(),port>=lower && port<=upper);
         let inside=request(Target::Websocket(Destination {host:Host::Dns(&host),port:lower}),&attrs,&usage);
-        prop_assert!(permits(&child,&inside,PolicyDecision::Allow).is_ok());
-        prop_assert!(!permits(&child,&r,PolicyDecision::Deny).is_ok());
+        prop_assert!(permits(&child,&inside,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
+        prop_assert!(!permits(&child,&r,PolicyDecision::Deny, acyclic_auth::authority::Scope::Exact).is_ok());
         let denied=request(Target::Websocket(Destination {host:Host::Dns(&sibling),port}),&attrs,&usage);
-        prop_assert!(!permits(&parent,&denied,PolicyDecision::Allow).is_ok());
-        prop_assert!(!permits(&child,&denied,PolicyDecision::Allow).is_ok());
+        prop_assert!(!permits(&parent,&denied,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
+        prop_assert!(!permits(&child,&denied,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
         let resource=request(Target::Resource {action:"fs/read",resource:"fs:/v"},&attrs,&usage);
-        prop_assert!(!permits(&parent,&resource,PolicyDecision::Allow).is_ok());
+        prop_assert!(!permits(&parent,&resource,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
     }
     #[test]
     fn socket_default_port_and_dns_boundaries(port in 1..=65535u16, label in "[a-z]{1,12}") {
         let parent=socket_root(socket_grants("example.com".into(),vec![]))?;
         let attrs=RecordAttributes::default();let usage=limits(None);
         let r=request(Target::Websocket(Destination {host:Host::Dns("EXAMPLE.COM."),port}),&attrs,&usage);
-        prop_assert_eq!(permits(&parent,&r,PolicyDecision::Allow).is_ok(),port==443);
+        prop_assert_eq!(permits(&parent,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(),port==443);
         let wildcard=socket_root(socket_grants("*.example.com".into(),vec![]))?;
         for host in ["example.com".to_owned(),format!("{label}example.com"),"example.com.evil".to_owned()] {
             let r=request(Target::Websocket(Destination {host:Host::Dns(&host),port:443}),&attrs,&usage);
-            prop_assert!(!permits(&wildcard,&r,PolicyDecision::Allow).is_ok());
+            prop_assert!(!permits(&wildcard,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
         }
         let resource_parent=vec![root()];
-        prop_assert!(!permits(&resource_parent,&r,PolicyDecision::Allow).is_ok());
+        prop_assert!(!permits(&resource_parent,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
     }
     #[test]
     fn ip_socket_intersections_never_widen(ip in any::<u32>(), prefix in 0..=32u8, ipv6 in any::<u128>(), prefix6 in 0..=128u8, candidate in any::<u32>(), candidate6 in any::<u128>()) {
@@ -159,11 +159,11 @@ proptest! {
             let parent=socket_root(socket_grants(all.into(),vec![]))?;
             let child=attenuate(&parent,vec![Caveat {kind:CaveatKind::Grants(socket_grants(format!("{ip}/{prefix}"),vec![]))}],vec![6;32]).unwrap();
             let r=request(Target::Websocket(Destination {host:Host::Ip(ip),port:443}),&attrs,&usage);
-            prop_assert!(permits(&parent,&r,PolicyDecision::Allow).is_ok());
-            prop_assert!(permits(&child,&r,PolicyDecision::Allow).is_ok());
+            prop_assert!(permits(&parent,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
+            prop_assert!(permits(&child,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
             let exact=attenuate(&child,vec![Caveat {kind:CaveatKind::Grants(socket_grants(ip.to_string(),vec![]))}],vec![7;32]).unwrap();
-            prop_assert!(permits(&exact,&r,PolicyDecision::Allow).is_ok());
-            prop_assert!(!permits(&exact,&r,PolicyDecision::Deny).is_ok());
+            prop_assert!(permits(&exact,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
+            prop_assert!(!permits(&exact,&r,PolicyDecision::Deny, acyclic_auth::authority::Scope::Exact).is_ok());
             let (other,expected)=match ip {
                 IpAddr::V4(ip) => {
                     let a=ip.octets();let b=candidate.to_be_bytes();
@@ -175,12 +175,12 @@ proptest! {
                 },
             };
             let r=request(Target::Websocket(Destination {host:Host::Ip(other),port:443}),&attrs,&usage);
-            prop_assert!(permits(&parent,&r,PolicyDecision::Allow).is_ok());
-            prop_assert_eq!(permits(&child,&r,PolicyDecision::Allow).is_ok(),expected);
-            prop_assert_eq!(permits(&exact,&r,PolicyDecision::Allow).is_ok(),other==ip);
+            prop_assert!(permits(&parent,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
+            prop_assert_eq!(permits(&child,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(),expected);
+            prop_assert_eq!(permits(&exact,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(),other==ip);
             let wrong_family=match ip { IpAddr::V4(_)=>IpAddr::V6(Ipv6Addr::LOCALHOST),IpAddr::V6(_)=>IpAddr::V4(Ipv4Addr::LOCALHOST) };
             let r=request(Target::Websocket(Destination {host:Host::Ip(wrong_family),port:443}),&attrs,&usage);
-            prop_assert!(!permits(&parent,&r,PolicyDecision::Allow).is_ok());
+            prop_assert!(!permits(&parent,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
         }
     }
     #[test]

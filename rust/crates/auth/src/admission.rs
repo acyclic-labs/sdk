@@ -1,6 +1,6 @@
 //! Runtime receipts separate historical evidence from live workload authority.
 use crate::{
-    authority::{PolicyDecision, Request, Target},
+    authority::{PolicyDecision, Request, Scope, Target},
     contract::*,
     verify::{self, CertifiedSigner, Trust, VerifiedCapability, VerifyError},
 };
@@ -43,7 +43,7 @@ impl<'a> RuntimeAdmission<'a> {
         if request.now_unix_seconds != self.now {
             return Err(VerifyError::Time);
         }
-        workload.authorize(self.trust, request, PolicyDecision::Allow)?;
+        workload.authorize(self.trust, request, PolicyDecision::Allow, Scope::Exact)?;
         let attributes = facts(request, payload, self.now)?;
         let Target::Resource { action, resource } = request.target else {
             return Err(VerifyError::Malformed);
@@ -70,6 +70,7 @@ impl<'a> RuntimeAdmission<'a> {
                 ..*request
             },
             PolicyDecision::Allow,
+            Scope::Exact,
         )?;
         let encoded = token.encode().to_vec();
         let name = receipt_resource(&encoded);
@@ -108,6 +109,7 @@ impl<'a> RuntimeAdmission<'a> {
             self.trust,
             &receipt_request(request, &name, &receipt_facts, self.now),
             PolicyDecision::Allow,
+            Scope::Exact,
         )?;
         Ok(AdmittedCapability {
             workload: encoded,
@@ -167,6 +169,7 @@ impl AuthenticatedAdmission {
             trust,
             &receipt_request(request, &self.resource, &receipt_facts, self.admitted),
             PolicyDecision::Allow,
+            Scope::Exact,
         )?;
         let attributes = facts(request, payload, self.admitted)?;
         self.workload.authorize(
@@ -177,6 +180,7 @@ impl AuthenticatedAdmission {
                 ..*request
             },
             PolicyDecision::Allow,
+            Scope::Exact,
         )?;
         Ok(())
     }

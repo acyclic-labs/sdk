@@ -65,7 +65,12 @@ fn minted_workloads_keep_certificate_grants_audience_expiry_and_revocation()
     let attributes = RecordAttributes::default();
     let usage = limits(None);
     let allowed = request("fs:/public/item", &attributes, &usage);
-    child.authorize(&trust, &allowed, authority::PolicyDecision::Allow)?;
+    child.authorize(
+        &trust,
+        &allowed,
+        authority::PolicyDecision::Allow,
+        acyclic_auth::authority::Scope::Exact,
+    )?;
     for (action, resource, audience) in [
         ("fs/read", "fs:/private/item", "workers:/test"),
         ("fs/write", "fs:/public/item", "workers:/test"),
@@ -76,7 +81,12 @@ fn minted_workloads_keep_certificate_grants_audience_expiry_and_revocation()
         denied.audience = audience;
         assert!(
             child
-                .authorize(&trust, &denied, authority::PolicyDecision::Allow)
+                .authorize(
+                    &trust,
+                    &denied,
+                    authority::PolicyDecision::Allow,
+                    acyclic_auth::authority::Scope::Exact
+                )
                 .is_err()
         );
     }

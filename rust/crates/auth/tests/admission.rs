@@ -97,7 +97,12 @@ fn authenticated_admission_rechecks_every_request_and_current_trust() -> TestRes
     let historical = authenticated.authorize_history(&trust, &expired, [7; 32])?;
     assert!(
         historical
-            .authorize(&trust, &expired, PolicyDecision::Allow)
+            .authorize(
+                &trust,
+                &expired,
+                PolicyDecision::Allow,
+                acyclic_auth::authority::Scope::Exact
+            )
             .is_err()
     );
     let mut forged = proof;
@@ -185,7 +190,12 @@ fn historical_evidence_survives_expiry_without_becoming_fresh_authority() -> Tes
     assert!(historical.attenuate(vec![], &[9; 32]).is_err());
     assert!(
         historical
-            .authorize(&trust, &later, PolicyDecision::Allow)
+            .authorize(
+                &trust,
+                &later,
+                PolicyDecision::Allow,
+                acyclic_auth::authority::Scope::Exact
+            )
             .is_err()
     );
     assert!(matches!(

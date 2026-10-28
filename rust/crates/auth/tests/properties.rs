@@ -70,10 +70,10 @@ proptest! {
         let keys=vec![vec![key]];
         let resource=format!("fs:/{name}"); let audience=format!("workers:/{name}");
         let r=Request { target:Target::Resource {action:"fs/read",resource:&resource},audience:&audience,holder:Some(&name),now_unix_seconds:now,keys:&keys,attributes:&RecordAttributes::try_new(attrs).unwrap(),usage:&usage,cpu_millis:used,memory_bytes:used };
-        prop_assert!(!permits(&parent,&r,PolicyDecision::Deny).is_ok());
+        prop_assert!(!permits(&parent,&r,PolicyDecision::Deny, acyclic_auth::authority::Scope::Exact).is_ok());
         if let Ok(child)=attenuate(&parent,after,vec![6;32]) {
-            prop_assert!(!permits(&child,&r,PolicyDecision::Allow).is_ok() || permits(&parent,&r,PolicyDecision::Allow).is_ok());
-            prop_assert!(!permits(&child,&r,PolicyDecision::Deny).is_ok());
+            prop_assert!(!permits(&child,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok() || permits(&parent,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
+            prop_assert!(!permits(&child,&r,PolicyDecision::Deny, acyclic_auth::authority::Scope::Exact).is_ok());
             prop_assert_eq!(child.get(..parent.len()),Some(parent.as_slice()));
         }
     }
@@ -162,8 +162,8 @@ proptest! {
         for author in ["issuer",child_id.as_str()] {
             let attrs=vec![Attribute {name:"author".into(),value:author.as_bytes().to_vec()}];
             let r=Request { target:Target::Resource {action:"fs/read",resource:"fs:/v"},audience:"workers:/app",holder:None,now_unix_seconds:2,keys:&[],attributes:&RecordAttributes::try_new(attrs).unwrap(),usage:&usage,cpu_millis:0,memory_bytes:0 };
-            prop_assert_eq!(permits(&parent,&r,PolicyDecision::Allow).is_ok(),author=="issuer");
-            prop_assert_eq!(permits(&child,&r,PolicyDecision::Allow).is_ok(),author=="issuer");
+            prop_assert_eq!(permits(&parent,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(),author=="issuer");
+            prop_assert_eq!(permits(&child,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(),author=="issuer");
         }
     }
     #[test]
@@ -175,9 +175,9 @@ proptest! {
             Caveat {kind:CaveatKind::Limits(limits(Some(ceiling)))}],vec![6;32]).unwrap();
         let attrs=vec![Attribute {name:"author".into(),value:child_id.into_bytes()}];let usage=limits(Some(used));
         let r=Request {target:Target::Resource {action:"fs/read",resource:"fs:/v"},audience:"workers:/app",holder:None,now_unix_seconds:2,keys:&[],attributes:&RecordAttributes::try_new(attrs).unwrap(),usage:&usage,cpu_millis:0,memory_bytes:0};
-        prop_assert!(permits(&parent,&r,PolicyDecision::Allow).is_ok());
-        prop_assert_eq!(permits(&child,&r,PolicyDecision::Allow).is_ok(),used<=ceiling);
-        prop_assert!(!permits(&child,&r,PolicyDecision::Deny).is_ok());
+        prop_assert!(permits(&parent,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok());
+        prop_assert_eq!(permits(&child,&r,PolicyDecision::Allow, acyclic_auth::authority::Scope::Exact).is_ok(),used<=ceiling);
+        prop_assert!(!permits(&child,&r,PolicyDecision::Deny, acyclic_auth::authority::Scope::Exact).is_ok());
     }
     #[test]
     fn root_certificates_and_versions_cannot_be_reintroduced(version in any::<u32>()) {

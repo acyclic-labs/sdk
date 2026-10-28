@@ -244,10 +244,11 @@ fn rotation_cannot_drop_pins_filters_or_rebind_the_declaring_subject() {
     let attributes = RecordAttributes::default();
     let usage = signed::limits(None);
     assert!(
-        cap.authorize_follow(
+        cap.authorize(
             &signed::Snapshot::default(),
             &signed::request("fs:/allowed", &attributes, &usage),
-            PolicyDecision::Allow
+            PolicyDecision::Allow,
+            acyclic_auth::authority::Scope::Follow
         )
         .is_err(),
         "record deferral cannot authorize another action"
@@ -518,10 +519,11 @@ fn filesystem_discovery_defers_only_list_and_checks_full_paths_and_deny_wins() {
     let cap = verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
     let usage = signed::limits(None);
     assert!(
-        cap.authorize_resource_follow(
+        cap.authorize(
             &signed::Snapshot::default(),
             &signed::request("fs:/volume/public", &attributes, &usage),
-            PolicyDecision::Allow
+            PolicyDecision::Allow,
+            acyclic_auth::authority::Scope::ResourceFollow
         )
         .is_err(),
         "fs/read cannot use discovery deferral"
