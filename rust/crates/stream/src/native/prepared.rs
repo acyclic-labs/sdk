@@ -13,6 +13,25 @@ pub struct PreparedRecordCapacity {
     pub attributes: usize,
 }
 
+impl PreparedRecordCapacity {
+    pub(crate) fn validate(
+        &self,
+        value: &OwnedBytes,
+        headers: &crate::RecordHeaders,
+    ) -> Result<(), StreamError> {
+        // Inspect counts before traversing header payload: a recovered record may
+        // have been published by an independent writer after this reservation.
+        if headers.keys().len() > self.keys
+            || headers.attributes().len() > self.attributes
+            || value.len() > self.payload_bytes
+            || headers.payload_bytes() > self.payload_bytes - value.len()
+        {
+            return Err(StreamError::LimitExceeded);
+        }
+        Ok(())
+    }
+}
+
 /// A genuine prepared Commit-family ingress.
 pub struct PreparedNativeCommit {
     future: NativeProviderFuture<'static, CommitOutcome>,
@@ -50,13 +69,11 @@ impl PreparedNativeCommit {
     ) -> NativeProviderFuture<'static, CommitOutcome> {
         let record = if record.value.is_empty() {
             Err(StreamError::InvalidArgument)
-        } else if record.payload_bytes() > self.capacity.payload_bytes
-            || record.headers.keys().len() > self.capacity.keys
-            || record.headers.attributes().len() > self.capacity.attributes
-        {
-            Err(StreamError::LimitExceeded)
         } else {
-            crate::changes::validate(&record.value, &record.headers).map(|()| record)
+            self.capacity
+                .validate(&record.value, &record.headers)
+                .and_then(|()| crate::changes::validate(&record.value, &record.headers))
+                .map(|()| record)
         };
         self.record.supply(record);
         std::mem::replace(
