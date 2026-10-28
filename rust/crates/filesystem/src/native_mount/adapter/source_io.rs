@@ -29,6 +29,12 @@ pub struct CaptureProducer {
 
 impl Drop for CaptureProducer {
     fn drop(&mut self) {
+        // Quiescence includes the accepted operation's retained custody. Their
+        // destructors may lock the original ledger or block, so retire them
+        // before publishing completion and without holding the source gate.
+        drop(self.original.take());
+        drop(self._allocation.take());
+        drop(self._owner.take());
         let mut gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner);
         gate.producers = {
             assert!(gate.producers > 0, "accepted physical source operation");
