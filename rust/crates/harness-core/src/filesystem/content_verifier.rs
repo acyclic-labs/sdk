@@ -293,7 +293,7 @@ where
         crate::conversation::BoundedContentFuture::new(io, || async move {
             let after = after
                 .map(|name| {
-                    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)
+                    LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec())
                         .map_err(|error| Error::Invalid(error.to_string()))
                 })
                 .transpose()?;
@@ -587,14 +587,12 @@ where
                 .map_err(Error::from)?;
                 let (bytes, custody) = work.copy_bytes(name.as_bytes()).map_err(Error::from)?;
                 cursor_custody = Some(custody);
-                Some(
-                    LogicalName::new(NameEncoding::Utf8, bytes, u32::MAX).map_err(|_| {
-                        Error::NativeBoundary {
-                            code: crate::wire::ErrorCode::Invalid,
-                            reason: "private directory cursor is not a logical child name",
-                        }
-                    })?,
-                )
+                Some(LogicalName::new(NameEncoding::Utf8, bytes).map_err(|_| {
+                    Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "private directory cursor is not a logical child name",
+                    }
+                })?)
             } else {
                 cursor_custody = None;
                 None

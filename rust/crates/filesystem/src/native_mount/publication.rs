@@ -8,8 +8,6 @@ use crate::{
     LivePublicationObservation, OperationId, PublicationPermit, WorkBudget,
 };
 
-const MAXIMUM_SAFE_REBASE_ATTEMPTS: usize = 8;
-
 #[derive(Default)]
 pub(super) struct PublicationProof<'a> {
     pub(super) producer: Option<&'a std::sync::Arc<crate::kernel::ProofDataCustody>>,
@@ -154,11 +152,7 @@ where
         return Ok(Some((None, checkout.generation_id())));
     }
     if mode == MutationMode::PrivateOverlay {
-        for _ in 0..(if force {
-            MAXIMUM_SAFE_REBASE_ATTEMPTS
-        } else {
-            1
-        }) {
+        loop {
             original
                 .charge(crate::materializer::NativeResourceCredit::Items.delta(1))
                 .map_err(|error| T::from(MountSourceError::NativeWork(error)))?;
@@ -186,7 +180,6 @@ where
                 return Ok(private_ack(operation_id, outcome));
             }
         }
-        Err(T::from(MountSourceError::PublicationRetryLimit))
     } else {
         let (outcome, allocation) = checkout
             .resume_live_with_native_work(
@@ -258,7 +251,7 @@ async fn rebase_conflicted<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             checkout
                 .volume_config()
                 .limits
-                .maximum_checkout_dependencies,
+                .maximum_directory_page_entries,
             original,
             cancellation,
         )
@@ -328,11 +321,7 @@ mod tests {
             (&mut budgeted, b"stale"),
         ] {
             let path = NamespacePath::new(
-                vec![LogicalName::new(
-                    NameEncoding::Utf8,
-                    name.to_vec(),
-                    config.limits.maximum_component_bytes,
-                )?],
+                vec![LogicalName::new(NameEncoding::Utf8, name.to_vec())?],
                 config.limits,
             )?;
             checkout
@@ -392,7 +381,7 @@ mod tests {
         assert!(conflict.work.authority_records_read > 0);
         let rebase = stale
             .rebase_head(
-                config.limits.maximum_checkout_dependencies,
+                config.limits.maximum_directory_page_entries,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
             )

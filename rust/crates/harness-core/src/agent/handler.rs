@@ -23,7 +23,10 @@ use acyclic_actors::{
 };
 use acyclic_stream::{CommitRequest, ReadRequest, StreamProvider};
 use futures::TryStreamExt;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 /// The agent's one subscription: its inbox.
 pub const INBOX: &str = "inbox";
@@ -190,7 +193,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             .filter(|subscription| subscription.path == inbox)
             .ok_or(Error::Record("agent inbox subscription differs"))?
             .cursor;
-        let observed = if let Some(checkpoint) = state.checkpoint() {
+        let mut observed = if let Some(checkpoint) = state.checkpoint() {
             checkpoint_state(checkpoint)?
         } else {
             // A new child's inherited inbox starts with its ancestors' records.
@@ -212,6 +215,12 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
         if &observed.path != agent || observed.parent != agent.parent() {
             return Err(Error::Record("agent state binding differs"));
         }
+        observed
+            .open_children
+            .bind(Arc::clone(self.store.provider()));
+        observed
+            .archive_pending
+            .bind(Arc::clone(self.store.provider()));
         Ok((observed, cursor))
     }
 
@@ -340,7 +349,23 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHa
                 state.refill(records, end);
             }
         }
+        if let Some(state) = state.as_mut() {
+            state
+                .open_children
+                .bind(Arc::clone(self.agents.store.provider()));
+            state
+                .archive_pending
+                .bind(Arc::clone(self.agents.store.provider()));
+        }
         let mut step = step(&self.driver, &path, state, cursor, wake, cancellation).await?;
+        step.state
+            .open_children
+            .bind(Arc::clone(self.agents.store.provider()));
+        step.state
+            .archive_pending
+            .bind(Arc::clone(self.agents.store.provider()));
+        step.state.open_children.persist().await?;
+        step.state.archive_pending.persist().await?;
         let participant = match &self.volumes {
             Some(volumes) => volumes.bind(&step.state, &mut step.outs)?,
             None => None,

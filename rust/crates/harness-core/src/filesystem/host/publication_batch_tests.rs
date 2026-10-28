@@ -438,7 +438,7 @@ impl InternalPublicationCase<'_> {
                     volume: self.volume,
                     key: &key,
                     expected_path: Some(&path),
-                    maximum_bytes: 64,
+                    maximum_bytes: Some(64),
                     internal_class: Some(class),
                     purpose: PublicationPurpose::Content,
                     scope: self.write.policy_scope(),

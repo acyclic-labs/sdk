@@ -298,7 +298,6 @@ fn merge_file_tables_core<'a, 'accounting, S: AsyncObjectStore>(
                         store,
                         request.ours.file_table,
                         &mutations.value,
-                        request.maximum_changes,
                         limits,
                         accounting,
                         cancellation,

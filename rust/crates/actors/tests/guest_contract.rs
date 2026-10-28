@@ -25,7 +25,7 @@ proptest! {
     /// and nonzero versions/expiries, preserving all admitted values verbatim.
     #[test]
     fn host_metadata_construction_preserves_valid_input(value in ".{0,128}", version in any::<u32>(), expiry in any::<u64>()) {
-        let valid = value.len() <= MAX_GUEST_METADATA_BYTES && !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control);
+        let valid = !value.is_empty() && value.trim() == value && !value.chars().any(char::is_control);
         let capability = CallerCapability::new(version, value.clone());
         let runtime = RuntimeHandle::new(version, value.clone());
         prop_assert_eq!(capability.is_ok(), valid && version != 0);

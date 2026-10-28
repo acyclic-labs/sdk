@@ -266,14 +266,14 @@ async fn service_rejects_oversized_commands_before_provider_dispatch() {
 async fn invalid_configuration_is_rejected_before_network_io() -> TestResult {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("https://127.0.0.1:{}", listener.local_addr()?.port());
-    let long = "t".repeat(MAX_BEARER_TOKEN_BYTES + 1);
-    for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
+
+    for token in ["", " ", "a\r\nb", "a\0b"] {
         assert!(matches!(
             Client::connect_eager(&endpoint, token).await,
             Err(ConnectError::InvalidCredential)
         ));
     }
-    for pem in [Vec::new(), vec![b'x'; MAX_CA_CERTIFICATE_BYTES + 1]] {
+    for pem in [Vec::new()] {
         assert!(matches!(
             Client::connect_eager_with_ca_certificate(&endpoint, "fixture", pem).await,
             Err(ConnectError::InvalidCaCertificate)

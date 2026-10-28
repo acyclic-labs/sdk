@@ -36,7 +36,7 @@ export function createObjectsV1GrpcClients(options: ObjectsV1GrpcOptions) {
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   const timeoutMs = options.timeoutMs ?? 30000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 0x7fff_ffff) throw new RangeError("timeoutMs must be a positive int32");
-  if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
+  if (options.caCertificate !== undefined && options.caCertificate.length === 0) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
     const lease = await resolveCredential(credential, request.signal);
     request.header.set("authorization", `Bearer ${lease.token()}`);

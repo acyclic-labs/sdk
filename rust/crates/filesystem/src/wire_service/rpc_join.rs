@@ -9,8 +9,7 @@ where
     ) -> Result<Response<wire::JoinPlan>, Status> {
         self.admit(&request)?;
         let request = request.into_inner();
-        if request.maximum_generations == 0
-            || request.maximum_generations > self.limits.maximum_page_items
+        if request.maximum_generations == Some(0)
             || request.maximum_changes == 0
             || request.maximum_changes > self.limits.maximum_page_items
             || request.maximum_conflicts == 0
@@ -211,8 +210,7 @@ where
         base_ref: &wire::GenerationRef,
         history: JoinHistory,
     ) -> Result<(), Status> {
-        if supplied.maximum_generations == 0
-            || supplied.maximum_generations > self.limits.maximum_page_items
+        if supplied.maximum_generations == Some(0)
             || supplied.maximum_changes == 0
             || supplied.maximum_changes > self.limits.maximum_page_items
             || supplied.maximum_conflicts == 0

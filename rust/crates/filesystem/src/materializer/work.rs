@@ -406,8 +406,6 @@ impl NativeMaterializationWork {
             result.map_err(native_materialization_work_error),
         )
     }
-    /// Maximum complete builtin payload.
-    pub const MAXIMUM_BUILTIN_BYTES: usize = 262_144;
 }
 
 #[cfg(test)]

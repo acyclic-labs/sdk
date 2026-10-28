@@ -52,12 +52,5 @@ pub(in crate::bindings) fn encode_export_manifest(
 pub(in crate::bindings) fn decode_export_manifest(
     manifest: &NativeExportManifest,
 ) -> Result<GenerationExportManifest> {
-    const MAXIMUM_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
-    const MAXIMUM_MANIFEST_OBJECTS: u64 = 1_000_000;
-    decode_generation_export_manifest(
-        &manifest.manifest_bytes,
-        MAXIMUM_MANIFEST_BYTES,
-        MAXIMUM_MANIFEST_OBJECTS,
-    )
-    .map_err(napi_error)
+    decode_generation_export_manifest(&manifest.manifest_bytes, None, None).map_err(napi_error)
 }

@@ -22,7 +22,8 @@ pub struct BrowserJoinPlan {
 #[serde(rename_all = "camelCase")]
 pub struct BrowserJoinOptions {
     pub(in crate::bindings) history: String,
-    pub(in crate::bindings) maximum_generations: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::bindings) maximum_generations: Option<u32>,
     pub(in crate::bindings) maximum_changes: u32,
     pub(in crate::bindings) maximum_conflicts: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]

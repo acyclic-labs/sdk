@@ -148,31 +148,22 @@ pub(super) fn run_parallel_io_children(mount: &Path, count: usize) -> Result<(),
             let Some(child) = children.get_mut(index).and_then(Option::as_mut) else {
                 continue;
             };
-            if captured_child_output_exceeds_limit(child)? {
-                let cleanup = terminate_captured_children(&mut children);
-                return Err(format!(
-                    "parallel I/O child {index} output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes{cleanup}"
-                )
-                .into());
-            }
             let Some(status) = child.process.try_wait(None)? else {
                 continue;
             };
-            let mut child = children
+            let child = children
                 .get_mut(index)
                 .and_then(Option::take)
                 .ok_or("parallel child disappeared")?;
-            let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
+            let output = captured_child_output(status, child)?;
             remaining -= 1;
             if !output.status.success() {
                 let cleanup = terminate_captured_children(&mut children);
-                return Err(format!(
-                    "parallel I/O child {index} failed ({}): {}{}{cleanup}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                )
-                .into());
+                let status = output.status;
+                output.write_diagnostics(&format!("parallel I/O child {index}"))?;
+                return Err(
+                    format!("parallel I/O child {index} failed ({status}){cleanup}").into(),
+                );
             }
         }
         if remaining != 0 && Instant::now() >= deadline {

@@ -156,7 +156,6 @@ async fn diff_with_accounting<
                             &mut values,
                             maximum,
                             &mut truncated,
-                            limits,
                             accounting,
                         );
                         if let Err(error) = pushed {
@@ -170,7 +169,6 @@ async fn diff_with_accounting<
                             &mut values,
                             maximum,
                             &mut truncated,
-                            limits,
                             accounting,
                         )?;
                     }
@@ -194,7 +192,6 @@ async fn diff_with_accounting<
                         &mut values,
                         maximum,
                         &mut truncated,
-                        limits,
                         accounting,
                     )?;
                 }
@@ -333,7 +330,6 @@ fn push_page<F: Format, const PREFIX: bool, const RESET: bool>(
     values: &mut Changes<F>,
     maximum: usize,
     truncated: &mut bool,
-    limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
     let result = (|| {
@@ -378,7 +374,6 @@ fn push_page<F: Format, const PREFIX: bool, const RESET: bool>(
                         Owned::new(value, guard, bytes),
                         before,
                         maximum,
-                        limits,
                         accounting,
                         &mut cursor,
                     )?;
@@ -391,20 +386,14 @@ fn push_page<F: Format, const PREFIX: bool, const RESET: bool>(
                             *truncated = true;
                             break;
                         }
-                        let (value, guard) = persistent_io::clone_value::<F>(
-                            value,
-                            limits.maximum_name_bytes,
-                            accounting,
-                            None,
-                            0,
-                        )?;
+                        let (value, guard) =
+                            persistent_io::clone_value::<F>(value, accounting, None, 0)?;
                         let bytes = F::value_owned_bytes(&value);
                         insert_value::<F, PREFIX>(
                             values,
                             Owned::new(value, guard, bytes),
                             before,
                             maximum,
-                            limits,
                             accounting,
                             &mut cursor,
                         )?;
@@ -424,7 +413,6 @@ fn insert_value<F: Format, const PREFIX: bool>(
     value: Owned<F::Value>,
     before: bool,
     maximum: usize,
-    limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cursor: &mut Option<usize>,
 ) -> Result<(), FsError> {
@@ -449,13 +437,8 @@ fn insert_value<F: Format, const PREFIX: bool>(
             values
                 .ensure_for_push(maximum.saturating_add(1), accounting)
                 .map_err(allocation_error)?;
-            let (key, mut guard) = persistent_io::clone_key::<F>(
-                F::key(&value.value),
-                limits.maximum_name_bytes,
-                accounting,
-                None,
-                0,
-            )?;
+            let (key, mut guard) =
+                persistent_io::clone_key::<F>(F::key(&value.value), accounting, None, 0)?;
             let bytes = F::key_owned_bytes(&key);
             values.allocation.absorb(&mut guard)?;
             values.bytes = values.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;

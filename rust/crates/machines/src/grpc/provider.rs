@@ -340,9 +340,6 @@ machine_mutations! {
     ) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                if count.get() > MAX_FORK_CHILDREN {
-                    return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-                }
                 let value = self.client().await?
                     .fork(wire::ForkCheckpointRequest {
                         protocol: Some(protocol()),
@@ -385,9 +382,6 @@ machine_mutations! {
     ) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                if count.get() > MAX_FORK_CHILDREN {
-                    return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-                }
                 let value = self.client().await?
                     .fork_machine(wire::ForkMachineRequest {
                         protocol: Some(protocol()),

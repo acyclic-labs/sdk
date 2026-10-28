@@ -171,9 +171,8 @@ fn portable_git_names_decode_canonical_windows_names() {
         .encode_utf16()
         .flat_map(u16::to_le_bytes)
         .collect();
-    let name =
-        crate::kernel::LogicalName::new(crate::kernel::NameEncoding::WindowsUtf16Le, bytes, 255)
-            .expect("valid Windows name");
+    let name = crate::kernel::LogicalName::new(crate::kernel::NameEncoding::WindowsUtf16Le, bytes)
+        .expect("valid Windows name");
     assert_eq!(
         name.unicode_text(
             crate::WorkBudget::UNBOUNDED,
