@@ -727,18 +727,16 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             );
             let result = {
                 let interrupted = self.interrupt(&mut inner, cancellation);
-                futures::pin_mut!(interrupted);
+                let timeout = async {
+                    match limits.handler_timeout_millis() {
+                        Some(timeout) => sleep(timeout).await,
+                        None => futures::future::pending::<()>().await,
+                    }
+                };
+                futures::pin_mut!(interrupted, timeout);
                 match futures::future::select(
                     handled,
-                    futures::future::select(
-                        async {
-                            match limits.handler_timeout_millis() {
-                                Some(timeout) => sleep(timeout).await,
-                                None => futures::future::pending::<()>().await,
-                            }
-                        },
-                        interrupted,
-                    ),
+                    futures::future::select(timeout, interrupted),
                 )
                 .await
                 {
