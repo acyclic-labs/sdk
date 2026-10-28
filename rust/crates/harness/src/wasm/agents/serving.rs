@@ -327,13 +327,17 @@ impl WasmAgentServer {
         agent: String,
         file: JsValue,
     ) -> std::result::Result<Vec<u8>, JsValue> {
-        self.bound
+        let (bytes, _) = self
+            .bound
             .read_file(
                 &AgentPath::try_from(agent).map_err(agent_error)?,
                 &from_js(file)?,
+                0,
+                self.observation.maximum_bytes,
             )
             .await
-            .map_err(agent_error)
+            .map_err(agent_error)?;
+        Ok(bytes)
     }
 
     pub async fn pause(&self, agent: String, paused: bool) -> std::result::Result<(), JsValue> {
