@@ -492,6 +492,7 @@ async fn invoked<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
         .store()
         .provider()
         .read(acyclic_stream::ReadRequest {
+            key: None,
             path: fixture.inbox.clone(),
             from: 0,
             limit: 1,
@@ -897,6 +898,7 @@ async fn applied<T: Target + ?Sized>(target: &T, run: &str) -> Result<(), Failur
     let provider = target.store().provider();
     let input = provider
         .read(acyclic_stream::ReadRequest {
+            key: None,
             path: fixture.inbox.clone(),
             from: 1,
             limit: 1,

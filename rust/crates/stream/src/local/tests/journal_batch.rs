@@ -120,3 +120,105 @@ mod cuts {
         Ok(())
     }
 }
+
+#[cfg(feature = "test-support")]
+mod deadlines {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct Advance {
+        clock: Arc<super::super::TestClock>,
+        admitted: AtomicU64,
+        at: u64,
+    }
+    impl PersistenceCut for Advance {
+        fn admit(&self) -> bool {
+            if self.admitted.fetch_add(1, Ordering::SeqCst) + 1 == self.at {
+                self.clock.0.store(20, Ordering::SeqCst);
+            }
+            true
+        }
+        fn acknowledge(&self) -> bool {
+            true
+        }
+        fn crashed(&self, _: Result<(), CutSimulationError>) {
+            panic!("deadline admission is not a simulated power loss");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_worker_checks_the_actual_deadline_before_accepting_a_proposal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let clock = Arc::new(super::super::TestClock(AtomicU64::new(10)));
+        let stream =
+            LocalStream::open_with_clock(root.path(), LocalStreamLimits::default(), clock.clone())
+                .await?;
+        stream.cut_persistence(Arc::new(Advance {
+            clock,
+            admitted: AtomicU64::new(0),
+            at: 1,
+        }));
+        let mut request = super::super::replay_work::request(b"deadline".to_vec());
+        request.deadline_unix_millis = Some(20);
+        assert!(matches!(
+            stream.commit(request.clone()).await,
+            Err(StreamError::DeadlineElapsed)
+        ));
+        assert_eq!(
+            std::fs::metadata(root.path().join(JOURNAL_FILE))?.len(),
+            HEADER_BYTES as u64
+        );
+        assert_eq!(
+            stream
+                .inspect_idempotency(request.idempotency_key.clone())
+                .await?,
+            None
+        );
+        request.deadline_unix_millis = Some(30);
+        assert!(matches!(
+            stream.commit(request).await?,
+            CommitOutcome::Committed(_)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn an_expired_suffix_cannot_report_an_atomic_refusal_after_a_durable_prefix()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = tempfile::tempdir()?;
+        let clock = Arc::new(super::super::TestClock(AtomicU64::new(10)));
+        let stream =
+            LocalStream::open_with_clock(root.path(), LocalStreamLimits::default(), clock.clone())
+                .await?;
+        stream.cut_persistence(Arc::new(Advance {
+            clock,
+            admitted: AtomicU64::new(0),
+            at: 2,
+        }));
+        let mut prepared = frames(3, None)?;
+        for frame in &mut prepared {
+            frame.deadline = Some(20);
+        }
+        assert!(matches!(
+            stream.persist_frames(prepared.into_iter()).await,
+            Err(StreamError::Unavailable)
+        ));
+        assert!(matches!(
+            stream.check_available(),
+            Err(StreamError::Unavailable)
+        ));
+        drop(stream);
+        let reopened = LocalStream::open(root.path(), LocalStreamLimits::default()).await?;
+        assert_eq!(reopened.tail(StreamPath::new("batch")?).await?, 1);
+        let bytes = std::fs::metadata(root.path().join(JOURNAL_FILE))?.len();
+        assert!(
+            matches!(reopened.append(super::super::keyed_append("batch", 0)?).await?, AppendOutcome::Committed(receipt) if receipt.tail == 1)
+        );
+        assert_eq!(
+            std::fs::metadata(root.path().join(JOURNAL_FILE))?.len(),
+            bytes
+        );
+        Ok(())
+    }
+}

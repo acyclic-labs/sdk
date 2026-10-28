@@ -181,6 +181,12 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
         self.inner.head(path).await
     }
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> Result<acyclic_stream::Heads, StreamError> {
+        self.inner.heads(request).await
+    }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         self.inner.watermarks(path).await
     }

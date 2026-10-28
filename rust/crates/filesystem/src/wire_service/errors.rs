@@ -396,7 +396,6 @@ fn objects_service_code(error: &acyclic_objects::Error) -> Code {
         E::InvalidArgument | E::DigestMismatch => Code::InvalidArgument,
         E::NotFound => Code::NotFound,
         E::MissingReference | E::Conflict | E::RevisionForeign => Code::FailedPrecondition,
-        E::DeadlineElapsed => Code::DeadlineExceeded,
         E::AccessDenied => Code::PermissionDenied,
         E::QuotaExceeded => Code::ResourceExhausted,
         E::Unavailable | E::Suspended | E::OutcomeUnknown => Code::Unavailable,
@@ -404,6 +403,7 @@ fn objects_service_code(error: &acyclic_objects::Error) -> Code {
         E::Unspecified => Code::Internal,
         E::Unsupported => Code::Unimplemented,
         E::RangeNotSatisfiable => Code::OutOfRange,
+        E::DeadlineElapsed => Code::DeadlineExceeded,
     }
 }
 
@@ -423,7 +423,7 @@ fn local_stream_code(error: &acyclic_stream::LocalStreamError) -> Code {
     match error {
         E::IncompleteFrame | E::Corrupt => Code::DataLoss,
         E::Io(error) => io_code(error),
-        E::AlreadyOpen => Code::FailedPrecondition,
+        E::AlreadyOpen | E::UnsupportedPreRevisionStore => Code::FailedPrecondition,
         E::InvalidLimits => Code::InvalidArgument,
         E::Replay(error) => stream_code(error),
         E::Executor => Code::Unavailable,
