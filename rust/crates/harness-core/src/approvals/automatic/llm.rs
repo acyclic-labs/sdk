@@ -104,7 +104,7 @@ async fn collect_review(
         count += 1;
         if limits
             .model_events_per_step
-            .is_some_and(|maximum| count > maximum)
+            .is_some_and(|maximum| count > maximum.get())
         {
             return Err(Error::Invalid("approver event bound exceeded".into()));
         }
