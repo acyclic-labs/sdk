@@ -1,10 +1,10 @@
 # SDK limit classification
 
-Baseline: `2146782983`, 2026-10-28. Locations refer to that baseline so deleted limits remain traceable.
+Baseline: `2146782983`, 2026-10-28. Historical locations keep deleted limits traceable.
 
 Categories: **1** arbitrary product cap; **2** chunk/page; **3** backpressure/credit; **4** protection or representation invariant.
 
-Actions marked pending require implementation or a semantic follow-up within this milestone. A retained page is valid only when the remainder remains available.
+Pending entries remain unfinished. A retained page must make all remaining data available through continuation. Explicit finite caller policies and the original allocation, cancellation, authorization and corruption controls remain.
 
 | Constant | File:line | Category | Action |
 |---|---|---|---|
@@ -98,7 +98,6 @@ Actions marked pending require implementation or a semantic follow-up within thi
 | `MAX_RECORD_KEY_BYTES` | `rust/crates/stream/src/record_headers.rs:16` (removed) | 1 | Delete generic key-width refusals in header/change validation and follow ranges, and its cap-only negative. Native compact validation compares directly against original funded immutable header keys; owned decoding reconstructs complete keys in growing owned scratch. Retain sorted/unique keys, canonical prefix compression, exact index/value equivalence and original finite native admission controls. |
 | `MAX_RECORD_ATTRIBUTES` | `rust/crates/stream/src/record_headers.rs:18` | 1 | DELETE refusal and cap-specific tests; page/stream growing state. Pending. |
 | `MAX_ACTOR_CALL_REPLY_BYTES` | `rust/crates/stream/src/wire_codec/session.rs:10` | 1 | Deleted earlier. Credited reply fragments carry complete values; receiver allocation follows actual received bytes and validates sequence/announced totals. |
-| `MAX_PAYLOAD` | `scripts/buildbox/buildbox.mjs:322` | 2 | Keep rsync transport-switch threshold. Git-only SDK payload no longer has a separate 32 MiB refusal; complete payload is shipped. |
 | `MAX_RECEIPT_BYTES` | `scripts/plugin-qualification.mjs:8` | 1 | Deleted whole-receipt byte ceiling. Regular-file/nonempty admission, schema/revision/digest binding remain. |
 | `MAX_RECEIPT_BYTES` | `scripts/typescript-qualification.mjs:9` | 1 | Deleted whole-receipt byte ceilings, including the hidden compiler-receipt override. Exact read-length stability, schema and digest checks remain. |
 | `MAX_ARCHIVE_BYTES` | `scripts/validate-npm-package.mjs:7` | 1 | Deleted whole compressed/expanded archive ceilings. One shared streaming gzip/tar parser serves npm qualification, compiler inventories and native assembly; unneeded bodies drain under stream backpressure. Checksums, octal/offset representation, truncation, exact end markers, safe/duplicate member checks and original digest/provenance binding remain. |
@@ -250,49 +249,16 @@ Actions marked pending require implementation or a semantic follow-up within thi
 | Spawn brief content allowance | `rust/crates/harness-core/src/filesystem/spawn_volumes.rs:38` | 1 | Optional byte policy defaults to None at native host. Publication and immutable recovery derive read/write sizes from authenticated descriptors or actual bytes when unbounded; no maximum sentinel. |
 | G62 approvals/reservations; explicit actor CPU/memory/time | User configuration | 3/4 | Keep user-managed resource capacity; no new default product cap. |
 
-## Work still in progress
-
-The following mechanisms still need structural changes before this milestone can ship:
-
-- Stream whole-record/whole-command limits versus framed transport, request item/path limits, dynamic header preparation, and continuation of large atomic payloads.
-- Actor request envelopes and harness command chunking; large agent record/checkpoint values must cross every backend without hidden refusal.
-- Filesystem whole-volume defaults, native extent collection defaults and exact-install change-count refusal. Path counts are optional; bulk capture collection/union scaling is being verified.
-- Projection checkpoint manifests and default cold-history refusal budgets.
-- Qualification/archive limits and remaining non-constant refusal sites. Codex credential-file/refresh byte ceilings are deleted with original accounting preserved.
-- Merged be-host PR1725 is integrated by rebase: immutable anchored delivery cuts and checkpoint-without-cursor are preserved.
-
-Verification so far: full core library tests passed on bb2 (600 passed, zero failed,
-ignored or filtered), including persistent membership pagination/reopen. This test
-receipt predates later string/MCP/OIDC edits. Native compile validation is ongoing.
-
 ## Latest implementation evidence
-
-- Native compile check 6 passed on bb2, including harness filesystem/native execution/MCP HTTP/OIDC and core, streams, objects, actors, machines and conformance all-targets. Receipt: `cc8885c3d0e4`, `/home/var/log/buildbox/1793160020596-18539-8e9dbb1d.log`. Later discovery/capture/reply changes are not covered by that receipt.
-- Check 8 passed with filesystem all-targets/native mount/watch and N-API: `9e65db3e2aad`. Check 10 passed after rebase and inference count/CA, transfer and cursor changes: `c92b0eec4ae3`, `/home/var/log/buildbox/1793161484802-34237-a1e5c711.log`. Check 11 passed for filesystem all-targets after retry changes: `fc1ed929f75a`, `/home/var/log/buildbox/1793161818750-37014-063f22d2.log`. Check 13 passed after optional publication/recovery, descriptor-based session sizes, full settled outcomes and the 100-contention regression compiled: `9236e36c3742`, `/home/var/log/buildbox/1793162203275-40145-80995bc4.log`. Later file-endpoint, approval and child-enumeration edits await validation.
-- Actor call replies no longer have a hidden whole-value maximum. The receiver reserves only bytes in received fragments; credit, fragment order, announced-total consistency and explicit finite caller allowances remain.
-- Discovery entry/directory/instruction/frontmatter defaults are unbounded. Source revision, canonical order, scan accounting, cancellation and explicit finite controls remain.
-
-This inventory remains a working audit. Pending entries are not represented as implemented or validated.
-
-- Native check 14 passed on bb2: `a9d6a77a96ba`, `/home/var/log/buildbox/1793162485072-42361-abc4cf46.log`. Check 15 passed: `b5abb4e6063b`, `/home/var/log/buildbox/1793162824554-47609-93669fe5.log`, covering later file-endpoint credit and streaming capability hashing. Check 16 completed its broad native all-targets phase, then exposed browser-only stale capacity references; those are corrected and awaiting the next compile. Dependency/query/visited-page edits postdate that snapshot.
-
-- Check 19 passed native provider/filesystem all-targets, then found browser-only callers still requiring limit scalars. Those callers now propagate optional policies. Check 20 is running on bb2 for broad native and browser targets; later facade mutation edits are not covered by its snapshot.
-
-- Check 21: broad native and WASM all-targets compile passed on bb2, receipt `22c2db26f504`. Check 22: native harness/filesystem/NAPI and WASM all-targets passed, receipt `5f15dd5808af`, log `1793164395838-62855-6dfd1198`. Check 23 passed search/fetch, client cursor/path, machine recovery and native service native+WASM all-targets, receipt `abaa684afbb1`, log `1793164783851-65727-cd923b28`.
 
 | Additional mechanism | File:line | Category | Action |
 |---|---|---|---|
 | `TurnLimits.history_turns` / `HISTORY_TURNS` | `rust/crates/harness-core/src/filesystem/agent_turns.rs:333`; `rust/crates/harness/src/local/agents.rs:31`; `rust/crates/harness/src/wasm/agents.rs:54` | 1 | Defaults are None. Explicit optional tail policy remains available. Shared reader follows 128-record pages to the anchored tail and rejects gaps. Cross-turn compaction/checkpoint scalability remains pending. |
 | NameBuffer inline scratch | `rust/crates/filesystem/src/workspace/name_normalize.rs:NameBuffer` | 2 | Keep inline optimization; larger names spill geometrically under original accounting and never fail by inline size. |
 
-- Check 24 found a NAPI closure error-type inference issue after deleting its cap-only branch; an explicit Result<Vec<_>> fixes it. Check 25 passed native filesystem/NAPI and browser all-targets, receipt `da3665ff8755`, log `1793165170950-68508-7ea8fffa`. Check 26 covers later history, mutation argument cleanup, accounting, remote-read credit and native settlement changes; Windows target availability is also queried there.
-
 | Additional mechanism | File:line | Category | Action |
 |---|---|---|---|
 | Join / operation reconcile `maximum_generations` | `rust/crates/filesystem/src/workspace/lifecycle.rs:205`; `operation_window.rs:187` | 1 | Default is None across ordinary joins and operation reconciliation. Explicit finite policies remain optional. Proto, witness and operation fingerprints preserve bound presence. Shared ancestry uses the original-funded visited hash set, append-only traversal queues and one funded sort, replacing quadratic sorted insertion. Native FS/NAPI all targets and FS WASM all targets compile pass `354111d26e1d`; no new runtime claim. Change/conflict defaults remain pending. |
-
-Latest verification: native harness/core/filesystem/NAPI/providers/inference all targets completed in compile26; its WASM stale import was corrected and harness WASM all targets passed `4cd574f746ce`. Signed local checkpoint `3d79c801ed` contains those changes. Compile29 subsequently passed native FS/NAPI and FS WASM all targets for optional join ancestry (`354111d26e1d`). Windows/Darwin compile remains pending. No PR admission or complete-milestone claim.
-
 
 | Additional mechanism | File:line | Category | Action |
 |---|---|---|---|
@@ -303,16 +269,10 @@ Latest verification: native harness/core/filesystem/NAPI/providers/inference all
 | Approval request id 255 bytes | `rust/crates/harness-core/src/approvals/files.rs:57` | 1 | Deleted byte ceiling; nonempty/canonical/reserved path-component validation remains. |
 | Windows native projection settle deadline | `rust/crates/filesystem/src/native_mount/projfs` | 1 | Earlier edit removed the hidden settle deadline; polling follows original work cancellation. Windows FS library compile passed in check30. Darwin compilation stopped in the Linux C toolchain on unsupported Apple compiler flags; no Darwin Rust-source pass is claimed. |
 
-Checks31 and35 passed on bb2: inference HTTP codec/core all targets (`b68ed294647f`), and FS/NAPI native all targets, FS WASM all targets and TUI all targets (`ae9ef17c33ce`). Check34 passed inference generation, WASM build and TypeScript compilation after installing frozen dependencies on bb2. These are compile/build receipts, not runtime proof. Check36 passed native FS/NAPI and FS WASM all targets for the path byte/depth deletion (`b52c131b3a42`, log `1793167452411-93172-254b583d`). The subsequently added deep-path acceptance regression has not yet been compiled or run. No PR has been published and the milestone remains incomplete.
-
-Checks37 and38 passed on bb2 for native FS/NAPI and FS WASM all targets: `b6937a65e63c` (log `1793167889736-96363-150f6e9f`) and `f71449d5a0b8` (log `1793168298595-101539-00780802`). Check38 includes streamed Rust qualification receipts, uncapped script receipt ingress, the memory object index/default policy, deep-path regression compilation and authority event reads. Generation parent changes postdate those receipts and are compiling in check39, alongside filesystem binding generation/WASM/TypeScript. No new runtime or PR admission claim.
-
 | Additional mechanism | File:line | Category | Action |
 |---|---|---|---|
 | Qualification manifest / README / changelog byte ceilings | `scripts/validate-npm-package.mjs:15` | 1 | Deleted metadata size refusals. The common parser retains only selected bodies; dist bytes are drained. Original package identity, exports, documentation and changelog validation remain. |
 | Plugin manifest subprocess output ceiling | `scripts/plugin-qualification.mjs:15` | 1 | Deleted capped tar subprocess. Manifest parsing and original SHA-512 evidence now share one streamed archive pass with file stability checks. |
-
-Check39 completed native FS/NAPI and FS WASM all-target checks, filesystem generation and the WASM build, then found a missing optional-presence annotation for BrowserOperationReconcileOptions.maximum_generations during TypeScript compilation; that source annotation is fixed and awaits regeneration. Check40 passed all 29 archive/compiler-evidence tests without skips, then full scripts typing reported 137 diagnostics outside the edited archive/qualification files; no broad scripts type-check pass is claimed. Check41 passed all 30 tests including streamed plugin evidence; its subsequent targeted type-check command required the compiler's --ignoreConfig flag. Corrected targeted script typing passed in check42 (`1793169020313-106463-342170e4`). Generation parent regressions are compiled, not run. The whole milestone remains unfinished and unpublished.
 
 | Additional mechanism | File:line | Category | Action |
 |---|---|---|---|
@@ -320,26 +280,13 @@ Check39 completed native FS/NAPI and FS WASM all-target checks, filesystem gener
 | `ProbeLimits.maximum_content_payload_bytes` | `rust/crates/filesystem/src/kernel/probe.rs:70` | 1 | Optional explicit caller policy; default None. Explicit finite and zero-policy negatives remain. |
 | `CONTENT_READ_CHUNK_BYTES` | `rust/crates/filesystem/src/kernel/file_read.rs:17` | 2 | Shared internal comparison/digest chunk. Offset loops continue until the complete logical value has been consumed. |
 
-Check43 passed native FS/NAPI all targets with S3/native mount/native watch and FS WASM all targets (`5dc45381f4a7`, remote `1793169503228-108550-5746fd18`). This includes removal of the default whole-content ceiling and optional probe policy. It is compile evidence, not new runtime proof. Check44 exposed one qualification watcher helper type still expecting std::process::Output; corrected without watcher semantic changes. Check46 passed qualification native compile, filesystem binding generation, WASM build and TypeScript compilation, including the ancestry optional-presence fix (`7f2d144ec8ef`, remote `1793170069635-114187-adab5d6e`).
-
-
 | Additional mechanism | File:line | Category | Action |
 |---|---|---|---|
-| Explicit synchronous tool/compiler output `maxBuffer` ceilings | `scripts/{bench-client-requests,check-consumer-builds,check-dev-build,check-hermetic-clippy,contract-targets,local-cloud,publish-cargo-crates,publish-release-assets,qualify-mcp-loom,qualify-rustfmt,release-evidence,wasm-cache}.mjs`; `scripts/buildbox/{buildbox,buildbox-receipt}.mjs` | 1 | Deleted all explicit pipe-output ceilings. Shared process-capture primitive routes selected streams through temporary files, preserves input/encoding/status/spawn/timeout/descriptor ownership, then returns complete selected bytes. Remote receipt embeds the same source; installer and isolated fixtures carry its dependency. All remaining production captured spawnSync/execFileSync callers now use the same primitive. Commands with inherited stdio keep direct streaming. |
-| SDK git payload 32 MiB | `scripts/buildbox/buildbox.mjs:400` | 1 | Deleted git-only SDK payload refusal. Other repository rsync threshold remains a transport selection. |
-| Buildbox nearest-base/history hint cache 200 / 50000 / 400 | `scripts/buildbox/buildbox.mjs:readHave,rememberHave` | 2 | Keep bounded optimization caches. Misses reload or transfer a larger complete bundle; no requested history is dropped or refused. |
-
-Check49 targeted capture helper/test typing passed; 54/55 regression tests passed. Its single failure was a gate test selecting an earlier preparation cd instead of the production tee pipeline; selector corrected, all status/stream/negative assertions preserved. Check50 passed all 16 generated gate tests, all 14 installer tests and all 14 input-closure tests. Three of five resource-limit tests failed at native CPU-lease admission (effective-cpuset/constructor-exit) on bb2, before their parity assertion; controls remain unchanged, no passing kernel-limit claim (`1793170817559-119876-d4a4b473`). No host install/deployment, new runtime Rust claim or complete milestone claim.
-
 
 | Additional mechanism | File:line | Category | Action |
 |---|---|---|---|
 | Node default synchronous capture ceiling | `scripts/{assemble-native-family,build-native-family,build-wasm,check-baselines,check-boundaries,check-build-boundaries,check-crate-tests,check-dev-dependency-cycles,check-git-proto-build,check-lane-artifacts,check-metadata,check-stream-protocol-contract,check-typescript-tarballs,generate-actors,generate-contracts,generate-filesystem-hosted-contract,harness-package-closure,publish-npm-packages,release-qualification-artifacts,release-source,run-harness-conformance,static-ci,typescript-qualification}.mjs` | 1 | Replaced captured synchronous commands with the single temporary-file primitive; inherited compiler wrapper and inherited commands already stream. Actual helper is included in verify-only publication and isolated dependency closures. |
-| Partial receipt line 65536-byte tail | `scripts/buildbox/buildbox.mjs:1506` | 1 | Deleted truncation of an incomplete receipt line. Stream output is already forwarded; receipt parser now retains the complete pending line. |
 | TypeScript consumer error 2000-character tail | `scripts/typescript-qualification.mjs:274` | 1 | Deleted loss of complete captured failure diagnostics in qualification evidence. |
-
-Check51 passed 55/58 script tests without skips (`1793170960039-120817-56d982df`); failures are current fixture-source drift: two boundary fixtures still read removed typescript/packages/harness/test/client.test.ts, and the evidence inventory reads removed harness-core/src/executor.rs after its directory split. These assertions are retained and reported to del-core; no complete test-suite pass claimed. All 27 edited JavaScript modules pass syntax checks.
-
 
 | Additional mechanism | File:line | Category | Action |
 |---|---|---|---|
@@ -347,9 +294,6 @@ Check51 passed 55/58 script tests without skips (`1793170960039-120817-56d982df`
 | `DecodeLimits.maximum_name_bytes` | `rust/crates/filesystem/src/kernel/codec.rs` | 1 | Deleted whole-name limit and clone plumbing. Shared decoder checks length prefixes against actual remaining input before observing or copying; canonical u32 length overflow remains a representation error. |
 | Canonical name/path u32 lengths | `rust/crates/filesystem/src/kernel/types/name.rs`; `kernel/namespace_path/mod.rs` | 4 | Keep checked representation conversion. Product-cap errors replaced with explicit length-overflow errors; no encoding or path grammar validation relaxed. |
 | Binding whole-transaction `maximum_mutations_per_batch` checks | `rust/crates/filesystem-{napi,wasm}/src/bindings/authored/mod.rs`; `filesystem-napi/src/bindings/publication/mod.rs` | 1 | Deleted total operation-count and Vec-capacity refusals. Core funded batch continuation remains. Fork-selection total-count misuse was subsequently deleted; ordered prefix traversal and funded identity indexing replace quadratic scans. |
-
-Check52 found a duplicate retained encoding-test name; corrected to windows_name_encoding_rejects_before_backend_work. Check53 passed native FS/NAPI all-targets with S3/native mount/native watch and FS WASM all-targets (`10510d354d98`, remote `1793171497639-124347-91b0e470`). It includes component policy deletion and canonical/native negatives at compile time. Later binding count-check deletion and unused-field cleanup await the next check. No new runtime or milestone-completion claim.
-
 
 | Additional mechanism | File:line | Category | Action |
 |---|---|---|---|
@@ -364,17 +308,7 @@ Check52 found a duplicate retained encoding-test name; corrected to windows_name
 | Objects HTTP request 16 MiB / NDJSON metadata line 12 MiB | `rust/crates/objects/src/v1/http.rs:29`; `typescript/packages/objects/src/v1-http.ts:60` | 1 | Deleted whole-request and metadata-header ceilings. Only subsequent physical body frames retain their bounded envelope; complete metadata grows geometrically. JSON bridge accepts an optional explicit byte policy. |
 | Objects TypeScript HTTP request/response and gRPC response defaults 64 MiB | `typescript/packages/objects/src/v1-http.ts:28`; `src/v1-grpc.ts:50` | 1 | Defaults are undefined; explicit finite caller budgets remain. Private CA byte ceiling removed, empty/malformed CA validation retained. The separate unary gRPC message ceiling still requires shared transport chunking and remains pending. |
 
-Check54 found an obsolete private diff-helper argument in its existing ordering test; removed the argument without changing the 277-comparison budget or negative controls. Check55 found an Option<LogicalName> assertion using as_deref rather than as_ref; corrected. Check56 passed native FS/NAPI all-targets and FS WASM all-targets, then exposed recursive shadowing of the imported commandOutput in the native producer generator. Renamed the local trimming helper; no status/stream options dropped. Check59 subsequently passed filesystem generation and the WASM build, then stopped on missing actors/observe TypeScript dependency declarations (remote `1793173143554-136708-c5c7abb0`). Check62 builds the dependency declarations before checking consumers.
-
-Check57 passed Objects native all-targets (local/S3/HTTP) and core Objects WASM all-targets (`ed71f3e7a241`, remote `1793172889270-135284-9a03dfc6`). Check58 compiled the new multi-manifest and corruption regressions (`8a37fe3dad52`, remote `1793173037174-135853-5eb1f588`). Later whole-record/validator changes passed the native phase of check60; the actual objects-wasm binding check exposed a descriptor feature gate excluding JSON on WASM. The gate is fixed; check61 is compiling both native gRPC/HTTP/local/S3 targets and the WASM binding. New large-metadata, checkpoint/retry, torn-length and 10001-part regressions are compile evidence only until run. Existing original native budget/custody negatives are unchanged.
-
-Check61 passed native Objects all-targets with local/S3/HTTP/gRPC and the actual objects-wasm WASM all-targets (`0ec01a9c152d`, remote `1793173956278-142838-9aac89b9`). This includes the descriptor gate correction, optional memory/JSON binding policies, logical validator deletion and metadata/framing regressions at compile time. Check62 remains running; no new runtime proof or complete-milestone claim.
-
-Check62 passed Objects/Filesystem generation, both production WASM builds, TypeScript package builds and filesystem type tests on bb2 (`1793174001683-143095-d383508e`, 08:03:49 UTC). Access-policy compiler changes postdate that receipt; their native/WASM compile and new positive/finite-admission regressions are pending. The full milestone remains unfinished; no runtime or PR admission claim.
-
 ## Limits introduced by the refreshed main
-
-These locations refer to main `7b8fd5bc35`, which introduced or moved mechanisms after the original inventory.
 
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
@@ -406,20 +340,9 @@ These locations refer to main `7b8fd5bc35`, which introduced or moved mechanisms
 | `MAXPATHLEN` | `rust/crates/native-runtime/src/testing/resources.rs:170` | 4 | Keep exact Darwin native proc path buffer ABI in test resource accounting; no SDK product refusal is derived from it. |
 | `MAXIMUM (local-cloud Objects qualification)` | `rust/crates/harness/tests/local_cloud_objects/content.rs:40` | 3 | Keep the deliberately explicit finite original native qualification budget and its refusal/custody controls; it is not a default product cap. |
 
-Check69 passed client all-target agents/grpc, workspace all targets, native FS/NAPI s3-http/native-mount/native-watch, and FS/harness WASM all targets on bb2 (`1793176713787-158446-e42a33b1`, 08:46:11 UTC). It includes the refreshed access compiler and shared publisher integration. The latest snapshot restoration and terminal spool changes postdate that upload; check70 is running. No new runtime proof, admission, or completed-milestone claim.
-
-Check71 passed native client all targets with agents/grpc, GraphCoder all targets and harness WASM all targets on bb2 (`1793177885784-166229-ef0934f2`, 09:01:47 UTC); three actual temporary-storage transcript regressions passed in 0.88 s. Check72 then passed all 51 shared TUI library tests with tui, with no filtered tests, in 0.84 s (`1793178277555-168452-05f8fa44`, 09:08:16 UTC). These receipts cover the complete transcript and streaming row producer.
-
-
 | Limit / growing structure | File:line | Category | Action |
 | --- | --- | --- | --- |
 | Persistent diff `maximum_changes` and sorted-vector insertion | `rust/crates/filesystem/src/kernel/persistent_diff.rs:50` | 1 | The count policy is optional, with None propagated without a sentinel through diff, merge, reconciliation and bindings. The growing structure appends payloads and uses the same balanced AVL topology as native generation indexes, with subtree ranks. Each metadata write is admitted on the original ledger. Final ordering uses an in-place linear permutation without extra key comparisons; already ordered payloads need no permutation. Existing explicit finite budgets and all 277 comparator prefixes remain required controls. |
-
-Check73 passed native filesystem all targets with s3-http/native-mount/native-watch, then its WASM command incorrectly enabled default native-storage features and failed in Stream's native-only modules (`1793178872894-173749-f45cd8d5`, 09:17:25 UTC). Check74 passed all 17 diff tests in 0.10 s and all five native-index tests in 0.06 s, including the unchanged 277-comparison prefixes, native index 4 MiB budget, and original allocation/copy-refusal controls. Its direct WASM all-target command compiled production code but failed in existing native-only test helpers and hosted TCP test harnesses (`1793179100590-174949-caabf930`, 09:28:52 UTC). Check75 targets the actual filesystem WASM binding crate, including its portable targets. The milestone and PR admission remain unfinished.
-
-
-Check75 passed the actual filesystem WASM binding crate with all targets, and all 40 client library tests with agents/grpc passed in 0.01 s with no filtered tests (`1793179803239-177334-643a613c`, 09:32:31 UTC). This includes the 5,000-demand/follow regression, long fork-chain restoration/revocation, coverage projections, and the reader priority regression. Planning deduplicates visible needs before prefetch in linear passes, so an earlier duplicate prefetch cannot suppress visible work or reorder visible needs. Optional filesystem change/conflict policy work starts after this receipt and has not yet been validated.
-
 
 | Constant / policy | File:line | Category | Action |
 |---|---|---|---|
@@ -429,9 +352,6 @@ Check75 passed the actual filesystem WASM binding crate with all targets, and al
 | Conflict label / Git directory lookup scan count 1 | `rust/crates/filesystem/src/workspace/join_resolution.rs:198`; `workspace/join_git.rs:49` | 1 | Deleted the implicit scan bound: one scan item is not one matching result and could hide a valid path. The lookup follows actual namespace pages under the original work ledger; the caller then selects one label. |
 | Candidate-rebase `maximum_conflicts: Some(1)` | `rust/crates/filesystem/src/facade/candidate_rebase.rs:82` | 2 | Keep one representative conflict for the internal yes/no merge predicate. Any conflict rejects that candidate; no user-visible conflict list is truncated by this predicate. |
 
-Optional diff/conflict and namespace policies above are implemented in the working tree but not yet validated. Check78 compiled the filesystem targets but found one NAPI fixture that needed an explicit Some policy. Check79 found a remaining new-binding caller of the deleted insertion helper; that caller now uses the shared append/sort path. Neither failed receipt is represented as a passing validation. PR1744 remains a draft for the whole unfinished milestone.
-
-
 | Constant / growing structure | File:line | Category | Action |
 |---|---|---|---|
 | New-binding parent repeated scans | `rust/crates/filesystem/src/workspace/diff/created.rs:1` | 1 | Resolve bindings through a sorted funded file-ID index and iterative visitation with cycle detection. A 2,112-directory independent path oracle passes under the original finite boundary budget; no budget increase. |
@@ -439,20 +359,10 @@ Optional diff/conflict and namespace policies above are implemented in the worki
 | Policy compilation/binding reservation arrays of 2/4 | `rust/crates/filesystem/src/facade/access_policy.rs:369`; `facade/access_policy/binding.rs:54` | 1 | Replace fixed stage slots with one accumulated original-ledger allocation. Admit every discovered state before allocating it; reconcile only actual retained output and retire scratch. Fix follows check81 wire failures and awaits validation. |
 | Implicit `BOUNDARY_BUDGET` binding defaults | `rust/crates/filesystem/src/performance.rs:36` | 1 | NAPI/WASM production entry points select the existing UNBOUNDED value instead of this implicit finite budget. The BOUNDARY_BUDGET value remains unchanged for explicit embeddings/qualification and existing finite admission/custody negatives. No original native meter, normalization or cancellation mechanism changes. Validation pending; source postdates check83. |
 
-Check80 passed native FS/NAPI, actual FS WASM, workspace all-targets and filesystem binding generation, but production WASM stopped at Actors native-family metadata drift: the resolved graph gained `protobuf-json`. Check82 regenerated actual native facts/descriptors and passed native FS/NAPI plus actual FS WASM all-targets (`1793182216858-191764-c3534243`, 10:13:25 UTC). Updated native-family roots also attest the shared process-capture helper; production verification must confirm them against the current generator.
-
-Check81 passed all 17 persistent-diff tests, 15 merge tests, seven change-set tests, two discovery tests and two new-binding path tests (2,112 directories plus cycle corruption). Its wire-service run passed four and failed twelve with `InvalidAccessPolicy`: the new per-state admissions exceeded fixed two/four reservation-stage arrays. Those arrays are now removed; no negative test or authority check was dropped. This receipt does not qualify the later two-stack directory queue. Check81 remote `1793181786197-189255-b7026b35`, 10:15:31 UTC; compile-only remains the delivery gate. PR1744 remains a draft and the milestone is unfinished.
-
-
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | Native host capture three-attempt installation cutoff | `rust/crates/filesystem/src/native_mount/adapter/capture.rs:66` | 1 | Deleted attempt count. Retry follows an actual failed conditional candidate adoption; every attempt retains the original work, cancellation, source identity and operation fences. No sleep/readiness polling is introduced. |
 | Implicit finite host-capture convenience budget | `rust/crates/filesystem/src/native_mount/adapter/capture.rs:30` | 1 | Native capture/sync/refresh/advance reuse the bound source original ledger; an unbound public entry starts with the existing UNBOUNDED value. Refresh and its invalidation diff now share that same invocation; directory page size no longer acts as its whole-rebase conflict count. Ordinary callback/path defaults also use UNBOUNDED. Explicit finite metered calls and qualification controls remain unchanged. Validation pending after check84. |
-
-Main #1735 (`49b39b0528`) is integrated by rebase, retaining aggregate-engine deletions and the deleted WASM aggregate history implementation. The signed PR head after refresh is `7e29715abe`. Check83 is running on that exact head; subsequent binding-default and native-install index changes are not covered by it. All work remains in the one draft PR1744.
-
-
-Check84 passed native FS/NAPI all targets with s3-http/native-mount/native-watch and actual FS WASM all targets on signed `93a189d291` (`1793183037372-198678-20ac4758`, 10:26:47 UTC). This covers removal of hidden NAPI/WASM boundary defaults, the native install fixed-width index, and capture retry count deletion. The later source-ledger reuse changes are not included. Check83 already passed refreshed workspace all-targets and FS WASM; its runtime/production phases are still running.
 
 | Constant / policy | File:line | Category | Action |
 |---|---|---|---|
@@ -462,24 +372,12 @@ Check84 passed native FS/NAPI all targets with s3-http/native-mount/native-watch
 | Generation-position `CAPACITY` | `rust/crates/filesystem/src/facade/generation_cache.rs:4` | 2 | Keep disposable lookup cache size; older generations remain resolvable through the authority store. |
 | Durable websocket `WEB_SOCKET_TAG_COUNT`, `WEB_SOCKET_TAG_CHARACTERS`, `WEB_SOCKET_ATTACHMENT_BYTES`, `WEB_SOCKET_AUTO_RESPONSE_CHARACTERS` | `rust/crates/actors/src/guest/durable.rs:11` | 1 / platform boundary | Audit pending: whole logical SDK values currently encounter raw host ABI limits. Coordinate with be-host before changing representation; deleting checks alone cannot expand the host ABI. |
 
-Check83 passed workspace/native and actual filesystem WASM all-targets on `7e29715abe`, then all 16 wire-service tests, seven change-set tests and two discovery tests. This validates the policy-stage allocation fix without removing authority/export/deadline/canonical-policy negatives. Production generation is still running. Check85 failed on `68f698ad79` because native rebase returns allocation custody with its decision and refresh accepted only standalone work. Both callers now use the shared native-aware primitive; no passing receipt yet covers those fixes or the cache changes.
-
-
 | Constant / policy | File:line | Category | Action |
 |---|---|---|---|
 | Claim `CHECK_ALLOCATIONS`, `CHECK_ALLOCATION_BYTES` | `rust/crates/native-runtime/src/claim/mod.rs:140` (removed); `filesystem/src/core_state/mod.rs:334` | 1 | Delete fixed platform allocation bundles derived from record ceiling. Actual record/path/identity buffers are admitted before allocation and retired after physical storage; shared admission withholds its own real lock attempt before invoking the same original meter. Explicit allocation/physical-read/cancellation refusals remain. |
 | Claim checksum scratch 16 KiB | `rust/crates/native-runtime/src/claim/record.rs:143` | 2 | Each chunk advances through the complete declared record; no total record-size refusal. Invalid framing/checksum requires constant scratch space before any whole-record allocation. |
 
-Check86 failed on a test-only missing Context import (`1793183850004-202072-57820f8a`, 10:40:12 UTC), fixed in signed `7926d078f1`. Check87 has passed native FS/NAPI and actual FS WASM all-targets on that head; owning cache runtime tests are still compiling. The subsequent native-claim changes are not covered by it.
-
-Check83 passed production filesystem generation, production WASM and TypeScript build/type checks, then failed the final compatibility hash check on Harness schema metadata (`1793182799052-197557-ced53d7f`, 10:41:00 UTC). No generated artifacts were copied back from that failed job. The manifest now attests the actual tracked Harness schema after main #1735; a new complete production run is still required for current cache/native-claim source.
-
-
-Check87 passed native FS/NAPI and actual FS WASM all-targets plus all 56 owning cache tests, including 2,112 concurrent readers, in 1.21 s on signed `7926d078f1` (`1793183999873-203345-445f3ed4`, 10:52:07 UTC). Check88 passed native runtime/FS/NAPI all-targets, actual FS WASM all-targets and all 23 claim tests in 0.02 s on signed `e370b53ae7` (`1793184731362-209307-ab118016`, 10:55:56 UTC). Neither receipt covers the subsequent kernel-wait/no-poll edits. Production artifacts, Windows and model builds still require current-source verification.
-
 ## Polling audit
-
-The no-poll sweep is part of this same unfinished milestone. The first tracked-source scan found 375 timer/yield candidates in 207 files. This is an inventory, not a claim that all polling is removed: retries and readiness loops without explicit timer calls still require inspection. Transport-error backoff, absolute deadlines, intentional model scheduler interleavings and simulated fixture latency are distinct from application-state polling. Each pending candidate must be classified from its mechanism before completion.
 
 | Mechanism | File:line | Classification | Action |
 |---|---|---|---|
@@ -490,8 +388,6 @@ The no-poll sweep is part of this same unfinished milestone. The first tracked-s
 | Python host fixture readiness | `plugin/tests/hosts/managed-session.py:99`; `plugin/tests/hosts/sandbox-commands.py:164` | Test readiness poll | Pending: primitive readiness notification while preserving process/profile ownership and cleanup. |
 | Shared admission ownership tests | `rust/crates/filesystem/src/core_state/tests/ownership.rs:118` | Test readiness poll | Pending: replace ready-file rechecks with a channel/OS event at the owning primitive. |
 | Windows projection settling | `rust/crates/filesystem/src/native_mount/windows.rs` | Product readiness poll | Pending: event-driven completion at projection primitive; no restored settlement timeout or original cancellation bypass. |
-
-The complete first-pass candidate inventory follows. “Inspect” is explicitly unfinished and does not imply a verified classification.
 
 | Candidate | File:line | Classification | Action |
 |---|---|---|---|
@@ -680,9 +576,9 @@ The complete first-pass candidate inventory follows. “Inspect” is explicitly
 | `tokio::task::yield_now().await;` | `rust/crates/harness/src/local/host_files/tests.rs:59` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
 | `tokio::task::yield_now().await;` | `rust/crates/harness/src/local/host_files/tests.rs:204` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
 | `tokio::task::yield_now().await;` | `rust/crates/harness/src/local/host_files/tests.rs:242` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
-| `tokio::task::yield_now().await;` | `rust/crates/harness/src/local/host_process/children/tests.rs:37` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
-| `std::thread::yield_now();` | `rust/crates/harness/src/local/host_process/children/tests.rs:107` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
-| `std::thread::yield_now();` | `rust/crates/harness/src/local/host_process/children/tests.rs:115` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
+| Native child fixture endpoint readiness | `rust/crates/harness/src/local/host_process/children/tests.rs:37` | Test readiness poll | Replaced file/yield rechecks with one construction poll of the actual serving future, which publishes and watches before its first Pending. Ordinary owner events drive subsequent work. Compile pending. |
+| Native child fixture PID publication | `rust/crates/harness/src/local/host_process/children/tests.rs:107` | Test readiness poll | Replaced PID-file probes and shell busy-wait with a complete stdout PID frame and blocking stdin release. Uses existing shared ProcessReadiness, armed before inspection. External stderr custody remains. Compile pending. |
+| Native child fixture process exit | `rust/crates/harness/src/local/host_process/children/tests.rs:115` | Test readiness poll | Replaced yield/exit rechecks with actual pipe/process events. Drain ready data and deliver queued stdin before waiting again; preserve held-stderr EOF negative, exact diagnostic and partial-file capture on all three host adapters. Compile pending. |
 | `tokio::time::sleep(std::time::Duration::from_millis(20)).await;` | `rust/crates/harness/src/local/tests/agents.rs:63` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
 | `tokio::time::sleep(std::time::Duration::from_millis(20)).await;` | `rust/crates/harness/src/local/tests/agents.rs:405` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
 | `thread::yield_now();` | `rust/crates/harness/src/local/workspace/bootstrap/loom_tests.rs:25` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
@@ -871,9 +767,6 @@ The complete first-pass candidate inventory follows. “Inspect” is explicitly
 | `setInterval(() => {}, 1 << 30);` | `typescript/packages/stream/test/session-model-driver.ts:92` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
 | `setTimeout(callback: () => void, milliseconds?: number, ...args: unknown[]) {` | `typescript/packages/stream/test/session.test.ts:190` | Inspect | Pending mechanism inspection and event/deadline/backoff classification. |
 
-
-Check89 passed harness-core all-target native compilation with filesystem-local/native-execution/test-support on signed `ecc1f61568`, then the Windows build found a claim-path helper reexport visibility error (`1793185338422-212162-3509670b`, 11:04:48 UTC). Visibility now matches the existing crate-internal Windows I/O boundary. Model compilation and runtime event tests did not execute; no passing receipt is inferred for them.
-
 | Polling mechanism | File:line | Classification | Action |
 |---|---|---|---|
 | Capture `check_every` / `checking_every` | `rust/crates/native-runtime/src/process_tree/pump.rs:16` (removed) | Product readiness poll | Deleted unused periodic configuration and its timer state. Capture checks run on actual input/output/exit/retained owner signals or its existing absolute deadline. Source search found no callers of the removed option. Verification pending. |
@@ -881,22 +774,15 @@ Check89 passed harness-core all-target native compilation with filesystem-local/
 | Shared admission transaction readiness | `rust/crates/filesystem/src/core_state/tests/ownership.rs:16` | Channel delivery | Replaced try_recv/yield loops with one-shot receivers, retaining original blocking-worker release and observer-abort controls. Verification pending. |
 | Cross-process claim ownership readiness | `rust/crates/filesystem/src/core_state/tests/ownership.rs:214`; `tests/mod.rs:142` | Process output event | Child flushes an owner-committed marker. Both parent tests arm the shared native process-event hub before reading; no ready file or periodic process/path checks. Original ownership exclusion, kill/reap, stale-owner probes and ten-second failure deadline remain. Verification pending. |
 
-
 | Constant / policy | File:line | Category | Action |
 |---|---|---|---|
 | Managed native process implicit `work_budget(65_536, 65_536)` | `rust/crates/harness/src/local/host_process.rs:179` | 1 | The convenience entry now selects existing UNBOUNDED before funding the process. Explicit process(work), original invocation-window normalization, lifetime custody and the original finite 65,536 polling regression remain unchanged; the finite factory now belongs to that test module. Validation pending. |
 | Memory Stream `idempotency_results` | `rust/crates/stream/src/memory/memory_limits.rs:15` | 1 default / explicit opt-in | Default is None from the initial milestone commit. Retain optional finite admission selected by the embedding user; exact retained identities replay before that admission and are never evicted. Replay indexing and original finite allocation/cancellation controls stay. This clarification changes documentation only. |
 
-Check90 passed both new filesystem-notification regressions, Python AST admission and Windows filesystem library compilation with native-mount/native-watch on signed `490da831e6`. The subsequent global cfg(loom) build failed in the external synchrony dependency (unavailable loom task/Weak imports), before our model compilation (`1793185574493-213804-08e7cc2c`, 11:08:53 UTC). It is not model proof. The later native event and ownership runtime commands did not execute and require their own receipt. No source shim, test exclusion or alternate ledger is introduced for that dependency failure.
-
-
 | Polling mechanism / primitive | File:line | Classification | Action |
 |---|---|---|---|
 | ProjFS settlement 100 ms cancellation recheck | `rust/crates/filesystem/src/native_mount/projfs/projector.rs:638` | Product readiness poll | Replace with enabled projector change notifications and the original funded cancellation registration. A check precedes each actual wait; completion/failure state and the captured target stay under the same projector lock. Existing held-placeholder service retries remain separately pending. Windows compilation passed check92; no Windows runtime proof is claimed. |
 | Funded synchronous future wait | `rust/crates/native-runtime/src/blocking/wait.rs:101` | Event wait primitive | Expose the existing measured completion engine for borrowed futures; no new thread, scheduler or timer. One wake allocation is admitted before polling and stays charged through retained wakers. Cancellation wakes the task to observe original work, without abandoning accepted work. Added actual retained-before-park, saved-waker retirement and deny-allocation-before-first-poll controls; all passed check92. |
-
-
-Check92 passed Windows filesystem library compilation with native-mount/native-watch and the actual retained-waker admission/retirement regression on signed `89ecd0f9ef` (`1793186093377-219315-c8f6793d`, 11:16:50 UTC). The original wake allocation remains charged through saved wakers and denied allocation prevents the first poll. This does not certify Windows runtime, Darwin or the separately pending held-placeholder retry mechanism.
 
 | Polling mechanism | File:line | Classification | Action |
 |---|---|---|---|
@@ -905,15 +791,11 @@ Check92 passed Windows filesystem library compilation with native-mount/native-w
 | Failed Windows admission exit recheck | `rust/crates/native-runtime/src/process_tree/windows.rs:343` | Harness process-exit poll | Use the shared Windows process-exit event/deadline waiter after the original kill result; preserve admission and cleanup errors and the existing five-second failure deadline. Validation pending. |
 | Multi-caller Windows spawner completion loop | `rust/crates/native-runtime/src/process_tree/windows.rs:626` | Harness process-exit poll | Use ProcessTree::wait and the shared native exit wait. Retain the actual creation-thread oracle and all caller results. Validation pending. |
 
-
-Check93 passed all 22 affected script tests in 2.24 seconds and Windows native-runtime test compilation on signed `ff386d046f` (`1793186487433-221088-dedbe476`, 11:22:31 UTC). The actual compiler cancellation/incomplete receipt, helper descendant cleanup, complete large output, partial timeout diagnostics and watchdog controls all ran. Windows source compiled only; no Windows runtime receipt is inferred.
-
 | Constant / polling mechanism | File:line | Category / classification | Action |
 |---|---|---|---|
 | Browser agent fixture `max_children: 8` | `typescript/packages/harness/test/browser-agents-fixture.mjs:29` | 1 | Set null. This conformance preset now has unlimited child membership; original finite model/storage work controls remain selected explicitly by the fixture. Validation pending. |
 | Browser agent durable-state read/sleep loop | `typescript/packages/harness/test/browser-agents-fixture.mjs:54` | Product and harness readiness poll / missing host adapter | Expose an agent follow through the existing Streams atomic replay-to-live subscription. The shared WasmFollow constructor supplies the one existing close/wake/cursor engine. The fixture consumes actual records, retaining exact 64-bit sequence and payload integers through the existing native JSON decoder; all page and guest consumers use it. Subscription closes on predicate success or failure. Validation pending. |
 | Browser uncertain tool dispatch loop | `typescript/packages/harness/test/browser-agents-tool.html:62` | Harness readiness poll | Wait on the actual tool invocation callback after its exact durable effect has been recorded. Preserve the original intent identity, lost acknowledgment, reopen/reconcile and dispatch-once controls. Validation pending. |
-
 
 | Polling mechanism / primitive | File:line | Classification | Action |
 |---|---|---|---|
@@ -921,8 +803,6 @@ Check93 passed all 22 affected script tests in 2.24 seconds and Windows native-r
 | Chrome DevTools endpoint probes | `typescript/packages/filesystem/test/browser-qualify.mjs:146`; `typescript/packages/actors/test/browser-http-conformance.mjs:209` | Harness readiness poll | Observe complete endpoint publication through the shared native filesystem watch. Actual child exit/error cancels readiness; owned failure deadlines and process cleanup remain. Page-result and authenticated cancellation polling are separately pending. Validation pending. |
 
 ## Rebase onto the G24 Objects core (2026-10-28)
-
-Current base is `dea6019a5c272f9a44beedb1c11fbec2c204ea4c`. Main replaces the old bucket/current-value Objects implementation with one account-scoped blob core. Retired `objects/src/v1` and physical implementations, the old root publisher and their removed tests remain deleted. Their earlier entries and receipts describe historical source only, not current implementation or adopted proof. Optional filesystem logical-object admission is composed with the new core; the new content binding and immutable delivery cuts remain intact.
 
 | Constant / limit | File:line (rebased source) | Category | Action |
 |---|---|---|---|
@@ -935,68 +815,36 @@ Current base is `dea6019a5c272f9a44beedb1c11fbec2c204ea4c`. Main replaces the ol
 | G24 `REQUEST_TIMEOUT` / `MAX_TRANSFER_TIMEOUT` | `rust/crates/objects/src/grpc.rs:17` | 1 | Remove default request/channel ceilings. Retain positive finite `with_transfer_timeout` as an opt-in body deadline, with no maximum. HTTP has no default whole-request timeout. |
 | G24 Objects whole-message wire transport | `rust/crates/objects/src/grpc.rs:165`; `rust/crates/objects/src/http.rs:149` | 1 / primitive gap | Main's new blob core still uses whole logical messages; shared logical streaming remains pending. No physical frame bound is raised as part of this rebase. |
 
-Check91 passed native harness all-target compilation, the one process wake test, both quiet-owner tests, all six filesystem ownership tests, production generation/FS WASM, and FS TypeScript builds on its recorded pre-G24 source. Its final digest check failed with filesystem schemaDigest mismatch (`1793185888909-215612-1fcdcc13`, 11:36:09 UTC). Failed jobs do not copy generated artifacts back. This is not a current rebased-source receipt.
-
-Check94 passed actual harness-provider WASM compilation, production generation and harness WASM build on pre-G24 `2ac598873b`; TypeScript found three errors (`1793186970506-223588-54e5f81d`, 11:35:29 UTC). The optional brief literal, optional wake capacity and explorer scheduler guard are now corrected; guest integration and digest checks did not run. No runtime proof is inferred.
-
-Check95 passed all three filesystem-notification publication/cancellation/deadline regressions and both browser-controller syntax checks on pre-G24 `3fec244f42` (`1793187194258-224931-5ad73df9`, 11:33:53 UTC). The final Chromium PATH lookup returned unavailable; actual browser execution remains unverified.
-
 | Constant / polling mechanism | File:line | Category / classification | Action |
 |---|---|---|---|
 | G24 `LocalOptions.maximum_object_bytes = 64 MiB` | `rust/crates/filesystem/src/facade/local.rs:15,29` | 1 | Change to `Option<u64>` and default None. Pass the original optional choice to the one LogicalObjectStore; no hidden Some fallback. |
 | Retired logical Objects batch identity index | `rust/crates/filesystem/src/memory/objects.rs:101` | Scaling structure | Main deleted the old logical Objects index. Use the existing funded FixedIndex for temporary batch deduplication; retire its nodes before persistent storage grows. Preserve duplicate mismatch, explicit finite allocation and write admission. No old provider is restored. |
 | Owner release `is_released` loops | `rust/crates/filesystem/src/facade/local_root_tests.rs:72`; `src/tests/facade/local.rs:34`; `src/tests/workspace/publication/mod.rs:347`; `src/lazy_workspace/tests/mount.rs:486` | Harness readiness poll / primitive gap | Add async waiting to the existing shared native OwnershipReleaseBarrier, with enabled notifications before observation. Synchronous and asynchronous waiters use the same completion condition. Signal after actual payload and retained-fence cleanup, not early Arc strong-count retirement. Replace these loops, preserve original failure deadlines. Actual blocking payload/fence and dropped-waiter regression added; validation pending. Composition-specific owner loops remain separately pending. |
 
-Check96 native workspace/all-target compilation on signed `bea98ede0d` stopped on the new local object's u64/Option mismatch and a memory batch reference to the retired logical Objects index (`1793187823956-229219-3f877689`, 11:47:06 UTC). Both are corrected above. Its subsequent WASM checks did not run.
-
-Check97 passed both actual SQLite wake-index regressions in 79ms on signed `bea98ede0d` (`1793187844625-229447-019402f1`, 11:46:03 UTC). Pending delivery crossed multiple 256-row pages, source suppression and exact subtree boundaries held, stale acknowledgments retained later generations, reopening kept durable routing, long identities worked, and the explicit finite capacity still refused only new actors. The subsequent TS build failed because that isolated job did not generate WASM bindings. Guest integration did not run; full production generation is required before that build can certify source.
-
-The filesystem schema digest now names the actual committed optional-limit schema. Descriptor generation and its corresponding digest still require successful current production generation; no old failed-job output is copied back.
-
 | Polling mechanism | File:line | Classification | Action |
 |---|---|---|---|
 | Composition and prefix owner strong-count loops | `rust/crates/filesystem/src/kernel/publication/combiner/composition/tests.rs:397,411`; `tests/prefix.rs:155` | Harness retirement poll | Replace with the same OwnershipReleaseBarrier async event, attached last to the existing real object-owner fixture. Observe actual owner field retirement before checking the original collector head or original funding. Then await local-root cleanup. All original drop/cancellation/collection/publication and native credit assertions remain. No mock provider or new production owner is introduced. Current compile/runtime validation pending. |
 
-Check98 on signed `375b4c088d` has passed native workspace/all-target compilation (1m41s) and the actual blocking payload/fence/cancelled-waiter retirement regression (one test, 0.00s). The remaining filesystem lifecycle test and actual WASM compile stages are still running; no final job receipt is claimed yet. This receipt excludes the subsequent composition fixture event changes.
-
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | G24 root `nonempty_max_bytes = 1024` descriptor annotations | `rust/crates/objects/proto/objects/v1/objects.proto:113,120` | 1 | Delete the byte ceiling from both retain and release messages, matching the shared RootId constructor. Canonical route admission still rejects empty identities through RootId::new. The committed schema digest is updated; descriptor production regeneration remains required. |
-
-Check98 completed successfully on signed `375b4c088d`: native workspace/all-target compilation, the actual blocking payload/fence/cancelled-waiter regression, the real local-root failed-initialization/retry lifecycle test, and both FS and harness-provider WASM compile checks passed (`1793188263465-231164-22c3d7ce`, 12:03:49 UTC, 765.9s). This source-specific receipt excludes the later composition fixtures, root descriptor annotation deletion and terminal readiness changes.
-
-Check99 passed production harness generation, actual harness WASM build, and the harness TypeScript build on the same signed source. Both real SQLite routing tests passed again. Guest integration failed at module loading because the isolated job omitted generated Stream protobuf inputs (`1793188326893-231611-646d719c`, 11:56:44 UTC). No guest runtime proof or failed-job generated output is adopted. Check100 adds that required generation input.
 
 | Polling mechanism | File:line | Classification | Action |
 |---|---|---|---|
 | POSIX terminal input 1ms sleep/recheck | `rust/crates/harness-tui/src/term/session.rs:179` | Product readiness poll / primitive gap | Replace with one OS wait over terminal input and a lifecycle notification socket. The existing shared lifecycle publishes restore, resume and close while holding its state lock; the reader drains notifications before observing state, releases the lock before waiting, and disables input readiness while restored. Closing an already restored terminal still wakes the reader. Linux uses poll; Darwin uses the same existing unlimited-select FFI primitive, with descriptor sets sized to actual descriptors. Original absolute deadlines remain. Real PTY input/output, resume and restored-close coverage is added to the existing process-owner test. Compile and runtime validation pending. |
 | Probe receive WouldBlock retry | `rust/crates/harness-tui/src/term/probe.rs:482` | Product readiness poll / remaining primitive contract gap | Still pending: unify the ProbeIo readiness contract and its real/codec-conformance adapters before removing this independent sleep. The terminal session input change alone does not complete the probe contract. |
 
-Check100 completed harness production generation, required Stream protobuf generation, actual harness WASM build, and harness TS compilation on signed `bd9c110423`. Both SQLite tests passed (35ms). The real guest integration exposed a faulty follow fixture check: it treated protobuf codec zero as uncompressed although the canonical enum is Codec.NONE (2). Its cleanup then attempted to free a still-borrowed guest handle and obscured the first error (`1793188912199-234782-4a5652ad`, 12:08:01 UTC, 369.4s). The shared fixture now uses the generated Codec.NONE enum and tracks original guest callback promises. Closing its existing host aborts active deliveries and awaits those promises before callers free guest handles. The browser guest forwards both original cancellation and interrupt signals. All fixture consumers use this same event-based close; no timer, substitute provider, or dropped assertion is introduced. Current validation pending.
-
 | Polling mechanism | File:line | Classification | Action |
 |---|---|---|---|
 | ProbeIo receive WouldBlock sleep/recheck | `rust/crates/harness-tui/src/term/probe.rs:481` | Product readiness poll / transport contract | Delete the generic sleep loop. ProbeIo now documents its actual event/deadline contract; nonblocking RawTty no longer implements that blocking transport. RawTty exposes the ordinary Read device operation, and RestoreGuard keeps that input-only access distinct from tracked output. Session input handles native readiness outside the lifecycle lock. Packet-fragmentation conformance retains inter-packet EINTR, outer/inner ordering, failed-send boundaries and byte-loss/early-completion negatives; the real PTY test covers input readiness and lifecycle events. Windows' independent 1ms close-fence recheck remains pending at windows.rs:297 and is not claimed fixed by this contract change. |
-
-Check101 has passed native TUI all-target compilation and the real PTY lifecycle/input/output test on signed `8122e83a60` (one test, 0.00s). Composition fixture cases and Windows compilation are still running. This partial receipt does not cover the subsequent ProbeIo contract changes.
 
 | Polling mechanism | File:line | Classification | Action |
 |---|---|---|---|
 | Parked TypeScript session model noop interval | `typescript/packages/stream/test/session-model-driver.ts:92` | Test-harness periodic keepalive | Delete setInterval. The existing shared model-driver serve loop retains the owner's actual stdin pipe and its close event exits the process even while a command is parked. Keep the parked acknowledgment, startup-crash lifetime negative, killed-owner stderr EOF fence, original finite process-wide work bank, reconnect exhaustion, and exact boundary controls unchanged. Actual owner-model qualification remains pending on current generated Stream WASM. |
 
-Check101 completed successfully on signed `8122e83a60`: native TUI all-target compilation, actual PTY input/output/resume/restored-close coverage, all 16 real filesystem composition/prefix cancellation, collection and original-credit cases (0.21s), and Windows TUI all-target compilation (`1793189243720-235925-9fb3a7e1`, 12:19:06 UTC, 702.7s). This receipt excludes the subsequent ProbeIo contract and guest follow changes. Darwin execution/compilation is not inferred from Linux or Windows checks.
-
-Check102 passed harness generation/WASM/TS on signed `3cb2baa4db` and both SQLite regressions again (35ms). The real guest test now surfaces the original typed storage failure instead of masking it during cleanup: conversation follow returns NotFound before its first turn (`1793189489868-237291-789d6d68`, 12:16:46 UTC, 316.5s). Failed generated output is not adopted.
-
 | Polling mechanism / primitive gap | File:line | Classification | Action |
 |---|---|---|---|
 | Conversation observation before its first publication | `rust/crates/harness-core/src/agent/host.rs:157`; `rust/crates/harness/src/wasm/agents.rs:693` | Missing harness observation event composition | Add shared AgentHost::follow_conversation. Existing conversations attach directly. For a missing initial conversation at cursor zero only, follow the existing status stream from its latest record before retrying; every conversation append atomically publishes status. Further observations follow actual status commits. A terminal Done with no conversation retains NotFound instead of waiting forever. Positive cursors, unknown agents, prefix retention and other provider refusals remain typed. Streams' actual MissingFollow conformance negative and no-creation semantics are unchanged. Native real-provider event/cancel/missing/out-of-range/terminal cases are added; actual guest qualification pending. No timer, alternate journal, extra producer or semantic history checkpoint is introduced. |
-
-Conversation follow establishes path existence with the provider's original tail operation before opening the cursor. This control read buys a cross-transport guarantee: Streams' MissingFollow conformance explicitly permits a remote transport to defer NotFound until its first item, so registration success alone cannot establish readiness. Status notifications remain the only retry trigger, and the eventual cursor is still the provider's one shared atomic replay-to-live follow. There is no changed missing-path behavior or alternate follow implementation.
-
-Check103 passed on signed `689dce23b3`: native harness-core/provider all-target compilation, the actual conversation-follow publication/cancellation/missing/positive-cursor/out-of-range/terminal regression (0.00s), all 51 TUI unit tests (0.86s), all five terminal-negotiation cases (0.02s), and Windows TUI all-target compilation (`1793190459233-246261-b9ec674e`, 12:31:27 UTC, 227.5s). This covers the shared ProbeIo contract and native follow composition; no Darwin proof is inferred.
-
-Check104 passed on that same signed source: production harness generation, required Stream protobuf generation, actual harness WASM compilation, harness TypeScript compilation, and the real guest artifact running one agent turn over in-memory host storage (453.75ms, four original assertions; `1793190515385-250486-83bf0aaf`, 12:33:25 UTC, 290.2s). The typed NotFound and borrowed-handle cleanup failures from checks100/102 are resolved through the shared follow and callback-retirement mechanisms. This does not qualify the other browser pages or the still-stale G24 Objects TypeScript adapters.
 
 | Polling mechanism | File:line | Classification | Action |
 |---|---|---|---|
@@ -1006,62 +854,34 @@ Check104 passed on that same signed source: production harness generation, requi
 |---|---|---|---|
 | Windows terminal input close-fence 1ms recheck | `rust/crates/harness-tui/src/term/windows.rs:297`; `rust/crates/native-runtime/src/windows/terminal.rs:136` | Product readiness poll / native event gap | Delete the recheck. The existing console owner publishes close through a manual-reset OS event before output quiescence/restoration, including failed restoration attempts. Input waits on that event and the original console handle together, prioritizes close, retains its actual absolute deadline and reads directly into caller-owned storage. A full native chunk leaves later input available. Notification errors do not skip restoration. The existing model retains its close-fence negative and now observes the notification; a real kernel-event regression checks wake and simultaneous-close priority. Windows compilation/runtime validation pending; the separate output-worker submission cancellation poll remains pending. |
 
-Check105 passed both browser controller/shared result-waiter syntax checks on signed `305ca5808a` (`1793190940546-253224-980474da`, 12:38:42 UTC, 181.8s). The remote environment exposed no Chrome/Chromium/Firefox executable through the checked PATH names and no Playwright browser cache. No actual browser-page execution is claimed.
-
-
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | Agent command 64 KiB / WASM maximumCommandBytes | `rust/crates/harness-client/src/command.rs:14`; `rust/crates/harness/src/wasm/agent_command.rs:178` (removed) | 1 | Delete this independent product cap in both adapters and remove its cap-only rejection test. Complete immutable commands use the shared JSON codec without the custom refusal writer; WASM snapshots their actual length and the public conformance adapter uses the same constructor. The existing intent/body round trip now preserves a large escaped input. Typed Capacity is still used by explicit caller page contracts and the separately pending lower logical transport, so those controls are not deleted. Current validation pending. |
-
-Check106 passed Windows TUI and native-runtime all-target compilation, including the new actual kernel-event test source, on signed `c6fe14e8ce` (`1793191590323-257872-0cd3b6a6`, 12:47:24 UTC, 53.9s). This is cross-compilation only; no Windows execution or Loom model proof is inferred. Global Loom qualification remains affected by the previously observed external synchrony dependency's missing Loom task/Weak APIs; no model controls are filtered or replaced.
-
-Check107 did not execute any build or test. Remote source synchronization rejected the job because HEAD moved between identity capture and synchronization (`sync-failed`, exit224). Its successor will capture a stable signed command-cap-removal source before edits resume.
-
-
-Check108 passed on signed `c1b9beb465`: all 18 native client library tests (including complete large escaped command preservation), production harness and required Stream protobuf generation, actual harness WASM compilation, harness TypeScript compilation, and the actual guest artifact's turn (446.93ms, four assertions; `1793191770627-258755-7838c1f4`, 12:55:49 UTC, 378.9s). This qualifies the separate command-cap removal; lower logical transport streaming is still pending.
 
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | MAX_IDEMPOTENCY_KEY_BYTES / StreamLimit retry-key width 256 | `rust/crates/stream/src/lib.rs`; `rust/crates/stream/proto/stream/v1/stream.proto`; `typescript/packages/stream/src/types.ts` (removed) | 1 | Delete the arbitrary opaque-key width across native, HTTP, WASM and TypeScript adapters. Both wire adapters invoke the same nonempty exact-byte domain constructor. Retain canonical base64, nonempty identity and original finite admission controls. Snapshot replay now exercises a 131073-byte key, body mismatch and a fresh key differing only in its last byte against the original explicit capacity of one. Existing HTTP scalar round trip uses a 16385-byte binary key and exact uint64 positions. Current qualification pending. |
 | retained_fact_bound (64 commands plus item/path/key arithmetic) | `rust/crates/stream/src/memory/snapshot/mod.rs` (removed) | 1 | Delete the derived whole retained-fact ceiling. Decode each existing length-delimited snapshot slice using that actual slice length; canonical protobuf, flags, complete-input, identity, state and explicit restore-capacity validation remain. This does not claim whole-snapshot linked-root paging is complete. |
 
-
 | Polling mechanism | File:line | Classification | Action |
 |---|---|---|---|
 | Windows console prior-operation acknowledgment 1ms recheck | `rust/crates/harness-tui/src/term/console_owner.rs:173` | Product readiness poll | Delete the periodic timeout. Wait on the existing acknowledgment Condvar with the caller's actual remaining absolute deadline. Submission, completion, cancellation and failed-spawn paths already notify that same condition under the owner lock. The independent native cancellation pre-submission race remains a primitive gap; its repeated-cancel loop is not claimed fixed here. |
-
-
-Check109 passed native Stream all-target compilation and all 11 snapshot regressions on signed `2ccd258220` (0.00s), including long exact key replay, body mismatch, fresh last-byte distinction and finite capacity. The combined job then stopped at the existing clean-source WASM guard because descriptor regeneration was ordered before that build (`1793192817015-261824-ee82a165`, 13:11:15 UTC, 258.0s). No failed-job outputs were adopted.
-
-Check110 passed production Stream protobuf generation and actual WASM compilation on signed `80254ef86e`. TypeScript compilation exposed a pre-existing adapter annotation requiring the public virtual-follow method on the stored generated unary client (`1793193089948-263453-281304de`, 13:17:21 UTC, 351.1s). The annotation now names the actual generated unary client; follow stays exclusively on StreamSessions. No retired RPC or second follow engine is restored.
-
-Check111 passed current production Stream generation/WASM/TypeScript on signed `930ff1e744`. The complete stream.test.ts ran 54 tests in 550ms: 44 passed, 10 failed (`1793193454563-264183-f179a80e`, 13:22:26 UTC, 292.3s). The long binary retry-key/uint64 HTTP round trip passed. Existing stale fixtures omitted required caller keys or used the retired byte-record shape; those now supply explicit stable keys and use wireAppendRequest. The obsolete own-condition append negative is moved onto a fork missing its required destination-absence guard, matching request.rs's current canonical contract. All cases remain in the suite; no test filtering or restored append guard is used. Descriptor generation was not reached and no failed outputs were adopted.
 
 | Polling mechanism / primitive gap | File:line | Classification | Action |
 |---|---|---|---|
 | Actors browser HTTP result and server-cancellation probes | `typescript/packages/actors/test/browser-http-conformance.mjs:198,242` (removed) | Test-harness readiness poll | Delete until()/50ms probes. The actual authenticated request triggers page cancellation; the original response-close event completes it. Keep the tab open until that response closes, so tab cleanup cannot mask ignored abort. Publish the page's result through the same DOM channel as other browser qualification pages. All routes, authorization, typed failures and cancellation assertions remain. The current main G24 Objects consumer gap is separate and not filtered out. |
 | Browser protocol pending-command and result-wait owner | `scripts/browser-protocol.mjs`; `scripts/browser-result.mjs` | Event primitive composition | Both Actors and filesystem qualification use one shared CDP/BiDi command/event connection. Connection failure aborts page observation and retires pending commands; DOM publication is observed before document scripts. One absolute page deadline also covers server-close observation. Actual browser validation pending. |
 
-Check112 stopped at the filesystem browser-controller syntax check before generation, tests or descriptor production (`1793193966655-268442-77d0bab2`, 13:28:02 UTC, 162.9s). The shared result-waiter replacement left an obsolete local cleanup fragment; that fragment is now removed. No build/test success or generated artifacts are inferred from this job.
-
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | Conformance control command/invocation width and aggregate fixture 8 MiB | `rust/crates/conformance/src/client/controls.rs:85` (removed) | 1 | Delete the redundant size refusals and aggregate byte counter. Keep the complete finite oracle-vector set, canonical command/invocation equivalence, side-effect-free validation before execution, and original typed refusal, identity, approval, cancellation and custody assertions. The installed-package test keeps its asserted-principal negative and deletes only the obsolete maximumCommandBytes size assertion. |
 | Tool-output conformance subscription width / record plus 128 bytes | `rust/crates/conformance/src/client/tool_output.rs:29` (removed) | 1 | Delete independent fixture byte refusals. Decode and canonical re-encoding, exact resource, credential-slot identity, unchanged-state negative and actual stream observation remain. Physical framing and original caller credit stay in their owning shared primitives. |
-
-Check113 passed all browser protocol/result and Actors/filesystem controller syntax checks, production Stream generation, actual Stream WASM and TypeScript compilation, all 54 Stream tests (561ms, 448 assertions), and canonical descriptor production on signed pre-rebase `93f20204af` (`1793194610080-270080-4e5bca8a`, 13:41:28 UTC, 313.4s). This includes the long opaque retry-key/uint64 round trip and the existing caller-selected finite response controls. No actual browser execution is inferred from syntax checks. The descriptor copy-back variable in that job was incorrectly named, so the three owned artifacts were fetched only from the successful follow-up below.
-
-Check114 passed conformance client-session all-target compilation, including the command/tool-output fixture cleanup, and canonical descriptor production on rebased signed `626b201468` (`1793194930645-272378-1f426762`, 13:44:08 UTC, 133.4s). The filesystem, Objects and Stream descriptors were copied back from this successful job at 13:44:17 and their actual SHA-256 values recorded in the manifest. Main e167f27589's signing-key custody change is preserved. These receipts do not cover subsequent Machines/domain edits.
 
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | Machines exec argv64 / each4096 / total32768 | `rust/crates/machines/src/contract/observation.rs:162`; `typescript/packages/machines/src/grpc.ts:40`; `rust/crates/machines/proto/machines/v1/machines.proto:375` (removed) | 1 | Delete argument count and UTF-8 byte refusals in both adapters and protocol documentation. Preserve a nonempty program, no embedded NUL, single dispatch, exact machine identity, typed transport errors and cancellation. Existing native and TLS client cases now transmit more than64 arguments with a long Unicode argument and over32KiB total, preserving complete server-observed values. Physical whole-message transport streaming remains separately pending. |
 | Machines exec selected deadline maximum60000ms | Same Rust/TS contract; `machines.proto:378` (removed) | 1 | Delete the independent maximum on a positive caller-selected deadline. Preserve the existing uint32 wire representation, zero/noninteger/overflow rejection, actual cancellation and end-of-stream semantics. Existing actual RPC cases use the complete wire duration range; no default timeout or machine reservation is introduced. |
 | SQLite Objects domain256 characters | `typescript/packages/harness/src/cloudflare-storage.ts:162` (removed) | 1 | Delete the remaining object-domain width refusal. Exact nonempty domain identity stays bound as a SQL parameter in the existing indexed and chunked atomic storage. Journal and event domains already have no width cap. |
-
-Check115 passed native Machines all-target compilation and 44 of45 library tests in5.01s on signed `1653e9941b`. Both the large argv/full selected duration RPC case and the unchanged cancellation/identity/EOF controls passed. Only the existing descriptor-pin test failed because the canonical proto comments changed while the tracked Machines descriptor baseline was not yet regenerated (`1793195161944-275804-36bfe3ff`, 13:47:07 UTC, 81.8s). Its manifest expectation is updated to the actual compiled descriptor SHA-256 reported by that test; the next job must produce the canonical descriptor, verify the pin and compare all manifest digests. No failed-job artifact was adopted, and generation/TS tests were not reached.
-
-The Python/JS/TSX declaration extension scanned123 source files and identified12 previously omitted declarations in arena/packages/jev. The following entries complete that declaration inventory; model-bound integration marked pending remains within this milestone.
 
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
@@ -1079,11 +899,6 @@ The Python/JS/TSX declaration extension scanned123 source files and identified12
 | MAX_OPTION_TOKENS (64) | `arena/packages/jev/src/jev/format.py:22` | 1 | Delete the independent common option-size refusal. Preserve complete option text and actual selected-model/remote endpoint errors. |
 | BRANCH_CHUNK96 / BRANCH_TOKEN_BUDGET200000 / NAIVE_FORWARD_TOKENS48000 | `arena/packages/jev/src/jev/format.py:23` | 2 | Keep branch batch planning; complete branch work must continue through every chunk. No total question or option refusal is justified by these sizes. |
 
-Check116 passed native Machines all-target compilation and all45 library cases in5.01s, including the canonical compiled descriptor pin, on signed `181fce4ef4` (`1793195372466-276678-fa700593`, 13:52:45 UTC, 212.6s). Production generation passed; TypeScript compilation then failed because this job omitted the production WASM build and had no Auth/Machines generated declarations. The next job adds build-wasm.mjs machines, runs the complete TLS suite, produces the canonical descriptor and verifies global hashes/baselines. No TLS-suite or fetched-descriptor success is inferred from116.
-
-
-Check117 passed Python source compilation, Windows TUI/native-runtime all-target compilation, production Machines generation, actual dependency/Auth/Machines WASM builds and TypeScript compilation on signed `db6c4251a5` (`1793195656454-277940-aa66f499`, 13:57:53 UTC, 228.0s). The complete TLS suite passed12/14 cases. It exposed Node's signed32 timer overflow for a full uint32 command deadline and an obsolete credential-size negative. No descriptor production was reached and no failed artifact was adopted. The shared deadline owner below fixes the timer mechanism; the TLS command case independently selects a short RPC deadline while preserving the complete command duration. A direct real-host timer case covers long-duration scheduling, finite expiry and parent cancellation. Native full-duration RPC coverage remains passing.
-
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | Node gRPC defaultTimeoutMs30000 | `typescript/packages/machines/src/grpc.ts:31`; `typescript/packages/filesystem/src/grpc.ts:29`; `typescript/packages/objects/src/v1-grpc.ts:44` (removed) | 1 | Delete SDK default request deadlines. Explicit CallOptions.timeoutMs remains caller-selected and is owned by one shared monotonic timer/cancellation primitive. Complete streams retain their owner until consumption or cancellation. |
@@ -1091,56 +906,22 @@ Check117 passed Python source compilation, Windows TUI/native-runtime all-target
 | Node private CA64KiB | Machines/Filesystem/Stream grpc adapters:25 (removed) | 1 | Delete redundant PEM byte refusal, matching Objects. Keep nonempty configuration, system trust roots, TLS identity verification and transport certificate parsing. |
 | Host signed32 timer interval | `typescript/packages/actors/src/deadline.ts:17` | 2 | Keep only as a scheduling chunk: rearm against the same monotonic absolute deadline until the complete positive finite caller duration expires. No readiness probe or whole-duration refusal. One owner composes parent cancellation, finite expiry and stream retirement across all four gRPC families and virtual Stream follows. gRPC timeout metadata rounds up using protocol units; the local deadline keeps exact duration. |
 
-Python scorer prefix/question/option-text truncation and refusal removal is now implemented. The option-count/letter-label mechanism is completed below; no hosted endpoint or actual GPU/model qualification is claimed. The obsolete Plan.truncated flag, which only described the deleted local prefix slice, is removed.
-
-
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | OpenRouter LETTERS26 | `arena/packages/jev/src/jev/backends/openrouter.py:39` | 2 | Keep a next-token choice alphabet per request. Balanced group choices continue through every original option without an IndexError or a total option ceiling. The existing flat request stays unchanged for one alphabet-sized question. Actual request count, tokens and dollars include every conditional group. No raised limit or generated multi-token-label approximation. |
-
-The Python common option-count ceiling is now deleted; hosted endpoint capacity/errors remain external and unchanged. The existing actual HTTP round trip now transmits a body over1MiB with66 questions,33 options on one question, long question/option text and complete-state distribution equality. Qualification pending; no GPU/model request has been sent.
-
 
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | Python HTTP/model default120s | `arena/packages/jev/src/jev/backends/http.py:17`; `backends/{jev,openrouter}.py:_default_post` (removed) | 1 | Delete implicit request deadlines. HttpBackend's optional timeout remains an explicit caller knob; model post injection and user-configured standard-library socket policy remain. |
 | Gate / CLI default8s | `arena/packages/jev/src/jev/gate.py:70`; `cli.py:151` (removed) | 1 | Default to no whole-evaluation deadline. Keep explicit timeout_s / --timeout and its existing fail-open negative. Thread.join waits for the actual completion event; no readiness polling is introduced. Backend errors still produce the existing fail-open decision. |
 
-The option-tree regression uses an independent weighted-leaf probability oracle across1003 options. It checks the actual conditional-composition implementation against the flat mathematical distribution and accounts for every request, token and dollar; it is not live provider/model calibration proof.
-
-
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | RESOURCE_INDEX_PREFIX_BYTES1024 | `rust/crates/stream/src/lib.rs:162`; `stream/src/session/resources.rs:285`; `filesystem/src/publication_changes/entry.rs:21` | 2 | Preserve the existing coarse filesystem index granularity as a separate shared resource-index property, not a generic key admission ceiling. Full paths remain lossless in change metadata, with exact post-selection authorization and unchanged denial negatives. Grant range selection uses the same prefix resolution, so long paths cannot disappear from follows. No data/path is truncated or refused by this index. |
 
-The native change encoding regression now publishes two4097-byte keys sharing4096 bytes, decodes their complete compact values and actual wire ingress, and retains the original allocation ownership through key aliases. All native allocation-denial and cancellation negatives remain. Qualification pending; record-count/header-count and logical whole-frame mechanisms remain separately pending.
-
-Check119 passed Python source/test compilation and all23 JEV tests in0.674s on signed `e075fc73a4` (`1793196649523-281928-94fadd2f`, 14:11:16 UTC, 46.9s). This includes the actual HTTP body/question/option round trip, the independent1003-leaf conditional probability/cost oracle and existing gate finite-timeout/error negatives. No live endpoint, GPU, model calibration or external capacity claim follows from these tests.
-
-Check120 stopped in all-target compilation at two test-fixture lifetime errors: the golden protobuf constructor selected a static borrowed-byte conversion for the new dynamically owned long keys (signed `e33febc364`, `1793196927443-285496-610b5bac`, final14:17:19 UTC,125.7s). The expected golden value now copies those caller-owned test slices explicitly; original native allocation/custody assertions remain. No tests or WASM checks were reached.
-
-
-Check118 passed production Machines and Stream proto/WASM/TypeScript builds, all15 combined host-deadline/Machines TLS cases and all4 Stream session transport cases on signed33973451fc (`1793196262188-280082-2d63bd56`, final14:18:30 UTC,890.0s). Filesystem production proto/WASM/TypeScript builds passed;6/7 TLS cases passed. The sole failure was an obsolete long-credential refusal assertion, now deleted while HTTPS, empty/control-character credentials, certificate configuration and explicit finite message controls remain. Descriptor production and global baseline checks were not reached; no failed artifact was adopted. The Actors deadline export now declares its public Connect Transport type dependency as a production dependency rather than a development-only dependency.
-
-Check121 passed native Stream/filesystem all-target compilation on signed6183166649 (`1793197127088-286281-6d705804`, final14:21:30 UTC,178.3s). The complete Stream library suite passed318/322 cases with zero filtered tests, including complete long-key encoding and original custody. Four failures remain: commit-index prior work admission, native promised-capacity isolation, typed-follow public allocation count and ten-thousand-follow opening allocation count. These original finite and allocation controls remain unchanged pending diagnosis. The chained WASM checks were not reached; no broad-suite success is inferred.
-
-
 | Poll / owner | File:line | Classification | Action |
 |---|---|---|---|
 | CaptureWorkScope Arc::strong_count / yield_now release loop | `rust/crates/filesystem/src/native_capture/accounting.rs:36` (removed) | Retirement readiness poll | Replace with the existing native ownership Condvar/Notify release mechanism, generalized over retained state. The custody signal publishes after all accepted packet/worker aliases and late Weak upgrades retire. Both control funding guards remain in the observer state until outside the original leaf lock, so a final temporary upgrade can safely retire under that lock. Pre-admit both complete Arc allocations, including counters, on the original ledger. The retained-byte counter and its funding survive in the observer until final retirement and exact settlement; no fresh work owner or cancellation escape. Existing reserve finite-allocation/copy/cancellation negatives now include the mandatory event control allocation explicitly. Qualification pending. |
-
-The Stream prior-admission fixture now seeds a different idempotency key before attempting a fresh publication; a replay does not publish an index entry. The promised-capacity fixture admits its actual two seed replay identities and one prepared completion, retaining refusal of unrelated append/fork/commit and cancellation-safe funded settlement. The follow allocation regressions are steered to their Streams projection owner; their assertions remain unchanged.
-
-
-Check122 passed frozen dependency installation, production Filesystem proto/dependency WASM/TypeScript builds and all7 TLS transport cases in747.7ms on signed174ea2556a (`1793197557609-288425-5a6a1327`, final14:34:42 UTC,554.7s). Canonical descriptor production also ran; global digest checking then stopped at the Stream schema digest. Inspection found three stale manifest inputs after rebasing the current Stream and account-scoped Objects schema/conformance sources. Their expectations now match the exact tracked source bytes; descriptor artifacts must still be copied from a successful canonical producer job and checked globally. No artifact from the failed122 job is adopted.
-
-
-Capture retirement review identified a lock-order requirement before runtime qualification: the final temporary weak upgrade can drop inside demand accounting while the original leaf is locked. Its header funding guard therefore belongs in the retained retirement state, with the event allocation guard, until the observer returns outside that lock. The concurrency control now explicitly drops the final late packet under the original leaf lock while cancellation is set, and checks both guards remain funded until the observer is destroyed. No weak-upgrade exclusion or early custody release is assumed.
-
-
-Check123 passed native Stream/filesystem/native-runtime all-target compilation, Windows filesystem/native-runtime all-target compilation, Stream portable WASM and filesystem WASM on signed d72ea0703c (`1793198111116-296504-e0d9e8ad`, final14:39:53 UTC,313.2s). Check124 successfully ran the canonical descriptor producer on signed07b678cf7d (`1793198228241-297222-63a1d23a`, final14:38:28 UTC,119.6s). All four actual .bin artifacts were fetched; only Machines differs from the tracked baseline (SHA256 c4808c8c860474f3ec1ab129a917764d33a2c24dfbebb5f5c993a5028ed225ab). Global compatibility checks are pending.
-
-Check125 compiled and ran the entire filesystem library on signedad609c4472 (`1793198378656-297915-c39e5d20`, final14:49:38 UTC,627.9s). Result:2427 passed,64 failed,30 ignored,zero filtered; runtime30.35s. Both capture retirement regressions passed. A subsequent P1 identified that their extra observer hid notification-before-final-Arc-decrement ordering; the revised regression removes that observer and requires explicit transfer of both funding guards before retirement returns, while the original leaf remains locked. Existing full-suite failure classes include stale deleted-cap assertions, accounting expectations, original finite-budget overflow and publication/custody behavior; these remain visible, not filtered or claimed green.
 
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
@@ -1149,63 +930,19 @@ Check125 compiled and ran the entire filesystem library on signedad609c4472 (`17
 | Reader delivery credit256 | `rust/crates/harness-client/src/reader/driver.rs:143` | 3 | Keep per-frame credit; rotate BTreeMap traversal after the last visited follow so every follow can progress. Wake after consuming credit. |
 | Compact-key expanded record budget | `rust/crates/stream/src/changes.rs:296` | 4 (existing whole-record mechanism pending replacement) | Check expanded key lengths before reconstruction/copy, using the existing record budget; preserve corruption, native-custody and explicit finite negatives. Generic key-width caps remain deleted. |
 
-Check126 loaded every affected archive consumer and ran the complete seven-backend/script suites on signeda563f0da2b (`1793199102571-303887-457f7ae5`, final14:52:08 UTC,38.9s). Six failures are stale canonical method inventories in C++/Elixir/Erlang/Swift consumers (current canonical21 versus stale consumer23; canonical Head replaces retired AcknowledgeDelivery/Children/Follow). Archive admission and asynchronous staging completed; the six failing contract checks remain visible. Chained global compatibility and Rust compilation were not reached. No test filtering or method-count assertion relaxation is adopted.
-
-P1 source repairs also decode Darwin command output as text, require the prompted browser status cursor, and select the original cancellation event inside the ProjFS settlement future. No macOS, browser or Windows runtime execution is claimed by source changes or cross-compilation.
-
-Check127 passed compatibility source digests but stopped at a stale inference generated descriptor baseline on signedce3cf46e4d (`1793199418929-305632-aeaaa8ab`, final14:57:31 UTC,46.7s). No Rust compilation was reached. Check128 successfully regenerated all seven canonical descriptor baselines and the exact Actors packaged descriptor copy on the same signed source (`1793199621416-306060-2e7c9228`, final15:01:11 UTC,64.3s; eight files copied back15:01:31). In addition to Machines from124, actual changed artifacts are Actors (SHA2561d740a94cde7215438a6e312f41d7ebb0c836a663a51ed714356400f5ecb6f2c) and inference (5ace4676c445191702665f43ba2fc2c3a7a00ab78a4b8bfc2f179f8ab61bf45a). These are producer outputs, not invented baseline bytes. Check129 passed native Harness-client/Stream/filesystem all-target compilation, Windows filesystem all-target compilation and Harness-client WASM on signedce3cf46e4d (`1793199621359-306062-b426b8d0`, final15:05:01 UTC,294.8s).
-
-The full-filesystem run exposed four retained assertions about deleted caps. Removed only: oversized accounting page refusal (zero-limit rejection remains),255-byte directory cursor refusal, old maximum-depth decode refusal and the17MiB file's obsolete private16MiB full-read refusal. Existing wrong-kind, malformed enum/boolean, authenticated bounds, explicit finite page-height, work-admission, cancellation, publication and ownership negatives remain. The directory name/depth and source-read mechanisms already retain complete large values; these assertions cannot be used as negative controls after their corresponding product caps are deleted.
-
-The maintained C++ and Swift native consumers now implement and invoke canonical Head, including populated request/response and exact server-path/descriptor controls. Retired Follow, Children and AcknowledgeDelivery handlers/calls are deleted. Their complete method sets remain compared against the maintained schema. Elixir/Erlang consumers already derive their method calls from canonical descriptors; their exact completeness counts now assert21, matching Actors12 plus Stream9. Qualification pending; no native binary runtime result is inferred from source fixture changes.
-
-Check130 loaded and ran all214 archive/backend/native-producer cases on signed8d64605d83 (`1793200248685-308846-fc6b22a1`, final15:11:09 UTC,35.2s):194 passed,20 failed. All failures reached stale fake-command completion markers still claiming23 after the native source fixture now measures21; no actual native binary execution is represented by those fake-command cases. Fixtures now emit the complete canonical21 marker, and Erlang receipts read actual unary/server-streaming counts emitted by its descriptor-driven native probe rather than a stale fixed3. Global baseline checks were not reached. PHP and Dart CLI wrappers and PHP installed mutation controls now await completion before consuming results or failures.
-
-Check131 compiled the selected filesystem/Harness-client/Stream test targets and ran the whole filesystem library on signed6f665a72b6 (`1793200302534-309175-dba4de1c`, final15:21:17 UTC,588.1s). Result:2432 passed,59 failed,30 ignored,zero filtered; runtime30.29s. The revised capture final-packet test, with no extra observer and both guards transferred while the original leaf is held, passed; its exact finite preallocation/refund control also passed. Cargo stopped after the filesystem failures, so no Harness-client or Stream runtime result is inferred.
-
-Check132 passed all214 archive/backend/native-producer script cases in553.2ms on signedc51dafbc48 (`1793200473398-311585-fe5c888d`, final15:16:06 UTC,117.7s). It then stopped at inference descriptorDigest in the compatibility manifest. The manifest now records the exact successful128 Actors and inference producer artifacts, with no fabricated bytes. No native C++/Swift/BEAM runtime proof is claimed by fake-command qualification cases.
-
-Rebased own signed commits onto main3241d0a6a6 (#1751). Its unified TurnContext owns both complete settled/current message grants and model selection, including inherited policy references; preserve that single contract and exact original grants. History remains paged with optional caller-selected tail; each settled output reads its complete descriptor length. The shared Session client now keeps the typed follow projection concrete until the final record or provider boundary, removing one redundant allocation per follow on native and WASM. Both existing follow allocation assertions and negative controls remain unchanged; qualification pending.
-
-Check133 on signed98fb3a1997 passed compatibility source digests, all seven descriptor baseline comparisons and native whole-workspace all-target compilation (`1793200965852-313616-1fa03a25`, final15:26:13 UTC). The subsequent portable command used a nonexistent Stream feature and did not check WASM. Corrected134 reached a missing WASM provider boxing boundary;135 reached an unavailable test-only retry-key constructor in the new fairness regression. Both source errors are repaired at the proper public boundary/constructor, without changing allocation or fairness assertions. No runtime result is inferred from135.
-
 | PHP dependency ZIP members20,000, compressed16MiB, expanded32MiB; PHP memory256MiB, command output48MiB and timeout180s | `tools/sdk-generator/backends/php/src/qualify.mjs`; `tests/fixtures/consumer/archive_inventory.php` | 1 -> 2 | Delete defaults. Libzip verifies each member through64KiB reads and CRC into a private inspection file; Node consumes entry/chunk records through the same canonical/type/collision/payload admission as tar. Commands use the shared file capture primitive. Empty archives, single package root, exact pinned bytes, installed inventories, CRC, length and type negatives remain. Individual required file bodies remain retained for exact installed comparison; no full expanded ZIP JSON is materialized. Qualification pending. |
 
-Check136 passed Stream and Harness-client WASM compilation on signedc9301675a6 (`1793201517510-316982-4841c3fe`, final15:33:59 UTC,136.9s). Check137 ran both whole libraries on the same source (`1793201517433-317000-5d603208`, final15:33:53 UTC,130.9s). Harness-client19/19 passed, including actual513-follow fairness; Stream320/323 passed in9.03s, including compact ingress allocation protection. The three failures all reach the follow allocation byte-savings assertion after the one-public-box allocation-count assertions pass: synchronous projections still retain ready-future storage. Preserve both byte/count checks and negative controls while removing that redundant state.
-
-Check138 passed all262 archive/generator/native-producer script cases on signed8ef5335fdb (`1793201891688-318734-2278d8dd`, final15:38:37 UTC,39.7s; runtime1.008s), including the chunked PHP inspection adapter and all prior provenance/path/installed negative controls. This remains script staging, not actual admitted Windows PHP execution.
-
-The shared synchronous projection now polls and transforms each ready item directly, with no retained ready-future state. Session cursor consumption suppresses record-only progress after updating the canonical cursor; raw/progress subscribers retain the same cuts. The specialized data projection is deleted in favor of the one general projection primitive. Both exact follow allocation byte/count assertions and reviewed-shape negative controls remain unchanged; qualification pending.
-
-Check139 passed both whole libraries (Harness-client19/19, Stream323/323 in8.58s) and both Stream/Harness-client WASM compiles on signed6251e63ecc (`1793201953223-319101-a9b312cd`, final15:41:56 UTC,163.3s). All unchanged exact follow byte/count assertions and reviewed-shape negative controls passed.
-
-PHP ZIP admission now hashes unretained bodies through shared chunk admission, retains only package metadata plus per-file digests, and compares installed files with the shared open-file hashing primitive. Original compressed ZIPs remain on disk: private copies are digest-bound before/after inspection and again after feed staging. Shared hashInput retains canonical containment, regular-file identity and before/after length/time checks. The private inspection lifetime is cleaned on every exit. Added chunk-boundary, truncation, length and staged-drift controls; qualification pending.
-
-Check140 passed all276 archive/generator/shared-authority/native-producer script cases, source compatibility digests and all descriptor baseline comparisons on signed17676e500d (`1793202200242-322205-b8f8e2fe`, final15:43:49 UTC,44.9s; script runtime1.073s). Chunked PHP ZIP inspection now includes directory termination,7-byte body boundaries, malformed base64, truncated terminators, wrong lengths and private staged archive drift. The shared digest-only admission consumed65,600KiB through repeated64KiB chunks without retaining its body; unsafe paths were rejected before body reads. No actual admitted Windows PHP runtime execution is inferred.
-
 | Session registration10-second deadline | `rust/crates/stream/src/session/client.rs:635` | 1, optional caller policy retained | DefaultNone awaits the actual registration outcome or caller cancellation. with_registration_timeout explicitly selects a finite millisecond deadline per client; queue withdrawal, sibling isolation, trace outcomes and the Loom deadline/cursor race remain. Existing lifecycle controls select10s explicitly; physical handshake/reconnect controls are unchanged and separately pending. Qualification pending. |
-
-
-Check141 passed the complete Stream library323/323 in8.43s and Stream WASM compilation on signedb2fd3397cd (`1793202779552-327681-2bbc09f9`, final15:56:08 UTC,223.5s). Existing explicit finite registration deadline, queue withdrawal, cursor, credential, isolation and original allocation/custody controls passed unchanged.
 
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | Physical handshake1-second deadline and3 attempts | `rust/crates/stream/src/session/client/link.rs:359` (removed) | 1 | Delete hidden per-handshake timeout and retry cutoff. One owned dial loop retries actual Unavailable outcomes with100ms backoff; a pending handshake waits for its result, original caller cancellation or explicit registration timeout. Terminal authentication and typed refusals still terminate. Attempt numbering saturates only its diagnostic field; it never refuses work. The finite concurrent-Welcome control now selects its deadline explicitly. Qualification pending. |
 | Created browser tab lifetime | `scripts/browser-result.mjs:50` | Owner/cancellation repair | Arm the explicit test timeout and connection-abort observation before protocol attachment. Own target cleanup even when attachment fails; retirement callback errors cannot skip listener or tab cleanup. Existing send retirement guards prevent late setup continuation from installing resources. No actual browser runtime qualification is inferred. |
 
-Check142 stopped during Stream test compilation at an invalid fixture builder call: the timeout belongs to session::Client rather than the outer grpc::Client (`ff8bed4647`, `1793203213064-332109-58d14cd3`, final16:01:03 UTC,65.5s). The fixture now obtains the existing session client before selecting its explicit deadline. No tests, WASM check or browser syntax check were reached.
-
-
-Check143 passed the complete Stream library323/323 in8.71s, Stream WASM compilation and browser-result syntax on signed3c0d109425 (`1793203384334-333281-a504dbef`, final16:04:32 UTC,100.2s). The actual concurrent silent-Welcome transport now observes the explicit registration deadline; recovery beyond the former retry group and terminal-authentication negative controls pass. Syntax alone does not prove browser execution.
-
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | Git SHOWN_FILE_BYTES16MiB; patch/blame/grep file16MiB | `rust/crates/harness-core/src/tools/git/actions.rs:5,387,409,562`; `commands.rs:102` (removed) | 1 -> optional policy / chunking | Delete fixed whole-file policy. Shared Workspace/Generation/LazyWorkspace read accepts None or an explicit finite byte bound; source identity, original accounting, cancellation and no-follow type checks remain. Stock show/apply/blame/grep choose None. Grep reads32 files concurrently in64KiB ranges, retaining unfinished lines and exact matches rather than whole file bodies; invalid UTF-8 anywhere discards that file's matches. |
 | Git100000 entries/matches; u32MAX whole-diff sentinels | `rust/crates/harness-core/src/tools/git/{actions,executor,join}.rs`; `rust/crates/filesystem/src/git_compat/{tree,diff}.rs` | 1 | Delete stock finite cutoffs; one shared optional-policy traversal accepts None with explicit finite opt-ins preserved. Existing1024-entry directory pages and32-read concurrency keep serving further work. Root/reserved namespaces, exact generations and conditional publication remain. Whole-file byte bounds are caller policy, never replaced by raised sentinels. Qualification pending. |
-
-Check144 stopped in whole-workspace compilation because the optional symbolic-link bound was extracted inside an accounted source closure, where errors must have DemandError rather than LazyWorkspaceError. The bound is now resolved before entering that closure, and before allocating the source namespace; regular reads keep their exact requested range. No runtime or chained WASM success is inferred (`d8a255194e`, `1793203617971-334460-535ee43b`).
-
-Check145 passed native whole-workspace all-target compilation and filesystem/harness WASM compilation on signeda03f189821 (`1793204018505-335203-f9d7982c`, final16:16:30 UTC,182.3s), after bb2 SSH recovery. Git optional policies and chunked grep compile on both targets; no runtime Git result is inferred.
 
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
@@ -1215,17 +952,11 @@ Check145 passed native whole-workspace all-target compilation and filesystem/har
 |---|---|---|---|
 | Stream gRPC OPERATION_DEADLINE10s / ATTEMPT_TIMEOUT1s | `rust/crates/stream/src/grpc/mod.rs:43` (removed); `grpc/client.rs` | 1 -> optional caller policy | Delete hidden whole-operation, per-attempt and connection cutoffs. Client.with_operation_timeout selects an optional absolute operation deadline, default None; it includes credential resolution, all retries and backoff and propagates remaining time to gRPC. Actual transport uncertainty retries the same body with fresh credentials; terminal authentication/corruption/application cancellation still stops. Existing10s negative selects its policy explicitly. Added virtual-time controls for11s outcomes, retries beyond10s and pending credential timeout. Dropping the future cancels owned work. Diagnostic attempt saturation cannot refuse work. Qualification pending. |
 
-Check146 passed native whole-workspace all-target compilation, filesystem/harness WASM compilation, source compatibility digests and all descriptor baseline comparisons on signed2874732c40 (`1793204318659-340084-21467711`, final16:21:49 UTC,204.5s). Optional step policy and unchanged finite fixtures compile across native/browser hosts; no step runtime result is inferred.
-
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | Machines CONNECT_TIMEOUT10s / RPC_TIMEOUT30s | `rust/crates/machines/src/grpc/mod.rs:12` (removed) | 1 | Delete implicit channel cutoffs on remote mTLS and owner-confined local sockets. Caller-selected command deadlines and original operation observation/reconciliation, socket identity and bearer validation remain. |
 | Inference connect10s / channel/request60s | `rust/crates/inference/src/host/mod.rs:128,707` (removed) | 1 | Delete implicit connection and operation deadlines. Caller cancellation remains owned by the actual future; physical HTTP2 keepalive health detection remains. No evaluation/model/budget semantics changed. |
 | Inference API key8192 bytes | `rust/crates/inference/src/host/values.rs:2` (removed) | 1 | Delete the count refusal and cap-only property. Retain nonempty/HTTP metadata validation and sensitive credentials. New16385-byte exact-identity control includes newline/empty rejection and absence of hidden gRPC deadline. |
-
-Check147 passed the complete Stream library325/325 in8.45s and Stream WASM compilation on signedd2f9624110 (`1793204506864-340810-38aedffb`, final16:25:01 UTC,213.5s). New11-second outcome/retry and explicit pending-credential deadline controls passed, as did original trace, credential-renewal, terminal-error, isolation, cancellation and exact finite native allocation controls. Zero cases filtered.
-
-Check148 passed native Machines/inference all-target compilation with inference HTTP codec on signedbf7578cbc7 (`1793205104250-342258-b45d31e7`, final16:33:52 UTC,144.7s including bb2 recovery). Existing selected command deadlines and the new exact long-credential control compile; no additional runtime claim.
 
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
@@ -1237,60 +968,21 @@ Check148 passed native Machines/inference all-target compilation with inference 
 
 | ReaderPolicy timeout_ms10,000 | `rust/crates/harness-client/src/reader.rs:53,76,788` | 1 -> optional caller policy | Default None gives in-flight reads no deadline or deadline timer. A slow valid read keeps its admitted request slot until its actual completion, cancellation or caller-selected Some deadline; transport-error backoff and request/follow credit remain. Finite simulation fixtures retain their exact1500ms policy and deadline-race controls. Compile qualification pending. |
 
-Check149 passed native whole-workspace all-target compilation, native-runtime/harness Windows all-target compilation and filesystem/harness WASM compilation on signed0cae55e0ed (`1793205644957-345354-e0cabba1`, final16:48:03 UTC,454.0s). The original finite approved request/control boundaries compile unchanged; the optional shell capture schedule and remaining default work roots compile across native and browser hosts. Quiet finite/unbounded event controls compiled, with no new runtime claim.
-
-Review P1 found that agent observation passed UNBOUNDED to the deliberately finite from_budget preparation constructor. It now uses the existing platform-independent unbounded-root preparation constructor; the finite public constructor and all original-work requirements are unchanged. A real in-memory FilesystemHost regression derives a structured tools credential and rejects write-only and incomplete-subtree authority. The existing native shell/observation control remains. Runtime qualification pending.
-
-Check150 passed native whole-workspace all-target compilation on signeda9c7a2c20b (`1793206543604-352102-4036a230`) and then stopped compiling the standalone filesystem-access test target: the new observation regression uses hosting APIs while that isolated command had not enabled hosting. The regression is now gated by its actual API feature, and its qualification command explicitly enables hosting. No runtime or chained WASM result is inferred.
-
-Check151 stopped compiling the new standalone observation regression because the API is specifically native filesystem-local, rather than the general hosting feature (`a60ee9064a`, `1793206933431-355648-28dc53a5`, final17:05:54 UTC,231.7s including bb2 recovery). The regression now uses that exact existing API gate; the next qualification explicitly enables filesystem-local. No runtime or chained WASM result is inferred.
-
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | TURN_BACKSTOP_MS6h, owner handler60s,1MiB memory/64KiB checkpoint defaults | `rust/crates/harness/src/local/agents.rs:34,218,290`; `local/host_owner/agents.rs:468`; `wasm/agents.rs:55`; `wasm/agents/{providers,serving}.rs` | 1 -> optional user policy | Delete default resource policies. ActorLimits carries optional positive timeout/memory/checkpoint fields through the sole canonical domain/protobuf validator and native/event runtime. None neither arms a timer nor refuses a checkpoint by policy; explicit finite budgets remain positive and enforced, including original stalled-handler and checkpoint-refusal controls. Browser caller-selected timeout remains Some; native/browser default all other policies to None. Original immutable record/alarm SubscriptionCuts, state anchor, cancellation, G54 placement and G62 user-managed reservations remain. Lower whole-value transport streaming is still separately pending; descriptors/bindings and compile qualification pending. |
-
-Check152 stopped before compilation because the private checkout lacked the pinned Buf executable after descriptor production (`e79f1b2739`, job1793208119609-393374-a64a2767, final17:24:50 UTC rc127). Check153 adds the frozen dependency install and independently produces the Buf descriptor, then found the optional Actor timer future needed pinning in the existing select. That source fix is applied; no runtime or browser qualification is inferred from these failed attempts.
 
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | MCP startup10s/tool60s defaults; u32 milliseconds | `rust/crates/harness-core/src/mcp/config.rs:18,20,188,189`; `install.rs:109`; `http/{mod,native}.rs`; `stdio/native.rs`; `rust/crates/harness/src/wasm/mcp/browser.rs:185`; `typescript/packages/harness/src/mcp-http.ts:18` | 1 -> optional caller policy | Preserve absent deadlines from configuration through native HTTP, persistent stdio and browser I/O. Explicit positive finite milliseconds remain lossless u64 values and share one absolute native deadline, including startup schema registration and worker retirement. The browser adapter uses the primitive Actors deadline owner, whose timer chunks preserve long deadlines. Existing remaining-startup, per-request cancellation, blocked-cancellation cleanup, process ownership and no-replay negatives remain. A virtual61-second real stdio exchange covers no implicit tool deadline. Qualification pending. |
 
-Check154 produced all7 canonical descriptor families and independently captured Actors with pinned Buf1.73.0 on signed820141e422 (`1793208542121-396690-e009f9d4`, final17:30:03 UTC rc0,101.0s; all9 requested artifacts copied back17:30:26 UTC). Actors schema sha256:9019ecaff1861fbd6965b4ff39ed6e422a105235ead11d536aa7fc60cc97ea20 and actual descriptor sha256:e96e93fc1b4412020ef8d74b579c634eaa912d430dd19324334bb0012c0f0118 replace the same v1 baseline; no migration or fabricated descriptor bytes. Browser MCP optional policies preserve absent values and exact u64 BigInt milliseconds through the shared chunked Actors clock. Compilation and runtime qualification remain pending.
-
-Check155 passed native whole-workspace all-target compilation on signeda550afea33 (`1793208741004-398234-f39d2d9e`, native1m36s; final17:43:08 UTC rc101 in662.0s including bb2 connection/compilation). The full native filesystem-access target ran all60 cases in0.27s:59 passed, one failed, zero filtered. The reviewed structured-observation regression PASSED, including full tools subtree credential derivation and both authority negatives. The failing finite policy-compiler property assumed at most4 allocation admission cuts, which no longer describes a dynamically admitted DFA. It now discovers and refuses EVERY actual reached admission cut with the same finite work bank, retaining exact live-memory coverage, zero retained allocations on refusal, decision-oracle equivalence and zero-allocation hot reads. No cutoff is raised or filter applied. Chained browser/baseline checks did not run; their qualification remains pending.
-
-Check156 regenerated all7 canonical descriptors and the independent Actors Buf fixture after rebasing signed source214c1d3977 onto main28d5c495b63e (#1743). Job1793209914229-464540-92a0d288 completed17:53:43 UTC rc0 in150.6s, copying all9 artifacts back17:54:23 UTC. Applied revisions, at_least admission cuts, incarnation and shared RevisionTracker are preserved. Actual combined Stream descriptor sha256:ecdc48a3522656c03571b869800a1451c83fa69a5deeb38f0dbcd7fa637f9ba0 replaces its same-v1 baseline. One child-index read now explicitly carries an empty admission cut. Combined compilation and repaired compiler-property runtime qualification remain pending.
-
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | Conversation model_events_per_step / tool_calls_per_step default u32::MAX sentinels, derived journal selection bounds | `rust/crates/harness-core/src/conversation/mod.rs:65,67,80,81`; `executor/{admission,journal,records,record_index,replay,checkpoint_selection}.rs`; `filesystem/execution_journal/step_index.rs`; `runtime/scope.rs`; `context/validation.rs`; `rust/crates/harness/src/wasm/{contract,declarations}.rs` | 1 -> optional user policy | Default policies are actual None. Model admission, approval review, authenticated per-step indexes, pending tails and paged replay preserve optional bounds without a finite fallback; derived aggregate bounds exist only when every contributing policy is finite. Explicit finite controls, duplicate identity/corruption checks, semantic three-record tool settlement, funded copying and original native WorkBudget remain. Pinned policy intersection keeps the finite side; child scopes cannot replace any finite ancestor count with None. Existing replay control now also selects all70 records across the64-record page, while unchanged explicit finite refusal controls remain. Native/browser compilation pending. |
 
-Check157 on signed2a7449c3fb passed native whole-workspace all-target compilation (1m40s), the entire filesystem-access target (60passed,0failed,0ignored,0filtered,0.44s) and browser Harness WASM compilation (52.21s). Both the reviewed observation credential regression and every-admission-cut compiler property passed. Job1793210248780-467092-94436893 ended18:05:01 UTC rc1 in495.0s because the subsequent compatibility check found stale raw schema digests after rebase. Actual Stream schema sha256:024499b7fe5c27e4ea499107fcbdd4b59b18f4197afea0890dcfa7a40cdb77ba and Actors schema sha256:1542e31958b7f4e69f5b9c330acb2154f83b4114e14b140ee3facb550e1c64e3 now bind the checked-in source bytes; every other schema/conformance digest was checked against its actual declared artifact. Descriptor bytes were generated in156, not fabricated. Baseline requalification remains pending. Check158 is an exact earlier snapshot of4b726c3855 and therefore still contains those stale metadata hashes; its code/test results must be reported separately from the expected final metadata failure.
-
-Check158 stopped whole-workspace compilation on signed4b726c3855 with three count-policy call-site errors: one semantic single-record operation binding, its identity-control call and the finite step-policy fixture binding. Both single-record selections now explicitly use Some(1); the finite step negative again supplies its original Some(1) policy. No runtime or chained browser result is inferred. The expected stale metadata failure was not reached.
-
-Check159 on signedf9a504778c passed the corrected global compatibility/descriptor baseline check and built actual Auth/Actors WASM. The generated Actors canonical TypeScript shape guard then rejected optional resource policies whose Rust TS projection lacked the same optional-presence annotations used by other canonical fields. All3 policies now carry #[ts(optional)], preserving protobuf absence without weakening the shared guard. Job1793210766927-471241-e112e015 ended18:10:05 UTC rc2 in253.8s; deadline/browser runtime commands did not run.
-
-Check160 on signed135fc7fbda passed native whole-workspace all-target compilation and ran the entire785-case harness-core library:779passed,6failed,0ignored,0filtered in7.14s (job1793210841792-471824-def494b2, final18:18:02 UTC rc101 in652.5s including remote recovery). Optional count authority, paged replay and the virtual61-second real stdio no-deadline regression PASSED, along with original MCP finite cancellation/cleanup negatives. Failures remain in exact preparation allocation (24bytes), summary broad-grant negative, original range authentication (2), summary append-cost subtraction, and the layout scan. None is dismissed as unrelated or weakened. The expiry cache now expresses obsolete-entry pressure as stale count greater than live count rather than multiplying a variable named slots; this is the same eviction condition without an overflowing product or decode-layout ambiguity. Chained WASM/baseline commands did not run.
-
-Optional positive model-event/tool-call policies now use Option<NonZeroUsize>, preserving the former scalar footprint while None remains unbounded. Zero is excluded by canonical deserialization and explicit finite values remain unchanged; scope attenuation and numeric browser projections use the primitive getter. No exact allocation snapshot or native negative is altered. Requalification will determine the remaining preparation discrepancy.
-
-Check162 stopped native workspace compilation on signed927d962430 because the shared retained-heap accounting trait did not yet cover NonZeroUsize. The primitive inline-type list now accounts that scalar as zero heap bytes, exactly as for usize; enclosing slots remain measured by their actual layout. No runtime result is inferred (job1793211946648-480927-bfd2d5bb, final18:28:43 UTC rc101 in174.6s). Check161 independently qualifies the preceding browser snapshot and remains separate.
-
-Check161 on signed4c3cf012b6 passed global compatibility/descriptor baselines, Harness browser compilation, actual Auth/Actors WASM generation, the unchanged canonical TypeScript shape guard, Actor TypeScript compilation and the shared long-deadline/finite-expiry/cancellation test (1passed,0failed). Actual Harness WASM also built. The MCP bridge test stopped before execution because the Harness package had not declared its new Actors deadline dependency; its package metadata and workspace lock now declare the existing Actors0.2.0 dependency. This repairs real published-package resolution rather than injecting a test alias. Job1793211780876-475624-8c4295aa ended18:33:44 UTC rc1 in643.0s. MCP browser runtime remains unqualified.
-
-Two unchanged core160 controls had obsolete oracle assumptions after shared primitive changes: directory grants explicitly exclude internal files, and append no longer guarantees a read for every written record. The summary control now additionally asserts root-directory [true,false] while whole-volume authority must observe [true,true] and fail the exact-summary detector; authenticated provenance/identity mutations remain. The append-cost guard counts ALL actual reads against the SAME4*258 bound instead of subtracting writes, strengthening it and removing unsigned underflow. No production grant, exact allocation snapshot, native finite range negative or work bank is relaxed. Runtime requalification pending.
-
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | Sum of logical-object read maxima | `rust/crates/filesystem/src/logical_objects/read.rs:139` | 1 -> 2 | Batch feasibility uses a checked optional aggregate; unknown/unrepresentable aggregate takes the existing sequential read path instead of refusing tiny valid reads. Every read clamps to the same original remaining object/allocation credit. Ordered values, duplicate requests, original native ownership and all finite denials remain; added native/portable-accounting regression with3 unbounded per-read policies over tiny objects. Qualification pending. |
-
-Check163 on signed6d379a48e3 passed native whole-workspace all-target compilation and ran all785 harness-core cases:780passed,5failed,0ignored,0filtered in8.07s (job1793212650590-485056-681eed19, final18:42:59 UTC rc101 in328.9s). The unchanged layout guard now passes; positive count policies compile with shared ownership accounting. Exact preparation differs by8bytes (actual24302 versus expected24294) after compacting2 optional positive fields; no snapshot changed. Summary/append oracle corrections are in the later7268fc2e75 snapshot and were therefore not tested here. Both original finite range controls still fail and remain unchanged.
-
-Model step policies now share the compact positive optional representation used by event/call policies, including Preset.max_steps. A finite preset cannot silently turn zero into None: its canonical type excludes zero before composition. All existing positive finite values and nullable wire/browser projections remain. The exact allocation snapshot is unchanged; requalification must verify the final8byte difference without raising a bound.
-
-
-Check164 on signed7268fc2e75 passed frozen package installation, actual Auth/Actors WASM generation, Actor TypeScript compilation and actual Harness WASM generation. All4 MCP browser bridge tests passed (0failed,0skipped,333.396ms), covering lossless u64 deadlines, JSON/SSE chunk widths and canonical request/response controls. The declared Actors dependency resolves without aliases or injected stubs. Job1793212784797-486464-ca36aa12 ended18:50:38 UTC rc0 in653.4s. The later compact step policy is separately under check165; it is not credited to164.
 
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
@@ -1298,48 +990,18 @@ Check164 on signed7268fc2e75 passed frozen package installation, actual Auth/Act
 | Dense Hello credentials up to largest slot and aggregate Hello sizing | `rust/crates/stream/src/session/client/link.rs:391`; `rust/crates/stream/proto/stream/v1/session.proto:28` | 1 -> 2 | Delete the duplicate credentials field. The existing SessionCredential mechanism lazily streams only occupied initial slots after Hello, before any rotation or interest. Sparse u32 slot IDs require no maximum-slot-sized array. New actual-gRPC control queues more than1024 slots and over1MiB aggregate credential bytes, follows on u32::MAX, revokes that slot and retains an independent usable slot. Descriptor generation and runtime qualification pending. |
 | Outbound control queue frame/byte refusal | `rust/crates/stream/src/session/client/outbound.rs:16,30` | 1 deleted | O(1) enqueue/dequeue with no count or aggregate-size refusal. Keep transport credit, per-channel payload credit and delayed open-command credit. Closing still retires values and wakes readers outside the lock; a paused peer cannot block independent sessions or cancellation. Keep Loom wake/cancellation/lock-order and FIFO proofs; remove only deleted capacity predicates. Qualification pending. |
 
-
-Review P1 PRRT_kwDOUMoiI86xQeb3 found the storage-backends-only conformance endpoint still initialized optional history policy as scalar8. Its selected finite8-turn fixture now uses Some(8); no history default or negative control is removed. The required-feature target must compile separately because default workspace all-target checks do not enable it.
-
-Check165 passed native whole-workspace all-target compilation on signed2e1ce69f5c before the bb2 SSH interruption at18:54:25 UTC. No test or chained WASM outcome is yet known. Check166 did not acquire a private bb2 checkout: the relay reported InsufficientInstanceCapacity at19:05:08 UTC. Its local waiting relay was stopped to refresh the branch and include the new required-feature P1 repair in the next compilation; no source qualification is inferred.
-
-
-The branch is rebased onto main#1747 bf7956ffcc. The overlapping Objects gRPC conflict preserves its canonical RevisionTracker, request floors, reply revisions and stale/foreign refusal controls while removing default deadlines. No read-your-writes mechanism or source credit is counted twice.
-
-Physical source quiescence now retires accepted native work, allocation and owner fields before decrementing the producer count or waking the joiner, outside the gate lock. A deterministic real original-meter control holds the accepted owner's destructor and verifies the source cannot publish completion early. Existing finite caller refusal/poll-bank and last-alias physical join controls remain unchanged. The10ms caller-poll mechanism is still pending a funded event replacement; this custody repair does not claim to remove it. Qualification pending.
-
-
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | Browser session ingress1024 and WebSocket aggregate buffered1MiB | `typescript/packages/stream/src/session-websocket.ts:24,56`; `src/session-queue.ts:13` | 1 deleted; explicit3 retained | Browser ingress selects no count policy and grows the shared FIFO geometrically at amortized O(1) per item; it keeps no consumed references. Explicit send-credit windows still delay writers and preserve cancellation/FIFO ownership. Delete the aggregate bufferedAmount refusal; per-frame validation remains pending shared logical-value streaming. Added burst/wrapped-growth/discard control; all original finite queue cancellation/order/work models remain. Qualification pending. |
-
-The post-1747 Objects raw schema digest is bound to its actual current bytes (sha256:cfd0c3b0956033cae13f9e8db39ddb3b691a2a8d3a8756ea6fec57033130ce3e). Canonical descriptor regeneration for this merged schema and the new SessionHello is still pending bb2; no descriptor digest is fabricated.
-
-
-The browser session constructor now forwards the existing optional Rust registration policy instead of hiding it. Default absence still arms no timer. The EOF/reconnect finite deadline control explicitly selects its original10000ms policy; the former default retry-count assertion becomes a shared silent-handshake/caller-cancellation control. Browser bridge fixtures assert ordered SessionCredential frames, including exact initial/renewed bytes, rather than the removed aggregate Hello field. No finite cancellation/deadline model is filtered. Actual WASM/TypeScript/runtime qualification pending.
-
-
-Check165 finally reported job-lost at19:14:42 UTC, exit224, after its18:54:25 SSH interruption and unsuccessful reattachment. Only the already observed native workspace compile is credited; no core/filesystem runtime or WASM outcome is available. Check167 likewise acquired no source checkout: Spot InsufficientInstanceCapacity persisted through19:28:41 UTC. Its exact local waiting relay was stopped before editing the second browser transport; no remote result is inferred.
 
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | Rust WASM WebSocket ingress1024 / aggregate buffered1MiB | `rust/crates/stream/src/wasm/socket.rs:97,193` | 1 deleted; 3 retained in shared session | The thin physical adapter uses an unbounded incoming channel, preserves transport EOF/cancellation and reports receiver closure as Unavailable. Aggregate buffered-byte refusal is removed; canonical session credit continues delaying payload production. Per-frame guards remain separately pending logical streaming. No new pool, timer or backend mechanism. Qualification pending. |
 | JavaScript credential spread argument count | `typescript/packages/stream/src/session-websocket.ts:16` | 1 -> 2 | Encode UTF-8 through8192-byte character chunks before base64 of the complete value. All chunks continue; no credential-length refusal. The existing fresh-credential/cancellation property now includes262145-byte exact identity. Qualification pending. |
 
-The Loom session fixture Client constructors now carry the canonical revision tracker introduced by main#1743, shared with their actual pool where present. No model or negative control is dropped.
-
-
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
 | Limits path_bytes / attachments / context_messages default u32::MAX sentinels | `rust/crates/harness-core/src/conversation/mod.rs:57,59,69`; projection/context/model/runtime/files consumers; native/browser hosts | 1 -> optional caller policy | Default None, represented with the existing compact positive optional count type. Direct projection, continued requests, source composition, content metadata and context delta checks enforce only explicit Some policies. Pinned intersections retain any finite side; scoped children cannot widen finite ancestors. Compaction derives a numeric retained suffix from actual context size when policy is absent; model physical context/token accounting still controls compaction. Finite fixtures retain their exact values, canonical zero decode remains invalid, and the existing10,000-record delta and authority control now exercise both absent and finite policies. Qualification pending. |
-
-Check168 is queued from a separate immutable signed4c02cdc843 checkout at Q:/wt/unbounded-check-20261028, so continued audit edits cannot change its requested source. It includes the required-feature storage endpoint, all native workspace targets, the affected complete core/filesystem/Stream libraries, the shared standalone Loom model, browser compilation and actual Stream WASM/TypeScript transport controls. Spot capacity is still unavailable; no private source checkout or result is credited. Descriptor copies, if produced, must be copied from that frozen checkout and hashed from actual bytes.
-
-
-Check168 ended before source acquisition at19:39:58 UTC with vm-unreachable/exit224 after repeated Spot InsufficientInstanceCapacity. Its requested signed4c02cdc843 source was never admitted to a remote private checkout, so no compilation, descriptors or runtime results are credited. A replacement check must qualify the later optional conversation counts as well.
-
-The shared logical-object native adapter now recovers payload-free Admission failures through the exact original NativeMaterializationWork.runtime_error ledger. Completed objects and publication receipts remain inside their NativeObjectsError with custody intact. The original finite range hash allowance and1MiB live-memory controls remain unchanged; this source repair does not claim either control passes. No replacement meter, budget or producer is introduced. Qualification pending.
-
 
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
@@ -1348,15 +1010,6 @@ The shared logical-object native adapter now recovers payload-free Admission fai
 | MIN_IDEMPOTENCY_RETENTION_SECS | `rust/crates/stream/src/lib.rs:154` (removed) | 1 | Deleted the unused historical source-compatibility constant. No minimum retention or replacement policy is introduced. |
 | VolumeLimits.maximum_paths_per_batch | `rust/crates/filesystem/src/model.rs:110`; `workspace/transaction_write.rs:319`; `lazy_workspace/directory.rs:512` | 2 | Keep. Both consumers iterate every paths.chunks(maximum) result; the complete output is retained under the original accounting. No aggregate path count refusal remains. |
 | VolumeLimits.maximum_mutations_per_batch | `rust/crates/filesystem/src/model.rs:108`; `facade/transactions.rs:343`; `lazy_workspace/exactify.rs:179`; `native_mount/lazy/sync.rs:297` | 2 | Keep funded batch continuation. The private candidate applies each piece before installing the final state; the original atomic publication and work ledger remain. Whole-operation count refusals were deleted separately. |
-
-Check169 acquired signedc077200c2a at19:52:24 UTC and ran in actual source job1793217144106-574732-0ee13f34. Native whole-workspace/all-target compilation failed on the Objects RPC macro's20 Option<Duration> type errors after the#1747 integration (final relay job1793216794010-574732-44bfe055,19:53:54 UTC,rc101,95.8s). The later runtime/WASM commands did not run. No descriptor copy-back is credited from that failed combined job. Check170 separately requests only canonical descriptor generation and copy-back from the same frozen schema; it is pending.
-
-
-The Objects gRPC call macro now binds Option<Duration> once. Some uses the existing Tokio timeout and preserves the elapsed-error precedence; None awaits the same RPC without a timer. Both paths still use the canonical observed reply handler, forward the original minimum revision and retain RevisionForeign/error-detail handling. The existing replica deadline test and its positive floor-application control are unchanged. Latest compilation/runtime qualification is pending.
-
-
-Check170 canonical descriptor generation PASS on actual signedc077200c2a source job1793217559446-577630-dce03596 (final relay1793217529349-577630-ee070826,20:00:17 UTC,rc0,88.2s). All7 real artifacts copied back at20:01:15 UTC. Stream descriptor is sha256:9b30beeff26e10245f8eb9988b657441147238c2682b7b7323d5696832de155e; Objects is sha256:b188950797893f9d63c517abed1b5479eef9dc0e8c4cacbffafc33c26751143f. Only those2 byte sequences changed; the manifest now hashes actual produced bytes. No packaged Actors copy changed. The latest global baseline and native compile remain pending; the descriptor P1 remains open until baseline verification.
-
 
 ## S3 multipart retention policy and additional inventory
 
@@ -1373,32 +1026,10 @@ Check170 canonical descriptor generation PASS on actual signedc077200c2a source 
 | `FilesystemS3Limits.maximum_multipart_records` | `rust/crates/filesystem/src/s3_http.rs:63` (removed) | 1 | Deleted field, 20003-record default, whole-tail refusal and pre-publication history refusal. One incremental replay state consumes every page through the captured tail; only current parts and exact retry identities survive each record. No whole-history payload vector remains. |
 | `FilesystemS3Limits.maximum_multipart_cas_retries` | `rust/crates/filesystem/src/s3_http.rs:69` (removed) | 1 | Deleted the field and32-attempt default in all5 CAS paths. A real conflict yields via the shared runtime primitive and retries the same original operation; successful/terminal/typed failures still end the operation. The now-impossible false terminalization result and count-exhaustion errors are deleted. |
 
-The S3 retention policy change has static formatting/diff verification only; its optional s3-http feature requires bb2 compilation. Existing explicit finite upload and byte negatives are unchanged except for Some presence. No new Objects producer, replacement ledger, native funding change or runtime proof is claimed.
-
-Check171 on signed a338a45c6e06ab3099696ad4721c62d90a5c03c4 has passed the global compatibility/descriptor baseline, native workspace all-target compilation (1m43s) and the storage-backends conformance endpoint compile (1m09s), actual job1793217791601-578801-44b70a74. Its runtime and WASM phases are still running. The descriptor P1 PRRT_kwDOUMoiI86xR76S was resolved after the real baseline result, reply https://github.com/acyclic-labs/sdk/pull/1744#discussion_r4405538162. No full runtime or latest S3 source qualification is inferred.
-
-
-Check171 ended20:11:08 UTC with admission-daemon disconnection/INFRA, rc224,494.1s (final relay1793217774470-578801-7c87a491). The previously recorded baseline/workspace/required-feature compiles passed before that interruption. No library runtime, model or WASM result is credited.
-
-Check172 on signed5c385221fada32056f2f6dc234ac1a34510546c6 passed filesystem all-target compilation with s3-http (1m33s) and Harness browser compilation (48.85s). It then failed the standalone Stream session model compile with15 API-drift errors: missing canonical SessionCursor import and retired Gate.current/next, policy.enabled and Progress.consume_opaque APIs. Actual source job1793218380736-584351-b85a162f, final relay1793218365724-584351-d3fe920b,20:15:52 UTC,rc101,186.8s. Stream WASM/TypeScript commands were after the failed && and did not run. Sent exact diagnostics/ownership steer to streams-cp in Q:/lanes/unbounded/steer-session-model172.md; no production shims, fake wire types or filtered tests are introduced.
-
-The later streaming S3 history/CAS changes await bb2 compilation. The new integration control authors20004 part updates over a20005-record history, replays every page, checks every original operation identity and the exact current part, then confirms that conflicting reuse of the oldest identity still fails. Existing terminal/cancellation/access controls remain. No runtime proof is claimed.
-
-
 | Constant / policy | File:line (discovery source11a8ae17cd) | Category | Action |
 |---|---|---|---|
 | `S3MultipartOptions.maximum_parts` / `maximum_part_bytes` | `rust/crates/filesystem/src/s3.rs:142,144` | 1, optional caller policy | Removed the default10000-part and5GiB refusals. Both default to None; explicit positive Some policy still refuses before staging the rejected part. Current parts and immutable staged roots use the existing keyed map; complete selects the exact ordered set for one generation. |
 | `LIST_PAGE_ENTRIES` / `S3ListOptions.maximum_keys` | `rust/crates/filesystem/src/s3.rs:20,34` | 2 | Keep real namespace/output page boundaries. Immutable generation plus query/last-key identity preserves complete continuation; additional entries produce later pages instead of aggregate scan refusal. |
-
-Check173 on signed11a8ae17cdc40227745247015734843e453f16d0 passed s3-http filesystem all-target compilation, including the incremental history/CAS implementation and20004-update control (1m36s). Actual source job1793218767079-586375-1dcabe13. During the subsequent Stream generation/build phase its admission daemon disconnected; missing proc-macro archive diagnostics followed teardown. Final relay1793218755590-586375-68bac194,20:21:37 UTC,rc224,141.4s. No runtime, generated artifact, WASM or TypeScript pass is credited. Later S3 listing/key/optional staging policy changes await compilation.
-
-
-### Review repairs: original-meter native read pages and multipart errors
-
-- Stream `memory/provider.rs::native_read` reuses one 1024-record cursor page rather than reserving the entire requested record count. Every subsequent page uses the captured immutable `PathState`, its original finite cut and original `NativeReadMeter`; previous windows retire before refilling the same allocation. This is paging, not a whole-read refusal. The original exact small-read observer and funding controls are retained with the actual paged cursor frame accounted explicitly. A 10,000-record read under 40 KiB verifies complete ordered output, immutable cut, original finite read refusal and original cancellation across the page boundary.
-- S3 multipart create retries only `NoSuchUpload` after a conditional conflict. Invalid persisted headers, explicit replacement-policy refusal, service failures and access failures return unchanged instead of retrying unchanged state. A real-memory upload/reconfiguration/retry regression preserves the explicit finite policy.
-- Compile174 on signed `7d40ee3367d5f7c65938cc04c2c3e95bb133c0c5`: filesystem `s3-http` all-targets compile PASS (1m35s). This predates these two review repairs; their qualification is pending.
-
 
 ### Streaming source policy and review qualification175
 
@@ -1407,4 +1038,19 @@ Check173 on signed11a8ae17cdc40227745247015734843e453f16d0 passed s3-http filesy
 | `BlobBuildOptions.maximum_blob_bytes` and checkout/transaction `maximum_source_bytes` | `rust/crates/filesystem/src/kernel/blob/build.rs:13`; `src/facade/staging.rs:407`; `src/workspace/transaction_write.rs:427` | 1 opt-in | Optional source policy flows through the existing shared blob builder. None consumes every authenticated chunk; explicit finite values, zero-invalid options, original native and source-budget negatives remain finite. Index reservations derive from a finite bound when supplied and from the actual page width otherwise. Existing property compares identical roots/source bytes for tight finite, loose finite and absent policy. |
 | Native read cursor reservation | `rust/crates/stream/src/memory/provider.rs:324` | 2 | One reusable funded record page retains the original immutable snapshot and finite end. Original read/cancel refusal after an ordered prefix remains. Review qualification caught the Vec end-order mismatch; corrected to consume oldest window first, with all exact observer/funding negatives retained. |
 
-Compile175 on signed c3b4e8677e33d5c901f65b9ecb50d8b078fd0d78 acquired actual source1793219482859-590965-094fd75b: Stream whole library321PASS/11FAIL/0ignored/0filtered,9.15s, rc101 at20:32:40UTC. The native page ordering and physical opening-frame comparison failures are being repaired; no pass claimed for that source. Independent snapshot/reopened or separately seeded receipt scope/incarnation mismatches were sent to the Stream owner with the complete log. The subsequent filesystem feature check did not run because the Stream command failed. No tests were filtered, finite negative funding raised or failures marked resolved by this receipt.
+## Remaining structural work
+
+- Stream logical atomic values, command counts, paths and dynamic headers must continue across framed transports while preserving one commit and original funding.
+- Actor, machine and filesystem whole-value messages still need shared streaming.
+- Recursive path/JSON ownership, process event publication and remaining readiness polling need structural changes.
+- Current library failures and obsolete standalone model APIs remain unresolved.
+
+## Validation
+
+Linux x86_64 on source `1f17e04f7f58e23d5df02052aec6ab2e2fe9b9c8`:
+
+- `cargo check --locked -p acyclic-fs --features s3-http --all-targets`: passed, 1m40s.
+- `cargo test --locked -p acyclic-stream --lib`: 326 passed, 6 failed, zero ignored or filtered, 8.77s. All native-read paging, immutable-snapshot, finite-budget, cancellation and independent observer/funding controls passed. The six remaining failures concern revision scopes/incarnations after reopening or constructing independent providers.
+- `cargo test --locked -p acyclic-fs --features s3-http --lib`: 2,448 passed, 56 failed, 30 ignored, zero filtered, 30.32s. Multipart durable replay, more than 20,003 history records, abort fencing and permanent create-error propagation passed. The exact transaction staging fixture was recaptured from this real measurement; independent byte/error/publication equivalence and the serial-staging negative control passed. Remaining library failures are unresolved.
+
+The exact transaction staging fixture in `rust/crates/filesystem/src/workspace/transaction_batch_expected.json` was captured from the two actual allocation/work values printed by the full filesystem run above. Its source is `1f17e04f7f58e23d5df02052aec6ab2e2fe9b9c8`; no values were estimated. Exact comparisons and the serial-staging negative control remain. The recaptured fixture has not yet been rerun.
