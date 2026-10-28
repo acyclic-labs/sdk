@@ -148,7 +148,10 @@ pub mod source;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 mod source_watch;
 pub mod speculation;
-#[cfg(all(any(test, feature = "local"), not(target_arch = "wasm32")))]
+#[cfg(all(
+    any(test, feature = "local", feature = "conformance"),
+    not(target_arch = "wasm32")
+))]
 #[doc(hidden)]
 pub mod staged_objects;
 pub mod storage;

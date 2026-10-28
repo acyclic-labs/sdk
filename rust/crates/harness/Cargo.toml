@@ -68,7 +68,7 @@ required-features = ["filesystem"]
 consumer-features = [["filesystem"], ["filesystem-local", "test-support"], ["filesystem-local", "native-execution"]]
 
 [features]
-conformance = ["hosting", "oidc", "dep:acyclic-objects", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/session", "acyclic-stream/test-support", "dep:ed25519-dalek", "dep:jsonwebtoken"]
+conformance = ["hosting", "oidc", "acyclic-fs/conformance", "dep:acyclic-objects", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/session", "acyclic-stream/test-support", "dep:ed25519-dalek", "dep:jsonwebtoken"]
 oidc = ["filesystem", "acyclic-harness-core/oidc"]
 oidc-http = ["oidc", "acyclic-harness-core/oidc-http"]
 tui = ["dep:acyclic-harness-tui", "acyclic-harness-tui/tui", "acyclic-harness-core/tui"]

@@ -208,7 +208,7 @@ windows = { version = "0.62.2", features = [
 
 
 [features]
-conformance = ["distributed", "acyclic-stream/conformance", "acyclic-objects/conformance"]
+conformance = ["distributed", "acyclic-stream/conformance", "acyclic-objects/conformance", "dep:tempfile"]
 session = ["distributed", "acyclic-stream/session"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-stream/test-support", "acyclic-objects?/test-support"]
 fuzzing = []
