@@ -45,8 +45,11 @@ test("checks original default members alone, reusing one target with bounded wor
 });
 
 test("real Cargo compilations overlap; restoring the shared build lock is rejected", async () => {
-  mkdirSync(".tools", { recursive: true });
-  const directory = resolve(mkdtempSync(".tools/crate-check-"));
+  // Cargo admission requires actual job-owned target storage. Keep the real
+  // fixture and both build directories under that original target as well.
+  const fixtureRoot = resolve(process.env.CARGO_TARGET_DIR ?? "target", "crate-test-fixtures");
+  mkdirSync(fixtureRoot, { recursive: true });
+  const directory = mkdtempSync(join(fixtureRoot, "crate-check-"));
   try {
     for (const shared of [false, true]) {
       const fixture = join(directory, shared ? "shared" : "parallel");
@@ -101,8 +104,8 @@ test("real Cargo compilations overlap; restoring the shared build lock is reject
       }
     }
   } finally {
-    assert.equal(dirname(directory), resolve(".tools"));
-    assert.ok(directory.startsWith(resolve(".tools") + sep));
+    assert.equal(dirname(directory), fixtureRoot);
+    assert.ok(directory.startsWith(fixtureRoot + sep));
     rmSync(directory, { recursive: true, force: true });
   }
 });
