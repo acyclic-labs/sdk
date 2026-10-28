@@ -21,7 +21,6 @@ pub const MINIMUM_REVISION: &str = "acyclic-min-revision-bin";
 /// Response metadata: the revision committing a write or serving a read.
 pub const REVISION: &str = "acyclic-revision-bin";
 
-
 fn credential_header(token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
     if !acyclic_auth::credential::valid_credential(token) {
         return Err(ConnectError::InvalidConfiguration);
