@@ -56,6 +56,8 @@ run() ->
       length(Methods)
     end || {_Pb,S,Client,_,Methods}<-Specs],
     21=lists:sum(Counts),21=ets:info(rpc_route_counts,size),
+    Streaming=length([M || {_,_,_,_,Methods}<-Specs,M<-Methods,maps:get(output_stream,M)]),
+    io:format("PASS RPC shapes: ~p unary, ~p server streaming~n",[lists:sum(Counts)-Streaming,Streaming]),
     ok=grpcbox_channel:stop(route_control),
     ok=application:stop(grpcbox),
     scalar_controls(),
