@@ -140,19 +140,19 @@ struct Shared {
 
 struct Pause {
     operation: &'static str,
-    fragment: &'static str,
+    fragment: String,
     reached: std::sync::Arc<tokio::sync::Notify>,
     release: std::sync::Arc<tokio::sync::Notify>,
 }
 
 impl Shared {
     /// Parks the first `operation` on a key containing `fragment`, after it applies.
-    fn park(&self, operation: &'static str, fragment: &'static str) -> (std::sync::Arc<tokio::sync::Notify>, std::sync::Arc<tokio::sync::Notify>) {
+    fn park(&self, operation: &'static str, fragment: impl Into<String>) -> (std::sync::Arc<tokio::sync::Notify>, std::sync::Arc<tokio::sync::Notify>) {
         let reached = std::sync::Arc::new(tokio::sync::Notify::new());
         let release = std::sync::Arc::new(tokio::sync::Notify::new());
         *self.pause.lock().unwrap() = Some(Pause {
             operation,
-            fragment,
+            fragment: fragment.into(),
             reached: reached.clone(),
             release: release.clone(),
         });
@@ -163,7 +163,7 @@ impl Shared {
         let parked = {
             let mut pause = self.pause.lock().unwrap();
             match &*pause {
-                Some(p) if p.operation == operation && key.contains(p.fragment) => pause.take(),
+                Some(p) if p.operation == operation && key.contains(&p.fragment) => pause.take(),
                 _ => None,
             }
         };
@@ -350,5 +350,124 @@ async fn another_processs_collection_keeps_a_fresh_blob_for_one_full_pass() -> R
     // A re-put refreshes the grace of bytes still present.
     let refreshed = writing.put(vec![4; 8].into(), Vec::new()).await?;
     assert!(matches!(refreshed, Put::AlreadyExists { .. }));
+    Ok(())
+}
+
+/// One process releases a root while another retains an equal batch under
+/// it. Returns the delete of the retained child once both finish.
+async fn release_then_retain() -> Result<Delete, Box<dyn std::error::Error>> {
+    let medium = Shared::default();
+    let (releasing, retaining) = (Store::new(medium.clone()).account(b"acct")?, Store::new(medium.clone()).account(b"acct")?);
+    let child = retaining.put(vec![6; 32].into(), Vec::new()).await?.verified().ok_or("unknown")?.digest;
+    let root = RootId::new(*b"root")?;
+    retaining.retain(&root, vec![child]).await?;
+    let (reached, release) = medium.park("remove", "/r/");
+    let (released, retained) = tokio::join!(releasing.release(&root), async {
+        reached.notified().await;
+        let retained = retaining.retain(&root, vec![child]).await;
+        release.notify_one();
+        retained
+    });
+    assert!(released?);
+    retained?;
+    Ok(retaining.delete(child).await?)
+}
+
+#[tokio::test]
+async fn a_release_never_unpins_a_concurrent_equal_retain() -> Result<(), Box<dyn std::error::Error>> {
+    // The second retain owns its batch keys; the release removes only its own.
+    // Negative control: with one shared key per batch, the release removed the
+    // second retain's key and this delete was `Deleted`.
+    assert_eq!(release_then_retain().await?, Delete::Referenced);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_delete_never_removes_a_writers_pending_reference() -> Result<(), Box<dyn std::error::Error>> {
+    // The deleter passes its index check; a parent writer creates its child key
+    // and pauses; the delete completes; a third process re-puts the child; the
+    // writer resumes and commits. Its key must still pin the child.
+    // Negative control: a deleter that cleared inbound keys left the committed
+    // parent unpinning its child, and this delete was `Deleted`.
+    let medium = Shared::default();
+    let stores = (
+        Store::new(medium.clone()).account(b"acct")?,
+        Store::new(medium.clone()).account(b"acct")?,
+        Store::new(medium.clone()).account(b"acct")?,
+    );
+    let (deleting, writing, reputting) = stores;
+    let body = OwnedBytes::from(vec![7; 32]);
+    let child = writing.put(body.clone(), Vec::new()).await?.verified().ok_or("unknown")?.digest;
+    let (deleter_reached, deleter_release) = medium.park("list", format!("/i/{}/", child.to_hex()));
+    let deleted = tokio::spawn({
+        let deleting = deleting.clone();
+        async move { deleting.delete(child).await }
+    });
+    deleter_reached.notified().await;
+    let (writer_reached, writer_release) = medium.park("create", format!("/i/{}/e", child.to_hex()));
+    let written = tokio::spawn({
+        let writing = writing.clone();
+        async move { writing.put(vec![8; 32].into(), vec![child]).await }
+    });
+    writer_reached.notified().await;
+    deleter_release.notify_one();
+    assert_eq!(deleted.await??, Delete::Deleted);
+    assert!(reputting.put(body, Vec::new()).await?.verified().is_some());
+    writer_release.notify_one();
+    assert!(written.await??.verified().is_some());
+    assert_eq!(deleting.delete(child).await?, Delete::Referenced);
+    assert_eq!(writing.head(child).await?.length, 32);
+    Ok(())
+}
+
+#[tokio::test]
+async fn one_delete_never_clears_another_deleters_tombstone() -> Result<(), Box<dyn std::error::Error>> {
+    // Two deletes pass their checks; the first pauses before removing; the
+    // second completes. A same-bytes put and a referencing put must then
+    // refuse, because the first is still removing.
+    // Negative control: a deleter that cleared every tombstone let both
+    // commit, and the first then removed bytes a live parent referenced.
+    let medium = Shared::default();
+    let (first, second, writing) = (
+        Store::new(medium.clone()).account(b"acct")?,
+        Store::new(medium.clone()).account(b"acct")?,
+        Store::new(medium.clone()).account(b"acct")?,
+    );
+    let body = OwnedBytes::from(vec![9; 32]);
+    let digest = writing.put(body.clone(), Vec::new()).await?.verified().ok_or("unknown")?.digest;
+    let (reached, release) = medium.park("list", format!("/i/{}/", digest.to_hex()));
+    let paused = tokio::spawn({
+        let first = first.clone();
+        async move { first.delete(digest).await }
+    });
+    reached.notified().await;
+    assert_eq!(second.delete(digest).await?, Delete::Deleted);
+    let reput = writing.put(body, Vec::new()).await?;
+    let parent = writing.put(vec![10; 32].into(), vec![digest]).await;
+    release.notify_one();
+    paused.await??;
+    assert_eq!(reput, Put::Unknown);
+    assert_eq!(parent.map_err(|error| error.code).err(), Some(ErrorCode::MissingReference));
+    Ok(())
+}
+
+#[tokio::test]
+async fn collection_clears_an_abandoned_tombstone_after_its_fence() -> Result<(), Box<dyn std::error::Error>> {
+    // A deleter crashed holding its tombstone on bytes now stored nowhere.
+    // Negative control: before collection cleared flags, every later put of
+    // these bytes stayed `Unknown`.
+    let store = Store::new(MemoryMedium::default());
+    let blobs = store.account(b"acct")?;
+    let body = OwnedBytes::from(vec![11; 32]);
+    let digest = Digest::of(&body);
+    let abandoned = format!("{}/d/{}/{:020}.crashed", Digest::of(b"acct").to_hex(), digest.to_hex(), 0);
+    store.medium().create(&abandoned, OwnedBytes::new()).await?;
+    assert_eq!(blobs.put(body.clone(), Vec::new()).await?, Put::Unknown);
+    // The first pass is fenced at the tombstone's own revision: a deleter may
+    // still be live, so it stays.
+    blobs.collect().await?;
+    assert_eq!(blobs.put(body.clone(), Vec::new()).await?, Put::Unknown);
+    blobs.collect().await?;
+    assert!(matches!(blobs.put(body, Vec::new()).await?, Put::Created { .. }));
     Ok(())
 }
