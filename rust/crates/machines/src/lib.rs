@@ -47,6 +47,19 @@ pub const MAX_PAGE_SIZE: u32 = 256;
 pub const MAX_OUTPUT_READ_BYTES: u32 = 65_536;
 /// Maximum events returned in one page.
 pub const MAX_EVENT_PAGE_SIZE: u32 = 1_024;
+
+/// Normalize a positive request hint to one physical page or output chunk.
+/// Continue using the returned page cursor or output offset for more data.
+///
+/// # Errors
+/// Rejects zero request hints or zero chunk widths.
+pub fn page_limit(requested: u32, chunk: u32) -> Result<u32, ProviderError> {
+    if requested == 0 || chunk == 0 {
+        return Err(ProviderError::Invalid("page size must be positive".into()));
+    }
+    Ok(requested.min(chunk))
+}
+
 /// Default automatic idle suspension delay.
 pub const DEFAULT_IDLE_SUSPEND: Duration = Duration::from_secs(15);
 

@@ -314,7 +314,7 @@ async fn exec_stream_errors_distinguish_unknown_and_completed_commands() {
 async fn read_output_preserves_wide_offsets_and_validates_evidence() {
     let (machine, io, shutdown, task) = fixture().await;
     let offset = 9_007_199_254_740_993;
-    for limit in [0, 65_537] {
+    for limit in [0] {
         assert!(matches!(
             machine.read_output(offset, limit).await,
             Err(ProviderError::Invalid(_))
@@ -365,11 +365,36 @@ async fn read_output_preserves_wide_offsets_and_validates_evidence() {
             Err(ProviderError::Rejected(_))
         ));
     }
-    assert!(io.reads.lock().unwrap().iter().all(|read| read.machine
+    let normal_reads = io.reads.lock().unwrap().len();
+    *io.output.lock().unwrap() = wire::MachineOutput {
+        machine: Some(encode_machine(machine.id())),
+        offset,
+        data: vec![1; MAX_OUTPUT_READ_BYTES as usize],
+    };
+    let chunk = machine.read_output(offset, u32::MAX).await.unwrap();
+    assert_eq!(chunk.data.len(), MAX_OUTPUT_READ_BYTES as usize);
+    let next = chunk.offset + chunk.data.len() as u64;
+    *io.output.lock().unwrap() = wire::MachineOutput {
+        machine: Some(encode_machine(machine.id())),
+        offset: next,
+        data: vec![2],
+    };
+    assert_eq!(
+        machine.read_output(next, u32::MAX).await.unwrap().data,
+        vec![2]
+    );
+    let reads = io.reads.lock().unwrap();
+    assert!(reads[..normal_reads].iter().all(|read| read.machine
         == Some(encode_machine(machine.id()))
         && read.offset == offset
         && read.limit == 2
         && read.protocol == Some(protocol())));
+    assert!(
+        reads[normal_reads..]
+            .iter()
+            .all(|read| read.limit == MAX_OUTPUT_READ_BYTES)
+    );
+    drop(reads);
     stop(shutdown, task).await;
 }
 
