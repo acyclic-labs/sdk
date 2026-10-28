@@ -53,10 +53,10 @@ pub const DEFAULT_CONVERSATION_PAGE_MESSAGES: u32 = 1_024;
 pub struct Limits {
     /// Maximum bytes in one referenced file admitted to a conversation.
     pub file_bytes: u64,
-    /// Maximum normalized UTF-8 path bytes.
-    pub path_bytes: usize,
-    /// Maximum attachments in one message, inline or manifest-backed.
-    pub attachments: usize,
+    /// Optional maximum normalized UTF-8 path bytes.
+    pub path_bytes: Option<std::num::NonZeroUsize>,
+    /// Optional maximum attachments in one message, inline or manifest-backed.
+    pub attachments: Option<std::num::NonZeroUsize>,
     /// Maximum bytes rendered directly into one model context part.
     pub render_bytes: u64,
     /// Optional maximum model round trips in the stock agent loop.
@@ -65,21 +65,21 @@ pub struct Limits {
     pub model_events_per_step: Option<std::num::NonZeroUsize>,
     /// Optional maximum distinct tool calls admitted in one model round trip.
     pub tool_calls_per_step: Option<std::num::NonZeroUsize>,
-    /// Maximum canonical messages selected into one model request.
-    pub context_messages: usize,
+    /// Optional maximum canonical messages selected into one model request.
+    pub context_messages: Option<std::num::NonZeroUsize>,
 }
 
 impl Default for Limits {
     fn default() -> Self {
         Self {
             file_bytes: MAX_EXACT_JS_INTEGER,
-            path_bytes: u32::MAX as usize,
-            attachments: u32::MAX as usize,
+            path_bytes: None,
+            attachments: None,
             render_bytes: MAX_EXACT_JS_INTEGER,
             model_steps: None,
             model_events_per_step: None,
             tool_calls_per_step: None,
-            context_messages: u32::MAX as usize,
+            context_messages: None,
         }
     }
 }
@@ -98,6 +98,8 @@ impl Limits {
             .any(|limit| limit == 0 || limit > MAX_EXACT_JS_INTEGER)
             || [self.path_bytes, self.attachments, self.context_messages]
                 .into_iter()
+                .flatten()
+                .map(std::num::NonZeroUsize::get)
                 .chain(self.model_steps.map(std::num::NonZeroUsize::get))
                 .chain(self.model_events_per_step.map(std::num::NonZeroUsize::get))
                 .chain(self.tool_calls_per_step.map(std::num::NonZeroUsize::get))
@@ -120,7 +122,10 @@ impl Limits {
     ) -> Result<()> {
         self.validate(work)?;
         file.validate(work)?;
-        if file.path().len() > self.path_bytes || file.descriptor().byte_length() > self.file_bytes
+        if self
+            .path_bytes
+            .is_some_and(|maximum| file.path().len() > maximum.get())
+            || file.descriptor().byte_length() > self.file_bytes
         {
             return Err(conversation_error(
                 work,
@@ -166,7 +171,10 @@ impl Limits {
                 item_count,
             } => (&[][..], Some(manifest), *item_count as usize),
         };
-        if count > self.attachments {
+        if self
+            .attachments
+            .is_some_and(|maximum| count > maximum.get())
+        {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,
