@@ -37,19 +37,6 @@ impl CommitPlan {
         bind_histories(&mut self.histories, commit_id, time)
     }
 
-    fn publish(
-        self,
-        state: &mut State,
-        build: &mut NamespaceBuilder<'_>,
-        probe: &mut impl FnMut(),
-        key: IdempotencyKey,
-        digest: [u8; 32],
-        time: u64,
-    ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        self.stage(state, build)?
-            .publish(state, probe, key, digest, time)
-    }
-
     fn stage(
         self,
         state: &State,

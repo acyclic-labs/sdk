@@ -95,7 +95,7 @@ impl LocalStream {
     async fn settle_prepared(
         &self,
         mut command: Command,
-        mut frame: PreparedFrame,
+        frame: PreparedFrame,
         plan: crate::memory::PreparedCommit,
         ingress: Arc<crate::native::NativeCommitRecordSlot>,
     ) -> Result<
@@ -116,29 +116,32 @@ impl LocalStream {
             unreachable!()
         };
         *records.first_mut().ok_or(StreamError::InvalidArgument)? = body.clone();
-        let time = self.inner.commit_clock.source.now_unix_millis();
-        frame
-            .fill(&command, time)
-            .map_err(|error| self.frame_error(error))?;
-        self.inner
+        let publication = self.inner.publication.write().await;
+        let cursor = self
+            .inner
             .journal
             .lock()
-            .map_err(|_| StreamError::Unavailable)?
-            .admit(&frame)
-            .map_err(|error| self.frame_error(error))?;
-        self.inner.commit_clock.pin(time);
-        let publication = self.inner.publication.write().await;
-        let result = plan.settle(body).await;
-        self.inner.commit_clock.unpin();
-        let result = match result {
-            Ok(result) => {
-                if matches!(result.0, CommitOutcome::Committed(_)) {
-                    self.persist(frame).await?;
-                }
-                Ok(result)
+            .map_err(|_| self.inner.poison())?
+            .bytes;
+        let mut replica = crate::replicated::Replicated::new(
+            port::LocalPort::prepared(self.clone(), frame),
+            self.inner.provider.clone(),
+            Arc::clone(&self.inner.replica_clock),
+            cursor,
+        );
+        let result = replica.execute_prepared(&command, plan, body).await;
+        if replica.is_failed() {
+            self.inner.poison();
+        }
+        let result = result.and_then(|execution| {
+            let crate::journal::Outcome::Commit(outcome) = execution.outcome else {
+                return Err(StreamError::InvalidResponse);
+            };
+            if replica.cursor == cursor && matches!(outcome, CommitOutcome::Committed(_)) {
+                self.require_accepted_with_reservation::<true>(true)?;
             }
-            Err(error) => Err(error),
-        };
+            Ok((outcome, execution.allocation))
+        });
         let _retained = self.release_publication(publication);
         if result.is_ok() {
             self.compact_if_due().await?;

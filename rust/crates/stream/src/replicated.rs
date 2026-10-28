@@ -66,17 +66,53 @@ pub(crate) struct Execution {
     pub(crate) allocation: crate::memory::Allocation,
 }
 
+#[derive(Default)]
+struct Attempt {
+    started: bool,
+    appended: Option<AppendIf>,
+}
+
+impl Attempt {
+    async fn persist(
+        &mut self,
+        journal: &mut impl CommandJournal,
+        expected: u64,
+        frame: JournalFrame<'_>,
+    ) -> Result<(), StreamError> {
+        self.started = true;
+        let stamp = frame.at_millis;
+        let result = journal.append_if(expected, &[frame]).await?;
+        let outcome = match &result {
+            AppendIf::Accepted {
+                sequence,
+                at_millis,
+            } => {
+                if *sequence <= expected || *at_millis != stamp {
+                    return Err(StreamError::InvalidResponse);
+                }
+                Ok(())
+            }
+            AppendIf::Stale { .. } => Err(StreamError::Unavailable),
+            AppendIf::Refused(error) => Err(error.clone()),
+        };
+        self.appended = Some(result);
+        outcome
+    }
+}
+
 /// Storage owns physical ordering, durability, its acceptance clock and events.
 /// It never evaluates Stream conditions or invents a replacement retry identity.
-#[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
-#[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 pub(crate) trait CommandJournal: ProviderPlatform {
-    async fn append_if(
+    fn append_if(
         &mut self,
         expected: u64,
         frames: &[JournalFrame<'_>],
-    ) -> Result<AppendIf, StreamError>;
-    async fn read(&mut self, from: u64, page: usize) -> Result<JournalPage, StreamError>;
+    ) -> impl Future<Output = Result<AppendIf, StreamError>> + ProviderTask;
+    fn read(
+        &mut self,
+        from: u64,
+        page: usize,
+    ) -> impl Future<Output = Result<JournalPage, StreamError>> + ProviderTask;
     /// Registers atomically against `after`; an already advanced head is ready.
     fn changed(&mut self, after: u64) -> BoxProviderFuture<'static, Result<(), StreamError>>;
 }
@@ -140,6 +176,60 @@ impl<J: CommandJournal> Replicated<J> {
     fn fail(&mut self) {
         self.failed = true;
         self.provider.revisions.close();
+    }
+
+    /// Returns false only for a proven losing proposal that can be reconsidered.
+    fn complete<T>(&mut self, attempt: Attempt, result: &Result<T, StreamError>) -> bool {
+        match attempt.appended {
+            Some(AppendIf::Stale { head }) if head > self.cursor => return false,
+            Some(AppendIf::Accepted { sequence, .. }) if result.is_ok() => self.cursor = sequence,
+            Some(AppendIf::Refused(_)) => {}
+            Some(_) => self.fail(),
+            None if attempt.started
+                && matches!(
+                    result,
+                    Err(StreamError::Unavailable
+                        | StreamError::InvalidResponse
+                        | StreamError::Unsupported)
+                ) =>
+            {
+                self.fail()
+            }
+            None => {}
+        }
+        true
+    }
+
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    pub(crate) async fn execute_prepared(
+        &mut self,
+        command: &Command,
+        plan: crate::memory::PreparedCommit,
+        body: crate::AppendRecord,
+    ) -> Result<Execution, StreamError> {
+        self.refresh(1).await?;
+        let expected = self.cursor;
+        let Command::Commit(request) = command else {
+            return Err(StreamError::InvalidArgument);
+        };
+        let frame = JournalFrame {
+            command,
+            at_millis: self.clock.now_unix_millis(),
+            deadline: request.deadline_unix_millis,
+        };
+        let mut attempt = Attempt::default();
+        let result = plan
+            .with_commit_clock(Arc::clone(&self.clock) as _)
+            .settle_durable(body, attempt.persist(&mut self.journal, expected, frame))
+            .await
+            .map(|(outcome, allocation)| Execution {
+                outcome: Outcome::Commit(outcome),
+                allocation,
+            });
+        if !self.complete(attempt, &result) {
+            return Err(StreamError::PrefixNotRetained);
+        }
+        result
     }
 
     pub(crate) async fn refresh(&mut self, page: usize) -> Result<(), StreamError> {
@@ -263,74 +353,30 @@ impl<J: CommandJournal> Replicated<J> {
             self.refresh_with(page, observe).await?;
             observe.observe(&self.provider, command, false).await?;
             let expected = self.cursor;
-            let mut appended = None;
-            let mut attempted = false;
-            let clock = &self.clock;
-            let journal = &mut self.journal;
+            let mut attempt = Attempt::default();
             let frame = JournalFrame {
                 command,
-                at_millis: clock.now_unix_millis(),
+                at_millis: self.clock.now_unix_millis(),
                 deadline,
                 #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
                 changes: changes.clone(),
             };
             let result = self
                 .provider
-                .apply_durable(&canonical, deadline, async {
-                    attempted = true;
-                    let result = journal.append_if(expected, &[frame]).await?;
-                    match result {
-                        AppendIf::Accepted {
-                            sequence,
-                            at_millis,
-                        } => {
-                            if sequence <= expected {
-                                return Err(StreamError::InvalidResponse);
-                            }
-                            if at_millis != clock.now_unix_millis() {
-                                return Err(StreamError::InvalidResponse);
-                            }
-                            appended = Some(AppendIf::Accepted {
-                                sequence,
-                                at_millis,
-                            });
-                            Ok(())
-                        }
-                        AppendIf::Stale { head } => {
-                            appended = Some(AppendIf::Stale { head });
-                            Err(StreamError::Unavailable)
-                        }
-                        AppendIf::Refused(error) => {
-                            appended = Some(AppendIf::Refused(error.clone()));
-                            Err(error)
-                        }
-                    }
-                })
+                .apply_durable(
+                    &canonical,
+                    deadline,
+                    attempt.persist(&mut self.journal, expected, frame),
+                )
                 .await;
-            match appended {
-                Some(AppendIf::Stale { head }) if head > expected => {
-                    // This is the conditional journal's losing proposal. Its
-                    // uninstalled plan was dropped; catch up and decide again
-                    // under the same exact request identity and deadline.
-                    continue;
-                }
-                Some(AppendIf::Accepted { sequence, .. }) if result.is_ok() => {
-                    self.cursor = sequence;
-                    observe.observe(&self.provider, command, true).await?;
-                }
-                Some(AppendIf::Refused(_)) => {}
-                Some(_) => self.fail(),
-                None if attempted
-                    && matches!(
-                        result,
-                        Err(StreamError::Unavailable
-                            | StreamError::InvalidResponse
-                            | StreamError::Unsupported)
-                    ) =>
-                {
-                    self.fail()
-                }
-                None => {}
+            if !self.complete(attempt, &result) {
+                // This is the conditional journal's losing proposal. Its
+                // uninstalled plan was dropped; catch up and decide again
+                // under the same exact request identity and deadline.
+                continue;
+            }
+            if self.cursor > expected {
+                observe.observe(&self.provider, command, true).await?;
             }
             return result;
         }

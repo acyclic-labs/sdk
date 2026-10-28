@@ -283,8 +283,22 @@ impl MemoryStream {
 
 impl PreparedCommit {
     pub(crate) async fn settle(
+        self,
+        body: crate::AppendRecord,
+    ) -> Result<(CommitOutcome, Allocation), StreamError> {
+        self.settle_durable(body, std::future::ready(Ok(()))).await
+    }
+
+    #[cfg(feature = "local")]
+    pub(crate) fn with_commit_clock(mut self, clock: Arc<dyn UnixMillisClock>) -> Self {
+        self.provider = self.provider.with_commit_clock(clock);
+        self
+    }
+
+    pub(crate) async fn settle_durable(
         mut self,
         mut body: crate::AppendRecord,
+        persist: impl Future<Output = Result<(), StreamError>>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
         let work = Arc::clone(
             self.provider
@@ -297,7 +311,7 @@ impl PreparedCommit {
         let _ = work.record(record_codec(&mut self.codec, 0, hashed));
         let mut state = self.provider.state.write().await;
         let (mut conflicts, output_claim) = self.conflicts;
-        let result = (|| {
+        let result = async {
             if let Some(stored) = state.replay(self.key.as_bytes(), || {
                 self.provider.record_replay_probe(&mut self.probes);
                 Ok::<_, StreamError>(())
@@ -333,71 +347,72 @@ impl PreparedCommit {
                 }
             }
             drop(self.capacity.take());
-            let bytes = if conflicts.is_empty() {
-                body.payload_bytes()
-            } else {
-                0
-            };
-            self.provider.publish(bytes, || {
-                if conflicts.is_empty() {
-                    let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
-                    let time = crate::preparation::committed_time(
-                        state.last_committed_at_micros,
-                        self.provider.commit_clock.now_unix_millis(),
-                    );
-                    let id = commit_identity(decision, digest);
-                    bind_body(&mut self.plan, body)?;
-                    for history in &mut self.plan.histories {
-                        if let History::Batch {
-                            parent,
-                            records,
-                            keys,
-                            ..
-                        } = Arc::get_mut(history).ok_or(StreamError::Unavailable)?
-                        {
-                            *keys = parent
-                                .as_ref()
-                                .map_or_else(KeyTree::default, |parent| parent.keys().clone())
-                                .append_reserved(records, &mut || {
-                                    work.record(
-                                        self.key_nodes
-                                            .as_mut()
-                                            .ok_or(StreamError::Unavailable)?
-                                            .split(key_node_bytes()),
-                                    )
-                                    .map(Some)
-                                })?;
-                        }
-                    }
-                    self.plan
-                        .bind(id, time, &self.provider.revisions.at(decision))?;
-                    let _ = work.record(record_codec(
-                        &mut self.codec,
-                        2 * std::mem::size_of::<Record>() as u64,
-                        identity_bytes(),
-                    ));
-                    self.provider.install_retained(&mut state, self.retained)?;
-                    self.plan.publish(
-                        &mut state,
-                        &mut NamespaceBuilder {
-                            allocate: &|_| Err(StreamError::Capacity),
-                            reserve: Some(&mut self.namespace),
-                        },
+            if !conflicts.is_empty() {
+                let value = CommitOutcome::Conflict(conflicts);
+                let _ = work.record(record_codec(&mut self.codec, 2 * copied_bytes(&value), 0));
+                return Ok((value, output_claim));
+            }
+            let bytes = body.payload_bytes();
+            let decision = state.decision.checked_add(1).ok_or(StreamError::Capacity)?;
+            let time = crate::preparation::committed_time(
+                state.last_committed_at_micros,
+                self.provider.commit_clock.now_unix_millis(),
+            );
+            let id = commit_identity(decision, digest);
+            bind_body(&mut self.plan, body)?;
+            for history in &mut self.plan.histories {
+                if let History::Batch {
+                    parent,
+                    records,
+                    keys,
+                    ..
+                } = Arc::get_mut(history).ok_or(StreamError::Unavailable)?
+                {
+                    *keys = parent
+                        .as_ref()
+                        .map_or_else(KeyTree::default, |parent| parent.keys().clone())
+                        .append_reserved(records, &mut || {
+                            work.record(
+                                self.key_nodes
+                                    .as_mut()
+                                    .ok_or(StreamError::Unavailable)?
+                                    .split(key_node_bytes()),
+                            )
+                            .map(Some)
+                        })?;
+                }
+            }
+            self.plan
+                .bind(id, time, &self.provider.revisions.at(decision))?;
+            let _ = work.record(record_codec(
+                &mut self.codec,
+                2 * std::mem::size_of::<Record>() as u64,
+                identity_bytes(),
+            ));
+            let publication = self.plan.stage(
+                &state,
+                &mut NamespaceBuilder {
+                    allocate: &|_| Err(StreamError::Capacity),
+                    reserve: Some(&mut self.namespace),
+                },
+            )?;
+            Decision::Accepted {
+                bytes,
+                install: |state: &mut State, _durable| {
+                    self.provider.install_retained(state, self.retained)?;
+                    publication.publish(
+                        state,
                         &mut || self.provider.record_replay_probe(&mut self.probes),
                         self.key,
                         digest,
                         time,
                     )
-                } else {
-                    let value = CommitOutcome::Conflict(conflicts);
-                    let _ = work.record(record_codec(&mut self.codec, 2 * copied_bytes(&value), 0));
-                    Ok((value, output_claim))
-                }
-            })
-        })();
-        if result.is_ok() {
-            self.provider.applied(&state);
+                },
+            }
+            .durable(&self.provider, &mut state, persist)
+            .await
         }
+        .await;
         let _ = work.record(self.probes.record(16));
         work.release_write();
         result

@@ -8,7 +8,6 @@ pub(super) struct HostPort {
     pub(super) bytes: u64,
 }
 
-#[async_trait(?Send)]
 impl CommandJournal for HostPort {
     async fn read(&mut self, from: u64, page: usize) -> Result<JournalPage, StreamError> {
         if !self.configured {

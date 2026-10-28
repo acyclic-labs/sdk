@@ -13,7 +13,6 @@ struct Advancing {
     advance_clock: Option<Arc<super::TestClock>>,
 }
 
-#[async_trait]
 impl CommandJournal for Advancing {
     async fn read(&mut self, from: u64, page: usize) -> Result<JournalPage, StreamError> {
         let received = self.port.read(from, page).await?;
@@ -78,9 +77,7 @@ async fn real_journal_pages_pin_a_head_while_the_source_advances()
         );
         let mut replica = Replicated::new(
             Advancing {
-                port: port::LocalPort {
-                    stream: source.clone(),
-                },
+                port: port::LocalPort::new(source.clone()),
                 advance: Some(append(&path, head)),
                 pages: Vec::new(),
                 proposals: Vec::new(),
@@ -118,9 +115,7 @@ async fn a_lost_conditional_proposal_keeps_its_exact_command()
     let clock = Arc::new(ReplicaClock::default());
     let mut replica = Replicated::new(
         Advancing {
-            port: port::LocalPort {
-                stream: source.clone(),
-            },
+            port: port::LocalPort::new(source.clone()),
             advance: Some(append(&path, 1)),
             pages: Vec::new(),
             proposals: Vec::new(),
@@ -171,9 +166,7 @@ async fn a_lost_durable_reply_closes_the_replica_and_recovers_the_original_ident
     let clock = Arc::new(ReplicaClock::default());
     let mut replica = Replicated::new(
         Advancing {
-            port: port::LocalPort {
-                stream: source.clone(),
-            },
+            port: port::LocalPort::new(source.clone()),
             advance: None,
             pages: Vec::new(),
             proposals: Vec::new(),
@@ -234,9 +227,7 @@ async fn a_prepared_stamp_matches_recovery_when_the_acceptance_clock_advances()
     let clock = Arc::new(ReplicaClock::default());
     let mut replica = Replicated::new(
         Advancing {
-            port: port::LocalPort {
-                stream: source.clone(),
-            },
+            port: port::LocalPort::new(source.clone()),
             advance: None,
             pages: Vec::new(),
             proposals: Vec::new(),

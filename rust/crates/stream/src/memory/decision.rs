@@ -17,14 +17,6 @@ impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
         }
     }
 
-    #[cfg(any(
-        feature = "local",
-        feature = "postgres",
-        all(
-            any(feature = "wasm", feature = "wasm-journal"),
-            target_arch = "wasm32"
-        )
-    ))]
     async fn durable(
         self,
         core: &MemoryStream,

@@ -7,9 +7,50 @@ use crate::replicated::{
 /// starts a new instance after installing its snapshot under visibility.
 pub(super) struct LocalPort {
     pub(super) stream: LocalStream,
+    prepared: Option<PreparedFrame>,
 }
 
-#[async_trait]
+enum Frames {
+    One(Option<PreparedFrame>),
+    Many {
+        frames: std::vec::IntoIter<PreparedFrame>,
+        _allocation: Option<acyclic_native_runtime::ReadAllocation>,
+    },
+}
+impl Frames {
+    fn as_slice(&self) -> &[PreparedFrame] {
+        match self {
+            Self::One(frame) => frame.as_slice(),
+            Self::Many { frames, .. } => frames.as_slice(),
+        }
+    }
+}
+impl Iterator for Frames {
+    type Item = PreparedFrame;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::One(frame) => frame.take(),
+            Self::Many { frames, .. } => frames.next(),
+        }
+    }
+}
+
+impl LocalPort {
+    pub(super) fn new(stream: LocalStream) -> Self {
+        Self {
+            stream,
+            prepared: None,
+        }
+    }
+
+    pub(super) fn prepared(stream: LocalStream, frame: PreparedFrame) -> Self {
+        Self {
+            stream,
+            prepared: Some(frame),
+        }
+    }
+}
+
 impl CommandJournal for LocalPort {
     async fn read(&mut self, from: u64, page: usize) -> Result<JournalPage, StreamError> {
         let stream = self.stream.clone();
@@ -88,6 +129,16 @@ impl CommandJournal for LocalPort {
             return Err(StreamError::DeadlineElapsed);
         }
         let prepared = (|| {
+            if let Some(mut prepared) = self.prepared.take() {
+                let [frame] = frames else {
+                    return Err(StreamError::InvalidArgument);
+                };
+                prepared
+                    .fill(frame.command, frame.at_millis)
+                    .map_err(|error| self.stream.frame_error(error))?;
+                prepared.deadline = frame.deadline;
+                return Ok(Frames::One(Some(prepared)));
+            }
             let (mut prepared, allocation) = if let Some(work) = &self.stream.work {
                 work.reserve_durability(
                     (frames.len() as u64)
@@ -111,9 +162,12 @@ impl CommandJournal for LocalPort {
                 encoded.deadline = frame.deadline;
                 prepared.push(encoded);
             }
-            Ok::<_, StreamError>((prepared, allocation))
+            Ok::<_, StreamError>(Frames::Many {
+                frames: prepared.into_iter(),
+                _allocation: allocation,
+            })
         })();
-        let (prepared, allocation) = match prepared {
+        let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => return Ok(AppendIf::Refused(error)),
         };
@@ -126,6 +180,7 @@ impl CommandJournal for LocalPort {
                 .lock()
                 .map_err(|_| self.stream.inner.poison())?;
             let bytes = prepared
+                .as_slice()
                 .iter()
                 .try_fold(journal.bytes, |bytes, frame| {
                     bytes.checked_add(frame.encoded.len() as u64)
@@ -133,7 +188,7 @@ impl CommandJournal for LocalPort {
                 .ok_or(StreamError::Capacity)?;
             let operations = journal
                 .operations
-                .checked_add(prepared.len() as u64)
+                .checked_add(prepared.as_slice().len() as u64)
                 .ok_or(StreamError::Capacity)?;
             if bytes > journal.limits.journal_bytes
                 || operations > journal.limits.journal_operations
@@ -141,13 +196,7 @@ impl CommandJournal for LocalPort {
                 return Err(StreamError::Capacity);
             }
         }
-        let mut prepared = prepared.into_iter();
-        self.stream
-            .persist_frames(std::iter::from_fn(move || {
-                let _owner = &allocation;
-                prepared.next()
-            }))
-            .await?;
+        self.stream.persist_frames(prepared).await?;
         let sequence = self
             .stream
             .inner

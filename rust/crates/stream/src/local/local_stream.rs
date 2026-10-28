@@ -214,9 +214,7 @@ impl LocalStream {
             provider = provider.with_context(Arc::clone(work));
         }
         let mut replica = crate::replicated::Replicated::new(
-            port::LocalPort {
-                stream: self.clone(),
-            },
+            port::LocalPort::new(self.clone()),
             provider,
             clock,
             cursor,
@@ -324,6 +322,7 @@ impl LocalStream {
     }
 
     /// Writes one frame through the same ordered owner as a journal batch.
+    #[cfg(any(test, loom))]
     async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
         self.persist_frames(std::iter::once(frame)).await
     }
@@ -456,13 +455,21 @@ impl LocalStream {
     // Called under visibility before releasing an ordinary replay. A deferred
     // original must become required, without appending a duplicate frame.
     fn require_accepted<const REQUIRE: bool>(&self) -> Result<(), StreamError> {
+        self.require_accepted_with_reservation::<REQUIRE>(false)
+    }
+
+    fn require_accepted_with_reservation<const REQUIRE: bool>(
+        &self,
+        reserved: bool,
+    ) -> Result<(), StreamError> {
         if REQUIRE && !deferred(self) {
             let mut journal = self
                 .inner
                 .journal
                 .lock()
                 .map_err(|_| StreamError::Unavailable)?;
-            if journal.synced < journal.appended
+            if !reserved
+                && journal.synced < journal.appended
                 && let Some(work) = &self.work
             {
                 work.reserve_durability(1)?;

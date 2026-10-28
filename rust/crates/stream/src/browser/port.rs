@@ -24,7 +24,6 @@ impl<'a> BrowserPort<'a> {
     }
 }
 
-#[async_trait(?Send)]
 impl CommandJournal for BrowserPort<'_> {
     async fn read(&mut self, from: u64, page: usize) -> Result<JournalPage, StreamError> {
         let store = self

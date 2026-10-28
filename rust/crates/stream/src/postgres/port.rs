@@ -17,7 +17,6 @@ pub(super) struct PgJournal<'a> {
     pub(super) head: u64,
 }
 
-#[async_trait]
 impl CommandJournal for PgJournal<'_> {
     async fn append_if(
         &mut self,
