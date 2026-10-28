@@ -123,7 +123,6 @@ async fn read_and_list(
         &response,
     )?;
     let read = wire::ReadRequest {
-        key: None,
         generation: Some(generation.clone()),
         path: "/value".into(),
         range: None,

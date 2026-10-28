@@ -330,7 +330,6 @@ async fn wire_adapter_uses_one_engine_for_bounded_customer_semantics()
     assert!(unknown.outcome.is_none());
     let read = service
         .read(Request::new(wire::ReadRequest {
-            key: None,
             generation: Some(generation.clone()),
             path: "/dir/value".to_owned(),
             range: None,
