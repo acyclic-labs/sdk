@@ -191,6 +191,7 @@ impl TurnHost for Host {
             max_steps: 4,
             custody: None,
             selected: None,
+            checkpoint: None,
             approvals: None,
             effects: Some(self.0.clone()),
             outputs: Arc::new(Unused),

@@ -64,6 +64,7 @@ pub fn send(to: &AgentPath, sender: &Sender, record: &InboxRecord) -> Result<Com
         InboxRecord::Cancel(_) => "cancel",
         InboxRecord::Hook(_) => "hook",
         InboxRecord::Spawn(_) => "spawn",
+        InboxRecord::Context(_) => "context",
     };
     let intent = intent_of(record);
     Ok(CommitRequest {
@@ -105,6 +106,7 @@ fn intent_of(record: &InboxRecord) -> String {
         InboxRecord::ChildDone(done) => done.child.as_str().to_owned(),
         InboxRecord::Hook(hook) => hook.id.as_str().to_owned(),
         InboxRecord::Spawn(spawn) => spawn.id.as_str().to_owned(),
+        InboxRecord::Context(request) => request.id.as_str().to_owned(),
         InboxRecord::ForkAdopted(adopted) => adopted.agent.as_str().to_owned(),
     }
 }

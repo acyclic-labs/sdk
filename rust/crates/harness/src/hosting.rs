@@ -27,8 +27,9 @@ pub use acyclic_harness_core::filesystem::{
 
 use crate::{
     agent::{
-        AgentPath, AgentRecord, Control, Delivered, Error, InboxRecord, IntentId, Message, Sender,
-        SpawnOutcome, SpawnRequest, StatusRecord, requested_child,
+        AgentPath, AgentRecord, ContextAction, ContextRequest, Control, Delivered, Error,
+        InboxRecord, IntentId, Message, Sender, SpawnOutcome, SpawnRequest, StatusRecord,
+        requested_child,
     },
     model::ModelContent,
 };
@@ -314,6 +315,25 @@ where
         self.bound.tool_resource(&self.root).await
     }
 
+    /// Delivers one context request to `agent`; its checkpoint settles in
+    /// the agent's conversation like a turn.
+    async fn context(
+        &self,
+        agent: &AgentPath,
+        by: &Sender,
+        id: &IntentId,
+        action: ContextAction,
+    ) -> Result<AgentReply, Error> {
+        let record = InboxRecord::Context(ContextRequest {
+            by: by.clone(),
+            id: id.clone(),
+            action,
+        });
+        Ok(AgentReply::Delivered {
+            delivery: self.bound.agents().send(agent, by, &record).await?,
+        })
+    }
+
     async fn dispatch(&self, command: &AgentCommand, by: &Sender) -> Result<AgentReply, Error> {
         let agents = self.bound.agents();
         match command {
@@ -395,6 +415,31 @@ where
                 Ok(AgentReply::Delivered {
                     delivery: agents.send(agent, by, &record).await?,
                 })
+            }
+            AgentCommand::Compact {
+                agent,
+                id,
+                instructions,
+            } => {
+                let agent = self.within_tree(agent)?;
+                let instructions = match instructions.as_ref().map(text).transpose()? {
+                    Some(guidance) if !guidance.trim().is_empty() => Some(Box::new(
+                        self.bound
+                            .stage_text(agent, "compact", by, id, guidance)
+                            .await?,
+                    )),
+                    _ => None,
+                };
+                self.context(agent, by, id, ContextAction::Compact { instructions })
+                    .await
+            }
+            AgentCommand::Rewind { agent, id } => {
+                self.context(self.within_tree(agent)?, by, id, ContextAction::Rewind)
+                    .await
+            }
+            AgentCommand::ClearAll { agent, id } => {
+                self.context(self.within_tree(agent)?, by, id, ContextAction::Clear)
+                    .await
             }
             AgentCommand::Children { agent, page } => {
                 let agent = self.within_tree(agent)?;

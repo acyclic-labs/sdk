@@ -144,6 +144,37 @@ pub enum AgentCommand {
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         id: IntentId,
     },
+    /// Compact the agent's model context: one model request summarizes it,
+    /// and later turns start from that checkpoint.
+    Compact {
+        /// Exact recipient.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Reuse with the same instructions after an uncertain delivery.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+        /// Guidance for the summary, staged like a prompt body.
+        instructions: Option<ModelContent>,
+    },
+    /// Restore the agent's latest checkpoint, dropping every turn after it
+    /// from its model context.
+    Rewind {
+        /// Exact recipient.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Stable rewind identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+    },
+    /// Retire the agent's conversation: later turns start with no history.
+    ClearAll {
+        /// Exact recipient.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        agent: AgentPath,
+        /// Stable clear identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+    },
     /// Spawn through the host's existing fork/volume publication mechanism.
     Spawn {
         /// Exact parent.
@@ -241,7 +272,12 @@ pub enum ReadTarget {
 impl AgentCommand {
     fn validate(&self) -> Result<(), CommandError> {
         match self {
-            Self::Prompt { body, .. } | Self::Spawn { brief: body, .. } => body
+            Self::Prompt { body, .. }
+            | Self::Spawn { brief: body, .. }
+            | Self::Compact {
+                instructions: Some(body),
+                ..
+            } => body
                 .validate_user_input(&mut None)
                 .map_err(|_| CommandError::Invalid),
             Self::Decide { binding, .. } => binding.validate().map_err(|_| CommandError::Invalid),

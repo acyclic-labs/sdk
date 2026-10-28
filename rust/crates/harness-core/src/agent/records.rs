@@ -221,6 +221,39 @@ pub struct Hook {
     pub event: Box<FileRef>,
 }
 
+/// How a context request selects the agent's later model context. Each one
+/// settles as a conversation entry, a checkpoint: every later turn's context
+/// is the latest checkpoint's summary, then the turns settled after it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum ContextAction {
+    /// One model request summarizes the current context; its answer is the
+    /// checkpoint's summary.
+    Compact {
+        /// Caller guidance for the summary, staged like a message body.
+        #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef | null"))]
+        instructions: Option<Box<FileRef>>,
+    },
+    /// Restores the latest checkpoint, dropping every turn settled after it;
+    /// with none, the conversation's start.
+    Rewind,
+    /// Retires the conversation: later turns start with no history.
+    Clear,
+}
+
+/// Compact, rewind or clear the agent's model context.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContextRequest {
+    /// Requester.
+    pub by: Sender,
+    /// Stable intent identity.
+    pub id: IntentId,
+    /// The selection it makes.
+    pub action: ContextAction,
+}
+
 /// The only input to an agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -243,6 +276,8 @@ pub enum InboxRecord {
     Hook(Hook),
     /// Spawn a child on an authorized caller's request.
     Spawn(SpawnRequest),
+    /// Compact, rewind or clear the model context.
+    Context(ContextRequest),
 }
 
 /// Current phase of an agent, appended to its status stream on change and on
@@ -394,7 +429,8 @@ impl AgentRecord for InboxRecord {
             Self::ChildDone(done) => check_outcome(&done.outcome),
             Self::Message(Message { from, .. })
             | Self::Cancel(Control { by: from, .. })
-            | Self::Archive(Control { by: from, .. }) => check_sender(from),
+            | Self::Archive(Control { by: from, .. })
+            | Self::Context(ContextRequest { by: from, .. }) => check_sender(from),
             Self::Hook(hook) => check_text(&hook.host),
             Self::Spawn(spawn) => {
                 if spawn.brief.is_empty() || spawn.brief.len() > MAX_MESSAGE_BYTES {

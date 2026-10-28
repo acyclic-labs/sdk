@@ -315,6 +315,19 @@ mod tests {
                 id: intent(),
                 brief: widest_text(MAX_MESSAGE_BYTES),
             }));
+            for action in [
+                crate::agent::ContextAction::Compact {
+                    instructions: Some(Box::new(file())),
+                },
+                crate::agent::ContextAction::Rewind,
+                crate::agent::ContextAction::Clear,
+            ] {
+                records.push(InboxRecord::Context(crate::agent::ContextRequest {
+                    by: from.clone(),
+                    id: intent(),
+                    action,
+                }));
+            }
             for control in [InboxRecord::Cancel, InboxRecord::Archive] {
                 records.push(control(Control {
                     by: from.clone(),
@@ -381,6 +394,7 @@ mod tests {
                 inbox: u64::MAX,
                 input,
                 output: file(),
+                outcome: crate::agent::TurnOutcome::Cancelled,
             }
             .encode()
             .expect("a conversation entry fits");
@@ -536,7 +550,7 @@ mod tests {
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);
             }
             for input in turn_inputs() {
-                let record = ConversationEntry { inbox: u64::MAX, input, output: file() };
+                let record = ConversationEntry { inbox: u64::MAX, input, output: file(), outcome: crate::agent::TurnOutcome::Cancelled };
                 let worst = assert_record_bound(&record);
                 let sample: ConversationEntry = varied(&record, name, text);
                 proptest::prop_assert!(assert_record_bound(&sample) <= worst);

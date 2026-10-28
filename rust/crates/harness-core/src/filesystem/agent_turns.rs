@@ -3,8 +3,9 @@
 //! [`TurnExecutors`] for that agent and authority, per turn.
 //!
 //! The model context of a turn is the host's system prompt, then the agent's
-//! own conversation stream: the last settled turns as user/assistant messages,
-//! then the turn's input. The host binds exactly that selection into the turn's journal,
+//! own conversation stream from its latest checkpoint: that checkpoint's
+//! summary, the turns settled after it as user/assistant messages, then the
+//! turn's input. The host binds exactly that selection into the turn's journal,
 //! so the executor can dispatch no other history.
 
 use super::{
@@ -710,6 +711,8 @@ fn prompt_id(prompt: &str) -> uuid::Uuid {
 /// before either a child's result or a follow-up can be observed.
 struct TurnContext<'a> {
     prompt: Option<&'a str>,
+    /// The latest checkpoint: its turn and its staged summary.
+    checkpoint: Option<(OperationId, FileRef)>,
     settled: Vec<(OperationId, ModelContent, FileRef)>,
     turn: OperationId,
     input: &'a ModelContent,
@@ -717,16 +720,35 @@ struct TurnContext<'a> {
 }
 
 impl<'a> TurnContext<'a> {
-    /// The context of `agent`'s `turn` over its settled `history`.
+    /// The context of `agent`'s `turn` over its settled `history`: from its
+    /// latest checkpoint on, which replaces every entry before it.
     fn new(
         agent: &'a AgentState,
         prompt: Option<&'a str>,
-        history: Vec<ConversationEntry>,
+        mut history: Vec<ConversationEntry>,
         turn: OperationId,
         input: &'a ModelContent,
     ) -> Result<Self> {
+        let checkpoint = match history
+            .iter()
+            .rposition(|entry| entry.checkpoint().is_some())
+        {
+            Some(at) => {
+                let after = history.split_off(at + 1);
+                let entry = std::mem::replace(&mut history, after)
+                    .pop()
+                    .ok_or_else(|| Error::Invalid("checkpoint entry is absent".into()))?;
+                Some((
+                    crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?,
+                    entry.output,
+                ))
+            }
+            None => None,
+        };
+        // A cancelled checkpoint selects nothing and is no turn.
         let settled = history
             .into_iter()
+            .filter(|entry| entry.input.context().is_none())
             .map(|entry| {
                 Ok((
                     crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?,
@@ -737,6 +759,7 @@ impl<'a> TurnContext<'a> {
             .collect::<Result<_>>()?;
         Ok(Self {
             prompt,
+            checkpoint,
             settled,
             turn,
             input,
@@ -751,16 +774,23 @@ impl<'a> TurnContext<'a> {
     /// on an ancestor's private volume, a child's result on the child's), and
     /// the approval policy.
     fn files(&self) -> impl Iterator<Item = &FileRef> {
-        self.settled
+        self.checkpoint
             .iter()
-            .flat_map(|(_, input, output)| input.file_refs().chain(std::iter::once(output)))
+            .map(|(_, summary)| summary)
+            .chain(
+                self.settled.iter().flat_map(|(_, input, output)| {
+                    input.file_refs().chain(std::iter::once(output))
+                }),
+            )
             .chain(self.input.file_refs())
             .chain(self.policy)
     }
 
-    /// The selection: one user and one assistant message per settled turn,
-    /// assistant text read from its staged output through `reader`, which
-    /// holds [`Self::files`]. Without a prompt or history there is none.
+    /// The selection: the checkpoint's summary as one assistant message
+    /// (none when it is empty), then one user and one assistant message per
+    /// settled turn, assistant text read from its staged output through
+    /// `reader`, which holds [`Self::files`]. Without a prompt or history
+    /// there is none.
     async fn select(
         self,
         agent: &AgentState,
@@ -769,11 +799,17 @@ impl<'a> TurnContext<'a> {
     ) -> Result<Option<SelectedModelContext>> {
         let Self {
             prompt,
+            checkpoint,
             settled,
             turn,
             ..
         } = self;
-        if settled.is_empty() && prompt.is_none() {
+        let summary = match checkpoint {
+            Some((checkpoint, output)) => Some((checkpoint, staged_text(reader, &output).await?))
+                .filter(|(_, summary)| !summary.is_empty()),
+            None => None,
+        };
+        if settled.is_empty() && summary.is_none() && prompt.is_none() {
             return Ok(None);
         }
         let mut messages = Vec::with_capacity(2 * settled.len() + 2);
@@ -785,12 +821,15 @@ impl<'a> TurnContext<'a> {
             });
             message_ids.push(prompt_id(prompt));
         }
+        if let Some((checkpoint, summary)) = summary {
+            messages.push(ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text(summary),
+            });
+            message_ids.push(message_id(checkpoint, ModelRole::Assistant));
+        }
         for (settled, content, output) in settled {
-            let bytes = reader
-                .read(&output, output.descriptor().byte_length(), None, None)?
-                .await?;
-            let output: TurnOutput = serde_json::from_slice(&bytes)
-                .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
+            let text = staged_text(reader, &output).await?;
             messages.push(ModelMessage {
                 role: ModelRole::User,
                 content: crate::agent::expand_attachments(content, reader).await?,
@@ -798,7 +837,7 @@ impl<'a> TurnContext<'a> {
             message_ids.push(message_id(settled, ModelRole::User));
             messages.push(ModelMessage {
                 role: ModelRole::Assistant,
-                content: ModelContent::Text(output.text),
+                content: ModelContent::Text(text),
             });
             message_ids.push(message_id(settled, ModelRole::Assistant));
         }
@@ -816,6 +855,17 @@ impl<'a> TurnContext<'a> {
             messages,
         }))
     }
+}
+
+/// The assistant text of a staged turn output, read through `reader` at its
+/// pinned length.
+async fn staged_text(reader: &dyn ContentResidencyVerifier, output: &FileRef) -> Result<String> {
+    let bytes = reader
+        .read(output, output.descriptor().byte_length(), None, None)?
+        .await?;
+    serde_json::from_slice::<TurnOutput>(&bytes)
+        .map(|output| output.text)
+        .map_err(|_| Error::Invalid("staged turn output is malformed".into()))
 }
 
 impl<P, A, O> TurnHost for FilesystemTurnHost<P, A, O>
@@ -841,6 +891,10 @@ where
             // The turn's grant is derived from its context, before the turn
             // can observe anything: every file the context can reach.
             let context = TurnContext::new(agent, self.prompt.as_deref(), history, turn, input)?;
+            let checkpoint = context
+                .checkpoint
+                .as_ref()
+                .map(|(_, output)| output.clone());
             let external: Vec<FileRef> = context.files().cloned().collect();
             let (journal, bindings, files) = self.journal(admitted, &external)?;
             // Every file the context reaches is readable under the turn's
@@ -906,6 +960,7 @@ where
                 max_steps: self.limits.max_steps,
                 custody: Some(authority.issuer),
                 selected,
+                checkpoint,
                 approvals: Some(approvals),
                 effects,
                 goal,

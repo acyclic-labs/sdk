@@ -340,8 +340,11 @@ impl HostDriver {
                 });
                 None
             }
-            // Native hosts decide their own tool approvals.
-            TurnInput::Approval { .. } | TurnInput::ApprovalRequested { .. } => {
+            // Native hosts decide their own tool approvals and own their
+            // model context.
+            TurnInput::Approval { .. }
+            | TurnInput::ApprovalRequested { .. }
+            | TurnInput::Context { .. } => {
                 return Ok(idle(Vec::new()));
             }
             TurnInput::Hook { host, id, event } if host == HOST => {
@@ -384,6 +387,7 @@ impl HostDriver {
             inbox,
             input,
             output,
+            outcome: Default::default(),
         };
         outs.push(Out::Conversation(entry.encode().map_err(storage)?));
         Ok(TurnStep {

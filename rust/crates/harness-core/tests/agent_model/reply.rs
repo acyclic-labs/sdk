@@ -22,6 +22,7 @@ fn entry(inbox: u64, input: TurnInput) -> Result<Vec<u8>> {
         inbox,
         input,
         output: file("output")?,
+        outcome: Default::default(),
     }
     .encode()?)
 }

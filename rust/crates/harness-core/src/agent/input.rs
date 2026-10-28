@@ -1,7 +1,7 @@
 //! A turn's input: what it runs, the inbox sequence that carried it, and
 //! which input a waiting turn takes ahead of the window.
 
-use super::{AgentPath, ChildDone, InboxRecord, IntentId, Phase, Sender};
+use super::{AgentPath, ChildDone, ContextAction, InboxRecord, IntentId, Phase, Sender};
 use crate::conversation::FileRef;
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +63,27 @@ pub enum TurnInput {
         #[cfg_attr(feature = "wasm", tsify(type = "WasmAgentFileRef"))]
         event: Box<FileRef>,
     },
+    /// A context request; its entry is a checkpoint.
+    Context {
+        /// Requester.
+        from: Sender,
+        /// Request identity.
+        #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+        id: IntentId,
+        /// The selection it makes.
+        action: ContextAction,
+    },
+}
+
+impl TurnInput {
+    /// The selection a checkpoint entry's input makes; `None` for a turn.
+    #[must_use]
+    pub const fn context(&self) -> Option<&ContextAction> {
+        match self {
+            Self::Context { action, .. } => Some(action),
+            _ => None,
+        }
+    }
 }
 
 /// One input held for the turn, at the inbox sequence of the record that
@@ -107,6 +128,11 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
             host: hook.host,
             id: hook.id,
             event: hook.event,
+        }),
+        InboxRecord::Context(request) => Some(TurnInput::Context {
+            from: request.by,
+            id: request.id,
+            action: request.action,
         }),
         InboxRecord::ForkAdopted(_)
         | InboxRecord::Cancel(_)

@@ -268,7 +268,12 @@ fn validate_reply(
         | (AgentReply::Settlement { .. }, AgentCommand::Settlement { .. })
         | (
             AgentReply::Delivered { .. },
-            AgentCommand::Prompt { .. } | AgentCommand::Cancel { .. } | AgentCommand::Decide { .. },
+            AgentCommand::Prompt { .. }
+            | AgentCommand::Cancel { .. }
+            | AgentCommand::Decide { .. }
+            | AgentCommand::Compact { .. }
+            | AgentCommand::Rewind { .. }
+            | AgentCommand::ClearAll { .. },
         ) => return Ok(()),
         (AgentReply::Reply { reply }, AgentCommand::Reply { id, inbox, .. }) => {
             // An answer is the entry of exactly the requested message.

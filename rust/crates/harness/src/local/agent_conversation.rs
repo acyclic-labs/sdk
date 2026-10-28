@@ -4,11 +4,18 @@
 //! remote alike; observation is one [`super::Observer`] of its status, its
 //! settled conversation entries and its tool output. Frontends render its
 //! events; it holds no frontend state.
+//!
+//! [`Conversation::compact`], [`Conversation::rewind`] and
+//! [`Conversation::clear_all`] select the model context of later turns. Each
+//! settles like a turn, as one conversation entry, a checkpoint, which the
+//! observer reports as [`super::Event::Turn`] whose input [`checkpoint`] names:
+//! later turns see that checkpoint's summary, then the turns after it.
 use super::Connection;
 use crate::{
     Error, Result,
     agent::{
-        AgentPath, ConversationEntry, Delivered, IntentId, Phase, Reply, StatusRecord, TurnInput,
+        AgentPath, ContextAction, ConversationEntry, Delivered, IntentId, Phase, Reply,
+        StatusRecord, TurnInput,
     },
     conversation::FileRef,
     executor::TurnOutput,
@@ -74,6 +81,59 @@ impl Conversation {
         }
     }
 
+    /// The inbox sequence `command` committed at, which its settled entry
+    /// carries.
+    async fn committed(&self, command: &AgentCommand) -> Result<u64> {
+        match self.delivered(command).await? {
+            Delivered::Committed { inbox } => Ok(inbox),
+            Delivered::Closed => Err(Error::Conflict("conversation is archived".into())),
+        }
+    }
+
+    /// Compact the conversation as request `id`: one model request
+    /// summarizes the current context, guided by `instructions`, and later
+    /// turns start from that summary. Returns its inbox sequence; the
+    /// checkpoint settles as the entry at it. The same id replays exactly.
+    ///
+    /// # Errors
+    /// Session, host or decoding failures.
+    pub async fn compact(&self, id: &str, instructions: Option<&str>) -> Result<u64> {
+        self.committed(&AgentCommand::Compact {
+            agent: self.agent().clone(),
+            id: intent(id)?,
+            instructions: instructions.map(|text| ModelContent::Text(text.to_owned())),
+        })
+        .await
+    }
+
+    /// Rewind the conversation as request `id` to its latest checkpoint:
+    /// every turn settled after it leaves later turns' context. Returns its
+    /// inbox sequence, like [`Self::compact`].
+    ///
+    /// # Errors
+    /// Session, host or decoding failures.
+    pub async fn rewind(&self, id: &str) -> Result<u64> {
+        self.committed(&AgentCommand::Rewind {
+            agent: self.agent().clone(),
+            id: intent(id)?,
+        })
+        .await
+    }
+
+    /// Retire the conversation as request `id`: later turns, and a reopened
+    /// transcript, start after it with no history. Returns its inbox
+    /// sequence, like [`Self::compact`].
+    ///
+    /// # Errors
+    /// Session, host or decoding failures.
+    pub async fn clear_all(&self, id: &str) -> Result<u64> {
+        self.committed(&AgentCommand::ClearAll {
+            agent: self.agent().clone(),
+            id: intent(id)?,
+        })
+        .await
+    }
+
     /// Send `prompt` as message `id`; returns its inbox sequence. The same id
     /// and prompt replay exactly.
     ///
@@ -85,13 +145,9 @@ impl Conversation {
             id: intent(id)?,
             body: ModelContent::Text(prompt.to_owned()),
         };
-        match self.delivered(&command).await? {
-            Delivered::Committed { inbox } => {
-                tracing::debug!(id, inbox, "message committed");
-                Ok(inbox)
-            }
-            Delivered::Closed => Err(Error::Conflict("conversation is archived".into())),
-        }
+        let inbox = self.committed(&command).await?;
+        tracing::debug!(id, inbox, "message committed");
+        Ok(inbox)
     }
 
     /// Stop the running turn; the conversation stays open.
@@ -305,6 +361,13 @@ impl Conversation {
         let (_, statuses, _) = self.settlement().await?;
         super::Observer::open(&self.connection, from, statuses.saturating_sub(1))
     }
+}
+
+/// The selection a settled `entry` made when it is a checkpoint (a
+/// compaction, rewind or clear); `None` for a turn.
+#[must_use]
+pub const fn checkpoint(entry: &ConversationEntry) -> Option<&ContextAction> {
+    entry.checkpoint()
 }
 
 /// Whether `status` ends the wait for a turn without its output: the agent

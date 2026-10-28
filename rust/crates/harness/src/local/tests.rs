@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use std::{path::Path, sync::Arc};
 
 mod agents;
+mod context;
 
 fn scripted(turns: impl IntoIterator<Item = ScriptedTurn>) -> Arc<ScriptedModelProvider> {
     Arc::new(ScriptedModelProvider::new(turns).with_context_capacity(capacity()))

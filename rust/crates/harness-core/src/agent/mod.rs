@@ -34,8 +34,8 @@ pub use commit::{
     Spawn, Submitted, archive, create_root, inbox_tail, intent_key, send, spawn, submit,
 };
 pub use driver::{
-    ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnOutputs, approval_intent,
-    expand_attachments, model_input, turn_id,
+    COMPACT_INSTRUCTION, ConversationEntry, ExecutorDriver, OpenTurn, TurnHost, TurnOutcome,
+    TurnOutputs, approval_intent, expand_attachments, model_input, turn_id,
 };
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};
@@ -49,10 +49,10 @@ pub use machine::{
     step,
 };
 pub use records::{
-    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, Closed, Control,
-    ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES, MAX_MESSAGE_BYTES,
-    MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase, Sender, SpawnRequest, StatusRecord,
-    VolumeBinding,
+    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, Closed, ContextAction,
+    ContextRequest, Control, ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES,
+    MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase, Sender, SpawnRequest,
+    StatusRecord, VolumeBinding,
 };
 pub use reply::{Reply, reply};
 
