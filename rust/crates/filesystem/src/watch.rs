@@ -1,4 +1,4 @@
-//! Bounded native change notifications for materialized checkouts.
+//! Native change notifications for materialized checkouts.
 #![allow(
     clippy::result_large_err,
     reason = "Watch admission failures must not allocate another error owner."
@@ -24,7 +24,7 @@ use notify::event::{ModifyKind, RenameMode};
 use notify::{Event, EventKind};
 use std::mem::size_of;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{TryRecvError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -215,13 +215,11 @@ impl WatchBatchOriginal {
     }
 }
 
-/// Bounded native watcher configuration.
+/// Native watcher configuration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeWatchOptions {
     /// Volume path/name bounds used while converting host paths.
     pub limits: VolumeLimits,
-    /// Maximum queued native changes before typed invalidation.
-    pub maximum_queued_changes: u32,
     /// Whether descendants are observed recursively.
     pub recursive: bool,
 }
@@ -257,16 +255,8 @@ impl NativeWatchOptions {
     pub const fn new(limits: VolumeLimits) -> Self {
         Self {
             limits,
-            maximum_queued_changes: 16_384,
             recursive: true,
         }
-    }
-
-    fn validate(self) -> Result<Self, NativeWatchError> {
-        if self.maximum_queued_changes == 0 {
-            return Err(NativeWatchError::InvalidOptions);
-        }
-        Ok(self)
     }
 }
 
@@ -379,8 +369,6 @@ struct NativeEventContext {
     root_identity: NativeRootIdentity,
     profile: FilesystemProfile,
     limits: VolumeLimits,
-    #[cfg(any(target_os = "linux", windows))]
-    maximum_queued_changes: u32,
     _root_allocation: Option<crate::NativeAllocation>,
 }
 
@@ -548,7 +536,7 @@ struct NativeEventDelivery {
     context: NativeEventContext,
     sender: QueueSender<QueuedWatchChange>,
     shared: Arc<Mutex<SharedState>>,
-    queued: Arc<AtomicU32>,
+    queued: Arc<AtomicUsize>,
     fenced: Arc<Condvar>,
 }
 
@@ -665,21 +653,6 @@ impl NativeEventDelivery {
         // replacement. Fence and capture still verify its native identity.
         if relative.as_os_str().is_empty() && mask & !(libc::IN_ATTRIB | libc::IN_ISDIR) != 0 {
             state.invalidation = Some(WatchInvalidationReason::RootChanged);
-            return Ok(());
-        }
-        let completes_rename = mask & libc::IN_MOVED_TO != 0
-            && state
-                .pending_rename
-                .as_ref()
-                .is_some_and(|pending| pending.tracker == cookie);
-        if !completes_rename
-            && self
-                .queued
-                .load(Ordering::Acquire)
-                .saturating_add(u32::from(state.pending_rename.is_some()))
-                >= self.context.maximum_queued_changes
-        {
-            state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
             return Ok(());
         }
         let payload = match namespace_hint_with_work(
@@ -1231,24 +1204,6 @@ impl WindowsRootSink {
         if state.invalidation.is_some() {
             return Ok(());
         }
-        let completes_rename = action.is_some_and(|(action, cookie)| {
-            action == 5
-                && state
-                    .pending_rename
-                    .as_ref()
-                    .is_some_and(|pending| pending.tracker == cookie)
-        });
-        if !completes_rename
-            && self
-                .delivery
-                .queued
-                .load(Ordering::Acquire)
-                .saturating_add(u32::from(state.pending_rename.is_some()))
-                >= self.delivery.context.maximum_queued_changes
-        {
-            state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-            return Ok(());
-        }
         let payload = match namespace_hint_names_with_work(
             names,
             self.delivery.context.profile,
@@ -1426,7 +1381,7 @@ pub struct NativeWatch {
     held_root: NativeWatchHeldRoot,
     #[cfg(windows)]
     windows_delivery: Arc<NativeEventDelivery>,
-    queued: Arc<AtomicU32>,
+    queued: Arc<AtomicUsize>,
     shared: Arc<Mutex<SharedState>>,
     fenced: Arc<Condvar>,
     fences: u64,
@@ -1716,7 +1671,7 @@ impl NativeWatch {
         if cfg!(any(target_os = "linux", target_os = "macos", windows))
             && !(cfg!(target_os = "linux") && options.recursive)
         {
-            let root = Self::ordinary_root(root.as_ref(), options, &mut work)
+            let root = Self::ordinary_root(root.as_ref(), &mut work)
                 .map_err(|error| OperationFailure::new(error, work.receipt()))?;
             let native = crate::NativeMaterializationWork::from_demand(work)
                 .map_err(|(error, spent)| OperationFailure::new(error.into(), *spent))?;
@@ -1752,11 +1707,9 @@ impl NativeWatch {
 
     fn ordinary_root<W: crate::demand::SourceDemandReadWork>(
         requested: &Path,
-        options: NativeWatchOptions,
         work: &mut W,
     ) -> Result<PathBuf, NativeWatchError> {
         work.check().map_err(demand_watch_error)?;
-        options.validate()?;
         work.started_io(WorkCounters {
             backend_read_operations: 1,
             ..WorkCounters::UNCHARGED
@@ -1812,7 +1765,6 @@ impl NativeWatch {
         original: Option<&crate::NativeMaterializationWork>,
     ) -> Result<Self, NativeWatchError> {
         work.check().map_err(demand_watch_error)?;
-        let options = options.validate()?;
         if cfg!(target_os = "linux")
             && options.recursive
             && (original.is_some()
@@ -1837,7 +1789,7 @@ impl NativeWatch {
         let root_path = if original.is_some() {
             requested_root
         } else {
-            ordinary_root = Self::ordinary_root(requested_root, options, work)?;
+            ordinary_root = Self::ordinary_root(requested_root, work)?;
             &ordinary_root
         };
         let cleanup = original
@@ -1884,28 +1836,13 @@ impl NativeWatch {
             .ok_or(NativeWatchError::SourceUnavailable)?;
         let held = &*held;
         let (root, root_allocation) = Self::copy_startup_path(root_path, work, original)?;
-        let capacity = usize::try_from(options.maximum_queued_changes)
-            .map_err(|_| NativeWatchError::InvalidOptions)?;
-        let queue_bytes = (capacity as u64)
-            .checked_mul(size_of::<WatchChange>() as u64)
-            .ok_or(WorkError::Overflow)?;
-        let queue_allocation = if let Some(original) = original {
-            // Queue capacity is an admission bound. Its backing grows with
-            // occupancy and carries its own original-ledger allocation guard.
-            Some(original.claim(0, 0, crate::WorkCounters::UNCHARGED)?)
-        } else {
-            work.claim_allocation(
-                queue_bytes,
-                u64::from((queue_bytes) != 0),
-                crate::WorkCounters::UNCHARGED,
-            )
-            .map_err(demand_watch_error)?;
-            None
-        };
+        let queue_allocation = original
+            .map(|original| original.claim(0, 0, crate::WorkCounters::UNCHARGED))
+            .transpose()?;
         Self::startup_control(work)?;
-        let (sender, receiver) = crate::watch_queue::bounded(capacity, queue_allocation);
+        let (sender, receiver) = crate::watch_queue::channel(queue_allocation);
         Self::startup_control(work)?;
-        let queued = Arc::new(AtomicU32::new(0));
+        let queued = Arc::new(AtomicUsize::new(0));
         Self::startup_control(work)?;
         let state = SharedState::new(Some(WatchInvalidationReason::InitialSnapshotRequired));
         let shared = Arc::new(Mutex::new(state));
@@ -1920,8 +1857,6 @@ impl NativeWatch {
             root_identity,
             profile,
             limits: options.limits,
-            #[cfg(any(target_os = "linux", windows))]
-            maximum_queued_changes: options.maximum_queued_changes,
             _root_allocation: context_allocation,
         };
         #[cfg(windows)]
@@ -1946,8 +1881,6 @@ impl NativeWatch {
                 root_identity,
                 profile,
                 limits: options.limits,
-                #[cfg(target_os = "linux")]
-                maximum_queued_changes: options.maximum_queued_changes,
                 _root_allocation: context_allocation,
             };
             let callback_shared = Arc::clone(&shared);
@@ -1999,7 +1932,6 @@ impl NativeWatch {
                     root_identity,
                     profile,
                     limits: options.limits,
-                    maximum_queued_changes: options.maximum_queued_changes,
                     _root_allocation: event_allocation,
                 },
                 sender: linux_sender,
@@ -3718,12 +3650,13 @@ impl NativeWatch {
                     reason,
                 }
             } else {
-                let queued = self.queued.load(Ordering::Acquire).min(maximum_changes);
-                let capacity =
-                    usize::try_from(queued).map_err(|_| NativeWatchError::InvalidOptions)?;
+                let capacity = self
+                    .queued
+                    .load(Ordering::Acquire)
+                    .min(maximum_changes as usize);
                 let next = self
                     .next_sequence
-                    .checked_add(u64::from(queued))
+                    .checked_add(capacity as u64)
                     .ok_or(NativeWatchError::SequenceExhausted)?;
                 let bytes = capacity
                     .checked_mul(size_of::<WatchChange>())
@@ -4085,7 +4018,7 @@ fn accept_native_event(
     context: &NativeEventContext,
     sender: &QueueSender<QueuedWatchChange>,
     shared: &Arc<Mutex<SharedState>>,
-    queued: &Arc<AtomicU32>,
+    queued: &Arc<AtomicUsize>,
 ) {
     let Ok(mut state) = shared.lock() else {
         return;
@@ -4129,9 +4062,6 @@ fn accept_native_event(
                 }
                 match mode {
                     RenameMode::From if state.pending_rename.is_none() => {
-                        if queued.load(Ordering::Acquire) >= context.maximum_queued_changes {
-                            return Err(WatchInvalidationReason::QueueOverflow);
-                        }
                         state.pending_rename = Some(PendingRename {
                             tracker,
                             from: path,
@@ -4180,15 +4110,6 @@ fn accept_native_event(
         }
     };
     for change in changes {
-        #[cfg(target_os = "linux")]
-        if queued
-            .load(Ordering::Acquire)
-            .saturating_add(u32::from(state.pending_rename.is_some()))
-            >= context.maximum_queued_changes
-        {
-            state.invalidation = Some(WatchInvalidationReason::QueueOverflow);
-            break;
-        }
         match sender.try_send(QueuedWatchChange {
             change,
             allocations: [None, None],

@@ -539,7 +539,7 @@ export interface FsCheckout {
   materialize?(options: MaterializeOptions): Promise<MaterializationResult>;
   capture?( sourceRoot: string, paths: readonly string[], maximumPaths: number, maximumExtentSpans: number, ): Promise<CaptureResult>;
   captureBaseline?( sourceRoot: string, maximumPaths: number, maximumExtentSpans: number, ): Promise<CaptureResult>;
-  watch?( sourceRoot: string, maximumQueuedChanges: number, recursive: boolean, ): NativeWatcher;
+  watch?( sourceRoot: string, recursive: boolean, ): NativeWatcher;
   cancel?(): void;
 }
 export interface NativeMount {
@@ -609,7 +609,6 @@ export interface NativeSourceOptions {
   readonly mode: "pinned" | "tracking";
   readonly maximumPaths: number;
   readonly maximumExtentSpans: number;
-  readonly maximumQueuedChanges: number;
   /** Canonical absolute prefixes omitted from capture and deletion inference. */
   readonly excludedPaths?: readonly string[];
 }
