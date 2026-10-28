@@ -228,124 +228,37 @@ impl ActorsClient {
         )
         .await
     }
+}
 
-    /// Execute `DeployNamespace` with an encoded protobuf request.
-    pub async fn deploy_namespace(
-        &self,
-        request: &[u8],
-        signal: Option<JsValue>,
-    ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("DeployNamespace", request))
-            .await
-    }
+macro_rules! operation_wrappers {
+    ($(($method:ident, $name:literal)),+ $(,)?) => {
+        #[wasm_bindgen]
+        impl ActorsClient {
+            $(
+            #[doc = concat!("Execute `", $name, "` with an encoded protobuf request.")]
+            pub async fn $method(
+                &self,
+                request: &[u8],
+                signal: Option<JsValue>,
+            ) -> Result<Vec<u8>, JsValue> {
+                self.run(signal, self.inner.call($name, request)).await
+            }
+            )+
+        }
+    };
+}
 
-    /// Execute `DeployWorker` with an encoded protobuf request.
-    pub async fn deploy_worker(
-        &self,
-        request: &[u8],
-        signal: Option<JsValue>,
-    ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("DeployWorker", request))
-            .await
-    }
-
-    /// Execute `InvokeWorker` with an encoded protobuf request.
-    pub async fn invoke_worker(
-        &self,
-        request: &[u8],
-        signal: Option<JsValue>,
-    ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("InvokeWorker", request))
-            .await
-    }
-
-    /// Execute `DeleteWorker` with an encoded protobuf request.
-    pub async fn delete_worker(
-        &self,
-        request: &[u8],
-        signal: Option<JsValue>,
-    ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("DeleteWorker", request))
-            .await
-    }
-
-    /// Execute `UpdateNamespace` with an encoded protobuf request.
-    pub async fn update_namespace(
-        &self,
-        request: &[u8],
-        signal: Option<JsValue>,
-    ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("UpdateNamespace", request))
-            .await
-    }
-
-    /// Execute `InspectActor` with an encoded protobuf request.
-    pub async fn inspect_actor(
-        &self,
-        request: &[u8],
-        signal: Option<JsValue>,
-    ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("InspectActor", request))
-            .await
-    }
-
-    /// Execute `AddSubscription` with an encoded protobuf request.
-    pub async fn add_subscription(
-        &self,
-        request: &[u8],
-        signal: Option<JsValue>,
-    ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("AddSubscription", request))
-            .await
-    }
-
-    /// Execute `RemoveSubscription` with an encoded protobuf request.
-    pub async fn remove_subscription(
-        &self,
-        request: &[u8],
-        signal: Option<JsValue>,
-    ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("RemoveSubscription", request))
-            .await
-    }
-
-    /// Execute `ResumeSubscription` with an encoded protobuf request.
-    pub async fn resume_subscription(
-        &self,
-        request: &[u8],
-        signal: Option<JsValue>,
-    ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("ResumeSubscription", request))
-            .await
-    }
-
-    /// Execute `CheckpointActor` with an encoded protobuf request.
-    pub async fn checkpoint_actor(
-        &self,
-        request: &[u8],
-        signal: Option<JsValue>,
-    ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("CheckpointActor", request))
-            .await
-    }
-
-    /// Execute `InvokeActor` with an encoded protobuf request.
-    pub async fn invoke_actor(
-        &self,
-        request: &[u8],
-        signal: Option<JsValue>,
-    ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("InvokeActor", request))
-            .await
-    }
-
-    /// Execute `DeleteAll` with an encoded protobuf request.
-    pub async fn delete_all(
-        &self,
-        request: &[u8],
-        signal: Option<JsValue>,
-    ) -> Result<Vec<u8>, JsValue> {
-        self.run(signal, self.inner.call("DeleteAll", request))
-            .await
-    }
+operation_wrappers! {
+    (deploy_namespace, "DeployNamespace"),
+    (deploy_worker, "DeployWorker"),
+    (invoke_worker, "InvokeWorker"),
+    (delete_worker, "DeleteWorker"),
+    (update_namespace, "UpdateNamespace"),
+    (inspect_actor, "InspectActor"),
+    (add_subscription, "AddSubscription"),
+    (remove_subscription, "RemoveSubscription"),
+    (resume_subscription, "ResumeSubscription"),
+    (checkpoint_actor, "CheckpointActor"),
+    (invoke_actor, "InvokeActor"),
+    (delete_all, "DeleteAll"),
 }
