@@ -56,8 +56,14 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
             }
             for (key, bound) in [
                 ("model_steps", value.model_steps),
-                ("model_events_per_step", value.model_events_per_step),
-                ("tool_calls_per_step", value.tool_calls_per_step),
+                (
+                    "model_events_per_step",
+                    value.model_events_per_step.map(std::num::NonZeroUsize::get),
+                ),
+                (
+                    "tool_calls_per_step",
+                    value.tool_calls_per_step.map(std::num::NonZeroUsize::get),
+                ),
             ] {
                 let bound = bound
                     .map(|count| exact_js_number(count as u64))

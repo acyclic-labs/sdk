@@ -47,8 +47,9 @@ impl ExecutionRecordQuery<'_> {
             .zip(limits.tool_calls_per_step)
             .map(|(events, calls)| {
                 events
+                    .get()
                     .saturating_mul(2)
-                    .saturating_add(calls.saturating_mul(3))
+                    .saturating_add(calls.get().saturating_mul(3))
                     .saturating_add(7)
             })
     }
