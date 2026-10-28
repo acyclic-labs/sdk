@@ -1197,3 +1197,8 @@ Canonical descriptor and Stream contract generation passed on `dabc96ee038356b37
 | Constant or policy | File:line | Category | Action |
 |---|---|---|---|
 | `SettingsConfig.maximum_file_bytes`1MiB | `rust/crates/harness-core/src/native_settings.rs:24,69`; `native_settings/model.rs:12` | 1 deleted; optional caller policy retained | Default None. One shared file reader serves model selection and hook/MCP snapshots; explicitly selected finite positive policies retain zero/overflow and actual oversize refusal. Existing real-file regression now loads a >1MiB TOML document through both public consumers, verifies selected MCP/model identities, and preserves both selected-policy negatives and malformed UTF-8. One file open, one owned read buffer and one parser per consumer; no reread or extra serialization pass. Qualification pending. |
+
+
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
+| `SimulationOptions.maximum_scheduled_faults`4,096 / `maximum_trace_entries`65,536 / `maximum_pending_objects`4,096 / `maximum_pending_object_bytes`256MiB | `rust/crates/filesystem/src/simulation/mod.rs:117`; `simulation/state.rs:19,55`; `simulation/objects.rs:132` | 1 deleted | Delete the options type, schedule/trace/delayed-value refusals, ZeroBound/ScheduleFull variants and cap-only assertions. Constructors become infallible. Existing ordered fault/pending maps and geometrically growing trace retain complete work. Original finite native trace/copy admission, cancellation, delayed-byte ownership, exact occurrence/duplicate/fault compatibility and digest validation remain. Delayed-object integration verifies both independent values become visible at flush. Qualification pending. |
