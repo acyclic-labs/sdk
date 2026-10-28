@@ -26,7 +26,7 @@ case "$mode" in
 esac
 echo "GATE_PACKAGES tests ${test_pkgs[*]}"
 echo "GATE_PACKAGES clippy ${clippy_pkgs[*]}"
-if [ ${#test_pkgs[@]} -eq 0 ]; then
+if [ "$mode" = affected ] && [ ${#test_pkgs[@]} -eq 0 ]; then
   echo 'GATE_EMPTY no changed Cargo inputs'
   echo 'GATE_DONE rc=0'
   exit 0
@@ -37,8 +37,10 @@ bash scripts/gate-rust-format.sh || exit $?
 cargo metadata --locked --offline --no-deps --format-version 1 > "$gate_output/.gate-pr-metadata.json" || exit 2
 if [ "$mode" = full ]; then
   names=$(python3 scripts/gate-packages.py --defaults < "$gate_output/.gate-pr-metadata.json") || exit 2
-  clippy_pkgs=()
-  while IFS= read -r name; do clippy_pkgs+=(-p "$name"); done <<< "$names"
+  test_pkgs=(); clippy_pkgs=()
+  while IFS= read -r name; do
+    test_pkgs+=(-p "$name"); clippy_pkgs+=(-p "$name")
+  done <<< "$names"
 fi
 gate_fuzz_executables="$gate_output/.gate-fuzz-executables"
 : > "$gate_fuzz_executables" || exit 2

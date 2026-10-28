@@ -11,7 +11,13 @@ meta=$(cargo metadata --locked --no-deps --format-version 1) || {
   rc=$?; echo 'STEP_FAILED gate-metadata; recovery: cargo metadata --locked --no-deps --format-version 1'
   echo "GATE_DONE rc=$rc"; exit "$rc"
 }
-if [ "$(tr -d '\r' < .gate-scope-mode)" = full ]; then
+mode=$(tr -d '\r' < .gate-scope-mode 2>/dev/null) || mode=
+case "$mode" in
+  full|affected) ;;
+  *) echo "STEP_FAILED gate-scope: invalid or missing .gate-scope-mode; recovery: printf 'full\\n' > .gate-scope-mode && bash scripts/gate-lite.sh"
+     echo 'GATE_DONE rc=2'; exit 2;;
+esac
+if [ "$mode" = full ]; then
   full=1
   names=$(printf '%s' "$meta" | python3 scripts/gate-packages.py --defaults) || {
     rc=$?; echo "GATE_DONE rc=$rc"; exit "$rc"
@@ -19,12 +25,20 @@ if [ "$(tr -d '\r' < .gate-scope-mode)" = full ]; then
   while IFS= read -r p; do args+=(-p "$p"); selected+=("$p"); done <<< "$names"
   fmt_args=(--all)
 else
+  if [ ! -f .gate-tests-packages ] || [ ! -f .gate-clippy-packages ]; then
+    echo "STEP_FAILED gate-packages: missing affected scope files; recovery: printf 'full\\n' > .gate-scope-mode && bash scripts/gate-lite.sh"
+    echo 'GATE_DONE rc=2'; exit 2
+  fi
   while IFS= read -r p; do
     [ -z "$p" ] || { args+=(-p "$p"); selected+=("$p"); }
   done < <(cat .gate-tests-packages .gate-clippy-packages | tr -d '\r' | sort -u)
+  if [ ${#selected[@]} = 0 ]; then
+    echo 'GATE_EMPTY no changed Cargo inputs'
+    echo 'GATE_DONE rc=0'; exit 0
+  fi
   fmt_args=("${args[@]}")
 fi
-echo "GATE_LITE_START scope=$(tr -d '\r' < .gate-scope-mode) crates=$((${#args[@]} / 2))"
+echo "GATE_LITE_START scope=$mode crates=$((${#args[@]} / 2))"
 if [ "$full" = 1 ]; then
   bash scripts/gate-rust-format.sh --stage; rc=$?
 else
