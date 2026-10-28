@@ -157,7 +157,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace = self.open(&workspace_ref.0, Some(io)).await?;
         let generation = match expected_generation {
             Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
-            None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+            None => self.current_generation(&workspace, io).await?,
         };
         let view = private_read_view(&workspace, grant, generation.id(), ceiling, io).await?;
         super::super::access::require(&view.0, acyclic_fs::access::Action::List, path, io)?;
@@ -205,15 +205,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )
             .await?;
         }
-        reference.1.into_retained()?;
-        if let Some(hold) = bytes.1 {
-            hold.into_retained()?;
-        }
         super::super::access::require_current(&workspace, &view.0, io).await?;
         if let Some((workspace, view)) = &data_access {
             super::super::access::require_current(workspace, &view.0, io).await?;
         }
         grant.recheck(Some(io))?;
+        reference.1.into_retained()?;
+        if let Some(hold) = bytes.1 {
+            hold.into_retained()?;
+        }
         Ok((reference.0, bytes.0, publication))
     }
 

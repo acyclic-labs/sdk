@@ -136,7 +136,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         guard().await?;
         let generation = match request.generation {
             Some(expected) => self.generation(&workspace, expected, Some(io)).await?,
-            None => io.sdk(workspace.head(io, io.cancellation()).await)?,
+            None => self.current_generation(&workspace, io).await?,
         };
         guard().await?;
         let scope = request.grant.policy_scope();

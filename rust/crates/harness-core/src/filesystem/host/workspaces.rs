@@ -87,7 +87,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .await,
             )?,
             None => io.sdk(
-                workspace
+                self.current_generation(&workspace, io)
+                    .await?
                     .read(path, maximum_bytes, io, io.cancellation())
                     .await,
             )?,
@@ -428,7 +429,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             &owned
         };
         let workspace = self.open(reference, Some(io)).await?;
-        let head = io.sdk(workspace.head(io, io.cancellation()).await)?;
+        let head = self.current_generation(&workspace, io).await?;
         let reference = crate::executor::with_history_io(Some(io), |work| {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let resource = crate::core::copy_resource(reference.as_resource(), &mut quota)?;

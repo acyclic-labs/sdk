@@ -6,9 +6,7 @@ use crate::{
     tool::{ToolExecutor, ToolInvocation, ToolResult},
 };
 use acyclic_fs::distributed::AuthorityProvider;
-use acyclic_fs::{
-    GitCompatStore, StreamAuthorityStore, StreamGitCompatStore, WorkspaceGraph, WorkspaceResolver,
-};
+use acyclic_fs::{StreamAuthorityStore, StreamGitCompatStore, WorkspaceGraph, WorkspaceResolver};
 use acyclic_stream::BoxProviderFuture;
 
 /// Filesystem commands over the remote placement itself, without a machine.
@@ -134,17 +132,15 @@ impl<P: AuthorityProvider + ?Sized + 'static, O: AsyncObjectStore + 'static> Fil
             .register_root(&root)
             .await
             .map_err(<StreamGitCompatStore<P> as crate::tools::git::CommandStore>::lineage_error)?;
-        let selected = match GitCompatStore::load(&self.store, root.id())
+        let (selected, pending) = repository
+            .checkout_selection()
             .await
-            .map_err(<StreamGitCompatStore<P> as crate::tools::git::CommandStore>::error)?
-        {
-            Some(state) => state
-                .branches
-                .get(&state.current_branch)
-                .map(|branch| branch.workspace_id)
-                .ok_or_else(|| Error::Conflict("filesystem branch selection is invalid".into()))?,
-            None => root.id(),
-        };
+            .map_err(crate::tools::git::compat_error::<StreamGitCompatStore<P>>)?;
+        if pending.is_some() {
+            return Err(Error::Conflict(
+                "filesystem checkout requires its original publication reconciliation".into(),
+            ));
+        }
         let workspace = if selected == root.id() {
             root.clone()
         } else {
