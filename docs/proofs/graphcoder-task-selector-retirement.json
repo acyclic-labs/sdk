@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "owner": "del-tooling",
+  "decision": "Retire two orphan qualifier selectors together with exact historical source mapping; retain every live selected test and all current assertion bodies",
+  "retirement": {
+    "commit": "8078fa93ebcc59eb039019cfc9541c38dadd646c",
+    "pr": 1644,
+    "parent": "3b37d404357dc422e3c42da42b6e619be79fa7e1",
+    "contract": "Former task-volume FileKey/Query range index and disposable open-approval fold; entire old harness loop was retired by the merged product owner",
+    "signature_limit": "Local git reports E for this historical merged commit; new mapping does not upgrade historical signer trust"
+  },
+  "selectors": [
+    {
+      "prefix": "task_volume::approval_query::tests::",
+      "source": "rust/crates/harness-core/src/task_volume/approval_query.rs",
+      "oracles": [
+        "open_and_exact_selections_examine_no_settled_history",
+        "pending_fold_never_retains_settled_requests"
+      ],
+      "contract": "Original open-request fold excludes settled history; exact lookup bounded candidate count; full-history negative and independent event-fold property remain captured"
+    },
+    {
+      "prefix": "task_volume::schema::query::tests::folder_ranges_do_not_visit_unrelated_task_history",
+      "source": "rust/crates/harness/tests/task_volume/ranges.rs",
+      "oracles": [
+        "folder_ranges_do_not_visit_unrelated_task_history"
+      ],
+      "routing_limit": "The actual former case lived under harness integration task_volume::ranges, not this core library prefix",
+      "contract": "Original Query candidate counts exclude 10000 unrelated chunks and match independent full-key predicates including Unicode and missing task/request cases"
+    }
+  ],
+  "historical_source": {
+    "archive": "D:\\lane-scratch\\del-tooling\\m3\\retired-selector-source\\parent-3b37-task-volume-with-target-roots.tar",
+    "sha256": "f37540a9a6d7ededb3d78bb025af03b99c4dea0fba30c7d00a25a41b5b4e0bbe",
+    "member_inventory": "D:\\lane-scratch\\del-tooling\\m3\\retired-selector-source\\source-with-target-roots.json",
+    "members": [
+      {
+        "path": "rust/crates/harness-core/src/task_volume/approval_query.rs",
+        "mode": "100644",
+        "blob": "6bb3616691d33390f9d78c17e4af4ed601ea6914",
+        "sha256": "9e006e0e09000cef89c8cc20cc65b42b66f4a1f4a96ccf4977ca9beaf76b4714",
+        "bytes": 5002
+      },
+      {
+        "path": "rust/crates/harness-core/src/task_volume/query.rs",
+        "mode": "100644",
+        "blob": "0ab983c1e76491adb8971afd5ac45ee9df2f4296",
+        "sha256": "633b0a553b578fe224fabcb864f2bddb9eaea3ce115050d73d6214430e2dd02c",
+        "bytes": 23330
+      },
+      {
+        "path": "rust/crates/harness-core/src/task_volume/mod.rs",
+        "mode": "100644",
+        "blob": "2ff90113686740ee539ad73536b38ddd75149f0a",
+        "sha256": "bf03c1e627b4068e8f3b16333dc1b6e3b5f092bbf17b375549038307056336ad",
+        "bytes": 29055
+      },
+      {
+        "path": "rust/crates/harness/tests/task_volume/ranges.rs",
+        "mode": "100644",
+        "blob": "a7d3d1b461b1ddddfaaca0a7c44ef42e1801f0f2",
+        "sha256": "13c5adee8765e409f0c2e053479fb819ed9c32c6d021134d2071539cbef45855",
+        "bytes": 7217
+      },
+      {
+        "path": "rust/crates/harness/tests/cases/task_volume.rs",
+        "mode": "100644",
+        "blob": "50b63205a5e5a324525ee9a9f920bae125332f8f",
+        "sha256": "6e2bc8ad32f2348afea2c6a38e472b05138cf038ef13ff3e612dddfa079350d8",
+        "bytes": 19941
+      },
+      {
+        "path": "rust/crates/harness/tests/main.rs",
+        "mode": "100644",
+        "blob": "dc55b818e3e760011634d3b0c5fa0dabd6e06482",
+        "sha256": "0d866b120d716b46ae8af28bfc7087eeb0a885c592eb5166300d7eb696401bb6",
+        "bytes": 4950
+      },
+      {
+        "path": "rust/crates/harness-core/Cargo.toml",
+        "mode": "100644",
+        "blob": "cce95484df74897b6f6b4c1937145b889658f9a7",
+        "sha256": "0d82818e74a3553eb6b7e431feb1a00b3a4099aa952ca586d29d281cd98ad339",
+        "bytes": 7198
+      },
+      {
+        "path": "rust/crates/harness/Cargo.toml",
+        "mode": "100644",
+        "blob": "8c48ac280303ba5cad65eaf7ea7a3fed6cb7b3a2",
+        "sha256": "3798fe2c75c7e42d21e6e32013dc757d6cea20c9a123e307ca23d622221ac274",
+        "bytes": 10001
+      }
+    ]
+  },
+  "retained_live_contracts": "Current shared AgentHost approval vectors retain pending/decision/exact-action/replay assertions. They are distinct contracts and are not relabeled as historical task-index performance equivalence. All remaining GraphCoder selectors, physical process isolation and strict per-filter nonempty refusal remain.",
+  "qualification": "No old/control test execution, no inferred proof pass, no current product equivalence, no test-body deletion or deletion credit. Reconstruct historical targets using the original full parent checkout; archive contains original target roots/manifests and all captured task-volume sources.",
+  "actual_case_inventory": {
+    "source": "312bc92b9d701a06be23d26d566441198eed9169",
+    "job": "1793167027720-90794-fc8482d0",
+    "counts": {
+      "core": 1116,
+      "harness": 128
+    },
+    "scope": "Actual compiled binary --list output only, no test bodies or model schedules executed",
+    "zero_matching_retired_filters": true,
+    "remaining_core_filter_counts": {
+      "executor::tool_execution::cancellation_tests::": 1,
+      "command_request::diff_tests::": 2,
+      "native_settings::model::tests::": 2
+    },
+    "remaining_harness_filters": "Twelve additional old harness library filters have zero names in the actual128-case list; remain explicitly OPEN and unchanged pending their distinct source/contract mapping. The16-case checkout capture group remains selected."
+  }
+}
