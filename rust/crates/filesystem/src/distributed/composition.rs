@@ -134,6 +134,43 @@ impl FilesystemCommit {
         }
     }
 
+    pub(super) fn record_holds(
+        &self,
+        prepared: &Self,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<Vec<crate::PublicationHold>, AuthorityStoreError> {
+        work.vec(
+            self.holds
+                .len()
+                .checked_add(prepared.holds.len())
+                .ok_or(crate::WorkError::Overflow)?,
+        )
+    }
+
+    pub(super) fn install_records(
+        &mut self,
+        prepared: Self,
+        mut combined: Vec<crate::PublicationHold>,
+    ) {
+        let Self {
+            request,
+            mut holds,
+            sealed,
+            deadline,
+            owner,
+            allocation,
+            ..
+        } = prepared;
+        combined.append(&mut self.holds);
+        combined.append(&mut holds);
+        self.request = request;
+        self.holds = combined;
+        self.sealed = sealed;
+        self.deadline = deadline;
+        self.owner = owner;
+        self.allocation = allocation;
+    }
+
     fn ensure_unclaimed(&self, authority: AuthorityId) -> Result<(), AuthorityStoreError> {
         if self.sealed {
             return Err(AuthorityStoreError::RejectedStatic(
@@ -387,7 +424,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         commit.check_owner(owner)?;
         if !commit.sealed {
             let copied = work.copy_commit(&commit.request)?;
-            let request = self.with_policy_cuts(copied, &[], work)?;
+            let mut request = self.with_policy_cuts(copied, &[], work)?;
+            acyclic_stream::request::validate_commit(&mut request).map_err(map_stream_error)?;
             commit.request = request;
             commit.sealed = true;
             commit.bind_owner(owner);

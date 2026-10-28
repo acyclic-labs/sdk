@@ -159,7 +159,7 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
         work: &mut AuthorityWork<'_>,
     ) -> Result<RecordReceipt, AuthorityStoreError> {
         let held = self.record(path.clone(), sequence, work).await?;
-        let encoded = work.encode_state(expected, operation)?;
+        let encoded = work.encode_state(expected, operation, &path)?;
         let comparison = WorkCounters {
             items_examined: encoded.len() as u64 + 1,
             ..WorkCounters::UNCHARGED
@@ -237,7 +237,7 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
                 "duplicate filesystem state contribution",
             ));
         }
-        let encoded = work.encode_state(record, &commit.request().idempotency_key)?;
+        let encoded = work.encode_state(record, &commit.request().idempotency_key, path)?;
         let mut records = work.vec(1)?;
         records.push(encoded.into());
         let condition = clone_condition(&observed.condition, work)?;

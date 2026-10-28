@@ -76,6 +76,7 @@ async fn portable_root_and_companion_share_one_record_and_exact_receipt() -> Tes
     let decoded = StateRecord::decode(record.value.clone())?;
     assert_eq!(decoded.state, state(b"overlay+shadows"));
     assert_eq!(decoded.operation.as_bytes(), b"create");
+    assert_eq!(decoded.published_at.as_ref(), path.as_str().as_bytes());
     assert_eq!(provider.tail(path).await?, 1);
     let mut wrong = receipt;
     wrong.commit_id = acyclic_stream::CommitId::from_bytes([255; 32]);
@@ -460,4 +461,435 @@ fn unknown(
         FilesystemCommitOutcome::Unknown { commit, .. } => Ok(commit),
         _ => Err("lost-ack owner was not preserved".into()),
     }
+}
+
+#[tokio::test]
+async fn prepared_state_batches_reconcile_all_roots_and_refs_from_exact_records() -> TestResult {
+    for count in [1, 8, 64] {
+        let provider = Arc::new(MemoryStream::default());
+        let store = StreamAuthorityStore::new(provider.clone());
+        let cancellation = CancellationToken::new();
+        let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
+        let mut updates = Vec::new();
+        let first = StreamPath::new("actor/files/0")?;
+        for index in 0..count {
+            let path = StreamPath::new(format!("actor/files/{index}"))?;
+            let observed = store.observe_record(path, &mut work).await?;
+            updates.push((
+                observed.observation,
+                state(b"root+metadata"),
+                crate::PublicationHold::none(),
+            ));
+        }
+        let refs = store
+            .observe_record(StreamPath::new("actor/refs")?, &mut work)
+            .await?;
+        updates.push((
+            refs.observation,
+            StateRecord::Companion {
+                kind: CompanionKind::GitRefs,
+                payload: OwnedBytes::from_static(b"refs-snapshot"),
+            },
+            crate::PublicationHold::none(),
+        ));
+        let mut publication = commit(b"all-roots")?;
+        store.prepare_records(&mut publication, updates, &[], Some(u64::MAX), &mut work)?;
+        assert!(publication.request_mut().is_none());
+        assert_eq!(publication.request().mutations.len(), count + 1);
+        assert_eq!(
+            provider.tail(first.clone()).await,
+            Err(StreamError::NotFound)
+        );
+
+        // Capture a real provider decision, then discard the reply. Recovery
+        // never consults the decision cache or republishes the command.
+        let CommitOutcome::Committed(envelope) =
+            provider.commit(publication.request().clone()).await?
+        else {
+            return Err("prepared state batch conflicted".into());
+        };
+        let recorded_id = envelope.commit_id;
+        drop(envelope);
+        publish(
+            &store,
+            &first,
+            b"later-operation",
+            &state(b"later"),
+            &mut work,
+        )
+        .await?;
+        let before = work.spent();
+        assert!(
+            matches!(store.reconcile_states(publication, &mut work).await,
+            StatePublicationOutcome::Recorded(id) if id == recorded_id)
+        );
+        assert_eq!(
+            work.spent().backend_read_operations - before.backend_read_operations,
+            (count + 1) as u64
+        );
+        assert_eq!(
+            work.spent().backend_write_operations,
+            before.backend_write_operations
+        );
+        assert_eq!(provider.tail(first).await?, 2);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_state_batch_restores_caller_conditions_and_publishes_nothing() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = StreamAuthorityStore::new(provider.clone());
+    let foreign = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
+    let path = StreamPath::new("actor/files/root")?;
+    publish(&store, &path, b"initial", &state(b"old"), &mut work).await?;
+    let observed = store.observe_record(path.clone(), &mut work).await?;
+    let other = foreign
+        .observe_record(StreamPath::new("actor/files/foreign")?, &mut work)
+        .await?;
+    let mut publication = commit(b"refused-batch")?;
+    publication
+        .request_mut()
+        .ok_or("unexpected seal")?
+        .conditions
+        .push(CommitCondition::Tail {
+            path: path.clone(),
+            expected: 1,
+        });
+    let before = publication.request().clone();
+    assert!(
+        store
+            .prepare_records(
+                &mut publication,
+                [
+                    (
+                        observed.observation,
+                        state(b"new"),
+                        crate::PublicationHold::none()
+                    ),
+                    (
+                        other.observation,
+                        state(b"foreign"),
+                        crate::PublicationHold::none()
+                    ),
+                ],
+                &[],
+                None,
+                &mut work
+            )
+            .is_err()
+    );
+    // The first contribution strengthened Tail -> Head in the draft. It must
+    // not leak into the original request when the second contribution refuses.
+    assert_eq!(publication.request(), &before);
+    assert!(publication.request_mut().is_some());
+    assert_eq!(provider.tail(path).await?, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn inherited_state_is_readable_but_cannot_settle_a_destination_append() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = StreamAuthorityStore::new(provider.clone());
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
+    let source = StreamPath::new("actor/source")?;
+    let destination = StreamPath::new("actor/child")?;
+    let key = IdempotencyKey::new(OwnedBytes::from_static(b"same-operation"))?;
+    let observed = store.observe_record(destination.clone(), &mut work).await?;
+    let mut publication = commit(b"same-operation")?;
+    store.prepare_records(
+        &mut publication,
+        [(
+            observed.observation,
+            state(b"same"),
+            crate::PublicationHold::none(),
+        )],
+        &[],
+        None,
+        &mut work,
+    )?;
+    let original = publication.request().clone();
+    let envelope = publish(
+        &store,
+        &source,
+        b"same-operation",
+        &state(b"same"),
+        &mut work,
+    )
+    .await?;
+    provider
+        .fork(acyclic_stream::ForkRequest {
+            exclude: Vec::new(),
+            source: source.clone(),
+            destination: destination.clone(),
+            at_tail: Some(1),
+            idempotency_key: None,
+        })
+        .await?;
+    let inherited = store
+        .read_receipt(
+            &RecordReceipt {
+                path: destination.clone(),
+                sequence: 0,
+                commit_id: envelope.commit_id,
+            },
+            &mut work,
+        )
+        .await?;
+    let decoded = StateRecord::decode(inherited.record.ok_or("missing inherited state")?.value)?;
+    assert_eq!(decoded.state, state(b"same"));
+    assert_eq!(decoded.published_at.as_ref(), source.as_str().as_bytes());
+    assert!(
+        store
+            .reconcile_record(destination.clone(), 0, &key, &state(b"same"), &mut work)
+            .await
+            .is_err()
+    );
+    match store.reconcile_states(publication, &mut work).await {
+        StatePublicationOutcome::Unknown { commit, .. } => assert_eq!(commit.request(), &original),
+        _ => {
+            return Err(
+                "an inherited source record settled an unsubmitted destination append".into(),
+            );
+        }
+    }
+    assert_eq!(provider.tail(destination).await?, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn stale_batch_root_metadata_policy_or_actor_publishes_no_root_or_ref() -> TestResult {
+    for changed in ["left", "metadata", "policy", "actor"] {
+        let provider = Arc::new(MemoryStream::default());
+        let store = StreamAuthorityStore::new(provider.clone());
+        let cancellation = CancellationToken::new();
+        let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
+        let mut updates = Vec::new();
+        let mut observations = Vec::new();
+        for suffix in ["left", "right", "refs", "metadata", "policy", "actor"] {
+            let path = StreamPath::new(format!("batch/{suffix}"))?;
+            publish(
+                &store,
+                &path,
+                match suffix {
+                    "left" => b"initial-left",
+                    "right" => b"initial-right",
+                    "refs" => b"initial-refs",
+                    "metadata" => b"initial-metadata",
+                    "policy" => b"initial-policy",
+                    _ => b"initial-actor",
+                },
+                &state(b"old"),
+                &mut work,
+            )
+            .await?;
+            let observed = store.observe_record(path, &mut work).await?;
+            if matches!(suffix, "left" | "right" | "refs") {
+                let next = if suffix == "refs" {
+                    StateRecord::Companion {
+                        kind: CompanionKind::GitRefs,
+                        payload: OwnedBytes::from_static(b"new-refs"),
+                    }
+                } else {
+                    state(b"new-root+metadata")
+                };
+                updates.push((observed.observation, next, crate::PublicationHold::none()));
+            } else {
+                observations.push(observed.observation);
+            }
+        }
+        let mut publication = commit(b"batch-with-authorized-observations")?;
+        store.prepare_records(&mut publication, updates, &observations, None, &mut work)?;
+        publish(
+            &store,
+            &StreamPath::new(format!("batch/{changed}"))?,
+            b"advance",
+            &state(b"advanced"),
+            &mut work,
+        )
+        .await?;
+        assert!(matches!(
+            store.submit(publication, &mut work).await?,
+            FilesystemCommitOutcome::Rejected(_)
+        ));
+        for suffix in ["left", "right", "refs", "metadata", "policy", "actor"] {
+            assert_eq!(
+                provider
+                    .tail(StreamPath::new(format!("batch/{suffix}"))?)
+                    .await?,
+                if suffix == changed { 2 } else { 1 }
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn oversized_state_batch_leaves_the_original_request_and_no_published_prefix() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = StreamAuthorityStore::new(provider.clone());
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    let record = StateRecord::Companion {
+        kind: CompanionKind::OperationOutcome,
+        payload: vec![1; acyclic_stream::MAX_RECORD_BYTES - 128].into(),
+    };
+    let mut updates = Vec::new();
+    for index in 0..17 {
+        let cut = store
+            .observe_record(StreamPath::new(format!("large/root{index}"))?, &mut work)
+            .await?;
+        updates.push((
+            cut.observation,
+            record.clone(),
+            crate::PublicationHold::none(),
+        ));
+    }
+    let mut publication = commit(b"oversized-atomic-batch")?;
+    publication
+        .request_mut()
+        .ok_or("unexpected seal")?
+        .conditions
+        .push(CommitCondition::Absent {
+            path: StreamPath::new("caller/condition")?,
+        });
+    let original = publication.request().clone();
+    assert!(matches!(
+        store.prepare_records(&mut publication, updates, &[], None, &mut work),
+        Err(AuthorityStoreError::NativeStream(
+            StreamError::LimitExceeded
+        ))
+    ));
+    assert_eq!(publication.request(), &original);
+    assert!(publication.request_mut().is_some());
+    for index in 0..17 {
+        assert_eq!(
+            provider
+                .tail(StreamPath::new(format!("large/root{index}"))?)
+                .await,
+            Err(StreamError::NotFound)
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn identical_state_bytes_from_separate_commits_are_not_one_publication() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = StreamAuthorityStore::new(provider.clone());
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
+    let mut publication = commit(b"original-operation")?;
+    let mut updates = Vec::new();
+    for suffix in ["left", "right"] {
+        let observed = store
+            .observe_record(StreamPath::new(format!("actor/files/{suffix}"))?, &mut work)
+            .await?;
+        updates.push((
+            observed.observation,
+            state(b"same"),
+            crate::PublicationHold::none(),
+        ));
+    }
+    store.prepare_records(&mut publication, updates, &[], None, &mut work)?;
+    let original = publication.request().clone();
+    for (index, mutation) in original.mutations.iter().enumerate() {
+        let CommitMutation::Append { path, .. } = mutation else {
+            return Err("unexpected fork".into());
+        };
+        let decision = provider
+            .commit(CommitRequest {
+                conditions: vec![CommitCondition::Absent { path: path.clone() }],
+                mutations: vec![mutation.clone()],
+                idempotency_key: IdempotencyKey::new(format!("separate-{index}").into_bytes())?,
+            })
+            .await?;
+        assert!(matches!(decision, CommitOutcome::Committed(_)));
+    }
+    match store.reconcile_states(publication, &mut work).await {
+        StatePublicationOutcome::Unknown {
+            commit,
+            error: AuthorityStoreError::NativeStream(StreamError::IdempotencyMismatch),
+        } => assert_eq!(commit.request(), &original),
+        _ => return Err("separate commits were accepted as one publication".into()),
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn state_reconciliation_refusals_keep_actual_lost_ack_custody() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let spy = Arc::new(super::tests::ReleaseSpy::losing_ack(provider.clone()));
+    let store = StreamAuthorityStore::new(spy.clone());
+    let foreign = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
+            .map_err(|(error, _)| error)?;
+    let baseline = original.live_allocation_bytes();
+    let collection = Arc::new(crate::collection::Collection::default());
+    let hold = collection.unswept().await.into_hold();
+    let mut preparation = AuthorityWork::native(&original, &cancellation);
+    let observed = store.authorized_observation(CommitCondition::Absent {
+        path: StreamPath::new("actor/files/held")?,
+    })?;
+    let mut publication = commit(b"held-state-batch")?;
+    store.prepare_records(
+        &mut publication,
+        [(observed, state(b"accepted"), hold)],
+        &[],
+        Some(u64::MAX),
+        &mut preparation,
+    )?;
+    let request = publication.request().clone();
+    drop(preparation);
+    let retained = original.live_allocation_bytes();
+    assert!(retained > baseline);
+    let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
+    let mut publication = unknown(store.submit(publication, &mut work).await?)?;
+    let mut collecting = Box::pin(collection.begin());
+    assert!(futures::poll!(collecting.as_mut()).is_pending());
+    let stopped = CancellationToken::new();
+    stopped.cancel();
+    let mut cancelled = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &stopped);
+    publication = match store.reconcile_states(publication, &mut cancelled).await {
+        StatePublicationOutcome::Unknown { commit, .. } => commit,
+        _ => return Err("cancelled reconciliation lost its unresolved owner".into()),
+    };
+    let mut exhausted = AuthorityWork::new(
+        WorkBudget {
+            items_examined: 0,
+            ..crate::performance::BOUNDARY_BUDGET
+        },
+        &cancellation,
+    );
+    publication = match store.reconcile_states(publication, &mut exhausted).await {
+        StatePublicationOutcome::Unknown { commit, .. } => commit,
+        _ => return Err("finite reconciliation refusal lost its unresolved owner".into()),
+    };
+    publication = match foreign.reconcile_states(publication, &mut work).await {
+        StatePublicationOutcome::Unknown { commit, .. } => commit,
+        _ => return Err("foreign reconciliation settled another owner's request".into()),
+    };
+    assert_eq!(publication.request(), &request);
+    assert_eq!(publication.deadline(), Some(u64::MAX));
+    assert_eq!(original.live_allocation_bytes(), retained);
+    assert!(futures::poll!(collecting.as_mut()).is_pending());
+    assert!(matches!(
+        store.reconcile_states(publication, &mut work).await,
+        StatePublicationOutcome::Recorded(_)
+    ));
+    assert_eq!(spy.commit_attempts(), 1);
+    assert!(futures::poll!(collecting.as_mut()).is_ready());
+    drop(request);
+    drop(work);
+    drop(store);
+    drop(spy);
+    drop(provider);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+    Ok(())
 }
