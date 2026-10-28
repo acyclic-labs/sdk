@@ -3,13 +3,13 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { fromBinary, fromJson, toBinary, toJson } from "@bufbuild/protobuf";
 import * as actors from "../../actors/generated/proto/actors/v1/actors_pb.js";
-import { PutObjectHeaderSchema } from "../../objects/generated/proto/objects/v1/objects_pb.js";
 import { WorkersDeploymentClient } from "../dist/deployment.js";
 
 const golden = JSON.parse(await readFile(new URL("../../../../rust/crates/workers/tests/fixtures/cloud-workers/golden.json", import.meta.url)));
 
 test("Named Worker deployment retains canonical request/response JSON", async () => {
   const seen = [];
+  const blob = { blake3: new Uint8Array(32).fill(7) };
   const rpc = (name, input, output) => async bytes => {
     seen.push(name);
     assert.deepEqual(toJson(input, fromBinary(input, bytes)), golden[name].request);
@@ -27,13 +27,19 @@ test("Named Worker deployment retains canonical request/response JSON", async ()
       };
     } },
   }, {
-    async put(header, bytes) {
+    async put(bytes) {
       seen.push("publish");
-      assert.deepEqual(toJson(PutObjectHeaderSchema, header), golden.publish.request);
       assert.equal(new TextDecoder().decode(bytes), golden.code);
+      return { outcome: { case: "created", value: { digest: blob, length: BigInt(bytes.byteLength) } } };
+    },
+    async retain(root, references) {
+      seen.push("retain");
+      assert.equal(new TextDecoder().decode(root), golden.publish.root);
+      assert.deepEqual(references, [blob]);
+      return { references: 1n };
     },
   });
-  const digest = await client.publish(new TextEncoder().encode(golden.code), "publish-code");
+  const digest = await client.publish(new TextEncoder().encode(golden.code));
   assert.equal(Buffer.from(digest).toString("hex"), golden.publish.sha256);
   const created = await client.deploy(fromJson(actors.DeploymentRequestSchema, golden.deploy.request));
   assert.equal(created.deployment.name, golden.deploy.response.deployment.name);
@@ -43,7 +49,7 @@ test("Named Worker deployment retains canonical request/response JSON", async ()
   assert.equal(new TextDecoder().decode(Uint8Array.from(invoked.body)), "output");
   assert.deepEqual(invoked.headers, golden.invoke.response.headers);
   await client.delete(fromJson(actors.DeleteWorkerRequestSchema, golden.delete.request));
-  assert.deepEqual(seen, ["publish", "deploy", "invoke", "delete"]);
+  assert.deepEqual(seen, ["publish", "retain", "deploy", "invoke", "delete"]);
 });
 
 test("failed publication does not return a digest or enter the lifecycle", async () => {
@@ -51,8 +57,16 @@ test("failed publication does not return a digest or enter the lifecycle", async
   const client = new WorkersDeploymentClient({
     endpoint: "http://127.0.0.1:1234", token: "fixture-token",
     binding: { connect: () => assert.fail("publication connected to Actors") },
-  }, { put: async () => { throw failure; } });
-  await assert.rejects(client.publish(new Uint8Array([1]), "publish"), error => error === failure);
+  }, { put: async () => { throw failure; }, retain: () => assert.fail("a failed put was retained") });
+  await assert.rejects(client.publish(new Uint8Array([1])), error => error === failure);
+});
+
+test("an unknown publication outcome is never retained or returned", async () => {
+  const client = new WorkersDeploymentClient({
+    endpoint: "http://127.0.0.1:1234", token: "fixture-token",
+    binding: { connect: () => assert.fail("publication connected to Actors") },
+  }, { put: async () => ({ outcome: { case: "unknown", value: true } }), retain: () => assert.fail("an unknown put was retained") });
+  await assert.rejects(client.publish(new Uint8Array([1])), error => error.code === 13);
 });
 
 test("fixtures distinguish proposed SDK deployment from historical Cloud code", () => {

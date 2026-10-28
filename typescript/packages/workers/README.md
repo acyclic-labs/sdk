@@ -1,8 +1,8 @@
 # @acyclic-labs/workers
 
-Workers are named script deployments, alongside actor namespace deployments. This example publishes `worker.mjs` (a module exporting `default.fetch`, without an actor export), deploys a named script, invokes it and deletes it. The account must already own the `actors-code` Objects bucket.
+Workers are named script deployments, alongside actor namespace deployments. This example publishes `worker.mjs` (a module exporting `default.fetch`, without an actor export), deploys a named script, invokes it and deletes it.
 
-Uses the canonical Objects and Actors contracts. Publication stores exact module bytes at `sha256/<digest>`. No mutation is automatically retried.
+Uses the canonical Objects and Actors contracts. Publication stores exact module bytes as an Objects blob retained under the code's own root until unpublished. No mutation is automatically retried.
 
 ```ts
 import { readFile } from "node:fs/promises";
@@ -12,7 +12,7 @@ import { WorkersDeploymentClient } from "@acyclic-labs/workers";
 
 const options = { endpoint: process.env.EDGE_ENDPOINT!, token: process.env.ACYCLIC_API_KEY! };
 const workers = new WorkersDeploymentClient(options, new HttpObjectsV1(options));
-const digest = await workers.publish(await readFile("worker.mjs"), "publish-worker");
+const digest = await workers.publish(await readFile("worker.mjs"));
 const { deployment } = await workers.deploy({
   name: await ActorNamespace("example-worker"), accountId: new Uint8Array(), jurisdiction: "", expectedRevision: 0n,
   codeSha256: await CodeSha256(digest), bindings: [], subscriptions: [],

@@ -19,7 +19,7 @@ function body(source, declaration) {
 }
 
 const objectMethods = {
-  PutObject: "put", GetObject: "get", HeadObject: "head", DeleteObject: "delete", ListObjects: "list", RestoreObjects: "restore",
+  PutBlob: "put", GetBlob: "get", HeadBlob: "head", DeleteBlob: "delete", ListBlobs: "list",
 };
 const snake = name => name.replace(/[A-Z]/g, letter => `_${letter.toLowerCase()}`);
 const rustMethod = (source, name) => new RegExp(`^\\s*(?:pub\\s+)?async\\s+fn\\s+${name}\\s*\\(`, "m").test(source);
@@ -61,13 +61,9 @@ export function createSourceInspector(root, read = path => {
     const tsBase = `typescript/packages/${family}/src/`;
     const operation = objects ? objectMethods[rpc.name] ?? rpc.localName : rpc.localName;
     const rustName = snake(operation);
-    if (objects) {
-      const contracts = source(`${rustBase}lib.rs`).match(/^pub mod v[0-9]+;/gm) ?? [];
-      if (contracts.length !== 1 || contracts[0] !== `pub mod ${version};`) throw new Error("Objects must expose one current contract module");
-    }
-    const rustRoot = source(`${rustBase}${objects ? "v1/mod.rs" : "lib.rs"}`);
-    const grpc = source(`${rustBase}${objects ? "v1/grpc.rs" : stream ? "grpc/client.rs" : "grpc.rs"}`);
-    const http = source(`${rustBase}${objects ? "v1/" : ""}http.rs`);
+    const rustRoot = source(`${rustBase}lib.rs`);
+    const grpc = source(`${rustBase}${stream ? "grpc/client.rs" : "grpc.rs"}`);
+    const http = source(`${rustBase}http.rs`);
     // Actors' tonic declarations are generated in Cargo OUT_DIR, so the clean
     // checkout has no stable generated .rs path to inspect. The checked-in
     // operation macro, Rust route table, and generated TS facade are the
@@ -89,13 +85,13 @@ export function createSourceInspector(root, read = path => {
         new RegExp(`\\boperation!\\(\\s*${rustName}\\s*,`).test(actorsClient)
       : objects || stream
       ? objects
-        ? grpc.includes("impl ObjectsProvider for GrpcObjects") &&
+        ? grpc.includes("impl Blobs for GrpcObjects") &&
           (rustMethod(grpc, rustName) || new RegExp(`^${rustName}\\(\\w+\\) ->`, "m").test(grpc))
         : rustMethod(rustImpl(grpc, "impl StreamProvider for Client"), rustName)
       : grpc.includes(`pub type Client = wire::${family}_service_client::${serviceName}Client<`) &&
         rustMethod(source(`${rustBase}generated/acyclic.${family}.${version}.tonic.rs`).split(`pub mod ${family}_service_server`)[0], rustName));
     const rustHttp = module("http") && (rustMethod(objects || stream
-      ? rustImpl(http, objects ? "impl ObjectsProvider for HttpObjects" : "impl StreamProvider for HttpStream") : http, rustName)
+      ? rustImpl(http, objects ? "impl Blobs for HttpObjects" : "impl StreamProvider for HttpStream") : http, rustName)
       || (unified && http.includes("operations! {") && new RegExp(`\\(${rustName},\\s*\\d+,`).test(http)));
     const grpcPath = `${tsBase}${objects ? "v1-grpc" : "grpc"}.ts`;
     const typescriptGrpcNodeBun = family === "actors"

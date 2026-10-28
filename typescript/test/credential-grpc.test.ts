@@ -4,7 +4,7 @@ import { credentialGetter, credentialGetterKinds } from "./credential-getters.js
 import { credentialTlsFixture } from "./credential-tls.js";
 import { StreamService } from "../packages/stream/generated/proto/stream/v1/stream_pb.js";
 import { FilesystemService } from "../packages/filesystem/generated/proto/filesystem/v2/filesystem_pb.js";
-import { BucketsService } from "../packages/objects/generated/proto/objects/v1/objects_pb.js";
+import { BlobsService } from "../packages/objects/generated/proto/objects/v1/objects_pb.js";
 import { MachinesService } from "../packages/machines/generated/proto/machines/v1/machines_pb.js";
 import { createStreamGrpcClient } from "../packages/stream/src/grpc.js";
 import { DefaultStreamProvider } from "../packages/stream/src/default.js";
@@ -21,7 +21,7 @@ test("every product gRPC client resolves current credentials and stops on failur
   const { endpoint, certificate, close } = await credentialTlsFixture(router => {
     router.service(StreamService, { tail(_request, context) { observe("streams", context); return { tail: 0n }; } });
     router.service(FilesystemService, { handshake(_request, context) { return observe("fs", context); } });
-    router.service(BucketsService, { headBucket(_request, context) { return observe("objects", context); } });
+    router.service(BlobsService, { usage(_request, context) { return observe("objects", context); } });
     router.service(MachinesService, { listMachines(_request, context) { return observe("machines", context); } });
   });
   const clients = credentialGetterKinds.flatMap(kind => ["streams", "fs", "objects", "machines"].map(product => {
@@ -36,7 +36,7 @@ test("every product gRPC client resolves current credentials and stops on failur
     switch (product) {
       case "streams": { const client = createStreamGrpcClient(options); invoke = () => client.tail({ path: "credential/test" }); break; }
       case "fs": { const client = createFilesystemGrpcClient(options); invoke = () => client.filesystem.handshake({}); release = client.close; break; }
-      case "objects": { const client = createObjectsV1GrpcClients(options); invoke = () => client.buckets.headBucket({}); release = client.close; break; }
+      case "objects": { const client = createObjectsV1GrpcClients(options); invoke = () => client.blobs.usage({}); release = client.close; break; }
       case "machines": { const client = createMachinesGrpcClient(options); invoke = () => client.machines.listMachines({}); release = client.close; break; }
       default: throw new Error("unknown fixture product");
     }

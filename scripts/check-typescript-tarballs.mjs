@@ -132,17 +132,15 @@ const checks = {
     return created.kind === "created" && (await provider.inspectMachine(created.machine.id)).state === "running";
   },
   "@acyclic-labs/objects": async (m) => {
-    const { create } = await import("@bufbuild/protobuf");
     const proto = await import("@acyclic-labs/objects/proto");
     const http = await import("@acyclic-labs/objects/http");
-    if (proto.GetObjectRequestSchema.typeName !== "acyclic.objects.v1.GetObjectRequest"
+    if (proto.GetBlobRequestSchema.typeName !== "acyclic.objects.v1.GetBlobRequest"
       || http.HttpObjectsV1 !== m.HttpObjectsV1
-      || ["Objects", "MemoryObjectsProvider", "SnapshotSchema", "SnapshotsService"].some(name => name in m)) return false;
+      || ["Objects", "MemoryObjectsProvider", "CreateBucketRequestSchema", "PutObjectHeaderSchema"].some(name => name in m)) return false;
     const provider = await m.MemoryObjectsV1.create();
-    const bucket = await provider.createBucket(create(m.CreateBucketRequestSchema, { name: "tarball-smoke" }));
-    await provider.put(create(m.PutObjectHeaderSchema, { bucket: bucket.bucket, objectKey: "smoke" }), new Uint8Array([7]));
-    const fetched = await provider.get(create(m.GetObjectRequestSchema, { bucket: bucket.bucket, objectKey: "smoke" }), 1n);
-    return fetched.body.length === 1 && fetched.body[0] === 7 && typeof m.HttpObjectsV1 === "function";
+    const digest = m.verified(await provider.put(new Uint8Array([7])))?.digest;
+    const fetched = digest && await provider.get({ digest, maximumBytes: 1n });
+    return fetched?.body.length === 1 && fetched.body[0] === 7 && typeof m.HttpObjectsV1 === "function";
   },
   "@acyclic-labs/sdk": (m) => typeof m.harness === "object" && typeof m.machines === "object",
   "@acyclic-labs/workers": (m) => typeof m.WorkersDeploymentClient === "function",

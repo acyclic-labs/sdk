@@ -10,11 +10,11 @@ import { Code, ConnectError, createClient } from "@connectrpc/connect";
 import { connectNodeAdapter, createGrpcTransport } from "@connectrpc/connect-node";
 import { ActorsService } from "../generated/proto/actors/v1/actors_pb.js";
 import { StreamService } from "../../stream/generated/proto/stream/v1/stream_pb.js";
-import { BucketsService, ObjectsService, MultipartService } from "../../objects/generated/proto/objects/v1/objects_pb.js";
+import { BlobsService } from "../../objects/generated/proto/objects/v1/objects_pb.js";
 import { ActorsClient } from "../dist/index.js";
 import { createObjectsV1GrpcClients } from "../../objects/dist/v1-grpc.js";
 
-const services = [ActorsService, StreamService, BucketsService, ObjectsService, MultipartService];
+const services = [ActorsService, StreamService, BlobsService];
 const expected = services.reduce((count, service) => count + service.methods.length, 0);
 const file = fileURLToPath(import.meta.url);
 const root = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -79,7 +79,7 @@ if (process.argv.includes("--client")) {
     nodeOptions:{ca:options.caCertificate},interceptors:[next => async request => {
       request.header.set("authorization",`Bearer ${options.token}`);return next(request);
     }]}));
-  const clients = [actors, stream, objects.buckets, objects.objects, objects.multipart];
+  const clients = [actors, stream, objects.blobs];
   let count = 0;
   for (const [index, service] of services.entries()) {
     for (const method of service.methods) {

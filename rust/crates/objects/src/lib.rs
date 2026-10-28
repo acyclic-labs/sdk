@@ -43,8 +43,8 @@ pub use ownership::{
     ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt, native_future,
 };
 pub use provider::{
-    Blobs, Collection, Delete, Deletion, Head, Object, Page, Put, Released, Retained, RootId,
-    Usage, Verified,
+    BATCH_WINDOW, Blobs, Collection, Delete, Deletion, Head, Object, Page, Put, Released, Retained,
+    RootId, Usage, Verified,
 };
 pub use store::{Account, MemoryObjects, Store};
 

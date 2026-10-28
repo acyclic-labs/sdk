@@ -1,5 +1,5 @@
 //! Binary adapter: generated public messages and Rust rules remain authoritative.
-use acyclic_objects::{Error, MemoryObjects, json, wire};
+use acyclic_objects::{Digest, Error, MemoryObjects, json, wire};
 use wasm_bindgen::prelude::*;
 
 /// Throws an `Error` named `ObjectsV1Error` carrying the numeric wire `code`.
@@ -38,6 +38,18 @@ pub fn objects_v1_http_type(route: &str, output: bool) -> Result<String, JsValue
         .find(|(name, _, _)| *name == route)
         .ok_or_else(|| error(wire::ErrorCode::InvalidArgument.into()))?;
     Ok(if output { *response } else { *input }.to_owned())
+}
+
+/// The BLAKE3-256 digest naming `bytes` as a plain blob.
+#[wasm_bindgen]
+#[must_use]
+pub fn objects_v1_digest(bytes: &[u8]) -> Vec<u8> {
+    Digest::of(bytes).as_bytes().to_vec()
+}
+/// Checks one route's binary reply against its binary request, as the Rust clients do.
+#[wasm_bindgen]
+pub fn verify_objects_v1(route: &str, input: &[u8], output: &[u8]) -> Result<(), JsValue> {
+    acyclic_objects::route::verify(route, input, output).map_err(error)
 }
 
 /// One in-memory account served through the canonical route dispatch.

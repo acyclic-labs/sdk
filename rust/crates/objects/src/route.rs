@@ -60,7 +60,7 @@ pub async fn get_blob(
         wire::GetBlobResponse {
             info: Some(convert::wire_head(object.head())),
             start: object.start(),
-            body: object.into_body().to_vec(),
+            body: bytes::Bytes::from_owner(object.into_body()),
         },
         revision,
     ))
@@ -200,4 +200,60 @@ pub async fn invoke(blobs: &dyn Blobs, route: &str, input: &[u8]) -> Result<Vec<
         "blobs/usage" => usage(blobs, decode(input)?).await?.0.encode_to_vec(),
         _ => return Err(wire::ErrorCode::InvalidArgument.into()),
     })
+}
+
+/// Checks one [`crate::HTTP_ROUTES`] reply against the request it answers,
+/// exactly as the Rust clients check theirs, for clients in other languages
+/// that carry the binary messages themselves.
+///
+/// A put request's digest is trusted as the caller's own: the client hashed
+/// the body when it built the request, and the service refuses a mismatch.
+///
+/// # Errors
+/// `InvalidArgument` for an unknown route or malformed request, and
+/// `Unavailable` for a reply that is malformed or does not answer it.
+pub fn verify(route: &str, input: &[u8], output: &[u8]) -> Result<(), Error> {
+    fn reply<T: Message + Default>(bytes: &[u8]) -> Result<T, Error> {
+        T::decode(bytes).map_err(|_| wire::ErrorCode::Unavailable.into())
+    }
+    let checked = match route {
+        "blobs/put" => {
+            let request: wire::PutBlobRequest = decode(input)?;
+            let digest = convert::digest(request.digest.as_ref())?;
+            convert::verified_put(&reply(output)?, digest, request.body.len() as u64).map(drop)
+        }
+        "blobs/put-manifest" => {
+            let request: wire::PutManifestRequest = decode(input)?;
+            let manifest = convert::from_manifest(request.manifest.as_ref())?;
+            let (digest, length) = (Digest::of(&manifest.encode()), manifest.length()?);
+            convert::verified_put(&reply(output)?, digest, length).map(drop)
+        }
+        "blobs/get" => {
+            let request: wire::GetBlobRequest = decode(input)?;
+            let digest = convert::digest(request.digest.as_ref())?;
+            let range = convert::from_range(request.range.as_ref());
+            convert::object(reply(output)?, digest, range, request.maximum_bytes).map(drop)
+        }
+        "blobs/head" => {
+            let request: wire::HeadBlobRequest = decode(input)?;
+            let digest = convert::digest(request.digest.as_ref())?;
+            convert::headed(&reply(output)?, digest).map(drop)
+        }
+        "blobs/delete" => convert::delete(&reply(output)?).map(drop),
+        "blobs/list" => {
+            let request: wire::ListBlobsRequest = decode(input)?;
+            let after = request
+                .after
+                .as_ref()
+                .map(|after| convert::digest(Some(after)))
+                .transpose()?;
+            convert::listed(&reply(output)?, after, request.limit).map(drop)
+        }
+        "blobs/retain" => reply::<wire::RetainResponse>(output).map(drop),
+        "blobs/release" => reply::<wire::ReleaseResponse>(output).map(drop),
+        "blobs/collect" => reply::<wire::CollectResponse>(output).map(drop),
+        "blobs/usage" => reply::<wire::UsageResponse>(output).map(drop),
+        _ => return Err(wire::ErrorCode::InvalidArgument.into()),
+    };
+    checked.map_err(|_| wire::ErrorCode::Unavailable.into())
 }

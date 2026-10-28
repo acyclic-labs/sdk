@@ -65,7 +65,7 @@ mod tests {
             digest: Some(wire::Digest {
                 blake3: vec![7; 32],
             }),
-            body: vec![0, 255],
+            body: vec![0, 255].into(),
             references: Vec::new(),
         };
         let encoded = encode("PutBlobRequest", &value)?;

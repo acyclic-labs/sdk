@@ -1,70 +1,42 @@
 import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
-import { lifecycle } from "./v1-lifecycle.mjs";
+import { bytes, lifecycle } from "./v1-lifecycle.mjs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
-import { zstdCompressSync } from "node:zlib";
-import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { create, toBinary } from "@bufbuild/protobuf";
 import * as wire from "@acyclic-labs/objects/proto";
-import { MemoryObjectsV1 } from "@acyclic-labs/objects";
+import { MemoryObjectsV1, blobDigest, verified } from "@acyclic-labs/objects";
 import { HttpObjectsV1 } from "@acyclic-labs/objects/http";
 import { ObjectsV1Memory, objects_v1_http_type, decode_objects_v1_json, encode_objects_v1_json } from "../generated/wasm/acyclic_objects_wasm.js";
 
-const expectedRoutes = ["buckets/create", "buckets/head", "buckets/delete", "objects/put", "objects/get", "objects/head", "objects/delete", "objects/list", "objects/restore", "multipart/create", "multipart/upload-part", "multipart/list-parts", "multipart/complete", "multipart/abort"];
-const make = (name, value) => create(wire[`${name}Schema`], value);
+const expectedRoutes = ["blobs/put", "blobs/put-manifest", "blobs/get", "blobs/head", "blobs/delete", "blobs/list", "blobs/retain", "blobs/release", "blobs/collect", "blobs/usage"];
 const fail = (code) => error => error.code === code;
-const bytes = new Uint8Array(135000).map((_, index) => index % 251);
-const zstdBody = (data, decodedLength = BigInt(data.length)) => make("Body", { codec: wire.Codec.ZSTD, data: zstdCompressSync(data), decodedLength });
-const plainBody = data => make("Body", { codec: wire.Codec.NONE, data, decodedLength: BigInt(data.length) });
-// Compresses every other download frame so clients reassemble mixed codecs in order.
-const mixedFrames = frames => frames.map((frame, index) => {
-  const message = fromBinary(wire.GetObjectResponseSchema, frame);
-  if (message.frame.case !== "body" || index % 2 === 0) return frame;
-  return toBinary(wire.GetObjectResponseSchema, make("GetObjectResponse", { frame: { case: "body", value: zstdBody(message.frame.value.data) } }));
-});
+const json = (name, schema, value) => Buffer.from(encode_objects_v1_json(name, toBinary(schema, create(schema, value)), 1 << 20));
+const replying = payload => async () => new Response(payload, { headers: { "content-type": "application/json" } });
 
 async function fixture() {
   await MemoryObjectsV1.create(); // initialize the shared WASM runtime
-  const memory = new ObjectsV1Memory(64n * 1024n * 1024n, 10000);
+  const memory = new ObjectsV1Memory();
   const seen = new Set();
   const server = createServer(async (request, response) => {
     try {
       if (request.headers.authorization !== "Bearer fixture") throw { code: wire.ErrorCode.ACCESS_DENIED };
       assert.equal(request.method, "POST");
+      assert.equal(request.headers["content-type"], "application/json");
       const route = request.url.replace(/^\/v1\/objects\//, "");
       seen.add(route);
-      const input = objects_v1_http_type(route, false);
-      const output = objects_v1_http_type(route, true);
       const chunks = [];
       for await (const chunk of request) chunks.push(chunk);
-      const data = Buffer.concat(chunks);
-      let query;
-      let body = new Uint8Array(0);
-      if (route === "objects/put" || route === "multipart/upload-part") {
-        assert.equal(request.headers["content-type"], "application/x-ndjson");
-        assert.equal(data.at(-1), 10);
-        const lines = data.toString("utf8").trimEnd().split("\n");
-        const schema = route === "objects/put" ? wire.PutObjectRequestSchema : wire.UploadPartRequestSchema;
-        const headerSchema = route === "objects/put" ? wire.PutObjectHeaderSchema : wire.UploadPartHeaderSchema;
-        const frames = lines.map(line => fromBinary(schema, decode_objects_v1_json(input, Buffer.from(line), 128 * 1024)));
-        assert.equal(frames.shift().frame.case, "header");
-        assert.deepEqual(frames.pop().frame, { case: "complete", value: true });
-        const first = fromBinary(schema, decode_objects_v1_json(input, Buffer.from(lines[0]), 128 * 1024));
-        query = toBinary(headerSchema, first.frame.value);
-        body = Buffer.concat(frames.map(({ frame }) => { assert.equal(frame.case, "body"); assert.ok(frame.value.length <= 65536); return frame.value; }));
-      } else query = decode_objects_v1_json(input, data, 16 * 1024 * 1024);
-      const invoked = await memory.invoke(route, query, body, 64n * 1024n * 1024n);
-      const result = route === "objects/get" ? mixedFrames(invoked) : invoked;
-      const encoded = result.map(frame => Buffer.from(encode_objects_v1_json(output, frame, 16 * 1024 * 1024)));
-      response.writeHead(200, { "content-type": route === "objects/get" ? "application/x-ndjson" : "application/json" });
-      const payload = route === "objects/get" ? Buffer.concat(encoded.flatMap(frame => [frame, Buffer.from("\n")])) : encoded[0];
-      for (let offset = 0; offset < payload.length; offset += 97) response.write(payload.subarray(offset, offset + 97));
+      const input = decode_objects_v1_json(objects_v1_http_type(route, false), Buffer.concat(chunks), 1 << 30);
+      const payload = Buffer.from(encode_objects_v1_json(objects_v1_http_type(route, true), await memory.invoke(route, input), 1 << 30));
+      response.writeHead(200, { "content-type": "application/json" });
+      for (let offset = 0; offset < payload.length; offset += 4099) response.write(payload.subarray(offset, offset + 4099));
       response.end();
     } catch (error) {
       const code = typeof error.code === "number" ? error.code : wire.ErrorCode.UNAVAILABLE;
       response.writeHead(code === wire.ErrorCode.ACCESS_DENIED ? 403 : 400, { "content-type": "application/json" });
-      response.end(encode_objects_v1_json("ErrorDetail", toBinary(wire.ErrorDetailSchema, make("ErrorDetail", { code })), 1024));
+      response.end(json("ErrorDetail", wire.ErrorDetailSchema, { code }));
     }
   });
   const close = ownFixtureServer(server);
@@ -75,94 +47,62 @@ async function fixture() {
   } catch (error) { await close(); throw error; }
 }
 
-test("Objects v1 Rust WASM provider covers every operation and atomic retry semantics", async () => {
-  const provider = await MemoryObjectsV1.create();
-  await lifecycle(provider);
-  await assert.rejects(provider.restore(make("RestoreObjectsRequest", {
-    bucket: { name: "customer.inputs" }, prefix: "", at: { seconds: 42n, nanos: 1000 }, mutation: { idempotencyKey: "restore" },
-  })), fail(wire.ErrorCode.UNSUPPORTED));
+test("Objects v1 Rust WASM memory provider serves the whole blob lifecycle", async () => {
+  await lifecycle(await MemoryObjectsV1.create());
 });
-test("Objects v1 HTTP covers every operation, frame boundaries, errors and authentication", async () => {
+test("Objects v1 HTTP serves every canonical route, typed errors and authentication", async () => {
   const server = await fixture();
   try {
-    const provider = new HttpObjectsV1({ endpoint: server.endpoint, token: "fixture" });
-    await lifecycle(provider);
-    await assert.rejects(provider.restore(make("RestoreObjectsRequest", {
-      bucket: { name: "customer.inputs" }, prefix: "", at: { seconds: 42n, nanos: 1000 }, mutation: { idempotencyKey: "restore" },
-    })), fail(wire.ErrorCode.UNSUPPORTED));
-    assert.deepEqual([...server.seen].sort(), expectedRoutes.sort());
-    await assert.rejects(new HttpObjectsV1({ endpoint: server.endpoint, token: "wrong" }).headBucket(make("HeadBucketRequest", { bucket: { name: "customer.inputs" } })), fail(wire.ErrorCode.ACCESS_DENIED));
+    await lifecycle(new HttpObjectsV1({ endpoint: server.endpoint, token: "fixture" }));
+    assert.deepEqual([...server.seen].sort(), [...expectedRoutes].sort());
+    await assert.rejects(new HttpObjectsV1({ endpoint: server.endpoint, token: "wrong" }).usage(), fail(wire.ErrorCode.ACCESS_DENIED));
   } finally { await server.close(); }
 });
-test("Objects v1 rejects invalid requests before HTTP and bounds response allocations", async () => {
+test("Objects v1 never reports a reply that does not answer its request", async () => {
+  await MemoryObjectsV1.create();
+  const digest = await blobDigest(bytes);
+  const other = await blobDigest(new Uint8Array([1]));
+  const endpoint = "https://objects.example";
+  const client = payload => new HttpObjectsV1({ endpoint, token: "fixture", fetch: replying(payload) });
+  // Created must name exactly the published digest and length.
+  for (const value of [{ digest: other, length: BigInt(bytes.length) }, { digest, length: 1n }]) {
+    await assert.rejects(client(json("PutResponse", wire.PutResponseSchema, { outcome: { case: "created", value } })).put(bytes), fail(wire.ErrorCode.UNAVAILABLE));
+  }
+  // An unknown outcome stays unknown: no digest is reported.
+  const unknown = await client(json("PutResponse", wire.PutResponseSchema, { outcome: { case: "unknown", value: true } })).put(bytes);
+  assert.equal(verified(unknown), undefined);
+  await assert.rejects(client(json("PutResponse", wire.PutResponseSchema, {})).put(bytes), fail(wire.ErrorCode.UNAVAILABLE));
+  // A service-side digest refusal keeps its own code.
+  const refusing = new HttpObjectsV1({ endpoint, token: "fixture", fetch: async () => new Response(json("ErrorDetail", wire.ErrorDetailSchema, { code: wire.ErrorCode.DIGEST_MISMATCH }), { status: 400 }) });
+  await assert.rejects(refusing.put(bytes), fail(wire.ErrorCode.DIGEST_MISMATCH));
+  const info = { digest, kind: wire.Kind.BLOB, length: 4n };
+  for (const reply of [
+    { info: { ...info, digest: other }, start: 0n, body: new Uint8Array(4) },
+    { info, start: 1n, body: new Uint8Array(4) },
+    { info, start: 0n, body: new Uint8Array(3) },
+    // A whole plain blob must hash to its digest.
+    { info, start: 0n, body: new Uint8Array(4) },
+  ]) {
+    await assert.rejects(client(json("GetBlobResponse", wire.GetBlobResponseSchema, reply)).get({ digest, maximumBytes: 4n }), fail(wire.ErrorCode.UNAVAILABLE));
+  }
+  await assert.rejects(client(json("BlobInfo", wire.BlobInfoSchema, { ...info, digest: other })).head(digest), fail(wire.ErrorCode.UNAVAILABLE));
+  await assert.rejects(client(json("ListBlobsResponse", wire.ListBlobsResponseSchema, { digests: [digest, other, digest] })).list({ limit: 2 }), fail(wire.ErrorCode.UNAVAILABLE));
+});
+test("Objects v1 HTTP bounds responses and refuses unsafe endpoints", async () => {
   let calls = 0;
   const fetcher = async () => { calls++; return new Response(new Uint8Array(100), { headers: { "content-type": "application/json" } }); };
   const client = new HttpObjectsV1({ endpoint: "https://objects.example", token: "fixture", maximumResponseBytes: 16, fetch: fetcher });
-  await assert.rejects(client.put(make("PutObjectHeader", { bucket: { name: "bad..bucket" }, objectKey: "data" }), bytes), fail(wire.ErrorCode.INVALID_ARGUMENT));
-  assert.equal(calls, 0);
-  await assert.rejects(client.headBucket(make("HeadBucketRequest", { bucket: { name: "customer.inputs" } })), fail(wire.ErrorCode.QUOTA_EXCEEDED));
+  await assert.rejects(client.usage(), fail(wire.ErrorCode.QUOTA_EXCEEDED));
   assert.equal(calls, 1);
   for (const endpoint of ["http://objects.example", "https://user@objects.example", "https://objects.example/?query=1", "https://objects.example/#fragment"]) assert.throws(() => new HttpObjectsV1({ endpoint, token: "fixture" }));
-  await assert.rejects(MemoryObjectsV1.create(0x1_0000_0000n), fail(wire.ErrorCode.QUOTA_EXCEEDED));
 });
-test("Objects v1 HTTP cancels oversized downloads at the header before pulling the body", async () => {
+test("Objects v1 HTTP bounds a call by the caller's deadline alone", async () => {
   await MemoryObjectsV1.create();
-  const frame = make("GetObjectResponse", { frame: { case: "header", value: { object: { etag: "opaque", size: 1000000n, lastModified: { seconds: 0n, nanos: 0 } } } } });
-  const header = Buffer.concat([Buffer.from(encode_objects_v1_json("GetObjectResponse", toBinary(wire.GetObjectResponseSchema, frame), 128 * 1024)), Buffer.from("\n")]);
-  let pulls = 0;
-  let cancelled = false;
-  const fetcher = async () => new Response(new ReadableStream({
-    pull(controller) { pulls++; if (pulls === 1) controller.enqueue(header); else throw new Error("body must not be pulled"); },
-    cancel() { cancelled = true; },
-  }, { highWaterMark: 0 }), { headers: { "content-type": "application/x-ndjson" } });
-  const client = new HttpObjectsV1({ endpoint: "https://objects.example", token: "fixture", fetch: fetcher });
-  await assert.rejects(client.get(make("GetObjectRequest", { bucket: { name: "customer.inputs" }, objectKey: "data" }), 1n), fail(wire.ErrorCode.QUOTA_EXCEEDED));
-  assert.equal(pulls, 1);
-  assert.equal(cancelled, true);
-});
-
-test("Objects v1 validates remote metadata, ranges, framing and terminal errors", async () => {
-  await MemoryObjectsV1.create();
-  const info = { etag: "opaque", size: 1n, lastModified: { seconds: 0n, nanos: 0 } };
-  const header = make("GetObjectResponse", { frame: { case: "header", value: { object: info } } });
-  const body = make("GetObjectResponse", { frame: { case: "body", value: plainBody(new Uint8Array([1])) } });
-  const bodyFrame = value => make("GetObjectResponse", { frame: { case: "body", value } });
-  const encode = frame => Buffer.from(encode_objects_v1_json("GetObjectResponse", toBinary(wire.GetObjectResponseSchema, frame), 16 * 1024 * 1024));
-  const lines = frames => Buffer.concat(frames.flatMap(frame => [encode(frame), Buffer.from("\n")]));
-  const query = make("GetObjectRequest", { bucket: { name: "customer.inputs" }, objectKey: "data" });
-  for (const [payload, media, code] of [
-    [lines([header]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
-    [lines([header, header, body]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
-    [Buffer.concat([encode(header), Buffer.from("\n"), encode(body)]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
-    [lines([header, body]), "application/json", wire.ErrorCode.UNAVAILABLE],
-    [lines([header, make("GetObjectResponse", { frame: { case: "error", value: { code: wire.ErrorCode.ACCESS_DENIED } } })]), "application/x-ndjson", wire.ErrorCode.ACCESS_DENIED],
-    [lines([make("GetObjectResponse", { frame: { case: "header", value: { object: { ...info, size: 999999999n } } } })]), "application/x-ndjson", wire.ErrorCode.QUOTA_EXCEEDED],
-    [lines([make("GetObjectResponse", { frame: { case: "header", value: { object: info, contentRange: { start: 0n, end: 0n, total: 1n } } } }), body]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
-    [Buffer.from('{"unknown":true}\n'), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
-    // Declared lengths above the frame limit are refused before decompressing the garbage data.
-    [lines([header, bodyFrame(make("Body", { codec: wire.Codec.ZSTD, data: new Uint8Array([255, 255]), decodedLength: 8388609n }))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
-    [lines([header, bodyFrame(make("Body", { codec: wire.Codec.NONE, data: new Uint8Array(65537), decodedLength: 65537n }))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
-    [lines([header, bodyFrame(make("Body", { codec: wire.Codec.ZSTD, data: new Uint8Array([255, 255]), decodedLength: 1n }))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
-    [lines([header, bodyFrame(zstdBody(new Uint8Array([1, 2]), 1n))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
-    ...[0, 3].map(codec => [lines([header, bodyFrame(make("Body", { codec, data: new Uint8Array([1]), decodedLength: 1n }))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE]),
-    [lines([header, bodyFrame(make("Body", { codec: wire.Codec.NONE, data: new Uint8Array([1]), decodedLength: 2n }))]), "application/x-ndjson", wire.ErrorCode.UNAVAILABLE],
-  ]) {
-    const client = new HttpObjectsV1({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response(payload, { headers: { "content-type": media } }) });
-    await assert.rejects(client.get(query, 16n), fail(code));
-  }
-  for (const frame of [body, bodyFrame(zstdBody(new Uint8Array([1])))]) {
-    const client = new HttpObjectsV1({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response(lines([header, frame]), { headers: { "content-type": "application/x-ndjson" } }) });
-    assert.deepEqual([...(await client.get(query, 16n)).body], [1]);
-  }
-  // One whole stored block arrives as a single compressed frame; one byte more is refused.
-  const block = new Uint8Array(8388608);
-  for (let offset = 0; offset < block.length; offset += 65536) crypto.getRandomValues(block.subarray(offset, offset + 65536));
-  const blockHeader = make("GetObjectResponse", { frame: { case: "header", value: { object: { ...info, size: 8388608n } } } });
-  const whole = new HttpObjectsV1({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response(lines([blockHeader, bodyFrame(zstdBody(block))]), { headers: { "content-type": "application/x-ndjson" } }) });
-  assert.ok(Buffer.from((await whole.get(query, 8388608n)).body).equals(Buffer.from(block)));
-  const largerHeader = make("GetObjectResponse", { frame: { case: "header", value: { object: { ...info, size: 8388609n } } } });
-  const larger = new HttpObjectsV1({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response(lines([largerHeader, bodyFrame(make("Body", { codec: wire.Codec.ZSTD, data: new Uint8Array([255]), decodedLength: 8388609n }))]), { headers: { "content-type": "application/x-ndjson" } }) });
-  await assert.rejects(larger.get(query, 8388609n), fail(wire.ErrorCode.UNAVAILABLE));
-  const corrupt = new HttpObjectsV1({ endpoint: "https://objects.example", token: "fixture", fetch: async () => new Response('{"bucket":{"name":"different.bucket"},"createdAt":"1970-01-01T00:00:00Z"}', { headers: { "content-type": "application/json" } }) });
-  await assert.rejects(corrupt.headBucket(make("HeadBucketRequest", { bucket: { name: "customer.inputs" } })), fail(wire.ErrorCode.UNAVAILABLE));
+  const endpoint = "https://objects.example";
+  const hanging = async (_url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));
+  await assert.rejects(new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs: 20, fetch: hanging }).usage(), fail(wire.ErrorCode.DEADLINE_ELAPSED));
+  // Negative control: a reply inside a long caller deadline is served.
+  const late = async () => { await new Promise(resolve => setTimeout(resolve, 50)); return replying(json("UsageResponse", wire.UsageResponseSchema, { blobs: 2n }))(); };
+  assert.equal((await new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs: 0x7fff_ffff, fetch: late }).usage()).blobs, 2n);
+  for (const timeoutMs of [0, 0x8000_0000, 1.5]) assert.throws(() => new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs }), RangeError);
 });

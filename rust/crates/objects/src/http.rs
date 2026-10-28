@@ -201,18 +201,12 @@ impl Blobs for HttpObjects {
                 "blobs/put",
                 &wire::PutBlobRequest {
                     digest: Some(digest.into()),
-                    body: body.to_vec(),
+                    body: bytes::Bytes::from_owner(body.clone()),
                     references: convert::wire_digests(&references),
                 },
             )
             .await?;
-        let put = convert::put(&reply)?;
-        if put.verified().is_some_and(|verified| {
-            verified.digest != digest || verified.length != body.len() as u64
-        }) {
-            return Err(unavailable());
-        }
-        Ok(put)
+        convert::verified_put(&reply, digest, body.len() as u64)
     }
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
@@ -226,14 +220,7 @@ impl Blobs for HttpObjects {
                 },
             )
             .await?;
-        let put = convert::put(&reply)?;
-        if put
-            .verified()
-            .is_some_and(|verified| verified.digest != digest || verified.length != length)
-        {
-            return Err(unavailable());
-        }
-        Ok(put)
+        convert::verified_put(&reply, digest, length)
     }
 
     async fn get(
@@ -264,11 +251,7 @@ impl Blobs for HttpObjects {
                 },
             )
             .await?;
-        let head = convert::head(&reply)?;
-        if head.digest != digest {
-            return Err(unavailable());
-        }
-        Ok(head)
+        convert::headed(&reply, digest)
     }
 
     async fn delete(&self, digest: Digest) -> Result<crate::Deletion, Error> {
@@ -296,13 +279,7 @@ impl Blobs for HttpObjects {
                 },
             )
             .await?;
-        let page = convert::page(&reply)?;
-        if page.digests.len() > limit as usize
-            || after.is_some_and(|after| page.digests.first().is_some_and(|first| *first <= after))
-        {
-            return Err(unavailable());
-        }
-        Ok(page)
+        convert::listed(&reply, after, limit)
     }
 
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {

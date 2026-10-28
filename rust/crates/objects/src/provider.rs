@@ -5,6 +5,11 @@ use crate::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeF
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{ObjectsNativeRequest, ObjectsPutReceipt};
 use acyclic_stream::{OwnedBytes, Revision};
+use futures::stream::{self, StreamExt};
+
+/// Requests a default batch keeps in flight: one round trip covers a window
+/// instead of one request, and a batch never holds more pending work.
+pub const BATCH_WINDOW: usize = 64;
 
 /// A digest and length compared with the stored envelope in the caller's own
 /// account, under the grant that admitted the call.
@@ -318,25 +323,42 @@ pub trait Blobs: Send + Sync {
         Ok(minimum)
     }
 
-    /// Ordered, individually atomic puts.
+    /// Ordered, individually atomic puts, at most [`BATCH_WINDOW`] in flight.
+    /// A put that references or repeats an earlier put of the batch starts
+    /// only once that put completed, so outcomes never depend on timing.
     async fn put_batch(&self, requests: Vec<(OwnedBytes, Vec<Digest>)>) -> Vec<Result<Put, Error>> {
+        let overlapped = |segment: Vec<(OwnedBytes, Vec<Digest>)>| {
+            stream::iter(segment)
+                .map(|(body, references)| self.put(body, references))
+                .buffered(BATCH_WINDOW)
+                .collect::<Vec<_>>()
+        };
         let mut results = Vec::with_capacity(requests.len());
+        let mut segment = Vec::new();
+        let mut published = std::collections::HashSet::new();
         for (body, references) in requests {
-            results.push(self.put(body, references).await);
+            let digest = Digest::of(&body);
+            if published.contains(&digest) || references.iter().any(|r| published.contains(r)) {
+                results.extend(overlapped(std::mem::take(&mut segment)).await);
+                published.clear();
+            }
+            published.insert(digest);
+            segment.push((body, references));
         }
+        results.extend(overlapped(segment).await);
         results
     }
 
-    /// Ordered, individually bounded reads.
+    /// Ordered, individually bounded reads, at most [`BATCH_WINDOW`] in flight.
     async fn get_batch(
         &self,
         requests: Vec<(Digest, ByteRange, u64)>,
     ) -> Vec<Result<Object, Error>> {
-        let mut results = Vec::with_capacity(requests.len());
-        for (digest, range, maximum) in requests {
-            results.push(self.get(digest, range, maximum).await);
-        }
-        results
+        stream::iter(requests)
+            .map(|(digest, range, maximum)| self.get(digest, range, maximum))
+            .buffered(BATCH_WINDOW)
+            .collect()
+            .await
     }
 
     /// Reads under the caller's original allocation owner.

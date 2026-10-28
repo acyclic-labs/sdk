@@ -1273,3 +1273,123 @@ async fn a_local_create_never_succeeds_past_a_failed_directory_flush()
     }
     Ok(())
 }
+
+/// Counts how many puts and reads overlap; each parks once before serving.
+struct Overlap {
+    inner: crate::MemoryObjects,
+    live: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+}
+
+impl Overlap {
+    async fn enter<T>(&self, work: impl Future<Output = T>) -> T {
+        let live = self.live.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(live, Ordering::SeqCst);
+        let mut parked = false;
+        std::future::poll_fn(|context| {
+            if std::mem::replace(&mut parked, true) {
+                std::task::Poll::Ready(())
+            } else {
+                context.waker().wake_by_ref();
+                std::task::Poll::Pending
+            }
+        })
+        .await;
+        let value = work.await;
+        self.live.fetch_sub(1, Ordering::SeqCst);
+        value
+    }
+}
+
+#[async_trait::async_trait]
+impl Blobs for Overlap {
+    async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, crate::Error> {
+        self.enter(self.inner.put(body, references)).await
+    }
+    async fn put_manifest(&self, manifest: crate::Manifest) -> Result<Put, crate::Error> {
+        self.inner.put_manifest(manifest).await
+    }
+    async fn get(
+        &self,
+        digest: Digest,
+        range: ByteRange,
+        maximum: u64,
+    ) -> Result<crate::Object, crate::Error> {
+        self.enter(self.inner.get(digest, range, maximum)).await
+    }
+    async fn head(&self, digest: Digest) -> Result<crate::Head, crate::Error> {
+        self.inner.head(digest).await
+    }
+    async fn delete(&self, digest: Digest) -> Result<crate::Deletion, crate::Error> {
+        self.inner.delete(digest).await
+    }
+    async fn list(&self, after: Option<Digest>, limit: u32) -> Result<crate::Page, crate::Error> {
+        self.inner.list(after, limit).await
+    }
+    async fn retain(
+        &self,
+        root: &RootId,
+        references: Vec<Digest>,
+    ) -> Result<crate::Retained, crate::Error> {
+        self.inner.retain(root, references).await
+    }
+    async fn release(&self, root: &RootId) -> Result<crate::Released, crate::Error> {
+        self.inner.release(root).await
+    }
+    async fn collect(&self) -> Result<crate::Collection, crate::Error> {
+        self.inner.collect().await
+    }
+    async fn usage(&self) -> Result<crate::Usage, crate::Error> {
+        self.inner.usage().await
+    }
+}
+
+#[tokio::test]
+async fn default_batches_overlap_one_window_and_keep_request_order()
+-> Result<(), Box<dyn std::error::Error>> {
+    let blobs = Overlap {
+        inner: crate::MemoryObjects::memory(),
+        live: 0.into(),
+        peak: 0.into(),
+    };
+    let count = crate::BATCH_WINDOW * 2 + 3;
+    let body = |index: usize| OwnedBytes::from(index.to_le_bytes().to_vec());
+    // Negative control: one-at-a-time puts never overlap under the probe.
+    blobs.put(body(count), Vec::new()).await?;
+    blobs.put(body(count + 1), Vec::new()).await?;
+    assert_eq!(blobs.peak.load(Ordering::SeqCst), 1);
+
+    let puts = blobs
+        .put_batch((0..count).map(|index| (body(index), Vec::new())).collect())
+        .await;
+    assert_eq!(blobs.peak.swap(0, Ordering::SeqCst), crate::BATCH_WINDOW);
+    let mut reads = Vec::with_capacity(count);
+    for (index, put) in puts.into_iter().enumerate() {
+        let digest = put?.verified().ok_or("a fresh put verifies")?.digest;
+        assert_eq!(digest, Digest::of(&index.to_le_bytes()));
+        reads.push((digest, ByteRange::FULL, 8));
+    }
+    let objects = blobs.get_batch(reads).await;
+    assert_eq!(blobs.peak.swap(0, Ordering::SeqCst), crate::BATCH_WINDOW);
+    for (index, object) in objects.into_iter().enumerate() {
+        assert_eq!(object?.body().as_ref(), index.to_le_bytes());
+    }
+
+    // A put that references or repeats an earlier one waits for it.
+    let parent = OwnedBytes::from_static(b"dependent parent");
+    let digest = Digest::of(&parent);
+    let puts = blobs
+        .put_batch(vec![
+            (parent.clone(), Vec::new()),
+            (OwnedBytes::from_static(b"dependent child"), vec![digest]),
+            (parent, Vec::new()),
+        ])
+        .await;
+    assert!(matches!(puts[0], Ok(Put::Created { .. })));
+    assert!(matches!(puts[1], Ok(Put::Created { .. })));
+    assert!(matches!(puts[2], Ok(Put::AlreadyExists { .. })));
+    // The child waits for its parent; the repeat, whose original already
+    // completed, overlaps the child.
+    assert_eq!(blobs.peak.swap(0, Ordering::SeqCst), 2);
+    Ok(())
+}

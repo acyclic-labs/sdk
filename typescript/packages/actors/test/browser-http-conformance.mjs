@@ -32,7 +32,7 @@ const identity = JSON.parse(generated.stdout);
 const spki = new X509Certificate(identity.certificate).publicKey.export({ type: "spki", format: "der" });
 const trust = createHash("sha256").update(spki).digest("base64");
 await MemoryObjectsV1.create();
-const objects = new ObjectsV1Memory(64n * 1024n * 1024n, 10000);
+const objects = new ObjectsV1Memory();
 const stream = new MemoryStreamProvider();
 const seen = new Set();
 let cancellationDispatched = false;
@@ -145,22 +145,10 @@ const server = createServer({ key: identity.key, cert: identity.certificate }, a
     if (isObjects) {
       const route = pathname.slice("/v1/objects/".length);
       const input = objects_v1_http_type(route, false); const output = objects_v1_http_type(route, true);
-      let query; let body = new Uint8Array(0);
-      if (route === "objects/put" || route === "multipart/upload-part") {
-        assert.equal(request.headers["content-type"], "application/x-ndjson"); assert.equal(data.at(-1), 10);
-        const put = route === "objects/put";
-        const schema = put ? objectsWire.PutObjectRequestSchema : objectsWire.UploadPartRequestSchema;
-        const headerSchema = put ? objectsWire.PutObjectHeaderSchema : objectsWire.UploadPartHeaderSchema;
-        const frames = data.toString("utf8").trimEnd().split("\n").map(line => fromBinary(schema, decode_objects_v1_json(input, Buffer.from(line), 128 * 1024)));
-        const first = frames.shift(); assert.equal(first.frame.case, "header"); query = toBinary(headerSchema, first.frame.value);
-        assert.deepEqual(frames.pop().frame, { case: "complete", value: true });
-        body = Buffer.concat(frames.map(({ frame }) => { assert.equal(frame.case, "body"); assert.ok(frame.value.length <= 65536); return frame.value; }));
-      } else query = decode_objects_v1_json(input, data, 16 * 1024 * 1024);
       seen.add(`objects/${route}`);
-      const result = await objects.invoke(route, query, body, 64n * 1024n * 1024n);
-      const encoded = result.map(frame => Buffer.from(encode_objects_v1_json(output, frame, 16 * 1024 * 1024)));
-      response.writeHead(200, { "content-type": route === "objects/get" ? "application/x-ndjson" : "application/json" });
-      const payload = route === "objects/get" ? Buffer.concat(encoded.flatMap(frame => [frame, Buffer.from("\n")])) : encoded[0];
+      const result = await objects.invoke(route, decode_objects_v1_json(input, data, 1 << 30));
+      const payload = Buffer.from(encode_objects_v1_json(output, result, 1 << 30));
+      response.writeHead(200, { "content-type": "application/json" });
       for (let offset = 0; offset < payload.length; offset += 97) response.write(payload.subarray(offset, offset + 97));
       response.end(); return;
     }
@@ -230,7 +218,7 @@ try {
   await until("server-observed Actors cancellation", () => cancellationClosed ? true : undefined);
   assert.equal(cancellationDispatched, true);
   console.log("Chrome Actors gRPC-Web: authenticated request decoded before abort; pending response closed without completion");
-  assert.equal(seen.size, 23 + ActorsService.methods.length, `expected 13 Objects, ${ActorsService.methods.length} Actor and 10 Stream HTTP routes: ${[...seen]}`);
+  assert.equal(seen.size, 20 + ActorsService.methods.length, `expected 10 Objects, ${ActorsService.methods.length} Actor and 10 Stream HTTP routes: ${[...seen]}`);
   console.log(`Chrome HTTPS: ${result.detail}; ${seen.size} fixture routes observed`);
   await send("Page.navigate", { url: `https://localhost:${server.address().port}/typescript/packages/objects/test/browser-wasm.html` }, sessionId);
   const memory = await until("browser Objects v1 memory", async () => {
@@ -242,7 +230,7 @@ try {
     return result?.status === "passed" || result?.status === "failed" ? result : undefined;
   });
   assert.equal(memory.status, "passed", memory.detail);
-  console.log("Chrome Objects v1 default export: memory PUT, range GET and current-key replacement passed");
+  console.log("Chrome Objects v1 default export: memory blob PUT, range GET and idempotent re-PUT passed");
   await send("Browser.close"); await exit;
 } finally {
   socket?.close();

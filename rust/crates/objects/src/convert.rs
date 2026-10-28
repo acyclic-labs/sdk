@@ -77,7 +77,6 @@ pub(crate) fn from_manifest(manifest: Option<&wire::Manifest>) -> Result<Manifes
     })
 }
 
-#[cfg(objects_client)]
 fn verified(value: &wire::Verified) -> Result<Verified, Error> {
     Ok(Verified {
         digest: digest(value.digest.as_ref())?,
@@ -94,7 +93,6 @@ fn wire_verified(value: &Verified) -> wire::Verified {
     }
 }
 
-#[cfg(objects_client)]
 pub(crate) fn put(value: &wire::PutResponse) -> Result<Put, Error> {
     use wire::put_response::Outcome;
     match value.outcome.as_ref().ok_or_else(invalid)? {
@@ -121,7 +119,6 @@ pub(crate) fn wire_put(value: &Put) -> wire::PutResponse {
     }
 }
 
-#[cfg(objects_client)]
 pub(crate) fn head(value: &wire::BlobInfo) -> Result<Head, Error> {
     Ok(Head {
         digest: digest(value.digest.as_ref())?,
@@ -149,7 +146,6 @@ pub(crate) fn wire_head(value: &Head) -> wire::BlobInfo {
     }
 }
 
-#[cfg(objects_client)]
 pub(crate) fn delete(value: &wire::DeleteBlobResponse) -> Result<Delete, Error> {
     match wire::DeleteStatus::try_from(value.status).map_err(|_| invalid())? {
         wire::DeleteStatus::Deleted => Ok(Delete::Deleted),
@@ -170,7 +166,6 @@ pub(crate) fn wire_delete(value: Delete) -> wire::DeleteBlobResponse {
     }
 }
 
-#[cfg(objects_client)]
 pub(crate) fn page(value: &wire::ListBlobsResponse) -> Result<Page, Error> {
     let page = Page {
         digests: digests(&value.digests)?,
@@ -237,7 +232,6 @@ pub(crate) fn usage(value: &wire::UsageResponse) -> Usage {
 }
 
 /// Checks a remote read against its request before exposing it.
-#[cfg(objects_client)]
 pub(crate) fn object(
     value: wire::GetBlobResponse,
     requested: Digest,
@@ -258,4 +252,44 @@ pub(crate) fn object(
         return Err(wire::ErrorCode::Unavailable.into());
     }
     Ok(crate::Object::new(head, value.start, value.body.into()))
+}
+
+/// Checks a put acknowledgement against the bytes it was for.
+pub(crate) fn verified_put(
+    value: &wire::PutResponse,
+    requested: Digest,
+    length: u64,
+) -> Result<Put, Error> {
+    let put = put(value)?;
+    if put
+        .verified()
+        .is_some_and(|verified| verified.digest != requested || verified.length != length)
+    {
+        return Err(wire::ErrorCode::Unavailable.into());
+    }
+    Ok(put)
+}
+
+/// Checks an envelope against the digest it was read for.
+pub(crate) fn headed(value: &wire::BlobInfo, requested: Digest) -> Result<Head, Error> {
+    let head = head(value)?;
+    if head.digest != requested {
+        return Err(wire::ErrorCode::Unavailable.into());
+    }
+    Ok(head)
+}
+
+/// Checks a page against the cursor and limit it was listed for.
+pub(crate) fn listed(
+    value: &wire::ListBlobsResponse,
+    after: Option<Digest>,
+    limit: u32,
+) -> Result<Page, Error> {
+    let page = page(value)?;
+    if page.digests.len() > limit as usize
+        || after.is_some_and(|after| page.digests.first().is_some_and(|first| *first <= after))
+    {
+        return Err(wire::ErrorCode::Unavailable.into());
+    }
+    Ok(page)
 }

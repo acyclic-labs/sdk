@@ -12,8 +12,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if grpc || feature("JSON") {
         println!("cargo::rustc-cfg=objects_server");
     }
+    // Bodies share the caller's buffer end to end instead of copying it.
+    let mut config = acyclic_proto_build::config()?;
+    config.bytes([
+        ".acyclic.objects.v1.PutBlobRequest.body",
+        ".acyclic.objects.v1.GetBlobResponse.body",
+    ]);
     acyclic_proto_build::compile(
-        acyclic_proto_build::config()?,
+        config,
         acyclic_proto_build::services(grpc),
         &["proto/objects/v1/objects.proto"],
         "acyclic-objects-v1.bin",
