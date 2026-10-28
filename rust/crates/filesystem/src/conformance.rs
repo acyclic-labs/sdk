@@ -6,7 +6,6 @@ use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, EmbeddedCapabilities, ForkOptions,
     Fs, Generation, IdempotencyKey, TransactionCommit, WorkBudget, WorkspaceError,
 };
-use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     ProviderPlatform, StreamProvider, UnixMillisClock as _,
     testing::{Counted, RequestLedger, Requests},
