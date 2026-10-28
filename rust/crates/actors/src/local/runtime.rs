@@ -8,6 +8,7 @@ use super::ready::{ReadySet, Registration, Work};
 use super::{Error, PreparedPublish, Snapshot, State, Store};
 mod dispatcher;
 mod interrupt;
+mod limits;
 use crate::addressing::{AccountId, ActorReference, NamespaceId};
 use crate::guest::{Delivery, Handler, Trigger};
 use acyclic_stream::query_sync::SyncMutex;
@@ -17,6 +18,7 @@ use acyclic_stream::{
     RecordStream, StreamError, StreamPath, StreamProvider, UnixMillisClock as _,
 };
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
+pub use limits::RuntimeLimits;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashMap, hash_map::RandomState},
@@ -132,6 +134,8 @@ pub struct Runtime<P: StreamProvider + ?Sized> {
     /// Identity of this runtime's placement attempts: two hosts claiming the
     /// same cut never share an idempotency key, so only one claim commits.
     instance: uuid::Uuid,
+    limits: RuntimeLimits,
+    admission: tokio::sync::Semaphore,
 }
 
 impl<P: StreamProvider + ?Sized> Runtime<P> {
@@ -146,7 +150,18 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             actors: std::array::from_fn(|_| SyncMutex::new(HashMap::new())),
             shards: RandomState::new(),
             instance: uuid::Uuid::new_v4(),
+            limits: RuntimeLimits::default(),
+            admission: tokio::sync::Semaphore::new(RuntimeLimits::default().active),
         }
+    }
+
+    /// Configure admission before sharing or running this host. Event-owned
+    /// deliveries and continuous dispatch use the same admission bound.
+    #[must_use]
+    pub fn with_limits(mut self, limits: RuntimeLimits) -> Self {
+        self.admission = tokio::sync::Semaphore::new(limits.active);
+        self.limits = limits;
+        self
     }
 
     /// Claim only the actors of `within`'s account and namespace: discovery
@@ -289,11 +304,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     /// Run every currently ready or due actor to quiescence, then return the
     /// failures. Deterministic hosts and tests drive the runtime with this.
     pub async fn drain(&self) -> Vec<(ActorReference, Error)> {
-        self.ready.wake_due(self.clock.now_unix_ms(), usize::MAX);
+        let now = self.clock.now_unix_ms();
+        while self.ready.wake_due(now, self.limits.work) == self.limits.work {
+            limits::yield_now().await;
+        }
         let mut failures = Vec::new();
-        while let Some(work) = self.ready.take() {
+        let mut steps = 0;
+        loop {
+            let Some(work) = self.ready.take() else { break };
             if let Err(failure) = self.execute(work, Inputs::Follow).await {
                 failures.push(failure);
+            }
+            steps += 1;
+            if steps == self.limits.work {
+                limits::yield_now().await;
+                steps = 0;
             }
         }
         failures
@@ -307,7 +332,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let slot = self
             .slot(actor)
             .ok_or(Error::Invalid("actor is not tracked"))?;
-        self.deliver(actor, &slot, Inputs::Event).await
+        while !self.deliver(actor, &slot, Inputs::Event).await? {
+            // Drop both the actor lock and admission before queueing another
+            // batch. Finite event delivery still drains its committed input.
+            limits::yield_now().await;
+        }
+        Ok(())
     }
 
     /// Host forever: follow the root's activation log to discover actors
@@ -352,49 +382,77 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let mut dispatching: Option<BoxProviderFuture<'_, Result<Snapshot, Error>>> = None;
         let mut running = FuturesUnordered::new();
         let mut timer: Option<(u64, BoxProviderFuture<'static, ()>)> = None;
+        let mut next_class = 0;
+        let mut steps = 0;
         loop {
+            if steps == self.limits.work {
+                limits::yield_now().await;
+                steps = 0;
+            }
             let event = poll_fn(|context: &mut Context<'_>| {
-                if let Some(checkpoint) = dispatching.as_mut() {
-                    if let Poll::Ready(result) = checkpoint.poll_unpin(context) {
-                        return Poll::Ready(Event::Dispatched(result));
-                    }
-                } else {
-                    match created.poll_next_unpin(context) {
-                        Poll::Ready(Some(Ok(record))) => {
-                            return Poll::Ready(Event::Created(record));
+                // Alarm changes must wake us even when active admission is
+                // full and the ready queue cannot currently be consumed.
+                self.ready.listen(context);
+                for _ in 0..4 {
+                    let class = next_class;
+                    next_class = (next_class + 1) % 4;
+                    match class {
+                        0 => {
+                            // Provider I/O owned by an active delivery must keep
+                            // progressing during dispatcher checkpoint writes.
+                            if let Poll::Ready(Some(result)) = running.poll_next_unpin(context) {
+                                return Poll::Ready(Event::Done(result));
+                            }
                         }
-                        Poll::Ready(Some(Err(error))) => return Poll::Ready(Event::Failed(error)),
-                        Poll::Ready(None) => {
-                            return Poll::Ready(Event::Failed(StreamError::Unavailable));
+                        1 => {
+                            if let Some(checkpoint) = dispatching.as_mut() {
+                                if let Poll::Ready(result) = checkpoint.poll_unpin(context) {
+                                    return Poll::Ready(Event::Dispatched(result));
+                                }
+                            } else {
+                                match created.poll_next_unpin(context) {
+                                    Poll::Ready(Some(Ok(record))) => {
+                                        return Poll::Ready(Event::Created(record));
+                                    }
+                                    Poll::Ready(Some(Err(error))) => {
+                                        return Poll::Ready(Event::Failed(error));
+                                    }
+                                    Poll::Ready(None) => {
+                                        return Poll::Ready(Event::Failed(
+                                            StreamError::Unavailable,
+                                        ));
+                                    }
+                                    Poll::Pending => {}
+                                }
+                            }
                         }
-                        Poll::Pending => {}
+                        2 => {
+                            if dispatching.is_none()
+                                && running.len() < self.limits.active
+                                && let Poll::Ready(work) = self.ready.poll_ready(context)
+                            {
+                                return Poll::Ready(Event::Work(work));
+                            }
+                        }
+                        _ => {
+                            // Read the deadline after installing the waiter: an earlier
+                            // alarm installed concurrently wakes us to rearm.
+                            let next = self.ready.next_deadline();
+                            if next != timer.as_ref().map(|(deadline, _)| *deadline) {
+                                return Poll::Ready(Event::Rearm(next));
+                            }
+                            if let Some((_, sleep)) = timer.as_mut()
+                                && sleep.poll_unpin(context).is_ready()
+                            {
+                                return Poll::Ready(Event::Due);
+                            }
+                        }
                     }
-                }
-                // A delivery's pending follow can own provider I/O. Keep
-                // polling it while the dispatcher checkpoints through that
-                // same provider; awaiting the checkpoint alone can deadlock.
-                if let Poll::Ready(Some(result)) = running.poll_next_unpin(context) {
-                    return Poll::Ready(Event::Done(result));
-                }
-                if dispatching.is_none()
-                    && let Poll::Ready(work) = self.ready.poll_ready(context)
-                {
-                    return Poll::Ready(Event::Work(work));
-                }
-                // Read the deadline after installing the waiter: an earlier
-                // alarm installed concurrently wakes us to rearm.
-                let next = self.ready.next_deadline();
-                if next != timer.as_ref().map(|(deadline, _)| *deadline) {
-                    return Poll::Ready(Event::Rearm(next));
-                }
-                if let Some((_, sleep)) = timer.as_mut()
-                    && sleep.poll_unpin(context).is_ready()
-                {
-                    return Poll::Ready(Event::Due);
                 }
                 Poll::Pending
             })
             .await;
+            steps += 1;
             match event {
                 Event::Created(record) => {
                     // The opening record is not an address; skip it.
@@ -428,7 +486,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
                 Event::Due => {
                     timer = None;
-                    self.ready.wake_due(self.clock.now_unix_ms(), usize::MAX);
+                    self.ready
+                        .wake_due(self.clock.now_unix_ms(), self.limits.work);
                 }
                 Event::Failed(error) => return Err(error.into()),
             }
@@ -462,16 +521,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             self.release(&actor);
         }
         drop(work);
-        result.map_err(|error| (actor, error))
+        result.map(|_| ()).map_err(|error| (actor, error))
     }
 
-    /// Deliver until nothing is ready: one committed transition per input.
+    /// Deliver one bounded batch. False retains a wake for the next batch.
     async fn deliver(
         &self,
         actor: &ActorReference,
         slot: &Arc<Slot>,
         inputs: Inputs,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
+        let _admission = self
+            .admission
+            .acquire()
+            .await
+            .map_err(|_| Error::Invalid("runtime admission is closed"))?;
         let mut refresh = RefreshOnDrop(Some(Arc::clone(slot)), false);
         let result = self.deliver_retained(actor, slot, inputs).await;
         // Cancellation can interrupt a committed publication before its receipt
@@ -485,17 +549,23 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         actor: &ActorReference,
         slot: &Slot,
         inputs: Inputs,
-    ) -> Result<(), Error> {
+    ) -> Result<bool, Error> {
         self.handler.manifest().validate_interrupts()?;
         let mut inner = slot.inner.lock().await;
         if inner.released {
-            return Ok(());
+            return Ok(true);
         }
+        let mut steps = 0;
         loop {
             // A pending follow may own asynchronous provider I/O or a fair
             // mutex ticket. Cancel it before loading state through that same
             // provider; the committed cursor is the source of truth below.
             inner.follows.clear();
+            if steps == self.limits.work {
+                slot.waker.wake_by_ref();
+                return Ok(false);
+            }
+            steps += 1;
             if let Some((snapshot, publication)) = inner.pending.take() {
                 match self.store.submit_retained(publication).await {
                     Ok(observed) => {
@@ -534,7 +604,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             };
             let Some(state) = snapshot.state() else {
                 inner.observed = None;
-                return Ok(());
+                return Ok(true);
             };
             // Unclaimed here (epoch 0 locally) always claims, including a state
             // created at epoch 0 by a foreign commit.
@@ -572,7 +642,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 // A later wake must observe an external resume as well.
                 inner.observed = None;
                 slot.registration.suspend_alarm();
-                return Ok(());
+                return Ok(true);
             }
             slot.registration.update_alarm(state.alarm())?;
             let now = self.clock.now_unix_ms();
@@ -592,7 +662,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         },
                         Some(record),
                     ),
-                    None => return Ok(()),
+                    None => return Ok(true),
                 },
             };
             // A retained publication cut cannot admit external handler work:

@@ -159,6 +159,60 @@ fn earlier_deadline_rearms_the_shared_dispatcher_after_unlock() -> Result<(), su
 
 #[cfg(not(loom))]
 #[test]
+fn unchanged_alarm_keeps_the_waiter_but_popped_or_suspended_alarm_reinstalls()
+-> Result<(), super::super::Error> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Signal(AtomicUsize);
+    impl Wake for Signal {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let set = ReadySet::default();
+    let registration = set.register(7_u64)?;
+    drop(set.take());
+    let committed = alarm(1, Some(100), None);
+    registration.update_alarm(&committed)?;
+    let signal = Arc::new(Signal(AtomicUsize::new(0)));
+    let waker = Waker::from(Arc::clone(&signal));
+    set.listen(&Context::from_waker(&waker));
+    for _ in 0..8 {
+        registration.update_alarm(&committed)?;
+    }
+    assert_eq!(signal.0.load(Ordering::SeqCst), 0);
+    assert_eq!(set.alarm_count(), 1);
+    assert!(
+        set.core
+            .index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .waiter
+            .is_some()
+    );
+    assert_eq!(set.wake_due(100, 1), 1);
+    drop(set.take());
+    set.listen(&Context::from_waker(&waker));
+    registration.update_alarm(&committed)?;
+    assert_eq!(
+        signal.0.load(Ordering::SeqCst),
+        2,
+        "due wake and retry rearm both notify"
+    );
+    assert_eq!(set.next_deadline(), Some(100));
+    registration.suspend_alarm();
+    set.listen(&Context::from_waker(&waker));
+    registration.update_alarm(&committed)?;
+    assert_eq!(
+        signal.0.load(Ordering::SeqCst),
+        3,
+        "resume reinstalls the withdrawn alarm"
+    );
+    assert_eq!(set.alarm_count(), 1);
+    Ok(())
+}
+
+#[cfg(not(loom))]
+#[test]
 fn replay_coalescing_and_hibernation_have_bounded_ownership() -> Result<(), super::super::Error> {
     let set = ReadySet::default();
     let registration = set.register(7)?;

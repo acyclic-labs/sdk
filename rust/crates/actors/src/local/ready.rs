@@ -216,6 +216,16 @@ impl<K: Clone> ReadySet<K> {
         }
     }
 
+    /// Retain the dispatcher's alarm-change wake while admission is full.
+    /// Install before reading the minimum deadline, under the same index lock.
+    pub fn listen(&self, context: &Context<'_>) {
+        self.core
+            .index
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .waiter = Some(context.waker().clone());
+    }
+
     /// Exact retained registration and ready counts, independent of actor heaps.
     pub fn counts(&self) -> (usize, usize) {
         let index = self
@@ -367,12 +377,15 @@ impl<K> Registration<K> {
         {
             return Err(super::Error::Conflict);
         }
-        let previous = entry.due.take();
-        entry.alarm = alarm.clone();
         let due = alarm
             .deadline_unix_ms
             .filter(|_| alarm.delivered_generation != Some(alarm.generation))
             .map(|deadline| (deadline, self.id, alarm.generation));
+        if &entry.alarm == alarm && entry.due == due {
+            return Ok(());
+        }
+        let previous = entry.due.take();
+        entry.alarm = alarm.clone();
         entry.due = due;
         if let Some(previous) = previous {
             index.due.remove(&previous);

@@ -630,6 +630,184 @@ async fn spawn_with<P: StreamProvider + ?Sized>(
     Ok(address)
 }
 
+struct ActiveAttempt<'a>(&'a std::sync::atomic::AtomicUsize);
+impl Drop for ActiveAttempt<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+struct Gated {
+    package: Package,
+    active: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+    gate: tokio::sync::Semaphore,
+}
+impl Handler for Gated {
+    fn manifest(&self) -> &Manifest {
+        self.package.manifest()
+    }
+    fn on_record<'a>(
+        &'a self,
+        delivery: Delivery,
+        checkpoint: Option<&'a Checkpoint>,
+        cancellation: crate::guest::CancellationToken,
+    ) -> GuestFuture<'a, Transition> {
+        async move {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            let _attempt = ActiveAttempt(&self.active);
+            self.peak.fetch_max(active, Ordering::SeqCst);
+            self.gate
+                .acquire()
+                .await
+                .map_err(|_| crate::guest::GuestError::Handler("test gate closed".into()))?
+                .forget();
+            self.package
+                .on_record(delivery, checkpoint, cancellation)
+                .await
+        }
+        .boxed()
+    }
+}
+
+async fn bounded_admission_and_abort(event_owned: bool) -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let handler = Arc::new(Gated {
+        package: Package::new()?,
+        active: std::sync::atomic::AtomicUsize::new(0),
+        peak: std::sync::atomic::AtomicUsize::new(0),
+        gate: tokio::sync::Semaphore::new(0),
+    });
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        handler.clone(),
+        Arc::new(SystemClock),
+    )
+    .with_limits(RuntimeLimits::new(2, 2)?);
+    let mut actors = Vec::new();
+    for index in 0..6 {
+        let address = spawn_with(&store, &format!("bounded-{index}"), &[b"emit"]).await?;
+        runtime.track(address.clone())?;
+        actors.push(address);
+    }
+    {
+        let events = FuturesUnordered::new();
+        for address in &actors {
+            events.push(runtime.drain_actor(address));
+        }
+        let mut host = Box::pin(runtime.run(|_, error| panic!("host failed: {error}")));
+        let mut events = events;
+        poll_fn(|context| {
+            if event_owned {
+                assert!(events.poll_next_unpin(context).is_pending());
+            } else {
+                assert!(host.as_mut().poll(context).is_pending());
+            }
+            if handler.active.load(Ordering::SeqCst) == 2 {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        })
+        .await;
+        assert_eq!(handler.peak.load(Ordering::SeqCst), 2);
+        assert_eq!(runtime.admission.available_permits(), 0);
+        for address in &actors {
+            assert_eq!(
+                store
+                    .load(address)
+                    .await?
+                    .state()
+                    .and_then(|state| state.cursor("inbox")),
+                Some(0)
+            );
+        }
+        // Drop a real in-flight handler, provider follows and admission waiters.
+        // Its claim may be durable; its input and effect must remain untouched.
+    }
+    assert_eq!(handler.active.load(Ordering::SeqCst), 0);
+    assert_eq!(runtime.admission.available_permits(), 2);
+    handler.gate.add_permits(actors.len());
+    for address in &actors {
+        runtime.wake(address);
+    }
+    assert!(runtime.drain().await.is_empty());
+    for index in 0..actors.len() {
+        assert_eq!(
+            records(&*provider, &format!("out/bounded-{index}")).await?,
+            vec![Bytes::from_static(b"r0")]
+        );
+    }
+    assert_eq!(handler.peak.load(Ordering::SeqCst), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn continuous_host_bounds_admission_and_aborted_delivery_releases_it() -> TestResult {
+    bounded_admission_and_abort(false).await
+}
+
+#[tokio::test]
+async fn concurrent_event_hosts_share_admission_and_aborted_delivery_releases_it() -> TestResult {
+    bounded_admission_and_abort(true).await
+}
+
+#[tokio::test]
+async fn hot_actor_requeues_behind_other_ready_work_at_its_committed_cut() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let store = Store::new(Arc::clone(&provider), root()?);
+    let hot = spawn_with(&store, "hot", &[b"emit".as_slice(); 8]).await?;
+    let cold = spawn_with(&store, "cold", &[b"emit"]).await?;
+    let runtime = Runtime::new(
+        Store::new(Arc::clone(&provider), root()?),
+        Arc::new(Package::new()?),
+        Arc::new(SystemClock),
+    )
+    .with_limits(RuntimeLimits::new(1, 2)?);
+    runtime.track(hot.clone())?;
+    runtime.track(cold.clone())?;
+    let work = runtime.ready.take().ok_or("missing initial hot work")?;
+    assert_eq!(work.key(), &hot);
+    runtime
+        .execute(work, Inputs::Follow)
+        .await
+        .map_err(|(_, error)| error)?;
+    assert_eq!(
+        store
+            .load(&hot)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(1)
+    );
+    let work = runtime.ready.take().ok_or("missing cold work")?;
+    assert_eq!(work.key(), &cold, "a hot actor must rejoin at the back");
+    runtime
+        .execute(work, Inputs::Follow)
+        .await
+        .map_err(|(_, error)| error)?;
+    assert_eq!(
+        records(&*provider, "out/cold").await?,
+        vec![Bytes::from_static(b"r0")]
+    );
+    assert_eq!(
+        records(&*provider, "out/hot").await?,
+        vec![Bytes::from_static(b"r0")]
+    );
+    runtime.drain_actor(&hot).await?;
+    assert_eq!(
+        store
+            .load(&hot)
+            .await?
+            .state()
+            .and_then(|state| state.cursor("inbox")),
+        Some(8)
+    );
+    assert_eq!(records(&*provider, "out/hot").await?.len(), 8);
+    Ok(())
+}
+
 /// A paused actor's overdue alarm leaves the due index (no wake loop) but
 /// stays committed and fires once on resume.
 #[tokio::test]
