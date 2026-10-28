@@ -287,9 +287,17 @@ impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
             let condition = clone_condition(&observed.condition, work)?;
             super::policy::merge_condition(&mut request.conditions, condition, work)?;
         }
+        // Every fence is part of the canonical command before size admission.
+        // Neither an explicit lease nor the caller's existing deadline may be
+        // extended by composition or omitted by an external submitter.
+        request.deadline_unix_millis = request
+            .deadline_unix_millis
+            .into_iter()
+            .chain(deadline)
+            .min();
         // Use the primitive's one canonical shape/encoded-total admission.
         acyclic_stream::request::validate_commit(&mut request).map_err(map_stream_error)?;
-        commit.seal_request(request, deadline);
+        commit.seal_request(request);
         commit.bind_owner(owner);
         commit.retain_request_custody(work);
         Ok(())

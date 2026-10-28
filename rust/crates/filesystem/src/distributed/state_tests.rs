@@ -287,12 +287,187 @@ async fn exact_expiry_is_retained_with_the_unknown_request() -> TestResult {
         &mut work,
     )?;
     store.seal_observed(&mut publication, &[], Some(100), &mut work)?;
+    assert_eq!(publication.request().deadline_unix_millis, Some(100));
     match store.submit(publication, &mut work).await? {
         FilesystemCommitOutcome::Unknown { commit, .. } => {
             assert_eq!(commit.deadline(), Some(100));
             assert!(commit.request().idempotency_key.as_bytes() == b"expired");
         }
         _ => return Err("expired publication was admitted".into()),
+    }
+    assert_eq!(provider.tail(path).await, Err(StreamError::NotFound));
+    Ok(())
+}
+
+#[tokio::test]
+async fn canonical_request_keeps_the_earliest_expiry_for_external_and_owned_submission()
+-> TestResult {
+    for external in [false, true] {
+        for (caller, lease) in [
+            (None, None),
+            (None, Some(100)),
+            (Some(100), None),
+            (Some(100), Some(200)),
+            (Some(200), Some(100)),
+            (Some(101), Some(200)),
+            (Some(200), Some(101)),
+        ] {
+            let provider = Arc::new(MemoryStream::new_with_clock(
+                MemoryLimits::default(),
+                Arc::new(Clock),
+            ));
+            let store = StreamAuthorityStore::new(provider.clone());
+            let cancellation = CancellationToken::new();
+            let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
+            let mut publication = commit(b"canonical-expiry")?;
+            publication
+                .request_mut()
+                .ok_or("unsealed request missing")?
+                .deadline_unix_millis = caller;
+            let mut updates = Vec::new();
+            for suffix in ["root", "refs"] {
+                let observed = store
+                    .observe_record(StreamPath::new(format!("actor/{suffix}"))?, &mut work)
+                    .await?;
+                updates.push((
+                    observed.observation,
+                    state(b"new"),
+                    crate::PublicationHold::none(),
+                ));
+            }
+            store.prepare_records(&mut publication, updates, &[], lease, &mut work)?;
+            let expiry = caller.into_iter().chain(lease).min();
+            let original = publication.request().clone();
+            assert_eq!(original.deadline_unix_millis, expiry);
+            assert_eq!(publication.deadline(), expiry);
+            let expired = expiry.is_some_and(|expiry| expiry <= 100);
+            // An external sender uses only the canonical request. It must not
+            // need an out-of-band lease argument to preserve the final fence.
+            if external {
+                match provider.commit(original.clone()).await {
+                    Err(StreamError::DeadlineElapsed) if expired => {
+                        assert_eq!(publication.request(), &original);
+                    }
+                    Ok(outcome @ CommitOutcome::Committed(_)) if !expired => {
+                        assert!(matches!(
+                            store.settle(publication, outcome, &mut work).await?,
+                            FilesystemCommitOutcome::Committed(_)
+                        ));
+                    }
+                    _ => return Err("external commit did not preserve its expiry".into()),
+                }
+            } else {
+                match store.submit(publication, &mut work).await? {
+                    FilesystemCommitOutcome::Unknown {
+                        commit,
+                        error: AuthorityStoreError::NativeStream(StreamError::DeadlineElapsed),
+                    } if expired => assert_eq!(commit.request(), &original),
+                    FilesystemCommitOutcome::Committed(_) if !expired => {}
+                    _ => return Err("owned commit did not preserve its expiry".into()),
+                }
+            }
+            for suffix in ["root", "refs"] {
+                let tail = provider
+                    .tail(StreamPath::new(format!("actor/{suffix}"))?)
+                    .await;
+                if expired {
+                    assert_eq!(tail, Err(StreamError::NotFound));
+                } else {
+                    assert_eq!(tail?, 1);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn expiry_bytes_are_admitted_before_a_request_is_sealed() -> TestResult {
+    let store = StreamAuthorityStore::new(Arc::new(MemoryStream::default()));
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
+    let path = StreamPath::new("actor/boundary")?;
+    let bytes = OwnedBytes::from(vec![0; acyclic_stream::MAX_RECORD_BYTES]);
+    let mut records = vec![bytes.clone().into(); acyclic_stream::MAX_COMMAND_BYTES / bytes.len()];
+    records.push(OwnedBytes::new().into());
+    let mut request = CommitRequest {
+        conditions: vec![CommitCondition::Absent { path: path.clone() }],
+        mutations: vec![CommitMutation::Append { path, records }],
+        idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"expiry-size"))?,
+        deadline_unix_millis: None,
+    };
+    // Use the real canonical wire length, including nested length delimiters,
+    // to construct a request that fits exactly without its final expiry fence.
+    let mut lower = 0;
+    let mut upper = bytes.len();
+    while lower < upper {
+        let middle = lower + (upper - lower).div_ceil(2);
+        let CommitMutation::Append { records, .. } = &mut request.mutations[0] else {
+            return Err("boundary append missing".into());
+        };
+        records.last_mut().ok_or("boundary record missing")?.value = bytes.slice(..middle);
+        if acyclic_stream::request::commit_encoded_len(&request)
+            <= acyclic_stream::MAX_COMMAND_BYTES
+        {
+            lower = middle;
+        } else {
+            upper = middle - 1;
+        }
+    }
+    let CommitMutation::Append { records, .. } = &mut request.mutations[0] else {
+        return Err("boundary append missing".into());
+    };
+    records.last_mut().ok_or("boundary record missing")?.value = bytes.slice(..lower);
+    assert_eq!(
+        acyclic_stream::request::commit_encoded_len(&request),
+        acyclic_stream::MAX_COMMAND_BYTES
+    );
+    acyclic_stream::request::validate_commit(&mut request)?;
+    let mut publication = FilesystemCommit::new(request.clone());
+    assert!(matches!(
+        store.seal_observed(&mut publication, &[], Some(u64::MAX), &mut work),
+        Err(AuthorityStoreError::NativeStream(
+            StreamError::LimitExceeded
+        ))
+    ));
+    assert_eq!(publication.request(), &request);
+    assert!(publication.request_mut().is_some());
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[tokio::test]
+async fn native_submission_keeps_the_canonical_exact_expiry_and_original_request() -> TestResult {
+    let provider = Arc::new(MemoryStream::new_with_clock(
+        MemoryLimits::default(),
+        Arc::new(Clock),
+    ));
+    let store = StreamAuthorityStore::new(provider.clone());
+    let cancellation = CancellationToken::new();
+    let original =
+        crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation)
+            .map_err(|(error, _)| error)?;
+    let mut work = AuthorityWork::native(&original, &cancellation);
+    let path = StreamPath::new("actor/native-expiry")?;
+    let observed = store.authorized_observation(CommitCondition::Absent { path: path.clone() })?;
+    let mut publication = commit(b"native-expiry")?;
+    store.prepare_records(
+        &mut publication,
+        [(observed, state(b"new"), crate::PublicationHold::none())],
+        &[],
+        Some(100),
+        &mut work,
+    )?;
+    let request = publication.request().clone();
+    match store.submit(publication, &mut work).await? {
+        FilesystemCommitOutcome::Unknown {
+            commit,
+            error: AuthorityStoreError::NativeStream(StreamError::DeadlineElapsed),
+        } => {
+            assert_eq!(commit.request(), &request);
+            assert_eq!(commit.request().deadline_unix_millis, Some(100));
+        }
+        _ => return Err("native submission bypassed its exact expiry".into()),
     }
     assert_eq!(provider.tail(path).await, Err(StreamError::NotFound));
     Ok(())

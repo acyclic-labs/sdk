@@ -72,6 +72,8 @@ Stage and verify the immutable closure before `contribute_record`, retaining
 its `PublicationHold` through submission. `PublicationHold::none()` alone proves
 no remote retention. `seal_observed` freezes explicit facts and the optional
 exclusive Unix-millis deadline without reading the legacy poll-local policy cut.
+The earliest caller/lease deadline is stored in the canonical request before
+encoded-total admission; it cannot be extended by composition.
 It reuses Streams' canonical request validation and full protobuf encoded-total
 admission. Oversize requests are not chunked. Conflicts publish no mutations.
 Cross-provider observations and mixed-owner contributions are refused. Prepared
@@ -101,9 +103,10 @@ coordinator, companion database or legacy authority consumers.
 Unknown retains the original request/key, deadline, holds and native request
 custody, including when local retry preparation, cancellation, budget admission,
 owner validation or cleanup refuses. Such refusal cannot settle an earlier
-uncertain publication. Resubmit that commit unchanged. External submitters must honor
-`deadline()` with `commit_before` and settle their actual provider outcome.
-Current head reads still use tail plus exact read pending G01. Multiple
+uncertain publication. Resubmit that commit unchanged. External submitters send
+the sealed canonical request, including its deadline, and settle their actual
+provider outcome. Current head reads still use tail plus exact read pending
+original-work native head dispatch. Multiple
 observations are optimistic facts, not a coherent G05 snapshot. Legacy `seal`
 retains its policy bridge until callers migrate.
 

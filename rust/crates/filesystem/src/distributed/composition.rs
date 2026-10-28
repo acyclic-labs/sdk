@@ -28,8 +28,6 @@ pub struct FilesystemCommit {
     /// Set once the request was fenced: retries resend these exact
     /// bytes and key, never a request re-fenced under a newer policy cut.
     sealed: bool,
-    /// Frozen provider-evaluated expiry, retained through an Unknown retry.
-    deadline: Option<u64>,
     /// Every contribution and retry belongs to the same provider scope.
     owner: Option<[u8; 16]>,
     // Last: request vectors and held publication guards retire before funding.
@@ -55,9 +53,8 @@ pub enum FilesystemCommitOutcome {
 }
 
 impl FilesystemCommit {
-    pub(super) fn seal_request(&mut self, request: CommitRequest, deadline: Option<u64>) {
+    pub(super) fn seal_request(&mut self, request: CommitRequest) {
         self.request = request;
-        self.deadline = deadline;
         self.sealed = true;
     }
     /// Starts from the caller's own conditions, mutations and idempotency key.
@@ -68,7 +65,6 @@ impl FilesystemCommit {
             contributions: Vec::new(),
             holds: Vec::new(),
             sealed: false,
-            deadline: None,
             owner: None,
             allocation: None,
         }
@@ -81,11 +77,11 @@ impl FilesystemCommit {
         &self.request
     }
 
-    /// Frozen exclusive expiry. External submitters must use `commit_before`
-    /// with this value when present, preserving it through an Unknown retry.
+    /// Frozen exclusive expiry carried by the canonical request itself.
+    /// External submitters send that same request, including its deadline.
     #[must_use]
     pub fn deadline(&self) -> Option<u64> {
-        self.deadline
+        self.request.deadline_unix_millis
     }
 
     /// Adds caller conditions or mutations. Filesystem contributions own their
@@ -156,7 +152,6 @@ impl FilesystemCommit {
             request,
             mut holds,
             sealed,
-            deadline,
             owner,
             allocation,
             ..
@@ -166,7 +161,6 @@ impl FilesystemCommit {
         self.request = request;
         self.holds = combined;
         self.sealed = sealed;
-        self.deadline = deadline;
         self.owner = owner;
         self.allocation = allocation;
     }
@@ -450,7 +444,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             Err(error) => return Ok(FilesystemCommitOutcome::Unknown { commit, error }),
         };
         let result = self
-            .commit(request, commit.deadline, work, None::<&mut ()>)
+            .commit(request, commit.deadline(), work, None::<&mut ()>)
             .await;
         if !work.is_native()
             && let Err(error) = work.release_request()
