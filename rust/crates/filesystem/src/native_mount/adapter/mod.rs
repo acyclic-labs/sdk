@@ -14,8 +14,7 @@ use crate::kernel::{
 };
 use crate::model::{CaseSensitivity, FilesystemProfile, VolumeConfig, VolumeLimits};
 use crate::native_capture::{
-    MAX_NATIVE_EXACT_CAPTURE_PATHS, NativeViewBaseline, capture_paths_batched,
-    capture_subtrees_with_native_work,
+    NativeViewBaseline, capture_paths_batched, capture_subtrees_with_native_work,
 };
 use crate::performance::BOUNDARY_BUDGET;
 use crate::{
@@ -39,7 +38,6 @@ use std::time::Duration;
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
 const MAXIMUM_EXACT_INSTALL_CHANGES: u32 = 65_536;
-const MAX_NATIVE_SUBTREE_CAPTURE_PATHS: u32 = 4_000_000;
 
 #[derive(Clone, Copy)]
 pub(super) enum HostCaptureScope {

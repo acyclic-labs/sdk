@@ -32,7 +32,7 @@ export function createObjectsV1GrpcClients(options: ObjectsV1GrpcOptions) {
   const credential = credentialProvider(options);
   const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
-  if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
+  if (options.caCertificate !== undefined && options.caCertificate.length === 0) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
     request.header.set("authorization", `Bearer ${await credential(request.signal)}`);
     return next(request);
@@ -47,9 +47,9 @@ export function createObjectsV1GrpcClients(options: ObjectsV1GrpcOptions) {
 /** Rust-validated provider with buffered operations and bounded streamed uploads. */
 export class GrpcObjectsV1 extends ObjectsV1Provider {
   private readonly clients: ReturnType<typeof createObjectsV1GrpcClients>;
-  constructor(options: ObjectsV1GrpcOptions, private readonly maximumResponseBytes = 64 * 1024 * 1024) {
+  constructor(options: ObjectsV1GrpcOptions, private readonly maximumResponseBytes?: number) {
     super();
-    if (!Number.isSafeInteger(maximumResponseBytes) || maximumResponseBytes < 1) throw new RangeError("invalid response bound");
+    if (maximumResponseBytes !== undefined && (!Number.isSafeInteger(maximumResponseBytes) || maximumResponseBytes < 1)) throw new RangeError("invalid response bound");
     this.clients = createObjectsV1GrpcClients(options);
   }
   /** Releases the owned HTTP/2 connection and cancels outstanding calls. */
@@ -177,7 +177,7 @@ export class GrpcObjectsV1 extends ObjectsV1Provider {
             }
             const encoded = toBinary(wire.GetObjectResponseSchema, frame);
             size += encoded.byteLength;
-            if (size > this.maximumResponseBytes) {
+            if (this.maximumResponseBytes !== undefined && size > this.maximumResponseBytes) {
               controller.abort();
               throw new ObjectsV1Error(wire.ErrorCode.QUOTA_EXCEEDED);
             }

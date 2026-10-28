@@ -159,7 +159,7 @@ pub(super) async fn bench_inner(
     let options = CaptureOptions {
         source_root: source.to_path_buf(),
         expected_root_identity: capture_root_identity(source).map_err(engine_err("identity"))?,
-        maximum_paths: 4_000_000,
+        maximum_paths: None,
         maximum_extent_spans: 65_536,
     };
 
@@ -407,7 +407,7 @@ pub(super) async fn capture_and_commit(
         source_root: source.to_path_buf(),
         expected_root_identity: capture_root_identity(source)
             .map_err(engine_err("root identity"))?,
-        maximum_paths: 4_000_000,
+        maximum_paths: None,
         maximum_extent_spans: 65_536,
     };
     let started = Instant::now();

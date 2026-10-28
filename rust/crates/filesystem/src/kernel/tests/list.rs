@@ -10,7 +10,6 @@ fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
         NameEncoding::Utf8,
         value.as_bytes().to_vec(),
-        255,
     )?)
 }
 
@@ -217,7 +216,6 @@ async fn volume_object_ceiling_does_not_size_a_tiny_cursor_allocation()
     let store = MemoryObjectStore::default();
     let root = tree(&store).await?;
     let limits = DecodeLimits {
-        maximum_visited_pages: u32::MAX,
         maximum_page_height: 64,
         ..DecodeLimits::default()
     };
@@ -258,7 +256,7 @@ async fn pagination_rejects_every_invalid_admission_and_authenticated_bound()
     assert_eq!(*zero.work, WorkCounters::default());
 
     // Host bindings build cursors without the volume's name bound.
-    let oversized = LogicalName::new(NameEncoding::Utf8, vec![b'a'; 256], u32::MAX)?;
+    let oversized = LogicalName::new(NameEncoding::Utf8, vec![b'a'; 256])?;
     let cursor = list_tree_entries(
         &store,
         root,

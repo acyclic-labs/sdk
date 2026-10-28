@@ -11,9 +11,6 @@ fn decode<T: Record + crate::HeapLayout>(
     bytes: &[u8],
     work: NativeWork<'_>,
 ) -> Result<(T, NativeCustody)> {
-    if bytes.len() > super::MAXIMUM_RESPONSE_BYTES {
-        return Err(crate::rejection(work, "search response exceeds byte limit"));
-    }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
@@ -32,7 +29,7 @@ fn decode<T: Record + crate::HeapLayout>(
         std::marker::PhantomData::<T>,
         bytes,
         crate::executor::json::JsonBounds {
-            maximum_bytes: super::MAXIMUM_RESPONSE_BYTES as u64,
+            maximum_bytes: bytes.len() as u64,
             maximum_items: u64::MAX,
             maximum_depth: 256,
         },

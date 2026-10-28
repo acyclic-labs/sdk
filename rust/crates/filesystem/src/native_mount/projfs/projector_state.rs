@@ -155,7 +155,6 @@ pub(super) struct ProjectorLifecycle {
 }
 
 pub(super) const HELD_RETRY: std::time::Duration = std::time::Duration::from_millis(20);
-pub(super) const HELD_SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Default)]
 pub(super) struct ProjectorState {

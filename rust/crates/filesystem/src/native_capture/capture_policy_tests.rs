@@ -344,7 +344,7 @@ fn options(root: &Path, maximum_paths: u32) -> Result<CaptureOptions, CaptureErr
     Ok(CaptureOptions {
         source_root: root.to_path_buf(),
         expected_root_identity: capture_root_identity(root)?,
-        maximum_paths,
+        maximum_paths: Some(maximum_paths),
         maximum_extent_spans: 8,
     })
 }

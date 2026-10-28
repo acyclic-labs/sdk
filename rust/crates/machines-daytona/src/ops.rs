@@ -25,9 +25,6 @@ use acyclic_machines::{
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
-/// Maximum retained state events per machine before the oldest are dropped.
-const MAX_EVENTS_PER_MACHINE: usize = 4_096;
-
 /// One admitted mutation.
 #[derive(Clone, Debug)]
 pub struct OperationRecord {
@@ -334,9 +331,6 @@ impl OperationRegistry {
         let previous = inner.machines.get(&id).map(|value| value.state);
         if previous != Some(observation.state) {
             let events = inner.events.entry(id).or_default();
-            if events.len() >= MAX_EVENTS_PER_MACHINE {
-                events.remove(0);
-            }
             let sequence = events
                 .last()
                 .map_or(1, |event| event.sequence.saturating_add(1));

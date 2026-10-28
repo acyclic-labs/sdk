@@ -120,12 +120,6 @@ impl LocalStream {
         frame
             .fill(&command, time)
             .map_err(|error| self.frame_error(error))?;
-        self.inner
-            .journal
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?
-            .admit(&frame)
-            .map_err(|error| self.frame_error(error))?;
         self.inner.commit_clock.pin(time);
         let publication = self.inner.publication.write().await;
         let result = plan.settle(body).await;

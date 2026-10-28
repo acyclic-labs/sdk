@@ -82,6 +82,7 @@ test("the generator compares executed bytes and records failure without changing
     const generator = source("generate-contracts.mjs");
     put("scripts/generate-contracts.mjs", generator);
     put("scripts/contract-targets.mjs", source("contract-targets.mjs"));
+    put("scripts/process-capture.mjs", source("process-capture.mjs"));
     for (const [, name] of generator.matchAll(/^  "([^"]+\.mjs)",/gm)) {
       put(`scripts/${name}`, name === "generate-actors-routes.mjs"
         ? 'export const rust = [["fixture", "bin", "contract"]]; export const render = ([stdout]) => ({"contract.txt": stdout});'

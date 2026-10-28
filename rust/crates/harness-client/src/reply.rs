@@ -1,6 +1,6 @@
 //! One frontend control result, independent of the endpoint's hosting backend.
 
-use crate::{AgentCommand, CommandError, MAX_AGENT_COMMAND_BYTES, MAX_READ_BYTES};
+use crate::{AgentCommand, CommandError, MAX_READ_BYTES};
 use acyclic_harness_core::{
     agent::{
         AgentPath, Delivered, Error as AgentError, IntentId, Phase, Reply, StatusRecord, TurnInput,
@@ -11,10 +11,6 @@ use acyclic_stream::{CommitRequest, wire_codec};
 use base64::Engine as _;
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
-
-/// The canonical commit can be larger than a displayed page. The session carrier
-/// must credit/chunk this bounded envelope, never discard an uncertain request.
-pub const MAX_AGENT_REPLY_BYTES: usize = acyclic_stream::MAX_COMMAND_BYTES + 128;
 
 /// Child discovery carries status at the page cut, without another follow.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -175,24 +171,12 @@ pub fn encode_agent_reply(
 ) -> Result<Vec<u8>, CommandError> {
     use envelope::Value;
     let value = match result {
-        Ok(reply) => {
-            let mut writer = ReplyWriter(Vec::with_capacity(MAX_AGENT_COMMAND_BYTES));
-            serde_json::to_writer(&mut writer, reply).map_err(|_| CommandError::Capacity)?;
-            Value::Reply(writer.0)
-        }
-        Err(AgentError::Unknown(request)) => {
-            if request.wire_encoded_len() > acyclic_stream::MAX_COMMAND_BYTES {
-                return Err(CommandError::Capacity);
-            }
-            Value::Unknown(wire_codec::commit_to_wire(request))
-        }
+        Ok(reply) => Value::Reply(serde_json::to_vec(reply).map_err(|_| CommandError::Invalid)?),
+        Err(AgentError::Unknown(request)) => Value::Unknown(wire_codec::commit_to_wire(request)),
         Err(error) => Value::Refused(error.code().to_owned()),
     };
     let envelope = Envelope { value: Some(value) };
     let encoded_len = envelope.encoded_len();
-    if encoded_len > MAX_AGENT_REPLY_BYTES {
-        return Err(CommandError::Capacity);
-    }
     if let Ok(reply) = result {
         validate_reply(reply, command, encoded_len)?;
     }
@@ -205,9 +189,6 @@ pub fn decode_agent_reply(
     bytes: &[u8],
     command: &AgentCommand,
 ) -> Result<Result<AgentReply, AgentControlFailure>, CommandError> {
-    if bytes.len() > MAX_AGENT_REPLY_BYTES {
-        return Err(CommandError::Capacity);
-    }
     let envelope_len = bytes.len();
     let envelope = Envelope::decode(bytes).map_err(|_| CommandError::Invalid)?;
     // The one Rust encoder is the protocol authority. Reject duplicate/unknown
@@ -235,7 +216,6 @@ pub fn decode_agent_reply(
         }
         envelope::Value::Refused(code) => {
             if code.is_empty()
-                || code.len() > 128
                 || code == "agent_unknown"
                 || !code
                     .bytes()
@@ -246,9 +226,6 @@ pub fn decode_agent_reply(
             Ok(Err(AgentControlFailure::Refused { code }))
         }
         envelope::Value::Reply(bytes) => {
-            if bytes.len() > MAX_AGENT_COMMAND_BYTES {
-                return Err(CommandError::Capacity);
-            }
             let reply: AgentReply =
                 serde_json::from_slice(&bytes).map_err(|_| CommandError::Invalid)?;
             validate_reply(&reply, command, envelope_len)?;
@@ -327,29 +304,14 @@ fn validate_reply(
     };
     if page.0 > page.2.items() as usize
         || bytes > page.2.bytes() as usize
-        || page.1.as_ref().is_some_and(|cursor| {
-            cursor.is_empty() || cursor.len() > 4096 || Some(cursor.as_str()) == page.2.cursor()
-        })
+        || page
+            .1
+            .as_ref()
+            .is_some_and(|cursor| cursor.is_empty() || Some(cursor.as_str()) == page.2.cursor())
     {
         return Err(CommandError::Capacity);
     }
     Ok(())
-}
-
-struct ReplyWriter(Vec<u8>);
-
-impl std::io::Write for ReplyWriter {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > MAX_AGENT_COMMAND_BYTES - self.0.len() {
-            return Err(std::io::Error::other("client reply capacity exceeded"));
-        }
-        self.0.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -461,8 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_export_does_not_consume_uncertain_custody() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn large_export_retains_uncertain_custody() -> Result<(), Box<dyn std::error::Error>> {
         let mut original = request()?;
         let CommitMutation::Append { records, .. } = &mut original.mutations[0] else {
             return Err("expected append".into());
@@ -472,10 +433,7 @@ mod tests {
             acyclic_stream::MAX_COMMAND_BYTES
         ]))];
         let result = Err(AgentError::Unknown(Box::new(original)));
-        assert!(matches!(
-            encode_agent_reply(&result, &AgentCommand::Root {}),
-            Err(CommandError::Capacity)
-        ));
+        assert!(encode_agent_reply(&result, &AgentCommand::Root {}).is_ok());
         assert_eq!(
             result
                 .as_ref()
