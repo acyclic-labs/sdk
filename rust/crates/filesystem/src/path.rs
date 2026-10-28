@@ -110,6 +110,22 @@ impl PortablePath {
             .split('/')
             .filter(|component| !component.is_empty())
     }
+
+    /// Borrows this path and its component ancestors, nearest first.
+    pub(crate) fn ancestors(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.as_str()).chain(
+            self.0
+                .rmatch_indices('/')
+                .filter(move |(end, _)| *end != 0 || self.0 != Self::ROOT)
+                .map(move |(end, _)| &self.0[..end.max(1)]),
+        )
+    }
+}
+
+impl std::borrow::Borrow<str> for PortablePath {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
 }
 
 impl fmt::Debug for PortablePath {

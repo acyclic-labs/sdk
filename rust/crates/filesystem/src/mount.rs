@@ -73,10 +73,14 @@ impl<A: 'static, O: 'static> MountedView<A, O> {
     /// Resolves one path by longest component-prefix match.
     #[must_use]
     pub fn resolve(&self, path: &PortablePath) -> Option<&MountedCheckout<A, O>> {
-        self.bindings
-            .values()
-            .filter(|binding| path.is_within(&binding.path))
-            .max_by_key(|binding| binding.path.depth())
+        self.bindings.get(self.selected_path(path)?)
+    }
+
+    // Lookup visits only the supplied path's component ancestors. Unrelated
+    // mounts do not add routing probes, and mutable routing need not clone a key.
+    fn selected_path<'a>(&self, path: &'a PortablePath) -> Option<&'a str> {
+        path.ancestors()
+            .find(|ancestor| self.bindings.contains_key(*ancestor))
     }
 
     /// Resolves and mutably borrows one checkout with a volume-relative path.
@@ -89,18 +93,12 @@ impl<A: 'static, O: 'static> MountedView<A, O> {
         &mut self,
         path: &PortablePath,
     ) -> Result<RoutedCheckout<'_, A, O>, MountError> {
-        let selected = self
-            .bindings
-            .keys()
-            .filter(|candidate| path.is_within(candidate))
-            .max_by_key(|candidate| candidate.depth())
-            .cloned()
-            .ok_or(MountError::UnmappedPath)?;
+        let selected = self.selected_path(path).ok_or(MountError::UnmappedPath)?;
         let binding = self
             .bindings
-            .get_mut(&selected)
+            .get_mut(selected)
             .ok_or(MountError::UnmappedPath)?;
-        let relative = relative_path(path, &selected, binding.checkout.volume_config().limits)?;
+        let relative = relative_path(path, &binding.path, binding.checkout.volume_config().limits)?;
         Ok(RoutedCheckout {
             mount_id: binding.mount_id,
             path: NamespacePath::from_portable_in_profile(
@@ -195,11 +193,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> MountedVie
     ///
     /// A mounted filesystem view must route every absolute path through `/`.
     pub fn build(self) -> Result<MountedView<A, O>, MountError> {
-        if !self
-            .bindings
-            .keys()
-            .any(|path| path.as_str() == PortablePath::ROOT)
-        {
+        if !self.bindings.contains_key(PortablePath::ROOT) {
             return Err(MountError::MissingRoot);
         }
         Ok(MountedView {

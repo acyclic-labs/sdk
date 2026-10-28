@@ -203,15 +203,16 @@ async fn mount_routing_failures_are_typed_and_non_mutating()
 #[tokio::test]
 async fn every_nested_route_and_rename_pair_is_deterministic_even_for_one_volume()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mount_paths = ["/", "/a", "/a/b", "/a/b/c", "/z"];
+    let mount_paths = ["/", "/a", "/a/b", "/a/b/c", "/a/é", "/z"];
     let checkouts = same_volume_checkouts(mount_paths.len()).await?;
     let expected_volume = checkouts.first().ok_or("missing checkout")?.volume_id();
     let mut builder = MountedView::builder();
     for (path, checkout) in mount_paths.iter().zip(checkouts) {
         builder = builder.mount(path, checkout)?;
     }
-    let view = builder.build()?;
+    let mut view = builder.build()?;
     let routed_cases = [
+        ("/", "/"),
         ("/root", "/"),
         ("/a", "/a"),
         ("/a/file", "/a"),
@@ -220,6 +221,10 @@ async fn every_nested_route_and_rename_pair_is_deterministic_even_for_one_volume
         ("/a/b/c", "/a/b/c"),
         ("/a/b/c/deep", "/a/b/c"),
         ("/a/bb", "/a"),
+        ("/a/b/cousin", "/a/b"),
+        ("/aa/b/c", "/"),
+        ("/a/é/漢", "/a/é"),
+        ("/a/éclair", "/a"),
         ("/z/file", "/z"),
     ];
     let limits = crate::model::VolumeLimits::default();
@@ -228,6 +233,31 @@ async fn every_nested_route_and_rename_pair_is_deterministic_even_for_one_volume
         let binding = view.resolve(&path).ok_or("path was not routed")?;
         assert_eq!(binding.path().as_str(), expected_mount);
         assert_eq!(binding.volume_id(), expected_volume);
+        let expected_mount_id = binding.mount_id();
+        let routed = view.route_mut(&path)?;
+        assert_eq!(routed.mount_id, expected_mount_id);
+        assert_eq!(routed.checkout.volume_id(), expected_volume);
+        let relative = if expected_mount == "/" {
+            path.as_str()
+        } else {
+            path.as_str()
+                .strip_prefix(expected_mount)
+                .ok_or("mount prefix mismatch")?
+        };
+        let expected_components = relative
+            .split('/')
+            .filter(|component| !component.is_empty())
+            .map(str::as_bytes)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            routed
+                .path
+                .components()
+                .iter()
+                .map(crate::kernel::LogicalName::as_bytes)
+                .collect::<Vec<_>>(),
+            expected_components
+        );
     }
 
     let representatives = ["/root", "/a/file", "/a/b/file", "/a/b/c/deep", "/z/file"]
