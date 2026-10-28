@@ -18,10 +18,11 @@ build = "build.rs"
 [features]
 default = ["host"]
 host = ["dep:acyclic-auth", "dep:thiserror", "dep:tonic", "dep:tonic-prost", "dep:uuid", "dep:zeroize"]
-http-codec = ["dep:prost-reflect", "dep:serde_json"]
+http-codec = ["dep:acyclic-protobuf-json", "dep:prost-reflect", "dep:serde_json"]
 
 [dependencies]
 acyclic-auth = { version = "=0.2.0", path = "../auth", optional = true }
+acyclic-protobuf-json = { version = "=0.2.0", path = "../protobuf-json", optional = true }
 prost.workspace = true
 sha2.workspace = true
 prost-reflect = { workspace = true, features = ["serde"], optional = true }

@@ -87,12 +87,14 @@ pub fn decode_http_request(path: &str, json: &[u8]) -> Result<Vec<u8>, &'static 
     if json.len() > MAXIMUM_HTTP_JSON_BYTES {
         return Err("inference HTTP request exceeds JSON ceiling");
     }
-    let mut deserializer = serde_json::Deserializer::from_slice(json);
-    let message = DynamicMessage::deserialize(method(path)?.input(), &mut deserializer)
-        .map_err(|_| "malformed inference protobuf JSON request")?;
-    deserializer
-        .end()
-        .map_err(|_| "trailing inference HTTP request data")?;
+    let message = acyclic_protobuf_json::decode(method(path)?.input(), json, MAXIMUM_HTTP_JSON_BYTES)
+        .map_err(|error| match error {
+            acyclic_protobuf_json::Error::Limit => "inference HTTP request exceeds JSON ceiling",
+            acyclic_protobuf_json::Error::Trailing => "trailing inference HTTP request data",
+            acyclic_protobuf_json::Error::Json | acyclic_protobuf_json::Error::Wire => {
+                "malformed inference protobuf JSON request"
+            }
+        })?;
     if message.encoded_len() > MAXIMUM_MESSAGE_BYTES {
         return Err("inference HTTP request exceeds wire ceiling");
     }
