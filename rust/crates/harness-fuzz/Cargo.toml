@@ -163,24 +163,11 @@ doc = false
 bench = false
 
 [dev-dependencies]
-# The directory-page bench compiles harness-core sources that read fixture
-# controls through its environment seam.
 acyclic-harness-core = { path = "../harness-core" }
 acyclic-test-support = { path = "../test-support" }
 proptest.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-
-[[bench]]
-name = "memory_directory_page"
-path = "benches/memory_directory_page.rs"
-
-[[bin]]
-name = "memory_directory"
-path = "fuzz_targets/memory_directory.rs"
-test = false
-doc = false
-bench = false
 
 [[bin]]
 name = "bounded_json"
