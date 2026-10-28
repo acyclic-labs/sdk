@@ -55,13 +55,13 @@ impl Pool {
         let Some(route) = self.routes.get(&owner) else {
             return;
         };
-        let recovering = route.generation > 1;
         let context = route
             .observation
             .in_scope(|| super::super::runtime::OperationSpan::new_root(tracing::Span::none()));
         self.dials.insert(
             name.clone(),
             Box::pin(context.scope(async move {
+                let mut attempt = 0;
                 let outcome = loop {
                     let result = async {
                         let channel = match &channel {
@@ -73,15 +73,19 @@ impl Pool {
                             &name,
                             identity.clone(),
                             credentials.clone(),
-                            executor.clone(),
+                            attempt,
                         )
                         .await
                     }
                     .await;
                     match result {
-                        // Existing interests own recovery until cancellation.
-                        // Initial admission and credential rejection stay bounded.
-                        Err(StreamError::Unavailable) if recovering => executor.sleep(100).await,
+                        // The original interest owns retries until cancellation or
+                        // its caller-selected registration deadline. Authentication
+                        // and other terminal refusals are never retried.
+                        Err(StreamError::Unavailable) => {
+                            attempt = attempt.saturating_add(1);
+                            executor.sleep(100).await;
+                        }
                         result => break result,
                     }
                 };
@@ -365,40 +369,24 @@ async fn open_link(
     destination: &str,
     identity: Bytes,
     credentials: BTreeMap<u32, Bytes>,
-    executor: std::sync::Arc<dyn crate::runtime::Executor>,
+    attempt: u64,
 ) -> Result<Ready, StreamError> {
-    for attempt in 0..3 {
-        let mut observation = Observation::session(attempt);
-        let result = observation
-            .operation
-            .clone()
-            .scope(deadline::until(
-                handshake(
-                    channel.clone(),
-                    destination,
-                    identity.clone(),
-                    credentials.clone(),
-                ),
-                executor.sleep(1_000),
-            ))
-            .await
-            .unwrap_or(Err(StreamError::Unavailable));
-        let result = match result {
-            Ok((node, mut link, response)) => {
-                link.observation = Some(observation);
-                Ok((node, link, response))
-            }
-            Err(error) => {
-                observation.finish(Some(&error));
-                Err(error)
-            }
-        };
-        match result {
-            Err(StreamError::Unavailable) if attempt < 2 => executor.sleep(10).await,
-            result => return result,
+    let mut observation = Observation::session(attempt);
+    let result = observation
+        .operation
+        .clone()
+        .scope(handshake(channel, destination, identity, credentials))
+        .await;
+    match result {
+        Ok((node, mut link, response)) => {
+            link.observation = Some(observation);
+            Ok((node, link, response))
+        }
+        Err(error) => {
+            observation.finish(Some(&error));
+            Err(error)
         }
     }
-    Err(StreamError::Unavailable)
 }
 
 async fn handshake(
