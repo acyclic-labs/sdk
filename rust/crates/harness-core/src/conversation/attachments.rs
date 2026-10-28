@@ -294,7 +294,10 @@ pub async fn verified_attachment_manifest<'a, V: ContentResidencyVerifier + ?Siz
 ) -> Result<(Vec<Attachment>, Option<ContentHold<'a>>)> {
     crate::executor::with_history_io(io, |work| {
         limits.validate_file(reference, work)?;
-        if item_count as usize > limits.attachments {
+        if limits
+            .attachments
+            .is_some_and(|maximum| item_count as usize > maximum.get())
+        {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,

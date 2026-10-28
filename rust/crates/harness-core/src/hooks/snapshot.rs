@@ -10,7 +10,10 @@ impl Hooks {
         limits: Limits,
     ) -> Result<FileRef> {
         const PREFIX: &str = "inputs/config/hooks/";
-        if PREFIX.len() + 64 + ".json".len() > limits.path_bytes {
+        if limits
+            .path_bytes
+            .is_some_and(|maximum| PREFIX.len() + 64 + ".json".len() > maximum.get())
+        {
             return Err(Error::Invalid(
                 "hook configuration path exceeds path bound".into(),
             ));
