@@ -12,7 +12,7 @@ pub fn lock_owned<T>(mutex: Arc<Mutex<T>>) -> impl Future<Output = OwnedMutexGua
     mutex.lock_owned()
 }
 
-#[cfg(all(loom, feature = "native-execution"))]
+#[cfg(loom)]
 #[doc(hidden)]
 pub use modeled::OwnedMutexGuard;
 #[cfg(loom)]
