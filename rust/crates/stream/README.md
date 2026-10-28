@@ -81,6 +81,16 @@ replaced fork prefixes, creation during registration, distinct opaque keys,
 attention, malformed JSON, tiny credit, a crash before application commit and
 changed key bytes. These are planned measurements, not performance results.
 
+`pages::PageSource::next_page(after, budget)` is the storage seam for pinned
+history, with `after` naming the next unread sequence. A source retains one
+immutable history and its inherited fork cuts; each nonempty page is contiguous
+and bounded by the caller's page budget. `pages::PinnedCursor` retains one page,
+loads on demand, and advances only when a record is consumed. Memory reads and
+follows use this cursor over immutable batch windows, without building a queue
+for the retained backlog. Durable page ports can await their storage event in
+the same interface. Replacing a follow pin checks its preceding commit before
+exposing records from the new cut.
+
 ```sh
 cargo add acyclic-stream
 ```

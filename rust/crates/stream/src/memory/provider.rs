@@ -278,12 +278,12 @@ impl StreamProvider for MemoryStream {
         let end = path
             .tail
             .min(request.from.saturating_add(u64::from(request.limit)));
-        let mut cursor = HistoryCursor::new(path, end, request.from);
-        Ok(stream::iter(
-            std::iter::from_fn(move || cursor.next_record())
-                .take(usize::try_from(end - request.from).unwrap_or(usize::MAX))
-                .map(Ok),
-        )
+        let cursor = HistoryCursor::new(path, end, request.from);
+        drop(state);
+        Ok(stream::try_unfold(cursor, |mut cursor| async move {
+            Ok(cursor.next_record().await?.map(|record| (record, cursor)))
+        })
+        .take(usize::try_from(end - request.from).unwrap_or(usize::MAX))
         .boxed())
     }
 

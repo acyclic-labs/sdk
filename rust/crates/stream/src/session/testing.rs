@@ -54,7 +54,8 @@ pub fn credential_with_grants(grants: Vec<ResourceGrant>) -> Bytes {
         };
         key.key.grants = GrantSet {
             grants: grants
-                .into_iter()
+                .iter()
+                .cloned()
                 .map(|grant| Grant {
                     kind: GrantKind::Resource(grant),
                 })
