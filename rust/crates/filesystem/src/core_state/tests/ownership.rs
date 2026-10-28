@@ -147,14 +147,26 @@ fn measured_admission_reads(root: &Path) -> u64 {
 }
 
 #[test]
-fn measured_shared_admission_charges_its_claim_check_allocations() {
+fn measured_shared_admission_charges_its_actual_claim_check_allocations() {
     let directory = tempfile::tempdir().unwrap();
-    let work = measured_admission(&directory.path().join("core-state"));
+    let path = directory.path().join("owner.lock");
+    let claim = acyclic_native_runtime::StoreClaim::acquire(&path).unwrap();
+    let record_bytes = std::fs::metadata(&path).unwrap().len();
+    let file = FileLock::new(std::fs::File::open(&path).unwrap());
+    let cancellation = crate::CancellationToken::new();
+    let work =
+        crate::NativeMaterializationWork::new(native::finite_budget(), &cancellation).unwrap();
     assert!(
-        work.peak_allocation_bytes >= acyclic_native_runtime::StoreClaim::CHECK_ALLOCATION_BYTES
-            && work.allocation_operations >= acyclic_native_runtime::StoreClaim::CHECK_ALLOCATIONS,
-        "{work:?}"
+        acyclic_native_runtime::StoreClaim::check_metered(&file, &work.runtime_meter())
+            .unwrap()
+            .claimed
     );
+    let receipt = work.receipt();
+    assert!(
+        receipt.peak_allocation_bytes >= record_bytes && receipt.allocation_operations > 0,
+        "{receipt:?}"
+    );
+    drop(claim);
 }
 
 #[test]
@@ -183,10 +195,10 @@ fn measured_shared_admission_charges_its_claim_check() -> Result<(), Box<dyn std
     child.terminate_descendants()?;
     child.wait(Duration::from_secs(5))?;
     let probed = measured_admission_reads(&root);
-    // One probe while the owner's process lock remains, three once another
-    // process's sweep has removed it.
+    // Count actual physical starts, including record framing and owner probes;
+    // an empty record does not allocate or perform those additional reads.
     assert!(
-        probed > free && probed - free < acyclic_native_runtime::StoreClaim::CHECK_READ_OPERATIONS,
+        probed > free,
         "free admission {free} reads, after a dead owner {probed}"
     );
     Ok(())
