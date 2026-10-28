@@ -35,6 +35,7 @@ pub mod persistence;
 #[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
 pub mod postgres;
 pub mod preparation;
+mod projection;
 pub mod request;
 pub mod runtime;
 #[cfg(any(
