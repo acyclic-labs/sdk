@@ -90,11 +90,11 @@ impl BrowserCheckout {
     pub async fn prepare_merge(
         &mut self,
         theirs: Vec<u8>,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_changes: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_changes: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_conflicts: JsValue,
     ) -> Result<Ts<BrowserMergePreparationResult>, JsValue> {
-        let maximum_changes = wasm_u32(&maximum_changes)?;
-        let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
+        let maximum_changes = wasm_optional_u32(&maximum_changes)?;
+        let maximum_conflicts = wasm_optional_u32(&maximum_conflicts)?;
 
         let theirs = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
             &theirs,

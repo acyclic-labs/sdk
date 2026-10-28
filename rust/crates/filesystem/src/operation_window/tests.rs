@@ -113,8 +113,8 @@ async fn zero_reconcile_limits_do_not_close_or_claim_a_window() {
         let mut limits = OperationReconcileLimits::default();
         match field {
             0 => limits.maximum_generations = Some(0),
-            1 => limits.maximum_changes = 0,
-            2 => limits.maximum_conflicts = 0,
+            1 => limits.maximum_changes = Some(0),
+            2 => limits.maximum_conflicts = Some(0),
             _ => unreachable!("only the three reconcile bounds are covered"),
         }
 
