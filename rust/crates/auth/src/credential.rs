@@ -1,4 +1,9 @@
-//! Request-scoped credential callbacks shared by product transports.
+//! Credential callbacks and validity-aware snapshots shared by product transports.
+mod cache;
+pub use cache::{
+    CredentialCache, CredentialCacheError, CredentialLease, CredentialRevision, CredentialSnapshot,
+    CredentialValidity,
+};
 use std::{future::Future, pin::Pin};
 use zeroize::Zeroizing;
 
@@ -33,14 +38,29 @@ type Callback = dyn Fn() -> CredentialFuture + Send + Sync;
 #[cfg(target_arch = "wasm32")]
 type Callback = dyn Fn() -> CredentialFuture;
 
-/// Immutable callback configuration. Each resolution owns its result; no token
-/// cache, synchronization protocol or background task is introduced here.
+/// Immutable callback configuration. Raw callbacks resolve afresh. Convert a
+/// validity-aware `CredentialCache` into this type to share trusted snapshots.
 #[derive(Clone)]
 pub struct CredentialProvider(Shared<Callback>);
 
 impl std::fmt::Debug for CredentialProvider {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("CredentialProvider(..)")
+    }
+}
+
+impl From<CredentialCache> for CredentialProvider {
+    fn from(cache: CredentialCache) -> Self {
+        Self::new(move || {
+            let cache = cache.clone();
+            async move {
+                cache
+                    .resolve()
+                    .await
+                    .map(|snapshot| snapshot.token().to_owned())
+                    .map_err(|error| CredentialError::Provider(Box::new(error)))
+            }
+        })
     }
 }
 
