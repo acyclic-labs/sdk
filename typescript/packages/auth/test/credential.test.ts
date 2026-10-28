@@ -81,6 +81,24 @@ test("late rejection and dispatch after revision change preserve exact invalidat
   changed.check();
 });
 
+test("request cancellation preserves shared source custody and exact rejection", async () => {
+  let calls = 0;
+  const cache = new CredentialCache(async () => new CredentialSnapshot(`synthetic-${++calls}`, "r", 100),
+    () => ({ nowUnixSeconds: 1, revision: "r" }));
+  const cancelled = new AbortController();
+  const old = await resolveCredential(cache.provider, cancelled.signal);
+  const peer = await resolveCredential(cache.provider);
+  cancelled.abort();
+  expect(() => old.check()).toThrow(DOMException);
+  peer.check();
+  expect(calls).toBe(1);
+  expect(peer.reject()).toBe(true);
+  const next = await resolveCredential(cache.provider);
+  expect(old.reject()).toBe(false);
+  next.check();
+  expect(calls).toBe(2);
+});
+
 test("last cancellation aborts and fences source; cancelling one waiter preserves cohort", async () => {
   const gate = deferred<CredentialSnapshot>();
   const started = deferred<AbortSignal>();

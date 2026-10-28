@@ -70,7 +70,7 @@ async fn javascript_owner_keeps_exact_rejection_revision_watch_and_cancellation(
     assert_eq!(watch.validity().revision, Some(revision));
     old.check().unwrap();
     assert!(old.reject().unwrap());
-    watch.await;
+    watch.await.unwrap();
     assert_eq!(call(&source, "closed").as_f64(), Some(1.0));
     let current = provider.resolve().await.unwrap();
     let watch = provider.watch().unwrap().unwrap();
@@ -78,7 +78,7 @@ async fn javascript_owner_keeps_exact_rejection_revision_watch_and_cancellation(
     current.check().unwrap();
     assert_eq!(call(&source, "calls").as_f64(), Some(2.0));
     call(&source, "replace");
-    watch.await;
+    watch.await.unwrap();
     assert!(current.check().is_err());
     let replacement = provider.resolve().await.unwrap();
     assert_ne!(replacement.binding(), current.binding());

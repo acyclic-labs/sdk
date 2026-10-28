@@ -61,7 +61,7 @@ fn provider_projects_trusted_binding_and_push_changes_without_raw_identity() {
     );
     rev.store(2, Ordering::SeqCst);
     cache.invalidate().unwrap();
-    block_on(change);
+    block_on(change).unwrap();
     assert!(old.check().is_err());
 
     let next = block_on(provider.resolve()).unwrap();
@@ -71,7 +71,7 @@ fn provider_projects_trusted_binding_and_push_changes_without_raw_identity() {
     assert!(!old.reject().unwrap());
     pending(change.as_mut());
     assert!(next.reject().unwrap());
-    block_on(change);
+    block_on(change).unwrap();
     // Dropped subscriptions release their registration and do not affect peers.
     drop(provider.watch().unwrap());
     cache.invalidate().unwrap();
@@ -79,6 +79,78 @@ fn provider_projects_trusted_binding_and_push_changes_without_raw_identity() {
     let raw = CredentialProvider::new(|| future::ready(Ok("synthetic-raw".into())));
     assert!(raw.watch().unwrap().is_none());
     assert_eq!(block_on(raw.resolve()).unwrap().binding(), None);
+}
+
+#[test]
+fn source_watch_retires_epochs_and_reports_last_producer_loss_without_waiting() {
+    use futures::task::{ArcWake, waker};
+
+    struct Reenter {
+        source: CredentialCache,
+        watch: Mutex<Option<CredentialWatch>>,
+    }
+    impl ArcWake for Reenter {
+        fn wake_by_ref(this: &Arc<Self>) {
+            *this.watch.lock().unwrap() = Some(this.source.watch().unwrap());
+        }
+    }
+    let source = CredentialCache::new(
+        |_| future::ready(Ok(snapshot("synthetic", 1, 100))),
+        || CredentialValidity {
+            now_unix_seconds: 1,
+            revision: Some(revision(1)),
+        },
+    );
+    let mut first = Box::pin(source.watch().unwrap());
+    let mut peer = Box::pin(source.watch().unwrap());
+    let reenter = Arc::new(Reenter {
+        source: source.clone(),
+        watch: Mutex::new(None),
+    });
+    let wake = waker(reenter.clone());
+    assert!(
+        first
+            .as_mut()
+            .poll(&mut Context::from_waker(&wake))
+            .is_pending()
+    );
+    pending(peer.as_mut());
+    source.invalidate().unwrap();
+    assert!(matches!(first.now_or_never(), Some(Ok(()))));
+    assert!(matches!(peer.now_or_never(), Some(Ok(()))));
+    let mut next = Box::pin(reenter.watch.lock().unwrap().take().unwrap());
+    // Registration from a wake belongs to the next epoch, not the retired one.
+    pending(next.as_mut());
+    drop(wake);
+    drop(reenter);
+
+    // Discarded subscriptions cannot retain their task wakers or the source.
+    let temporary = Arc::new(Reenter {
+        source: source.clone(),
+        watch: Mutex::new(None),
+    });
+    let weak = Arc::downgrade(&temporary);
+    let wake = waker(temporary.clone());
+    let mut discarded = Box::pin(source.watch().unwrap());
+    assert!(
+        discarded
+            .as_mut()
+            .poll(&mut Context::from_waker(&wake))
+            .is_pending()
+    );
+    drop(discarded);
+    drop(wake);
+    drop(temporary);
+    assert!(weak.upgrade().is_none());
+
+    let retained = source.clone();
+    drop(source);
+    pending(next.as_mut()); // A live producer is the negative control.
+    drop(retained);
+    assert!(matches!(
+        next.now_or_never(),
+        Some(Err(CredentialCacheError::Unavailable))
+    ));
 }
 
 #[test]

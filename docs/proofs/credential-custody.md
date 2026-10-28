@@ -96,7 +96,10 @@ qualify the separate JavaScript-to-native Stream ABI.
 
 Rust Actors, Streams and Objects retain leases across their HTTP/gRPC attempts.
 JS gRPC also retains custody through streaming trailers. Browser WebSocket
-setup checks its exact lease before connection; browser handshake transport
+sessions check their exact lease before connection, after open, before frame
+decoding and send, and when returning queued records or completion. A source
+notification closes the socket and ends pending reads; every terminal path
+unregisters that watch. Browser handshake transport
 failure does not reveal an authenticated HTTP rejection and cannot invalidate
 it. The shared native tonic service rechecks leases after readiness, before
 submitting to the transport. This does not make an atomic promise about a
@@ -106,7 +109,7 @@ Successful Actors replies, shared Auth channel calls, Stream unary replies and
 native session records recheck their retained lease before admitting the result.
 HTTP Actors, Objects and Stream retain that same lease through the complete
 body read and check before decoding and before successful return. JavaScript
-Objects checks each NDJSON body chunk and final completion. Local freshness
+Objects checks each successful body chunk and final completion. Local freshness
 refusals remain separate from malformed responses and remote rejection.
 JavaScript Actors checks before decoding its returned bytes; shared JavaScript
 credential streams check each record and completion and retire their iterator
@@ -138,6 +141,9 @@ updates. No bearer or signing material is emitted.
 Each delta affects exactly one identity. The full checkpoint is the population
 control: its bytes and work grow with retained entries. No deployed latency or
 disk/network improvement is inferred from these synthetic measurements.
+The current ordered index has O(log R) lookup/insertion in R retained entries;
+these measurements do not prove population-independent operation cost. Full
+checkpoint validation and replacement also process the complete retained input.
 
 Rust tests cross the previous 4,096-entry threshold while leaving an unrelated
 key valid, then explicitly revoke all older epochs while preserving the new
@@ -157,6 +163,15 @@ can retain older history without weakening publication order on restart.
 Real loopback HTTP controls hold successful bodies while the source changes
 account, becomes unavailable, expires or invalidates. The unchanged source
 succeeds; local refusal and cancellation preserve its cached snapshot.
+Objects blob controls additionally hold an authenticated rejection until a
+replacement lease is published. That late rejection cannot invalidate the
+replacement, while rejection of the current lease still forces renewal.
+Real loopback WebSocket controls exercise queued records, new wire frames and
+writes under the same changes and caller cancellation. Invalid protobuf bytes
+after source change must fail with a credential refusal before decoding. An
+unchanged lease can send and receive; source invalidation and peer closure
+complete an empty pending read without another wire record. Local refusal
+preserves the source snapshot, and only explicit invalidation refreshes it.
 
 The native Stream gRPC test also sends real tonic requests through a duplex
 transport and the production service adapter. Remote credential rejection
@@ -164,11 +179,31 @@ invalidates the used lease; permission denial preserves it; a replacement
 published before an old request's rejection remains valid. All four focused
 Stream credential tests passed on Linux x86_64 in 0.01 s.
 
+On Linux x86_64, 2026-10-28, `cargo bench --locked -p acyclic-auth --bench credential`
+held each synthetic cold/expiry source on a one-shot event until every caller
+joined. Warm resolution and check timings each average 16,384 sequential calls.
+The raw callback is the negative control for reuse, not a latency comparison.
+
+| Cohort callers | Cold cohort (us) | Warm resolve (ns/call) | Check (ns/call) | Expiry cohort (us) | Source calls total | Raw callback calls |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 23.02 | 58.30 | 24.93 | 2.77 | 2 | 1 |
+| 100 | 45.74 | 57.05 | 22.45 | 36.20 | 2 | 100 |
+| 1,000 | 386.22 | 57.06 | 23.33 | 353.85 | 2 | 1,000 |
+
+Every cold or expiry cohort shares one exact snapshot. Warm operations add no
+source calls; expiry invalidates the old lease. Cohort timing includes caller
+registration and delivery, so total work grows with live callers. This is an
+in-process synthetic source: no disk opens, JSON parsing, minting, remote token
+calls or deployed latency improvement is measured here. Those integrations
+still require their separate counters below.
+
 ## Remaining integrations
 
 - Integrate durable revocation publication, restart frontier retention, paged
   checkpoint transfer and dependent-cache invalidation with the actual owner.
   The old downstream overflow behavior is not removed by adding this SDK core.
+  Replace the ordered index's population-dependent lookup/insertion before
+  claiming constant per-identity operation cost.
 - Bind member/SVID identity, exact scope, original deadline/cancellation and
   predecode work admission in the shared public transport context; qualify
   actual native/browser requests rather than only the cache primitive.
@@ -194,3 +229,38 @@ Stream credential tests passed on Linux x86_64 in 0.01 s.
   denial, cancellation and producer failure, and preserve single redemption.
   Count token calls before approval: the required result is zero. An SDK sleep
   wrapper or an assumed endpoint would not satisfy this contract.
+
+## Source event progress and operation cost
+
+Native source watches share one one-shot event per current source epoch. A
+watch owns only the receiving side, so dropping the last source producer
+completes every pending watch with `CredentialCacheError::Unavailable`.
+Invalidation publishes the next epoch before delivering the previous event;
+a registration created by a waking observer cannot consume that old event.
+Registration captures the event before observing validity, releasing its lock
+before calling the source. A source observation may reenter invalidation; the
+already-registered event then completes rather than losing that change or
+deadlocking. A concurrent change can conservatively retire a fresh observation.
+Foreign custodians forward the same typed result and release their original
+registration on drop.
+
+Registration, cancellation and epoch replacement update a fixed amount of
+owner state. There is no per-source observer map or history scan. The shared
+future primitive owns current task registrations and removes a dropped task's
+waker. Delivering an event to N live observers necessarily performs N wake
+notifications; this is O(1) per notified observer, not O(1) total broadcast.
+The controls exercise a reentrant registration, dropped task cleanup, and a
+retained producer as the negative control for last-producer loss. All results
+are checked by polling the event directly, without a timeout or sleep.
+
+The native JavaScript adapter holds one cancellation cohort rather than a
+collection of pending callbacks. Retain/release changes a counter and the last
+release detaches that cohort before fencing transport and aborting its event.
+A reentrant request belongs to a new cohort. Credential resolution uses Auth's
+shared abort-aware primitive, so losing the producer cannot keep an abandoned
+request pending. The callback's eventual settlement remains observed. A request
+bound to a caller signal rechecks that signal without rejecting a shared lease.
+Mutation controls remove cancellation custody, fence ordering or cohort
+separation and must fail the same deterministic schedules. As with native
+watch delivery, abort notification work is proportional to live listeners;
+there is no scan over completed requests or historical cohorts.

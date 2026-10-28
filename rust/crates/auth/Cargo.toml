@@ -64,5 +64,9 @@ harness = false
 name = "revocation"
 harness = false
 
+[[bench]]
+name = "credential"
+harness = false
+
 [build-dependencies]
 acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }

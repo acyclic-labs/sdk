@@ -152,10 +152,8 @@ impl GrpcObjects {
         } else {
             acyclic_auth::channel::PeerTrust::Platform
         };
-        let endpoint = endpoint
-            .connect_timeout(std::time::Duration::from_secs(10))
-            // Every request carries its own deadline; the channel adds none.
-            ;
+        // Every request carries its own deadline; the channel adds none.
+        let endpoint = endpoint.connect_timeout(std::time::Duration::from_secs(10));
         let channel = acyclic_auth::channel::connect(endpoint, peer, identity)
             .await
             .map_err(|error| match error {

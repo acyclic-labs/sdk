@@ -260,9 +260,15 @@ export async function resolveCredential(provider: CredentialProvider, signal?: A
   signal?.throwIfAborted();
   if (provider.resolveRequest) {
     const request = await abortable(provider.resolveRequest(signal), signal);
+    signal?.throwIfAborted();
     validateCredential(request.token());
     request.check();
-    return request;
+    return {
+      ...(request.binding === undefined ? {} : { binding: request.binding }),
+      token: () => request.token(),
+      check: () => { signal?.throwIfAborted(); request.check(); },
+      reject: () => request.reject(),
+    };
   }
   const token = await rawCredential(provider, signal);
   validateCredential(token);

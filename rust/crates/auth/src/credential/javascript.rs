@@ -164,9 +164,11 @@ struct Registration {
     receive: oneshot::Receiver<()>,
 }
 impl Future for Registration {
-    type Output = ();
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
-        Pin::new(&mut self.receive).poll(cx).map(|_| ())
+    type Output = Result<(), CredentialCacheError>;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.receive)
+            .poll(cx)
+            .map(|result| result.map_err(|_| CredentialCacheError::Unavailable))
     }
 }
 impl Drop for Registration {

@@ -30,7 +30,7 @@ impl CredentialSource for Source {
             let registration = Registration(self.closed.clone());
             CredentialWatch::from_custodian(validity, async move {
                 let _registration = registration;
-                watch.await;
+                watch.await
             })
         }))
     }
@@ -104,7 +104,7 @@ fn custodian_adapter_retains_singleflight_exact_rejection_and_drop_owned_watch()
     let watch = provider.watch().unwrap().unwrap();
     assert_eq!(watch.validity().revision, Some(revision));
     assert!(old.reject().unwrap());
-    block_on(watch);
+    block_on(watch).unwrap();
     assert_eq!(closed.load(Ordering::SeqCst), 2);
     assert!(requests.iter().all(|request| request.check().is_err()));
     let current = block_on(provider.resolve()).unwrap();
@@ -120,4 +120,23 @@ fn custodian_adapter_retains_singleflight_exact_rejection_and_drop_owned_watch()
     });
     assert!(raw.watch().unwrap().is_none());
     assert!(block_on(raw.resolve()).unwrap().binding().is_none());
+
+    let source = CredentialProvider::from_custodian(Source {
+        provider: CredentialCache::new(
+            |_| async { CredentialSnapshot::new("synthetic".into(), [0; 32].into(), 100) },
+            || CredentialValidity {
+                now_unix_seconds: 1,
+                revision: Some([0; 32].into()),
+            },
+        )
+        .into(),
+        closed: Arc::new(AtomicUsize::new(0)),
+    });
+    let mut watch = Box::pin(source.watch().unwrap().unwrap());
+    assert!(watch.as_mut().now_or_never().is_none());
+    drop(source);
+    assert!(matches!(
+        watch.now_or_never(),
+        Some(Err(CredentialCacheError::Unavailable))
+    ));
 }

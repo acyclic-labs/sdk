@@ -5,7 +5,7 @@ import fc from "fast-check";
 import { nativeCredentials } from "../src/native-credentials.js";
 
 const driver = fileURLToPath(new URL("./native-credentials-model.ts", import.meta.url));
-for (const fault of ["", "any-release", "no-release", "live-abort-set", "no-abandon"]) {
+for (const fault of ["", "any-release", "no-release", "live-abort-set", "no-abandon", "ignore-abort"]) {
   test(`native shared credential interleavings: ${fault || "correct"}`, () => {
     const result = spawnSync(process.execPath, [driver], { encoding: "utf8", timeout: 2000,
       env: { ...process.env, STREAM_CREDENTIAL_FAULT: fault } });
@@ -16,6 +16,7 @@ for (const fault of ["", "any-release", "no-release", "live-abort-set", "no-aban
     } else {
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain(fault === "no-abandon" ? "abandoned credential must be fenced before abort"
+        : fault === "ignore-abort" ? "abandoned source must settle without its producer"
         : fault === "no-release" ? "last request leaked credentials" : "healthy request cancelled");
     }
   });
