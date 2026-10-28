@@ -94,6 +94,19 @@ At source `82a4a73b4f`, the ordinary Auth/Fs/Core/Harness all-feature main check
 
 Normal artifact qualification also requires the final Rust test summary to report exactly the selected number of passed cases, with no failed, ignored or measured cases. Exit status zero alone cannot admit an ignored selection. The inventory reports execution as `NOT_RUN` and ignored status as `NOT_OBSERVED`. Pure guard checks over a real captured seven-case summary and the actual 901-case inventory accept the original completion and prefixes, while derived incomplete/ignored/missing-summary inputs and a missing prefix refuse. These controls execute the guard code only; they are not new runtime, model or production omission-mutant results.
 
+The compile/list inventory now has these source-specific results. Every row lists cases without executing their bodies; ignored status remains unobserved. The `33b2aa2e3c` aggregate timed out during the final CLI compile, after its three preceding inventories completed. Its original client receipt retains the embedded remote receipt; separate remote raw copies await restored buildbox connectivity.
+
+| Target | Source | Discovered | Selected | Complete case-ID SHA256 prefix |
+|---|---|---:|---:|---|
+| Core library | `82a4a73b4f` | 901 | 5 | `cc8c86ca8486` |
+| Harness library | `a924a663a5` | 128 | 16 | `bae048d93a59` |
+| Harness integration | `33b2aa2e3c` | 274 | 28 | `6ab294d63e25` |
+| Search library | `33b2aa2e3c` | 43 | 7 | `4a524dc7b745` |
+| GraphCoder library | `33b2aa2e3c` | 4 | 4 | `2aebeee0d7a7` |
+| GraphCoder CLI | Pending | Unknown | Unknown | Pending |
+
+The corrected secret boundary fixture compiled as the actual `manifest_contract` target at `a924a663a5`; Workers JavaScript syntax also passed. Both fixtures now express exactly 256 accepted bytes and 257 refused bytes under the unchanged Rust grammar. Compilation and syntax checks do not execute these assertions or qualify Node/browser behavior.
+
 The root workspace contains 75 compatible package members while retaining exactly the original 48 default members. The captured proof-policy fixture workspace and lock remain isolated, as does the vendored upstream lock. These are static membership and provenance checks; the proposed incompatible-workspace negative control and cold/warm compiler/link measurements have not run. At source `a18e82f76d`, the normal conformance WASM build, bindgen, harness contract generation, harness WASM build and final Worker bundle passed. The final bundle resolves 14 modules with only platform/WASM imports external. This qualifies the build closure, not hosted execution or a speedup.
 
 Audit v3b coordination keeps tooling16/18/19/20 with the unbounded owner: per-map worker bounds are not a global compiler/process/FD budget, archive protective limits are not an unlimited-default contract, and hosted wake ownership must not gain a second polling mechanism. Existing caps are recorded source behavior pending that concrete shared-owner join. Physical causal IDs, nested leader/ReadIndex/quorum/fsync/lock/auth/copy units, trace loss and failed-sample accounting remain open beyond the current logical ledger and adapter RPC counts. Unknown is not zero. Neither instrumentation nor target consolidation establishes a speedup.
