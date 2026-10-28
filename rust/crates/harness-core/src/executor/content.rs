@@ -199,7 +199,13 @@ impl StockExecution<'_> {
     ) -> Result<()> {
         self.stock.limits.validate(&mut None)?;
         self.model_capacity()?;
-        if input.max_steps == 0 || input.max_steps as usize > self.stock.limits.model_steps {
+        if input.max_steps == Some(0)
+            || self
+                .stock
+                .limits
+                .model_steps
+                .is_some_and(|maximum| input.max_steps.is_none_or(|steps| steps as usize > maximum))
+        {
             return Err(stock_boundary(
                 self.io,
                 crate::wire::ErrorCode::Invalid,

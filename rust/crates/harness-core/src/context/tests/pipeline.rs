@@ -362,3 +362,27 @@ proptest::proptest! {
         proptest::prop_assert_eq!(selection.validate(crate::conversation::Limits::default(), &mut None).is_ok(), start < end && end <= 10);
     }
 }
+
+#[test]
+fn optional_step_allowances_intersect_without_widening_finite_policy() -> Result<()> {
+    for (pinned, admitted, expected) in [
+        (None, None, None),
+        (None, Some(3), Some(3)),
+        (Some(2), None, Some(2)),
+        (Some(2), Some(3), Some(2)),
+    ] {
+        let result = restrict_context_limits(
+            Limits {
+                model_steps: pinned,
+                ..Limits::default()
+            },
+            Limits {
+                model_steps: admitted,
+                ..Limits::default()
+            },
+            None,
+        )?;
+        assert_eq!(result.model_steps, expected);
+    }
+    Ok(())
+}
