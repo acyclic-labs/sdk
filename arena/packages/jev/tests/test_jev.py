@@ -352,9 +352,11 @@ class TestHttp(unittest.TestCase):
         try:
             b = HttpBackend(f"http://127.0.0.1:{srv.server_address[1]}")
             self.assertTrue(b.health()["ok"])
-            qs = [Question("Risk?", ("low", "high")), Question.yes_no("Breaking?")]
-            r = b.decide(STATE, qs)
-            self.assertEqual([d.probs for d in r], [d.probs for d in MockBackend().decide(STATE, qs)])
+            state = STATE + "x" * (1024 * 1024)
+            qs = [Question("Risk? " * 200, tuple(f"option{i}:" + "value" * 100 for i in range(33)))]
+            qs.extend(Question.yes_no(f"Breaking{i}?") for i in range(65))
+            r = b.decide(state, qs)
+            self.assertEqual([d.probs for d in r], [d.probs for d in MockBackend().decide(state, qs)])
             self.assertEqual(r.backend, "http:mock")
             with self.assertRaises(ValueError):
                 b.decide(STATE, [])
