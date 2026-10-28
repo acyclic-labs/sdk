@@ -21,8 +21,7 @@ pub struct FilesystemHost<A: 'static, O: 'static> {
             std::collections::HashMap<String, Arc<crate::context::native_skills::NativeSkills>>,
         >,
     >,
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-    project_family: Option<(acyclic_fs::WorkspaceId, acyclic_fs::LocalCoreStateStore)>,
+    project_family: Option<Arc<dyn family::ProjectFamily<A, O>>>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(in crate::filesystem) _native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -68,7 +67,6 @@ impl<A, O> FilesystemHost<A, O> {
                 native_skills: Arc::new(crate::sync::SyncMutex::new(
                     std::collections::HashMap::new(),
                 )),
-                #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
                 project_family: None,
                 #[cfg(not(target_arch = "wasm32"))]
                 _native_custody,
@@ -102,7 +100,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             publication_pause: self.publication_pause.clone(),
             #[cfg(all(feature = "filesystem-local", feature = "native-execution"))]
             native_skills: self.native_skills.clone(),
-            #[cfg(feature = "filesystem-local")]
             project_family: self.project_family.clone(),
             _native_custody: None,
         }))
@@ -145,26 +142,12 @@ impl<A, O> FilesystemHost<A, O> {
             .get(&volume.storage_name(&mut None)?)
             .cloned())
     }
-
-    #[cfg(feature = "native-execution")]
-    #[doc(hidden)]
-    pub fn with_project_family(
-        mut self: Arc<Self>,
-        root: acyclic_fs::WorkspaceId,
-        store: acyclic_fs::LocalCoreStateStore,
-    ) -> Result<Arc<Self>> {
-        Arc::get_mut(&mut self)
-            .ok_or_else(|| Error::Conflict("bind the project before sharing its host".into()))?
-            .project_family = Some((root, store));
-        Ok(self)
-    }
 }
 
 mod content;
 mod publication;
 pub(in crate::filesystem) use publication::{PublicationLookup, PublicationPurpose};
 mod directory;
-#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod family;
 mod keys;
 mod ranges;

@@ -192,7 +192,7 @@ pub trait MultiRootPublicationStore: Send + Sync {
 }
 
 /// Root-specific publisher backed by the ordinary join and materializer APIs.
-pub trait MultiRootPublisher: Send + Sync {
+pub trait MultiRootPublisher: acyclic_stream::ProviderPlatform {
     /// Publisher error.
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -272,7 +272,7 @@ pub trait MultiRootPublisher: Send + Sync {
 }
 
 /// Resolves one authenticated workspace identity for core publication.
-pub trait WorkspaceResolver<A: 'static, O: 'static>: Send + Sync {
+pub trait WorkspaceResolver<A: 'static, O: 'static>: acyclic_stream::ProviderPlatform {
     /// Resolver failure.
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -285,8 +285,8 @@ pub trait WorkspaceResolver<A: 'static, O: 'static>: Send + Sync {
 
 impl<A, O, S> WorkspaceResolver<A, O> for (crate::Fs<A, O>, WorkspaceGraph<S>)
 where
-    A: AsyncAuthorityStore + Send + Sync,
-    O: AsyncObjectStore + Send + Sync,
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
     S: WorkspaceLineageStore,
 {
     type Error = WorkspaceLineageError<S::Error>;

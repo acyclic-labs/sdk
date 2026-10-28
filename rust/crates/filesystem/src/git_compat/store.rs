@@ -1,7 +1,7 @@
 use super::*;
 
 /// Durable optimistic-concurrency adapter for private compatibility state.
-pub trait GitCompatStore: Send + Sync {
+pub trait GitCompatStore: acyclic_stream::ProviderPlatform {
     /// Adapter error.
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -9,7 +9,7 @@ pub trait GitCompatStore: Send + Sync {
     fn load(
         &self,
         workspace_id: WorkspaceId,
-    ) -> impl Future<Output = Result<Option<GitCompatState>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<GitCompatState>, Self::Error>> + acyclic_stream::ProviderTask;
 
     /// Atomically replaces one expected revision. Revision zero creates state.
     fn compare_and_swap(
@@ -17,14 +17,14 @@ pub trait GitCompatStore: Send + Sync {
         workspace_id: WorkspaceId,
         expected_revision: u64,
         replacement: GitCompatState,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + acyclic_stream::ProviderTask;
 
     /// Atomically removes one exact compatibility-state revision.
     fn compare_and_delete(
         &self,
         workspace_id: WorkspaceId,
         expected_revision: u64,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + acyclic_stream::ProviderTask;
 }
 
 /// Process-local compatibility state adapter for tests and embedded callers.

@@ -414,7 +414,13 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     policy: crate::approvals::ApprovalPolicy,
 }
 
-pub(in crate::filesystem) type WorkspaceToolsFactory = Arc<dyn Fn(&AgentState, &TurnAuthority) -> Result<Arc<dyn crate::tool::ToolExecutor>> + Send + Sync>;
+#[cfg(not(target_arch = "wasm32"))]
+pub(in crate::filesystem) type WorkspaceToolsFactory = Arc<
+    dyn Fn(&AgentState, &TurnAuthority) -> Result<Arc<dyn crate::tool::ToolExecutor>> + Send + Sync,
+>;
+#[cfg(target_arch = "wasm32")]
+pub(in crate::filesystem) type WorkspaceToolsFactory =
+    Arc<dyn Fn(&AgentState, &TurnAuthority) -> Result<Arc<dyn crate::tool::ToolExecutor>>>;
 
 /// A turn's bindings before its approval gate is resolved.
 struct Bindings {
@@ -459,7 +465,10 @@ where
         }
     }
 
-    pub(in crate::filesystem) fn with_workspace_tools(mut self, factory: WorkspaceToolsFactory) -> Self {
+    pub(in crate::filesystem) fn with_workspace_tools(
+        mut self,
+        factory: WorkspaceToolsFactory,
+    ) -> Self {
         self.workspace_tools = Some(factory);
         self
     }

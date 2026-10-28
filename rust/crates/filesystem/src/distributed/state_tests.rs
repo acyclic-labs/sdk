@@ -1385,3 +1385,58 @@ async fn state_reconciliation_refusals_keep_actual_lost_ack_custody() -> TestRes
     assert_eq!(original.live_allocation_bytes(), baseline);
     Ok(())
 }
+
+#[tokio::test]
+async fn lost_ack_and_unreadable_receipt_preserve_the_original_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::{
+        GitCompatState, GitCompatStore, StreamGitCompatStore, StreamGitCompatStoreError,
+        WorkspaceId,
+    };
+    let provider = Arc::new(MemoryStream::default());
+    let id = WorkspaceId::from_bytes([4; 16]);
+    let path = StreamPath::new(format!(
+        "fs/git-state-v1/{}/refs",
+        hex::encode(id.into_bytes())
+    ))?;
+    let spy = Arc::new(super::tests::ReleaseSpy::losing_ack_with_unreadable_record(
+        provider.clone(),
+        path.clone(),
+    ));
+    let authority = StreamAuthorityStore::new(spy.clone());
+    let store = StreamGitCompatStore::new(authority.clone());
+    let mut initial = GitCompatState::new("main", id);
+    initial.revision = 1;
+    let error = GitCompatStore::compare_and_swap(&store, id, 0, initial.clone())
+        .await
+        .expect_err("lost acknowledgement must not become success or absence");
+    let StreamGitCompatStoreError::Unknown { mut commit, error } = error else {
+        return Err("unresolved publication lost its owner".into());
+    };
+    assert!(matches!(
+        error,
+        AuthorityStoreError::NativeStream(acyclic_stream::StreamError::Unavailable)
+    ));
+    assert_eq!(spy.commit_attempts(), 1);
+    assert_eq!(provider.tail(path.clone()).await?, 1);
+    assert!(
+        commit.request_mut().is_none(),
+        "the original request remains sealed"
+    );
+    let request = commit.request().clone();
+    let outcome = provider.commit(request.clone()).await?;
+    let cancellation = CancellationToken::new();
+    let mut work = AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+    assert!(matches!(
+        authority.settle(commit, outcome, &mut work).await?,
+        FilesystemCommitOutcome::Committed(_)
+    ));
+    assert_eq!(
+        provider.tail(path).await?,
+        1,
+        "an exact retry cannot append twice"
+    );
+    let reopened = StreamGitCompatStore::new(StreamAuthorityStore::new(provider));
+    assert_eq!(GitCompatStore::load(&reopened, id).await?, Some(initial));
+    Ok(())
+}

@@ -6,8 +6,8 @@ where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
-    F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Result<(), Error>> + Send,
+    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
+    Fut: Future<Output = Result<(), Error>> + acyclic_stream::ProviderTask,
 {
     pub(super) async fn diff_agent(
         &self,

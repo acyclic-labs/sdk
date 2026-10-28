@@ -5,10 +5,13 @@ where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
-    F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Result<(), Error>> + Send,
+    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
+    Fut: Future<Output = Result<(), Error>> + acyclic_stream::ProviderTask,
 {
-    pub(super) async fn generation(&self, tree: GitTreeRef) -> Result<ManagedGeneration<P, O>, Error> {
+    pub(super) async fn generation(
+        &self,
+        tree: GitTreeRef,
+    ) -> Result<ManagedGeneration<P, O>, Error> {
         match tree {
             GitTreeRef::Exact(reference) => self
                 .workspace(reference.workspace_id)
@@ -21,7 +24,11 @@ where
                 .await
                 .map(|receipt| receipt.value)
                 .map_err(|failure| Error::from(failure.error).into()),
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+            #[cfg(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            ))]
             GitTreeRef::Lazy(snapshot) => {
                 let workspace = self.workspace(snapshot.workspace_id).await?;
                 let View::Checkout(current) = self.lazy_current else {
@@ -68,8 +75,14 @@ where
                     .await
                     .map_err(Error::from)
             }
-            #[cfg(not(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32"))))]
-            GitTreeRef::Lazy(_) => Err(Error::Unsupported("native source snapshots require a native checkout".into())),
+            #[cfg(not(all(
+                feature = "filesystem-local",
+                feature = "native-execution",
+                not(target_arch = "wasm32")
+            )))]
+            GitTreeRef::Lazy(_) => Err(Error::Unsupported(
+                "native source snapshots require a native checkout".into(),
+            )),
         }
     }
 

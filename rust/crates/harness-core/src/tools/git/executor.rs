@@ -5,8 +5,8 @@ where
     P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
     S: CommandStore,
-    F: Fn() -> Fut + Send + Sync,
-    Fut: Future<Output = Result<(), Error>> + Send,
+    F: Fn() -> Fut + acyclic_stream::ProviderPlatform,
+    Fut: Future<Output = Result<(), Error>> + acyclic_stream::ProviderTask,
 {
     type Error = Error;
 

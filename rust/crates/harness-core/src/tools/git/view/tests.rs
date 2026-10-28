@@ -1,5 +1,7 @@
 use super::*;
+use acyclic_fs::LocalFs;
 use proptest::prelude::*;
+type LocalWorkspace = FsWorkspace<LocalAuthorityBackend, LocalObjectBackend>;
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
 async fn fixture() -> TestResult<(

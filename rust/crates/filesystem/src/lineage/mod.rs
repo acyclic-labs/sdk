@@ -65,7 +65,7 @@ fn lineage_shape_is_valid(record: &WorkspaceLineageRecord) -> bool {
 }
 
 /// Durable optimistic-concurrency adapter for workspace lineage.
-pub trait WorkspaceLineageStore: Send + Sync {
+pub trait WorkspaceLineageStore: acyclic_stream::ProviderPlatform {
     /// Adapter error.
     type Error: std::error::Error + Send + Sync + 'static;
 
@@ -73,7 +73,8 @@ pub trait WorkspaceLineageStore: Send + Sync {
     fn load(
         &self,
         workspace_id: WorkspaceId,
-    ) -> impl Future<Output = Result<Option<WorkspaceLineageRecord>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<WorkspaceLineageRecord>, Self::Error>>
+    + acyclic_stream::ProviderTask;
 
     /// Atomically replaces `expected_revision`; zero creates a record.
     fn compare_and_swap(
@@ -81,7 +82,7 @@ pub trait WorkspaceLineageStore: Send + Sync {
         workspace_id: WorkspaceId,
         expected_revision: u64,
         replacement: WorkspaceLineageRecord,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<bool, Self::Error>> + acyclic_stream::ProviderTask;
 }
 
 /// Failure while recording or authenticating workspace lineage.

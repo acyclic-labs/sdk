@@ -78,7 +78,10 @@ pub(crate) async fn run_git_command<S: CommandStore, E: GitFilesystemExecutor<Er
 }
 
 /// Reads a patch file from the managed workspace.
-pub(crate) async fn git_apply_patch<P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static, O: acyclic_fs::AsyncObjectStore + 'static>(
+pub(crate) async fn git_apply_patch<
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+>(
     workspace: View<'_, P, O>,
     root: &Path,
     argv: &[String],
@@ -105,7 +108,10 @@ pub(crate) async fn git_apply_patch<P: acyclic_fs::distributed::AuthorityProvide
 }
 
 /// Captures the lazy or exact tree required by the command.
-pub(crate) fn git_workspace_tree<P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static, O: acyclic_fs::AsyncObjectStore + 'static>(
+pub(crate) fn git_workspace_tree<
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+>(
     workspace: View<'_, P, O>,
     argv: &[String],
     permit: Option<PublicationPermit>,
@@ -117,7 +123,10 @@ pub(crate) fn git_workspace_tree<P: acyclic_fs::distributed::AuthorityProvider +
 }
 
 /// Loads ignore and merge policies from the workspace.
-pub(crate) async fn git_policy<P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static, O: acyclic_fs::AsyncObjectStore + 'static>(
+pub(crate) async fn git_policy<
+    P: acyclic_fs::distributed::AuthorityProvider + ?Sized + 'static,
+    O: acyclic_fs::AsyncObjectStore + 'static,
+>(
     workspace: View<'_, P, O>,
 ) -> Result<(GitIgnorePolicy, Arc<MergeDriverRegistry>), Error> {
     Ok((

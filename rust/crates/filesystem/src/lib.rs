@@ -103,10 +103,9 @@ pub use publication_changes::{PublicationChanges, PublicationContext};
 mod fsevents;
 pub mod git_compat;
 mod heap_future;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod hosted;
 #[doc(hidden)]
 pub mod hosted_contract;
+pub use hosted_contract::{MAX_BYTE_RESPONSE_ENVELOPE_BYTES, MINIMUM_HANDSHAKE_RESPONSE_BYTES};
 mod identity;
 pub mod kernel;
 pub mod lazy_workspace;
@@ -222,8 +221,6 @@ pub use foundation::{
     FileId, GenerationId, Head, MountId, OperationId, ProposedCommit, Sequence, VolumeId, WatchId,
     authority_commit_digest,
 };
-#[cfg(feature = "distributed")]
-pub use git_compat::{StreamGitCompatStore, StreamGitCompatStoreError};
 pub use git_compat::{
     GitBisectResult, GitBisectState, GitBlameLine, GitBranch, GitCaptureAuthenticationError,
     GitCaptureError, GitCaptureProof, GitCapturedGeneration, GitCommand, GitCommandOutput,
@@ -239,12 +236,9 @@ pub use git_compat::{
     git_paths_preserving_reserved, git_restore_paths, git_tracked_paths_after, grep_git_generation,
     parse_git_public_command, walk_git_tree,
 };
-#[cfg(not(target_arch = "wasm32"))]
-pub use hosted::{
-    HostedFs, HostedFsError, HostedFsOptions, HostedGeneration, HostedS3Access,
-    HostedS3AccessOptions, HostedTransaction, HostedWorkspace, MAX_BYTE_RESPONSE_ENVELOPE_BYTES,
-    MINIMUM_HANDSHAKE_RESPONSE_BYTES,
-};
+#[cfg(feature = "distributed")]
+pub use git_compat::{StreamGitCompatStore, StreamGitCompatStoreError};
+
 pub use kernel::{
     DependencyRegion, DependencyState, DependencyUse, DirectoryPage, ExtentSeekTarget,
     GenerationExportManifest, GenerationExportManifestError, RebaseConflict, TreeEntry,

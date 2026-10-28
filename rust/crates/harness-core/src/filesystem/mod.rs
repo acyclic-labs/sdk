@@ -45,9 +45,7 @@ pub mod attestation;
 pub mod hosting;
 mod spawn_volumes;
 pub use spawn_volumes::{FilesystemSpawnVolumes, ForkCuts, spawned_binding};
-#[cfg(not(target_arch = "wasm32"))]
 mod fs_tools;
-#[cfg(not(target_arch = "wasm32"))]
 pub use fs_tools::FilesystemTools;
 mod stock_turns;
 pub use stock_turns::{Grants, StockExecutors, Tasks, TurnContext};
@@ -85,7 +83,9 @@ pub mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_process::NativeProcessObserver;
 mod workspace_access;
-pub use workspace_access::{WorkspaceAccess, require_unrestricted_volume_access, require_unrestricted_workspace_read};
+pub use workspace_access::{
+    WorkspaceAccess, require_unrestricted_volume_access, require_unrestricted_workspace_read,
+};
 mod native_capture_bounds;
 mod native_contract;
 #[cfg(all(
@@ -95,9 +95,7 @@ mod native_contract;
 ))]
 mod native_directory;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_access::{
-    NativeMountAuthority,
-};
+pub use native_access::NativeMountAuthority;
 #[cfg(all(
     feature = "native-execution",
     feature = "filesystem-local",
@@ -721,7 +719,6 @@ mod pinned_read_tests;
 
 use crate::executor::{stock_boundary, stock_string_copy};
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod workspace_policy;
 
 #[cfg(all(

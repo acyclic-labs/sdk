@@ -1,6 +1,10 @@
 //! The `acyclic git` executor over managed workspaces.
 
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 use acyclic_fs::demand::native::NativeDemandSource;
 use acyclic_fs::kernel::FileKind;
 use acyclic_fs::{
@@ -13,6 +17,12 @@ use acyclic_fs::{
     capture_git_compatible_generation_incremental, git_compatible_diff_counts,
     git_paths_preserving_reserved, git_restore_paths, grep_git_generation, walk_git_tree,
 };
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+use acyclic_fs::{LazyWorkspace, LocalAuthorityBackend, LocalCoreStateStore, LocalObjectBackend};
 use serde_json::json;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -20,47 +30,80 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tokio::sync::Mutex as AsyncMutex;
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
-use acyclic_fs::{LazyWorkspace, LocalAuthorityBackend, LocalCoreStateStore, LocalObjectBackend};
 
 /// Default command provider for a native checkout composition.
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 pub type DefaultProvider = acyclic_stream::LocalStream;
 /// Default command provider for a portable volume composition.
-#[cfg(not(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32"))))]
+#[cfg(not(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+)))]
 pub type DefaultProvider = acyclic_stream::MemoryStream;
 /// Default object backend for a native checkout composition.
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 pub type DefaultObjects = LocalObjectBackend;
 /// Default object backend for a portable volume composition.
-#[cfg(not(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32"))))]
+#[cfg(not(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+)))]
 pub type DefaultObjects = acyclic_fs::MemoryObjectBackend;
 /// Default durable command store for a native checkout composition.
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 pub type DefaultStore = LocalCoreStateStore;
 /// Default command store for a portable volume composition.
-#[cfg(not(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32"))))]
+#[cfg(not(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+)))]
 pub type DefaultStore = acyclic_fs::StreamGitCompatStore<DefaultProvider>;
 type ManagedWorkspace<P, O> = FsWorkspace<acyclic_fs::StreamAuthorityStore<P>, O>;
 type ManagedGeneration<P, O> = Generation<acyclic_fs::StreamAuthorityStore<P>, O>;
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 type LocalGeneration = Generation<LocalAuthorityBackend, LocalObjectBackend>;
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
-type ManagedLazyWorkspace<P, O> = LazyWorkspace<
-    acyclic_fs::StreamAuthorityStore<P>,
-    O,
-    NativeDemandSource,
-    LocalCoreStateStore,
->;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+type ManagedLazyWorkspace<P, O> =
+    LazyWorkspace<acyclic_fs::StreamAuthorityStore<P>, O, NativeDemandSource, LocalCoreStateStore>;
 
 mod command_store;
 pub use command_store::CommandStore;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn json_error(source: serde_json::Error) -> Error {
     Error::NativeJson {
         code: crate::wire::ErrorCode::Storage,
         source,
         custody: None,
+    }
+}
+#[cfg(target_arch = "wasm32")]
+fn json_error(source: serde_json::Error) -> Error {
+    Error::NativeGit {
+        source: Box::new(Failure::Json(source)),
     }
 }
 fn now_millis() -> u64 {
@@ -70,6 +113,11 @@ fn now_millis() -> u64 {
 mod access;
 mod helpers;
 mod join;
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 use acyclic_fs::facade::FsWork as _;
 use helpers::existing_tracked_paths;
 mod path;
@@ -77,7 +125,13 @@ use path::workspace_path_argument;
 
 use crate::Error;
 /// Executes the full git facade against a managed lazy workspace.
-pub(crate) struct WorkspaceGitExecutor<'a, F, P: ?Sized + 'static = DefaultProvider, O: 'static = DefaultObjects, S = DefaultStore> {
+pub(crate) struct WorkspaceGitExecutor<
+    'a,
+    F,
+    P: ?Sized + 'static = DefaultProvider,
+    O: 'static = DefaultObjects,
+    S = DefaultStore,
+> {
     pub access: &'a crate::filesystem::WorkspaceAccess,
     /// Revalidates task ownership before every effect.
     pub before_effect: &'a F,
@@ -147,21 +201,37 @@ pub(crate) use errors::compat_error;
 mod failure;
 pub use failure::Failure;
 mod executor;
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 mod materialize;
 mod resolve;
 mod restore;
 pub(crate) use commands::{git_apply_patch, git_policy, git_workspace_tree, run_git_command};
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 pub(crate) use materialize::RootMaterializingGitExecutor;
 #[doc(hidden)]
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
 pub use materialize::publish_checkout_transition;
 
 mod run;
-#[doc(hidden)]
-#[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
-pub use run::{run_with_guard, run};
 pub use run::{Output, Workspace, run_volume_with_guard};
+#[doc(hidden)]
+#[cfg(all(
+    feature = "filesystem-local",
+    feature = "native-execution",
+    not(target_arch = "wasm32")
+))]
+pub use run::{run, run_with_guard};
 mod view;
 pub use view::{OwnedView, View};
