@@ -135,7 +135,7 @@ async fn exercise(api: &DaytonaApi, id: &str) -> Result<(), String> {
 async fn conformance_suite_against_linux_vms() {
     let mut config = DaytonaConfig::from_env().expect("DAYTONA_API_KEY must be set");
     // The suite commits every machine to network policy `[8; 32]`; run it with no egress.
-    config.register_network_policy([8; 32], map::NetworkPolicy::BlockAll);
+    config.register_network_policy([8; 32], acyclic_machines::core::NetworkPolicy::BlockAll);
     assert!(
         config.default_snapshot.is_some(),
         "DAYTONA_SNAPSHOT must name a registered Linux VM snapshot"

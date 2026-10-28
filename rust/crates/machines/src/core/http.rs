@@ -106,6 +106,42 @@ pub fn endpoint_url(endpoint: &str) -> Result<Url, ProviderError> {
     Ok(endpoint)
 }
 
+/// Admit a provider-reported endpoint before forwarding parent credentials.
+/// The parent origin, its subdomains and explicit host enrollments share one
+/// policy. An endpoint on the parent host must retain the parent port.
+pub fn credential_endpoint(
+    parent: &str,
+    endpoint: &str,
+    enrolled_hosts: &[String],
+) -> Result<Url, ProviderError> {
+    let rejected = || {
+        ProviderError::Rejected(
+        "provider credential endpoint admission failed; recovery: enroll the proxy host in the provider configuration before forwarding credentials".into())
+    };
+    let base = Url::parse(parent).map_err(|_| rejected())?;
+    let url = Url::parse(endpoint).map_err(|_| rejected())?;
+    let (Some(base_host), Some(host)) = (base.host_str(), url.host_str()) else {
+        return Err(rejected());
+    };
+    let host = host.to_ascii_lowercase();
+    let base_host = base_host.to_ascii_lowercase();
+    let scheme_ok = url.scheme() == "https" || url.scheme() == base.scheme();
+    let userinfo = !url.username().is_empty() || url.password().is_some();
+    let host_ok = if host == base_host {
+        url.port_or_known_default() == base.port_or_known_default()
+    } else {
+        host.ends_with(&format!(".{base_host}"))
+            || enrolled_hosts
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(&host))
+    };
+    if scheme_ok && !userinfo && host_ok {
+        Ok(url)
+    } else {
+        Err(rejected())
+    }
+}
+
 impl Http {
     pub fn new(endpoint: &str, headers: HeaderMap) -> Result<Self, ProviderError> {
         let endpoint = endpoint_url(endpoint)?;

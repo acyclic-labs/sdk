@@ -6,13 +6,16 @@ segment grants no authority. Reopen the same store after restart. Successful
 same-key requests return the original outcome and settlement CommitId; a pending
 or unknown operation never authorizes another native dispatch.
 
-Register a Daytona snapshot and its enforced network policy in `DaytonaConfig`.
+Register a Daytona snapshot and its enforced `core::NetworkPolicy` in
+`DaytonaConfig`; network commitments use their exact 32-byte digest. Shared
+admission checks the enrolled domains before the adapter encodes Daytona fields.
 VM-class snapshots support native pause/resume, memory checkpoints and live fork.
 Containers do not advertise an atomic fork boundary. Fixed-instant expiration,
 spend and concurrency budgets that Daytona cannot enforce are refused. API
 endpoints must be HTTPS or loopback HTTP, with no URL credentials, query or
 fragment. Credentials are admitted once; redirects and automatic HTTP retry are
-disabled. Toolbox destinations retain the configured proxy host admission.
+disabled. Toolbox destinations use shared credential endpoint admission with the
+configured parent origin and proxy host enrollments.
 
 Guest execution prepares a lazy toolbox v2 process-ledger stream. The shared core
 owns separate binary stdout/stderr, exit status, output allowance, drop

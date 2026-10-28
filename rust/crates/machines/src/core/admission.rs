@@ -1,6 +1,41 @@
 //! Capability admission belongs above native image and creation primitives.
 use crate::*;
 
+/// Outbound policy enrolled by the host for a contract's network commitment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NetworkPolicy {
+    BlockAll,
+    AllowDomains(Vec<String>),
+}
+
+/// Resolve and validate the committed policy before native creation. Adapters
+/// only encode this admitted value in their provider's wire representation.
+pub fn admit_network<'a>(
+    policies: &'a BTreeMap<[u8; 32], NetworkPolicy>,
+    digest: &[u8; 32],
+) -> Result<&'a NetworkPolicy, ProviderError> {
+    let policy = policies.get(digest).ok_or_else(|| ProviderError::Unsupported(
+        "network commitment is unregistered; recovery: enroll its exact policy in the machine backend configuration before creation".into()))?;
+    if let NetworkPolicy::AllowDomains(domains) = policy {
+        if domains.is_empty() {
+            return Err(ProviderError::Invalid(
+                "network allowlist is empty; recovery: enroll BlockAll for this commitment".into(),
+            ));
+        }
+        if domains.iter().any(|domain| {
+            domain.is_empty()
+                || !domain
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '*'))
+        }) {
+            return Err(ProviderError::Invalid(
+                "network allowlist contains an unexpressible domain; recovery: enroll individual domain names without separators".into(),
+            ));
+        }
+    }
+    Ok(policy)
+}
+
 /// Construct the exact contract from the requested image and its qualification.
 /// An adapter supplies native image facts, never a second compatibility policy.
 pub fn admit_contract(

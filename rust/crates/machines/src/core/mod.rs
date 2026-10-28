@@ -5,7 +5,7 @@ pub use crate::{OperationSettlement, SettledMutation};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 mod admission;
-pub use admission::admit_contract;
+pub use admission::{NetworkPolicy, admit_contract, admit_network};
 #[cfg(not(target_arch = "wasm32"))]
 mod backend;
 #[cfg(not(target_arch = "wasm32"))]

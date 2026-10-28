@@ -27,6 +27,10 @@ the core console after canonical machine/driver admission; no raw output read
 primitive or second provider history is needed. Image identity, required
 capabilities and the effective suspension contract are admitted once in core.
 An image without SuspendResume records Manual, including in the simulator.
+`core::NetworkPolicy` and `admit_network` resolve enrolled 32-byte commitments
+and validate domain lists once; adapters only encode their native egress fields.
+The HTTP core also admits provider-reported credential destinations against
+the enrolled parent origin and proxy hosts before attaching sensitive headers.
 
 Guest adapters prepare one lazy `ExecSession`: an output stream and one stop
 future. Preparation performs no guest IO. Core checks the admitted machine and

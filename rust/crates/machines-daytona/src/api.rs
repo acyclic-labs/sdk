@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 
 use acyclic_machines::core::http::{
-    credential_headers, endpoint_url, http_transport_builder, send_body,
+    credential_endpoint, credential_headers, endpoint_url, http_transport_builder, send_body,
 };
 use acyclic_machines::{
     ProviderError,
@@ -578,35 +578,7 @@ impl DaytonaApi {
     /// # Errors
     /// Returns [`ProviderError::Rejected`] for any other URL.
     pub fn check_toolbox_proxy(&self, proxy: &str) -> Result<reqwest::Url, ProviderError> {
-        let rejected = || {
-            ProviderError::Rejected(format!(
-                "toolbox proxy URL {proxy:?} is not a Daytona proxy for {}",
-                self.base
-            ))
-        };
-        let base = reqwest::Url::parse(&self.base).map_err(|_| rejected())?;
-        let url = reqwest::Url::parse(proxy).map_err(|_| rejected())?;
-        let (Some(base_host), Some(host)) = (base.host_str(), url.host_str()) else {
-            return Err(rejected());
-        };
-        let host = host.to_ascii_lowercase();
-        let base_host = base_host.to_ascii_lowercase();
-        let scheme_ok = url.scheme() == "https" || url.scheme() == base.scheme();
-        let userinfo = !url.username().is_empty() || url.password().is_some();
-        let host_ok = if host == base_host {
-            url.port_or_known_default() == base.port_or_known_default()
-        } else {
-            host.ends_with(&format!(".{base_host}"))
-                || self
-                    .toolbox_proxy_hosts
-                    .iter()
-                    .any(|allowed| allowed.eq_ignore_ascii_case(&host))
-        };
-        if scheme_ok && !userinfo && host_ok {
-            Ok(url)
-        } else {
-            Err(rejected())
-        }
+        credential_endpoint(&self.base, proxy, &self.toolbox_proxy_hosts)
     }
 }
 

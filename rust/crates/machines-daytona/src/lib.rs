@@ -27,8 +27,8 @@ use sha2::{Digest as _, Sha256};
 
 use acyclic_machines::core::{
     Backend, BackendCore, Dispatch, ExecSession, ForkSlot, NativeBinding, NativeResource,
-    NativeResources, OperationRegistry, RawCreated, RawMachines, RawObservation, RawUsage,
-    metadata, now_unix_ms,
+    NativeResources, NetworkPolicy, OperationRegistry, RawCreated, RawMachines, RawObservation,
+    RawUsage, metadata, now_unix_ms,
 };
 #[cfg(test)]
 use acyclic_machines::{
@@ -55,10 +55,10 @@ pub struct DaytonaConfig {
     /// Snapshot booted when an image digest is not in `snapshots`; `None` makes such images
     /// unsupported. It must be a VM-class snapshot.
     pub default_snapshot: Option<String>,
-    /// Outbound network policies by network-policy digest (lowercase hex). A create or
+    /// Outbound network policies by network-policy digest. A create or
     /// checkpoint fork whose contract commits to a digest missing here is refused; see
-    /// [`map::NetworkPolicy`].
-    pub network_policies: BTreeMap<String, map::NetworkPolicy>,
+    /// [`NetworkPolicy`].
+    pub network_policies: BTreeMap<[u8; 32], NetworkPolicy>,
     /// Toolbox proxy hosts, besides the API host and its subdomains, that may receive the API
     /// key; see [`api::DaytonaApi::check_toolbox_proxy`]. Needed only for self-hosted
     /// deployments that serve the proxy from an unrelated domain.
@@ -136,8 +136,8 @@ impl DaytonaConfig {
 
     /// Registers the outbound policy a network-policy digest commits to. Sandboxes whose
     /// contract carries `digest` are created with exactly this policy.
-    pub fn register_network_policy(&mut self, digest: [u8; 32], policy: map::NetworkPolicy) {
-        self.network_policies.insert(hex::encode(&digest), policy);
+    pub fn register_network_policy(&mut self, digest: [u8; 32], policy: NetworkPolicy) {
+        self.network_policies.insert(digest, policy);
     }
 }
 
@@ -158,50 +158,6 @@ impl std::fmt::Debug for DaytonaConfig {
             .finish_non_exhaustive()
     }
 }
-
-/// Assurance level of a declared feature.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Assurance {
-    /// Not offered.
-    No,
-    /// Offered by Daytona's specification for the VM classes this provider admits.
-    Yes,
-    /// Offered with a caveat; do not rely on it for billing or safety decisions yet.
-    Provisional,
-}
-
-/// Feature declaration of this provider. VM-class features apply to `linux-vm` and `windows`
-/// sandboxes. Container sandboxes have no admitted atomic snapshot boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DaytonaCapabilities {
-    /// Checkpoints capture VM memory (hot snapshot, `includeMemory`).
-    pub checkpoint_memory: Assurance,
-    /// Native fork copies a running VM's memory and disk (`POST /sandbox/{id}/fork`), at any
-    /// time, without an intermediate checkpoint.
-    pub live_fork_memory: Assurance,
-    /// Container disk fork is unavailable without an atomic snapshot boundary.
-    pub container_disk_fork: Assurance,
-    /// A suspended machine keeps its memory (pause, not stop) and frees CPU and memory quota.
-    pub suspend_keeps_memory: Assurance,
-    /// Outbound domain policy is enforced. Only Daytona tiers 3 and 4 honour a per-sandbox
-    /// allow list; lower tiers apply the organization policy instead.
-    pub network_policy: Assurance,
-    /// Usage receipts are allocation estimates, not metered consumption.
-    pub usage_receipts: Assurance,
-    /// A checkpoint can be restored on a different host.
-    pub restore_cross_host: Assurance,
-}
-
-/// What this provider declares.
-pub const CAPABILITIES: DaytonaCapabilities = DaytonaCapabilities {
-    checkpoint_memory: Assurance::Yes,
-    live_fork_memory: Assurance::Yes,
-    container_disk_fork: Assurance::No,
-    suspend_keeps_memory: Assurance::Yes,
-    network_policy: Assurance::Provisional,
-    usage_receipts: Assurance::Provisional,
-    restore_cross_host: Assurance::No,
-};
 
 /// Machines provider over Daytona VM sandboxes.
 pub struct DaytonaProvider {
@@ -803,9 +759,6 @@ mod tests {
                 .unwrap(),
             "fallback"
         );
-        assert_eq!(CAPABILITIES.live_fork_memory, Assurance::Yes);
-        assert_eq!(CAPABILITIES.usage_receipts, Assurance::Provisional);
-        assert_eq!(CAPABILITIES.restore_cross_host, Assurance::No);
     }
 
     #[tokio::test]
@@ -877,10 +830,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(container.fork_fidelity(), None);
-        assert_eq!(CAPABILITIES.container_disk_fork, Assurance::No);
         assert_eq!(container.suspension, SuspensionPolicy::Manual);
         let mut config = DaytonaConfig::new("k");
-        config.register_network_policy([8; 32], map::NetworkPolicy::BlockAll);
+        config.register_network_policy([8; 32], acyclic_machines::core::NetworkPolicy::BlockAll);
         let body = map::create_request(&config, "s", key, None, &container).unwrap();
         assert!(
             serde_json::to_value(&body)
@@ -934,7 +886,7 @@ mod tests {
         config.tenant = tenant.map(str::to_owned);
         config.poll_interval = Duration::from_millis(1);
         config.ready_timeout = Duration::from_secs(5);
-        config.register_network_policy([8; 32], map::NetworkPolicy::BlockAll);
+        config.register_network_policy([8; 32], acyclic_machines::core::NetworkPolicy::BlockAll);
         Arc::new(DaytonaProvider::new(config, registry()).unwrap())
     }
 
@@ -955,7 +907,7 @@ mod tests {
         let mut config = DaytonaConfig::new("internal-test");
         config.api_url = mock.url.clone();
         config.default_snapshot = Some("base".into());
-        config.register_network_policy([8; 32], map::NetworkPolicy::BlockAll);
+        config.register_network_policy([8; 32], acyclic_machines::core::NetworkPolicy::BlockAll);
         let streams = acyclic_stream::LocalStream::open(
             dir.path(),
             acyclic_stream::LocalStreamLimits::default(),

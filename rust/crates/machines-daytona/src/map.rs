@@ -5,7 +5,7 @@
 //! it back on every observation. Everything here is a pure function over wire structs.
 
 use acyclic_machines::core::{
-    ForkSlot,
+    ForkSlot, NetworkPolicy, admit_network,
     metadata::{LABEL_CONTRACT, contract_from_labels, labels, sandbox_name},
 };
 use std::{
@@ -191,18 +191,6 @@ pub(crate) fn legacy_dedicated_cpu(
     }
 }
 
-/// Outbound network policy a sandbox is created with. The SDK request carries only a digest
-/// committing to a separately authorized policy; the host registers the policy each digest
-/// stands for (see [`DaytonaConfig::register_network_policy`]) and this provider refuses a
-/// digest it cannot map to a policy Daytona enforces.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum NetworkPolicy {
-    /// No outbound traffic (Daytona `networkBlockAll`).
-    BlockAll,
-    /// Outbound traffic only to these domains (Daytona `domainAllowList`).
-    AllowDomains(Vec<String>),
-}
-
 /// Daytona `(domainAllowList, networkBlockAll)` for the policy committed to by `digest`.
 ///
 /// # Errors
@@ -213,32 +201,9 @@ pub fn network_fields(
     config: &DaytonaConfig,
     digest: &[u8; 32],
 ) -> Result<(Option<String>, Option<bool>), ProviderError> {
-    let key = hex::encode(digest);
-    let policy = config.network_policies.get(&key).ok_or_else(|| {
-        ProviderError::Unsupported(format!(
-            "network policy {key} is not registered with this Daytona provider; it cannot enforce an unknown policy"
-        ))
-    })?;
-    match policy {
+    match admit_network(&config.network_policies, digest)? {
         NetworkPolicy::BlockAll => Ok((None, Some(true))),
-        NetworkPolicy::AllowDomains(domains) => {
-            if domains.is_empty() {
-                return Err(ProviderError::Invalid(format!(
-                    "network policy {key} allows no domains; register it as BlockAll"
-                )));
-            }
-            if let Some(bad) = domains.iter().find(|domain| {
-                domain.is_empty()
-                    || !domain
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '*'))
-            }) {
-                return Err(ProviderError::Invalid(format!(
-                    "network policy {key} has an unexpressible domain {bad:?}"
-                )));
-            }
-            Ok((Some(domains.join(",")), Some(false)))
-        }
+        NetworkPolicy::AllowDomains(domains) => Ok((Some(domains.join(",")), Some(false))),
     }
 }
 
