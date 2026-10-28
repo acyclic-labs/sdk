@@ -30,7 +30,7 @@ function fixture(t, fault) {
     }
     for (const name of ["actors", "stream"]) writeFileSync(join(consumer, name + "_pb_route_fixture.erl"), "dynamic fixture " + name);
     fault?.({ ...f, root, sdk, consumer, libs });
-    return { status: 0, stdout: ["PASS installed SDK and loaded-module provenance", "PASS archive-installed Erlang clients: 23 populated native TCP RPC pairs",
+    return { status: 0, stdout: ["PASS installed SDK and loaded-module provenance", "PASS archive-installed Erlang clients: 21 populated native TCP RPC pairs", "PASS RPC shapes: 20 unary, 1 server streaming",
       ...["actors", "stream"].map(name => name + "_pb differing modeled file descriptor fields: []"), "PASS installed SDK and loaded-module provenance"].join("\n") };
   };
   const options = { command, runtimePin: { ...pins.runtime["linux-x64"], inventory_sha256: sha256(runtimeBytes), otp_archive_sha256: rt.otp_archive_sha256, files: 1, links: 0 },
