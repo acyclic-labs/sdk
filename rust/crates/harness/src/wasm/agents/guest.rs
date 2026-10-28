@@ -7,8 +7,8 @@
 
 use super::host::Cancel;
 use super::{
-    BrowserHandler, WasmAgentProviders, WasmAgentRegistry, WasmBrowserAgentOptions, WasmReducer,
-    from_js, js_error,
+    BrowserHandler, WasmAgentAuthority, WasmAgentProviders, WasmAgentRegistry,
+    WasmBrowserAgentOptions, from_js, js_error,
 };
 use crate::{
     Error,
@@ -71,7 +71,7 @@ impl AgentGuest {
     pub fn open(
         providers: &WasmAgentProviders,
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
-        owner: &WasmReducer,
+        owner: &WasmAgentAuthority,
         registry: &WasmAgentRegistry,
         #[wasm_bindgen(unchecked_param_type = "WasmGuestAdmission")] admission: JsValue,
     ) -> Result<AgentGuest, JsValue> {

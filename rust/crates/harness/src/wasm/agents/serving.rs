@@ -89,7 +89,7 @@ impl WasmAgentServer {
     pub fn open(
         providers: &WasmAgentProviders,
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
-        owner: &WasmReducer,
+        owner: &WasmAgentAuthority,
         registry: &WasmAgentRegistry,
         #[wasm_bindgen(unchecked_param_type = "WasmHostingAdmission")] admission: JsValue,
         authority: &acyclic_stream::WasmSessionAuthority,

@@ -3,7 +3,7 @@
 //! [`AgentHost`] and [`FilesystemTurnHost`] the local harness composes. Each
 //! control is one agent commit; observation reads the agents' streams.
 
-use super::{WasmReducer, from_js, js_error};
+use super::{WasmAgentAuthority, from_js, js_error};
 use crate::{
     Capabilities, Error, OperationId, Result,
     agent::{
@@ -323,7 +323,7 @@ impl WasmAgents {
     /// failed agent delivery, which stays queued.
     pub async fn open(
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
-        owner: &WasmReducer,
+        owner: &WasmAgentAuthority,
         registry: &WasmAgentRegistry,
         #[wasm_bindgen(
             unchecked_param_type = "((actor: string, error: string) => void) | undefined"
@@ -345,7 +345,7 @@ impl WasmAgents {
     pub fn open_hosting(
         providers: &WasmAgentProviders,
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
-        owner: &WasmReducer,
+        owner: &WasmAgentAuthority,
         manifest: &[u8],
         #[wasm_bindgen(
             unchecked_param_type = "(delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => Promise<Uint8Array>"
@@ -407,7 +407,7 @@ impl WasmAgents {
     /// Hosts every agent of `providers` on one runtime running `handler`.
     fn host(
         options: WasmBrowserAgentOptions,
-        owner: &WasmReducer,
+        owner: &WasmAgentAuthority,
         providers: Providers,
         handler: Arc<dyn Handler>,
         report: Option<Function>,

@@ -1,0 +1,90 @@
+{
+  "state": "historical-retired-algorithm-proof-not-current-execution",
+  "original_commit": "28d5c495b63e6d7efd7556d164a49f33574ac80c",
+  "original_manifest_path": "rust/crates/harness-fuzz/Cargo.toml",
+  "original_manifest_blob": "04479a7727c6e83fd10ed8cc80e0f6f7e42db0fe",
+  "original_targets": [
+    "memory_directory",
+    "memory_directory_page"
+  ],
+  "original_required_features": [],
+  "original_default_features": [
+    "runtime"
+  ],
+  "production_dependencies": [
+    {
+      "path": "rust/crates/harness-core/src/memory_store/directory/page.rs",
+      "git_blob": "ccd02f1b8fe61235f82c6eb8d365f0286d5b0666"
+    },
+    {
+      "path": "rust/crates/harness-core/src/memory_store/directory/page/reference.rs",
+      "git_blob": "46b4492dc81b5479638c8112ba0fc48f8580aaa4"
+    }
+  ],
+  "reproduction": "Check out original_commit and use its original fuzz/benchmark Cargo targets; preserved bytes are historical evidence, not surviving Fs coverage or a current execution claim.",
+  "files": [
+    {
+      "original_path": "rust/crates/harness-fuzz/fuzz_targets/memory_directory.rs",
+      "preserved_path": "rust/crates/harness-fuzz/retired/memory_directory/memory_directory.rs",
+      "git_blob": "f09443215977c24b4ec208a50be4c19f2a066417",
+      "sha256": "e712533d9cd8640fbc310e1cfe1bb765330b1761a67724a12299c8167946da2e",
+      "bytes": 2137
+    },
+    {
+      "original_path": "rust/crates/harness-fuzz/benches/memory_directory_page.rs",
+      "preserved_path": "rust/crates/harness-fuzz/retired/memory_directory/memory_directory_page.rs",
+      "git_blob": "1596a88faf70bb3b6876a1fa8a3494d1ecb13958",
+      "sha256": "cc1dc0a4607407f417faa5485a479e4e0884838e8533f3c37f00961ca3c1b69a",
+      "bytes": 383
+    },
+    {
+      "original_path": "rust/crates/harness-fuzz/corpus/memory_directory/empty",
+      "preserved_path": "rust/crates/harness-fuzz/retired/memory_directory/corpus/empty",
+      "git_blob": "1f8b5ef3eecb524c6c3120b116ae56088f61656e",
+      "sha256": "b5897625740a29efa2c3f8c3c0b7bbdef392834304d27dbc80284721e9d7cd12",
+      "bytes": 72
+    },
+    {
+      "original_path": "rust/crates/harness-fuzz/corpus/memory_directory/file-directory-collision",
+      "preserved_path": "rust/crates/harness-fuzz/retired/memory_directory/corpus/file-directory-collision",
+      "git_blob": "fb32d0187f0350308894a6ef91d003980c9d8ebb",
+      "sha256": "38064208b482f09f39b37f4da76cc8d83c64a5112a13884b327f80fae0b938a2",
+      "bytes": 118
+    },
+    {
+      "original_path": "rust/crates/harness-fuzz/corpus/memory_directory/generation",
+      "preserved_path": "rust/crates/harness-fuzz/retired/memory_directory/corpus/generation",
+      "git_blob": "8fa38372d9a1aa40eab1d4bf5d50f146c87f1d8d",
+      "sha256": "bb48969fbe1932d99566398ee4fecdbbb882c5b71cc5c356e5b85d244bd8a64f",
+      "bytes": 155
+    },
+    {
+      "original_path": "rust/crates/harness-fuzz/corpus/memory_directory/published-after-pin",
+      "preserved_path": "rust/crates/harness-fuzz/retired/memory_directory/corpus/published-after-pin",
+      "git_blob": "d37f4a0112f2066b37d1f56cea521837d6be7839",
+      "sha256": "f9b3af3b3c68a3ad61c96d2c49425ee84aa19ce989856246eddcbc5d5404d185",
+      "bytes": 132
+    },
+    {
+      "original_path": "rust/crates/harness-fuzz/corpus/memory_directory/punctuation",
+      "preserved_path": "rust/crates/harness-fuzz/retired/memory_directory/corpus/punctuation",
+      "git_blob": "81fbb57118bce34ff616c674949a95407cf7c5fc",
+      "sha256": "2e7337d80e0e71372da559b27c48624d9fb5a9b99380e213920fb04f0cad0b91",
+      "bytes": 107
+    },
+    {
+      "original_path": "rust/crates/harness-fuzz/corpus/memory_directory/punctuation-prefixes",
+      "preserved_path": "rust/crates/harness-fuzz/retired/memory_directory/corpus/punctuation-prefixes",
+      "git_blob": "398b780d796213dfc3fc511d5ed8886d35de18b1",
+      "sha256": "1035756f3fcd0cecb839979c3a3dc2c9d0d3b5ff2e3b5cf554fa33a564ae4c36",
+      "bytes": 125
+    },
+    {
+      "original_path": "rust/crates/harness-fuzz/corpus/memory_directory/unicode-cursor",
+      "preserved_path": "rust/crates/harness-fuzz/retired/memory_directory/corpus/unicode-cursor",
+      "git_blob": "9d690abf250f3dad0c9f9157390cbbb7a92be7f2",
+      "sha256": "8a6f97aba0e8b320623ffb7a0b5e4696379c49cfb25d29d7410291a8604b1c81",
+      "bytes": 120
+    }
+  ]
+}

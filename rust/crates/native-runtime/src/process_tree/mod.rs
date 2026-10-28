@@ -458,12 +458,13 @@ impl ProcessTree {
 
     fn pump_stdin_controlled(
         &mut self,
-        meter: Option<&dyn crate::NativeReadMeter>,
+        owner: Option<&std::sync::Arc<dyn crate::NativeReadMeter>>,
     ) -> io::Result<bool> {
         let Some(mut input) = self.queued_stdin.take() else {
             return Ok(true);
         };
-        let result = input.poll(self, meter);
+        input.meter_owner = owner.cloned();
+        let result = input.poll(self, owner.map(|owner| owner.as_ref()));
         let complete = input.finished();
         if !complete {
             self.queued_stdin = Some(input);
@@ -718,9 +719,39 @@ impl ProcessTree {
         schedule: impl Into<CaptureSchedule>,
         max_bytes: usize,
         input: Option<CaptureInput<'_>>,
+        check: impl FnMut() -> io::Result<()>,
+        observe: impl FnMut(ProcessOutput<'_>) -> io::Result<ProcessInput>,
+        meter: Option<&dyn crate::NativeReadMeter>,
+        buffers: Option<[Vec<u8>; 3]>,
+        wake: Option<&[ProcessWake]>,
+    ) -> Result<Output, ProcessCaptureFailure> {
+        self.wait_with_output_controlled(
+            schedule,
+            max_bytes,
+            input,
+            check,
+            observe,
+            (meter, None),
+            buffers,
+            wake,
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "same capture loop retains the caller's original accounting owner"
+    )]
+    fn wait_with_output_controlled(
+        &mut self,
+        schedule: impl Into<CaptureSchedule>,
+        max_bytes: usize,
+        input: Option<CaptureInput<'_>>,
         mut check: impl FnMut() -> io::Result<()>,
         mut observe: impl FnMut(ProcessOutput<'_>) -> io::Result<ProcessInput>,
-        meter: Option<&dyn crate::NativeReadMeter>,
+        (meter, owner): (
+            Option<&dyn crate::NativeReadMeter>,
+            Option<&std::sync::Arc<dyn crate::NativeReadMeter>>,
+        ),
         buffers: Option<[Vec<u8>; 3]>,
         wake: Option<&[ProcessWake]>,
     ) -> Result<Output, ProcessCaptureFailure> {
@@ -758,7 +789,7 @@ impl ProcessTree {
                 ));
             }
             let input = input
-                .map(|input| PendingStdin::new_with_buffer(input, stdin_buffer, meter))
+                .map(|input| PendingStdin::new_with_buffer(input, stdin_buffer, meter, owner))
                 .transpose()
                 .map_err(ProcessCaptureFailure::before_capture)?;
             let mut pump = pump::Pump::new(self, schedule.into(), max_bytes, input, meter, output)?;

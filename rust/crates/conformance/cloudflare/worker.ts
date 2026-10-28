@@ -5,7 +5,7 @@ import wasm from "./generated/acyclic_cloudflare_conformance_bg.wasm";
 import { SqliteJournal, type StreamChange } from "../../../../typescript/packages/harness/src/cloudflare-storage.js";
 import { openCloudflareAgent, openCloudflareLedger } from "../../../../typescript/packages/harness/src/cloudflare.js";
 import { streamLedgerPort } from "../../../../typescript/packages/harness/src/event-ledger.js";
-import { initSync as initGuest, WasmReducer, WasmAgentRegistry, WasmSessionAuthority, type WasmFileRefWire, type Preset } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
+import { initSync as initGuest, WasmAgentAuthority, WasmAgentRegistry, WasmSessionAuthority, type WasmFileRefWire, type Preset } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
 import guestWasm from "./generated/agent_guest_bg.wasm";
 
 initSync({ module: wasm });
@@ -53,8 +53,8 @@ export class Ledger extends DurableObject {
 }
 
 export class Agent extends DurableObject {
-  private readonly owner = new WasmReducer({ kind: "task", id: "00112233-4455-6677-8899-aabbccddeeff" },
-    "do-conformance", new Uint8Array(32).fill(23), []);
+  private readonly owner = new WasmAgentAuthority({ kind: "task", id: "00112233-4455-6677-8899-aabbccddeeff" },
+    "do-conformance", new Uint8Array(32).fill(23));
   private readonly registry = new WasmAgentRegistry();
   private agent?: ReturnType<typeof openCloudflareAgent>;
   private executions = 0;

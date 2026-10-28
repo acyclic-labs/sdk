@@ -1,0 +1,76 @@
+{
+  "state": "historical-retired-algorithm-proof-not-current-execution",
+  "original_commit": "b7f160432c1a9cc8603e4d4c773632a3ac0b5e17",
+  "original_pr": 1717,
+  "original_target": "harness_memory_paths",
+  "original_required_features": [
+    "memory-paths"
+  ],
+  "original_feature_dependencies": [
+    "dep:serde_json"
+  ],
+  "original_manifest_path": "rust/fuzz/Cargo.toml",
+  "original_manifest_blob": "6f160c9dab524170979a08300f6bce9e37fe59c1",
+  "original_production_dependency": "rust/crates/harness-core/src/memory_store/directory/conflicts.rs",
+  "original_dependency_blob": "40cc764084cc85a94fe1e782496002d4eba9e1ab",
+  "reproduction": "Check out original_commit, then run its original Cargo target with original_required_features; this archive makes no execution or surviving Fs coverage claim.",
+  "reason": "MemoryStore implementation and API retired atomically; original independent reference oracle and seed bytes preserved without a compatibility implementation.",
+  "files": [
+    {
+      "original_path": "rust/fuzz/fuzz_targets/harness_memory_paths.rs",
+      "preserved_path": "rust/fuzz/retired/harness_memory_paths/fuzz_target.rs",
+      "git_blob": "eb7e8a5ae0307b16444feb5bfd9737f3007d022f",
+      "sha256": "5fec4ad0ae7c679e1c991578290fe811a2dc5aab7df77d8c7147af497f26fd6b",
+      "bytes": 1315
+    },
+    {
+      "original_path": "rust/fuzz/corpus/harness_memory_paths/ancestor",
+      "preserved_path": "rust/fuzz/retired/harness_memory_paths/corpus/ancestor",
+      "git_blob": "c0dd9f45acee33aac6d835f788242f929e6399c2",
+      "sha256": "ea23c8869e028a2ec21a9af2a9c825ee718d23e9bce2a68d429c6c2acaf925b5",
+      "bytes": 63
+    },
+    {
+      "original_path": "rust/fuzz/corpus/harness_memory_paths/depth-16-gap",
+      "preserved_path": "rust/fuzz/retired/harness_memory_paths/corpus/depth-16-gap",
+      "git_blob": "5190d53c8cf98e2f7c514ad2cfabee15cb797776",
+      "sha256": "560e92ec6f16c6351cfdd91622672a6036697dfe800b4d120d9b3e3f63c41f54",
+      "bytes": 1771
+    },
+    {
+      "original_path": "rust/fuzz/corpus/harness_memory_paths/depth-4-gap",
+      "preserved_path": "rust/fuzz/retired/harness_memory_paths/corpus/depth-4-gap",
+      "git_blob": "4f3a638f53bf068ad40ee7e0e68cb8914d7729c9",
+      "sha256": "5fb772fb1bc6678987cc4145b214a5ba9736086735e767f5daff2d379e6475ed",
+      "bytes": 787
+    },
+    {
+      "original_path": "rust/fuzz/corpus/harness_memory_paths/empty",
+      "preserved_path": "rust/fuzz/retired/harness_memory_paths/corpus/empty",
+      "git_blob": "9828f825d1ffc7e90ade1d4666c96b38021d6138",
+      "sha256": "38a1b820186bb67d86f8ccf1e66beb897ead4b4a6276264f2c01998631e95333",
+      "bytes": 8
+    },
+    {
+      "original_path": "rust/fuzz/corpus/harness_memory_paths/large-punctuation",
+      "preserved_path": "rust/fuzz/retired/harness_memory_paths/corpus/large-punctuation",
+      "git_blob": "827e55a14e7dad94f7234e45c5254f7229426f0b",
+      "sha256": "96bc4707bb31ca4b252fe16a47c8d4232552b108b68ce4b4ed5e3811074d98b4",
+      "bytes": 1747
+    },
+    {
+      "original_path": "rust/fuzz/corpus/harness_memory_paths/punctuation",
+      "preserved_path": "rust/fuzz/retired/harness_memory_paths/corpus/punctuation",
+      "git_blob": "9581896973bf74351777b70d6a6c6350e402bdf0",
+      "sha256": "fbdff9ce3afe582b099ba6c3300fdf7e9da57eee50aafd37bde5b69136347a78",
+      "bytes": 50
+    },
+    {
+      "original_path": "rust/fuzz/corpus/harness_memory_paths/unicode",
+      "preserved_path": "rust/fuzz/retired/harness_memory_paths/corpus/unicode",
+      "git_blob": "b41eac3bb301791cd14fd62376c3ae047b541e37",
+      "sha256": "f2a3e2906983765420f0837027c7a36c49714c324b2fa8ea0c859ceb9a632c8d",
+      "bytes": 57
+    }
+  ]
+}

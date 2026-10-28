@@ -1,10 +1,10 @@
-import init, { AgentGuest, WasmAgentProviders, WasmAgentRegistry, WasmAgents, WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
+import init, { AgentGuest, WasmAgentProviders, WasmAgentRegistry, WasmAgents, WasmAgentAuthority } from "../generated/wasm/acyclic_harness_wasm.js";
 
 // Test composition only: the real Rust agent host over IndexedDB providers.
 // The model is a scripted host callback; scheduling and recovery stay in Rust.
 export async function agentsFixture(id, reply, initialize = init) {
   await initialize();
-  const owner = new WasmReducer({ kind: "task", id }, "browser-agents", new Uint8Array(32).fill(23), []);
+  const owner = new WasmAgentAuthority({ kind: "task", id }, "browser-agents", new Uint8Array(32).fill(23));
   const registry = new WasmAgentRegistry();
   const requests = [];
   registry.configureModel({ provider: "browser-test", name: "scripted", revision: "1", options: {} },

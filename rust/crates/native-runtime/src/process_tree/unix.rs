@@ -150,6 +150,7 @@ pub(super) fn write_pipe(
     _writer: &mut Writer,
     bytes: &[u8],
     meter: Option<&dyn crate::NativeReadMeter>,
+    _owner: Option<&std::sync::Arc<dyn crate::NativeReadMeter>>,
 ) -> io::Result<(Option<usize>, io::Result<()>)> {
     nonblocking(pipe, meter)?;
     let (written, recorded) =

@@ -8,7 +8,6 @@ publish = false
 cargo-fuzz = true
 
 [features]
-memory-paths = ["dep:serde_json"]
 proto-descriptors = ["dep:acyclic-proto-build"]
 default = ["native"]
 agent = ["dep:acyclic-harness-core"]
@@ -61,14 +60,6 @@ bench = false
 name = "proto_descriptors"
 required-features = ["proto-descriptors"]
 path = "fuzz_targets/proto_descriptors.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "harness_memory_paths"
-required-features = ["memory-paths"]
-path = "fuzz_targets/harness_memory_paths.rs"
 test = false
 doc = false
 bench = false

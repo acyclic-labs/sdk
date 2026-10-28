@@ -69,6 +69,7 @@ pub(super) struct PendingStdin<'a> {
     stopped: bool,
     terminate_on_completion: bool,
     require_delivery: bool,
+    pub(super) meter_owner: Option<std::sync::Arc<dyn crate::NativeReadMeter>>,
 }
 
 impl<'a> PendingStdin<'a> {
@@ -108,6 +109,7 @@ impl<'a> PendingStdin<'a> {
         input: CaptureInput<'a>,
         buffer: Option<Vec<u8>>,
         meter: Option<&dyn crate::NativeReadMeter>,
+        owner: Option<&std::sync::Arc<dyn crate::NativeReadMeter>>,
     ) -> io::Result<Self> {
         let (initial, maximum, terminate_on_completion) = match input {
             CaptureInput::Exchange { initial, maximum } => (initial, maximum, true),
@@ -143,6 +145,7 @@ impl<'a> PendingStdin<'a> {
             stopped: false,
             terminate_on_completion,
             require_delivery: false,
+            meter_owner: owner.cloned(),
         })
     }
 
@@ -152,12 +155,12 @@ impl<'a> PendingStdin<'a> {
         meter: Option<&dyn crate::NativeReadMeter>,
     ) -> io::Result<bool> {
         let mut progressed = false;
-        #[cfg(unix)]
         if self.written < self.bytes.len() {
             let suffix = self
                 .bytes
                 .get(self.written..)
                 .ok_or_else(|| io::Error::other("invalid queued process input"))?;
+            #[cfg(unix)]
             let mut reservation = meter
                 .map(|meter| {
                     crate::NativeByteReservation::new(
@@ -174,12 +177,19 @@ impl<'a> PendingStdin<'a> {
                 .ok_or_else(|| {
                     io::Error::new(io::ErrorKind::BrokenPipe, "no owned process stdin")
                 })?;
-            let transfer = platform::write_pipe(pipe, &mut tree.writer, suffix, meter);
+            let transfer = platform::write_pipe(
+                pipe,
+                &mut tree.writer,
+                suffix,
+                meter,
+                self.meter_owner.as_ref(),
+            );
             let actual = transfer
                 .as_ref()
                 .ok()
                 .and_then(|(written, _)| *written)
                 .unwrap_or(0);
+            #[cfg(unix)]
             let recorded_bytes = reservation
                 .as_mut()
                 .map_or(Ok(()), |token| token.record(actual));
@@ -188,6 +198,7 @@ impl<'a> PendingStdin<'a> {
             }
             self.written += actual;
             progressed |= actual != 0;
+            #[cfg(unix)]
             recorded_bytes?;
             let (written, recorded_operation) = transfer?;
             recorded_operation?;
@@ -236,6 +247,7 @@ impl<'a> PendingStdin<'a> {
             stopped: false,
             terminate_on_completion,
             require_delivery: false,
+            meter_owner: None,
         })
     }
 

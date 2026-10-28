@@ -1,5 +1,5 @@
 import { AgentGuest, WasmAgentProviders, WasmAgentServer, WasmStream,
-  type WasmAgentRegistry, type WasmBrowserAgentOptions, type WasmReducer, type WasmFileRefWire,
+  type WasmAgentRegistry, type WasmBrowserAgentOptions, type WasmAgentAuthority, type WasmFileRefWire,
   type WasmHostingAdmission, type WasmSessionAuthority, type AgentCommand,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import { streamLedgerPort, type StreamLedger } from "./event-ledger.js";
@@ -31,7 +31,7 @@ export class EventAgentHost {
 
   constructor(private readonly storage: EventStorage, private readonly ledger: StreamLedger,
     private readonly name: string, options: WasmBrowserAgentOptions,
-    owner: WasmReducer, registry: WasmAgentRegistry, private readonly access: EventHostAccess) {
+    owner: WasmAgentAuthority, registry: WasmAgentRegistry, private readonly access: EventHostAccess) {
 
     const stream = WasmStream.connectProvider(streamLedgerPort(ledger, name));
     const objects = {

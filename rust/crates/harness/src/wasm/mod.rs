@@ -1,4 +1,4 @@
-//! Thin JavaScript host for the native authority and content contracts.
+//! JavaScript bindings for the shared agent runtime and authority.
 #![allow(
     clippy::needless_pass_by_value,
     reason = "wasm-bindgen's exported ABI owns JavaScript values and byte buffers"
@@ -16,8 +16,7 @@ use crate::{
     },
     core::{
         AggregateKind, Authority, AuthorityRoot, ExtensionAdmission, ExtensionConfiguration,
-        ExtensionDependency, ExtensionForkPolicy, ExtensionRecord, ExtensionStateMigration,
-        SchemaRegistry, Scope,
+        ExtensionDependency, ExtensionRecord, ExtensionStateMigration, Scope,
     },
     executor::ModelEventAdmission,
     interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
@@ -50,7 +49,7 @@ mod json;
 use json::*;
 mod model;
 use model::*;
-mod reducer;
+mod agent_authority;
 mod tool;
 use tool::*;
 #[cfg(target_arch = "wasm32")]
@@ -71,15 +70,8 @@ mod agents;
 mod context_discovery;
 mod mcp;
 
-/// Host-managed authority root hosted in WebAssembly: it issues and verifies
-/// the scopes of browser agents and their content grants.
+/// Host-managed signing authority for browser and guest agent admission.
 #[wasm_bindgen]
-pub struct WasmReducer {
+pub struct WasmAgentAuthority {
     issuer: AuthorityRoot,
-}
-
-/// Bounded Rust-owned content state for the WASM `MemoryConversation` adapter.
-#[wasm_bindgen]
-pub struct WasmContentStore {
-    store: crate::memory_store::MemoryStore,
 }

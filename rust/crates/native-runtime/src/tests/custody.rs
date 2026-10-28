@@ -58,7 +58,10 @@ fn duplex_capture_records_each_physical_input_byte_and_retires_pending_storage()
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut tree = ProcessTree::spawn(&mut command)?;
-    let meter = ReadBudgetMeter::new(u64::MAX, u64::MAX);
+    #[cfg(unix)]
+    let meter = Arc::new(ReadBudgetMeter::new(u64::MAX, u64::MAX));
+    #[cfg(windows)]
+    let meter = ReadBudgetMeter::shared(u64::MAX, u64::MAX);
     let input: Vec<_> = (0u8..251).cycle().take(8 * 1024 * 1024).collect();
     let maximum = 512 * 1024;
     let output = tree
@@ -68,7 +71,7 @@ fn duplex_capture_records_each_physical_input_byte_and_retires_pending_storage()
             Some(CaptureInput::Literal(&input)),
             || Ok(()),
             |_| Ok(ProcessInput::default()),
-            Some(&meter),
+            Some(&*meter),
             Some([
                 Vec::with_capacity(maximum),
                 Vec::with_capacity(maximum),
