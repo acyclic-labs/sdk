@@ -1,4 +1,4 @@
-//! Canonical bounded three-way generation merge.
+//! Canonical three-way generation merge with optional output policies.
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::checkpoint::build_checkpoint_with_accounting;
@@ -82,10 +82,10 @@ pub struct MergeGenerationRequest {
     pub theirs: GenerationRoot,
     /// Whether the source generation is retained as a second parent.
     pub retain_theirs_parent: bool,
-    /// Single total changed-record/name frontier bound.
-    pub maximum_changes: u32,
-    /// Maximum exact conflict regions retained in the terminal result.
-    pub maximum_conflicts: u32,
+    /// Optional total changed-record/name frontier policy.
+    pub maximum_changes: Option<u32>,
+    /// Optional maximum exact conflict regions retained in the terminal result.
+    pub maximum_conflicts: Option<u32>,
     /// Caller-validated side selections for exact conflicting regions.
     pub resolutions: BTreeMap<MergeConflict, MergeConflictResolution>,
 }
@@ -113,8 +113,8 @@ pub(crate) struct MergeGenerationBorrowedRequest<'a> {
     pub theirs_generation: ObjectId,
     pub theirs: &'a GenerationRoot,
     pub retain_theirs_parent: bool,
-    pub maximum_changes: u32,
-    pub maximum_conflicts: u32,
+    pub maximum_changes: Option<u32>,
+    pub maximum_conflicts: Option<u32>,
     pub content: ContentMerge,
 }
 
@@ -335,6 +335,26 @@ pub async fn merge_generation_async<S: AsyncObjectStore>(
 
 type RecordChange = (Option<FileRecord>, Option<FileRecord>);
 
+struct ChangeBudget {
+    remaining: Option<u32>,
+    examined: usize,
+}
+
+impl ChangeBudget {
+    fn consume(&mut self, count: usize) -> Result<(), FsError> {
+        if let Some(remaining) = &mut self.remaining {
+            *remaining = remaining
+                .checked_sub(u32::try_from(count).map_err(|_| FsError::MergeChangeLimit)?)
+                .ok_or(FsError::MergeChangeLimit)?;
+        }
+        self.examined = self
+            .examined
+            .checked_add(count)
+            .ok_or(WorkError::Overflow)?;
+        Ok(())
+    }
+}
+
 struct MergeState {
     records: Owned<Vec<(FileId, RecordChange)>>,
     conflicts: Owned<Vec<MergeConflict>>,
@@ -344,12 +364,17 @@ struct MergeState {
     /// file under its name; settled after both table diffs are known.
     replacements: Owned<Vec<(FileId, [Option<FileRecord>; 3])>>,
     truncated: bool,
-    remaining_changes: u32,
+    changes: ChangeBudget,
     content: ContentMerge,
 }
 
 impl MergeState {
-    fn new(maximum_changes: u32, accounting: &mut KernelAccounting<'_>) -> Result<Self, FsError> {
+    fn new(
+        maximum_changes: impl Into<Option<u32>>,
+        accounting: &mut KernelAccounting<'_>,
+    ) -> Result<Self, FsError> {
+        let maximum_changes = maximum_changes.into();
+
         Ok(Self {
             records: Owned::allocate(0, accounting)?,
             conflicts: Owned::allocate(0, accounting)?,
@@ -357,7 +382,10 @@ impl MergeState {
             file_folds: Owned::allocate(0, accounting)?,
             replacements: Owned::allocate(0, accounting)?,
             truncated: false,
-            remaining_changes: maximum_changes,
+            changes: ChangeBudget {
+                remaining: maximum_changes,
+                examined: 0,
+            },
             content: ContentMerge::Extents,
         })
     }
@@ -393,22 +421,15 @@ impl MergeState {
             .1 = value;
         Ok(())
     }
-    fn consume(&mut self, count: usize) -> Result<(), FsError> {
-        self.remaining_changes = self
-            .remaining_changes
-            .checked_sub(u32::try_from(count).map_err(|_| FsError::MergeChangeLimit)?)
-            .ok_or(FsError::MergeChangeLimit)?;
-        Ok(())
-    }
     fn conflict(
         &mut self,
         conflict: MergeConflict,
-        maximum: u32,
+        maximum: Option<u32>,
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), FsError> {
-        if self.conflicts.value.len() < usize::try_from(maximum).unwrap_or(usize::MAX) {
-            self.conflicts
-                .ensure_for_push(usize::try_from(maximum).unwrap_or(usize::MAX), accounting)?;
+        let maximum = maximum.map_or(usize::MAX, |maximum| maximum as usize);
+        if self.conflicts.value.len() < maximum {
+            self.conflicts.ensure_for_push(maximum, accounting)?;
             self.conflicts.value.push(conflict);
         } else {
             self.truncated = true;

@@ -176,12 +176,12 @@ impl HostedGeneration {
     pub async fn diff(
         &self,
         to: &HostedGeneration,
-        maximum_changes: u32,
+        maximum_changes: impl Into<Option<u32>>,
     ) -> Result<wire::DiffResponse, HostedFsError> {
+        let maximum_changes = maximum_changes.into();
+
         self.workspace.filesystem.require_owner(&to.workspace)?;
-        self.workspace
-            .filesystem
-            .require_page_bound(maximum_changes, "diff changes")?;
+
         let mut client = self.workspace.filesystem.client.clone();
         Ok(client
             .diff(
@@ -204,16 +204,14 @@ impl HostedGeneration {
         target: &HostedGeneration,
         history: wire::JoinHistory,
         maximum_generations: impl Into<Option<u32>>,
-        maximum_changes: u32,
-        maximum_conflicts: u32,
+        maximum_changes: impl Into<Option<u32>>,
+        maximum_conflicts: impl Into<Option<u32>>,
     ) -> Result<wire::JoinPlan, HostedFsError> {
+        let maximum_changes = maximum_changes.into();
+        let maximum_conflicts = maximum_conflicts.into();
+
         self.workspace.filesystem.require_owner(&target.workspace)?;
-        self.workspace
-            .filesystem
-            .require_page_bound(maximum_changes, "join changes")?;
-        self.workspace
-            .filesystem
-            .require_page_bound(maximum_conflicts, "join conflicts")?;
+
         let mut client = self.workspace.filesystem.client.clone();
         Ok(client
             .plan_join(

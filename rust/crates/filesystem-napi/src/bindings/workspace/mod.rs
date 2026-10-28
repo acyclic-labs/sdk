@@ -355,12 +355,12 @@ impl NativeWorkspace {
         &self,
         idempotency_key: Option<Buffer>,
         maximum_generations: Option<NapiU32>,
-        maximum_changes: NapiU32,
-        maximum_conflicts: NapiU32,
+        maximum_changes: Option<NapiU32>,
+        maximum_conflicts: Option<NapiU32>,
     ) -> Result<NativeWorkspaceRebaseResult> {
         let maximum_generations = maximum_generations.map(NapiU32::into_inner);
-        let maximum_changes = maximum_changes.into_inner();
-        let maximum_conflicts = maximum_conflicts.into_inner();
+        let maximum_changes = maximum_changes.map(NapiU32::into_inner);
+        let maximum_conflicts = maximum_conflicts.map(NapiU32::into_inner);
 
         self.inner
             .live_rebase(
@@ -379,9 +379,9 @@ impl NativeWorkspace {
         &self,
         from: &NativeGeneration,
         to: &NativeGeneration,
-        maximum_changes: NapiU32,
+        maximum_changes: Option<NapiU32>,
     ) -> Result<NativeChangeSet> {
-        let maximum_changes = maximum_changes.into_inner();
+        let maximum_changes = maximum_changes.map(NapiU32::into_inner);
         sdk_value!(unbounded_future!(
             self.inner,
             diff(&from.inner, &to.inner, maximum_changes)
@@ -401,8 +401,8 @@ impl NativeWorkspace {
             .history(history)
             .bounds(
                 options.maximum_generations.map(NapiU32::into_inner),
-                options.maximum_changes.into_inner(),
-                options.maximum_conflicts.into_inner(),
+                options.maximum_changes.map(NapiU32::into_inner),
+                options.maximum_conflicts.map(NapiU32::into_inner),
             )
             .plan_at(
                 &match options.source_generation {

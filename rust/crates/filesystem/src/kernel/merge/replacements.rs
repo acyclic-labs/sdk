@@ -48,14 +48,14 @@ async fn settle_record<S: AsyncObjectStore>(
             base.ok_or(FsError::InvalidDiff)?,
             ours.ok_or(FsError::InvalidDiff)?,
             theirs.ok_or(FsError::InvalidDiff)?,
-            (state.remaining_changes, state.content),
+            (state.changes.remaining, state.content),
             limits,
             accounting,
             cancellation,
         )
         .await?
     {
-        state.consume(examined as usize)?;
+        state.changes.consume(examined)?;
         resolved = OptionalResolution::Resolved(Some(record));
     }
     if matches!(resolved, OptionalResolution::Conflict)
@@ -156,14 +156,14 @@ async fn replacement_index<S: AsyncObjectStore>(
             if before == after {
                 continue;
             }
-            if state.remaining_changes == 0 {
+            if state.changes.remaining == Some(0) {
                 return Err(FsError::MergeChangeLimit);
             }
             let (diff, allocation) = diff_tree_entries_with_accounting(
                 store,
                 Some(before),
                 Some(after),
-                state.remaining_changes,
+                state.changes.remaining,
                 limits,
                 accounting,
                 cancellation,
@@ -175,7 +175,7 @@ async fn replacement_index<S: AsyncObjectStore>(
                 if diff.value.truncated {
                     return Err(FsError::MergeChangeLimit);
                 }
-                state.consume(diff.value.changes.len())?;
+                state.changes.consume(diff.value.changes.len())?;
                 for entry in &diff.value.changes {
                     let Some((replaced, record)) = rebound_record(
                         entry,
@@ -433,12 +433,14 @@ async fn settle_replacements<S: AsyncObjectStore>(
     store: &S,
     sides: [&[super::persistent_diff::ValueChange<FileId, FileRecord>]; 2],
     resolutions: ResolutionView<'_>,
-    maximum_conflicts: u32,
+    maximum_conflicts: impl Into<Option<u32>>,
     limits: DecodeLimits,
     state: &mut MergeState,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(), FsError> {
+    let maximum_conflicts = maximum_conflicts.into();
+
     if state.replacements.value.is_empty() {
         return Ok(());
     }
@@ -490,12 +492,14 @@ async fn settle_indexed<S: AsyncObjectStore>(
     store: &S,
     indexes: &[Owned<Vec<Replacement>>; 2],
     resolutions: ResolutionView<'_>,
-    maximum_conflicts: u32,
+    maximum_conflicts: impl Into<Option<u32>>,
     limits: DecodeLimits,
     state: &mut MergeState,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(), FsError> {
+    let maximum_conflicts = maximum_conflicts.into();
+
     let mut index = 0;
     while let Some(&(file, values)) = state.replacements.value.get(index) {
         index += 1;
