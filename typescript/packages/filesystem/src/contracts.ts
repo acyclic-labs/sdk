@@ -222,8 +222,6 @@ export type ResidencyReason =
   | "consumer-hint";
 export interface SpeculationOptions {
   readonly residency: {
-    readonly maximumActiveOperations: number;
-    readonly maximumActiveBytes: bigint;
     readonly outcomeWindow: number;
     readonly trafficWindow: number;
     readonly speculativeCostBasisPoints: number;
@@ -231,9 +229,6 @@ export interface SpeculationOptions {
     readonly minimumUsefulnessBasisPoints: number;
   };
   readonly promotion: {
-    readonly maximumActiveOperations: number;
-    readonly maximumActiveBytes: bigint;
-    readonly maximumActiveCostUnits: bigint;
     readonly outcomeWindow: number;
     readonly minimumUsefulnessSamples: number;
     readonly minimumUsefulnessBasisPoints: number;
