@@ -1037,6 +1037,7 @@ dependencies = [
  "serde-wasm-bindgen",
  "serde_json",
  "sha2 0.11.1",
+ "smallvec",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

@@ -330,7 +330,7 @@ pub fn validate(route: &str, value: &Value) -> Result {
             let item = object(value)?;
             validate_revision(field(item, "snapshot")?)?;
             let projection = string(field(item, "projection")?)?;
-            if !matches!(projection, "history" | "watermarks") {
+            if !matches!(projection, "history" | "watermarks" | "tail") {
                 return Err("invalid head projection");
             }
             for head in array(field(item, "heads")?)? {
@@ -339,7 +339,9 @@ pub fn validate(route: &str, value: &Value) -> Result {
                         validate("head", head)?;
                     } else {
                         let head = object(head)?;
-                        if u64_string(field(head, "durable")?)? > u64_string(field(head, "tail")?)?
+                        if (projection == "tail" && u64_string(field(head, "durable")?)? != 0)
+                            || u64_string(field(head, "durable")?)?
+                                > u64_string(field(head, "tail")?)?
                             || !field(head, "last")?.is_null()
                             || !field(head, "origin")?.is_null()
                         {

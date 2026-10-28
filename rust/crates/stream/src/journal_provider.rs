@@ -216,25 +216,20 @@ impl StreamProvider for JournalStream {
             self.wait_revision(&request.at_least).await?;
         }
         self.query(async move |provider| {
+            let projection = request.projection;
             let mut view = provider.heads(request).await?;
             for head in view.heads.iter_mut().flatten() {
-                head.durable = head.tail;
+                head.durable = if projection == crate::HeadProjection::Tail {
+                    0
+                } else {
+                    head.tail
+                };
             }
             Ok(view)
         })
         .await
     }
 
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.query(async move |p| p.tail(path).await).await
-    }
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        let tail = self.tail(path).await?;
-        Ok(StreamWatermarks {
-            accepted: tail,
-            durable: tail,
-        })
-    }
     async fn durable_receipt(
         &self,
         path: StreamPath,
@@ -269,13 +264,6 @@ impl StreamProvider for JournalStream {
         self.query(async move |p| p.read(request).await).await
     }
 
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.query(async move |p| p.children_page(request).await)
-            .await
-    }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.query(async move |p| p.read_commit(id).await).await
     }

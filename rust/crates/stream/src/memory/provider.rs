@@ -144,27 +144,16 @@ fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPa
                 tail_record,
                 origin,
             };
-            let encoded = crate::wire::Child {
-                origin: child
-                    .origin
-                    .clone()
-                    .map(crate::wire_codec::fork_origin_to_wire),
-                path: child.path.to_string(),
-                tail_record: child
-                    .tail_record
-                    .clone()
-                    .map(crate::wire_codec::record_wire),
-            };
             #[cfg(all(loom, feature = "local"))]
             let size =
                 if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes)
                 {
-                    encoded.path.len()
+                    child.path.as_str().len()
                 } else {
-                    prost::Message::encoded_len(&encoded)
+                    crate::wire_codec::requests::child_len(&child)
                 };
             #[cfg(not(all(loom, feature = "local")))]
-            let size = prost::Message::encoded_len(&encoded);
+            let size = crate::wire_codec::requests::child_len(&child);
             page_bytes = page_bytes.saturating_add(size).saturating_add(10);
             if page_bytes > crate::MAX_COMMAND_BYTES {
                 return Err(StreamError::LimitExceeded);
@@ -210,9 +199,7 @@ impl StreamProvider for MemoryStream {
                 .map(|request| children_at(&state, request))
                 .transpose()?,
         };
-        if prost::Message::encoded_len(&crate::wire_codec::heads_to_wire(view.clone()))
-            > crate::MAX_COMMAND_BYTES
-        {
+        if crate::wire_codec::requests::heads_len(&view) > crate::MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
         Ok(view)
@@ -242,14 +229,6 @@ impl StreamProvider for MemoryStream {
     ) -> Result<Option<crate::DurableReceipt>, StreamError> {
         let tail = self.tail(path.clone()).await?;
         Ok(crate::DurableReceipt::retained(path, tail, through))
-    }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        let state = self.state.read().await;
-        state
-            .paths
-            .get(&path)
-            .map(|stream| stream.tail)
-            .ok_or(StreamError::NotFound)
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -343,13 +322,6 @@ impl StreamProvider for MemoryStream {
             self.follow_from(path, from, preceding, when_absent, filter)
                 .await
         }
-    }
-
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        children_at(&*self.state.read().await, request)
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {

@@ -1,3 +1,7 @@
+/// Ordered observations with inline storage for a single path. Larger views grow
+/// with the caller's budget; the inline capacity is not a result limit.
+pub type HeadSet<T> = smallvec::SmallVec<[T; 1]>;
+
 /// One atomic observation of a path's accepted history and durable prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PathHead {
@@ -19,6 +23,8 @@ pub enum HeadProjection {
     History,
     /// Accepted/durable offsets only; last record and origin are omitted.
     Watermarks,
+    /// Accepted offset only; no durability metadata is consulted.
+    Tail,
 }
 
 /// Named observations and an optional hierarchy page at one authority cut.
@@ -27,7 +33,7 @@ pub struct HeadsRequest {
     /// Selects history details or an offset-only observation.
     pub projection: HeadProjection,
     /// Exact paths, in response order. An absent path has a `None` observation.
-    pub paths: Vec<StreamPath>,
+    pub paths: HeadSet<StreamPath>,
     /// Optional direct-child page, including its existing continuation fence.
     pub children: Option<ChildrenPageRequest>,
     /// Nonzero total result budget: named paths plus returned children.
@@ -56,7 +62,7 @@ pub struct Heads {
     /// Exact authority revision shared by heads, absence and the hierarchy page.
     pub snapshot: Revision,
     /// One observation for every requested path, in request order.
-    pub heads: Vec<Option<PathHead>>,
+    pub heads: HeadSet<Option<PathHead>>,
     /// Optional page at the same snapshot, with its own hierarchy continuation.
     pub children: Option<ChildrenPage>,
 }
@@ -91,12 +97,13 @@ impl PathHead {
     ) -> Result<(), StreamError> {
         match projection {
             HeadProjection::History => self.validate(),
-            HeadProjection::Watermarks
+            HeadProjection::Tail if self.durable != 0 => Err(StreamError::InvalidResponse),
+            HeadProjection::Tail | HeadProjection::Watermarks
                 if self.last.is_none() && self.origin.is_none() && self.durable <= self.tail =>
             {
                 Ok(())
             }
-            HeadProjection::Watermarks => Err(StreamError::InvalidResponse),
+            HeadProjection::Tail | HeadProjection::Watermarks => Err(StreamError::InvalidResponse),
         }
     }
 

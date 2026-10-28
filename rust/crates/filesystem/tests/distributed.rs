@@ -55,9 +55,6 @@ impl StreamProvider for PausingStream {
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         self.inner.heads(request).await
     }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.inner.tail(path).await
-    }
 
     async fn append(
         &self,
@@ -85,13 +82,6 @@ impl StreamProvider for PausingStream {
         request: acyclic_stream::FollowRequest,
     ) -> Result<acyclic_stream::FollowStream, StreamError> {
         self.inner.follow(request).await
-    }
-
-    async fn children_page(
-        &self,
-        request: acyclic_stream::ChildrenPageRequest,
-    ) -> Result<acyclic_stream::ChildrenPage, StreamError> {
-        self.inner.children_page(request).await
     }
 
     async fn commit(

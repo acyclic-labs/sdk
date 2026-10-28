@@ -62,8 +62,12 @@ impl StreamProvider for LocalStream {
             .wait(&request.at_least)
             .await?;
         self.accepted(async {
+            let projection = request.projection;
             let paths = request.paths.clone();
             let mut view = self.inner.provider.heads(request).await?;
+            if projection == crate::HeadProjection::Tail || paths.is_empty() {
+                return Ok(view);
+            }
             let synced = self
                 .inner
                 .synced
@@ -85,21 +89,6 @@ impl StreamProvider for LocalStream {
                 }
             }
             Ok(view)
-        })
-        .await?
-    }
-
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.visible(self.inner.provider.tail(path)).await?
-    }
-
-    async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
-        self.accepted(async {
-            let accepted = self.inner.provider.tail(path.clone()).await?;
-            Ok(crate::StreamWatermarks {
-                accepted,
-                durable: self.durable_tail_for_accepted(path, accepted)?,
-            })
         })
         .await?
     }
@@ -234,14 +223,6 @@ impl StreamProvider for LocalStream {
             self.follow_from(path, from, preceding, when_absent, filter)
                 .await
         }
-    }
-
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.visible(self.inner.provider.children_page(request))
-            .await?
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
@@ -385,32 +366,6 @@ fn describe_commit(request: &CommitRequest) {
 }
 
 impl LocalStream {
-    // Called under accepted's publication guard after observing this path's tail.
-    fn durable_tail_for_accepted(
-        &self,
-        path: StreamPath,
-        accepted: u64,
-    ) -> Result<u64, StreamError> {
-        // Both frame counters are published before publication is released.
-        // Do not borrow the journal: compaction may hold it during device I/O.
-        let synced = self
-            .inner
-            .synced
-            .borrow()
-            .flushed
-            .is_some_and(|cut| cut >= *self.inner.revision.borrow());
-        let mut tails = self
-            .inner
-            .durable_tails
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?;
-        let durable = tails.entry(path).or_default();
-        if synced {
-            *durable = (*durable).max(accepted);
-        }
-        Ok(*durable)
-    }
-
     fn receipt_for_flushed_snapshot(
         &self,
         path: StreamPath,

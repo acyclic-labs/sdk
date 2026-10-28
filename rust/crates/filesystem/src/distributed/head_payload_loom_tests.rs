@@ -99,9 +99,6 @@ impl StreamProvider for ModelStream {
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         self.call(self.inner.heads(request)).await
     }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.call(self.inner.tail(path)).await
-    }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         if request.path.as_str().ends_with("/records") {
             if matches!(self.change, Change::Retire) {

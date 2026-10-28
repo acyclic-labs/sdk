@@ -105,6 +105,8 @@ enum HeadProjection {
   HEAD_PROJECTION_HISTORY = 0;
   // Read accepted/durable offsets without fetching a record or fork descriptor.
   HEAD_PROJECTION_WATERMARKS = 1;
+  // Read the accepted offset without consulting durability metadata.
+  HEAD_PROJECTION_TAIL = 2;
 }
 
 message HeadsRequest {

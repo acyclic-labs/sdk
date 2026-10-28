@@ -1,6 +1,7 @@
 //! Multiplexed Streams follows shared by client and node-to-node sessions.
 
 use crate::StreamProvider;
+use crate::StreamProviderExt as _;
 use crate::{StreamError, StreamPath, wire, wire_codec};
 use bytes::Bytes;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]

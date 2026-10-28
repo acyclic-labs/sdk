@@ -16,24 +16,117 @@ fn attribute_len(attribute: RecordAttribute<'_>) -> usize {
         block_len(attribute.value.len())
     })
 }
-fn append_record_len(record: &AppendRecord) -> usize {
-    let value = if record.value.is_empty() {
+fn record_body_len(value: &[u8], headers: &crate::RecordHeaders) -> usize {
+    let value = if value.is_empty() {
         0
     } else {
-        block_len(record.value.len())
+        block_len(value.len())
     };
-    crate::changes::wire_keys(&record.headers)
+    crate::changes::wire_keys(headers)
         .iter()
         .map(|key| block_len(key.len()))
         .chain(
-            record
-                .headers
+            headers
                 .attributes()
                 .iter()
                 .map(|attribute| block_len(attribute_len(attribute))),
         )
         .fold(value, usize::saturating_add)
 }
+fn append_record_len(record: &AppendRecord) -> usize {
+    record_body_len(&record.value, &record.headers)
+}
+
+pub(crate) fn record_len(record: &crate::Record) -> usize {
+    record_body_len(&record.value, &record.headers)
+        .saturating_add(uint_len((record.sequence != 0).then_some(record.sequence)))
+        .saturating_add(block_len(record.commit_id.as_bytes().len()))
+        .saturating_add(uint_len(
+            (record.committed_at_micros != 0).then_some(record.committed_at_micros),
+        ))
+}
+
+pub(crate) fn origin_len(origin: &crate::ForkOrigin) -> usize {
+    block_len(origin.source.as_str().len())
+        .saturating_add(uint_len(
+            (origin.forked_at != 0).then_some(origin.forked_at),
+        ))
+        .saturating_add(block_len(origin.commit_id.as_bytes().len()))
+}
+
+pub(crate) fn child_len(child: &crate::Child) -> usize {
+    block_len(child.path.as_str().len())
+        .saturating_add(
+            child
+                .tail_record
+                .as_ref()
+                .map_or(0, |record| block_len(record_len(record))),
+        )
+        .saturating_add(
+            child
+                .origin
+                .as_ref()
+                .map_or(0, |origin| block_len(origin_len(origin))),
+        )
+}
+
+pub(crate) fn heads_len(view: &crate::Heads) -> usize {
+    let revision = &view.snapshot;
+    let snapshot = (if revision.scope.as_bytes().is_empty() {
+        0
+    } else {
+        block_len(revision.scope.as_bytes().len())
+    })
+    .saturating_add(block_len(16))
+    .saturating_add(uint_len((revision.index != 0).then_some(revision.index)));
+    let named = view
+        .heads
+        .iter()
+        .map(|head| {
+            block_len(head.as_ref().map_or(0, |head| {
+                block_len(
+                    uint_len((head.tail != 0).then_some(head.tail))
+                        .saturating_add(
+                            head.last
+                                .as_ref()
+                                .map_or(0, |record| block_len(record_len(record))),
+                        )
+                        .saturating_add(uint_len((head.durable != 0).then_some(head.durable)))
+                        .saturating_add(
+                            head.origin
+                                .as_ref()
+                                .map_or(0, |origin| block_len(origin_len(origin))),
+                        ),
+                )
+            }))
+        })
+        .fold(0usize, usize::saturating_add);
+    let children = view.children.as_ref().map_or(0, |page| {
+        block_len(
+            block_len(page.hierarchy_version.as_bytes().len())
+                .saturating_add(
+                    page.children
+                        .iter()
+                        .map(|child| block_len(child_len(child)))
+                        .fold(0usize, usize::saturating_add),
+                )
+                .saturating_add(
+                    page.next_after
+                        .as_ref()
+                        .map_or(0, |path| block_len(path.as_str().len())),
+                ),
+        )
+    });
+    block_len(snapshot)
+        .saturating_add(named)
+        .saturating_add(children)
+        .saturating_add(uint_len(match view.projection {
+            crate::HeadProjection::History => None,
+            crate::HeadProjection::Watermarks => Some(1),
+            crate::HeadProjection::Tail => Some(2),
+        }))
+}
+
 fn records_len(records: &[AppendRecord]) -> usize {
     records_len_with(records, &append_record_len)
 }

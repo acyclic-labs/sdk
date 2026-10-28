@@ -8,6 +8,24 @@ pub trait StreamProviderExt: StreamProvider {
         path: StreamPath,
     ) -> impl std::future::Future<Output = Result<PathHead, StreamError>> + ProviderTask;
 
+    /// Current accepted next sequence, without loading history or awaiting a flush.
+    fn tail(
+        &self,
+        path: StreamPath,
+    ) -> impl std::future::Future<Output = Result<u64, StreamError>> + ProviderTask;
+
+    /// Accepted visibility and its confirmed durable prefix at one snapshot.
+    fn watermarks(
+        &self,
+        path: StreamPath,
+    ) -> impl std::future::Future<Output = Result<StreamWatermarks, StreamError>> + ProviderTask;
+
+    /// One bounded direct-child page at a coherent authority snapshot.
+    fn children_page(
+        &self,
+        request: ChildrenPageRequest,
+    ) -> impl std::future::Future<Output = Result<ChildrenPage, StreamError>> + ProviderTask;
+
     /// Waits for the authority snapshot to cover the caller's minimum cut.
     fn wait_applied(
         &self,
@@ -20,24 +38,53 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         &self,
         path: StreamPath,
     ) -> impl std::future::Future<Output = Result<PathHead, StreamError>> + ProviderTask {
+        named_head(self, path, HeadProjection::History)
+    }
+
+    fn tail(
+        &self,
+        path: StreamPath,
+    ) -> impl std::future::Future<Output = Result<u64, StreamError>> + ProviderTask {
+        async move { Ok(named_head(self, path, HeadProjection::Tail).await?.tail) }
+    }
+
+    fn watermarks(
+        &self,
+        path: StreamPath,
+    ) -> impl std::future::Future<Output = Result<StreamWatermarks, StreamError>> + ProviderTask
+    {
         async move {
-            let request = HeadsRequest {
-                projection: Default::default(),
-                paths: vec![path],
-                children: None,
-                limit: 1,
-                at_least: RevisionCut::default(),
-            };
-            let mut view = self.heads(request).await?;
-            if view.projection != HeadProjection::History
-                || view.heads.len() != 1
-                || view.children.is_some()
-            {
+            let head = named_head(self, path, HeadProjection::Watermarks).await?;
+            Ok(StreamWatermarks {
+                accepted: head.tail,
+                durable: head.durable,
+            })
+        }
+    }
+
+    fn children_page(
+        &self,
+        request: ChildrenPageRequest,
+    ) -> impl std::future::Future<Output = Result<ChildrenPage, StreamError>> + ProviderTask {
+        async move {
+            let limit = request.limit;
+            let view = self
+                .heads(HeadsRequest {
+                    projection: HeadProjection::Watermarks,
+                    paths: Default::default(),
+                    children: Some(request),
+                    limit,
+                    at_least: Default::default(),
+                })
+                .await?;
+            if view.projection != HeadProjection::Watermarks || !view.heads.is_empty() {
                 return Err(StreamError::InvalidResponse);
             }
-            let head = view.heads.pop().flatten().ok_or(StreamError::NotFound)?;
-            head.validate()?;
-            Ok(head)
+            let page = view.children.ok_or(StreamError::InvalidResponse)?;
+            if page.children.len() > limit as usize {
+                return Err(StreamError::InvalidResponse);
+            }
+            Ok(page)
         }
     }
 
@@ -49,7 +96,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
             let view = self
                 .heads(HeadsRequest {
                     projection: Default::default(),
-                    paths: Vec::new(),
+                    paths: Default::default(),
                     children: None,
                     limit: 1,
                     at_least: at_least.clone(),
@@ -65,4 +112,26 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
             Ok(view.snapshot)
         }
     }
+}
+
+async fn named_head<P: StreamProvider + ?Sized>(
+    provider: &P,
+    path: StreamPath,
+    projection: HeadProjection,
+) -> Result<PathHead, StreamError> {
+    let mut view = provider
+        .heads(HeadsRequest {
+            projection,
+            paths: [path].into(),
+            children: None,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?;
+    if view.projection != projection || view.heads.len() != 1 || view.children.is_some() {
+        return Err(StreamError::InvalidResponse);
+    }
+    let head = view.heads.pop().flatten().ok_or(StreamError::NotFound)?;
+    head.validate_projection(projection)?;
+    Ok(head)
 }

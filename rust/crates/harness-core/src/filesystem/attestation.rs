@@ -23,10 +23,10 @@ use super::TurnAdmission;
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::NativeReadMeter;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, BoxProviderFuture, ChildrenPage, ChildrenPageRequest, CommitId,
-    CommitOutcome, CommitRequest, CommittedEnvelope, DurableReceipt, FollowStream, ForkReceipt,
-    ForkRequest, IdempotencyKey, IdempotencyObservation, ProviderPlatform, ReadRequest,
-    RecordStream, StreamError, StreamPath, StreamProvider, StreamWatermarks,
+    AppendOutcome, AppendRequest, BoxProviderFuture, CommitId, CommitOutcome, CommitRequest,
+    CommittedEnvelope, DurableReceipt, FollowStream, ForkReceipt, ForkRequest, IdempotencyKey,
+    IdempotencyObservation, ProviderPlatform, ReadRequest, RecordStream, StreamError, StreamPath,
+    StreamProvider,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_stream::{NativeProviderFuture, NativeRecordStream, PreparedNativeCommit};
@@ -163,18 +163,12 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         self.inner.inspect_idempotency(key).await
     }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.inner.tail(path).await
-    }
 
     async fn heads(
         &self,
         request: acyclic_stream::HeadsRequest,
     ) -> Result<acyclic_stream::Heads, StreamError> {
         self.inner.heads(request).await
-    }
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        self.inner.watermarks(path).await
     }
     async fn durable_receipt(
         &self,
@@ -203,12 +197,6 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
         request: acyclic_stream::FollowRequest,
     ) -> Result<FollowStream, StreamError> {
         self.inner.follow(request).await
-    }
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.inner.children_page(request).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.target(|| commit_digest(&request))
@@ -395,9 +383,6 @@ mod tests {
             key: super::IdempotencyKey,
         ) -> Result<Option<super::IdempotencyObservation>, super::StreamError> {
             self.inner.inspect_idempotency(key).await
-        }
-        async fn tail(&self, path: super::StreamPath) -> Result<u64, super::StreamError> {
-            self.inner.tail(path).await
         }
 
         async fn heads(

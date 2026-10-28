@@ -80,15 +80,6 @@ impl acyclic_stream::StreamProvider for CutStream {
         }
         self.inner.heads(request).await
     }
-    async fn tail(
-        &self,
-        path: acyclic_stream::StreamPath,
-    ) -> Result<u64, acyclic_stream::StreamError> {
-        if self.fails_now() {
-            return Err(acyclic_stream::StreamError::Unavailable);
-        }
-        self.inner.tail(path).await
-    }
 
     async fn append(
         &self,

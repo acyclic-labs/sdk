@@ -323,28 +323,20 @@ impl StreamProvider for BrowserStream {
             self.wait_revision(&request.at_least).await?;
         }
         self.with_provider(async move |provider| {
+            let projection = request.projection;
             let mut view = provider.heads(request).await?;
             for head in view.heads.iter_mut().flatten() {
-                head.durable = head.tail;
+                head.durable = if projection == crate::HeadProjection::Tail {
+                    0
+                } else {
+                    head.tail
+                };
             }
             Ok(view)
         })
         .await
     }
 
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.with_provider(async move |provider| provider.tail(path).await)
-            .await
-    }
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        // tail refreshes from completed strict IndexedDB transactions; an
-        // uncommitted cache mutation is never exposed outside its writer.
-        let accepted = self.tail(path).await?;
-        Ok(StreamWatermarks {
-            accepted,
-            durable: accepted,
-        })
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         match self.execute(Command::Append(request), None).await? {
             Outcome::Append(value) => Ok(value),
@@ -372,13 +364,6 @@ impl StreamProvider for BrowserStream {
             .await
     }
 
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.with_provider(async move |provider| provider.children_page(request).await)
-            .await
-    }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.with_provider(async move |provider| provider.read_commit(id).await)
             .await

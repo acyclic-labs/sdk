@@ -164,7 +164,7 @@ async fn head_refuses_incoherent_cuts_without_another_provider_request()
     let snapshot = MemoryStream::default()
         .heads(HeadsRequest {
             projection: Default::default(),
-            paths: Vec::new(),
+            paths: Default::default(),
             children: None,
             limit: 1,
             at_least: RevisionCut::default(),

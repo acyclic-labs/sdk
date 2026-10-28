@@ -38,19 +38,15 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.record(RequestClass::Metadata);
         self.inner().inspect_idempotency(idempotency_key).await
     }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.record(RequestClass::Head);
-        self.inner().tail(path).await
-    }
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
-        self.record(RequestClass::Head);
+        self.record(if request.paths.is_empty() && request.children.is_some() {
+            RequestClass::List
+        } else {
+            RequestClass::Head
+        });
         self.inner().heads(request).await
     }
 
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        self.record(RequestClass::Head);
-        self.inner().watermarks(path).await
-    }
     async fn durable_receipt(
         &self,
         path: StreamPath,
@@ -75,13 +71,6 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
     async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError> {
         self.record(RequestClass::Data);
         self.inner().follow(request).await
-    }
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.record(RequestClass::List);
-        self.inner().children_page(request).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.record(RequestClass::Data);

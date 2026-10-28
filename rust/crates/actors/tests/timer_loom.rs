@@ -133,7 +133,6 @@ macro_rules! delegate {
 delegate! {
     heads(request: acyclic_stream::HeadsRequest) -> acyclic_stream::Heads;
     inspect_idempotency(key: acyclic_stream::IdempotencyKey) -> Option<acyclic_stream::IdempotencyObservation>;
-    tail(path: StreamPath) -> u64;
     fork(request: acyclic_stream::ForkRequest) -> acyclic_stream::ForkReceipt;
     read(request: acyclic_stream::ReadRequest) -> acyclic_stream::RecordStream;
     commit(request: acyclic_stream::CommitRequest) -> acyclic_stream::CommitOutcome;

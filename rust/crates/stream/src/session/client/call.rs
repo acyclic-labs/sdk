@@ -30,7 +30,7 @@ impl Client {
     }
 
     /// Reads one page of direct children on the shared session, with the
-    /// semantics of [`crate::StreamProvider::children_page`]. The host must
+    /// semantics of [`crate::StreamProviderExt::children_page`]. The host must
     /// authorize `streams/list` on the parent; each child is returned only
     /// when the credential may list it, and its tail record only when it may
     /// follow that stream. A page is a pure read: a lost connection reissues

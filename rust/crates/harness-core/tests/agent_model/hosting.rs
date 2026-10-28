@@ -300,12 +300,6 @@ impl StreamProvider for Evidence {
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         self.inner.heads(request).await
     }
-    async fn tail(
-        &self,
-        path: acyclic_stream::StreamPath,
-    ) -> std::result::Result<u64, StreamError> {
-        self.inner.tail(path).await
-    }
     async fn append(
         &self,
         request: acyclic_stream::AppendRequest,

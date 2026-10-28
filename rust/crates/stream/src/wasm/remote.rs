@@ -96,46 +96,6 @@ impl StreamProvider for Remote {
         self.sessions.heads(request, 0).await
     }
 
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        let revisions = self.sessions.revisions();
-        let minimum = revisions.floor(&crate::RevisionCut::default());
-        let response = self
-            .service()
-            .tail(
-                self.request(wire::TailRequest {
-                    path: path.to_string(),
-                    accepted: false,
-                    durable_through: None,
-                    at_least: wire_codec::cut_to_wire(&minimum),
-                })
-                .await?,
-            )
-            .await
-            .map_err(|e| wire_codec::status(&e))
-            .inspect_err(|error| revisions.refused(error))?
-            .into_inner();
-        let applied = response
-            .applied
-            .map(|applied| wire_codec::issued_from_wire(Some(applied)))
-            .transpose()?;
-        revisions.served(&minimum, applied.as_ref())?;
-        Ok(response.tail)
-    }
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        let body = wire::TailRequest {
-            path: path.to_string(),
-            accepted: true,
-            durable_through: None,
-            at_least: Default::default(),
-        };
-        let result = self
-            .service()
-            .tail(self.request(body).await?)
-            .await
-            .map_err(|e| wire_codec::status(&e))?
-            .into_inner();
-        wire_codec::watermarks_from_wire(result)
-    }
     async fn durable_receipt(
         &self,
         path: StreamPath,
@@ -213,12 +173,6 @@ impl StreamProvider for Remote {
         self.sessions.follow(request).await
     }
 
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.sessions.children_page(request, 0).await
-    }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         let body = wire_codec::commit_to_wire(&request);
         let response = self

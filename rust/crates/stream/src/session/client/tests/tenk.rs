@@ -33,9 +33,6 @@ impl StreamProvider for Owners {
         self.memory.heads(request).await
     }
 
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.memory.tail(path).await
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.memory.append(request).await
     }

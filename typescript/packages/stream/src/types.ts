@@ -79,7 +79,7 @@ export type EncodedRecord = Record<Uint8Array>;
 export type ForkOrigin = PublicWire<WireForkOrigin, { readonly commitId: CommitId }>;
 export type PathHead = PublicWire<WirePathHead, { readonly last?: EncodedRecord; readonly origin?: ForkOrigin }>;
 /** Named paths and an optional children page at one authority snapshot. */
-export type HeadProjection = "history" | "watermarks";
+export type HeadProjection = "history" | "watermarks" | "tail";
 export interface HeadsRequest { readonly paths: readonly string[]; readonly children?: ChildrenPageRequest; readonly limit: number; readonly atLeast?: readonly Revision[]; readonly projection?: HeadProjection }
 export interface Heads { readonly snapshot: Revision; readonly heads: readonly (PathHead | undefined)[]; readonly children?: ChildrenPage; readonly projection: HeadProjection }
 export type AppendResult =

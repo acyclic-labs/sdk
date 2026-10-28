@@ -352,7 +352,7 @@ impl StreamProvider for HttpStream {
                     parse_head_projection(head, request.projection).map(Some)
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<crate::HeadSet<_>, _>>()?;
 
         let view = crate::Heads {
             projection: request.projection,
@@ -372,29 +372,6 @@ impl StreamProvider for HttpStream {
         Ok(view)
     }
 
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        let revisions = self.revisions()?;
-        let minimum = revisions.floor(&crate::RevisionCut::default());
-        let body = wire::TailRequest {
-            path: path.to_string(),
-            at_least: wire_codec::cut_to_wire(&minimum),
-            ..Default::default()
-        };
-        let value = self
-            .request("tail", body.encode_to_vec())
-            .await
-            .inspect_err(|error| revisions.refused(error))?;
-        let applied = value
-            .get("applied")
-            .filter(|value| !value.is_null())
-            .map(parse_revision)
-            .transpose()?;
-        revisions.served(&minimum, applied.as_ref())?;
-        parse_u64(field(&value, "tail")?)
-    }
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        self.session_client()?.watermarks(path).await
-    }
     async fn durable_receipt(
         &self,
         path: StreamPath,
@@ -442,12 +419,6 @@ impl StreamProvider for HttpStream {
         self.session_client()?.follow(request).await
     }
 
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.session_client()?.children_page(request).await
-    }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         let wire = wire_codec::commit_to_wire(&request);
         let response = self.request("commit", wire.encode_to_vec()).await?;
@@ -648,6 +619,7 @@ fn parse_head_projection_name(value: &Value) -> Result<crate::HeadProjection, St
     match value.as_str() {
         Some("history") => Ok(crate::HeadProjection::History),
         Some("watermarks") => Ok(crate::HeadProjection::Watermarks),
+        Some("tail") => Ok(crate::HeadProjection::Tail),
         _ => Err(StreamError::InvalidResponse),
     }
 }

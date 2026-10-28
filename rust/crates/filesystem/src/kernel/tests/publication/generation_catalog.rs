@@ -99,10 +99,6 @@ mod probe {
             self.read_request();
             self.inner.heads(request).await
         }
-        async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-            self.read_request();
-            self.inner.tail(path).await
-        }
         async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
             self.append_request();
             self.inner.append(request).await
@@ -121,13 +117,6 @@ mod probe {
         ) -> Result<acyclic_stream::FollowStream, StreamError> {
             self.read_request();
             self.inner.follow(request).await
-        }
-        async fn children_page(
-            &self,
-            request: acyclic_stream::ChildrenPageRequest,
-        ) -> Result<acyclic_stream::ChildrenPage, StreamError> {
-            self.read_request();
-            self.inner.children_page(request).await
         }
         async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
             self.append_request();

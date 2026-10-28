@@ -391,24 +391,18 @@ impl StreamProvider for PostgresStream {
             // wait needs no unrelated journal read or server clock request.
             self.refresh().await?;
         }
+        let projection = request.projection;
         let mut view = self.inner.core.heads(request).await?;
         for head in view.heads.iter_mut().flatten() {
-            head.durable = head.tail;
+            head.durable = if projection == crate::HeadProjection::Tail {
+                0
+            } else {
+                head.tail
+            };
         }
         Ok(view)
     }
 
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.refresh().await?;
-        self.inner.core.tail(path).await
-    }
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        let tail = self.tail(path).await?;
-        Ok(StreamWatermarks {
-            accepted: tail,
-            durable: tail,
-        })
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         match self.publish(Command::Append(request), None).await? {
             Outcome::Append(value) => Ok(value),
@@ -443,13 +437,6 @@ impl StreamProvider for PostgresStream {
         // observation. A miss is never cached as an authoritative absence.
         self.refresh().await?;
         self.inner.core.read_commit(id).await
-    }
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.refresh().await?;
-        self.inner.core.children_page(request).await
     }
     async fn follow(
         &self,

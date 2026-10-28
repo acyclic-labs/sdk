@@ -96,47 +96,6 @@ impl StreamProvider for Client {
         self.session()?.heads(request, 0).await
     }
 
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        let session = self.session()?;
-        let revisions = session.revisions();
-        let minimum = revisions.floor(&crate::RevisionCut::default());
-        let body = wire::TailRequest {
-            path: path.to_string(),
-            at_least: crate::wire_codec::cut_to_wire(&minimum),
-            ..Default::default()
-        };
-        let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.tail(request).await })
-            })
-            .await
-            .inspect_err(|error| revisions.refused(error))?;
-        decode_response(response, |response| {
-            let applied = response
-                .applied
-                .map(|applied| crate::wire_codec::issued_from_wire(Some(applied)))
-                .transpose()?;
-            revisions.served(&minimum, applied.as_ref())?;
-            Ok(response.tail)
-        })
-    }
-
-    async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
-        let response = self
-            .unary(
-                ATTEMPT_TIMEOUT,
-                wire::TailRequest {
-                    path: path.to_string(),
-                    accepted: true,
-                    durable_through: None,
-                    at_least: Default::default(),
-                },
-                |mut service, request| Box::pin(async move { service.tail(request).await }),
-            )
-            .await?;
-        decode_response(response, crate::wire_codec::watermarks_from_wire)
-    }
-
     async fn durable_receipt(
         &self,
         path: StreamPath,
@@ -218,13 +177,6 @@ impl StreamProvider for Client {
         self.session()?
             .follow_with_ack(request, self.acknowledge_deliveries)
             .await
-    }
-
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.session()?.children_page(request, 0).await
     }
 
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {

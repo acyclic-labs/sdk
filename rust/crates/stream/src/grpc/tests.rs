@@ -84,9 +84,6 @@ impl StreamProvider for EndingFollow {
         self.inner.heads(request).await
     }
 
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.inner.tail(path).await
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.inner.append(request).await
     }

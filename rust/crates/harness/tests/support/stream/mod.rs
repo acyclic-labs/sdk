@@ -78,6 +78,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             self.observation_tails
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
+        let projection = request.projection;
         let paths = request.paths.clone();
         let mut view = self.inner.heads(request).await?;
         for (path, head) in paths.into_iter().zip(&mut view.heads) {
@@ -92,7 +93,9 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
                 if stale != 0 {
                     head.tail = stale - 1;
                     head.durable = head.durable.min(head.tail);
-                    head.last = if head.tail == 0 {
+                    head.last = if head.tail == 0
+                        || projection != acyclic_stream::HeadProjection::History
+                    {
                         None
                     } else {
                         futures::TryStreamExt::try_next(
@@ -122,39 +125,6 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             cancellation.cancel();
         }
         Ok(view)
-    }
-    async fn tail(
-        &self,
-        path: acyclic_stream::StreamPath,
-    ) -> std::result::Result<u64, StreamError> {
-        assert!(
-            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
-            "ordinary tail on native-only fixture"
-        );
-        self.observation_tails
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if path
-            .as_str()
-            .starts_with("harness/v3/projection-checkpoints/")
-        {
-            let stale = self
-                .stale_projection_head_tail
-                .swap(0, std::sync::atomic::Ordering::SeqCst);
-            if stale != 0 {
-                return Ok(stale - 1);
-            }
-        }
-        let result = self.inner.tail(path).await;
-        #[cfg(feature = "filesystem")]
-        if let Some(cancellation) = self
-            .history_cancel_after_tail
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?
-            .take()
-        {
-            cancellation.cancel();
-        }
-        result
     }
     async fn append(
         &self,
@@ -318,19 +288,6 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             "ordinary follow on native-only fixture"
         );
         self.inner.follow(request).await
-    }
-    async fn children_page(
-        &self,
-        request: acyclic_stream::ChildrenPageRequest,
-    ) -> std::result::Result<acyclic_stream::ChildrenPage, StreamError> {
-        assert!(
-            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
-            "ordinary children page on native-only fixture"
-        );
-        self.io
-            .other_calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.children_page(request).await
     }
     async fn commit(
         &self,

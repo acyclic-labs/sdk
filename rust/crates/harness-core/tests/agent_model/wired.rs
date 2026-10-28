@@ -704,9 +704,6 @@ impl StreamProvider for Refusing {
     ) -> std::result::Result<Option<IdempotencyObservation>, StreamError> {
         self.refuse()
     }
-    async fn tail(&self, _: StreamPath) -> std::result::Result<u64, StreamError> {
-        self.refuse()
-    }
     async fn append(&self, _: AppendRequest) -> std::result::Result<AppendOutcome, StreamError> {
         self.refuse()
     }

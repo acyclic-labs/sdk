@@ -176,9 +176,9 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
 /// Serializes the tests that install [`JOURNAL_PERSIST_BLOCKER`], which is
 static PERSIST_BLOCKER_TESTS: Mutex<()> = Mutex::new(());
 
-/// A cancelled mutation stays invisible until its frame is durable: a
+/// Cancellation retains accepted visibility while durability has its own receipt.
 #[test]
-fn a_cancelled_mutation_is_invisible_until_its_frame_is_durable()
+fn cancellation_keeps_accepted_visibility_and_durable_receipts_distinct()
 -> Result<(), Box<dyn std::error::Error>> {
     let _serial = PERSIST_BLOCKER_TESTS
         .lock()
@@ -215,14 +215,18 @@ fn a_cancelled_mutation_is_invisible_until_its_frame_is_durable()
         appending.abort();
         assert!(appending.await.is_err_and(|error| error.is_cancelled()));
 
-        let reading = tokio::spawn({
-            let (provider, path) = (provider.clone(), path.clone());
-            async move { provider.tail(path).await }
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        assert!(!reading.is_finished(), "the unsynced record is not visible");
+        assert_eq!(provider.tail(path.clone()).await?, 1);
+        let receipt = provider.durable_receipt(path, 1);
+        futures::pin_mut!(receipt);
+        assert!(
+            futures::poll!(receipt.as_mut()).is_pending(),
+            "an accepted record has no durable receipt before the flush"
+        );
         release_tx.send(())?;
-        assert_eq!(reading.await??, 1, "the persisted record is visible");
+        assert_eq!(
+            receipt.await?.ok_or("missing durable receipt")?.through(),
+            1
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })
 }

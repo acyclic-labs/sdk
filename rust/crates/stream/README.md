@@ -188,3 +188,9 @@ for each invocation. These functions run on demand.
 The `conformance` feature exposes `testing::Counted<P>` and `assert_requests!` for downstream request budgets. For example, `assert_requests!(provider, provider.append(request).await, control = 0, data <= 1)` returns the original result and checks only calls issued during that expression. Metadata, list, head, lease and token calls count as control traffic. Retain `provider.ledger()` before erasing a counted provider into a trait object to keep measuring its calls.
 
 These counters measure the instrumented provider boundary. To qualify physical transport requests, put the same ledger at the backend's transport dispatch boundary. Shared clones contribute to one ledger; give concurrent independent workloads separate wrappers.
+
+Single-path `tail` uses the accepted-offset projection of `heads`; it neither
+fetches history nor waits for persistence. `watermarks` requests durability
+metadata explicitly. A durability receipt or barrier joins persistence when
+that guarantee is required. Empty and single-path observation sets use inline
+storage; larger sets grow with the requested budget.

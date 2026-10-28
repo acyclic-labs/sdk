@@ -234,10 +234,6 @@ impl StreamProvider for TcpDropProbe {
         Err(StreamError::Unsupported)
     }
 
-    async fn tail(&self, _path: StreamPath) -> std::result::Result<u64, StreamError> {
-        Err(StreamError::Unsupported)
-    }
-
     async fn heads(
         &self,
         _request: acyclic_stream::HeadsRequest,
@@ -275,13 +271,6 @@ impl StreamProvider for TcpDropProbe {
             Poll::Pending
         })
         .boxed())
-    }
-
-    async fn children_page(
-        &self,
-        _request: ChildrenPageRequest,
-    ) -> std::result::Result<ChildrenPage, StreamError> {
-        Err(StreamError::Unsupported)
     }
 
     async fn commit(

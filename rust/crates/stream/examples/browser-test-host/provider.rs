@@ -36,24 +36,19 @@ impl StreamProvider for Provider {
         &self,
         request: acyclic_stream::HeadsRequest,
     ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        let projection = request.projection;
         let paths = request.paths.clone();
         let mut view = self.memory.heads(request).await?;
         for (path, head) in paths.iter().zip(&mut view.heads) {
             if let Some(head) = head {
-                head.durable = self.durable(path, head.tail);
+                head.durable = if projection == HeadProjection::Tail {
+                    0
+                } else {
+                    self.durable(path, head.tail)
+                };
             }
         }
         Ok(view)
-    }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.memory.tail(path).await
-    }
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        let accepted = self.memory.tail(path.clone()).await?;
-        Ok(StreamWatermarks {
-            accepted,
-            durable: self.durable(&path, accepted),
-        })
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.memory.append(request).await
@@ -72,12 +67,6 @@ impl StreamProvider for Provider {
         self.memory.follow(request).await
     }
 
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.memory.children_page(request).await
-    }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.memory.commit(request).await
     }

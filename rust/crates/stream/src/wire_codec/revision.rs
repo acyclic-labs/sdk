@@ -1,4 +1,5 @@
 //! The one wire spelling of the shared applied-revision token.
+use crate::StreamProviderExt as _;
 use crate::{Revision, RevisionCut, RevisionScope, StreamError, wire};
 
 /// Encodes one revision.

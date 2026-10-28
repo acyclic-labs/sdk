@@ -92,13 +92,6 @@ impl acyclic_stream::StreamProvider for YieldStream {
         self.pause().await;
         self.inner.heads(request).await
     }
-    async fn tail(
-        &self,
-        path: acyclic_stream::StreamPath,
-    ) -> Result<u64, acyclic_stream::StreamError> {
-        self.pause().await;
-        self.inner.tail(path).await
-    }
 
     async fn append(
         &self,

@@ -71,16 +71,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError>;
-    /// Current next sequence.
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError>;
-    /// Observes accepted visibility and a confirmed durable prefix. Implementations
-    /// with independent persistence report its watermark without awaiting a flush.
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        Ok(StreamWatermarks {
-            accepted: self.tail(path).await?,
-            durable: 0,
-        })
-    }
     /// Issues a [`DurableReceipt`] when this path's confirmed durable prefix
     /// covers `through`. Wrapping providers delegate to their inner provider.
     async fn durable_receipt(
@@ -104,14 +94,6 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// passes an earlier matching record; record-only follows retain indexed wakes.
     async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError>;
 
-    /// Traverses arbitrarily large direct-child sets without silently
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        let _ = request;
-        Err(StreamError::Unsupported)
-    }
     /// Executes one all-or-nothing optimistic commit.
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError>;
     /// Reads one complete immutable successful envelope.

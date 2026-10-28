@@ -228,24 +228,6 @@ impl StreamProvider for InjectedStream {
         Ok(view)
     }
 
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        Ok(self.watermarks(path).await?.accepted)
-    }
-
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        wire_codec::watermarks_from_wire(
-            self.call(
-                "tail",
-                wire::TailRequest {
-                    path: path.to_string(),
-                    accepted: true,
-                    durable_through: None,
-                    at_least: Default::default(),
-                },
-            )
-            .await?,
-        )
-    }
     async fn durable_receipt(
         &self,
         path: StreamPath,
@@ -316,39 +298,6 @@ impl StreamProvider for InjectedStream {
             )
             .await?,
         ))
-    }
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        let input = wire::ChildrenPageRequest {
-            parent: request.parent.map(|p| p.to_string()),
-            after: request.after.map(|p| p.to_string()),
-            hierarchy_version: request
-                .hierarchy_version
-                .map(|id| bytes::Bytes::copy_from_slice(id.as_bytes())),
-            tail_stream: request.tail_stream.map(|p| p.to_string()),
-            limit: request.limit,
-        };
-        let result: wire::ChildrenPageResponse = self.call("children_page", input).await?;
-        Ok(ChildrenPage {
-            hierarchy_version: wire_codec::commit_id(&result.hierarchy_version)?,
-            children: result
-                .children
-                .into_iter()
-                .map(|child| {
-                    Ok(Child {
-                        origin: child
-                            .origin
-                            .map(wire_codec::fork_origin_from_wire)
-                            .transpose()?,
-                        path: wire_codec::path(child.path)?,
-                        tail_record: child.tail_record.map(wire_codec::record).transpose()?,
-                    })
-                })
-                .collect::<Result<_, StreamError>>()?,
-            next_after: result.next_after.map(wire_codec::path).transpose()?,
-        })
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         wire_codec::envelope_from_wire(

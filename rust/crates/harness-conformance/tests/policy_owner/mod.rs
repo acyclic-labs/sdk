@@ -25,9 +25,6 @@ impl StreamProvider for Session {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         self.0.inspect_idempotency(key).await
     }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.0.tail(path).await
-    }
 
     async fn heads(
         &self,

@@ -80,7 +80,7 @@ fn head_observation_from_wire(
     value: wire::PathHead,
     projection: crate::HeadProjection,
 ) -> Result<crate::PathHead, StreamError> {
-    if projection == crate::HeadProjection::Watermarks
+    if projection != crate::HeadProjection::History
         && (value.last.is_some() || value.origin.is_some())
     {
         return Err(StreamError::InvalidResponse);
@@ -102,6 +102,7 @@ fn projection_from_wire(value: i32) -> Result<crate::HeadProjection, StreamError
     match wire::HeadProjection::try_from(value) {
         Ok(wire::HeadProjection::History) => Ok(crate::HeadProjection::History),
         Ok(wire::HeadProjection::Watermarks) => Ok(crate::HeadProjection::Watermarks),
+        Ok(wire::HeadProjection::Tail) => Ok(crate::HeadProjection::Tail),
         Err(_) => Err(StreamError::InvalidResponse),
     }
 }
@@ -110,6 +111,7 @@ fn projection_to_wire(value: crate::HeadProjection) -> i32 {
     match value {
         crate::HeadProjection::History => wire::HeadProjection::History as i32,
         crate::HeadProjection::Watermarks => wire::HeadProjection::Watermarks as i32,
+        crate::HeadProjection::Tail => wire::HeadProjection::Tail as i32,
     }
 }
 

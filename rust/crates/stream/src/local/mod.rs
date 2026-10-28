@@ -1,5 +1,6 @@
 //! Bounded crash-recoverable local Stream provider.
 
+use crate::StreamProviderExt as _;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};

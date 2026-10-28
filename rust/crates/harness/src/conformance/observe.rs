@@ -151,10 +151,6 @@ impl StreamProvider for Observed {
             });
         self.io(self.inner.heads(request)).await
     }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.requests.record(RequestClass::Head);
-        self.io(self.inner.tail(path)).await
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.appends
             .lock()
@@ -180,13 +176,6 @@ impl StreamProvider for Observed {
         self.requests.record(RequestClass::Data);
         self.history_reads.fetch_add(1, Ordering::SeqCst);
         self.io(self.inner.follow(request)).await
-    }
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.requests.record(RequestClass::List);
-        self.io(self.inner.children_page(request)).await
     }
     async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
         self.requests.record(RequestClass::Data);

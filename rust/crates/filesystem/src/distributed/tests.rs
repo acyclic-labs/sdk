@@ -778,13 +778,6 @@ impl StreamProvider for ReleaseSpy {
         }
         self.inner.heads(request).await
     }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.reads.store(true, SeqCst);
-        if self.deny_probes_after_commit && self.writes.load(SeqCst) {
-            return Err(StreamError::InvalidArgument);
-        }
-        self.inner.tail(path).await
-    }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.reads.store(true, SeqCst);
         if self.writes.load(SeqCst)
