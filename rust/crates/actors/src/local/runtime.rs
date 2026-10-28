@@ -1,9 +1,11 @@
 //! `local::Runtime`: the single-node Actors host over any Stream provider.
 //!
 //! One dispatcher owns one follow of the state root's activation log, one
-//! ready index and one timer. A dormant actor owns no task, timer or socket: only its
-//! registration, one bounded state cut and a passive follow cursor per
-//! subscription that the dispatcher polls with that registration's waker.
+//! ready index and one timer. A dormant actor owns no task, timer, follow or
+//! socket: only its registration and one bounded state cut. The activation log
+//! is also the wake set: a producer that writes an actor's subscription appends
+//! [`Store::activation`] for that actor in the same commit, and the dispatcher's
+//! one follow wakes it. A delivery reads its inputs with bounded finite reads.
 use super::ready::{ReadySet, Registration, Work};
 use super::{Error, PreparedPublish, Snapshot, State, Store};
 mod dispatcher;
@@ -14,7 +16,7 @@ use crate::guest::{Delivery, Handler, Trigger};
 use acyclic_stream::query_sync::SyncMutex;
 use acyclic_stream::runtime::{Executor as _, PlatformExecutor};
 use acyclic_stream::{
-    AppendRequest, BoxProviderFuture, FollowFilter, IdempotencyKey, ProviderPlatform, Record,
+    AppendRequest, BoxProviderFuture, IdempotencyKey, ProviderPlatform, Record,
     RecordStream, StreamError, StreamPath, StreamProvider, UnixMillisClock as _,
 };
 use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
@@ -104,18 +106,8 @@ struct Inner {
     /// One receipt-backed cut per resident actor; never advances speculatively.
     observed: Option<Arc<Snapshot>>,
     follows: BTreeMap<String, RecordStream>,
-    /// A record read from a follow but not yet consumed by a commit.
-    held: BTreeMap<String, Record>,
     /// The exact request and participant custody survive an unknown acknowledgement.
     pending: Option<(Arc<Snapshot>, PreparedPublish)>,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum Inputs {
-    /// Read committed inputs, then install passive subscriptions.
-    Follow,
-    /// One event reads committed inputs without retaining subscriptions.
-    Event,
 }
 
 enum Event {
@@ -303,7 +295,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         let mut steps = 0;
         loop {
             let Some(work) = self.ready.take() else { break };
-            if let Err(failure) = self.execute(work, Inputs::Follow).await {
+            if let Err(failure) = self.execute(work).await {
                 failures.push(failure);
             }
             steps += 1;
@@ -316,9 +308,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Drain one tracked actor using finite reads of its committed input.
-    /// Event-owned hosts cannot wait for a passive subscription's transport
-    /// wake before returning from their event. Only declared interrupts retain
-    /// a follow while their handler is running; no idle follow is retained.
+    /// Only declared interrupts retain a follow while their handler is
+    /// running; no idle follow is retained.
     pub async fn drain_actor(&self, actor: &ActorReference) -> Result<(), Error> {
         let delivery = {
             // Pin the event under the same table lock as hibernation, before
@@ -337,7 +328,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 .map_err(|_| Error::Invalid("event delivery count overflow"))?;
             EventDelivery(Arc::clone(slot))
         };
-        while !self.deliver(actor, &delivery.0, Inputs::Event).await? {
+        while !self.deliver(actor, &delivery.0).await? {
             // Drop both the actor lock and admission before queueing another
             // batch. Finite event delivery still drains its committed input.
             limits::yield_now().await;
@@ -378,7 +369,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 path: root.clone(),
                 records: vec![b"open".to_vec().into()],
                 if_tail: Some(0),
-                idempotency_key: Some(key(
+                idempotency_key: key(
                     &Snapshot {
                         path: root.clone(),
                         tail: 0,
@@ -386,7 +377,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         state: None,
                     },
                     "open",
-                )?),
+                )?,
             })
             .await?;
         let (dispatch_store, dispatch_actor) = self.dispatcher_store()?;
@@ -400,9 +391,13 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             .state()
             .and_then(|state| state.cursor("activation"))
             .ok_or(Error::Invalid("dispatcher has no activation cursor"))?;
-        let mut created = acyclic_stream::records_only(provider.follow(acyclic_stream::FollowRequest { path: root, from, preceding: None, filter: FollowFilter::default(), progress: false }).await?);
+        let mut created = acyclic_stream::records_only(provider.follow(acyclic_stream::FollowRequest::new(root, from)).await?);
         let mut dispatcher = Some(dispatcher);
         let mut dispatching: Option<BoxProviderFuture<'_, Result<Snapshot, Error>>> = None;
+        // The activation log is also every producer's wake entry: the cursor
+        // only bounds restart replay, so consecutive entries coalesce into one
+        // checkpoint in flight at the latest seen end.
+        let mut seen = from;
         let mut running = FuturesUnordered::new();
         let mut timer: Option<(u64, BoxProviderFuture<'static, ()>)> = None;
         let mut next_class = 0;
@@ -428,30 +423,26 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                             }
                         }
                         1 => {
-                            if let Some(checkpoint) = dispatching.as_mut() {
-                                if let Poll::Ready(result) = checkpoint.poll_unpin(context) {
-                                    return Poll::Ready(Event::Dispatched(result));
+                            if let Some(checkpoint) = dispatching.as_mut()
+                                && let Poll::Ready(result) = checkpoint.poll_unpin(context)
+                            {
+                                return Poll::Ready(Event::Dispatched(result));
+                            }
+                            match created.poll_next_unpin(context) {
+                                Poll::Ready(Some(Ok(record))) => {
+                                    return Poll::Ready(Event::Created(record));
                                 }
-                            } else {
-                                match created.poll_next_unpin(context) {
-                                    Poll::Ready(Some(Ok(record))) => {
-                                        return Poll::Ready(Event::Created(record));
-                                    }
-                                    Poll::Ready(Some(Err(error))) => {
-                                        return Poll::Ready(Event::Failed(error));
-                                    }
-                                    Poll::Ready(None) => {
-                                        return Poll::Ready(Event::Failed(
-                                            StreamError::Unavailable,
-                                        ));
-                                    }
-                                    Poll::Pending => {}
+                                Poll::Ready(Some(Err(error))) => {
+                                    return Poll::Ready(Event::Failed(error));
                                 }
+                                Poll::Ready(None) => {
+                                    return Poll::Ready(Event::Failed(StreamError::Unavailable));
+                                }
+                                Poll::Pending => {}
                             }
                         }
                         2 => {
-                            if dispatching.is_none()
-                                && running.len() < self.limits.active
+                            if running.len() < self.limits.active
                                 && let Poll::Ready(work) = self.ready.poll_ready(context)
                             {
                                 return Poll::Ready(Event::Work(work));
@@ -478,20 +469,18 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
             steps += 1;
             match event {
                 Event::Created(record) => {
-                    // The opening record is not an address; skip it.
-                    // Another host's actors are not discovered here.
+                    // The opening record is not an address; skip it. Another
+                    // host's actors are not discovered here. Tracking wakes an
+                    // already resident actor: this is its producer's wake.
                     if let Ok(actor) = ActorReference::decode(record.value.as_ref())
                         && self.claims(&actor)
                     {
                         self.track(actor)?;
                     }
-                    let previous = dispatcher
-                        .take()
-                        .ok_or(Error::Invalid("dispatcher checkpoint is in flight"))?;
-                    let store = &dispatch_store;
-                    dispatching = Some(Box::pin(async move {
-                        self.advance_dispatcher(store, previous, &record).await
-                    }));
+                    seen = record
+                        .sequence
+                        .checked_add(1)
+                        .ok_or(Error::Invalid("activation cursor overflow"))?;
                 }
                 Event::Dispatched(result) => {
                     dispatching = None;
@@ -499,7 +488,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 }
                 Event::Work(work) => {
                     let execution: BoxProviderFuture<'_, _> =
-                        Box::pin(self.execute(work, Inputs::Follow));
+                        Box::pin(self.execute(work));
                     running.push(execution);
                 }
                 Event::Done(Err((actor, error))) => report(&actor, &error),
@@ -513,6 +502,19 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                         .wake_due(self.clock.now_unix_ms(), self.limits.work);
                 }
                 Event::Failed(error) => return Err(error.into()),
+            }
+            if dispatching.is_none()
+                && let Some(previous) = dispatcher.take_if(|previous| {
+                    previous
+                        .state()
+                        .and_then(|state| state.cursor("activation"))
+                        .is_some_and(|cursor| cursor < seen)
+                })
+            {
+                let store = &dispatch_store;
+                dispatching = Some(Box::pin(async move {
+                    self.advance_dispatcher(store, previous, seen).await
+                }));
             }
         }
     }
@@ -529,16 +531,12 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         &self.actors[(self.shards.hash_one(actor) as usize) % self.actors.len()]
     }
 
-    async fn execute(
-        &self,
-        work: Work<ActorReference>,
-        inputs: Inputs,
-    ) -> Result<(), (ActorReference, Error)> {
+    async fn execute(&self, work: Work<ActorReference>) -> Result<(), (ActorReference, Error)> {
         let actor = work.key().clone();
         let Some(slot) = self.slot(&actor) else {
             return Ok(());
         };
-        let result = self.deliver(&actor, &slot, inputs).await;
+        let result = self.deliver(&actor, &slot).await;
         if let Err(Error::Conflict) = result {
             // Another placement owns the actor now; stop hosting it here.
             self.release(&actor);
@@ -548,31 +546,21 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
     }
 
     /// Deliver one bounded batch. False retains a wake for the next batch.
-    async fn deliver(
-        &self,
-        actor: &ActorReference,
-        slot: &Arc<Slot>,
-        inputs: Inputs,
-    ) -> Result<bool, Error> {
+    async fn deliver(&self, actor: &ActorReference, slot: &Arc<Slot>) -> Result<bool, Error> {
         let _admission = self
             .admission
             .acquire()
             .await
             .map_err(|_| Error::Invalid("runtime admission is closed"))?;
         let mut refresh = RefreshOnDrop(Some(Arc::clone(slot)), false);
-        let result = self.deliver_retained(actor, slot, inputs).await;
+        let result = self.deliver_retained(actor, slot).await;
         // Cancellation can interrupt a committed publication before its receipt
         // is retained. A completed attempt handles its outcome in the loop.
         refresh.0 = None;
         result
     }
 
-    async fn deliver_retained(
-        &self,
-        actor: &ActorReference,
-        slot: &Slot,
-        inputs: Inputs,
-    ) -> Result<bool, Error> {
+    async fn deliver_retained(&self, actor: &ActorReference, slot: &Slot) -> Result<bool, Error> {
         self.handler.manifest().validate_interrupts()?;
         let mut inner = slot.inner.lock().await;
         if inner.released {
@@ -677,7 +665,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     },
                     None,
                 ),
-                _ => match self.next_record(slot, &mut inner, state, inputs).await? {
+                _ => match self.next_record(state).await? {
                     Some((subscription, record)) => (
                         Trigger::Record {
                             subscription,
@@ -815,7 +803,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         match self
             .store
             .provider()
-            .follow(acyclic_stream::FollowRequest { path: path.clone(), from: cursor, preceding: None, filter: FollowFilter::default(), progress: false })
+            .follow(acyclic_stream::FollowRequest::new(path.clone(), cursor))
             .await
         {
             Ok(follow) => {
@@ -827,22 +815,11 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         }
     }
 
-    /// The next unconsumed record of any subscription, without blocking.
-    /// A pending follow keeps this actor's waker, so an append wakes it.
-    async fn next_record(
-        &self,
-        slot: &Slot,
-        inner: &mut Inner,
-        state: &State,
-        inputs: Inputs,
-    ) -> Result<Option<(String, Record)>, Error> {
+    /// The next unconsumed record of any subscription, by one bounded finite
+    /// read per subscription. No follow is retained: the producer's same-commit
+    /// activation entry wakes this actor when new input commits.
+    async fn next_record(&self, state: &State) -> Result<Option<(String, Record)>, Error> {
         for (id, subscription) in state.subscriptions() {
-            if let Some(held) = inner.held.get(id) {
-                if held.sequence == subscription.cursor {
-                    return Ok(Some((id.clone(), held.clone())));
-                }
-                inner.held.remove(id);
-            }
             let records = self
                 .store
                 .provider()
@@ -862,51 +839,6 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                     return Err(Error::Invalid("subscription skipped a record"));
                 }
                 return Ok(Some((id.clone(), record)));
-            }
-        }
-        if inputs == Inputs::Event {
-            return Ok(None);
-        }
-        // Open every cursor before polling any: polling a cursor can retain
-        // provider I/O that another subscription's open would need to finish.
-        for (id, subscription) in state.subscriptions() {
-            if !inner.follows.contains_key(id)
-                && !self
-                    .open(inner, id, &subscription.path, subscription.cursor)
-                    .await?
-            {
-                continue;
-            }
-        }
-        for (id, subscription) in state.subscriptions() {
-            let Some(follow) = inner.follows.get_mut(id) else {
-                continue;
-            };
-            let mut context = Context::from_waker(&slot.waker);
-            loop {
-                match follow.poll_next_unpin(&mut context) {
-                    Poll::Ready(Some(Ok(record))) if record.sequence < subscription.cursor => {}
-                    Poll::Ready(Some(Ok(record))) if record.sequence == subscription.cursor => {
-                        inner.held.insert(id.clone(), record.clone());
-                        inner.follows.clear();
-                        return Ok(Some((id.clone(), record)));
-                    }
-                    Poll::Ready(Some(Ok(_))) => {
-                        inner.follows.clear();
-                        return Err(Error::Invalid("subscription skipped a record"));
-                    }
-                    Poll::Ready(Some(Err(error))) => {
-                        inner.follows.clear();
-                        return Err(error.into());
-                    }
-                    Poll::Ready(None) => {
-                        // Reopen from the committed cursor on the next attempt.
-                        inner.follows.remove(id);
-                        slot.waker.wake_by_ref();
-                        break;
-                    }
-                    Poll::Pending => break,
-                }
             }
         }
         Ok(None)

@@ -65,7 +65,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
         &self,
         store: &Store<P>,
         mut previous: Snapshot,
-        record: &Record,
+        seen: u64,
     ) -> Result<Snapshot, Error> {
         loop {
             let mut state = previous
@@ -76,16 +76,10 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 .subscriptions
                 .get_mut("activation")
                 .ok_or(Error::Invalid("dispatcher has no activation cursor"))?;
-            if subscription.cursor > record.sequence {
+            if subscription.cursor >= seen {
                 return Ok(previous);
             }
-            if subscription.cursor != record.sequence {
-                return Err(Error::Invalid("activation follow skipped a record"));
-            }
-            subscription.cursor = record
-                .sequence
-                .checked_add(1)
-                .ok_or(Error::Invalid("activation cursor overflow"))?;
+            subscription.cursor = seen;
             let publication =
                 store.prepare(&previous, &state, Vec::new(), key(&previous, "dispatch")?)?;
             match store.submit(publication).await {

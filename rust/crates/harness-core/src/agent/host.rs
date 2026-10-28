@@ -19,7 +19,7 @@ use acyclic_actors::{
     local::{Clock, Runtime, State, Store},
 };
 use acyclic_stream::{
-    CommitRequest, FollowFilter, ReadRequest, StreamError,
+    CommitRequest, ReadRequest, StreamError,
     StreamPath, StreamProvider,
 };
 use futures::{StreamExt as _, TryStreamExt as _};
@@ -203,7 +203,7 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
             }
             let mut committed = acyclic_stream::records_only(self
                 .provider
-                .follow(acyclic_stream::FollowRequest { path: path.clone(), from: tail, preceding: None, filter: FollowFilter::default(), progress: false })
+                .follow(acyclic_stream::FollowRequest::new(path.clone(), tail))
                 .await
                 .map_err(Error::Stream)?);
             match committed.next().await {
@@ -366,8 +366,12 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
     /// exists and `Absent{closed}` fences admission in the commit itself. An
     /// exact intent retry is identical after other appends, while changed
     /// semantic bytes still fail the provider's digest check.
-    async fn deliver(&self, to: &AgentPath, request: CommitRequest) -> Result<Delivered, Error> {
+    /// Commits one inbox write with its agent's wake entry.
+    async fn deliver(&self, to: &AgentPath, mut request: CommitRequest) -> Result<Delivered, Error> {
         let inbox = to.inbox()?;
+        request
+            .mutations
+            .push(self.runtime.store().activation(&self.actor(to)?).mutation);
         match submit(&*self.provider, request).await? {
             Submitted::Committed(receipt) => receipt
                 .appends

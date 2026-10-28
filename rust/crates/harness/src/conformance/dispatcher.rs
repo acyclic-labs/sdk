@@ -18,7 +18,7 @@ async fn output(
     use futures::TryStreamExt as _;
     let provider = host.provider();
     let path = host.runtime().store().path(&host.actor(agent)?)?;
-    let mut changes = provider.follow(acyclic_stream::FollowRequest { path: path, from: 0, preceding: None, filter: Default::default(), progress: false }).map_ok(acyclic_stream::records_only).await?;
+    let mut changes = provider.follow(acyclic_stream::FollowRequest::new(path, 0)).map_ok(acyclic_stream::records_only).await?;
     loop {
         let values = vectors::values(&**provider, agent.conversation()?).await?;
         if let Some(value) = values.get(index) {
@@ -74,9 +74,6 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         .into_iter()
         .find(|request| request.path == root)
         .ok_or("activation open was not attempted")?;
-    if opened.idempotency_key.is_none() {
-        return Err("activation open was not keyed".into());
-    }
     drop(host);
     drop(provider);
     let reopened = Arc::new(Observed::new(storage.open().await?));
@@ -89,7 +86,9 @@ pub(crate) async fn verify(backend: &dyn Backend) -> Result {
         .into_iter()
         .filter(|(path, _)| path == &root)
         .collect();
-    if follows != [(root, cut)] {
+    // Checkpoints coalesce, so the restart cursor may trail the cut, but it
+    // never replays from the log's opening record.
+    if !matches!(follows.as_slice(), [(path, from)] if *path == root && (1..=cut).contains(from)) {
         return Err(format!(
             "restart replayed activation history instead of its checkpoint: {follows:?}"
         )

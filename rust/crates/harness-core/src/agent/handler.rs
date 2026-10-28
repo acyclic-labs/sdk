@@ -106,6 +106,11 @@ impl<P: StreamProvider + ?Sized + 'static> Agents<P> {
         Self { store }
     }
 
+    /// The same-commit effect that wakes `actor` after a write to its inbox.
+    pub(super) fn wake(&self, actor: &ActorReference) -> Effect {
+        self.store.activation(actor)
+    }
+
     /// The effects that create `agent`'s actor, first consuming inbox record `cursor`.
     /// They ride in the commit that creates the agent: a spawn or a root creation.
     pub(super) fn create(
@@ -348,6 +353,20 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
         for child in spawned {
             let actor = Agents::<P>::actor(&delivery.actor, &child)?;
             effects.extend(self.agents.create(&actor, &path.child(&child)?, cursor)?);
+        }
+        // Every inbox this commit writes wakes its agent through the one
+        // activation follow; no dormant agent keeps a follow of its own.
+        let woken: BTreeSet<_> = step
+            .outs
+            .iter()
+            .filter_map(|out| match out {
+                Out::Send { to, .. } => Some(to.id()),
+                Out::Archive { target, .. } => Some(target.id()),
+                _ => None,
+            })
+            .collect();
+        for agent in woken {
+            effects.push(self.agents.wake(&Agents::<P>::actor(&delivery.actor, &agent)?));
         }
         Ok(Transition {
             participant,

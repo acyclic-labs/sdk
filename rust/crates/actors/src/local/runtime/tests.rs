@@ -620,7 +620,7 @@ async fn created<P: StreamProvider + ?Sized>(
     wake: StreamPath,
     path: StreamPath,
 ) -> TestResult {
-    let mut wakes = provider.follow(acyclic_stream::FollowRequest { path: wake, from: 0, preceding: None, filter: FollowFilter::default(), progress: false }).map_ok(acyclic_stream::records_only).await?;
+    let mut wakes = provider.follow(acyclic_stream::FollowRequest::new(wake, 0)).map_ok(acyclic_stream::records_only).await?;
     loop {
         match provider.tail(path.clone()).await {
             Ok(_) => return Ok(()),
@@ -1148,7 +1148,7 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
             path: inbox.clone(),
             records: vec![Bytes::from_static(b"emit").into()],
             if_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
     let cut = store.load(&address).await?;
@@ -1184,7 +1184,7 @@ async fn retained_cuts_refresh_after_pause_resume_and_foreign_claim() -> TestRes
             path: inbox,
             records: vec![Bytes::from_static(b"emit").into()],
             if_tail: Some(2),
-            idempotency_key: None,
+            idempotency_key: acyclic_stream::IdempotencyKey::unique(),
         })
         .await?;
     runtime.wake(&address);
@@ -1218,7 +1218,7 @@ async fn retained_cut_is_invalidated_when_delivery_is_cancelled() -> TestResult 
     // Poll through claim and state observation, then cancel the stalled handler.
     assert!(
         runtime
-            .deliver(&address, &slot, Inputs::Event)
+            .deliver(&address, &slot)
             .now_or_never()
             .is_none()
     );
