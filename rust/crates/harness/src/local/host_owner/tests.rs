@@ -21,7 +21,7 @@ impl Fixture {
             )
             .await?,
         );
-        let mut owner = HostWorkspaceOwner::new(local)?;
+        let owner = HostWorkspaceOwner::new(local)?;
         let root = owner
             .dispatch(
                 OperationId::new(),
@@ -41,6 +41,20 @@ impl Fixture {
     }
 
     async fn session(&mut self, reference: &str, action: SessionAction) -> Result<Value> {
+        self.exchange(reference, action, false).await
+    }
+
+    /// One exchange that also claims the next input under its fence.
+    async fn handoff(&mut self, reference: &str, action: SessionAction) -> Result<Value> {
+        self.exchange(reference, action, true).await
+    }
+
+    async fn exchange(
+        &mut self,
+        reference: &str,
+        action: SessionAction,
+        next: bool,
+    ) -> Result<Value> {
         self.owner
             .dispatch(
                 OperationId::new(),
@@ -48,6 +62,7 @@ impl Fixture {
                     parent: self.parent.clone(),
                     reference: reference.into(),
                     action,
+                    next,
                 },
             )
             .await
@@ -132,14 +147,22 @@ async fn native_session_lifecycle(host: &str) -> Result<()> {
         std::fs::read(view.join("instructions.md")).map_err(storage)?,
         b"discovered in child view"
     );
-    fixture
-        .session(
-            "child",
-            SessionAction::SaveSession {
-                id: "opaque-native-resume-id".into(),
-            },
-        )
-        .await?;
+    // The turn's custodied event log names its resume id; settlement derives
+    // it, so the running turn spends no exchange on it.
+    let custody = fixture
+        .checkout
+        .path()
+        .join(".acyclic-sdk/host-processes")
+        .join(child.id().as_str());
+    std::fs::create_dir_all(&custody).map_err(storage)?;
+    std::fs::write(
+        custody.join(format!("events-{}.jsonl", claim(&first)?.operation)),
+        b"{\"type\":\"thread.started\",\"thread_id\":\"superseded-id\"}
+{\"thread_id\":\"opaque-native-resume-id\"}
+not json naming a session_id
+",
+    )
+    .map_err(storage)?;
     native_write(&view.join("child.txt"), b"native")?;
     let failed = fixture
         .session(
@@ -448,5 +471,61 @@ async fn native_prompts_resolve_through_the_committed_reply() -> Result<()> {
         fixture.session("child", third).await?["reply"]["kind"],
         "dropped"
     );
+    Ok(())
+}
+
+/// Acceptance and settlement each carry the next claimed input under their
+/// own physical fence: no Observe or Next exchange, a replay of either hands
+/// out the identical claim, a plain claim stays refused, and a live process
+/// holding the fence receives no work.
+#[tokio::test]
+async fn native_handoff_carries_next_work_under_the_settlement_fence() -> Result<()> {
+    let mut fixture = Fixture::for_host("codex").await?;
+    let spawn = || SessionAction::Spawn {
+        prompt: "first".into(),
+    };
+    let accepted = fixture.handoff("child", spawn()).await?;
+    let first = accepted["next"].clone();
+    assert_eq!(first["prompt"], "first");
+    assert_eq!(
+        (&first["task"], &first["cwd"]),
+        (&accepted["task"], &accepted["cwd"])
+    );
+    assert!(
+        fixture.session("child", SessionAction::Next).await.is_err(),
+        "a competitor's plain claim is refused"
+    );
+    // A replayed acceptance re-hands the identical claim under the fence.
+    assert_eq!(
+        fixture.handoff("child", spawn()).await?["next"]["claim"],
+        first["claim"]
+    );
+    let send = SessionAction::Send {
+        prompt: "second".into(),
+    };
+    // While a process holds the fence, acceptance carries no work.
+    let child: AgentPath = serde_json::from_value(accepted["task"].clone()).map_err(storage)?;
+    let workspace = fixture.checkout.path().to_path_buf();
+    let held = super::super::host_process::HostProcessLease::acquire(
+        &workspace,
+        &child,
+        &cwd(&accepted)?,
+    )?;
+    assert!(fixture.handoff("child", send).await?["next"].is_null());
+    drop(held);
+    let first = claim(&first)?;
+    let complete = || SessionAction::Complete {
+        claim: first.clone(),
+        outcome: crate::Outcome::Cancelled,
+    };
+    let settled = fixture.handoff("child", complete()).await?;
+    assert_eq!(settled["status"]["turn"], 1);
+    let second = settled["next"].clone();
+    assert_eq!(second["prompt"], "second");
+    assert_eq!(second["turn"], 2);
+    // An unknown settlement outcome is resent exactly: the same next claim.
+    let replayed = fixture.handoff("child", complete()).await?;
+    assert_eq!(replayed["next"]["claim"], second["claim"]);
+    assert_eq!(replayed["status"]["turn"], 1);
     Ok(())
 }

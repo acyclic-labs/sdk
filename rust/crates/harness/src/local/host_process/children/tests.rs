@@ -62,32 +62,46 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result {
         held.open_file(Path::new("fixture.lock"), true)?,
         FileLockMode::Exclusive,
     )?;
-    let sessions = NativeChildren {
-        host: host.into(),
-        cwd: cwd.to_path_buf(),
-        parent: parent.clone(),
-        flags: Vec::new(),
-        children: BTreeMap::new(),
-        prompts: BTreeMap::new(),
-        _ownership: ownership,
-        _root: held,
-    };
-    let observed = sessions.request(
+    let mut sessions = NativeChildren::with(
+        host,
+        cwd.to_path_buf(),
+        parent.clone(),
+        Vec::new(),
+        ownership,
+        held,
+    );
+    // The accepting exchange itself carries the claimed input: no separate
+    // observation or claim precedes the launch.
+    let mut accepted = sessions.request(
         "held",
         SessionAction::Spawn {
             prompt: "held stderr".into(),
         },
+        true,
     )?;
-    let view = PathBuf::from(observed["cwd"].as_str().ok_or("child cwd absent")?);
-    let (lease, claimed) = HostProcessLease::claim_child(cwd, &parent, "held")?
+    let claimed = accepted
+        .as_object_mut()
+        .and_then(|reply| reply.remove("next"))
+        .filter(Value::is_object)
         .ok_or("fixture child input was not claimed")?;
+    let receipt = sessions.record("held", &accepted)?.receipt.clone();
+    let view = receipt.view().to_path_buf();
+    let lease = HostProcessLease::admit(cwd, &receipt, &claimed)?;
+    assert!(
+        sessions
+            .request("held", SessionAction::Next, false)
+            .is_err(),
+        "a competitor cannot claim the handed-off input"
+    );
     let mut running = Running {
         process: lease.funded_process()?,
         claim: serde_json::from_value(claimed["claim"].clone())?,
         failure: None,
         events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
         answer: String::new(),
-        session: None,
+        settlement: None,
+        wake: std::task::Waker::noop().clone(),
+        armed: None,
     };
     let mut command = std::process::Command::new("/bin/sh");
     command.args(["-c", "echo $$ > \"$1/pid\"; while test ! -f \"$1/exit\"; do :; done; printf captured > partial.txt; printf native-diagnostic >&2; exit 17", "fixture"])
@@ -118,11 +132,10 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result {
         !running.process.drain_stderr()?,
         "negative input must withhold stderr EOF"
     );
-    assert!(
-        sessions.refresh("held", &mut running)?,
-        "exited native session still waits for inherited stderr EOF"
-    );
-    let completed = sessions.request("held", SessionAction::Observe)?;
+    let completed = sessions
+        .refresh("held", &mut running)?
+        .ok_or("exited native session still waits for inherited stderr EOF")?;
+    assert!(completed["next"].is_null(), "no further input was queued");
     assert!(completed["status"]["settled"].as_bool().unwrap_or(false));
     let failure = completed["results"][0]["outcome"]["Failed"]["message"]
         .as_str()

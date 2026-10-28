@@ -26,19 +26,17 @@ pub enum SessionAction {
         /// Message body.
         prompt: String,
     },
-    /// Claim the next input, after the preceding process is quiescent.
+    /// Claim the next input, after the preceding process is quiescent. A
+    /// claimed input is refused: only a fenced handoff hands it out again.
     Next,
     /// Capture and settle a process that has exited, including failed writes.
+    /// The native resume id is derived from the turn's own custodied event
+    /// log, so a running turn never spends an exchange recording it.
     Complete {
         /// Exact original execution claim, returned by Next.
         claim: TurnClaim,
         /// Native outcome.
         outcome: Outcome<TurnOutput>,
-    },
-    /// Save an opaque native resume id; never a transcript or credential.
-    SaveSession {
-        /// Native id.
-        id: String,
     },
     /// Request a native-session lifecycle state.
     Control {
@@ -66,13 +64,64 @@ fn prompt_bound(prompt: &str) -> Result<()> {
     Ok(())
 }
 
+/// The native resume id an event names: a Codex thread, a Claude Code
+/// session or a Pi session header.
+fn native_session_id(event: &Value) -> Option<&str> {
+    event
+        .get("thread_id")
+        .or_else(|| event.get("session_id"))
+        .or_else(|| {
+            (event.get("type").and_then(Value::as_str) == Some("session"))
+                .then(|| event.get("id"))
+                .flatten()
+        })
+        .and_then(Value::as_str)
+}
+
+/// The last valid native resume id a turn's event log names.
+fn logged_session_id(log: &[u8]) -> Option<String> {
+    log.split(|byte| *byte == b'\n')
+        // Only lines that can name a session are decoded.
+        .filter(|line| {
+            line.windows(b"_id".len()).any(|window| window == b"_id")
+                || line
+                    .windows(b"session".len())
+                    .any(|window| window == b"session")
+        })
+        .filter_map(|line| serde_json::from_slice::<Value>(line).ok())
+        .filter_map(|event| native_session_id(&event).map(str::to_owned))
+        .filter(|id| valid_session_id(id))
+        .last()
+}
+
+fn valid_session_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
+}
+
+/// The claim exchange fused onto request `operation`: its own inbox identity.
+fn handoff(operation: OperationId) -> OperationId {
+    crate::local::context::publication_operation(
+        b"acyclic.native-handoff/v1\0",
+        &operation.into_bytes(),
+    )
+}
+
+/// The native session save derived at the settlement of claim `claim`.
+fn derived_session(claim: OperationId) -> OperationId {
+    crate::local::context::publication_operation(
+        b"acyclic.native-session/v1\0",
+        &claim.into_bytes(),
+    )
+}
+
 impl HostWorkspaceOwner {
     pub(super) async fn session(
-        &mut self,
+        &self,
         operation: OperationId,
         parent: &AgentPath,
         reference: &str,
         action: SessionAction,
+        next: bool,
     ) -> Result<Value> {
         self.attach(parent).await?;
         let child = agents::child(parent, reference)?;
@@ -103,7 +152,7 @@ impl HostWorkspaceOwner {
             }
         }
         self.attach(&child).await?;
-        let mut accepted = None;
+        let (mut accepted, mut fence) = (None, None);
         match action {
             SessionAction::Observe => {}
             // The first prompt is a message with the spawn's own identity, so
@@ -122,33 +171,12 @@ impl HostWorkspaceOwner {
             SessionAction::Reply { id, inbox } => {
                 accepted = Some(json!({"reply": self.native.reply(&child, &id, inbox).await?}));
             }
-            SessionAction::Next => return self.next_session(operation, &child).await,
+            SessionAction::Next => return self.claim(operation, &child, false).await,
             SessionAction::Complete { claim, outcome } => {
-                self.complete_session(operation, &child, &claim, outcome)
-                    .await?;
-            }
-            SessionAction::SaveSession { id } => {
-                if id.is_empty() || id.len() > 256 || id.chars().any(char::is_control) {
-                    return Err(Error::Invalid("native resume id invalid".into()));
-                }
-                let (_, session) = self.native.session(&child).await?;
-                if session
-                    .native
-                    .as_ref()
-                    .and_then(|native| native.get("id"))
-                    .and_then(Value::as_str)
-                    != Some(id.as_str())
-                {
-                    self.native
-                        .request(
-                            &child,
-                            operation,
-                            &Event::Native {
-                                session: json!({ "id": id }),
-                            },
-                        )
-                        .await?;
-                }
+                fence = Some(
+                    self.complete_session(operation, &child, &claim, outcome)
+                        .await?,
+                );
             }
             SessionAction::Control { control } => {
                 if self.native.session(&child).await?.1.control == Control::Archive
@@ -168,27 +196,77 @@ impl HostWorkspaceOwner {
                         operation: claimed,
                         turn: session.settled + 1,
                     };
-                    self.complete_session(operation, &child, &claim, Outcome::Cancelled)
-                        .await?;
+                    fence = Some(
+                        self.complete_session(operation, &child, &claim, Outcome::Cancelled)
+                            .await?,
+                    );
                 }
             }
         }
+        // The accepted work rides this same exchange. A settlement keeps the
+        // fence it captured under; any other action takes the child's fence
+        // only when no process holds it, so a running child is never claimed.
+        let work = if next {
+            let fence = match fence {
+                Some(fence) => Some(fence),
+                None => self.fence(&child)?,
+            };
+            match fence {
+                Some(_fence) => Some(self.claim(handoff(operation), &child, true).await?),
+                None => Some(Value::Null),
+            }
+        } else {
+            None
+        };
         let mut value = self.session_value(&child).await?;
-        if let (Some(object), Some(Value::Object(accepted))) = (value.as_object_mut(), accepted) {
-            object.extend(accepted);
+        if let Some(object) = value.as_object_mut() {
+            if let Some(Value::Object(accepted)) = accepted {
+                object.extend(accepted);
+            }
+            if let Some(work) = work {
+                object.insert("next".into(), work);
+            }
         }
         Ok(value)
     }
 
-    async fn next_session(&self, operation: OperationId, child: &AgentPath) -> Result<Value> {
+    /// The child's physical fence, when no live process holds it: every
+    /// preceding owner's tree is fenced. `None` while a process holds it.
+    fn fence(
+        &self,
+        child: &AgentPath,
+    ) -> Result<Option<super::super::host_process::QuiescentHostProcess>> {
+        let workspace = self
+            .local
+            .workspace_path()
+            .ok_or_else(|| Error::Invalid("native fence has no workspace".into()))?;
+        let view = self.view(child)?;
+        match super::super::host_process::HostProcessLease::acquire(workspace, child, view.path()) {
+            Ok(lease) => Ok(Some(lease.quiescent())),
+            Err(Error::Conflict(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Claims the child's next input as request `operation`. A claimed input
+    /// is refused unless `fenced`: its caller then holds the physical fence,
+    /// which proves no process runs it, and receives it under its exact claim.
+    async fn claim(
+        &self,
+        operation: OperationId,
+        child: &AgentPath,
+        fenced: bool,
+    ) -> Result<Value> {
         let (_, session) = self.native.session(child).await?;
         if session.claimed().is_some() {
-            return Err(Error::Conflict("native turn is already claimed".into()));
-        }
-        if session.control != Control::Resume || session.running.is_none() {
+            if !fenced {
+                return Err(Error::Conflict("native turn is already claimed".into()));
+            }
+        } else if session.control != Control::Resume || session.running.is_none() {
             return Ok(Value::Null);
+        } else {
+            self.native.request(child, operation, &Event::Claim).await?;
         }
-        self.native.request(child, operation, &Event::Claim).await?;
         let (state, session) = self.native.session(child).await?;
         let Some(Running {
             input,
@@ -213,13 +291,15 @@ impl HostWorkspaceOwner {
         )
     }
 
+    /// Settles `claim` under the child's physical fence, which it returns so
+    /// the next input can be claimed under the same fence.
     async fn complete_session(
         &self,
         operation: OperationId,
         child: &AgentPath,
         claim: &TurnClaim,
         outcome: Outcome<TurnOutput>,
-    ) -> Result<()> {
+    ) -> Result<super::super::host_process::QuiescentHostProcess> {
         if claim.agent != *child {
             return Err(Error::Conflict(
                 "native completion selects another child".into(),
@@ -239,13 +319,34 @@ impl HostWorkspaceOwner {
             Some(claimed) if claimed == claim.operation => {
                 view.capture(operation).await?;
                 // The turn's process recorded its whole event stream; the
-                // settled conversation entry carries it.
+                // settled conversation entry carries it, and the resume id
+                // it last named is the session's.
                 let events = match quiescence.events(claim.operation)? {
-                    Some(bytes) => Some(
-                        self.native
-                            .stage_events(child, claim.operation, &bytes)
-                            .await?,
-                    ),
+                    Some(bytes) => {
+                        if let Some(id) = logged_session_id(&bytes)
+                            && session
+                                .native
+                                .as_ref()
+                                .and_then(|native| native.get("id"))
+                                .and_then(Value::as_str)
+                                != Some(id.as_str())
+                        {
+                            self.native
+                                .request(
+                                    child,
+                                    derived_session(claim.operation),
+                                    &Event::Native {
+                                        session: json!({ "id": id }),
+                                    },
+                                )
+                                .await?;
+                        }
+                        Some(
+                            self.native
+                                .stage_events(child, claim.operation, &bytes)
+                                .await?,
+                        )
+                    }
                     None => None,
                 };
                 self.native
@@ -259,14 +360,17 @@ impl HostWorkspaceOwner {
                         },
                     )
                     .await?;
-                quiescence.retire_events(claim.operation)
+                quiescence.retire_events(claim.operation)?;
             }
             // A replayed completion of a turn that already settled.
-            _ if session.settled >= claim.turn => quiescence.retire_events(claim.operation),
-            _ => Err(Error::Conflict(
-                "native completion differs from its original claim".into(),
-            )),
+            _ if session.settled >= claim.turn => quiescence.retire_events(claim.operation)?,
+            _ => {
+                return Err(Error::Conflict(
+                    "native completion differs from its original claim".into(),
+                ));
+            }
         }
+        Ok(quiescence)
     }
 
     /// The plugin's view of one session.
