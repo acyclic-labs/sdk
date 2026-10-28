@@ -138,62 +138,64 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
 
 #[test]
 fn a_quiet_capture_sleeps_until_readiness_instead_of_polling() -> io::Result<()> {
-    let mut process = child("quiet")?;
-    let mut checks = 0;
-    let quiet = std::cell::Cell::<Option<Instant>>::new(None);
-    let idle_checks = std::cell::Cell::new(0);
-    let mut observed = Vec::new();
-    let started = Instant::now();
-    let output = process
-        .wait_with_output(
-            Duration::from_secs(2),
-            16 * 1024,
-            None,
-            || {
-                checks += 1;
-                if quiet.get().is_some_and(|start| {
-                    (Duration::from_millis(20)..Duration::from_millis(150))
-                        .contains(&start.elapsed())
-                }) {
-                    idle_checks.set(idle_checks.get() + 1);
-                }
-                Ok(())
-            },
-            |chunk| {
-                if let ProcessOutput::Stdout(bytes) = chunk {
-                    observed.extend_from_slice(bytes);
-                    if quiet.get().is_none()
-                        && observed
-                            .windows(b"QUIET_BEGIN".len())
-                            .any(|bytes| bytes == b"QUIET_BEGIN")
-                    {
-                        quiet.set(Some(Instant::now()));
+    for timeout in [Some(Duration::from_secs(2)), None] {
+        let mut process = child("quiet")?;
+        let mut checks = 0;
+        let quiet = std::cell::Cell::<Option<Instant>>::new(None);
+        let idle_checks = std::cell::Cell::new(0);
+        let mut observed = Vec::new();
+        let started = Instant::now();
+        let output = process
+            .wait_with_output(
+                CaptureSchedule::new(timeout),
+                16 * 1024,
+                None,
+                || {
+                    checks += 1;
+                    if quiet.get().is_some_and(|start| {
+                        (Duration::from_millis(20)..Duration::from_millis(150))
+                            .contains(&start.elapsed())
+                    }) {
+                        idle_checks.set(idle_checks.get() + 1);
                     }
-                }
-                Ok(ProcessInput::default())
-            },
-            None,
-            None,
-            None,
-        )
-        .map_err(|failure| failure.error)?;
-    eprintln!(
-        "IDLE_CAPTURE checks={checks} idle_checks={} elapsed_us={}",
-        idle_checks.get(),
-        started.elapsed().as_micros()
-    );
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("EVENT_CAPTURE_DONE"));
-    assert!(process.is_reaped());
-    assert!(
-        quiet.get().is_some(),
-        "child never declared its quiet interval"
-    );
-    assert_eq!(
-        idle_checks.get(),
-        0,
-        "quiet capture must wait for readiness"
-    );
+                    Ok(())
+                },
+                |chunk| {
+                    if let ProcessOutput::Stdout(bytes) = chunk {
+                        observed.extend_from_slice(bytes);
+                        if quiet.get().is_none()
+                            && observed
+                                .windows(b"QUIET_BEGIN".len())
+                                .any(|bytes| bytes == b"QUIET_BEGIN")
+                        {
+                            quiet.set(Some(Instant::now()));
+                        }
+                    }
+                    Ok(ProcessInput::default())
+                },
+                None,
+                None,
+                None,
+            )
+            .map_err(|failure| failure.error)?;
+        eprintln!(
+            "IDLE_CAPTURE checks={checks} idle_checks={} elapsed_us={}",
+            idle_checks.get(),
+            started.elapsed().as_micros()
+        );
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("EVENT_CAPTURE_DONE"));
+        assert!(process.is_reaped());
+        assert!(
+            quiet.get().is_some(),
+            "child never declared its quiet interval"
+        );
+        assert_eq!(
+            idle_checks.get(),
+            0,
+            "quiet capture must wait for readiness"
+        );
+    }
     Ok(())
 }
 
