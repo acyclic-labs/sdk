@@ -174,6 +174,7 @@ pub fn spawn(
     adopted.agent = child_id;
     adopted.parent = Some(parent.clone());
     adopted.forked_at = at_tail;
+    let conversation = adopted.conversation_tail;
     let record = InboxRecord::ForkAdopted(Box::new(adopted)).encode()?;
     Ok(Spawn {
         request: CommitRequest {
@@ -194,7 +195,7 @@ pub fn spawn(
                     at_tail,
                     records: vec![record.into()],
                 },
-                first_status(&child, at_tail)?,
+                first_status(&child, at_tail, conversation)?,
             ],
             idempotency_key: intent_key("spawn", &[parent.as_str(), intent.as_str()])?,
         },
@@ -203,14 +204,20 @@ pub fn spawn(
 }
 
 /// An agent's first status rides with its membership (its subtree's creation),
-/// so every listed agent has a status: `Idle` at its `ForkAdopted` sequence.
-fn first_status(agent: &AgentPath, forked_at: u64) -> Result<CommitMutation, Error> {
+/// so every listed agent has a status: `Idle` at its `ForkAdopted` sequence,
+/// with the `conversation` it inherits.
+fn first_status(
+    agent: &AgentPath,
+    forked_at: u64,
+    conversation: u64,
+) -> Result<CommitMutation, Error> {
     Ok(CommitMutation::Append {
         path: agent.status()?,
         records: vec![
             StatusRecord {
                 phase: Phase::Idle,
                 cursor: forked_at,
+                conversation,
             }
             .append_record()?,
         ],
@@ -240,7 +247,7 @@ pub fn create_root(intent: &IntentId, mut adopted: ForkAdopted) -> Result<Spawn,
                     path: inbox,
                     records: vec![InboxRecord::ForkAdopted(Box::new(adopted)).encode()?.into()],
                 },
-                first_status(&child, 0)?,
+                first_status(&child, 0, 0)?,
             ],
             idempotency_key: intent_key("create", &[child.as_str(), intent.as_str()])?,
         },

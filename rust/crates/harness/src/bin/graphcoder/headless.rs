@@ -1,6 +1,8 @@
 //! Headless conversations: one `-p` prompt, or JSONL requests on stdin.
-//! Every prompt settles through the conversation's committed reply; the
-//! frontend keeps only its outstanding prompts.
+//! Every prompt settles through the conversation's committed reply, read
+//! after subscribing and again at each committed status, which every
+//! conversation entry commits with; the frontend keeps only its outstanding
+//! prompts.
 use acyclic_harness::agent::{ConversationEntry, IntentId, Phase, Reply};
 use acyclic_harness::local::{
     Event,
@@ -28,10 +30,10 @@ pub async fn prompt(
     let mut events = conversation.observe(conversation.settled().await?).await?;
     let inbox = conversation.send(operation, prompt).await?;
     let mut answers = stdin_lines();
-    // An exact replay of a settled prompt is answered at once.
-    let mut reply = conversation.reply(operation, inbox).await?;
+    // Subscribed first, so a reply committed after this read wakes a status.
+    let mut status = None;
     loop {
-        match reply {
+        match conversation.reply(operation, inbox).await? {
             Reply::Answered { entry, .. } => return print(conversation, &entry, output).await,
             Reply::Dropped => {
                 eprintln!("graphcoder: {}", conversation.dropped().await?);
@@ -39,34 +41,23 @@ pub async fn prompt(
             }
             Reply::Pending => {}
         }
-        match events.next().await? {
-            Event::Turn(entry) if entry.inbox == inbox => {
-                return print(conversation, &entry, output).await;
-            }
-            Event::Turn(_) | Event::Output => {}
-            Event::Failed(error) => {
-                eprintln!("graphcoder: agent turn failed: {error}");
+        if let Some(status) = status.take() {
+            if let Some(reason) = ended(&status) {
+                eprintln!("graphcoder: {reason}");
                 return Ok(1);
             }
-            Event::Status(status) => {
-                if status.cursor > inbox {
-                    reply = conversation.reply(operation, inbox).await?;
-                    if !matches!(reply, Reply::Pending) {
-                        continue;
-                    }
-                }
-                if let Some(reason) = ended(&status) {
-                    eprintln!("graphcoder: {reason}");
-                    return Ok(1);
-                }
-                if let Phase::WaitingApproval { id } = status.phase {
-                    eprint!("graphcoder: approve request {}? [y/N] ", id.as_str());
-                    let answer = answers.next_line().await?.unwrap_or_default();
-                    let approved = matches!(answer.trim(), "y" | "Y" | "yes");
-                    conversation.decide(&id, approved).await?;
-                }
+            if let Phase::WaitingApproval { id } = status.phase {
+                eprint!("graphcoder: approve request {}? [y/N] ", id.as_str());
+                let answer = answers.next_line().await?.unwrap_or_default();
+                let approved = matches!(answer.trim(), "y" | "Y" | "yes");
+                conversation.decide(&id, approved).await?;
             }
         }
+        status = loop {
+            if let Event::Status(next) = events.next().await? {
+                break Some(next);
+            }
+        };
     }
 }
 
@@ -173,18 +164,8 @@ pub async fn jsonl(
                 }
             }
             event = events.next() => match event? {
-                Event::Turn(entry) => {
-                    if let Some((_, id)) = pending.remove(&entry.inbox) {
-                        emit(output, &answer(conversation, &id, &entry).await?)?;
-                    }
-                }
-                Event::Failed(error) => {
-                    let error = format!("agent turn failed: {error}");
-                    for (inbox, (_, id)) in std::mem::take(&mut pending) {
-                        emit(output, &json!({"id": id, "inbox": inbox, "error": error}))?;
-                    }
-                }
-                Event::Output => {}
+                // Each entry commits with a status, which settles it below.
+                Event::Turn(_) | Event::Output => {}
                 Event::Status(status) => {
                     let ended = ended(&status);
                     // Prompts the agent consumed settle from its committed reply.

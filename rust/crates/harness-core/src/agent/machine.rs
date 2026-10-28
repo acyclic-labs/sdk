@@ -482,9 +482,13 @@ pub async fn step<T: TurnDriver + ?Sized>(
     // record an idle agent consumes publishes its cursor too, so `Idle` at a
     // cursor proves every record before it settled (see [`super::settled`]).
     let phase = published(&state);
-    let status = (phase != previous || appended > 0 || (inbox_wake && phase == Phase::Idle))
-        .then_some(StatusRecord { phase, cursor });
     state.conversation_tail += appended;
+    let status = (phase != previous || appended > 0 || (inbox_wake && phase == Phase::Idle))
+        .then_some(StatusRecord {
+            phase,
+            cursor,
+            conversation: state.conversation_tail,
+        });
     state.status_tail += u64::from(status.is_some());
     Ok(Step {
         state,
@@ -618,7 +622,22 @@ async fn run<T: TurnDriver + ?Sized>(
         (Some(turn), _) => Some(turn.inbox),
         (None, input) => input.as_ref().map(|input| input.inbox),
     };
-    let mut turn = driver.step(state, cursor, input, cancellation).await?;
+    // A turn that fails for good settles as a committed failure, which
+    // every observer reads like any other outcome; only an uncertain
+    // failure retries the step.
+    let mut turn = match driver.step(state, cursor, input, cancellation).await {
+        Ok(turn) => turn,
+        Err(error) if error.uncertain() => return Err(error),
+        Err(error) => TurnStep {
+            checkpoint: None,
+            reserved_children: 0,
+            outs: Vec::new(),
+            wait: Wait::Done(AgentOutcome::Failed {
+                message: error.to_string(),
+            }),
+            drops: None,
+        },
+    };
     // The driver's effects are the step's one unchecked input: a turn
     // returning one no record can carry fails, applying none of them, so
     // the step's commit is always buildable.

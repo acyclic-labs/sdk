@@ -47,6 +47,7 @@ async fn an_invalid_host_wait_fails_before_publishing_status_or_effects() -> Res
         StatusRecord {
             phase: result.state.phase,
             cursor: u64::MAX,
+            conversation: u64::MAX,
         }
         .encode()?;
     }

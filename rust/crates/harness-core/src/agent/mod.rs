@@ -93,6 +93,21 @@ pub enum Error {
 }
 
 impl Error {
+    /// Whether the failed work may yet succeed unchanged: a commit whose
+    /// outcome is unknown, or a store that is momentarily unreachable. Only
+    /// these retry; every other turn failure settles the agent as failed.
+    #[must_use]
+    pub const fn uncertain(&self) -> bool {
+        matches!(
+            self,
+            Self::Unknown(_)
+                | Self::Stream(
+                    acyclic_stream::StreamError::Unavailable
+                        | acyclic_stream::StreamError::DeadlineElapsed
+                )
+        )
+    }
+
     /// Stable public classification shared by native and WASM client adapters.
     /// The error value itself retains its typed cause and uncertain request.
     #[must_use]

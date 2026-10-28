@@ -385,6 +385,7 @@ mod tests {
             StatusRecord {
                 phase: Phase::Done { outcome },
                 cursor: u64::MAX,
+                conversation: u64::MAX,
             }
             .encode()
             .expect("a status fits");
@@ -543,7 +544,7 @@ mod tests {
                 message: widest_text(MAX_MESSAGE_BYTES),
             }]);
             for phase in phases.into_iter().chain(record_outcomes.map(|outcome| Phase::Done { outcome })) {
-                let record = StatusRecord { phase, cursor: u64::MAX };
+                let record = StatusRecord { phase, cursor: u64::MAX, conversation: u64::MAX };
                 let worst = assert_record_bound(&record);
                 let mut sample: StatusRecord = varied(&record, name, text);
                 sample.cursor = cursor;
@@ -564,6 +565,7 @@ mod tests {
             let record = StatusRecord {
                 phase: Phase::WaitingHost { host },
                 cursor: 0,
+                conversation: 0,
             };
             assert!(
                 record.check().is_err(),
@@ -575,6 +577,7 @@ mod tests {
                 host: widest(MAX_INTENT_BYTES),
             },
             cursor: u64::MAX,
+            conversation: u64::MAX,
         };
         assert_record_bound(&record);
     }

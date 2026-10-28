@@ -324,6 +324,10 @@ pub struct StatusRecord {
     pub phase: Phase,
     /// Inbox cursor consumed by that transition.
     pub cursor: u64,
+    /// The agent's conversation length after that transition, committed
+    /// with it: the conversation stream exists once this is above zero.
+    #[serde(default)]
+    pub conversation: u64,
 }
 
 impl StatusRecord {

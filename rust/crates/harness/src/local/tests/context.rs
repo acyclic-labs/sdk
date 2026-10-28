@@ -53,7 +53,6 @@ impl Client {
             loop {
                 match self.observer.next().await? {
                     Event::Turn(entry) if entry.inbox == inbox => return Ok(entry),
-                    Event::Failed(error) => return Err(Error::Conflict(error)),
                     Event::Status(status) => {
                         if matches!(status.phase, crate::agent::Phase::Done { .. }) {
                             return Err(Error::Conflict(format!("agent finished: {status:?}")));

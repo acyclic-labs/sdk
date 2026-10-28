@@ -151,6 +151,7 @@ impl Swarm {
                     } else {
                         FORKED_AT + sequence
                     },
+                    conversation: 0,
                 }
                 .encode()
                 .unwrap(),

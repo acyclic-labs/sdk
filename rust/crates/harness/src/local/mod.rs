@@ -58,11 +58,11 @@ pub use verifier::{
 pub mod web;
 #[cfg(any(test, feature = "native-execution"))]
 mod workspace;
-pub use agents::{AgentFailure, LocalAgents, LocalTurns};
-#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
-pub use config::ModelResolver;
+pub use agents::{LocalAgents, LocalTurns};
 pub use config::LocalHarnessConfig;
 use config::LocalProject;
+#[cfg(any(test, feature = "hooks", feature = "mcp-stdio", feature = "mcp-http"))]
+pub use config::ModelResolver;
 pub use observer::{Event, Observer};
 #[cfg(any(test, feature = "native-execution"))]
 pub use workspace::LocalWorkspace;

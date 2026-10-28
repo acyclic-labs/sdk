@@ -71,8 +71,6 @@ struct View {
     /// The running turn's answer while it streams.
     reply: String,
     phase: Option<Phase>,
-    /// The latest failed delivery, until the next status.
-    failure: Option<String>,
     /// The failed task's error while its conversation stays failed, shown
     /// whole on the status row.
     ended: Option<String>,
@@ -158,10 +156,8 @@ impl View {
                 }
                 self.ring = true;
             }
-            Event::Failed(error) => self.failure = Some(error),
             Event::Output => return Ok(()),
             Event::Status(status) => {
-                self.failure = None;
                 self.ended = None;
                 self.approval_prompt = match &status.phase {
                     Phase::WaitingApproval { id } => conversation.approval_prompt(id).await?,
@@ -338,10 +334,6 @@ impl View {
                 id.as_str()
             ),
             (Some(Phase::Done { outcome }), _) => format!("conversation ended: {outcome:?}"),
-            _ if self.failure.is_some() => format!(
-                "agent turn failed: {}",
-                self.failure.as_deref().unwrap_or_default()
-            ),
             _ if self.busy() => "working · Esc or Ctrl+C interrupts".into(),
             _ if self.transcript.truncated() => {
                 "earlier transcript omitted · Ctrl+F finds prompt text".into()
@@ -579,7 +571,7 @@ pub async fn run(
                                 if view.pending.len() >= HISTORY as usize
                                     || text.len().saturating_add(view.pending.iter().map(|(_, text)| text.len()).sum::<usize>()) > 1024 * 1024
                                 {
-                                    view.failure = Some("pending prompt display is full; wait for a turn to settle".into());
+                                    view.notice = Some("pending prompt display is full; wait for a turn to settle".into());
                                     input.editor = Editor::new(&text);
                                     continue;
                                 }

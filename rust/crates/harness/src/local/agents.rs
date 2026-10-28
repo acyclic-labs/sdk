@@ -38,7 +38,6 @@ const TURN_BACKSTOP_MS: u64 = 6 * 60 * 60 * 1000;
 /// serves, and the runtime task that ends with it.
 pub(super) struct Hosted {
     server: Arc<LocalServer>,
-    failures: tokio::sync::broadcast::Sender<AgentFailure>,
     run: tokio::task::JoinHandle<()>,
 }
 
@@ -57,20 +56,6 @@ impl Hosted {
     pub(super) const fn server(&self) -> &Arc<LocalServer> {
         &self.server
     }
-
-    pub(super) const fn failures(&self) -> &tokio::sync::broadcast::Sender<AgentFailure> {
-        &self.failures
-    }
-}
-
-/// One failed agent delivery. It stays queued and is retried; a waiting
-/// client reports it rather than waiting for an output that may never come.
-#[derive(Clone, Debug)]
-pub struct AgentFailure {
-    /// The actor whose delivery failed; see [`AgentHost::actor`].
-    pub actor: ActorReference,
-    /// The failure, as the runtime reported it.
-    pub error: String,
 }
 
 impl Drop for Hosted {
@@ -401,31 +386,19 @@ impl LocalHarness {
             }
             Err(error) => return Err(storage(error)),
         };
-        let (failures, _) = tokio::sync::broadcast::channel(64);
-        let report = failures.clone();
         let runner = Arc::clone(&server);
+        // A delivery that fails here retries only an uncertain commit: a
+        // turn that fails for good commits its agent's failure, which every
+        // observer reads from the agent's status.
         let run = tokio::spawn(async move {
             let error = runner
                 .run(|actor, error| {
-                    tracing::warn!(?actor, %error, "agent turn failed");
-                    let _ = report.send(AgentFailure {
-                        actor: actor.clone(),
-                        error: error.to_string(),
-                    });
+                    tracing::warn!(?actor, %error, "agent delivery failed");
                 })
                 .await;
             tracing::error!(%error, "agent runtime stopped");
         });
-        Ok(Hosted {
-            server,
-            failures,
-            run,
-        })
-    }
-
-    /// Failed agent deliveries from now on, once the agents are hosted.
-    pub fn agent_failures(&self) -> Option<tokio::sync::broadcast::Receiver<AgentFailure>> {
-        self.agents.get().map(|hosted| hosted.failures.subscribe())
+        Ok(Hosted { server, run })
     }
 }
 

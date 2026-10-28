@@ -232,6 +232,7 @@ async fn seeded() -> Result<Seeded> {
                     StatusRecord {
                         phase: Phase::Running,
                         cursor: 1,
+                        conversation: 2,
                     }
                     .encode()?
                     .into(),
@@ -292,6 +293,7 @@ fn spawning(mut state: AgentState, name: &str) -> Step {
         status: Some(StatusRecord {
             phase: Phase::Idle,
             cursor: 1,
+            conversation: 3,
         }),
         state,
         alarm: Alarm::Clear,
@@ -334,6 +336,7 @@ async fn spawn_forks_the_pre_step_subtree_in_one_commit() -> Result {
     let first = StatusRecord {
         phase: Phase::Idle,
         cursor: 1,
+        conversation: 2,
     };
     assert_eq!(
         values(&provider, child.status()?).await?,
