@@ -259,17 +259,6 @@ fn decode(encoded: &[u8]) -> Option<State> {
     Some(state)
 }
 
-fn retained_fact_bound() -> Option<usize> {
-    crate::MAX_COMMAND_BYTES
-        .checked_mul(64)?
-        .checked_add(
-            crate::MAX_ITEMS
-                .checked_mul(crate::MAX_PATH_BYTES.checked_mul(2)?.checked_add(128)?)?,
-        )?
-        .checked_add(crate::MAX_IDEMPOTENCY_KEY_BYTES)?
-        .checked_add(128)
-}
-
 fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
     for _ in 0..input.len()? {
         let flags = input.u8()?;
@@ -279,15 +268,14 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
         let observation = if flags & RETAINS_REPLAY == 0 {
             None
         } else {
-            Some(
-                crate::persistence::decode_observation(input.bytes()?, retained_fact_bound()?)
-                    .ok()?,
-            )
+            let bytes = input.bytes()?;
+            Some(crate::persistence::decode_observation(bytes, bytes.len()).ok()?)
         };
         let envelope = if flags & RETAINS_COMMIT == 0 {
             None
         } else {
-            Some(crate::persistence::decode_envelope(input.bytes()?, retained_fact_bound()?).ok()?)
+            let bytes = input.bytes()?;
+            Some(crate::persistence::decode_envelope(bytes, bytes.len()).ok()?)
         };
         if envelope
             .as_ref()

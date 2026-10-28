@@ -25,7 +25,7 @@ async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError
         path: StreamPath::new("snapshot/retained")?,
         records: vec![(Bytes::from_static(b"once")).into()],
         if_tail: None,
-        idempotency_key: IdempotencyKey::new(Bytes::from_static(b"snapshot-once"))?,
+        idempotency_key: IdempotencyKey::new(vec![b'k'; 131_073])?,
     };
     let first = stream.append(request.clone()).await?;
     let restored = MemoryStream::new(limits);
@@ -39,7 +39,9 @@ async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError
         Err(StreamError::IdempotencyMismatch)
     );
     let mut fresh = request;
-    fresh.idempotency_key = IdempotencyKey::new(Bytes::from_static(b"fresh"))?;
+    let mut next_key = fresh.idempotency_key.as_bytes().to_vec();
+    *next_key.last_mut().ok_or(StreamError::InvalidArgument)? = b'j';
+    fresh.idempotency_key = IdempotencyKey::new(next_key)?;
     assert_eq!(restored.append(fresh).await, Err(StreamError::Capacity));
     Ok(())
 }
