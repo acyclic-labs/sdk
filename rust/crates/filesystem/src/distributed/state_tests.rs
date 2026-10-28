@@ -626,7 +626,7 @@ async fn inherited_state_is_readable_but_cannot_settle_a_destination_append() ->
             source: source.clone(),
             destination: destination.clone(),
             at_tail: Some(1),
-            idempotency_key: None,
+            idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"inherit-source"))?,
         })
         .await?;
     let inherited = store
@@ -805,6 +805,7 @@ async fn identical_state_bytes_from_separate_commits_are_not_one_publication() -
                 conditions: vec![CommitCondition::Absent { path: path.clone() }],
                 mutations: vec![mutation.clone()],
                 idempotency_key: IdempotencyKey::new(format!("separate-{index}").into_bytes())?,
+                deadline_unix_millis: None,
             })
             .await?;
         assert!(matches!(decision, CommitOutcome::Committed(_)));
