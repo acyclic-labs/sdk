@@ -261,37 +261,48 @@ impl LocalStream {
         Ok(())
     }
 
-    /// Writes `frame`, in the order its mutation applied, without waiting for
-    async fn persist(&self, mut frame: PreparedFrame) -> Result<(), StreamError> {
+    /// Writes one frame through the same ordered owner as a journal batch.
+    async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
+        self.persist_frames(std::iter::once(frame)).await
+    }
+
+    /// The caller retains publication for the entire ordered proposal. The
+    /// worker owns every original frame and its reservations until terminal I/O.
+    async fn persist_frames(
+        &self,
+        frames: impl Iterator<Item = PreparedFrame> + Send + 'static,
+    ) -> Result<(), StreamError> {
         #[cfg(feature = "test-support")]
         let cut = self.inner.persistence_cut.get().cloned();
         #[cfg(feature = "test-support")]
-        if let Some(cut) = &cut
-            && !cut.admit()
-        {
-            return Err(self.cut_crash(cut.as_ref()).await);
-        }
+        let fail_cut_truncation = FAIL_CUT_TRUNCATION.with(std::cell::Cell::get);
         let required = !deferred(self);
-        let journal = self.inner.journal.clone();
-        let persist = spawn_blocking(move || {
-            journal
-                .lock()
-                .map_err(|_| LocalStreamError::Corrupt)?
-                .append(&mut frame, required)
-        });
-        let result = persist
-            .await
-            .map_err(|_| LocalStreamError::Executor)
-            .and_then(|result| result);
-        if result.is_err() {
-            return Err(self.inner.poison());
-        }
-        #[cfg(feature = "test-support")]
-        if let Some(cut) = cut {
-            return self.cut_after_write(cut).await;
-        }
-        self.inner.published();
-        Ok(())
+        let stream = self.worker();
+        spawn_blocking(move || {
+            for mut frame in frames {
+                #[cfg(feature = "test-support")]
+                if let Some(cut) = &cut
+                    && !cut.admit()
+                {
+                    return Err(stream.cut_crash(cut.as_ref(), fail_cut_truncation));
+                }
+                stream
+                    .inner
+                    .journal
+                    .lock()
+                    .map_err(|_| stream.inner.poison())?
+                    .append(&mut frame, required)
+                    .map_err(|_| stream.inner.poison())?;
+                #[cfg(feature = "test-support")]
+                if let Some(cut) = &cut {
+                    stream.cut_after_write(cut.as_ref(), fail_cut_truncation)?;
+                }
+                stream.inner.published();
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| self.inner.poison())?
     }
 
     // Native builds reduce this to drop. The modeled old variant returns the
