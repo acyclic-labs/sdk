@@ -1217,3 +1217,59 @@ async fn a_put_swept_before_it_returns_is_never_created() -> Result<(), Box<dyn 
     ));
     Ok(())
 }
+
+/// PLATFORM-26/32: a FullFlush create is acknowledged only after the shared
+/// native namespace flush of its directory succeeds, on every platform.
+#[cfg(all(
+    feature = "local",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+#[tokio::test]
+async fn a_local_create_never_succeeds_past_a_failed_directory_flush()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_native_runtime::testing::{DurableFault, Schedule};
+    acyclic_native_runtime::initialize_native_io_services()?;
+    let scheduled = async |fault: Option<(usize, DurableFault)>| {
+        let root = tempfile::tempdir().unwrap();
+        let medium = crate::LocalMedium::open(root.path(), Default::default(), None)
+            .await
+            .unwrap();
+        let (schedule, mut events) = Schedule::new();
+        if let Some((ordinal, fault)) = fault {
+            schedule.cut_at(ordinal, fault);
+        }
+        let driver = tokio::spawn(async move {
+            while let Some(boundary) = events.recv().await {
+                boundary.release();
+            }
+        });
+        let created = schedule
+            .scope(medium.create("a/b/key", OwnedBytes::from(vec![7; 16])))
+            .await;
+        schedule.drained().await;
+        driver.abort();
+        let _ = driver.await;
+        (created, schedule.durable_writes())
+    };
+    let (created, trace) = scheduled(None).await;
+    assert!(created?);
+    let published = trace
+        .iter()
+        .position(|call| call.operation == "namespace:publish_new")
+        .ok_or("the create publishes through the shared native link")?;
+    // Negative control: a no-op directory adapter records no flush here.
+    let flush = trace[published..]
+        .iter()
+        .find(|call| call.operation == "file:sync_parent")
+        .ok_or("the published name's directory is flushed")?
+        .ordinal;
+    for fault in [DurableFault::Failed, DurableFault::After] {
+        let (created, _) = scheduled(Some((flush, fault))).await;
+        assert!(
+            matches!(created, Err(MediumError::Ambiguous(_))),
+            "{fault:?}: a visible name whose directory flush failed is ambiguous, never created"
+        );
+    }
+    Ok(())
+}
