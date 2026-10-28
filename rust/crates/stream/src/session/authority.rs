@@ -5,7 +5,7 @@ pub mod testing;
 use super::*;
 use acyclic_auth::{
     authority::{PolicyDecision, Request, Scope, Target},
-    verify::{self, Trust, VerifiedCapability, VerifyError},
+    verify::{Trust, VerifyError},
 };
 
 /// One authenticated, current public trust view and its trusted clock.

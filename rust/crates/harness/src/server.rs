@@ -13,12 +13,15 @@ use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
 use acyclic_stream::BoxProviderFuture;
 use std::sync::Arc;
 
+mod tls;
+
 /// This server's identity, announced in every [`Endpoint`]: a client or a
 /// test checks that an endpoint is served by this entry point.
 pub const IDENTITY: &str = concat!("acyclic-harness/", env!("CARGO_PKG_VERSION"));
 
 /// The server's TLS identity: its PEM certificate chain and private key,
-/// and the URL clients reach it at, which the certificate names.
+/// the URL clients reach it at, which the certificate names, and the peer
+/// it requires, if any.
 pub struct TlsIdentity {
     /// The `https` URL a remote client connects to: the server's public
     /// name, not the address it listens on (`0.0.0.0` reaches no one).
@@ -27,6 +30,22 @@ pub struct TlsIdentity {
     pub certificate: Vec<u8>,
     /// PEM private key.
     pub key: Vec<u8>,
+    /// The client every connection must authenticate as, over TLS 1.3,
+    /// before any session is dispatched; with `None`, any client may
+    /// connect, as server-only TLS.
+    pub peer: Option<PeerIdentity>,
+}
+
+/// A required TLS client: a certificate chain its authorities verify, whose
+/// end-entity certificate names `uri_san` exactly. It authenticates the
+/// connecting peer (a gateway or relay, say) and authorizes no account:
+/// every session's credential is still verified by [`ServerConfig::verifier`].
+pub struct PeerIdentity {
+    /// PEM certificates of the authorities a client chain must verify against.
+    pub certificate_authorities: Vec<u8>,
+    /// The URI subject alternative name the client certificate must hold,
+    /// such as a SPIFFE ID.
+    pub uri_san: String,
 }
 
 /// Everything a host supplies to [`serve`]: the harness and its seams. A
@@ -171,19 +190,18 @@ pub async fn serve<C: Composition>(
         acyclic_stream::session::Limits::default(),
     )
     .with_products(host.resources.clone(), server.clone());
-    let mut builder = tonic::transport::Server::builder();
-    let endpoint = if let Some(tls) = config.tls {
-        if !tls.url.starts_with("https://") {
-            return Err(Error::Invalid("a TLS server's URL is an https URL".into()));
+    let tls = match config.tls {
+        Some(identity) => {
+            if !identity.url.starts_with("https://") {
+                return Err(Error::Invalid("a TLS server's URL is an https URL".into()));
+            }
+            Some((tls::config(&identity)?, identity.url))
         }
-        builder = builder
-            .tls_config(tonic::transport::ServerTlsConfig::new().identity(
-                tonic::transport::Identity::from_pem(tls.certificate, tls.key),
-            ))
-            .map_err(failed)?;
-        tls.url
-    } else {
-        format!("http://{address}")
+        None => None,
+    };
+    let endpoint = match &tls {
+        Some((_, url)) => url.clone(),
+        None => format!("http://{address}"),
     };
     let observation = config
         .verifier
@@ -201,14 +219,24 @@ pub async fn serve<C: Composition>(
         observation,
     });
     use acyclic_stream::wire::stream_session_service_server::StreamSessionServiceServer;
-    let result = builder
-        .add_service(StreamSessionServiceServer::new(service))
-        .serve_with_incoming_shutdown(
-            tonic::transport::server::TcpIncoming::from(listener),
-            shutdown,
-        )
-        .await
-        .map_err(failed);
+    let router =
+        tonic::transport::Server::builder().add_service(StreamSessionServiceServer::new(service));
+    let result = match tls {
+        Some((tls, _)) => {
+            router
+                .serve_with_incoming_shutdown(tls::incoming(listener, tls), shutdown)
+                .await
+        }
+        None => {
+            router
+                .serve_with_incoming_shutdown(
+                    tonic::transport::server::TcpIncoming::from(listener),
+                    shutdown,
+                )
+                .await
+        }
+    }
+    .map_err(failed);
     drop(host);
     result
 }
