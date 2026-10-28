@@ -15,9 +15,6 @@ impl Remote {
     pub(super) fn session(&self) -> crate::session::Client {
         self.sessions.clone()
     }
-    pub(super) fn connections(&self) -> crate::session::Connections {
-        self.sessions.connections()
-    }
     pub(super) fn new(url: &str, credential: js_sys::Function) -> Result<Self, StreamError> {
         let response_limits =
             tonic_web_wasm_client::limits::UnaryResponseLimits::new(MAX_COMMAND_BYTES)

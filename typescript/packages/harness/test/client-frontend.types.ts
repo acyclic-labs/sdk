@@ -2,6 +2,7 @@ import type {
   AgentClient, AgentCommand, AgentControls, AgentEvent, AgentWindow, ApprovalBinding, ModelContent,
   ModelContentPart, ModelDataPart, StatusRecord,
   PreparedAgentInvocation,
+  DiscoveredAgentControls,
 } from "../src/index.js";
 import type {
   ApprovalBinding as RustApprovalBinding, ModelContent as RustModelContent,
@@ -47,3 +48,9 @@ type _PreparationKeepsCallerOwnedInvocation = Assert<Equal<
   ReturnType<typeof import("../src/index.js").prepareAgentInvocation>,
   PreparedAgentInvocation
 >>;
+
+type _DiscoveryReturnsTheRustResult = Assert<Equal<
+  Awaited<ReturnType<typeof import("../src/client.js").discoverAgentControls>>,
+  DiscoveredAgentControls
+>>;
+type _DiscoveredControlsUseTheRustContract = Assert<Equal<DiscoveredAgentControls["controls"], AgentControls>>;

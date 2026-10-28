@@ -6,9 +6,7 @@
 use super::{AgentFailure, LocalHarness, storage};
 use crate::{Error, Result, agent::AgentPath};
 use acyclic_actors::addressing::ActorReference;
-use acyclic_harness_client::{
-    AgentBinding, AgentCommand, AgentControls, AgentReply, PreparedCommand,
-};
+use acyclic_harness_client::{AgentCommand, AgentControls, AgentReply, PreparedCommand};
 use acyclic_stream::session::Client;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -112,11 +110,9 @@ impl Connection {
         session
             .register_credential(CREDENTIAL, credential.into())
             .map_err(exchange)?;
-        let discovery = AgentControls::new(session.clone(), CREDENTIAL, AgentBinding::discovery());
-        let (binding, tools) =
-            AgentBinding::from_reply(&execute(&discovery, &AgentCommand::Bind {}).await?)
-                .map_err(exchange)?;
-        let controls = AgentControls::new(session, CREDENTIAL, binding);
+        let (controls, tools) = AgentControls::discover(session, CREDENTIAL)
+            .await
+            .map_err(exchange)?;
         let AgentReply::Root { agent: root } = execute(&controls, &AgentCommand::Root {}).await?
         else {
             return Err(Error::Conflict("the endpoint named no root".into()));

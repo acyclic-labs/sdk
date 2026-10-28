@@ -60,7 +60,7 @@ export function assertClientWasmExports(value: unknown): void {
     "frame", "history", "health", "setViewport", "scroll", "hover", "focus", "expand", "collapse",
     "open", "close", "seek", "jumpEnd", "networkChanged", "snapshot", "restore", "free",
   ], true);
-  if (typeof exports.decodeClientJson !== "function" || typeof exports.encodeCanonicalJson !== "function" || !stream || !session || !agents || !commands || !controls || !invocation || !explorer) {
+  if (typeof exports.discoverAgentControls !== "function" || typeof exports.decodeClientJson !== "function" || typeof exports.encodeCanonicalJson !== "function" || !stream || !session || !agents || !commands || !controls || !invocation || !explorer) {
     throw new Error("harness WASM does not provide the required client exports");
   }
 }

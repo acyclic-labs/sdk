@@ -138,11 +138,8 @@ impl WasmStream {
     #[wasm_bindgen(js_name = connect)]
     pub fn connect(endpoint: &str, credential: js_sys::Function) -> Result<WasmStream, JsValue> {
         let remote = remote::Remote::new(endpoint, credential).map_err(js_error)?;
-        Ok(Self {
-            connections: Some(remote.connections()),
-            session: Some(remote.session()),
-            provider: std::sync::Arc::new(remote),
-        })
+        let session = remote.session();
+        Ok(Self::from_session(std::sync::Arc::new(remote), session))
     }
 
     /// Pushes the next successful handshake, including reconnects without further records.
@@ -338,6 +335,18 @@ impl WasmStream {
 }
 
 impl WasmStream {
+    /// Shares a host's existing provider and authenticated session pool.
+    pub fn from_session(
+        provider: std::sync::Arc<dyn StreamProvider>,
+        session: crate::session::Client,
+    ) -> Self {
+        Self {
+            connections: Some(session.connections()),
+            session: Some(session),
+            provider,
+        }
+    }
+
     /// Adapts an existing canonical provider without choosing another backend.
     pub fn from_provider(provider: std::sync::Arc<dyn StreamProvider>) -> Self {
         Self {

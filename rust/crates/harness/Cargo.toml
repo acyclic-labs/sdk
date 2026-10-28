@@ -201,6 +201,8 @@ wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+acyclic-auth = { version = "=0.2.0", path = "../auth", features = ["test-support"] }
+acyclic-stream = { version = "=0.2.0", path = "../stream", features = ["test-support"] }
 wasm-bindgen-test = "=0.3.67"
 
 [lints]
