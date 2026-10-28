@@ -1,13 +1,13 @@
 //! Harness composition with real model provider adapters.
 #![cfg(not(target_arch = "wasm32"))]
 use acyclic_harness_providers::Adapter;
+mod benchmark_catalog;
 #[cfg(loom)]
 #[path = "../src/sync.rs"]
 mod sync;
 #[cfg(not(loom))]
 #[path = "../src/sync/loom.rs"]
 mod sync;
-mod benchmark_catalog;
 mod verification_models;
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
