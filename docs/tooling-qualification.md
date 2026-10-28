@@ -36,3 +36,31 @@ No measurements below are supplied by compilation. Execute only the selected com
 Current work preserves the legacy StockExecutor corpus and receipt producers, filesystem taxonomy, language backends, native OS distinctions and historical proofs. Full hosted Actors composition, physical/auth request instrumentation, remaining exporter families and cross-driver custody parity remain distinct joins. Contract generation rejects every unknown family selector before Cargo or output publication, including an unknown selector mixed with a valid one. G24/G25 blob qualification waits for its actual provider contract; no preview API is integrated.
 
 The filesystem contract generator builds one optional `filesystem-contracts` example with `acyclic-fs/tooling`. Its four named payloads preserve the original descriptor digest, defaults, hosted enum tables and Git wire projection, including stdout newlines. The four old executable roots were removed only after same-source byte parity against their independently executed original bodies. Renderers keep their existing output paths, validators and file comparisons. Shared Cargo target identities are built and executed once; a malformed bundle or absent payload refuses generation. Cargo still resolves source, features, freshness and executable paths. Other language and contract families retain their current targets. This changes the selected filesystem executable count from four to one; it supplies no cold/warm compiler, RSS or wall-time comparison.
+
+## Tests
+
+The test deletion inventory is pinned to main `736854cc314cd583872d6f5297158c0d209527db`. Each dedicated Rust test source was counted with `git grep -c '' origin/main -- <exact path>`, one path per command. The table counts complete dedicated test files, including helpers and proof entrypoints; inline test blocks are retained and are outside these subtotals. No unreviewed test is a deletion estimate. Product-body ownership stays with its existing lane.
+
+| Crate | Baseline dedicated test lines | Further deletable lines established | Coverage retained |
+|---|---:|---:|---|
+| `actors` | 5,403 | 0 | Original cases and oracles; target routing only. |
+| `auth` | 4,013 | 0 | Original cases and oracles; target routing only. |
+| `conformance` | 928 | 0 | Original cases and oracles; target routing only. |
+| `contract-derive` | 479 | 0 | Original cases and oracles; target routing only. |
+| `filesystem` | 162,963 | 0 | Original cases and oracles; target routing only. |
+| `harness` | 30,437 | 0 | Original cases and oracles; target routing only. |
+| `harness-conformance` | 826 | 0 | Original cases and oracles; target routing only. |
+| `harness-core` | 63,116 | 0 | Original cases and oracles; target routing only. |
+| `harness-mock-model` | 619 | 0 | Original cases and oracles; target routing only. |
+| `harness-providers` | 15,412 | 0 | Original cases and oracles; target routing only. |
+| `inference` | 1,009 | 0 | Original cases and oracles; target routing only. |
+| `manifest` | 1,044 | 0 | Original cases and oracles; target routing only. |
+| `objects` | 6,271 | 0 | Original cases and oracles; target routing only. |
+| `sdk-generation` | 7,792 | 0 | Original cases and oracles; target routing only. |
+| `stream` | 23,221 | 0 | Original cases and oracles; target routing only. |
+
+Tooling scripts remove **426 net test lines** for retired CI behavior: six exclusive CI test files (396 lines) plus 30 net lines of static-workflow assertions in `tiny-ci.test.mjs`. This is the retired-things category; duplicate, tautology, compiler-restatement, formatting snapshot, over-mocked, removed-cap, timing-only, feature-copy and unused-helper categories have no additional established deletion in this batch. The lockfile checker itself remains live. No replacement test is needed for retired static-job assertions; the retained `tiny-ci.test.mjs` cases still cover the live qualifier selections and refusals. The full deleted-file inventory and baseline counts are bound in the lane evidence.
+
+Keep the shared conformance suites, generators and freshness checks, DST/Loom/Kani/fuzz sources and corpora, and real-binary end-to-end tests. The native staging/publication, archive corruption and independent digest checks remain real invariants. `check-feature-matrix` and its tests remain called by the on-demand qualifier. Tests moved into a shared binary retain their original feature/platform/model gates, physical process boundaries and exact nonempty selectors; relocation supplies no test-deletion credit.
+
+Decisions: review only tooling-owned test bodies for semantic deletion. A mechanical integration-root release does not transfer another lane's oracle ownership. Further deletion requires an identified surviving case for every retained behavior and must not remove a sole regression, refusal or invariant check. The retired discovery-only item remains separately bound to its signed product-retirement mapping.
