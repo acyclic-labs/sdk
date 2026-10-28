@@ -162,11 +162,10 @@ pub const MAX_RECORD_BYTES: usize = wire::StreamLimit::MaxRecordBytes as usize;
 /// Maximum records, participants, mutations, or path segments in one request.
 pub const MAX_ITEMS: usize = wire::StreamLimit::MaxItems as usize;
 const REPLAY_PAGE: u32 = 1_024;
-const _: () = assert!(REPLAY_PAGE as usize == MAX_ITEMS);
+/// Materialized hierarchy page size; larger requests continue through next_after.
+const CHILDREN_PAGE_ITEMS: u32 = 1_024;
 /// Maximum canonical application command, including metadata.
 pub const MAX_COMMAND_BYTES: usize = wire::StreamLimit::MaxCommandBytes as usize;
-/// Historical minimum replay window, preserved for source compatibility.
-pub const MIN_IDEMPOTENCY_RETENTION_SECS: u64 = 24 * 60 * 60;
 /// Maximum canonical path text accepted by the single-command wire format.
 pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
 
