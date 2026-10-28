@@ -180,6 +180,8 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
 fn failed(reader: &mut Reader, stream: &StreamPath, error: &StreamError, now: u64) {
     if matches!(error, StreamError::PrefixNotRetained) {
         reader.replaced(stream);
+    } else if matches!(error, StreamError::AccessDenied) {
+        reader.denied(stream);
     } else {
         reader.follow_failed(Failure::of(error), now);
     }

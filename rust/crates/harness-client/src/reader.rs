@@ -259,6 +259,10 @@ pub enum Failure {
     Overloaded,
     /// A definite refusal: do not retry this read.
     Refused,
+    /// The credential cannot read this stream; surface it and discard its cache.
+    Denied,
+    /// A checked resume no longer has the retained prefix it named.
+    RetentionLost,
     /// The hierarchy changed under a page cursor: re-learn the version from
     /// a first page and continue from the same cursor.
     Changed,
@@ -272,9 +276,22 @@ impl Failure {
             StreamError::Unavailable | StreamError::DeadlineElapsed => Self::Unavailable,
             StreamError::Capacity => Self::Overloaded,
             StreamError::HierarchyChanged => Self::Changed,
+            StreamError::AccessDenied => Self::Denied,
+            StreamError::PrefixNotRetained => Self::RetentionLost,
             _ => Self::Refused,
         }
     }
+}
+
+/// A reader discontinuity that applications must show separately from outages.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadIssue {
+    /// Authorization failed; cached bytes for the stream were discarded.
+    AccessDenied,
+    /// The resume anchor was lost; history must be loaded from a new cut.
+    RetentionLost,
+    /// A directory continuation observed concurrent hierarchy changes.
+    HierarchyChanged,
 }
 
 /// What the client can promise about freshness.
@@ -301,6 +318,14 @@ enum OpKey {
     Read(StreamPath, u64),
     Tail(StreamPath),
     Children(StreamPath, u32),
+}
+
+impl OpKey {
+    fn path(&self) -> &StreamPath {
+        match self {
+            Self::Read(path, _) | Self::Tail(path) | Self::Children(path, _) => path,
+        }
+    }
 }
 
 /// How a listing op is read and when its page goes stale.
@@ -359,6 +384,7 @@ pub struct Reader {
     keys: BTreeMap<OpKey, u64>,
     cancelled: Vec<u64>,
     refused: BTreeSet<OpKey>,
+    issues: BTreeMap<StreamPath, ReadIssue>,
     anchors: BTreeMap<StreamPath, Anchors>,
     follows: BTreeMap<StreamPath, u64>,
     delivered: usize,
@@ -391,6 +417,7 @@ impl Reader {
             keys: BTreeMap::new(),
             cancelled: Vec::new(),
             refused: BTreeSet::new(),
+            issues: BTreeMap::new(),
             anchors: BTreeMap::new(),
             follows: BTreeMap::new(),
             delivered: 0,
@@ -435,9 +462,14 @@ impl Reader {
     /// Warm start from persisted bytes.
     ///
     /// # Errors
-    /// Refuses malformed bytes.
+    /// Refuses malformed bytes or replacement while reads or follows are active.
     pub fn restore(&mut self, bytes: &[u8]) -> Result<(), SnapshotError> {
-        self.cache.restore(bytes)
+        if !self.inflight.is_empty() || !self.follows.is_empty() || !self.demand.is_empty() {
+            return Err(SnapshotError);
+        }
+        self.cache.restore(bytes)?;
+        self.generation += 1;
+        Ok(())
     }
 
     /// Adapt to memory pressure: shrink (or regrow) the one cache budget.
@@ -561,6 +593,13 @@ impl Reader {
 
     /// The next uncached read for one want, or `None` when it is satisfied.
     fn resolve(&self, want: &Want) -> Option<(OpKey, Paging)> {
+        let path = match want {
+            Want::Range { stream, .. } | Want::Last { stream, .. } => stream,
+            Want::Listing { parent, .. } => parent,
+        };
+        if self.issues.get(path) == Some(&ReadIssue::AccessDenied) {
+            return None;
+        }
         match want {
             Want::Range { stream, from, to } => {
                 // Nothing exists past the known tail; a follow extends it.
@@ -672,7 +711,10 @@ impl Reader {
             if self.inflight.len() >= limit {
                 break;
             }
-            if self.keys.contains_key(key) || self.refused.contains(key) {
+            if self.keys.contains_key(key)
+                || self.refused.contains(key)
+                || self.issues.get(key.path()) == Some(&ReadIssue::AccessDenied)
+            {
                 continue;
             }
             if *priority == Priority::Prefetch {
@@ -746,10 +788,18 @@ impl Reader {
             (_, Outcome::Failed(Failure::Changed)) => {
                 // Not an outage: the next first page carries the new version.
                 self.hierarchy = None;
+                self.report_issue(flight.key.path(), ReadIssue::HierarchyChanged);
+                return;
+            }
+            (_, Outcome::Failed(Failure::RetentionLost)) => {
+                self.replaced(flight.key.path());
                 return;
             }
             (_, Outcome::Failed(failure)) => {
-                if failure == Failure::Refused {
+                if failure == Failure::Denied {
+                    self.denied(flight.key.path());
+                }
+                if matches!(failure, Failure::Refused | Failure::Denied) {
                     self.refuse(flight.key.clone());
                 }
                 self.fail(failure, now);
@@ -934,6 +984,9 @@ impl Reader {
     pub fn set_follows(&mut self, streams: impl IntoIterator<Item = StreamPath>) {
         let mut next = BTreeMap::new();
         for stream in streams {
+            if self.issues.get(&stream) == Some(&ReadIssue::AccessDenied) {
+                continue;
+            }
             if next.len() >= self.policy.follows {
                 break;
             }
@@ -986,8 +1039,54 @@ impl Reader {
     /// replaced. Drop the stream's own records and re-learn it from reads.
     pub fn replaced(&mut self, stream: &StreamPath) {
         self.generation += 1;
-        self.cache.forget(stream);
+        self.report_issue(stream, ReadIssue::RetentionLost);
+        self.invalidate(stream);
+    }
+
+    /// Read failures and cursor discontinuities, bounded independently of history.
+    pub fn issues(&self) -> impl Iterator<Item = (&StreamPath, ReadIssue)> {
+        self.issues.iter().map(|(path, issue)| (path, *issue))
+    }
+
+    /// Acknowledge a displayed issue. Retry a denial only after renewing authority.
+    pub fn acknowledge_issue(&mut self, stream: &StreamPath) {
+        self.issues.remove(stream);
+        self.refused.retain(|key| key.path() != stream);
+        self.generation += 1;
+    }
+
+    fn report_issue(&mut self, stream: &StreamPath, issue: ReadIssue) {
+        if self.issues.len() == MAX_REFUSED
+            && !self.issues.contains_key(stream)
+            && let Some(first) = self.issues.keys().next().cloned()
+        {
+            self.issues.remove(&first);
+        }
+        self.issues.insert(stream.clone(), issue);
+    }
+
+    /// Refuse further delivery under a denied stream's old authority.
+    pub fn denied(&mut self, stream: &StreamPath) {
+        self.generation += 1;
+        self.report_issue(stream, ReadIssue::AccessDenied);
+        self.invalidate(stream);
+    }
+
+    fn invalidate(&mut self, stream: &StreamPath) {
+        self.cache.remove_stream(stream);
         self.follows.remove(stream);
+        let cancelled: Vec<_> = self
+            .inflight
+            .iter()
+            .filter(|(_, flight)| flight.key.path() == stream)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in cancelled {
+            if let Some(flight) = self.inflight.remove(&id) {
+                self.keys.remove(&flight.key);
+                self.cancelled.push(id);
+            }
+        }
     }
 
     /// Whether connections may be attempted now (outside a backoff).
@@ -1026,5 +1125,84 @@ impl Reader {
             (Some(read), Some(retry)) => Some(read.min(retry)),
             (read, retry) => read.or(retry),
         }
+    }
+}
+
+#[cfg(test)]
+mod reader_tests {
+    use super::*;
+
+    #[test]
+    fn denial_discards_aliases_cancels_reads_and_requires_explicit_retry() {
+        let stream = StreamPath::new("test/source").unwrap();
+        let child = StreamPath::new("test/child").unwrap();
+        let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+        reader.begin_frame(0);
+        reader.plan([0, 10].map(|from| {
+            (
+                Want::Range {
+                    stream: stream.clone(),
+                    from,
+                    to: from + 1,
+                },
+                Priority::Visible,
+            )
+        }));
+        let ops = reader.poll(0);
+        assert_eq!(ops.len(), 2);
+        reader
+            .cache
+            .insert_record(&stream, 0, Bytes::from_static(b"old"), None);
+        reader.cache.set_fork(&child, stream.clone(), 1);
+        let snapshot = reader.snapshot();
+        assert!(reader.restore(&snapshot).is_err());
+        reader.complete(ops[0].id(), Outcome::Failed(Failure::Denied), 0);
+        reader.complete(
+            ops[1].id(),
+            Outcome::Records(vec![Fetched {
+                sequence: 10,
+                value: Bytes::from_static(b"late"),
+                commit: CommitId::from_bytes([1; 32]),
+            }]),
+            1,
+        );
+        assert!(reader.cache.record(&stream, 0).is_none());
+        assert!(reader.cache.record(&child, 0).is_none());
+        assert!(reader.cache.record(&stream, 10).is_none());
+        assert_eq!(
+            reader.issues().collect::<Vec<_>>(),
+            vec![(&stream, ReadIssue::AccessDenied)]
+        );
+        let want = Want::Range {
+            stream: stream.clone(),
+            from: 0,
+            to: 1,
+        };
+        reader.begin_frame(10_000);
+        reader.plan([(want.clone(), Priority::Visible)]);
+        assert!(reader.poll(10_000).is_empty());
+        reader.acknowledge_issue(&stream);
+        reader.plan([(want, Priority::Visible)]);
+        assert_eq!(reader.poll(10_000).len(), 1);
+    }
+
+    #[test]
+    fn prefix_loss_is_reported_separately_from_transport_failure() {
+        let stream = StreamPath::new("test/source").unwrap();
+        let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+        reader
+            .cache
+            .insert_record(&stream, 0, Bytes::from_static(b"old"), None);
+        reader.replaced(&stream);
+        assert!(reader.cache.record(&stream, 0).is_none());
+        assert_eq!(
+            reader.issues().collect::<Vec<_>>(),
+            vec![(&stream, ReadIssue::RetentionLost)]
+        );
+        assert_eq!(reader.connectivity(), Connectivity::Online);
+        assert_eq!(
+            Failure::of(&StreamError::PrefixNotRetained),
+            Failure::RetentionLost
+        );
     }
 }

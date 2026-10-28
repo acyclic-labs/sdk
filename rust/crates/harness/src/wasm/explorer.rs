@@ -7,7 +7,7 @@ use super::json::to_js_client;
 use acyclic_harness_client::{
     Explorer, ReaderPolicy,
     explorer::{HistoryRow, Pos, Row},
-    reader::{Connectivity, Driver},
+    reader::{Connectivity, Driver, ReadIssue},
 };
 use acyclic_stream::{StreamPath, StreamProvider, WasmStream};
 use js_sys::{Function, Uint8Array};
@@ -69,13 +69,20 @@ enum RowView<'a> {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Health {
+struct Health<'a> {
     connectivity: &'static str,
     retry_at: Option<u64>,
     cache_bytes: usize,
     requests: usize,
     follows: usize,
     wake_in: Option<u64>,
+    issues: Vec<Issue<'a>>,
+}
+
+#[derive(Serialize)]
+struct Issue<'a> {
+    stream: &'a str,
+    kind: &'static str,
 }
 
 fn depth(pos: &Pos) -> usize {
@@ -225,6 +232,17 @@ impl WasmExplorer {
             wake_in: reader
                 .next_deadline()
                 .map(|deadline| deadline.saturating_sub(now)),
+            issues: reader
+                .issues()
+                .map(|(stream, issue)| Issue {
+                    stream: stream.as_str(),
+                    kind: match issue {
+                        ReadIssue::AccessDenied => "accessDenied",
+                        ReadIssue::RetentionLost => "retentionLost",
+                        ReadIssue::HierarchyChanged => "hierarchyChanged",
+                    },
+                })
+                .collect(),
         })
     }
 

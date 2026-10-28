@@ -25,6 +25,8 @@ export interface ExplorerHealth {
   follows: number;
   /** Milliseconds until the reader's next deadline (a read timeout or retry). */
   wakeIn: bigint | null;
+  /** Discontinuities that must remain visible independently of connectivity. */
+  issues: { stream: string; kind: "accessDenied" | "retentionLost" | "hierarchyChanged" }[];
 }
 
 export interface ExplorerOptions {

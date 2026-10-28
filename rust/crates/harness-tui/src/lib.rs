@@ -50,7 +50,11 @@ mod scrollbar;
 #[cfg(feature = "tui")]
 mod thinking;
 #[cfg(feature = "tui")]
+mod transcript;
+#[cfg(feature = "tui")]
 pub use thinking::Thinking;
+#[cfg(feature = "tui")]
+pub use transcript::TranscriptRows;
 #[cfg(feature = "tui")]
 mod widget;
 

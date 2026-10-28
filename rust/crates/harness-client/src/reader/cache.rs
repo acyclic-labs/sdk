@@ -183,6 +183,41 @@ impl RecordCache {
         }
     }
 
+    /// A denial or lost prefix cannot retain an alias into another history.
+    pub(super) fn remove_stream(&mut self, stream: &StreamPath) {
+        let mut affected = vec![stream.clone()];
+        for _ in 0..MAX_ALIAS_DEPTH {
+            let next: Vec<_> = self
+                .meta
+                .iter()
+                .filter(|(path, meta)| {
+                    !affected.contains(path)
+                        && meta
+                            .fork
+                            .as_ref()
+                            .is_some_and(|(source, _)| affected.contains(source))
+                })
+                .map(|(path, _)| path.clone())
+                .collect();
+            if next.is_empty() {
+                break;
+            }
+            affected.extend(next);
+        }
+        for path in affected {
+            self.forget(&path);
+            self.meta.remove(&path);
+        }
+        let listings: Vec<_> = self
+            .entries
+            .range(Key::Listing(stream.clone(), 0)..=Key::Listing(stream.clone(), u32::MAX))
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in listings {
+            self.remove(&key);
+        }
+    }
+
     /// Drop a parent's listing pages after `index`: their cursors were cut
     /// at a boundary the refreshed page `index` no longer ends at.
     pub fn drop_listings_after(&mut self, parent: &StreamPath, index: u32) {
@@ -445,18 +480,28 @@ impl RecordCache {
         out
     }
 
-    /// Restore persisted bytes into this (empty or not) cache, under its own
-    /// budget. Restored listings are not fresh, so displayed ones revalidate.
+    /// Replace this cache from persisted bytes under its own budget. Restored
+    /// listings are not fresh, so displayed ones revalidate. Parsing retains
+    /// at most one bounded staging cache, including on malformed input.
     ///
     /// # Errors
     /// Refuses malformed input without retaining any part of it.
     pub fn restore(&mut self, bytes: &[u8]) -> Result<(), SnapshotError> {
+        // Bound both parsing work and the caller-supplied encoded snapshot.
+        // Encoding overhead may exceed retained payload bytes for small entries.
+        if bytes.len() > self.max_bytes.saturating_mul(2) {
+            return Err(SnapshotError);
+        }
+        let mut restored = Self::new(self.max_bytes, self.max_streams);
         let mut input = Input(bytes);
         if input.take(MAGIC.len())? != MAGIC {
             return Err(SnapshotError);
         }
-        let mut metas = Vec::new();
-        for _ in 0..input.count()? {
+        let count = input.count()?;
+        if count > self.max_streams {
+            return Err(SnapshotError);
+        }
+        for _ in 0..count {
             let path = input.path()?;
             let tail = input.u64()?.checked_sub(1);
             let fork = match input.u8()? {
@@ -473,16 +518,30 @@ impl RecordCache {
                 }
                 _ => return Err(SnapshotError),
             };
-            metas.push((path, tail, fork, anchor));
+            if let Some(tail) = tail {
+                restored.observe_tail(&path, tail);
+            }
+            if let Some((source, at)) = fork {
+                restored.set_fork(&path, source, at);
+            }
+            if let Some((at, commit)) = anchor {
+                restored.note_commit(&path, at, commit);
+            }
         }
-        let mut entries = Vec::new();
         for _ in 0..input.count()? {
             match input.u8()? {
                 0 => {
                     let path = input.path()?;
                     let sequence = input.u64()?;
-                    let value = Bytes::copy_from_slice(input.bytes()?);
-                    entries.push((path, sequence, Ok(value)));
+                    let value = input.bytes()?;
+                    if value.len() <= self.max_bytes {
+                        restored.insert_record(
+                            &path,
+                            sequence,
+                            Bytes::copy_from_slice(value),
+                            None,
+                        );
+                    }
                 }
                 1 => {
                     let path = input.path()?;
@@ -496,20 +555,25 @@ impl RecordCache {
                         text => Some(StreamPath::new(text).map_err(|_| SnapshotError)?),
                     };
                     let mut children = Vec::new();
-                    for _ in 0..input.count()? {
+                    let count = input.count()?;
+                    if count > acyclic_stream::MAX_ITEMS {
+                        return Err(SnapshotError);
+                    }
+                    for _ in 0..count {
                         children.push(input.path()?);
                     }
-                    entries.push((
-                        path,
-                        u64::from(index),
-                        Err(Listing {
+                    restored.insert_listing(
+                        &path,
+                        index,
+                        Listing {
                             after,
                             children,
                             next,
                             fresh: false,
                             witnessed: None,
-                        }),
-                    ));
+                        },
+                        None,
+                    );
                 }
                 _ => return Err(SnapshotError),
             }
@@ -517,28 +581,7 @@ impl RecordCache {
         if !input.0.is_empty() {
             return Err(SnapshotError);
         }
-        for (path, tail, fork, anchor) in metas {
-            if let Some(tail) = tail {
-                self.observe_tail(&path, tail);
-            }
-            if let Some((source, at)) = fork {
-                self.set_fork(&path, source, at);
-            }
-            if let Some((at, commit)) = anchor {
-                self.note_commit(&path, at, commit);
-            }
-        }
-        for (path, position, value) in entries {
-            match value {
-                Ok(value) => {
-                    self.insert_record(&path, position, value, None);
-                }
-                Err(listing) => {
-                    // Index came from a u32 above.
-                    self.insert_listing(&path, position as u32, listing, None);
-                }
-            }
-        }
+        *self = restored;
         Ok(())
     }
 }
@@ -551,13 +594,15 @@ fn path_len(key: &Key) -> usize {
 
 const MAGIC: &[u8] = b"acyclic.records.v1\n";
 
-/// Persisted bytes are malformed; nothing was restored.
+/// Snapshot input exceeds admission bounds, is malformed, or the reader is active.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SnapshotError;
 
 impl std::fmt::Display for SnapshotError {
     fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        output.write_str("malformed record cache snapshot")
+        output.write_str(
+            "record cache snapshot rejected: invalid input, exceeded budget, or active reader",
+        )
     }
 }
 
@@ -612,5 +657,33 @@ impl<'a> Input<'a> {
     }
     fn path(&mut self) -> Result<StreamPath, SnapshotError> {
         StreamPath::new(self.str()?).map_err(|_| SnapshotError)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restore_is_bounded_and_replaces_the_previous_snapshot_atomically() {
+        let stream = StreamPath::new("test/history").unwrap();
+        let obsolete = StreamPath::new("test/obsolete").unwrap();
+        let mut source = RecordCache::new(64 * 1024, 16);
+        for sequence in 0..40 {
+            source.insert_record(&stream, sequence, Bytes::from(vec![7; 64]), None);
+        }
+        let mut target = RecordCache::new(4096, 16);
+        target.insert_record(&obsolete, 0, Bytes::from_static(b"old"), None);
+        let before = target.snapshot();
+        let mut malformed = source.snapshot();
+        malformed.push(255);
+        assert!(target.restore(&malformed).is_err());
+        assert_eq!(target.snapshot(), before);
+        assert!(target.restore(&vec![0; 8193]).is_err());
+        assert_eq!(target.snapshot(), before);
+        target.restore(&source.snapshot()).unwrap();
+        assert!(target.bytes() <= 4096);
+        assert!(target.record(&obsolete, 0).is_none());
+        assert_eq!(target.record(&stream, 39).unwrap().as_ref(), &[7; 64]);
     }
 }
