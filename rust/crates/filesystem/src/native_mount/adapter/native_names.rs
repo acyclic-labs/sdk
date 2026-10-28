@@ -162,17 +162,9 @@ impl<A, O> CheckoutMountSource<A, O> {
         source_root: &Path,
         paths: &[MountPath],
         expected_root_identity: NativeRootIdentity,
-        scope: HostCaptureScope,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Vec<NamespacePath>, CaptureOptions, crate::NativeAllocation), MountSourceError>
     {
-        if matches!(scope, HostCaptureScope::ExactPaths)
-            && paths.len() > MAX_NATIVE_EXACT_CAPTURE_PATHS
-        {
-            return Err(MountSourceError::Invalid(
-                "capture path set exceeds the native per-operation limit".into(),
-            ));
-        }
         let mut carrier = NativeDemandCarrier::Native(work);
         let mut inputs = InputBuffers::new(&mut carrier)?;
         let mut rooted = inputs.vec(paths.len())?;
@@ -180,15 +172,10 @@ impl<A, O> CheckoutMountSource<A, O> {
             rooted.push(self.namespace_inputs(path, &mut inputs)?);
         }
         let source_root = inputs.clone_path(source_root)?;
-        let maximum_paths = match scope {
-            HostCaptureScope::ExactPaths => u32::try_from(rooted.len())
-                .map_err(|_| MountSourceError::Work(crate::WorkError::Overflow))?,
-            HostCaptureScope::Subtree => MAX_NATIVE_SUBTREE_CAPTURE_PATHS,
-        };
         let options = CaptureOptions {
             source_root,
             expected_root_identity,
-            maximum_paths,
+            maximum_paths: None,
             maximum_extent_spans: 65_536,
         };
         Ok((

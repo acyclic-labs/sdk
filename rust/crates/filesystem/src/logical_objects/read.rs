@@ -61,7 +61,7 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
         #[cfg(target_arch = "wasm32")]
         let native = false;
         let maximum = maximum
-            .min(self.maximum_object_bytes)
+            .min(self.maximum_object_bytes.unwrap_or(maximum))
             .min(remaining.object_bytes_read);
         let maximum = if native {
             maximum
@@ -167,7 +167,10 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
             let (value, mut allocation) = read_request(
                 &self.bucket,
                 request.object_id,
-                request.maximum_bytes.min(self.maximum_object_bytes),
+                self.maximum_object_bytes
+                    .map_or(request.maximum_bytes, |limit| {
+                        request.maximum_bytes.min(limit)
+                    }),
                 work,
             )?;
             request_bytes = request_bytes
@@ -305,7 +308,7 @@ impl<P: ObjectsProvider + ?Sized> LogicalObjectStore<P> {
             let maximum = requests.get(index).map_or(0, |request| {
                 request
                     .maximum_bytes
-                    .min(self.maximum_object_bytes)
+                    .min(self.maximum_object_bytes.unwrap_or(request.maximum_bytes))
                     .min(left)
             });
             left -= maximum;

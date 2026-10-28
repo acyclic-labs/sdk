@@ -35,7 +35,7 @@ pub struct SourceOptions {
     /// Source advancement behavior.
     pub mode: SourceMode,
     /// Maximum paths in one authenticated baseline or reconciliation batch.
-    pub maximum_paths: u32,
+    pub maximum_paths: Option<u32>,
     /// Maximum sparse data spans admitted per regular file.
     pub maximum_extent_spans: u32,
     /// Maximum pending native hints before continuity is invalidated.
@@ -48,7 +48,7 @@ impl Default for SourceOptions {
     fn default() -> Self {
         Self {
             mode: SourceMode::Tracking,
-            maximum_paths: 262_144,
+            maximum_paths: None,
             maximum_extent_spans: 65_536,
             maximum_queued_changes: 65_536,
             excluded_paths: Vec::new(),
@@ -210,7 +210,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
             return Err(SourceError::Pinned);
         }
         begin_source_operation(&mut session, key, SourceOperation::Reconcile).await?;
-        let maximum_paths = session.capture.maximum_paths;
+        let maximum_paths = session.capture.maximum_paths.unwrap_or(1024);
         let batch = session
             .watcher
             .poll(
@@ -664,7 +664,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         path: impl AsRef<Path>,
         options: SourceOptions,
     ) -> Result<Workspace<A, O>, SourceError> {
-        if options.maximum_paths == 0
+        if options.maximum_paths == Some(0)
             || options.maximum_extent_spans == 0
             || options.maximum_queued_changes == 0
         {

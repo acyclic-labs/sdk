@@ -157,8 +157,14 @@ impl Checkpoint {
             .checked_add(36 + length as u64)
             .ok_or(Error::from(QuotaExceeded))?;
         if length > RECORD_LIMIT
-            || end > self.limits.maximum_journal_bytes
-            || pending.delta.ordinal > self.limits.maximum_journal_operations
+            || self
+                .limits
+                .maximum_journal_bytes
+                .is_some_and(|limit| end > limit)
+            || self
+                .limits
+                .maximum_journal_operations
+                .is_some_and(|limit| pending.delta.ordinal > limit)
         {
             return Err(Error::from(QuotaExceeded).into());
         }

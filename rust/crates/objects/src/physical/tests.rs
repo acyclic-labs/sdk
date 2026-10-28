@@ -124,7 +124,7 @@ async fn physical_reads_validate_ranges_and_corruption() {
         }]
         .into_iter()
         .collect();
-        assert!(validate_referenced_segments(directory.path(), &references, 1024).is_ok());
+        assert!(validate_referenced_segments(directory.path(), &references, Some(1024)).is_ok());
         let segment = segment_path(directory.path(), &id);
         OpenOptions::new()
             .write(true)
@@ -133,7 +133,7 @@ async fn physical_reads_validate_ranges_and_corruption() {
             .set_len(SEGMENT_HEADER_BYTES as u64)
             .unwrap_or_else(|_| unreachable!());
         assert!(read(&location, 0, body.len()).is_err());
-        assert!(validate_referenced_segments(directory.path(), &references, 1024).is_err());
+        assert!(validate_referenced_segments(directory.path(), &references, Some(1024)).is_err());
         fs::write(directory.path().join(JOURNAL_FILE), &body).unwrap_or_else(|_| unreachable!());
         let journal = LocalBodyLocation::Journal { offset: 0 };
         assert!(read(&journal, 0, body.len()).is_ok());

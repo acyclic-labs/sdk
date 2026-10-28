@@ -275,8 +275,8 @@ async fn logical_quota_failure_does_not_persist_a_body_or_retry_receipt()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let options = LocalObjectsLimits {
-        maximum_object_bytes: 5,
-        maximum_bytes: 5,
+        maximum_object_bytes: Some(5),
+        maximum_bytes: Some(5),
         ..Default::default()
     };
     let core = open(root.path().to_path_buf(), options, None)?;

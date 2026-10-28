@@ -172,8 +172,8 @@ async fn one_durable_batch_preserves_independent_validation_and_quota_failures()
 -> Result<(), Box<dyn std::error::Error>> {
     let root = tempfile::tempdir()?;
     let options = LocalObjectsLimits {
-        maximum_object_bytes: 4,
-        maximum_bytes: 20,
+        maximum_object_bytes: Some(4),
+        maximum_bytes: Some(20),
         ..Default::default()
     };
     let core = open(root.path().to_path_buf(), options, None)?;

@@ -277,10 +277,10 @@ impl Fixture {
             }],
             policy: ContextDiscoveryPolicy::default(),
             limits: ContextDiscoveryLimits {
-                entries: 64,
-                directories: 8,
-                header_bytes: 256,
-                instruction_bytes: 512,
+                entries: Some(64),
+                directories: Some(8),
+                header_bytes: Some(256),
+                instruction_bytes: Some(512),
             },
         }
     }
@@ -646,8 +646,17 @@ async fn admitted_frontmatter_has_no_extra_size_or_node_ceilings() -> Result<()>
             .map(Vec::len),
         Some(3_000)
     );
+    fixture
+        .put("skills/a/SKILL.md", prefix.as_bytes(), "large")
+        .await?;
+    declaration.limits = ContextDiscoveryLimits::default();
+    let captured = declaration.capture(fixture.reader.as_ref()).await?;
+    let discovered = first_skill(&captured)?;
+    assert_eq!(discovered.name, metadata.name);
+    assert_eq!(discovered.description, metadata.description);
+    assert_eq!(discovered.fields, metadata.fields);
     declaration.skills.clear();
-    declaration.limits.header_bytes = 65_537;
+    declaration.limits.header_bytes = Some(65_537);
     assert!(
         declaration
             .capture(fixture.reader.as_ref())

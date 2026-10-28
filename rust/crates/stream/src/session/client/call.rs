@@ -12,12 +12,12 @@ impl Client {
         &self,
         invocation: &Bytes,
         credential: u32,
-        maximum_reply_bytes: usize,
+        maximum_reply_bytes: impl Into<Option<usize>>,
     ) -> Result<Bytes, StreamError> {
+        let maximum_reply_bytes = maximum_reply_bytes.into();
         if invocation.is_empty()
             || invocation.len() > crate::MAX_COMMAND_BYTES
-            || maximum_reply_bytes == 0
-            || maximum_reply_bytes > wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES
+            || maximum_reply_bytes == Some(0)
         {
             return Err(StreamError::InvalidArgument);
         }
@@ -42,13 +42,12 @@ impl Client {
                 return Err(StreamError::InvalidResponse);
             };
             let length = wire_codec::session::actor_call_total(&data)?;
-            if length > maximum_reply_bytes || total.is_some_and(|old| old != length) {
+            if maximum_reply_bytes.is_some_and(|maximum| length > maximum)
+                || total.is_some_and(|old| old != length)
+            {
                 return Err(StreamError::InvalidResponse);
             }
             if total.is_none() {
-                reply
-                    .try_reserve_exact(length)
-                    .map_err(|_| StreamError::Capacity)?;
                 total = Some(length);
             }
             let Some(Item::ActorCall(chunk)) = data.item else {
@@ -57,6 +56,11 @@ impl Client {
             if chunk.len() > length - reply.len() {
                 return Err(StreamError::InvalidResponse);
             }
+            // Fund only received fragments. The announced total cannot trigger
+            // a large speculative allocation before its bytes arrive.
+            reply
+                .try_reserve(chunk.len())
+                .map_err(|_| StreamError::Capacity)?;
             reply.extend_from_slice(&chunk);
             if reply.len() == length {
                 return Ok(reply.into());

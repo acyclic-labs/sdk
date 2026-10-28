@@ -117,7 +117,7 @@ struct BrowserReader {
     list: Function,
     prefix: Function,
     read: Function,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 fn platform_error(error: JsValue) -> Error {
@@ -129,8 +129,8 @@ fn platform_error(error: JsValue) -> Error {
 }
 
 impl BrowserReader {
-    fn new(receiver: JsValue, maximum_bytes: u64) -> Result<Self> {
-        if maximum_bytes == 0 {
+    fn new(receiver: JsValue, maximum_bytes: Option<u64>) -> Result<Self> {
+        if maximum_bytes == Some(0) {
             return Err(Error::Invalid("browser read bound is invalid".into()));
         }
         let function = |name: &str| -> Result<Function> {
@@ -289,7 +289,9 @@ impl ContentResidencyVerifier for BrowserReader {
 
         crate::conversation::require_owner_reader(ceiling)?;
         BoundedContentFuture::new(io, || async move {
-            let maximum_bytes = maximum_bytes.min(self.maximum_bytes);
+            let maximum_bytes = self
+                .maximum_bytes
+                .map_or(maximum_bytes, |maximum| maximum_bytes.min(maximum));
             let generation = generation.ok_or_else(|| {
                 Error::Invalid("context path requires a pinned generation".into())
             })?;

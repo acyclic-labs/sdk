@@ -19,7 +19,6 @@ pub(super) fn start(mut session: Session, inbox: u64, input: TurnInput) -> Resul
 /// The open turn's step: `session` in its checkpoint, awaiting the next hook.
 pub(super) fn waiting(session: &Session, outs: Vec<Out>) -> Result<TurnStep> {
     Ok(TurnStep {
-        reserved_children: 0,
         checkpoint: Some(serde_json::to_vec(session).map_err(storage)?),
         outs,
         wait: Wait::Host(HOST.into()),
@@ -29,7 +28,6 @@ pub(super) fn waiting(session: &Session, outs: Vec<Out>) -> Result<TurnStep> {
 
 pub(super) fn idle(outs: Vec<Out>) -> TurnStep {
     TurnStep {
-        reserved_children: 0,
         checkpoint: None,
         outs,
         wait: Wait::Input,
@@ -48,7 +46,7 @@ pub(super) fn reject(session: &mut Session, id: &IntentId, reason: &str) -> Opti
 /// Applies owner request `id` at inbox sequence `inbox`, returning the input it
 /// settled. Stale or replayed requests are recorded, never failed: a failed
 /// turn would leave its input queued ahead of every later one.
-pub(super) fn apply(
+pub(super) async fn apply(
     agent: &AgentState,
     session: &mut Session,
     inbox: u64,
@@ -63,6 +61,8 @@ pub(super) fn apply(
             if agent
                 .open_children
                 .contains(&child(&agent.path, &reference)?)
+                .await
+                .map_err(storage)?
             {
                 return Ok(reject(session, id, "native child already exists"));
             }

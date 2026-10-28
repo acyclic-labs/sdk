@@ -34,7 +34,7 @@ fn core(root: &Path, limit: u64) -> MemoryObjects {
     let core = open(
         root.to_path_buf(),
         LocalObjectsLimits {
-            maximum_object_bytes: limit,
+            maximum_object_bytes: Some(limit),
             ..Default::default()
         },
         None,
@@ -67,7 +67,12 @@ fn previous_validation(
                 .map(|(_, body)| body),
         )
         .chain(pending)
-        .any(|body| body.len() as u64 > journal.limits.maximum_object_bytes)
+        .any(|body| {
+            journal
+                .limits
+                .maximum_object_bytes
+                .is_some_and(|limit| body.len() as u64 > limit)
+        })
     {
         return Err(QuotaExceeded.into());
     }
@@ -184,7 +189,7 @@ async fn inline_and_external_upload_parts_establish_the_same_validated_prefix()
         let core = open(
             root.path().to_path_buf(),
             LocalObjectsLimits {
-                maximum_object_bytes: limit as u64,
+                maximum_object_bytes: Some(limit as u64),
                 ..Default::default()
             },
             None,
@@ -227,7 +232,7 @@ proptest! {
         }
         drop(core);
         let core = open(root.path().to_path_buf(), LocalObjectsLimits {
-            maximum_object_bytes: limit, ..Default::default()
+            maximum_object_bytes: Some(limit), ..Default::default()
         }, None).unwrap();
         for (index, &length) in lengths.iter().enumerate() {
             let result = futures::executor::block_on(core.get(get(bucket(), &format!("item-{index}")), 25));

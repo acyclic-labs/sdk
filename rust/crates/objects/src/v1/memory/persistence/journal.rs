@@ -7,7 +7,11 @@ impl Journal {
             && tail.inline_bytes >= tail.bytes.saturating_sub(tail.inline_bytes))
     }
     pub(in crate::v1::memory) fn validate_body(&self, body: &StoredBody) -> Result<(), Error> {
-        if body.len() as u64 > self.limits.maximum_object_bytes {
+        if self
+            .limits
+            .maximum_object_bytes
+            .is_some_and(|limit| body.len() as u64 > limit)
+        {
             return Err(QuotaExceeded.into());
         }
         Ok(())
@@ -34,7 +38,11 @@ impl Journal {
                 publication.check()?;
                 self.check()?;
                 let mut tail = self.tail.lock().map_err(|_| Error::from(Unavailable))?;
-                if tail.operations >= self.limits.maximum_journal_operations {
+                if self
+                    .limits
+                    .maximum_journal_operations
+                    .is_some_and(|limit| tail.operations >= limit)
+                {
                     return Err(Error::from(QuotaExceeded).into());
                 }
                 let inline_data =
@@ -71,7 +79,12 @@ impl Journal {
                     .bytes
                     .checked_add(36 + record.len() as u64)
                     .ok_or(Error::from(QuotaExceeded))?;
-                if record.len() > RECORD_LIMIT || end > self.limits.maximum_journal_bytes {
+                if record.len() > RECORD_LIMIT
+                    || self
+                        .limits
+                        .maximum_journal_bytes
+                        .is_some_and(|limit| end > limit)
+                {
                     return Err(Error::from(QuotaExceeded).into());
                 }
                 let frame = encode_frame(&record, &mut publication)?;
@@ -167,7 +180,11 @@ impl Journal {
         }
         match body {
             StoredBody::Memory(bytes) => {
-                if bytes.len() as u64 > self.limits.maximum_object_bytes {
+                if self
+                    .limits
+                    .maximum_object_bytes
+                    .is_some_and(|limit| bytes.len() as u64 > limit)
+                {
                     return Err(Error::from(QuotaExceeded).into());
                 }
                 let digest =

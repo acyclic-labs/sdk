@@ -199,30 +199,10 @@ pub(super) fn classify_host_observation(
     }
 }
 
-pub(super) fn insert_host_observation(
-    observed: &mut Vec<(NamespacePath, Option<HostStat>)>,
-    path: NamespacePath,
-    metadata: HostStat,
-    maximum: usize,
-    meter: &NativeMaterializationWork,
-) -> Result<(), CaptureError> {
-    if capture_position(observed, &path, meter)?.is_err() && observed.len() >= maximum {
-        return Err(CaptureError::InvalidOptions);
-    }
-    capture_charge(
-        meter,
-        WorkCounters {
-            items_examined: 1,
-            ..WorkCounters::UNCHARGED
-        },
-    )?;
-    capture_replace(observed, path, Some(metadata), meter)
-}
-
 pub(super) fn collect_host_subtree_roots(
     source_root: &HostRoot,
     volume: (FilesystemProfile, crate::model::VolumeLimits),
-    maximum: usize,
+    maximum: Option<usize>,
     roots: &[NamespacePath],
     policy: &CapturePolicy,
     observed: &mut Vec<(NamespacePath, Option<HostStat>)>,
@@ -235,11 +215,10 @@ pub(super) fn collect_host_subtree_roots(
         capture_drop_host_path(host_root, meter)?;
         if let Some(observation) = observation {
             let recurse = observation.file_type() == crate::demand::SourceNodeKind::Directory;
-            insert_host_observation(
+            capture_push_entry(
                 observed,
                 clone_capture_path(root, meter)?,
-                observation,
-                maximum,
+                Some(observation),
                 meter,
             )?;
             if recurse {
@@ -250,12 +229,10 @@ pub(super) fn collect_host_subtree_roots(
                     clone_capture_path(root, meter)?,
                     policy,
                     meter,
-                    |path, stat, meter| {
-                        insert_host_observation(observed, path, stat, maximum, meter)
-                    },
+                    |path, stat, meter| capture_push_entry(observed, path, Some(stat), meter),
                 )?;
             }
         }
     }
-    Ok(())
+    capture_order_entries(observed, maximum, meter)
 }

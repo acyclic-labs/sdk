@@ -371,11 +371,7 @@ impl WasmAgentServer {
             .register_credential(0, credential)
             .map_err(stream_error)?;
         client
-            .actor_call(
-                &invocation,
-                0,
-                acyclic_harness_client::MAX_AGENT_REPLY_BYTES,
-            )
+            .actor_call(&invocation, 0, None)
             .await
             .map(|reply| Vec::from(reply.as_ref()))
             .map_err(stream_error)

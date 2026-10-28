@@ -181,7 +181,7 @@ pub use keys::{filesystem_key, workspace_ref};
 pub(in crate::filesystem) use publication::{
     content_metadata_matches, decode_content_metadata, recover_internal_upload_receipt,
 };
-pub(in crate::filesystem) use reads::read_generation;
+pub(in crate::filesystem) use reads::{read_generation, read_metadata};
 
 use crate::executor::stock_boundary;
 

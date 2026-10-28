@@ -507,7 +507,7 @@ mod tests {
         ));
         drop(provider);
         let options = LocalObjectsLimits {
-            maximum_bytes: 123,
+            maximum_bytes: Some(123),
             ..LocalObjectsLimits::default()
         };
         assert!(matches!(
@@ -524,7 +524,7 @@ mod tests {
             limits.maximum_journal_operations,
             limits.maximum_journal_bytes,
         ] {
-            header.extend_from_slice(&limit.to_le_bytes());
+            header.extend_from_slice(&limit.unwrap_or_default().to_le_bytes());
         }
         std::fs::write(legacy.path().join("mutations.log"), &header)?;
         let before = std::fs::read(legacy.path().join("mutations.log"))?;

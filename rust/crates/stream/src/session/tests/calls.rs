@@ -1,7 +1,7 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-struct Calls(Arc<AtomicUsize>);
+struct Calls(Arc<AtomicUsize>, usize);
 impl CallProvider for Calls {
     fn resource(&self, _: &[u8]) -> Result<String, StreamError> {
         Ok("actors:/fixture".into())
@@ -12,6 +12,7 @@ impl CallProvider for Calls {
         authorization: CallAuthorization,
     ) -> crate::BoxProviderFuture<'static, Result<Bytes, StreamError>> {
         let calls = self.0.clone();
+        let reply_bytes = self.1;
         Box::pin(async move {
             let attributes = acyclic_auth::contract::RecordAttributes::try_new(vec![])
                 .map_err(|_| StreamError::InvalidArgument)?;
@@ -22,7 +23,7 @@ impl CallProvider for Calls {
                 acyclic_auth::authority::PolicyDecision::Allow,
             )?;
             calls.fetch_add(1, Ordering::SeqCst);
-            Ok(vec![9; crate::MAX_RECORD_BYTES + 7].into())
+            Ok(vec![9; reply_bytes].into())
         })
     }
 }
@@ -36,7 +37,7 @@ async fn follow_authority_cannot_dispatch_calls_or_stop_healthy_follows() -> Tes
         provider,
         testing::authority(),
         None,
-        Arc::new(Calls(calls.clone())),
+        Arc::new(Calls(calls.clone(), crate::MAX_RECORD_BYTES + 7)),
         Arc::new(crate::runtime::PlatformExecutor),
     );
     client.register_credential(0, testing::credential())?;
@@ -99,18 +100,14 @@ async fn call_reply_uses_shared_credit_and_preserves_all_fragments() -> TestResu
         Arc::new(MemoryStream::default()),
         testing::authority(),
         None,
-        Arc::new(Calls(calls.clone())),
+        Arc::new(Calls(calls.clone(), 1024 * 1024 + 7)),
         Arc::new(crate::runtime::PlatformExecutor),
     );
     client.register_credential(0, credential.into())?;
     let response = client
-        .actor_call(
-            &Bytes::from_static(b"invocation"),
-            0,
-            crate::MAX_RECORD_BYTES + 7,
-        )
+        .actor_call(&Bytes::from_static(b"invocation"), 0, None)
         .await?;
-    assert_eq!(response.as_ref(), vec![9; crate::MAX_RECORD_BYTES + 7]);
+    assert_eq!(response.as_ref(), vec![9; 1024 * 1024 + 7]);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     Ok(())
 }

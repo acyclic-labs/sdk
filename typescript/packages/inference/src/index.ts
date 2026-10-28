@@ -298,7 +298,6 @@ async function readBoundedText(response: Response, maximumBytes: number, kind: s
 }
 
 /** Maximum bearer credential bytes. */
-export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
 
 /** Authenticated protobuf-JSON/NDJSON transport for the public service contract. */
 export class HttpInferenceTransport implements InferenceTransport {
@@ -449,7 +448,7 @@ export class HttpInferenceTransport implements InferenceTransport {
     signal?.throwIfAborted();
     // Headers already rejects CR, LF, and NUL; also bound the credential size.
     const authorization = headers.get("authorization") ?? "";
-    if (authorization.trim().length === 0 || utf8Length(authorization) > MAX_BEARER_TOKEN_BYTES + "Bearer ".length) {
+    if (authorization.trim().length === 0) {
       throw new InferenceTransportError(0, "authorization header must be non-empty and carry a bearer of at most 12 KiB");
     }
     headers.set("content-type", "application/json");

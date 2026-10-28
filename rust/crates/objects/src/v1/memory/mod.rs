@@ -60,15 +60,15 @@ fn fresh_cursor_key(
 #[derive(Clone, Copy, Debug)]
 pub struct MemoryOptions {
     /// Maximum combined bytes in current objects and staged multipart parts.
-    pub maximum_bytes: usize,
+    pub maximum_bytes: Option<usize>,
     /// Maximum number of buckets, current objects, staged uploads, and retry receipts.
-    pub maximum_entries: usize,
+    pub maximum_entries: Option<usize>,
 }
 impl Default for MemoryOptions {
     fn default() -> Self {
         Self {
-            maximum_bytes: 64 * 1024 * 1024,
-            maximum_entries: 10_000,
+            maximum_bytes: None,
+            maximum_entries: None,
         }
     }
 }
@@ -130,10 +130,7 @@ impl MemoryObjects {
         (
             Self {
                 state: StateArc::new(Mutex::new(state)),
-                options: MemoryOptions {
-                    maximum_entries: usize::MAX,
-                    ..MemoryOptions::default()
-                },
+                options: MemoryOptions::default(),
                 token_key: StateArc::new(Mutex::new(None)),
                 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 journal: None,
@@ -172,7 +169,7 @@ impl MemoryObjects {
 
     /// Creates a provider with explicit limits.
     pub fn new(options: MemoryOptions) -> Result<Self, Error> {
-        if options.maximum_entries == 0 {
+        if options.maximum_entries == Some(0) {
             return Err(InvalidArgument.into());
         }
         let token_key = fresh_cursor_key(fill_entropy)?;

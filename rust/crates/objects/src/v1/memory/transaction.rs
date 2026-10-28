@@ -174,7 +174,15 @@ impl MemoryObjects {
                 .and_then(|n| n.checked_add(new_bytes))
                 .ok_or(Error::from(QuotaExceeded))?;
         }
-        if count > self.options.maximum_entries || bytes > self.options.maximum_bytes {
+        if self
+            .options
+            .maximum_entries
+            .is_some_and(|limit| count > limit)
+            || self
+                .options
+                .maximum_bytes
+                .is_some_and(|limit| bytes > limit)
+        {
             return Err(Error::from(QuotaExceeded).into());
         }
         commit(guard, &mut next)?;

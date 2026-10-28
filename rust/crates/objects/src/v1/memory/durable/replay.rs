@@ -5,7 +5,7 @@ pub(in crate::v1::memory) fn apply(
     delta: Delta,
     restore_body: &impl Fn(Vec<BodyRecord>, u64) -> Result<StoredBody, RestoreError>,
     options: MemoryOptions,
-    maximum_object_bytes: u64,
+    maximum_object_bytes: Option<u64>,
 ) -> Result<(), RestoreError> {
     if delta.sequence < state.sequence {
         return Err(RestoreError);
@@ -55,7 +55,7 @@ pub(in crate::v1::memory) fn apply(
             .ok_or(RestoreError)?;
         if let Some(info) = value.info {
             response::object_info(&info).map_err(corrupt)?;
-            if info.size > maximum_object_bytes {
+            if maximum_object_bytes.is_some_and(|limit| info.size > limit) {
                 return Err(RestoreError);
             }
             let body = restore_body(value.bodies, info.size)?;
@@ -122,7 +122,7 @@ pub(in crate::v1::memory) fn apply_parts(
     next: &mut State,
     changes: Vec<PartChange>,
     restore_body: &impl Fn(Vec<BodyRecord>, u64) -> Result<StoredBody, RestoreError>,
-    maximum_object_bytes: u64,
+    maximum_object_bytes: Option<u64>,
 ) -> Result<(), RestoreError> {
     let mut seen = BTreeSet::new();
     for value in changes {
@@ -150,7 +150,7 @@ pub(in crate::v1::memory) fn apply_parts(
             receipt.size,
         )
         .map_err(corrupt)?;
-        if receipt.size > maximum_object_bytes {
+        if maximum_object_bytes.is_some_and(|limit| receipt.size > limit) {
             return Err(RestoreError);
         }
         let body = restore_body(value.bodies, receipt.size)?;
@@ -197,8 +197,10 @@ pub(in crate::v1::memory) fn validate_state(
     options: MemoryOptions,
 ) -> Result<(), RestoreError> {
     let size = super::super::stored_bytes(before, next).ok_or(RestoreError)?;
-    if size > options.maximum_bytes
-        || next.entry_count() > options.maximum_entries
+    if options.maximum_bytes.is_some_and(|limit| size > limit)
+        || options
+            .maximum_entries
+            .is_some_and(|limit| next.entry_count() > limit)
         || next
             .uploads
             .values()

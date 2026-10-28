@@ -111,11 +111,7 @@ impl GrpcObjects {
     ) -> Result<Self, ConnectError> {
         let identity = identity
             .map(|(certificate, key)| {
-                if certificate.is_empty()
-                    || certificate.len() > super::MAX_PEM_BYTES
-                    || key.is_empty()
-                    || key.len() > super::MAX_PEM_BYTES
-                {
+                if certificate.is_empty() || key.is_empty() {
                     return Err(ConnectError::InvalidConfiguration);
                 }
                 Ok(Identity::from_pem(certificate, key))
@@ -135,7 +131,7 @@ impl GrpcObjects {
         let authorization = token.map(credential_header).transpose()?;
         let mut tls = ClientTlsConfig::new();
         if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > super::MAX_PEM_BYTES {
+            if ca.is_empty() {
                 return Err(ConnectError::InvalidConfiguration);
             }
             tls = tls.ca_certificate(Certificate::from_pem(ca));

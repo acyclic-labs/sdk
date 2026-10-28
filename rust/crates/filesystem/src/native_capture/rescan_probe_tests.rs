@@ -38,7 +38,7 @@ fn fixture_with_prefix(runtime: &tokio::runtime::Runtime, prefix: &str) -> Fixtu
     let options = CaptureOptions {
         source_root: source.path().to_owned(),
         expected_root_identity: capture_root_identity(source.path()).unwrap(),
-        maximum_paths: 8,
+        maximum_paths: Some(8),
         maximum_extent_spans: 8,
     };
     let health = acyclic_native_runtime::NativeFile::from_file(

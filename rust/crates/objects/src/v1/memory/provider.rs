@@ -658,7 +658,7 @@ impl ObjectsProvider for MemoryObjects {
                                 .checked_add(body.len())
                                 .ok_or(Error::from(QuotaExceeded))?;
                         }
-                        if size > self.options.maximum_bytes {
+                        if self.options.maximum_bytes.is_some_and(|limit| size > limit) {
                             return Err(QuotaExceeded.into());
                         }
                         let metadata = (*value.metadata).clone();

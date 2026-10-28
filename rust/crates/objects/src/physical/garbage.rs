@@ -4,7 +4,7 @@ pub(crate) fn collect_physical_garbage(
     root: &Path,
     live_bodies: &BTreeSet<LocalBodyReference>,
     maximum_candidates: u64,
-    maximum_object_bytes: u64,
+    maximum_object_bytes: Option<u64>,
     durability: LocalDurability,
 ) -> Result<LocalObjectsGarbageCollection, PhysicalError> {
     let mut candidates = 0_u64;

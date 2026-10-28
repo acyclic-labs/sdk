@@ -47,8 +47,8 @@ pub(in crate::bindings) enum Acceleration {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(in crate::bindings) struct MemoryOptions {
-    pub(in crate::bindings) maximum_object_bytes: u64,
-    pub(in crate::bindings) maximum_memory_bytes: u64,
+    pub(in crate::bindings) maximum_object_bytes: Some(u64),
+    pub(in crate::bindings) maximum_memory_bytes: Some(u64),
     pub(in crate::bindings) object_cache: BrowserObjectCacheOptions,
 }
 
@@ -477,7 +477,7 @@ pub(in crate::bindings) fn memory_engine(
         "acyclic-fs-wasm-memory",
         acyclic_objects::v1::MemoryOptions {
             maximum_bytes,
-            maximum_entries: usize::MAX,
+            maximum_entries: Some(usize::MAX),
         },
     )
     .map_err(js_error)?;
@@ -486,7 +486,7 @@ pub(in crate::bindings) fn memory_engine(
         CachedObjectStore::new(
             BrowserObjects::Memory(
                 LogicalObjectStore::new(Arc::new(objects), bucket)
-                    .with_object_limit(maximum_object_bytes)
+                    .with_object_limit(Some(maximum_object_bytes))
                     .map_err(js_error)?,
             ),
             cache,

@@ -50,7 +50,7 @@ fn restore(
     expected: u64,
     source: &Arc<dyn ImmutableBodies>,
 ) -> Result<StoredBody, durable::RestoreError> {
-    if records.is_empty() || records.len() > 10_000 {
+    if records.is_empty() {
         return Err(durable::RestoreError);
     }
     let mut length = 0usize;
@@ -178,7 +178,11 @@ impl MemoryObjects {
     ) -> Result<Self, Error> {
         let core = Self::new(MemoryOptions::default())?;
         let mut state = State::default();
-        if pages.len() > core.options.maximum_entries {
+        if core
+            .options
+            .maximum_entries
+            .is_some_and(|limit| pages.len() > limit)
+        {
             return Err(Unavailable.into());
         }
         for bytes in pages {
@@ -194,7 +198,7 @@ impl MemoryObjects {
                 delta,
                 &|records, length| restore(records, length, &source),
                 core.options,
-                core.options.maximum_bytes as u64,
+                core.options.maximum_bytes.map(|value| value as u64),
             )
             .map_err(unavailable)?;
         }

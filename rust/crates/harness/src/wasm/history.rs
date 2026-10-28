@@ -14,8 +14,8 @@ use wasm_bindgen::prelude::*;
 #[serde(deny_unknown_fields)]
 struct BrowserHistoryOptions {
     database: String,
-    maximum_commands: u32,
-    maximum_journal_bytes: u64,
+    maximum_commands: Option<u32>,
+    maximum_journal_bytes: Option<u64>,
     authority: Authority,
     issuer_id: String,
     issuer_key: Vec<u8>,
@@ -26,23 +26,23 @@ struct BrowserHistoryOptions {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BrowserMemoryLimits {
-    paths: u32,
-    path_bytes: u32,
-    records: u32,
-    payload_bytes: u32,
-    commits: u32,
-    idempotency_results: u32,
+    paths: Option<u32>,
+    path_bytes: Option<u32>,
+    records: Option<u32>,
+    payload_bytes: Option<u32>,
+    commits: Option<u32>,
+    idempotency_results: Option<u32>,
 }
 
 impl From<BrowserMemoryLimits> for MemoryLimits {
     fn from(limits: BrowserMemoryLimits) -> Self {
         Self {
-            paths: limits.paths as usize,
-            path_bytes: limits.path_bytes as usize,
-            records: limits.records as usize,
-            payload_bytes: limits.payload_bytes as usize,
-            commits: limits.commits as usize,
-            idempotency_results: limits.idempotency_results as usize,
+            paths: limits.paths.map(|value| value as usize),
+            path_bytes: limits.path_bytes.map(|value| value as usize),
+            records: limits.records.map(|value| value as usize),
+            payload_bytes: limits.payload_bytes.map(|value| value as usize),
+            commits: limits.commits.map(|value| value as usize),
+            idempotency_results: limits.idempotency_results.map(|value| value as usize),
         }
     }
 }
@@ -53,7 +53,7 @@ impl BrowserHistoryOptions {
         let issuer =
             AuthorityRoot::new(self.issuer_id, key_bytes(self.issuer_key)?, self.authority);
         let limits = BrowserStreamLimits {
-            commands: u64::from(self.maximum_commands),
+            commands: self.maximum_commands.map(u64::from),
             journal_bytes: self.maximum_journal_bytes,
             memory: self.memory.map(MemoryLimits::from).unwrap_or_default(),
         };

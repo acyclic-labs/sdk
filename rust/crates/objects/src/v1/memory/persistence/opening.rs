@@ -12,17 +12,25 @@ pub(crate) fn open(
         bytes = obs::Empty
     );
     obs::scoped(&span, || {
-        if limits.maximum_object_bytes == 0
-            || limits.maximum_object_bytes > limits.maximum_bytes
-            || limits.maximum_journal_operations == 0
-            || limits.maximum_journal_bytes < 256
+        if limits.maximum_object_bytes == Some(0)
+            || limits
+                .maximum_object_bytes
+                .zip(limits.maximum_bytes)
+                .is_some_and(|(object, total)| object > total)
+            || limits.maximum_journal_operations == Some(0)
+            || limits
+                .maximum_journal_bytes
+                .is_some_and(|limit| limit < 256)
         {
             return Err(LocalOpenError::Invalid);
         }
         let options = MemoryOptions {
-            maximum_bytes: usize::try_from(limits.maximum_bytes)
+            maximum_bytes: limits
+                .maximum_bytes
+                .map(usize::try_from)
+                .transpose()
                 .map_err(|_| LocalOpenError::Invalid)?,
-            maximum_entries: usize::MAX,
+            maximum_entries: None,
         };
         fs::create_dir_all(root.join("segments"))?;
         let owner = acyclic_native_runtime::StoreClaim::acquire(&root.join("owner.lock")).map_err(
@@ -163,7 +171,10 @@ pub(super) fn replay(
         let mut inline_bytes = 0_u64;
         let mut inline_bodies = BTreeMap::new();
         let end = file.metadata()?.len();
-        if end > limits.maximum_journal_bytes {
+        if limits
+            .maximum_journal_bytes
+            .is_some_and(|limit| end > limit)
+        {
             return Err(LocalOpenError::Corrupt);
         }
         loop {
@@ -199,7 +210,9 @@ pub(super) fn replay(
             let delta = Delta::decode(encoded.as_slice()).map_err(corrupt)?;
             if delta.encode_to_vec() != encoded
                 || delta.ordinal != operations + 1
-                || operations >= limits.maximum_journal_operations
+                || limits
+                    .maximum_journal_operations
+                    .is_some_and(|limit| operations >= limit)
             {
                 return Err(LocalOpenError::Corrupt);
             }

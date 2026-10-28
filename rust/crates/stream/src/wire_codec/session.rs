@@ -6,9 +6,6 @@ use prost::Message as _;
 mod resource;
 pub use resource::{stream_path, stream_resource, validate_resource};
 
-/// Finite canonical Actors response plus its enclosing product result.
-pub const MAX_ACTOR_CALL_REPLY_BYTES: usize = crate::MAX_COMMAND_BYTES + 128;
-
 /// Actor-call chunks carry the immutable total byte length as an eight-byte
 /// little-endian opaque cursor. The record cursor counts consecutive chunks.
 pub fn actor_call_total(data: &wire::SessionData) -> Result<usize, StreamError> {
@@ -23,7 +20,7 @@ pub fn actor_call_total(data: &wire::SessionData) -> Result<usize, StreamError> 
         .map_err(|_| StreamError::InvalidResponse)?;
     usize::try_from(u64::from_le_bytes(bytes))
         .ok()
-        .filter(|total| *total > 0 && *total <= MAX_ACTOR_CALL_REPLY_BYTES)
+        .filter(|total| *total > 0)
         .ok_or(StreamError::InvalidResponse)
 }
 

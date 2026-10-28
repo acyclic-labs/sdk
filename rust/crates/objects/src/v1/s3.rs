@@ -175,9 +175,7 @@ impl S3Objects {
         }
         let bytes = self.inner.transport.metadata("roots", &head.node).await?;
         let root = Root::decode(bytes.as_slice()).map_err(backend)?;
-        if root.pages.len() > MemoryOptions::default().maximum_entries {
-            return Err(backend("current-state root exceeds entry bound"));
-        }
+
         let mut pages = Vec::with_capacity(root.pages.len());
         for page in root.pages {
             if page.len() != 32 {

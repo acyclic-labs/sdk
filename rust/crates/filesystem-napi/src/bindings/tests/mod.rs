@@ -162,7 +162,7 @@ async fn attached_workspace_rescans_and_seals_one_source()
     std::fs::write(source.path().join("value.bin"), [1_u8, 2, 3])?;
     let options = NativeSourceOptions {
         mode: "tracking".to_owned(),
-        maximum_paths: NapiU32(128),
+        maximum_paths: Some(NapiU32(128)),
         maximum_extent_spans: NapiU32(128),
         maximum_queued_changes: NapiU32(128),
         excluded_paths: None,
@@ -254,7 +254,7 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
         cancellation: CancellationToken::new(),
     };
     assert!(
-        Box::pin(watcher.reconcile(NapiU32(64), NapiU32(64)))
+        Box::pin(watcher.reconcile(Some(NapiU32(64)), NapiU32(64)))
             .await
             .is_err()
     );
@@ -262,7 +262,7 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
         .await
         .clear_retained_operation(unresolved);
     assert!(
-        Box::pin(watcher.reconcile(NapiU32(0), NapiU32(64)))
+        Box::pin(watcher.reconcile(Some(NapiU32(0)), NapiU32(64)))
             .await
             .is_err()
     );
@@ -284,7 +284,7 @@ async fn publication_fence_blocks_mutation_and_reconcile_until_resolved()
         ),
         "failed binding baseline retained scan custody: {polled:?}"
     );
-    Box::pin(watcher.reconcile(NapiU32(64), NapiU32(64))).await?;
+    Box::pin(watcher.reconcile(Some(NapiU32(64)), NapiU32(64))).await?;
     Ok(())
 }
 
@@ -358,7 +358,7 @@ async fn attachment_never_invents_policy_for_an_existing_workspace()
             source.path().to_string_lossy().into_owned(),
             NativeSourceOptions {
                 mode: "pinned".into(),
-                maximum_paths: NapiU32(128),
+                maximum_paths: Some(NapiU32(128)),
                 maximum_extent_spans: NapiU32(128),
                 maximum_queued_changes: NapiU32(128),
                 excluded_paths: None,

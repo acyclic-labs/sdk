@@ -223,7 +223,7 @@ impl HttpObjects {
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(30));
         if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > super::MAX_PEM_BYTES {
+            if ca.is_empty() {
                 return Err(invalid());
             }
             transport = transport

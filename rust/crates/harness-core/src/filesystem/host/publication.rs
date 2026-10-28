@@ -71,8 +71,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             content_receipt_path_io(receipt_identity, internal_class.is_some(), true, Some(io))?;
         let hold = io.guard_owned(receipt_path.capacity() as u64)?;
         let receipt_path = (receipt_path, hold);
-        let receipt =
-            read_generation(&original, &receipt_path.0, UPLOAD_RECORD_BYTES, Some(io)).await?;
+        let receipt = read_metadata(&original, &receipt_path.0, Some(io)).await?;
         let receipt = if internal_class.is_some() {
             recover_internal_upload_receipt(&original, receipt_identity, receipt, Some(io)).await?
         } else {
@@ -214,11 +213,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     }
 }
 
-const UPLOAD_RECORD_BYTES: u64 = 6
-    * (crate::conversation::MAX_PATH_BYTES as u64
-        + 32 * crate::conversation::MAX_LABEL_BYTES as u64
-        + 1024);
-
 // Older internal writes kept the FileRef index and the canonical receipt at
 // separate paths. New writes use the tuple-shaped index as their receipt.
 pub(in crate::filesystem) async fn recover_internal_upload_receipt<
@@ -238,7 +232,7 @@ pub(in crate::filesystem) async fn recover_internal_upload_receipt<
     let _hold = io
         .map(|io| io.guard_owned(path.capacity() as u64))
         .transpose()?;
-    read_generation(original, &path, UPLOAD_RECORD_BYTES, io).await
+    read_metadata(original, &path, io).await
 }
 
 pub(in crate::filesystem) fn content_metadata_matches(
@@ -251,7 +245,7 @@ pub(in crate::filesystem) fn content_metadata_matches(
         return Ok(true);
     }
     let legacy = match io {
-        Some(io) => io.encode(file, UPLOAD_RECORD_BYTES, false)?,
+        Some(io) => io.encode(file, io.remaining()?.peak_allocation_bytes, false)?,
         None => acyclic_stream::OwnedBytes::from(
             serde_json::to_vec(file).map_err(|error| Error::Invalid(error.to_string()))?,
         ),
@@ -265,7 +259,11 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     receipt: &acyclic_stream::OwnedBytes,
     io: &PreparationIo,
 ) -> Result<()> {
-    let canonical = io.encode(&(&recorded.0, &recorded.1), UPLOAD_RECORD_BYTES, true)?;
+    let canonical = io.encode(
+        &(&recorded.0, &recorded.1),
+        io.remaining()?.peak_allocation_bytes,
+        true,
+    )?;
     let hold = io.guard_bytes(&canonical)?;
     let canonical = (canonical, hold);
     if canonical.0.as_ref() != receipt.as_ref() {
@@ -278,8 +276,7 @@ async fn verify_upload_metadata<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let metadata_path = content_metadata_path_io(recorded.0.path(), true, Some(io))?;
     let hold = io.guard_owned(metadata_path.capacity() as u64)?;
     let metadata_path = (metadata_path, hold);
-    let metadata =
-        read_generation(original, &metadata_path.0, UPLOAD_RECORD_BYTES, Some(io)).await?;
+    let metadata = read_metadata(original, &metadata_path.0, Some(io)).await?;
     let hold = io.guard_bytes(&metadata)?;
     let metadata = (metadata, hold);
     if !content_metadata_matches(&metadata.0, &recorded.0, &canonical.0, Some(io))? {

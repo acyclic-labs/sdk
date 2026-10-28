@@ -74,7 +74,7 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
     let options = CaptureOptions {
         source_root: source.path().to_owned(),
         expected_root_identity: root.identity(),
-        maximum_paths: 8,
+        maximum_paths: Some(8),
         maximum_extent_spans: 8,
     };
     let policy = CapturePolicy::default();
@@ -95,7 +95,7 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
         limits,
         path("/"),
         &policy,
-        8,
+        Some(8),
         &mut warmed,
         &warm.native,
     ))?;
@@ -124,7 +124,7 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
                         start,
                         &policy,
                         &scope.native,
-                        |p, _, meter| append_scanned_path(&mut paths, p, 8, meter),
+                        |p, _, meter| append_scanned_path(&mut paths, p, Some(8), meter),
                     )
                 } else {
                     runtime.block_on(collect_checkout_subtree_paths(
@@ -132,7 +132,7 @@ fn production_leaf_walks_have_no_redundant_heap_copy() -> Result<(), Box<dyn std
                         limits,
                         start,
                         &policy,
-                        8,
+                        Some(8),
                         &mut paths,
                         &scope.native,
                     ))
@@ -208,7 +208,7 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
     let options = CaptureOptions {
         source_root: source.path().to_owned(),
         expected_root_identity: root.identity(),
-        maximum_paths: 32,
+        maximum_paths: Some(32),
         maximum_extent_spans: 8,
     };
     runtime.block_on(capture_subtrees_with_native_work(
@@ -235,7 +235,7 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
         limits,
         path("/"),
         &CapturePolicy::default(),
-        32,
+        Some(32),
         &mut warmed,
         &warm.native,
     ))?;
@@ -297,7 +297,7 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
                                             test_host_stat(&root, &namespace_to_host_path(&p)?)
                                                 .unwrap();
                                         ensure_same_host_node(&expected, &stat)?;
-                                        append_scanned_path(&mut paths, p, maximum, meter)
+                                        append_scanned_path(&mut paths, p, Some(maximum), meter)
                                     },
                                 )
                             } else {
@@ -306,7 +306,7 @@ fn moved_leaves_match_copying_walks_and_eliminate_only_redundant_work()
                                     limits,
                                     start,
                                     &policy,
-                                    maximum,
+                                    Some(maximum),
                                     &mut paths,
                                     &scope.native,
                                 )

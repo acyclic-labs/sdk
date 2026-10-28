@@ -80,7 +80,12 @@ impl HostWorkspaceOwner {
             prompt_bound(prompt)?;
             host_workspace::child_reference(reference)?;
             let (state, _) = self.native.session(parent).await?;
-            if state.open_children.contains(&child) {
+            if state
+                .open_children
+                .contains(&child)
+                .await
+                .map_err(storage)?
+            {
                 // Replaying a spawn is idempotent only for its own prompt.
                 if self.native.brief(&child).await?.prompt != *prompt {
                     return Err(Error::Conflict(format!(
@@ -285,11 +290,13 @@ impl HostWorkspaceOwner {
     pub(super) async fn sessions(&self, parent: &AgentPath) -> Result<Value> {
         let (state, session) = self.native.session(parent).await?;
         // A child whose report a stop dropped is closed all the same.
-        let open = |reference: &&String| {
-            agents::child(&state.path, reference)
-                .is_ok_and(|path| state.open_children.contains(&path))
-        };
-        let references = session.spawned.iter().filter(open).collect::<Vec<_>>();
+        let mut references = Vec::new();
+        for reference in &session.spawned {
+            let path = agents::child(&state.path, reference)?;
+            if state.open_children.contains(&path).await.map_err(storage)? {
+                references.push(reference);
+            }
+        }
         Ok(json!({ "references": references }))
     }
 }

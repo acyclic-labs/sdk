@@ -83,8 +83,8 @@ async fn addressing_preserves_explicit_create_already_exists_and_recreation()
 )]
 async fn native_batch_preserves_order_bounds_and_failed_item_rollback() -> Result<(), Error> {
     let provider = provider(MemoryOptions {
-        maximum_bytes: 6,
-        maximum_entries: 20,
+        maximum_bytes: Some(6),
+        maximum_entries: Some(20),
     })
     .await?;
     let mut first = put("first");
@@ -256,8 +256,8 @@ async fn conditional_publication_and_retry_do_not_overwrite_later_values() -> Re
 #[tokio::test]
 async fn quota_failure_rolls_back_publication_and_retry_receipt() -> Result<(), Error> {
     let provider = provider(MemoryOptions {
-        maximum_bytes: 5,
-        maximum_entries: 16,
+        maximum_bytes: Some(5),
+        maximum_entries: Some(16),
     })
     .await?;
     provider

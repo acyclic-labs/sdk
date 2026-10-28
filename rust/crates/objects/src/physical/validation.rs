@@ -43,7 +43,7 @@ pub(super) fn validate_segment_publication(
 pub(crate) fn validate_referenced_segments(
     root: &Path,
     bodies: &BTreeSet<LocalBodyReference>,
-    maximum_object_bytes: u64,
+    maximum_object_bytes: Option<u64>,
 ) -> Result<BTreeSet<[u8; 32]>, PhysicalError> {
     let span = crate::obs::span!(
         TRACE,
@@ -58,7 +58,7 @@ pub(crate) fn validate_referenced_segments(
 pub(super) fn validate_referenced_segments_inner(
     root: &Path,
     bodies: &BTreeSet<LocalBodyReference>,
-    maximum_object_bytes: u64,
+    maximum_object_bytes: Option<u64>,
 ) -> Result<BTreeSet<[u8; 32]>, PhysicalError> {
     let mut validated_segments = BTreeMap::new();
     for body in bodies {
@@ -86,7 +86,7 @@ pub(super) fn validate_referenced_segments_inner(
 pub(super) fn validate_segment_records(
     path: &Path,
     expected_id: &[u8; 32],
-    maximum_object_bytes: u64,
+    maximum_object_bytes: Option<u64>,
 ) -> Result<ValidatedSegmentRecords, PhysicalError> {
     let mut file = File::open(path).map_err(|_| PhysicalError::Corrupt)?;
     let actual_length = file.metadata().map_err(|_| PhysicalError::Corrupt)?.len();
@@ -146,9 +146,9 @@ pub(super) fn validate_segment_records(
         let maximum_body_bytes = if count == 1 {
             maximum_object_bytes
         } else {
-            MAXIMUM_SEGMENT_BYTES as u64
+            Some(MAXIMUM_SEGMENT_BYTES as u64)
         };
-        if body_bytes > maximum_body_bytes {
+        if maximum_body_bytes.is_some_and(|limit| body_bytes > limit) {
             return Err(PhysicalError::Corrupt);
         }
         let mut body_hasher = blake3::Hasher::new();

@@ -13,13 +13,13 @@ pub enum LocalDurability {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LocalObjectsLimits {
     /// Largest body admitted by a single completed object.
-    pub maximum_object_bytes: u64,
+    pub maximum_object_bytes: Option<u64>,
     /// Largest aggregate logical body/part footprint admitted by the provider.
-    pub maximum_bytes: u64,
+    pub maximum_bytes: Option<u64>,
     /// Maximum complete mutation frames replayed at startup.
-    pub maximum_journal_operations: u64,
+    pub maximum_journal_operations: Option<u64>,
     /// Maximum journal bytes including its durable header and frame checksums.
-    pub maximum_journal_bytes: u64,
+    pub maximum_journal_bytes: Option<u64>,
     /// Synchronization policy for journal frames and bodies. Not recorded in the durable
     pub durability: LocalDurability,
 }
@@ -27,10 +27,10 @@ pub struct LocalObjectsLimits {
 impl Default for LocalObjectsLimits {
     fn default() -> Self {
         Self {
-            maximum_object_bytes: 64 * 1_024 * 1_024,
-            maximum_bytes: 4 * 1_024 * 1_024 * 1_024,
-            maximum_journal_operations: 1_000_000,
-            maximum_journal_bytes: 1_024 * 1_024 * 1_024,
+            maximum_object_bytes: None,
+            maximum_bytes: None,
+            maximum_journal_operations: None,
+            maximum_journal_bytes: None,
             durability: LocalDurability::FullFlush,
         }
     }

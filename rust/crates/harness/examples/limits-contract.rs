@@ -1,8 +1,6 @@
 #![allow(missing_docs, reason = "contract example binary, not public API")]
 
-use acyclic_harness::conversation::{
-    Limits, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_PATH_BYTES, MAX_PORTABLE_COUNT,
-};
+use acyclic_harness::conversation::{Limits, MAX_EXACT_JS_INTEGER, MAX_PORTABLE_COUNT};
 use acyclic_harness::fork::{
     MAX_FORK_AGENTS, MAX_FORK_ATTACHMENT_MANIFEST_BYTES, MAX_FORK_INHERITED_BYTES,
     MAX_FORK_INHERITED_MESSAGES, MAX_FORK_REFERENCE_BYTES, MAX_FORK_REFERENCES, MAX_FORK_RESOURCES,
@@ -13,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let defaults = Limits::default();
     let maximum = Limits {
         file_bytes: MAX_EXACT_JS_INTEGER,
-        path_bytes: MAX_PATH_BYTES,
+        path_bytes: MAX_PORTABLE_COUNT,
         attachments: MAX_PORTABLE_COUNT,
         render_bytes: MAX_EXACT_JS_INTEGER,
         model_steps: MAX_PORTABLE_COUNT,
@@ -30,8 +28,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "default": defaults,
                 "maximum": maximum,
                 "exact_js_integer": MAX_EXACT_JS_INTEGER,
-                "max_path_bytes": MAX_PATH_BYTES,
-                "max_label_bytes": MAX_LABEL_BYTES,
             },
             "fork": {
                 "agents": MAX_FORK_AGENTS,

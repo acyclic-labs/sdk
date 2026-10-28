@@ -310,9 +310,6 @@ impl Client {
     /// Empty bytes drop it. Registration is ordered before subsequent opens;
     /// the server rechecks bound channels and reports refusal on those channels.
     pub fn register_credential(&self, slot: u32, credential: Bytes) -> Result<(), StreamError> {
-        if slot as usize >= Limits::default().channels {
-            return Err(StreamError::Capacity);
-        }
         let frame = frame(
             0,
             0,

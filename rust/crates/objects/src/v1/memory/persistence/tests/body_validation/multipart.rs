@@ -114,7 +114,7 @@ fn core_reopen(root: &Path) -> MemoryObjects {
     open(
         root.to_path_buf(),
         LocalObjectsLimits {
-            maximum_object_bytes: 64,
+            maximum_object_bytes: Some(64),
             ..Default::default()
         },
         None,
@@ -240,8 +240,8 @@ async fn multipart_quota_is_atomic_across_overwrite_abort_completion_and_reopen(
     for native in [false, true] {
         let root = tempfile::tempdir()?;
         let limits = LocalObjectsLimits {
-            maximum_object_bytes: 8,
-            maximum_bytes: 12,
+            maximum_object_bytes: Some(8),
+            maximum_bytes: Some(12),
             ..Default::default()
         };
         let core = open(root.path().to_path_buf(), limits, None)?;

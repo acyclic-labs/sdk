@@ -79,7 +79,7 @@ proptest! {
         commands in prop::collection::vec((0u8..6, 0usize..17, 0u8..4), 1..25),
     ) {
         let (mut core, bucket) = MemoryObjects::with_default_bucket();
-        core.options = MemoryOptions { maximum_bytes: 24, maximum_entries: 12 };
+        core.options = MemoryOptions { maximum_bytes: Some(24), maximum_entries: Some(12) };
         let mut state = core.lock_state().unwrap();
         let mut model = std::collections::BTreeMap::<String, Vec<u8>>::new();
         let mut receipts = 0;

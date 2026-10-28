@@ -250,7 +250,9 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
         let checkpoint = state.checkpoint().ok_or(Error::Record(
             "the step consuming the spawn has no checkpoint",
         ))?;
-        Ok(super::checkpoint_state(checkpoint)?.spawn_outcome(intent))
+        let mut state = super::checkpoint_state(checkpoint)?;
+        state.open_children.bind(Arc::clone(&self.provider));
+        state.spawn_outcome(intent).await
     }
 
     /// Actor state record `sequence` of the state stream at `path`.

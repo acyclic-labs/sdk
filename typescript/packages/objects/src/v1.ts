@@ -18,7 +18,6 @@ export function objectsV1Error(value: unknown): ObjectsV1Error {
 
 /** Generated messages cross this interface without an independently maintained JSON contract. */
 /** Largest bearer credential, in UTF-8 bytes, that an SDK client accepts; matches the Acyclic platform's maximum bearer (12 KiB). */
-export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
 
 /** Largest decoded_length one body frame may declare: 64 KiB plain, one 8 MiB stored block compressed. */
 export function bodyDecodedLimit(body: wire.Body): bigint {

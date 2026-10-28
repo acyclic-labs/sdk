@@ -357,7 +357,7 @@ pub(crate) async fn capture_paths_batched<A: AsyncAuthorityStore, O: AsyncObject
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let checked = (|| {
         validate_path_count(paths, options)?;
-        if batch_size == 0 || paths.len() > MAX_NATIVE_EXACT_CAPTURE_PATHS {
+        if batch_size == 0 {
             return Err(CaptureError::InvalidOptions);
         }
         cancellation.check()?;
@@ -461,7 +461,7 @@ pub(crate) async fn capture_subtrees_with_native_work<
     let meter = &scope.native;
     let result = async {
         {
-            if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
+            if options.maximum_paths == Some(0) || options.maximum_extent_spans == 0 {
                 return Err(CaptureError::InvalidOptions);
             }
             cancellation.check()?;
@@ -477,8 +477,10 @@ pub(crate) async fn capture_subtrees_with_native_work<
             if canonical.is_empty() {
                 return Ok(CaptureReceipt::default());
             }
-            let maximum =
-                usize::try_from(options.maximum_paths).map_err(|_| CaptureError::InvalidOptions)?;
+            let maximum = options
+                .maximum_paths
+                .map(|maximum| usize::try_from(maximum).map_err(|_| CaptureError::InvalidOptions))
+                .transpose()?;
             let mut paths = Vec::new();
             for path in &canonical {
                 let path = clone_capture_path(path, meter)?;
@@ -559,7 +561,7 @@ pub(crate) async fn capture_subtrees_with_native_work<
 fn scan_host_subtree_roots(
     source: (&Path, NativeRootIdentity),
     volume: (FilesystemProfile, crate::model::VolumeLimits),
-    maximum: usize,
+    maximum: Option<usize>,
     canonical: &[NamespacePath],
     policy: &CapturePolicy,
     observed: &mut Vec<(NamespacePath, Option<HostStat>)>,
@@ -601,7 +603,7 @@ async fn collect_captured_checkout_roots<A: AsyncAuthorityStore, O: AsyncObjectS
     canonical: Vec<NamespacePath>,
     limits: crate::model::VolumeLimits,
     policy: &CapturePolicy,
-    maximum: usize,
+    maximum: Option<usize>,
     paths: &mut Vec<(NamespacePath, ())>,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
@@ -645,7 +647,7 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             native.receipt(),
         ));
     }
-    if options.maximum_paths == 0 || options.maximum_extent_spans == 0 {
+    if options.maximum_paths == Some(0) || options.maximum_extent_spans == 0 {
         return Err(OperationFailure::new(
             CaptureError::InvalidOptions,
             native.receipt(),
@@ -666,8 +668,10 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let scope = CaptureWorkScope::new(&native)?;
     let meter = &scope.native;
     let result = (async {
-        let maximum =
-            usize::try_from(options.maximum_paths).map_err(|_| CaptureError::InvalidOptions)?;
+        let maximum = options
+            .maximum_paths
+            .map(|maximum| usize::try_from(maximum).map_err(|_| CaptureError::InvalidOptions))
+            .transpose()?;
         let source_root = open_source_root(options, meter)?;
         let limits = checkout.volume_config().limits;
         let profile = checkout.volume_config().profile;
@@ -682,8 +686,9 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             root,
             policy,
             meter,
-            |path, stat, meter| insert_host_observation(&mut observed, path, stat, maximum, meter),
+            |path, stat, meter| capture_push_entry(&mut observed, path, Some(stat), meter),
         )?;
+        capture_order_entries(&mut observed, maximum, meter)?;
         let root = NamespacePath::new(Vec::new(), limits).map_err(CaptureError::from)?;
         collect_checkout_subtree_paths(
             &mut candidate,

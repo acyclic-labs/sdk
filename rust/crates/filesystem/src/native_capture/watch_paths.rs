@@ -23,7 +23,7 @@ pub(super) fn watch_ancestor_candidates<'a>(
     ordinary: &[(NamespacePath, (CurrentRecord, CaptureIntent))],
     rename_records: &[(NamespacePath, Option<FileRecord>)],
     policy: &CapturePolicy,
-    maximum_paths: usize,
+    maximum_paths: Option<usize>,
     limits: crate::model::VolumeLimits,
     meter: &NativeMaterializationWork,
 ) -> Result<Vec<(NamespacePath, ())>, CaptureError> {
@@ -186,7 +186,7 @@ pub(super) async fn hydrate_watch_ancestors<A: AsyncAuthorityStore, O: AsyncObje
     ancestors: Vec<(NamespacePath, ())>,
     source_root: &HostRoot,
     epoch: u64,
-    maximum_paths: usize,
+    maximum_paths: Option<usize>,
     meter: &NativeMaterializationWork,
 ) -> Result<Vec<(NamespacePath, Option<FileRecord>)>, CaptureError> {
     let mut missing = Vec::new();
@@ -290,12 +290,14 @@ pub(super) async fn expand_directory_hints<A: AsyncAuthorityStore, O: AsyncObjec
     ordinary: &mut Vec<(NamespacePath, (CurrentRecord, CaptureIntent))>,
     rename_records: &[(NamespacePath, Option<FileRecord>)],
     source_root: &HostRoot,
-    maximum_paths: u32,
+    maximum_paths: Option<u32>,
     policy: &CapturePolicy,
     meter: &NativeMaterializationWork,
 ) -> Result<(), CaptureError> {
-    let maximum = usize::try_from(maximum_paths).map_err(|_| CaptureError::InvalidOptions)?;
-    if ordinary.len() > maximum {
+    let maximum = maximum_paths
+        .map(|maximum| usize::try_from(maximum).map_err(|_| CaptureError::InvalidOptions))
+        .transpose()?;
+    if maximum.is_some_and(|maximum| ordinary.len() > maximum) {
         return Err(CaptureError::InvalidOptions);
     }
     let limits = checkout.volume_config().limits;

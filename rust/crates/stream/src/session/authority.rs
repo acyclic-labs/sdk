@@ -122,17 +122,12 @@ impl Authority {
         slots: &mut Slots,
         slot: u32,
         bytes: &[u8],
-        maximum: usize,
     ) -> Result<(), StreamError> {
-        if usize::try_from(slot).map_err(|_| StreamError::Capacity)? >= maximum {
-            return Err(StreamError::Capacity);
-        }
         let previous_bytes = slots.entries.get(&slot).map_or(0, |entry| entry.1);
         let credential_bytes = slots
             .credential_bytes
             .checked_sub(previous_bytes)
             .and_then(|current| current.checked_add(bytes.len()))
-            .filter(|total| *total <= crate::MAX_COMMAND_BYTES)
             .ok_or(StreamError::Capacity)?;
         if bytes.is_empty() {
             slots.entries.remove(&slot);
@@ -160,7 +155,7 @@ impl Authority {
             .entries
             .insert(slot, (revision, bytes.len(), credential));
         slots.credential_bytes = credential_bytes;
-        if slots.expiries.len() > maximum.saturating_mul(2) {
+        if slots.expiries.len() > slots.entries.len().saturating_mul(2) {
             slots.expiries = slots
                 .entries
                 .iter()

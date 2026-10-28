@@ -29,8 +29,8 @@ async fn v2_batches_preserve_filesystem_content_identity_and_backend_accounting(
 -> Result<(), Box<dyn std::error::Error>> {
     let (provider, bucket) = MemoryObjects::with_bucket("fs-memory", MemoryOptions::default())?;
     let provider = Arc::new(provider);
-    let store =
-        LogicalObjectStore::new(Arc::clone(&provider), bucket.clone()).with_object_limit(8)?;
+    let store = LogicalObjectStore::new(Arc::clone(&provider), bucket.clone())
+        .with_object_limit(Some(8))?;
     let writes = [write(b"first"), write(b"second"), write(b"first")];
     let cancel = CancellationToken::new();
     let result = {
@@ -130,8 +130,8 @@ async fn v2_fs_rejects_invalid_digest_oversize_and_cancellation_before_publicati
 -> Result<(), Box<dyn std::error::Error>> {
     let (provider, bucket) = MemoryObjects::with_bucket("fs-memory", MemoryOptions::default())?;
     let provider = Arc::new(provider);
-    let store =
-        LogicalObjectStore::new(Arc::clone(&provider), bucket.clone()).with_object_limit(4)?;
+    let store = LogicalObjectStore::new(Arc::clone(&provider), bucket.clone())
+        .with_object_limit(Some(4))?;
     let cancel = CancellationToken::new();
     let oversized = write(b"oversized");
     let failure = provider_receipt!(
