@@ -179,7 +179,7 @@ impl StreamProvider for MemoryStream {
         &self,
         request: ChildrenPageRequest,
     ) -> Result<ChildrenPage, StreamError> {
-        validate_limit(request.limit)?;
+        let limit = page_limit(request.limit)?;
         if request.after.is_some() && request.hierarchy_version.is_none() {
             return Err(StreamError::InvalidArgument);
         }
@@ -214,12 +214,12 @@ impl StreamProvider for MemoryStream {
                 children,
                 lower,
                 request.parent.as_ref(),
-                request.limit as usize + 1,
+                limit as usize + 1,
                 &mut paths,
             )?;
         }
-        let has_more = paths.len() > request.limit as usize;
-        paths.truncate(request.limit as usize);
+        let has_more = paths.len() > limit as usize;
+        paths.truncate(limit as usize);
         let next_after = if has_more {
             paths.last().cloned()
         } else {

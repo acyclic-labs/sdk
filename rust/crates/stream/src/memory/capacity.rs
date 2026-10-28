@@ -1,9 +1,14 @@
 pub(crate) fn validate_limit(limit: u32) -> Result<(), StreamError> {
-    if limit == 0 || usize::try_from(limit).map_or(true, |limit| limit > MAX_ITEMS) {
+    if limit == 0 {
         Err(StreamError::LimitExceeded)
     } else {
         Ok(())
     }
+}
+
+pub(crate) fn page_limit(limit: u32) -> Result<u32, StreamError> {
+    validate_limit(limit)?;
+    Ok(limit.min(crate::CHILDREN_PAGE_ITEMS))
 }
 
 fn reserved(state: &State) -> (usize, usize) {

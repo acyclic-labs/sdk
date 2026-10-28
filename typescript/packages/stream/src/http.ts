@@ -3,7 +3,6 @@ import { StreamSessions } from "./session.js";
 import { webSocketSession, type SessionWebSocketFactory } from "./session-websocket.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { validateAppend } from "./client.js";
-import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { AccessToken, AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommittedEnvelope, CommitId, CommitOptions, CommitResult, CreateTokenRequest, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
@@ -70,8 +69,8 @@ export class HttpStreamProvider implements StreamProvider {
     if (request.hierarchyVersion !== undefined && request.hierarchyVersion.byteLength !== 32) {
       throw new StreamError("invalid_cursor", "hierarchy version must be a commit identity");
     }
-    if (!Number.isSafeInteger(request.limit) || request.limit < 1 || request.limit > StreamLimit.MAX_ITEMS) {
-      throw new StreamError("limit_exceeded", `child page limit must be between 1 and ${StreamLimit.MAX_ITEMS}`);
+    if (!Number.isSafeInteger(request.limit) || request.limit < 1) {
+      throw new StreamError("limit_exceeded", "child page limit must be a positive integer");
     }
     await validateWireRequest({
       kind: "children_page",
