@@ -69,30 +69,23 @@ pub struct FilesystemS3Limits {
     pub maximum_multipart_cas_retries: u32,
 }
 
-/// Administrative bounds for discovering active multipart object roots before immutable-object reclamation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Optional caller policy for discovering active multipart roots before reclamation.
+/// Absence admits the complete scan under the supplied work budget.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct S3MultipartRetentionLimits {
     /// Largest number of durable upload registry entries examined.
-    pub maximum_uploads: u64,
+    pub maximum_uploads: Option<u64>,
     /// Largest number of distinct staged immutable objects retained.
-    pub maximum_objects: u64,
+    pub maximum_objects: Option<u64>,
     /// Largest cumulative canonical bytes authenticated while tracing roots.
-    pub maximum_object_bytes: u64,
-}
-
-impl Default for S3MultipartRetentionLimits {
-    fn default() -> Self {
-        Self {
-            maximum_uploads: 1_000_000,
-            maximum_objects: 10_000_000,
-            maximum_object_bytes: 1024 * 1024 * 1024 * 1024,
-        }
-    }
+    pub maximum_object_bytes: Option<u64>,
 }
 
 impl S3MultipartRetentionLimits {
     fn validate(self) -> S3Result<Self> {
-        if self.maximum_uploads == 0 || self.maximum_objects == 0 || self.maximum_object_bytes == 0
+        if self.maximum_uploads == Some(0)
+            || self.maximum_objects == Some(0)
+            || self.maximum_object_bytes == Some(0)
         {
             return Err(s3s::s3_error!(InvalidArgument));
         }

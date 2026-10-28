@@ -659,7 +659,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
             restarted.resolver.principal.workspace.volume.fs.objects(),
             FilesystemS3Limits::default(),
             S3MultipartRetentionLimits {
-                maximum_uploads: 1,
+                maximum_uploads: Some(1),
                 ..S3MultipartRetentionLimits::default()
             },
             crate::WorkBudget::UNBOUNDED,
@@ -674,7 +674,7 @@ async fn multipart_is_stream_durable_stateless_and_exactly_retryable() -> S3Resu
             restarted.resolver.principal.workspace.volume.fs.objects(),
             FilesystemS3Limits::default(),
             S3MultipartRetentionLimits {
-                maximum_object_bytes: 1,
+                maximum_object_bytes: Some(1),
                 ..S3MultipartRetentionLimits::default()
             },
             crate::WorkBudget::UNBOUNDED,
