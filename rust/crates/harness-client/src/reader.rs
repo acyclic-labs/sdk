@@ -13,15 +13,17 @@
 //! scheduler, one deadline ([`Reader::next_deadline`]) and one cache serve
 //! every agent; idle agents cost nothing.
 
+mod backing;
 mod cache;
 mod driver;
 
+pub use backing::RecordBytes;
 use cache::Key;
 pub use cache::{Listing, RecordCache, SnapshotError};
 pub use driver::Driver;
 
+use acyclic_stream::OwnedBytes;
 use acyclic_stream::{CommitId, ForkOrigin, PathHead, StreamError, StreamPath};
-use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Finite budgets for one client, independent of the number of streams.
@@ -222,7 +224,7 @@ pub struct Fetched {
     /// Stream position.
     pub sequence: u64,
     /// Record value.
-    pub value: Bytes,
+    pub value: OwnedBytes,
     /// Commit that introduced it; anchors a resumed follow.
     pub commit: CommitId,
 }
@@ -1834,7 +1836,7 @@ mod reader_tests {
         assert_eq!(ops.len(), 2);
         reader
             .cache
-            .insert_record(&stream, 0, Bytes::from_static(b"old"), None);
+            .insert_record(&stream, 0, OwnedBytes::from_static(b"old"), None);
         reader.cache.observe_origin(
             &child,
             Some(ForkOrigin {
@@ -1850,7 +1852,7 @@ mod reader_tests {
             ops[1].id(),
             Outcome::Records(vec![Fetched {
                 sequence: 10,
-                value: Bytes::from_static(b"late"),
+                value: OwnedBytes::from_static(b"late"),
                 commit: CommitId::from_bytes([1; 32]),
             }]),
             1,
@@ -1878,7 +1880,7 @@ mod reader_tests {
     fn fetched(sequence: u64, len: usize) -> Fetched {
         Fetched {
             sequence,
-            value: Bytes::from(vec![7; len]),
+            value: OwnedBytes::from(vec![7; len]),
             commit: CommitId::from_bytes([1; 32]),
         }
     }
@@ -2022,7 +2024,7 @@ mod reader_tests {
         let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
         reader
             .cache
-            .insert_record(&stream, 0, Bytes::from_static(b"old"), None);
+            .insert_record(&stream, 0, OwnedBytes::from_static(b"old"), None);
         reader.replaced(&stream);
         assert!(reader.cache.record(&stream, 0).is_none());
         assert_eq!(

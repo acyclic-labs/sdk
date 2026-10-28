@@ -74,6 +74,64 @@ pub struct OwnedBytes {
     range: Range<usize>,
     retained_capacity: Option<usize>,
 }
+
+/// An opaque allocation owner with a known payload capacity.
+///
+/// Clones and slices of one allocation compare equal. The handle retains the
+/// original owner, including native admission guards, so its identity cannot be
+/// reused while the handle lives. Identity is process-local: it is neither a
+/// content identity nor an authorization or committed-history witness.
+#[derive(Clone)]
+pub struct OwnedBytesBacking {
+    data: Data,
+    capacity: usize,
+}
+
+impl OwnedBytesBacking {
+    /// Original payload capacity, excluding ownership and allocator headers.
+    #[must_use]
+    pub const fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    fn identity(&self) -> (u8, usize) {
+        match &self.data {
+            Data::Plain(bytes) => (0, bytes.as_ptr() as usize),
+            #[cfg(not(target_arch = "wasm32"))]
+            Data::Native(guard) => (1, Arc::as_ptr(guard).cast::<()>() as usize),
+        }
+    }
+}
+
+impl PartialEq for OwnedBytesBacking {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity() == other.identity()
+    }
+}
+impl Eq for OwnedBytesBacking {}
+impl PartialOrd for OwnedBytesBacking {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for OwnedBytesBacking {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.identity().cmp(&other.identity())
+    }
+}
+impl Hash for OwnedBytesBacking {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.identity().hash(state);
+    }
+}
+impl std::fmt::Debug for OwnedBytesBacking {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OwnedBytesBacking")
+            .field("capacity", &self.capacity)
+            .finish_non_exhaustive()
+    }
+}
+
 impl OwnedBytes {
     /// Empty ordinary bytes.
     #[must_use]
@@ -92,7 +150,7 @@ impl OwnedBytes {
     /// Copies ordinary bytes.
     #[must_use]
     pub fn copy_from_slice(bytes: &[u8]) -> Self {
-        Bytes::copy_from_slice(bytes).into()
+        Vec::from(bytes).into()
     }
     /// Transfers a vector and its allocation owner.
     #[cfg(not(target_arch = "wasm32"))]
@@ -195,6 +253,17 @@ impl OwnedBytes {
     #[must_use]
     pub const fn retained_capacity(&self) -> Option<usize> {
         self.retained_capacity
+    }
+
+    /// Retains and identifies the original allocation when its capacity is known.
+    /// Ordinary `Bytes` may be a slice of a larger allocation; their visible
+    /// length is insufficient evidence and therefore returns `None`.
+    #[must_use]
+    pub fn backing(&self) -> Option<OwnedBytesBacking> {
+        Some(OwnedBytesBacking {
+            data: self.data.clone(),
+            capacity: self.retained_capacity?,
+        })
     }
     /// Recovers unique ordinary vector storage without copying.
     pub fn try_into_ordinary_vec(self) -> Result<Vec<u8>, Self> {

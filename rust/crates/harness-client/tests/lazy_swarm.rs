@@ -12,8 +12,8 @@ use acyclic_harness_client::reader::{
 use acyclic_harness_core::agent::{
     AGENTS, AgentId, AgentPath, AgentRecord, ForkAdopted, InboxRecord, Phase, StatusRecord,
 };
+use acyclic_stream::OwnedBytes;
 use acyclic_stream::{CommitId, ForkOrigin, PathHead, Record, StreamPath};
-use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The fixture's tree never changes shape after creation.
@@ -137,9 +137,9 @@ impl Swarm {
         }
     }
 
-    fn value(&self, stream: &StreamPath, sequence: u64) -> Bytes {
+    fn value(&self, stream: &StreamPath, sequence: u64) -> OwnedBytes {
         match kind(stream) {
-            Some(Kind::Status(..)) => Bytes::from(
+            Some(Kind::Status(..)) => OwnedBytes::from(
                 StatusRecord {
                     phase: if sequence % 2 == 1 {
                         Phase::Running
@@ -162,7 +162,7 @@ impl Swarm {
             Some(Kind::Inbox(root, Some(_))) if sequence < FORKED_AT => {
                 self.value(&agent(root, None).inbox().unwrap(), sequence)
             }
-            Some(Kind::Inbox(root, Some(child))) if sequence == FORKED_AT => Bytes::from(
+            Some(Kind::Inbox(root, Some(child))) if sequence == FORKED_AT => OwnedBytes::from(
                 InboxRecord::ForkAdopted(Box::new(ForkAdopted {
                     agent: child_id(root, child),
                     parent: Some(agent(root, None)),
@@ -175,7 +175,7 @@ impl Swarm {
                 .encode()
                 .unwrap(),
             ),
-            _ => Bytes::from(format!(
+            _ => OwnedBytes::from(format!(
                 "{:<120}",
                 format!("{}#{sequence}", stream.as_str())
             )),
@@ -900,7 +900,7 @@ fn provisional_suffix_is_anchored_and_dropped_on_replacement() {
     let stream = StreamPath::new("harness/agents/x/conversation").unwrap();
     let record = |sequence| Fetched {
         sequence,
-        value: Bytes::from_static(b"r"),
+        value: OwnedBytes::from_static(b"r"),
         commit: commit(&stream, sequence),
     };
     reader.set_follows([stream.clone()]);
@@ -1113,7 +1113,7 @@ fn a_shifted_page_boundary_drops_later_pages_and_reads_stop_at_the_end() {
     let records = (from..5_000)
         .map(|sequence| Fetched {
             sequence,
-            value: Bytes::from_static(b"r"),
+            value: OwnedBytes::from_static(b"r"),
             commit: commit(&stream, sequence),
         })
         .collect();
@@ -1151,7 +1151,7 @@ fn cached_records_do_not_end_a_stream() {
         let records = (from..from + u64::from(limit))
             .map(|sequence| Fetched {
                 sequence,
-                value: Bytes::from_static(b"r"),
+                value: OwnedBytes::from_static(b"r"),
                 commit: commit(&stream, sequence),
             })
             .collect();

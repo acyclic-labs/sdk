@@ -186,10 +186,18 @@ fn in_place_transfer_keeps_owner_on_denial_and_retires_metadata_first()
     let bytes = bytes.try_into_ordinary_vec().unwrap_err();
     assert!(bytes.matches_meter(&meter));
     assert_eq!(observed.held.load(Order::Relaxed), held);
+    let backing = bytes.backing().unwrap();
+    assert_eq!(backing, bytes.slice(1..).backing().unwrap());
+    // An allocation identity is itself an owner; exclusive mutation cannot
+    // relocate storage while that identity is retained by an observer.
+    let bytes = bytes.try_into_unique().unwrap_err();
     let alias = bytes.slice(0..0);
     drop(bytes);
     assert_eq!(retired.load(Order::Relaxed), u64::MAX);
     drop(alias);
+    assert_eq!(retired.load(Order::Relaxed), u64::MAX);
+    assert_eq!(observed.held.load(Order::Relaxed), held);
+    drop(backing);
     assert_eq!(retired.load(Order::Relaxed), capacity as u64);
     assert_eq!(observed.held.load(Order::Relaxed), 0);
     Ok(())

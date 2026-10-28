@@ -226,12 +226,12 @@ fn failed(reader: &mut Reader, stream: &StreamPath, error: &StreamError, now: u6
     }
 }
 
-/// The cache charges exactly what it keeps: copy the visible bytes out of
-/// the transport's (possibly larger) backing allocation.
+/// Preserve the primitive allocation owner; the cache decides whether a
+/// transport slice needs detaching to establish a bounded retained charge.
 pub(super) fn fetched(record: &Record) -> Fetched {
     Fetched {
         sequence: record.sequence,
-        value: bytes::Bytes::copy_from_slice(record.value.as_slice()),
+        value: record.value.clone(),
         commit: record.commit_id,
     }
 }
@@ -427,6 +427,7 @@ mod tests {
                 (&source, 2, fork.commit_id)
             );
             assert_eq!(head.last.as_ref().unwrap().value.as_slice(), b"second");
+            let pointer = head.last.as_ref().unwrap().value.as_slice().as_ptr();
             let Outcome::Children { children, .. } = execute(
                 &provider,
                 Op::Children {
@@ -456,6 +457,7 @@ mod tests {
                 reader.observed_head(&path, head, observed),
                 HeadObservation::Applied
             );
+            assert_eq!(reader.cache().record(&path, 1).unwrap().as_ptr(), pointer);
             reader.plan([(
                 super::super::Want::Range {
                     stream: path.clone(),

@@ -20,8 +20,9 @@
 //! (`follow_checked`). A changed anchor means the provisional suffix was
 //! replaced, and [`RecordCache::forget`] drops that stream's own entries.
 
-use acyclic_stream::{CommitId, ForkOrigin, StreamPath};
-use bytes::Bytes;
+use super::backing::{BackingPool, RecordBytes};
+use acyclic_stream::OwnedBytes;
+use acyclic_stream::{CommitId, ForkOrigin, OwnedBytesBacking, StreamPath};
 use std::collections::{BTreeMap, BTreeSet};
 /// Fixed accounting charge per entry: map nodes, key and LRU bookkeeping.
 const ENTRY_OVERHEAD: usize = 96;
@@ -53,8 +54,26 @@ pub struct Listing {
 }
 
 enum Value {
-    Record(Bytes),
+    Record(RecordBytes),
     Listing(Listing),
+}
+
+impl Value {
+    fn encoded_len(&self, key: &Key) -> usize {
+        match self {
+            Self::Record(value) => 25usize
+                .saturating_add(path_len(key))
+                .saturating_add(value.len()),
+            Self::Listing(listing) => listing
+                .children
+                .iter()
+                .fold(41usize.saturating_add(path_len(key)), |bytes, child| {
+                    bytes.saturating_add(8).saturating_add(child.as_str().len())
+                })
+                .saturating_add(listing.after.as_ref().map_or(0, |path| path.as_str().len()))
+                .saturating_add(listing.next.as_ref().map_or(0, |path| path.as_str().len())),
+        }
+    }
 }
 
 struct Entry {
@@ -96,6 +115,10 @@ pub struct RecordCache {
     passed: BTreeMap<Key, (Value, usize)>,
     passed_bytes: usize,
     bytes: usize,
+    /// Payload capacity present in cached entries, charged once per backing.
+    cached_payload: usize,
+    resident: BTreeMap<OwnedBytesBacking, usize>,
+    backings: BackingPool,
     clock: u64,
     /// Use clock at the start of the current frame.
     mark: u64,
@@ -114,6 +137,9 @@ impl RecordCache {
             passed: BTreeMap::new(),
             passed_bytes: 0,
             bytes: 0,
+            cached_payload: 0,
+            resident: BTreeMap::new(),
+            backings: BackingPool::default(),
             clock: 0,
             mark: 0,
             max_bytes,
@@ -128,11 +154,19 @@ impl RecordCache {
         self.bytes
     }
 
-    /// Charge of values served uncached because the budget could not hold
-    /// them beside what is displayed; bounded by what the wants cover.
+    /// Uncached charges: pass-through bookkeeping plus payload held only by
+    /// pass-through records or cloned views. Shared payload is counted once.
     #[must_use]
     pub fn passed_bytes(&self) -> usize {
-        self.passed_bytes
+        self.passed_bytes + self.backings.bytes() - self.cached_payload
+    }
+
+    /// Live payload capacity across cached records, pass-throughs and cloned
+    /// views. Eviction cannot reclaim a payload while a renderer retains it.
+    /// This excludes allocator and ownership headers; it is not an RSS measure.
+    #[must_use]
+    pub fn backing_bytes(&self) -> usize {
+        self.backings.bytes()
     }
 
     /// Streams whose facts are retained.
@@ -403,7 +437,7 @@ impl RecordCache {
 
     /// Borrow a committed record without touching recency.
     #[must_use]
-    pub fn record(&self, stream: &StreamPath, sequence: u64) -> Option<&Bytes> {
+    pub fn record(&self, stream: &StreamPath, sequence: u64) -> Option<&RecordBytes> {
         match self.value(&self.resolve(stream, sequence)) {
             Some(Value::Record(value)) => Some(value),
             _ => None,
@@ -527,7 +561,7 @@ impl RecordCache {
         &mut self,
         stream: &StreamPath,
         sequence: u64,
-        value: Bytes,
+        value: OwnedBytes,
         protect: Option<u64>,
     ) -> bool {
         let key = self.resolve(stream, sequence);
@@ -536,7 +570,8 @@ impl RecordCache {
             self.touch(&key);
             return true;
         }
-        let charge = value.len() + path_len(&key) + ENTRY_OVERHEAD;
+        let value = self.backings.retain(value, self.max_bytes);
+        let charge = path_len(&key) + ENTRY_OVERHEAD;
         self.insert(key, Value::Record(value), charge, protect)
     }
 
@@ -568,6 +603,7 @@ impl RecordCache {
     fn insert(&mut self, key: Key, mut value: Value, charge: usize, protect: Option<u64>) -> bool {
         self.unpass(&key);
         if charge <= self.max_bytes {
+            self.retain_backing(&value);
             self.clock += 1;
             let used = self.clock;
             self.lru.insert(used, key.clone());
@@ -588,6 +624,7 @@ impl RecordCache {
             };
             self.lru.remove(&entry.used);
             self.bytes -= charge;
+            self.release_backing(&entry.value);
             value = entry.value;
         }
         if protect.is_some() {
@@ -623,8 +660,37 @@ impl RecordCache {
         if let Some(entry) = self.entries.remove(key) {
             self.lru.remove(&entry.used);
             self.bytes -= entry.charge;
+            self.release_backing(&entry.value);
         }
         self.unpass(key);
+    }
+
+    fn retain_backing(&mut self, value: &Value) {
+        if let Value::Record(value) = value {
+            let backing = value.backing();
+            let count = self.resident.entry(backing.clone()).or_default();
+            if *count == 0 {
+                self.bytes += backing.capacity();
+                self.cached_payload += backing.capacity();
+            }
+            *count += 1;
+        }
+    }
+
+    fn release_backing(&mut self, value: &Value) {
+        if let Value::Record(value) = value {
+            let backing = value.backing();
+            let count = self
+                .resident
+                .get_mut(backing)
+                .expect("cached records retain their backing");
+            *count -= 1;
+            if *count == 0 {
+                self.bytes -= backing.capacity();
+                self.cached_payload -= backing.capacity();
+                self.resident.remove(backing);
+            }
+        }
     }
 
     /// Evict least recently used entries until within budget. Returns false
@@ -644,8 +710,9 @@ impl RecordCache {
         true
     }
 
-    /// Persist the cache, most recently used last, as length-prefixed bytes.
-    /// Restoring the same bytes yields the same records and listings.
+    /// Persist recent entries, most recently used last, as length-prefixed
+    /// bytes. The entry section obeys the restore bound independently of
+    /// allocation sharing; an older entry is omitted when it cannot fit.
     #[must_use]
     pub fn snapshot(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.bytes);
@@ -681,8 +748,19 @@ impl RecordCache {
                 None => out.push(0),
             }
         }
-        put_u64(&mut out, self.lru.len() as u64);
-        for key in self.lru.values() {
+        let mut remaining = self.max_bytes.saturating_mul(2);
+        let mut selected = Vec::new();
+        for key in self.lru.values().rev() {
+            if let Some(entry) = self.entries.get(key) {
+                let encoded = entry.value.encoded_len(key);
+                if encoded <= remaining {
+                    remaining -= encoded;
+                    selected.push(key);
+                }
+            }
+        }
+        put_u64(&mut out, selected.len() as u64);
+        for key in selected.into_iter().rev() {
             let Some(entry) = self.entries.get(key) else {
                 continue;
             };
@@ -724,6 +802,8 @@ impl RecordCache {
     /// Refuses malformed input without retaining any part of it.
     pub fn restore(&mut self, bytes: &[u8]) -> Result<(), SnapshotError> {
         let mut restored = Self::new(self.max_bytes, self.max_streams);
+        // Views from the old cache remain charged through an atomic restore.
+        restored.backings = self.backings.clone();
         restored.clock = self.clock;
         restored.mark = self.mark;
         let mut input = Input(bytes);
@@ -787,10 +867,11 @@ impl RecordCache {
         // Facts are bounded by count above; bound the parsing work of the
         // entry section by the byte budget. Encoding overhead may exceed
         // retained payload bytes for small entries.
+        let entries = input.count()?;
         if input.0.len() > self.max_bytes.saturating_mul(2) {
             return Err(SnapshotError);
         }
-        for _ in 0..input.count()? {
+        for _ in 0..entries {
             match input.u8()? {
                 0 => {
                     let path = input.path()?;
@@ -800,7 +881,7 @@ impl RecordCache {
                         restored.insert_record(
                             &path,
                             sequence,
-                            Bytes::copy_from_slice(value),
+                            OwnedBytes::copy_from_slice(value),
                             None,
                         );
                     }
@@ -926,6 +1007,83 @@ impl<'a> Input<'a> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn shared_payload_stays_charged_until_the_last_view_retires() {
+        let stream = StreamPath::new("source").unwrap();
+        let child = StreamPath::new("child").unwrap();
+        let root = OwnedBytes::from(vec![7; 4096]);
+        let first = root.slice(5..9);
+        let pointer = first.as_slice().as_ptr();
+        let mut cache = RecordCache::new(8192, 16);
+        assert!(cache.insert_record(&stream, 0, first, None));
+        assert!(cache.insert_record(&stream, 1, root.slice(20..24), None));
+        cache.observe_origin(
+            &child,
+            Some(ForkOrigin {
+                source: stream.clone(),
+                forked_at: 2,
+                commit_id: CommitId::from_bytes([1; 32]),
+            }),
+        );
+        let view = cache.record(&child, 0).unwrap().clone();
+        assert_eq!(view.as_ptr(), pointer);
+        assert_eq!(cache.backing_bytes(), 4096);
+        assert_eq!(
+            cache.bytes(),
+            4096 + 2 * (ENTRY_OVERHEAD + stream.as_str().len())
+        );
+        cache.set_budget(0);
+        assert_eq!(cache.bytes(), 0);
+        assert_eq!(cache.passed_bytes(), 4096);
+        let empty = RecordCache::new(0, 16).snapshot();
+        cache.restore(&empty).unwrap();
+        assert_eq!(view.as_ref(), &[7; 4]);
+        assert_eq!(cache.backing_bytes(), 4096);
+        drop(view);
+        assert_eq!(cache.backing_bytes(), 0);
+    }
+
+    #[test]
+    fn tiny_slices_detach_unknown_or_over_budget_transport_backing() {
+        let stream = StreamPath::new("record").unwrap();
+        let root = OwnedBytes::from(vec![3; 1 << 20]);
+        let unknown = OwnedBytes::from(bytes::Bytes::from(vec![3; 1 << 20]).slice(11..15));
+        for value in [root.slice(11..15), unknown] {
+            let pointer = value.as_slice().as_ptr();
+            let mut cache = RecordCache::new(4096, 16);
+            assert!(cache.insert_record(&stream, 0, value, None));
+            let view = cache.record(&stream, 0).unwrap();
+            assert_ne!(view.as_ptr(), pointer);
+            assert_eq!(view.as_ref(), &[3; 4]);
+            assert_eq!(cache.backing_bytes(), 4);
+        }
+        let full = OwnedBytes::from(vec![5; 8192]);
+        let pointer = full.as_slice().as_ptr();
+        let mut cache = RecordCache::new(4096, 16);
+        assert!(!cache.insert_record(&stream, 0, full, Some(0)));
+        assert_eq!(cache.record(&stream, 0).unwrap().as_ptr(), pointer);
+        assert_eq!(cache.backing_bytes(), 8192);
+        cache.retain_passed(|_, _| false);
+        assert_eq!(cache.backing_bytes(), 0);
+    }
+
+    #[test]
+    fn snapshots_bound_encoded_payload_independently_of_shared_capacity() {
+        let stream = StreamPath::new("shared").unwrap();
+        let root = OwnedBytes::from(vec![9; 4096]);
+        let mut cache = RecordCache::new(8192, 16);
+        for sequence in 0..32 {
+            assert!(cache.insert_record(&stream, sequence, root.clone(), None));
+        }
+        assert_eq!(cache.backing_bytes(), 4096);
+        let bytes = cache.snapshot();
+        assert!(bytes.len() <= MAGIC.len() + 16 + 2 * 8192);
+        let mut restored = RecordCache::new(8192, 16);
+        restored.restore(&bytes).unwrap();
+        assert!(restored.record(&stream, 31).is_some());
+        assert!(restored.bytes() <= 8192);
+    }
+
     /// Publication identity is part of an alias; the same source and offset
     /// under a different fork must not retain either private bytes or aliases.
     #[test]
@@ -940,7 +1098,7 @@ mod tests {
             commit_id: CommitId::from_bytes([1; 32]),
         };
         cache.observe_origin(&child, Some(origin.clone()));
-        cache.insert_record(&child, 0, Bytes::from_static(b"private"), None);
+        cache.insert_record(&child, 0, OwnedBytes::from_static(b"private"), None);
         cache.observe_origin(
             &grandchild,
             Some(ForkOrigin {
@@ -969,7 +1127,7 @@ mod tests {
     fn inherited_cache_resolution_has_no_depth_cutoff() {
         let mut cache = RecordCache::new(64 * 1024, 256);
         let mut source = StreamPath::new("root").unwrap();
-        cache.insert_record(&source, 0, Bytes::from_static(b"retained"), None);
+        cache.insert_record(&source, 0, OwnedBytes::from_static(b"retained"), None);
         for index in 0..100 {
             let child = StreamPath::new(format!("fork{index}")).unwrap();
             cache.observe_origin(
@@ -991,12 +1149,12 @@ mod tests {
         let other = StreamPath::new("test/other").unwrap();
         let mut cache = RecordCache::new(16 * 1024, 1);
         cache.note_commit(&stream, 0, CommitId::from_bytes([1; 32]));
-        cache.insert_record(&stream, 0, Bytes::from_static(b"old"), None);
+        cache.insert_record(&stream, 0, OwnedBytes::from_static(b"old"), None);
         cache.begin_frame();
         cache.observe_tail(&other, 0);
         assert!(cache.record(&stream, 0).is_none());
         cache.note_commit(&stream, 0, CommitId::from_bytes([2; 32]));
-        cache.insert_record(&stream, 0, Bytes::from_static(b"new"), None);
+        cache.insert_record(&stream, 0, OwnedBytes::from_static(b"new"), None);
         assert_eq!(cache.record(&stream, 0).unwrap().as_ref(), b"new");
         assert_eq!(
             cache.anchor(&stream, 0),
@@ -1016,7 +1174,7 @@ mod tests {
         }
         cache.set_budget(64 * 1024);
         let stream = StreamPath::new("test/s0").unwrap();
-        assert!(cache.insert_record(&stream, 0, Bytes::from_static(b"row"), None));
+        assert!(cache.insert_record(&stream, 0, OwnedBytes::from_static(b"row"), None));
         assert_eq!(cache.record(&stream, 0).unwrap().as_ref(), b"row");
         assert!(cache.bytes() <= 64 * 1024);
         assert_eq!(cache.streams(), 4096);
@@ -1061,13 +1219,17 @@ mod tests {
                 commit_id: CommitId::from_bytes([1; 32]),
             }),
         );
-        cache.insert_record(&source, 0, Bytes::from_static(b"a"), None);
-        cache.insert_record(&child, 3, Bytes::from_static(b"c"), None);
+        cache.insert_record(&source, 0, OwnedBytes::from_static(b"a"), None);
+        cache.insert_record(&child, 3, OwnedBytes::from_static(b"c"), None);
         let mark = cache.begin_frame();
         cache.touch_range(&child, 0, 4);
         let large = StreamPath::new("test/z").unwrap();
-        let cached =
-            cache.insert_record(&large, 0, Bytes::from(vec![0; 64 * 1024 - 300]), Some(mark));
+        let cached = cache.insert_record(
+            &large,
+            0,
+            OwnedBytes::from(vec![0; 64 * 1024 - 300]),
+            Some(mark),
+        );
         assert!(!cached);
         assert!(cache.record(&large, 0).is_some());
         cache.observe_tail(&StreamPath::new("test/other").unwrap(), 1);
@@ -1081,10 +1243,10 @@ mod tests {
         let obsolete = StreamPath::new("test/obsolete").unwrap();
         let mut source = RecordCache::new(64 * 1024, 16);
         for sequence in 0..40 {
-            source.insert_record(&stream, sequence, Bytes::from(vec![7; 64]), None);
+            source.insert_record(&stream, sequence, OwnedBytes::from(vec![7; 64]), None);
         }
         let mut target = RecordCache::new(4096, 16);
-        target.insert_record(&obsolete, 0, Bytes::from_static(b"old"), None);
+        target.insert_record(&obsolete, 0, OwnedBytes::from_static(b"old"), None);
         let before = target.snapshot();
         let mut malformed = source.snapshot();
         malformed.push(255);

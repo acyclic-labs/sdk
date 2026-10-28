@@ -11,10 +11,10 @@
 //! Per frame the work is bounded by the viewport, overscan and fixed
 //! budgets; agents that are not displayed cost nothing.
 
+use crate::reader::RecordBytes;
 use crate::reader::{Priority, Reader, ReaderPolicy, Want};
 use acyclic_harness_core::agent::{AGENTS, AgentPath, AgentRecord, StatusRecord};
 use acyclic_stream::{StreamError, StreamPath};
-use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Rows of lookahead in the scroll direction, at most.
@@ -165,7 +165,7 @@ pub enum Row {
         /// Conversation tail, from the listing projection or a later read.
         conversation: Option<u64>,
         /// The latest committed conversation record, projected by the listing.
-        latest: Option<Bytes>,
+        latest: Option<RecordBytes>,
         /// Whether children are shown.
         expanded: bool,
     },
@@ -182,7 +182,7 @@ pub struct HistoryRow {
     /// Conversation position.
     pub sequence: u64,
     /// Committed record, `None` while loading.
-    pub value: Option<Bytes>,
+    pub value: Option<RecordBytes>,
 }
 
 struct History {
