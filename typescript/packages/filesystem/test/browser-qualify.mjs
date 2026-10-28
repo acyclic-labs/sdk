@@ -9,7 +9,8 @@
 // Usage: node test/browser-qualify.mjs [page ...]   (default: every page)
 // CHROME selects Chromium. BROWSER=firefox uses GECKODRIVER and optional FIREFOX.
 import { spawn } from "node:child_process";
-import { waitForBrowserResult } from "../../../../scripts/browser-result.mjs";
+import { connectBrowserProtocol as connect } from "../../../../scripts/browser-protocol.mjs";
+import { chromiumPageResult, waitForBrowserResult } from "../../../../scripts/browser-result.mjs";
 import { waitForFileValue } from "../../../../scripts/graphcoder-e2e/wait-path.mjs";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createServer } from "node:http";
@@ -246,46 +247,6 @@ async function runFirefoxPage(browser, observer, origin, page) {
   return { page, passed: observed.status === "passed", text: observed.text, events };
 }
 
-async function connect(endpoint) {
-  const socket = new WebSocket(endpoint);
-  await new Promise((resolveOpen, reject) => {
-    socket.addEventListener("open", resolveOpen, { once: true });
-    socket.addEventListener("error", () => reject(new Error("DevTools connection failed")), { once: true });
-  });
-  let sequence = 0;
-  const pending = new Map();
-  const listeners = new Set();
-  socket.addEventListener("message", (event) => {
-    const message = JSON.parse(event.data);
-    if (message.id === undefined) {
-      for (const listener of listeners) listener(message);
-      return;
-    }
-    const handler = pending.get(message.id);
-    pending.delete(message.id);
-    if (message.error === undefined) handler?.resolve(message.result);
-    else handler?.reject(new Error(typeof message.error === "string"
-      ? `${message.error}: ${message.message}`
-      : `${message.error.message} (${message.error.code})`));
-  });
-  return {
-    send(method, params = {}, sessionId = undefined) {
-      const id = ++sequence;
-      return new Promise((resolveSend, reject) => {
-        pending.set(id, { resolve: resolveSend, reject });
-        socket.send(JSON.stringify({ id, method, params, sessionId }));
-      });
-    },
-    listen(listener) {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    close() {
-      socket.close();
-    },
-  };
-}
-
 function describeException(details) {
   const exception = details.exception;
   return exception?.description ?? exception?.value ?? details.text;
@@ -311,33 +272,13 @@ function observe(browser) {
 async function runPage(browser, observer, origin, page) {
   observer.events = [];
   const events = observer.events;
-  // The page is navigated only once its session is observing it.
-  const { targetId } = await browser.send("Target.createTarget", { url: "about:blank" });
-  const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
-  const binding = "__acyclicQualificationResult";
-  let finish;
-  const result = new Promise(resolveResult => { finish = resolveResult; });
-  const unlisten = browser.listen(message => {
-    if (message.sessionId !== sessionId) return;
-    if (message.method === "Runtime.bindingCalled" && message.params.name === binding) {
-      finish(JSON.parse(message.params.payload));
-    } else if (message.method === "Runtime.exceptionThrown") {
-      finish({ status: "failed", text: describeException(message.params.exceptionDetails) });
-    }
-  });
-  const timeout = setTimeout(() => finish({ status: "failed", text: `timed out waiting for ${page} result` }), PAGE_DEADLINE_MS);
   let observed;
   try {
-    await browser.send("Runtime.enable", {}, sessionId);
-    await browser.send("Runtime.addBinding", { name: binding }, sessionId);
-    await browser.send("Page.addScriptToEvaluateOnNewDocument", {
-      source: `(${waitForBrowserResult})(${PAGE_DEADLINE_MS}).then(value => globalThis.${binding}(JSON.stringify(value)));`,
-    }, sessionId);
-    const navigation = await browser.send("Page.navigate", { url: `${origin}/test/${page}` }, sessionId);
-    if (navigation.errorText) throw new Error(navigation.errorText);
-    observed = await result;
+    observed = await chromiumPageResult(browser, `${origin}/test/${page}`, PAGE_DEADLINE_MS);
   } catch (error) {
     return { page, passed: false, text: String(error.stack ?? error), events };
+  }
+  return { page, passed: false, text: String(error.stack ?? error), events };
   } finally {
     clearTimeout(timeout);
     unlisten();
