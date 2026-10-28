@@ -56,9 +56,9 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
                         packet((bytes, Vec::new()), custody, original)?,
                         original.runtime_meter(),
                     )
-                    .map_err(native_error)?
+                    .map_err(|error| native_error(error, original))?
                     .await
-                    .map_err(native_error)?;
+                    .map_err(|error| native_error(error, original))?;
                 receipt.put().clone()
             }
             _ => {
@@ -120,14 +120,14 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
                         packet(requests, custody, original)?,
                         original.runtime_meter(),
                     )
-                    .map_err(native_error)?
+                    .map_err(|error| native_error(error, original))?
                     .await
-                    .map_err(native_error)?;
+                    .map_err(|error| native_error(error, original))?;
                 finish_writes(
                     results.map(|value| {
                         value
                             .map(|receipt| receipt.put().clone())
-                            .map_err(native_error)
+                            .map_err(|error| native_error(error, original))
                     }),
                     writes,
                     parts,
