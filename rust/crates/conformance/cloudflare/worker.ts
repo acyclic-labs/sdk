@@ -321,8 +321,9 @@ export default {
         if ((await observations.next()).value !== "started") {
           throw new Error("STEP guest-cancel start failed; recovery: bash scripts/qualify-cloudflare.sh");
         }
-        await agent.cancel("cancel-running-guest");
-        const [outcome, aborted] = await Promise.all([creation, observations.next()]);
+        const [outcome, aborted] = await Promise.all([
+          creation, observations.next(), agent.cancel("cancel-running-guest"),
+        ]);
         if ("error" in outcome || aborted.value !== "aborted") {
           throw new Error(`STEP guest-cancel failed: ${JSON.stringify(outcome)}; recovery: bash scripts/qualify-cloudflare.sh`);
         }
