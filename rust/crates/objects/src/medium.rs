@@ -32,6 +32,19 @@ pub trait Medium: Send + Sync + 'static {
     ) -> Result<Option<OwnedBytes>, MediumError>;
     /// Removes `key`, reporting whether it existed.
     async fn remove(&self, key: &str) -> Result<bool, MediumError>;
+    /// Replaces `key` with `bytes` only while it holds exactly `expected`,
+    /// atomically against every other conditional write and removal.
+    /// `Ok(false)` leaves the key untouched.
+    async fn replace(
+        &self,
+        key: &str,
+        expected: &[u8],
+        bytes: OwnedBytes,
+    ) -> Result<bool, MediumError>;
+    /// Removes `key` only while it holds exactly `expected`, atomically against
+    /// every other conditional write and removal. The engine writes bytes
+    /// unique to each write, so a stale remover never matches a later value.
+    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError>;
     /// Lists up to `limit` keys under `prefix` strictly after `after`, in
     /// ascending byte order, with their stored sizes.
     async fn list(
@@ -99,6 +112,34 @@ impl Medium for MemoryMedium {
             .unwrap_or_else(PoisonError::into_inner)
             .remove(key)
             .is_some())
+    }
+
+    async fn replace(
+        &self,
+        key: &str,
+        expected: &[u8],
+        bytes: OwnedBytes,
+    ) -> Result<bool, MediumError> {
+        let mut keys = self.keys.write().unwrap_or_else(PoisonError::into_inner);
+        match keys.get_mut(key) {
+            Some(current) if current.as_ref() == expected => {
+                *current = bytes;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+        let mut keys = self.keys.write().unwrap_or_else(PoisonError::into_inner);
+        if keys
+            .get(key)
+            .is_some_and(|current| current.as_ref() == expected)
+        {
+            keys.remove(key);
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     async fn list(

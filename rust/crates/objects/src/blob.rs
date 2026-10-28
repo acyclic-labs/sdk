@@ -192,11 +192,17 @@ pub(crate) struct Envelope {
     pub(crate) length: u64,
     pub(crate) stored: u64,
     pub(crate) references: Vec<Digest>,
+    /// Unique to the put that published this blob; names its payload and
+    /// index keys, so no actor working on an earlier blob of the same digest
+    /// can match anything of this one.
+    pub(crate) version: [u8; 16],
+    /// The deleter that owns this blob's removal, if any.
+    pub(crate) dying: Option<[u8; 16]>,
 }
 
 impl Envelope {
     pub(crate) fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(ENVELOPE_MAGIC.len() + 21 + self.references.len() * 32);
+        let mut bytes = Vec::with_capacity(ENVELOPE_MAGIC.len() + 54 + self.references.len() * 32);
         bytes.extend_from_slice(ENVELOPE_MAGIC);
         bytes.push(match self.kind {
             Kind::Blob => 1,
@@ -207,6 +213,14 @@ impl Envelope {
         bytes.extend_from_slice(&(self.references.len() as u32).to_le_bytes());
         for reference in &self.references {
             bytes.extend_from_slice(reference.as_bytes());
+        }
+        bytes.extend_from_slice(&self.version);
+        match self.dying {
+            None => bytes.push(0),
+            Some(deleter) => {
+                bytes.push(1);
+                bytes.extend_from_slice(&deleter);
+            }
         }
         bytes
     }
@@ -226,12 +240,23 @@ impl Envelope {
         let references = (0..reader.u32()?)
             .map(|_| reader.digest())
             .collect::<Result<Vec<_>, Error>>()?;
+        let nonce = |reader: &mut Reader<'_>| -> Result<[u8; 16], Error> {
+            reader.take(16)?.try_into().map_err(|_| corrupt())
+        };
+        let version = nonce(&mut reader)?;
+        let dying = match reader.take(1)? {
+            [0] => None,
+            [1] => Some(nonce(&mut reader)?),
+            _ => return Err(corrupt()),
+        };
         reader.finish()?;
         Ok(Self {
             kind,
             length,
             stored,
             references,
+            version,
+            dying,
         })
     }
 }

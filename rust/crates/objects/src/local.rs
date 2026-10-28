@@ -2,12 +2,16 @@
 //!
 //! A key becomes visible only by hard-linking a complete, synchronized
 //! temporary file into place, so create-if-absent is atomic on every
-//! supported filesystem and a crash never exposes partial bytes.
+//! supported filesystem and a crash never exposes partial bytes. One process
+//! owns the root, so one in-process lock makes compare-and-replace and
+//! compare-and-remove atomic; only create competes with them, and it never
+//! replaces an existing key.
 use crate::{Medium, MediumError, Store};
 use acyclic_stream::OwnedBytes;
 use std::io::{Read as _, Seek as _, Write as _};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::PoisonError;
 
 /// How file contents are made durable before they become observable.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -52,6 +56,7 @@ const FORMAT: &[u8] = b"acyclic-objects-local-v1\n";
 pub struct LocalMedium {
     root: PathBuf,
     durability: LocalDurability,
+    conditional: std::sync::Arc<std::sync::Mutex<()>>,
     _lock: std::fs::File,
     _anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
 }
@@ -175,6 +180,7 @@ impl LocalMedium {
         Ok(Self {
             root,
             durability,
+            conditional: Default::default(),
             _lock: lock,
             _anchor: anchor,
         })
@@ -233,6 +239,15 @@ fn walk(
         }
     }
     Ok(())
+}
+
+/// Whether `path` currently holds exactly `expected`.
+fn holds(path: &Path, expected: &[u8]) -> std::io::Result<bool> {
+    match std::fs::read(path) {
+        Ok(current) => Ok(current == expected),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 #[async_trait::async_trait]
@@ -313,6 +328,60 @@ impl Medium for LocalMedium {
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error),
+        })
+        .await
+        .map_err(failed)
+    }
+
+    async fn replace(
+        &self,
+        key: &str,
+        expected: &[u8],
+        bytes: OwnedBytes,
+    ) -> Result<bool, MediumError> {
+        let (target, expected) = (self.path(key), expected.to_vec());
+        let mut name = [0u8; 16];
+        getrandom::fill(&mut name).map_err(|error| failed(std::io::Error::other(error)))?;
+        let temporary = self.root.join("tmp").join(hex::encode(name));
+        let (durability, conditional) = (self.durability, self.conditional.clone());
+        let replaced = blocking(move || {
+            let _held = conditional.lock().unwrap_or_else(PoisonError::into_inner);
+            if !holds(&target, &expected)? {
+                return Ok(None);
+            }
+            let mut file = std::fs::File::create_new(&temporary)?;
+            file.write_all(&bytes)?;
+            sync(&file, durability)?;
+            drop(file);
+            if let Err(error) = std::fs::rename(&temporary, &target) {
+                let _ = std::fs::remove_file(&temporary);
+                return Err(error);
+            }
+            let parent = target.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+            Ok(Some(sync_directory(parent, durability)))
+        })
+        .await
+        .map_err(failed)?;
+        match replaced {
+            None => Ok(false),
+            Some(Ok(())) => Ok(true),
+            Some(Err(error)) => Err(MediumError::Ambiguous(error)),
+        }
+    }
+
+    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+        let (path, expected) = (self.path(key), expected.to_vec());
+        let (durability, conditional) = (self.durability, self.conditional.clone());
+        blocking(move || {
+            let _held = conditional.lock().unwrap_or_else(PoisonError::into_inner);
+            if !holds(&path, &expected)? {
+                return Ok(false);
+            }
+            std::fs::remove_file(&path)?;
+            if let Some(parent) = path.parent() {
+                sync_directory(parent, durability)?;
+            }
+            Ok(true)
         })
         .await
         .map_err(failed)

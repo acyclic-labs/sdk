@@ -12,6 +12,7 @@
     "collection-keeps-retained-closures",
     "list-after-never-duplicates-or-skips",
     "usage-counts-unique-bytes",
-    "cross-account-isolation"
+    "cross-account-isolation",
+    "medium-conditional-writes-match-only-their-observed-bytes"
   ]
 }

@@ -2,14 +2,14 @@
 use super::s3::observed_store::ObservedStore;
 use acyclic_objects::{Blobs, ByteRange, Digest, Put, Store, s3::S3Medium, wire};
 use acyclic_stream::OwnedBytes;
-use object_store::{ObjectStore, path::Path};
+use object_store::path::Path;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
 
 pub async fn verify(
-    store: Arc<dyn ObjectStore>,
+    store: Arc<dyn acyclic_objects::s3::Bucket>,
     prefix: Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let observed = Arc::new(ObservedStore {

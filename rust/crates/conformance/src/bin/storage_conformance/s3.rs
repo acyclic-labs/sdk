@@ -1,6 +1,6 @@
 use acyclic_objects::{Blobs, ByteRange, Delete, Digest, Put, Store, s3::S3Medium, wire};
 use acyclic_stream::OwnedBytes;
-use object_store::{ObjectStore, path::Path};
+use object_store::path::Path;
 use std::{
     sync::{
         Arc,
@@ -12,17 +12,22 @@ use std::{
 pub(super) mod observed_store;
 
 fn account(
-    store: Arc<dyn ObjectStore>,
+    store: Arc<dyn acyclic_objects::s3::Bucket>,
     prefix: &Path,
 ) -> Result<acyclic_objects::Account<S3Medium>, acyclic_objects::Error> {
     Store::new(S3Medium::new(store, prefix.as_ref())).account(b"storage-conformance")
 }
 
 pub async fn verify(
-    store: Arc<dyn ObjectStore>,
+    store: Arc<dyn acyclic_objects::s3::Bucket>,
     prefix: Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
+    acyclic_objects::conformance::verify_medium(
+        &S3Medium::new(store.clone(), prefix.as_ref()),
+        "s3",
+    )
+    .await?;
     let left = account(store.clone(), &prefix)?;
     let right = account(store.clone(), &prefix)?;
     let body = OwnedBytes::from_static(b"race");
@@ -84,7 +89,7 @@ fn one_creator(a: Put, b: Put) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn cold_ranges(
-    store: Arc<dyn ObjectStore>,
+    store: Arc<dyn acyclic_objects::s3::Bucket>,
     prefix: Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let observed = Arc::new(observed_store::ObservedStore {

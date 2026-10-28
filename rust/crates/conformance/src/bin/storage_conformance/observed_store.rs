@@ -8,7 +8,7 @@ use std::sync::{
 
 #[derive(Debug)]
 pub struct ObservedStore {
-    pub inner: Arc<dyn ObjectStore>,
+    pub inner: Arc<dyn acyclic_objects::s3::Bucket>,
     pub body_bytes: AtomicUsize,
     pub body_gets: AtomicUsize,
     pub metadata_bytes: AtomicUsize,
@@ -116,5 +116,28 @@ impl ObjectStore for ObservedStore {
     }
     async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
         self.inner.copy_opts(from, to, options).await
+    }
+}
+
+#[async_trait::async_trait]
+impl signer::Signer for ObservedStore {
+    async fn signed_url(
+        &self,
+        method: acyclic_objects::s3::Method,
+        path: &Path,
+        expires_in: std::time::Duration,
+    ) -> Result<acyclic_objects::s3::Url> {
+        self.inner.signed_url(method, path, expires_in).await
+    }
+    async fn signed_url_opts(
+        &self,
+        method: acyclic_objects::s3::Method,
+        path: &Path,
+        expires_in: std::time::Duration,
+        options: &signer::SignedUrlOptions,
+    ) -> Result<acyclic_objects::s3::Url> {
+        self.inner
+            .signed_url_opts(method, path, expires_in, options)
+            .await
     }
 }

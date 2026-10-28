@@ -4,7 +4,6 @@ use acyclic_objects::{Store, s3::S3Medium};
 use acyclic_stream::{
     BoxProviderFuture, LocalStream, LocalStreamLimits, StreamProvider, postgres::PostgresStream,
 };
-use object_store::ObjectStore;
 use std::{sync::Arc, time::Instant};
 
 #[path = "endpoint.rs"]
@@ -12,7 +11,7 @@ mod endpoint;
 
 struct Providers {
     database: Option<String>,
-    objects: Option<Arc<dyn ObjectStore>>,
+    objects: Option<Arc<dyn acyclic_objects::s3::Bucket>>,
 }
 
 struct Domain {
@@ -90,19 +89,20 @@ impl Storage for Domain {
 
 pub async fn verify(
     database: &str,
-    store: Arc<dyn ObjectStore>,
+    store: Arc<dyn acyclic_objects::s3::Bucket>,
 ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let store: Arc<dyn ObjectStore> = if std::env::var_os("STORAGE_IO_TRACE").is_some() {
-        Arc::new(super::s3::observed_store::ObservedStore {
-            inner: store,
-            body_bytes: 0.into(),
-            body_gets: 0.into(),
-            metadata_bytes: 0.into(),
-            envelope_creates: 0.into(),
-        })
-    } else {
-        store
-    };
+    let store: Arc<dyn acyclic_objects::s3::Bucket> =
+        if std::env::var_os("STORAGE_IO_TRACE").is_some() {
+            Arc::new(super::s3::observed_store::ObservedStore {
+                inner: store,
+                body_bytes: 0.into(),
+                body_gets: 0.into(),
+                metadata_bytes: 0.into(),
+                envelope_creates: 0.into(),
+            })
+        } else {
+            store
+        };
     for (name, database, objects) in [
         ("Postgres + memory objects", Some(database.to_owned()), None),
         ("local streams + MinIO", None, Some(store.clone())),

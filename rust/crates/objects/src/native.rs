@@ -107,6 +107,30 @@ impl<M: Medium> Medium for Metered<M> {
         removed
     }
 
+    async fn replace(
+        &self,
+        key: &str,
+        expected: &[u8],
+        bytes: OwnedBytes,
+    ) -> Result<bool, MediumError> {
+        self.charge(self.meter.admit_write(bytes.len()))?;
+        let replaced = self.inner.replace(key, expected, bytes.clone()).await;
+        let written = if matches!(replaced, Ok(true)) {
+            bytes.len()
+        } else {
+            0
+        };
+        self.charge(self.meter.record_write(written))?;
+        replaced
+    }
+
+    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+        self.charge(self.meter.admit_write(0))?;
+        let removed = self.inner.remove_if(key, expected).await;
+        self.charge(self.meter.record_write(0))?;
+        removed
+    }
+
     async fn list(
         &self,
         prefix: &str,

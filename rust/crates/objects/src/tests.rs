@@ -15,6 +15,7 @@ async fn memory_store_passes_the_shared_suite() -> Result<(), Box<dyn std::error
         "memory",
     )
     .await?;
+    conformance::verify_medium(store.medium().as_ref(), "memory").await?;
     Ok(())
 }
 
@@ -30,6 +31,7 @@ async fn local_store_passes_the_shared_suite_and_reopens() -> Result<(), Box<dyn
         "local",
     )
     .await?;
+    conformance::verify_medium(store.medium().as_ref(), "local").await?;
     let body = OwnedBytes::from(vec![9; 128]);
     let digest = Digest::of(&body);
     store
@@ -78,6 +80,17 @@ impl Medium for Faulty {
     }
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
         self.inner.remove(key).await
+    }
+    async fn replace(
+        &self,
+        key: &str,
+        expected: &[u8],
+        bytes: OwnedBytes,
+    ) -> Result<bool, MediumError> {
+        self.inner.replace(key, expected, bytes).await
+    }
+    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+        self.inner.remove_if(key, expected).await
     }
     async fn list(
         &self,
@@ -169,25 +182,41 @@ fn manifest_and_envelope_encodings_round_trip() -> Result<(), crate::Error> {
     Ok(())
 }
 
-/// One shared medium that two [`Store`]s, standing for two processes, open.
-/// It parks the first operation matching `pause` until released, to force one
-/// interleaving, and with `hide_tombstones` lists no tombstone: the negative
-/// control, a store without the delete protocol.
-#[derive(Clone, Default)]
+/// One shared medium that several [`Store`]s, standing for processes, open.
+/// It parks one operation matching `pause` until released, to force one
+/// interleaving. With `forgetful` its conditional writes ignore the bytes
+/// they were given: a deleter's mark is never stored and its removal matches
+/// whatever is there, the negative control for the delete protocol.
+#[derive(Clone)]
 struct Shared {
-    inner: MemoryMedium,
+    inner: std::sync::Arc<dyn Medium>,
     pause: std::sync::Arc<std::sync::Mutex<Option<Pause>>>,
-    hide_tombstones: bool,
+    forgetful: bool,
+}
+
+impl Default for Shared {
+    fn default() -> Self {
+        Self::over(MemoryMedium::default(), false)
+    }
 }
 
 struct Pause {
     operation: &'static str,
     fragment: String,
+    skip: usize,
     reached: std::sync::Arc<tokio::sync::Notify>,
     release: std::sync::Arc<tokio::sync::Notify>,
 }
 
 impl Shared {
+    fn over(inner: impl Medium, forgetful: bool) -> Self {
+        Self {
+            inner: std::sync::Arc::new(inner),
+            pause: Default::default(),
+            forgetful,
+        }
+    }
+
     /// Parks the first `operation` on a key containing `fragment`, after it applies.
     fn park(
         &self,
@@ -197,11 +226,25 @@ impl Shared {
         std::sync::Arc<tokio::sync::Notify>,
         std::sync::Arc<tokio::sync::Notify>,
     ) {
+        self.park_after(operation, fragment, 0)
+    }
+
+    /// Parks the match after `skip` earlier matches.
+    fn park_after(
+        &self,
+        operation: &'static str,
+        fragment: impl Into<String>,
+        skip: usize,
+    ) -> (
+        std::sync::Arc<tokio::sync::Notify>,
+        std::sync::Arc<tokio::sync::Notify>,
+    ) {
         let reached = std::sync::Arc::new(tokio::sync::Notify::new());
         let release = std::sync::Arc::new(tokio::sync::Notify::new());
         *self.pause.lock().unwrap() = Some(Pause {
             operation,
             fragment: fragment.into(),
+            skip,
             reached: reached.clone(),
             release: release.clone(),
         });
@@ -211,8 +254,15 @@ impl Shared {
     async fn after(&self, operation: &'static str, key: &str) {
         let parked = {
             let mut pause = self.pause.lock().unwrap();
-            match &*pause {
-                Some(p) if p.operation == operation && key.contains(&p.fragment) => pause.take(),
+            match &mut *pause {
+                Some(p) if p.operation == operation && key.contains(&p.fragment) => {
+                    if p.skip == 0 {
+                        pause.take()
+                    } else {
+                        p.skip -= 1;
+                        None
+                    }
+                }
                 _ => None,
             }
         };
@@ -242,15 +292,35 @@ impl Medium for Shared {
         self.after("remove", key).await;
         removed
     }
+    async fn replace(
+        &self,
+        key: &str,
+        expected: &[u8],
+        bytes: OwnedBytes,
+    ) -> Result<bool, MediumError> {
+        let replaced = if self.forgetful {
+            Ok(self.inner.read(key, Some(0..0)).await?.is_some())
+        } else {
+            self.inner.replace(key, expected, bytes).await
+        };
+        self.after("replace", key).await;
+        replaced
+    }
+    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+        let removed = if self.forgetful {
+            self.inner.remove(key).await
+        } else {
+            self.inner.remove_if(key, expected).await
+        };
+        self.after("remove", key).await;
+        removed
+    }
     async fn list(
         &self,
         prefix: &str,
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, u64)>, MediumError> {
-        if self.hide_tombstones && prefix.contains("/d/") {
-            return Ok(Vec::new());
-        }
         let listed = self.inner.list(prefix, after, limit).await;
         self.after("list", prefix).await;
         listed
@@ -264,17 +334,14 @@ enum Writer {
     Retain,
 }
 
-/// The deleter passes its index check, then another process references the
-/// blob before the deleter removes it. Returns whether the writer succeeded
-/// and whether the blob it referenced survived.
+/// The deleter marks the blob and passes its index check, then another
+/// process references the blob before the deleter removes it. Returns whether
+/// the writer succeeded and whether the blob it referenced survived.
 async fn delete_then_reference(
     writer: Writer,
-    hide_tombstones: bool,
+    forgetful: bool,
 ) -> Result<(bool, bool), Box<dyn std::error::Error>> {
-    let medium = Shared {
-        hide_tombstones,
-        ..Shared::default()
-    };
+    let medium = Shared::over(MemoryMedium::default(), forgetful);
     let (deleting, writing) = (Store::new(medium.clone()), Store::new(medium.clone()));
     let (deleting, writing) = (deleting.account(b"acct")?, writing.account(b"acct")?);
     let child = writing
@@ -283,7 +350,7 @@ async fn delete_then_reference(
         .verified()
         .ok_or("unknown")?
         .digest;
-    let (reached, release) = medium.park("list", "/i/");
+    let (reached, release) = medium.park_after("list", "/i/", 1);
     let (deleted, written) = tokio::join!(deleting.delete(child), async {
         reached.notified().await;
         let written = match writer {
@@ -314,9 +381,9 @@ async fn delete_then_reference(
 async fn delete_never_breaks_a_reference_written_by_another_process()
 -> Result<(), Box<dyn std::error::Error>> {
     for writer in [Writer::Put, Writer::Retain] {
-        // The writer sees the tombstone and refuses; the delete completes.
+        // The writer sees the deleter's mark and refuses; the delete completes.
         assert_eq!(delete_then_reference(writer, false).await?, (false, false));
-        // Negative control: without tombstones the same schedule commits a
+        // Negative control: without a stored mark the same schedule commits a
         // reference to a deleted blob.
         assert_eq!(delete_then_reference(writer, true).await?, (true, false));
     }
@@ -350,15 +417,12 @@ async fn a_reference_indexed_first_refuses_the_delete() -> Result<(), Box<dyn st
 }
 
 /// Another process puts the same bytes after the deleter removed the
-/// envelope, before it removed the payload. Returns that put and whether the
-/// bytes are readable once both finish.
-async fn delete_then_same_bytes(
-    hide_tombstones: bool,
-) -> Result<(Put, bool), Box<dyn std::error::Error>> {
-    let medium = Shared {
-        hide_tombstones,
-        ..Shared::default()
-    };
+/// envelope, before it removed the payload. The re-put is a new version with
+/// its own payload, so the deleter's remaining work never touches it.
+#[tokio::test]
+async fn a_reput_between_envelope_and_payload_removal_survives()
+-> Result<(), Box<dyn std::error::Error>> {
+    let medium = Shared::default();
     let (deleting, writing) = (
         Store::new(medium.clone()).account(b"acct")?,
         Store::new(medium.clone()).account(b"acct")?,
@@ -378,16 +442,11 @@ async fn delete_then_same_bytes(
         put
     });
     assert_eq!(deleted?, Delete::Deleted);
-    Ok((put?, writing.get(digest, ByteRange::FULL, 32).await.is_ok()))
-}
-
-#[tokio::test]
-async fn bytes_being_deleted_are_never_reported_durable() -> Result<(), Box<dyn std::error::Error>>
-{
-    assert_eq!(delete_then_same_bytes(false).await?, (Put::Unknown, false));
-    // Negative control: without tombstones the put reports bytes the delete then removes.
-    let (put, readable) = delete_then_same_bytes(true).await?;
-    assert!(put.verified().is_some() && !readable);
+    assert!(matches!(put?, Put::Created { .. }));
+    assert_eq!(
+        writing.get(digest, ByteRange::FULL, 32).await?.body(),
+        &body
+    );
     Ok(())
 }
 
@@ -521,8 +580,8 @@ async fn a_release_never_unpins_a_concurrent_equal_retain() -> Result<(), Box<dy
 #[tokio::test]
 async fn a_delete_never_removes_a_writers_pending_reference()
 -> Result<(), Box<dyn std::error::Error>> {
-    // The deleter passes its index check; a parent writer creates its child key
-    // and pauses; the delete completes; a third process re-puts the child; the
+    // The deleter marks and passes its index check; a parent writer creates its
+    // child key and pauses; the delete completes; a third process re-puts the child; the
     // writer resumes and commits. Its key must still pin the child.
     // Negative control: a deleter that cleared inbound keys left the committed
     // parent unpinning its child, and this delete was `Deleted`.
@@ -540,7 +599,8 @@ async fn a_delete_never_removes_a_writers_pending_reference()
         .verified()
         .ok_or("unknown")?
         .digest;
-    let (deleter_reached, deleter_release) = medium.park("list", format!("/i/{}/", child.to_hex()));
+    let (deleter_reached, deleter_release) =
+        medium.park_after("list", format!("/i/{}/", child.to_hex()), 1);
     let deleted = tokio::spawn({
         let deleting = deleting.clone();
         async move { deleting.delete(child).await }
@@ -563,72 +623,109 @@ async fn a_delete_never_removes_a_writers_pending_reference()
     Ok(())
 }
 
-#[tokio::test]
-async fn one_delete_never_clears_another_deleters_tombstone()
--> Result<(), Box<dyn std::error::Error>> {
-    // Two deletes pass their checks; the first pauses before removing; the
-    // second completes. A same-bytes put and a referencing put must then
-    // refuse, because the first is still removing.
-    // Negative control: a deleter that cleared every tombstone let both
-    // commit, and the first then removed bytes a live parent referenced.
-    let medium = Shared::default();
-    let (first, second, writing) = (
-        Store::new(medium.clone()).account(b"acct")?,
+/// A deleter marks and passes its checks, then stalls before removing. Two
+/// collections run meanwhile, the second removing the blob; a fresh put of
+/// the same bytes is retained. Returns the stalled delete and whether the
+/// retained blob is still readable once it resumes.
+async fn stalled_delete_then_reput(
+    medium: impl Medium,
+    forgetful: bool,
+) -> Result<(Result<Delete, ErrorCode>, bool), Box<dyn std::error::Error>> {
+    let medium = Shared::over(medium, forgetful);
+    let (deleting, others) = (
         Store::new(medium.clone()).account(b"acct")?,
         Store::new(medium.clone()).account(b"acct")?,
     );
-    let body = OwnedBytes::from(vec![9; 32]);
-    let digest = writing
+    let body = OwnedBytes::from(vec![12; 32]);
+    let digest = others
         .put(body.clone(), Vec::new())
         .await?
         .verified()
         .ok_or("unknown")?
         .digest;
-    let (reached, release) = medium.park("list", format!("/i/{}/", digest.to_hex()));
-    let paused = tokio::spawn({
-        let first = first.clone();
-        async move { first.delete(digest).await }
+    let (reached, release) = medium.park_after("list", format!("/i/{}/", digest.to_hex()), 1);
+    let stalled = tokio::spawn({
+        let deleting = deleting.clone();
+        async move { deleting.delete(digest).await }
     });
     reached.notified().await;
-    assert_eq!(second.delete(digest).await?, Delete::Deleted);
-    let reput = writing.put(body, Vec::new()).await?;
-    let parent = writing.put(vec![10; 32].into(), vec![digest]).await;
-    release.notify_one();
-    paused.await??;
-    assert_eq!(reput, Put::Unknown);
+    others.collect().await?;
+    others.collect().await?;
     assert_eq!(
-        parent.map_err(|error| error.code).err(),
-        Some(ErrorCode::MissingReference)
+        others.head(digest).await.map_err(|error| error.code).err(),
+        Some(ErrorCode::NotFound)
     );
+    assert!(matches!(
+        others.put(body.clone(), Vec::new()).await?,
+        Put::Created { .. }
+    ));
+    others.retain(&RootId::new(*b"root")?, vec![digest]).await?;
+    release.notify_one();
+    let deleted = stalled.await?.map_err(|error| error.code);
+    let readable = others.get(digest, ByteRange::FULL, 32).await.is_ok();
+    Ok((deleted, readable))
+}
+
+#[tokio::test]
+async fn a_stalled_deleter_never_removes_a_reput_retained_blob()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The deleter's removal matches only the envelope bearing its own mark,
+    // which collection revived and then removed itself.
+    assert_eq!(
+        stalled_delete_then_reput(MemoryMedium::default(), false).await?,
+        (Err(ErrorCode::OutcomeUnknown), true)
+    );
+    // Negative control: an unconditional removal erases the fresh blob.
+    assert_eq!(
+        stalled_delete_then_reput(MemoryMedium::default(), true).await?,
+        (Ok(Delete::Deleted), false)
+    );
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    for forgetful in [false, true] {
+        let root = tempfile::tempdir()?;
+        let local = crate::LocalMedium::open(root.path(), Default::default(), None).await?;
+        let (_, readable) = stalled_delete_then_reput(local, forgetful).await?;
+        assert_eq!(readable, !forgetful);
+    }
     Ok(())
 }
 
 #[tokio::test]
-async fn collection_clears_an_abandoned_tombstone_after_its_fence()
+async fn collection_revives_a_kept_blob_whose_deleter_crashed()
 -> Result<(), Box<dyn std::error::Error>> {
-    // A deleter crashed holding its tombstone on bytes now stored nowhere.
-    // Negative control: before collection cleared flags, every later put of
-    // these bytes stayed `Unknown`.
+    // A deleter crashed after marking a blob that a fresh put still protects.
     let store = Store::new(MemoryMedium::default());
     let blobs = store.account(b"acct")?;
-    let body = OwnedBytes::from(vec![11; 32]);
-    let digest = Digest::of(&body);
-    let abandoned = format!(
-        "{}/d/{}/{:020}.crashed",
-        Digest::of(b"acct").to_hex(),
-        digest.to_hex(),
-        0
+    let child = blobs
+        .put(vec![11; 32].into(), Vec::new())
+        .await?
+        .verified()
+        .ok_or("unknown")?
+        .digest;
+    let hex = child.to_hex();
+    let key = format!("{}/e/{}/{hex}", Digest::of(b"acct").to_hex(), &hex[..2]);
+    let live = store.medium().read(&key, None).await?.ok_or("absent")?;
+    let mut marked = crate::blob::Envelope::decode(&live)?;
+    marked.dying = Some([7; 16]);
+    assert!(
+        store
+            .medium()
+            .replace(&key, &live, marked.encode().into())
+            .await?
     );
-    store.medium().create(&abandoned, OwnedBytes::new()).await?;
-    assert_eq!(blobs.put(body.clone(), Vec::new()).await?, Put::Unknown);
-    // The first pass is fenced at the tombstone's own revision: a deleter may
-    // still be live, so it stays.
-    blobs.collect().await?;
-    assert_eq!(blobs.put(body.clone(), Vec::new()).await?, Put::Unknown);
-    blobs.collect().await?;
-    assert!(matches!(
-        blobs.put(body, Vec::new()).await?,
-        Put::Created { .. }
-    ));
+    // Marked, it refuses new holders, as a live deleter needs.
+    let parent = blobs.put(vec![12; 32].into(), vec![child]).await;
+    assert_eq!(
+        parent.map_err(|error| error.code).err(),
+        Some(ErrorCode::MissingReference)
+    );
+    assert_eq!(blobs.collect().await?.swept, 0);
+    assert!(
+        blobs
+            .put(vec![12; 32].into(), vec![child])
+            .await?
+            .verified()
+            .is_some()
+    );
     Ok(())
 }

@@ -3,9 +3,11 @@
 //! [`verify`] takes two accounts of the same disposable service. Every case
 //! runs against the first; the cross-account probes also use the second and
 //! fail if either account can observe, dedupe against or delete the other's
-//! blobs.
+//! blobs. [`verify_medium`] checks the conditional writes every medium
+//! beneath the engine must make atomic.
 use crate::{
-    Blobs, ByteRange, Delete, Digest, Error, Kind, Manifest, Part, Put, RootId, wire::ErrorCode,
+    Blobs, ByteRange, Delete, Digest, Error, Kind, Manifest, Medium, Part, Put, RootId,
+    wire::ErrorCode,
 };
 use acyclic_stream::OwnedBytes;
 
@@ -438,5 +440,65 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     );
     let still_first = first.head(digest).await;
     expect!("cross-account-isolation", still_first.is_ok(), still_first);
+    Ok(())
+}
+
+/// Checks that `medium`'s conditional replace and removal match only the
+/// exact bytes observed: a remover holding an earlier value of a key never
+/// removes or replaces a later one.
+pub async fn verify_medium(medium: &dyn Medium, run: &str) -> Result<(), Failure> {
+    const CASE: &str = "medium-conditional-writes-match-only-their-observed-bytes";
+    let key = format!("medium-conformance/{run}/key");
+    let check = |step: &'static str, observed: Result<bool, crate::MediumError>, wanted: bool| {
+        match observed {
+            Ok(value) if value == wanted => Ok(()),
+            other => Err(fail(CASE, format!("{step}: {other:?}"))),
+        }
+    };
+    let (first, second, later) = (bytes("first", 32), bytes("second", 32), bytes("later", 32));
+    check(
+        "absent replace",
+        medium.replace(&key, &first, second.clone()).await,
+        false,
+    )?;
+    check(
+        "absent removal",
+        medium.remove_if(&key, &first).await,
+        false,
+    )?;
+    check("create", medium.create(&key, first.clone()).await, true)?;
+    check(
+        "stale replace",
+        medium.replace(&key, &second, later.clone()).await,
+        false,
+    )?;
+    check(
+        "replace",
+        medium.replace(&key, &first, second.clone()).await,
+        true,
+    )?;
+    check("stale removal", medium.remove_if(&key, &first).await, false)?;
+    let read = medium.read(&key, None).await;
+    if !matches!(&read, Ok(Some(value)) if *value == second) {
+        return Err(fail(CASE, format!("replaced value: {read:?}")));
+    }
+    check("removal", medium.remove_if(&key, &second).await, true)?;
+    // A later value of the key: the earlier remover's bytes match nothing.
+    check("recreate", medium.create(&key, later.clone()).await, true)?;
+    check(
+        "delayed removal",
+        medium.remove_if(&key, &second).await,
+        false,
+    )?;
+    check(
+        "delayed replace",
+        medium.replace(&key, &second, first.clone()).await,
+        false,
+    )?;
+    let read = medium.read(&key, None).await;
+    if !matches!(&read, Ok(Some(value)) if *value == later) {
+        return Err(fail(CASE, format!("later value: {read:?}")));
+    }
+    check("cleanup", medium.remove_if(&key, &later).await, true)?;
     Ok(())
 }
