@@ -127,39 +127,43 @@ async fn append(
     if frames.is_empty() {
         return Err(StreamError::InvalidArgument);
     }
-    let mut expected = i64::try_from(expected).map_err(unavailable)?;
+    let expected = i64::try_from(expected).map_err(unavailable)?;
     let at_millis = frames.last().ok_or(StreamError::InvalidArgument)?.at_millis;
-    for frame in frames {
-        let millis = i64::try_from(frame.at_millis).map_err(unavailable)?;
-        let deadline = frame
-            .deadline
-            .map(|value| i64::try_from(value).unwrap_or(i64::MAX));
-        let bytes = frame.command.as_ref();
-        let row = transaction
-            .query_one(
-                publish,
-                &[&namespace, &expected, &bytes, &millis, &deadline],
-            )
-            .await
-            .map_err(|error| {
-                if error
-                    .as_db_error()
-                    .is_some_and(|error| error.code().code() == "PST01")
-                {
-                    StreamError::DeadlineElapsed
-                } else {
-                    unavailable(error)
-                }
-            })?;
-        let sequence: i64 = row.get(0);
-        if !row.get::<_, bool>(2) {
-            return Ok(AppendIf::Stale {
-                head: u64::try_from(sequence).map_err(unavailable)?,
-            });
-        }
-        expected = sequence;
+    // Borrow the original command bodies through the transaction. Protocol
+    // encoding performs no intermediate concatenation or body clone here.
+    let bytes: Vec<&[u8]> = frames.iter().map(|frame| frame.command.as_ref()).collect();
+    let millis: Vec<i64> = frames
+        .iter()
+        .map(|frame| i64::try_from(frame.at_millis).map_err(unavailable))
+        .collect::<Result<_, _>>()?;
+    let deadlines: Vec<Option<i64>> = frames
+        .iter()
+        .map(|frame| {
+            frame
+                .deadline
+                .map(|value| i64::try_from(value).unwrap_or(i64::MAX))
+        })
+        .collect();
+    let row = transaction
+        .query_one(
+            publish,
+            &[&namespace, &expected, &bytes, &millis, &deadlines],
+        )
+        .await
+        .map_err(|error| {
+            if error
+                .as_db_error()
+                .is_some_and(|error| error.code().code() == "PST01")
+            {
+                StreamError::DeadlineElapsed
+            } else {
+                unavailable(error)
+            }
+        })?;
+    let sequence = u64::try_from(row.get::<_, i64>(0)).map_err(unavailable)?;
+    if !row.get::<_, bool>(2) {
+        return Ok(AppendIf::Stale { head: sequence });
     }
-    let sequence = u64::try_from(expected).map_err(unavailable)?;
     transaction.commit().await.map_err(unavailable)?;
     Ok(AppendIf::Accepted {
         sequence,

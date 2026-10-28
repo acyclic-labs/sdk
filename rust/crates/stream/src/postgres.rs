@@ -96,7 +96,8 @@ impl PostgresStream {
         let generation = <[u8; 16]>::try_from(generation.as_slice()).map_err(unavailable)?;
         let publish = client
             .prepare(
-                "SELECT revision, at_millis, accepted FROM acyclic_stream_publish($1,$2,$3,$4,$5)",
+                "SELECT revision, at_millis, accepted FROM acyclic_stream_publish(\
+                 $1,$2,$3::bytea[],$4::bigint[],$5::bigint[])",
             )
             .await
             .map_err(unavailable)?;
