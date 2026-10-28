@@ -198,18 +198,6 @@ fn option_validation_location_identity_and_executor_accessors_are_total()
     let defaults = PromotionSpeculatorOptions::default();
     for invalid in [
         PromotionSpeculatorOptions {
-            maximum_active_operations: 0,
-            ..defaults
-        },
-        PromotionSpeculatorOptions {
-            maximum_active_bytes: 0,
-            ..defaults
-        },
-        PromotionSpeculatorOptions {
-            maximum_active_cost_units: 0,
-            ..defaults
-        },
-        PromotionSpeculatorOptions {
             outcome_window: 0,
             ..defaults
         },
@@ -261,8 +249,7 @@ fn option_validation_location_identity_and_executor_accessors_are_total()
 }
 
 #[test]
-fn selected_active_capacity_and_volume_identity_are_independent()
--> Result<(), Box<dyn std::error::Error>> {
+fn volume_identity_is_checked_before_planning() -> Result<(), Box<dyn std::error::Error>> {
     let volume_id = VolumeId::from_bytes([71; 16]);
     let generation_id = generation(72);
     let object_id = object(73);
@@ -280,22 +267,6 @@ fn selected_active_capacity_and_volume_identity_are_independent()
         PromotionAdmission::Rejected(PromotionRejection::WrongVolume)
     );
 
-    let mut active_limited = PromotionSpeculator::new(
-        PromotionSpeculatorOptions {
-            maximum_active_bytes: 63,
-            ..defaults
-        },
-        volume_id,
-        generation_id,
-    )?;
-    assert_eq!(
-        active_limited.plan(
-            candidate(3, volume_id, generation_id, object_id),
-            &[source],
-            &[writable],
-        )?,
-        PromotionAdmission::Rejected(PromotionRejection::ActiveCapacity)
-    );
     Ok(())
 }
 
@@ -356,12 +327,7 @@ async fn planning_is_deterministic_bounded_generation_fenced_and_idempotent()
         destination(6, StorageTier::NodeLocal, 1),
     ];
     let mut engine = PromotionSpeculator::new(
-        PromotionSpeculatorOptions {
-            maximum_active_operations: 1,
-            maximum_active_bytes: 64,
-            maximum_active_cost_units: 128,
-            ..PromotionSpeculatorOptions::default()
-        },
+        PromotionSpeculatorOptions::default(),
         volume_id,
         generation_id,
     )?;
@@ -474,9 +440,6 @@ fn residency_handoff_preemption_and_adaptive_feedback_are_exact()
     assert_eq!(promotion.reason, ResidencyReason::DirectorySuccessor);
 
     let options = PromotionSpeculatorOptions {
-        maximum_active_operations: 1,
-        maximum_active_bytes: 64,
-        maximum_active_cost_units: 128,
         outcome_window: 2,
         minimum_usefulness_samples: 2,
         minimum_usefulness_basis_points: 5_000,
