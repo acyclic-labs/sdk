@@ -331,7 +331,9 @@ pub fn children_page_from_wire(
 }
 
 /// Encodes a paginated children request as its generated wire representation.
-pub fn children_page_request_to_wire(value: crate::ChildrenPageRequest) -> wire::ChildrenPageRequest {
+pub fn children_page_request_to_wire(
+    value: crate::ChildrenPageRequest,
+) -> wire::ChildrenPageRequest {
     wire::ChildrenPageRequest {
         tail_stream: value.tail_stream.map(|path| path.to_string()),
         parent: value.parent.map(|path| path.to_string()),
