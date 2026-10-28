@@ -7,11 +7,12 @@ use acyclic_harness::{
     Error, Result,
     core::Scope,
     hosting::VerifiedCaller,
-    server::{Custody, ServerConfig, Verifier},
+    server::{
+        Custody, KeyFileCredentials, KeyFileVerifier, Observation, RootCredential, ServerConfig,
+        Verifier,
+    },
 };
-use acyclic_stream::session::{
-    Admission, Authority, CapabilityVerifier, CredentialVerifier, TrustSnapshot,
-};
+use acyclic_stream::session::{Admission, Authority, CredentialVerifier, TrustSnapshot};
 use futures::future::BoxFuture;
 use std::sync::{
     Arc,
@@ -41,7 +42,8 @@ impl Witness {
 
 /// Admits the tree under its own scope, and verifies every session
 /// credential itself: the session's one verifier, which witnesses each
-/// credential before verifying it as the stock envelope.
+/// credential before verifying it as the key file's. It publishes the key
+/// file's credential for its clients.
 struct Witnessed;
 
 impl Verifier for Witnessed {
@@ -58,12 +60,23 @@ impl Verifier for Witnessed {
             .map_err(|error| Error::Invalid(error.to_string()))?;
         Ok(Arc::new(authority.verified_by(Arc::new(Credentials {
             witness: Witness::new("verified a session credential"),
+            opaque: Witness::new("verified an opaque credential"),
         }))))
+    }
+
+    fn observation<'a>(
+        &'a self,
+        root: RootCredential<'a>,
+    ) -> BoxFuture<'a, Result<Option<Observation>>> {
+        KeyFileVerifier.observation(root)
     }
 }
 
 struct Credentials {
     witness: Witness,
+    /// A credential in another format than the key file's, a JWS's dotted
+    /// one say, reached this verifier intact.
+    opaque: Witness,
 }
 
 impl CredentialVerifier for Credentials {
@@ -72,8 +85,11 @@ impl CredentialVerifier for Credentials {
         credential: &'a [u8],
         trust: &'a TrustSnapshot,
     ) -> BoxFuture<'a, std::result::Result<Arc<dyn Admission>, VerifyError>> {
+        if credential.contains(&b'.') {
+            self.opaque.saw();
+        }
         self.witness.saw();
-        CapabilityVerifier.verify(credential, trust)
+        KeyFileCredentials.verify(credential, trust)
     }
 }
 

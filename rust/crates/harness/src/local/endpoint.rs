@@ -79,12 +79,8 @@ impl Connection {
     #[cfg(feature = "grpc")]
     pub async fn connect(options: &acyclic_harness_client::ConnectionOptions) -> Result<Self> {
         use acyclic_harness_client::EndpointTransport;
-        use base64::Engine as _;
-        let credential = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(options.credential())
-            .map_err(|_| {
-                Error::Unauthorized("the credential is not an endpoint credential".into())
-            })?;
+        // Opaque to the client: the endpoint's verifier alone reads it.
+        let credential = options.credential().as_bytes().to_vec();
         let client = match options.transport() {
             EndpointTransport::Tls => {
                 acyclic_stream::grpc::Client::connect_eager(

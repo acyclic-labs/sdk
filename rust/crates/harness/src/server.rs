@@ -5,7 +5,9 @@
 //! stream session protocol over gRPC; a client reaches either with
 //! [`crate::local::Connection::connect`], the endpoint being its only
 //! difference. A host supplies only what [`ServerConfig`] names.
-pub use crate::local::{Custody, KeyFileVerifier, Verifier};
+pub use crate::local::{
+    Custody, KeyFileCredentials, KeyFileVerifier, Observation, RootCredential, Verifier,
+};
 use crate::{Error, LocalHarnessConfig, Result};
 use acyclic_fs::{AsyncObjectStore, distributed::AuthorityProvider};
 use acyclic_stream::BoxProviderFuture;
@@ -129,12 +131,10 @@ pub struct Endpoint {
     pub server: &'static str,
     /// The URL a client connects to.
     pub endpoint: String,
-    /// The endpoint credential (`ACYCLIC_API_KEY`): the credential minted for
-    /// the tree's root, base64url without padding.
-    pub credential: String,
-    /// The principal the credential authenticates, which an approval policy
-    /// names to route decisions to its holder.
-    pub principal: String,
+    /// The credential its verifier publishes for clients
+    /// ([`Verifier::observation`]); none when clients hold their own.
+    #[serde(flatten)]
+    pub observation: Option<Observation>,
 }
 
 /// Opens `config`'s harness and serves its agent tree on `listener` until
@@ -164,10 +164,6 @@ pub async fn serve<C: Composition>(
         issuer: bound.issuer(),
         clock: &host.clock,
     })?;
-    let observation = bound
-        .client_credential(server.root(), server.resource(), host.clock.clone())
-        .await
-        .map_err(failed)?;
     let service = acyclic_stream::session::Service::new(
         bound.agents().provider().clone(),
         authority,
@@ -189,13 +185,20 @@ pub async fn serve<C: Composition>(
     } else {
         format!("http://{address}")
     };
-    use base64::Engine as _;
+    let observation = config
+        .verifier
+        .observation(RootCredential(Box::pin(async {
+            let minted = bound
+                .client_credential(server.root(), server.resource(), host.clock.clone())
+                .await
+                .map_err(failed)?;
+            Ok((minted.credential, minted.principal))
+        })))
+        .await?;
     ready(&Endpoint {
         server: IDENTITY,
         endpoint,
-        credential: base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(&observation.credential),
-        principal: observation.principal,
+        observation,
     });
     use acyclic_stream::wire::stream_session_service_server::StreamSessionServiceServer;
     let result = builder

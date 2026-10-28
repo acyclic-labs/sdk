@@ -571,11 +571,30 @@ async fn graphcoder_runs_one_scenario_identically_on_every_backend() {
             (backend, Some(server))
         };
         let answer = tokio::task::block_in_place(|| scenario(&home, &model, &policy, &backend));
+        let backend_url = match &backend {
+            Backend::Endpoint { url, .. } => url.clone(),
+            Backend::Local => String::new(),
+        };
         if let Some(mut server) = server {
             // The injected seams admitted the tree and every client.
             if name == "seams" {
                 server.wait_for("seams: verified the caller");
                 server.wait_for("seams: verified a session credential");
+                // A credential in a gateway's own format, a dotted JWS, is
+                // carried opaque to the verifier, not refused by the client.
+                let url = backend_url.as_str();
+                let mut command = home.command(
+                    &model,
+                    None,
+                    &["-p", "hi", "--operation", "opaque", "--endpoint", url],
+                );
+                command.env(
+                    "ACYCLIC_API_KEY",
+                    "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJzZWFtcyJ9.c2lnbmF0dXJl",
+                );
+                let opaque = Running::start(command);
+                server.wait_for("seams: verified an opaque credential");
+                opaque.kill();
             }
             server.kill();
         }

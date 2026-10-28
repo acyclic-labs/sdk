@@ -51,7 +51,9 @@ mod tests;
 mod tool_metadata;
 mod tool_output;
 mod verifier;
-pub use verifier::{Custody, KeyFileVerifier, Verifier};
+pub use verifier::{
+    Custody, KeyFileCredentials, KeyFileVerifier, Observation, RootCredential, Verifier,
+};
 #[cfg(feature = "search-http")]
 pub mod web;
 #[cfg(any(test, feature = "native-execution"))]
