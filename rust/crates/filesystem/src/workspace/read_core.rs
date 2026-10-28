@@ -9,7 +9,7 @@ pub(super) async fn read_selected<
     workspace: &Workspace<A, O>,
     selector: GenerationSelector,
     path: &str,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     work: W,
     cancellation: &CancellationToken,
 ) -> W::Output<acyclic_stream::OwnedBytes, WorkspaceError> {
@@ -30,7 +30,7 @@ pub(super) async fn read_selected<
             return Err(WorkspaceError::NotRegularFile);
         }
         let length = regular_file_bytes(record)?;
-        if length > maximum_bytes {
+        if maximum_bytes.is_some_and(|maximum| length > maximum) {
             return Err(WorkspaceError::ReadLimitExceeded);
         }
         let range = crate::ByteRange { offset: 0, length };

@@ -27,7 +27,7 @@ pub struct Preset {
     /// configured provider.
     pub web_tools: bool,
     /// Model rounds per turn; each round may run several tool calls. `None`
-    /// keeps the harness limit.
+    /// is unbounded unless the host explicitly selects a finite policy.
     #[cfg_attr(feature = "wasm", tsify(type = "number | null"))]
     pub max_steps: Option<usize>,
     /// Open children each agent may have at once; `None` is unbounded.
