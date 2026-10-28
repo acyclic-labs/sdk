@@ -49,7 +49,6 @@ export function waitForBrowserResult(timeoutMs) {
 // external event (for example server-observed request cancellation) to this tab.
 export async function chromiumPageResult(browser, url, timeoutMs, { onReady, onResult } = {}) {
   const { targetId } = await browser.send("Target.createTarget", { url: "about:blank" });
-  const { sessionId } = await browser.send("Target.attachToTarget", { targetId, flatten: true });
   const binding = "__acyclicQualificationResult";
   let finish, fail;
   const result = new Promise(resolve => { finish = resolve; });
@@ -64,22 +63,23 @@ export async function chromiumPageResult(browser, url, timeoutMs, { onReady, onR
   const disconnected = () => fail(browser.signal.reason);
   if (browser.signal.aborted) disconnected();
   else browser.signal.addEventListener("abort", disconnected, { once: true });
-  const unlisten = browser.listen(message => {
-    if (message.sessionId !== sessionId) return;
-    if (message.method === "Runtime.bindingCalled" && message.params.name === binding) {
-      try { finish(JSON.parse(message.params.payload)); }
-      catch (error) { fail(error); }
-    } else if (message.method === "Runtime.exceptionThrown") {
-      const details = message.params.exceptionDetails;
-      finish({ status: "failed", text: details.exception?.description ?? details.exception?.value ?? details.text });
-    }
-  });
   const timeout = setTimeout(() => fail(new Error(`timed out waiting for ${url} result`)), timeoutMs);
-  let retire;
+  let retire, unlisten;
   try {
     // Attach a rejection handler before protocol setup: an early page failure
     // can occur while a command acknowledgment is still in flight.
     return await Promise.race([terminal, (async () => {
+      const { sessionId } = await send("Target.attachToTarget", { targetId, flatten: true });
+      unlisten = browser.listen(message => {
+        if (message.sessionId !== sessionId) return;
+        if (message.method === "Runtime.bindingCalled" && message.params.name === binding) {
+          try { finish(JSON.parse(message.params.payload)); }
+          catch (error) { fail(error); }
+        } else if (message.method === "Runtime.exceptionThrown") {
+          const details = message.params.exceptionDetails;
+          finish({ status: "failed", text: details.exception?.description ?? details.exception?.value ?? details.text });
+        }
+      });
       await send("Runtime.enable", {}, sessionId);
       await send("Runtime.addBinding", { name: binding }, sessionId);
       await send("Page.addScriptToEvaluateOnNewDocument", {
@@ -96,8 +96,14 @@ export async function chromiumPageResult(browser, url, timeoutMs, { onReady, onR
     active = false;
     clearTimeout(timeout);
     browser.signal.removeEventListener("abort", disconnected);
-    retire?.();
-    unlisten();
-    await browser.send("Target.closeTarget", { targetId }).catch(() => {});
+    try {
+      retire?.();
+    } finally {
+      try {
+        unlisten?.();
+      } finally {
+        await browser.send("Target.closeTarget", { targetId }).catch(() => {});
+      }
+    }
   }
 }
