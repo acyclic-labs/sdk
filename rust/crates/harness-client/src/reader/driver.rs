@@ -295,7 +295,7 @@ mod tests {
                         path: path.clone(),
                         records: vec![b"record".as_slice().into(); 4],
                         if_tail: Some(0),
-                        idempotency_key: IdempotencyKey::unique(),
+                        idempotency_key: IdempotencyKey::new(format!("fair/{index:04}")).unwrap(),
                     })
                     .await
                     .unwrap();
