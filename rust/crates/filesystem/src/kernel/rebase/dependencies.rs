@@ -47,11 +47,7 @@ impl CheckoutDependencies {
     pub fn new(
         observations: impl IntoIterator<Item = Dependency>,
         mutations: impl IntoIterator<Item = Dependency>,
-        maximum_dependencies: u32,
     ) -> Result<Self, DependencyError> {
-        if maximum_dependencies == 0 {
-            return Err(DependencyError::ZeroLimit);
-        }
         let mut captured: BTreeMap<DependencyRegion, CapturedState> = BTreeMap::new();
         for (dependency, usage) in observations
             .into_iter()
@@ -71,11 +67,6 @@ impl CheckoutDependencies {
                     existing.usage = DependencyUse::ObservationAndMutation;
                 }
                 continue;
-            }
-            if u32::try_from(captured.len()).unwrap_or(u32::MAX) >= maximum_dependencies {
-                return Err(DependencyError::TooManyDependencies {
-                    maximum: maximum_dependencies,
-                });
             }
             captured.insert(
                 dependency.region,
@@ -175,21 +166,15 @@ impl CheckoutDependencies {
     pub(crate) fn prepare_observations(
         &self,
         dependencies: Vec<Dependency>,
-        maximum_dependencies: u32,
     ) -> Result<DependencyExtension, DependencyError> {
-        self.prepare(
-            dependencies,
-            maximum_dependencies,
-            DependencyUse::Observation,
-        )
+        self.prepare(dependencies, DependencyUse::Observation)
     }
 
     pub(crate) fn prepare_mutations(
         &self,
         dependencies: Vec<Dependency>,
-        maximum_dependencies: u32,
     ) -> Result<DependencyExtension, DependencyError> {
-        self.prepare(dependencies, maximum_dependencies, DependencyUse::Mutation)
+        self.prepare(dependencies, DependencyUse::Mutation)
     }
 
     pub(crate) fn commit_with_data_custody<E: From<WorkError>>(
@@ -592,12 +577,8 @@ impl CheckoutDependencies {
     fn prepare(
         &self,
         dependencies: Vec<Dependency>,
-        maximum_dependencies: u32,
         usage: DependencyUse,
     ) -> Result<DependencyExtension, DependencyError> {
-        if maximum_dependencies == 0 {
-            return Err(DependencyError::ZeroLimit);
-        }
         let mut staged = BTreeMap::new();
         for dependency in dependencies {
             dependency.region.validate()?;
@@ -615,17 +596,6 @@ impl CheckoutDependencies {
                     staged.insert(dependency.region, dependency.expected);
                 }
             }
-        }
-        let distinct_new = staged
-            .keys()
-            .filter(|region| !self.captured.entries.contains_key(*region))
-            .count();
-        if self.captured.entries.len().saturating_add(distinct_new)
-            > usize::try_from(maximum_dependencies).unwrap_or(usize::MAX)
-        {
-            return Err(DependencyError::TooManyDependencies {
-                maximum: maximum_dependencies,
-            });
         }
         Ok(DependencyExtension { staged, usage })
     }

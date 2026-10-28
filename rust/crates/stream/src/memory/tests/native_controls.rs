@@ -835,11 +835,11 @@ async fn competing_tail_keeps_canonical_conflict_and_target_unchanged() -> Memor
 async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it() -> MemoryResult<()>
 {
     let limits = MemoryLimits {
-        commits: 3,
-        records: 3,
-        payload_bytes: 72,
+        commits: Some(3),
+        records: Some(3),
+        payload_bytes: Some(72),
         // Two retained seed receipts and exactly one promised completion.
-        idempotency_results: 3,
+        idempotency_results: Some(3),
         ..MemoryLimits::default()
     };
     for abandon in [false, true] {

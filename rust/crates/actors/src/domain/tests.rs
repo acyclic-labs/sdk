@@ -320,22 +320,6 @@ fn wire_ingress_rechecks_request_admission_predicates() {
         Err(DomainError::Contract(crate::ContractError::InvalidArgument))
     );
 
-    let mut over_limit = create;
-    over_limit
-        .bindings
-        .extend((0..=crate::MAX_BINDINGS).map(|index| wire::Binding {
-            target_account: Vec::new(),
-            actor_namespace: None,
-            worker_service: None,
-            name: format!("binding-{index}"),
-            capability: "read".into(),
-            resource: "bucket/a".into(),
-        }));
-    assert_eq!(
-        DeploymentRequest::try_from(over_limit),
-        Err(DomainError::Contract(crate::ContractError::LimitExceeded))
-    );
-
     let update = wire::UpdateNamespaceRequest {
         secrets: Vec::new(),
         fetch: None,

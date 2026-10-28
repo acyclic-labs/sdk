@@ -30,7 +30,7 @@ impl LocalHarness {
     ) -> Result<DiscoveredContext> {
         let mut bounds = crate::context::DiscoveryWork {
             limits: ContextDiscoveryLimits {
-                instruction_bytes: maximum,
+                instruction_bytes: Some(maximum),
                 ..Default::default()
             },
             ..Default::default()
@@ -204,7 +204,7 @@ impl crate::context::InstructionReader for CheckoutInstructions<'_> {
                 .read_at_snapshot(*cut, &format!("/{path}"), None, maximum, &mut accounting)
                 .await?;
             ContextDiscoveryLimits {
-                instruction_bytes: maximum,
+                instruction_bytes: Some(maximum),
                 ..Default::default()
             }
             .validate_instruction(bytes.bytes.as_ref())?;

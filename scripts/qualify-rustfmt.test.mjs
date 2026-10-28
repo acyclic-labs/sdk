@@ -43,8 +43,8 @@ function fixture(overrides = {}) {
 
 function gateFixture() {
   const root = fixture({ "member/src/plain.rs": drift });
-  mkdirSync(join(root, "scripts"));
-  for (const name of ["gate-lite.sh", "gate-rust-format.sh", "qualify-rustfmt.mjs", "rustfmt-manifests.py"]) {
+  mkdirSync(join(root, "scripts/buildbox"), { recursive: true });
+  for (const name of ["gate-lite.sh", "gate-rust-format.sh", "qualify-rustfmt.mjs", "process-capture.mjs", "rustfmt-manifests.py"]) {
     copyFileSync(join(repo, "scripts", name), join(root, "scripts", name));
   }
   writeFileSync(join(root, ".gate-scope-mode"), "full\n");

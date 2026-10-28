@@ -25,9 +25,6 @@ impl WasmSession {
         slot: u32,
         credential: js_sys::Uint8Array,
     ) -> Result<(), JsValue> {
-        if slot as usize >= crate::session::Limits::default().channels {
-            return Err(js_error(StreamError::Capacity));
-        }
         if credential.length() as usize > MAX_COMMAND_BYTES {
             return Err(js_error(StreamError::LimitExceeded));
         }

@@ -28,7 +28,6 @@ use crate::{
     ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, Record,
     RecordStream, StreamError, StreamProvider, wire,
 };
-pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
 mod client;
 #[cfg(test)]
@@ -152,7 +151,7 @@ impl Client {
         certificate_pem: impl AsRef<[u8]>,
     ) -> Result<Self, ConnectError> {
         let pem = certificate_pem.as_ref();
-        if pem.is_empty() || pem.len() > MAX_CA_CERTIFICATE_BYTES {
+        if pem.is_empty() {
             return Err(ConnectError::InvalidCaCertificate);
         }
         Self::connect_tls(endpoint.as_ref(), bearer_token.as_ref(), Some(pem)).await
@@ -202,8 +201,7 @@ impl Client {
         endpoint: &str,
         certificate_pem: Option<&[u8]>,
     ) -> Result<Channel, ConnectError> {
-        if certificate_pem.is_some_and(|pem| pem.is_empty() || pem.len() > MAX_CA_CERTIFICATE_BYTES)
-        {
+        if certificate_pem.is_some_and(|pem| pem.is_empty()) {
             return Err(ConnectError::InvalidCaCertificate);
         }
         channel_tls(endpoint, certificate_pem).await

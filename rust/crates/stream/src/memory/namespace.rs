@@ -48,7 +48,7 @@ impl MemoryStream {
         // Minimum AVL nodes at height h are F(h+2)-1. Prepay the maximum
         // possible sibling spine while other paths are inserted after acceptance.
         let (mut low, mut high, mut height) = (0usize, 1usize, 0usize);
-        while high <= self.limits.paths {
+        while self.limits.paths.is_none_or(|limit| high <= limit) {
             height += 1;
             let next = low.saturating_add(high).saturating_add(1);
             if next == usize::MAX {

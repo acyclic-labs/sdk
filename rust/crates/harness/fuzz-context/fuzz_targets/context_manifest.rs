@@ -10,7 +10,7 @@ use libfuzzer_sys::fuzz_target;
 fuzz_target!(|input: &[u8]| {
     for instruction_bytes in [0, 1, 16, 4096] {
         let bounds = ContextDiscoveryLimits {
-            instruction_bytes,
+            instruction_bytes: Some(instruction_bytes),
             ..Default::default()
         };
         if bounds.validate_instruction(input).is_ok() {

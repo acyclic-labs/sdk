@@ -395,12 +395,12 @@ async fn follow_scales_with_history_depth() -> Result<(), StreamError> {
 async fn exact_replay_precedes_capacity_and_changed_arguments_never_reclassify()
 -> Result<(), StreamError> {
     let provider = MemoryStream::new(MemoryLimits {
-        paths: 2,
-        path_bytes: 4,
-        records: 1,
-        payload_bytes: 3,
-        commits: 1,
-        idempotency_results: 1,
+        paths: Some(2),
+        path_bytes: Some(4),
+        records: Some(1),
+        payload_bytes: Some(3),
+        commits: Some(1),
+        idempotency_results: Some(1),
     });
     let request = AppendRequest {
         path: path("a/b")?,
@@ -545,8 +545,8 @@ fn permanent_path_validation_rejects_ambiguous_names() {
 async fn results_and_envelopes_never_expire_or_execute_again() -> Result<(), StreamError> {
     let clock = Arc::new(TestClock::default());
     let limits = MemoryLimits {
-        idempotency_results: 1,
-        commits: 1,
+        idempotency_results: Some(1),
+        commits: Some(1),
         ..MemoryLimits::default()
     };
     let provider = MemoryStream::new_with_clock(limits, clock.clone());
@@ -732,8 +732,8 @@ async fn hierarchy_page_starts_after_prefix_siblings() -> Result<(), StreamError
 #[tokio::test]
 async fn commit_counts_an_explicit_parent_once_across_prefix_siblings() -> Result<(), StreamError> {
     let provider = MemoryStream::new(MemoryLimits {
-        paths: 4,
-        path_bytes: 18,
+        paths: Some(4),
+        path_bytes: Some(18),
         ..MemoryLimits::default()
     });
     let names = ["a", "a-/child", "a/child"];

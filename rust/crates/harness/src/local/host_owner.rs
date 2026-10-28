@@ -202,13 +202,26 @@ impl HostWorkspaceOwner {
             HostAction::Agents { task } => {
                 self.attach(&task).await?;
                 let (state, _) = self.native.session(&task).await?;
-                let mut agents = Vec::with_capacity(state.open_children.len());
-                for child in &state.open_children {
-                    let (child_state, session) = self.native.session(child).await?;
-                    agents.push(json!({"task":child,"reference":session.reference,
-                        "control":session.control,"settled":session.settled,
-                        "running":session.claimed().is_some(),
-                        "pending":session.pending(&child_state)}));
+                let mut agents = Vec::new();
+                let mut after = None;
+                loop {
+                    let page = state
+                        .open_children
+                        .page(after.as_ref(), 256)
+                        .await
+                        .map_err(storage)?;
+                    if page.is_empty() {
+                        break;
+                    }
+                    for id in &page {
+                        let child = task.child(id).map_err(storage)?;
+                        let (child_state, session) = self.native.session(&child).await?;
+                        agents.push(json!({"task":child,"reference":session.reference,
+                            "control":session.control,"settled":session.settled,
+                            "running":session.claimed().is_some(),
+                            "pending":session.pending(&child_state)}));
+                    }
+                    after = page.last().cloned();
                 }
                 Ok(json!({ "agents": agents }))
             }

@@ -63,7 +63,7 @@ proptest! {
             let maximum = length as u64 - u64::from(short);
             let budget = WorkBudget { bytes_copied: maximum, ..WorkBudget::UNBOUNDED };
             let name = super::super::super::LogicalName::new(
-                super::super::super::NameEncoding::Utf8, vec![b'x'; length], 64,
+                super::super::super::NameEncoding::Utf8, vec![b'x'; length],
             ).unwrap();
             let original = crate::NativeMaterializationWork::new(budget, &cancellation).unwrap();
             let child = original.native_volume_work(budget).unwrap();

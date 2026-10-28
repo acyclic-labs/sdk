@@ -177,12 +177,11 @@ impl Authority {
         slots: &mut Slots,
         slot: u32,
         bytes: &[u8],
-        maximum: usize,
     ) -> Result<(), StreamError> {
-        match self.verifying(slots, slot, Bytes::copy_from_slice(bytes), maximum)? {
+        match self.verifying(slots, slot, Bytes::copy_from_slice(bytes))? {
             Some(verifying) => {
                 let verdict = verifying.verdict.await;
-                self.settle(slots, verifying.slot, verifying.length, verdict, maximum)
+                self.settle(slots, verifying.slot, verifying.length, verdict)
             }
             None => Ok(()),
         }
@@ -196,11 +195,7 @@ impl Authority {
         slots: &mut Slots,
         slot: u32,
         bytes: Bytes,
-        maximum: usize,
     ) -> Result<Option<Verifying>, StreamError> {
-        if usize::try_from(slot).map_err(|_| StreamError::Capacity)? >= maximum {
-            return Err(StreamError::Capacity);
-        }
         let credential_bytes = slots.credential_bytes(slot, bytes.len())?;
         if bytes.is_empty() {
             slots.entries.remove(&slot);
@@ -229,7 +224,6 @@ impl Authority {
         slot: u32,
         length: usize,
         credential: Credential,
-        maximum: usize,
     ) -> Result<(), StreamError> {
         let credential_bytes = slots.credential_bytes(slot, length)?;
         let revision = slots
@@ -246,7 +240,7 @@ impl Authority {
         }
         slots.entries.insert(slot, (revision, length, credential));
         slots.credential_bytes = credential_bytes;
-        if slots.expiries.len() > maximum.saturating_mul(2) {
+        if slots.expiries.len() > slots.entries.len().saturating_mul(2) {
             slots.expiries = slots
                 .entries
                 .iter()

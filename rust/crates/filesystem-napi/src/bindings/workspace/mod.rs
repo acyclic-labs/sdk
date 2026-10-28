@@ -354,11 +354,11 @@ impl NativeWorkspace {
     pub async fn live_rebase(
         &self,
         idempotency_key: Option<Buffer>,
-        maximum_generations: NapiU32,
+        maximum_generations: Option<NapiU32>,
         maximum_changes: NapiU32,
         maximum_conflicts: NapiU32,
     ) -> Result<NativeWorkspaceRebaseResult> {
-        let maximum_generations = maximum_generations.into_inner();
+        let maximum_generations = maximum_generations.map(NapiU32::into_inner);
         let maximum_changes = maximum_changes.into_inner();
         let maximum_conflicts = maximum_conflicts.into_inner();
 
@@ -400,7 +400,7 @@ impl NativeWorkspace {
             .join_into(&target.inner)
             .history(history)
             .bounds(
-                options.maximum_generations.into_inner(),
+                options.maximum_generations.map(NapiU32::into_inner),
                 options.maximum_changes.into_inner(),
                 options.maximum_conflicts.into_inner(),
             )
@@ -551,7 +551,7 @@ pub(in crate::bindings) fn native_workspace_name(
 ) -> Result<LogicalName> {
     let encoding = NameEncoding::from_public_str(&value.encoding)
         .ok_or_else(|| Error::new(Status::InvalidArg, "unknown name encoding"))?;
-    LogicalName::new(encoding, value.bytes.to_vec(), u32::MAX).map_err(napi_error)
+    LogicalName::new(encoding, value.bytes.to_vec()).map_err(napi_error)
 }
 
 pub(in crate::bindings) fn native_workspace_name_value(name: &LogicalName) -> NativeWorkspaceName {

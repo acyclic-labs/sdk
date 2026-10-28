@@ -1,18 +1,12 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// Maximum UTF-8 bytes in textual caller metadata and opaque host handles.
-pub const MAX_GUEST_METADATA_BYTES: usize = 1024;
-
 /// Invalid host metadata representation; never includes credential or handle values.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("invalid guest metadata field: {0}")]
 pub struct GuestMetadataError(pub &'static str);
 
 fn identity(value: &str, field: &'static str) -> Result<(), GuestMetadataError> {
-    if value.len() > MAX_GUEST_METADATA_BYTES {
-        return Err(GuestMetadataError(field));
-    }
     if value.is_empty() || value.trim() != value || value.chars().any(char::is_control) {
         return Err(GuestMetadataError(field));
     }
@@ -277,7 +271,7 @@ fn canonical_expiry(value: &str) -> bool {
 }
 
 fn metadata_string<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<String, D::Error> {
-    bounded_string(decoder, MAX_GUEST_METADATA_BYTES)
+    String::deserialize(decoder)
 }
 fn expiry_string<'de, D: serde::Deserializer<'de>>(decoder: D) -> Result<String, D::Error> {
     bounded_string(decoder, 20)
