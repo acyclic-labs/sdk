@@ -1,18 +1,20 @@
-//! Model-visible identity tools over newline-delimited stdio JSON-RPC.
+//! Model-visible identity tools, served by the shared harness stdio MCP
+//! tool server. The server owns the protocol; this provider runs one identity
+//! operation at a time on the command's runtime.
 
 use super::*;
+use acyclic_harness_core::mcp::stdio::{Settled, ToolCall, ToolProvider, ToolServer, Wake};
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex, PoisonError};
 #[cfg(test)]
-use tokio::io::AsyncBufReadExt as _;
-use tokio::io::AsyncWriteExt as _;
+use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
-const PROTOCOL: &str = "2025-11-25";
 const FRAME_LIMIT: usize = 1024 * 1024;
 
 struct Server {
     identity: Identity,
     credentials: PathBuf,
     pending: Option<(DeviceCode, tokio::time::Instant)>,
-    initialized: bool,
     login_cancelled: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
@@ -22,79 +24,8 @@ impl Server {
             identity: Identity::new(&options.endpoint)?,
             credentials: options.credentials,
             pending: None,
-            initialized: false,
             login_cancelled: None,
         })
-    }
-
-    async fn request(&mut self, request: &Value) -> Option<Value> {
-        let id = request.get("id").cloned();
-        let method = request.get("method").and_then(Value::as_str);
-        if request.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || method.is_none() {
-            return Some(rpc_error(
-                &id.unwrap_or(Value::Null),
-                -32600,
-                "Invalid Request",
-            ));
-        }
-        let id = id?;
-        if !id.is_string() && !id.is_number() {
-            return Some(rpc_error(&Value::Null, -32600, "Invalid request ID"));
-        }
-        let result = match method {
-            Some("initialize") => {
-                if request
-                    .pointer("/params/protocolVersion")
-                    .and_then(Value::as_str)
-                    .is_none()
-                {
-                    return Some(rpc_error(&id, -32602, "Missing protocol version"));
-                }
-                self.initialized = true;
-                json!({"protocolVersion": PROTOCOL, "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "acyclic-identity", "version": env!("CARGO_PKG_VERSION")}})
-            }
-            Some("ping") => json!({}),
-            _ if !self.initialized => return Some(rpc_error(&id, -32000, "Initialize first")),
-            Some("tools/list") => json!({"tools": tools()}),
-            Some("tools/call") => {
-                let name = request
-                    .pointer("/params/name")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                if !tools()
-                    .iter()
-                    .any(|tool| tool.get("name").and_then(Value::as_str) == Some(name))
-                {
-                    return Some(rpc_error(&id, -32602, "Unknown identity tool"));
-                }
-                if request
-                    .pointer("/params/arguments")
-                    .is_some_and(|arguments| {
-                        arguments
-                            .as_object()
-                            .is_none_or(|object| !object.is_empty())
-                    })
-                {
-                    return Some(rpc_error(&id, -32602, "Identity tools take no arguments"));
-                }
-                let result = self.call(name).await;
-                let (value, is_error) = match result {
-                    Ok(value) => (value, false),
-                    Err(error) => (error.json(), true),
-                };
-                let text = value.to_string();
-                let structured = if value.is_object() {
-                    value
-                } else {
-                    json!({"result": value})
-                };
-                json!({"content": [{"type": "text", "text": text}],
-                    "structuredContent": structured, "isError": is_error})
-            }
-            _ => return Some(rpc_error(&id, -32601, "Method not found")),
-        };
-        Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
     }
 
     async fn call(&mut self, name: &str) -> Result<Value, Error> {
@@ -181,10 +112,6 @@ impl Server {
     }
 }
 
-fn rpc_error(id: &Value, code: i32, message: &str) -> Value {
-    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
-}
-
 fn tools() -> Vec<Value> {
     [
         ("identity_login", "Start device login. Show the returned URL and code to the user, then call identity_login_complete."),
@@ -200,209 +127,189 @@ fn tools() -> Vec<Value> {
             "idempotentHint": false, "openWorldHint": true}})).collect()
 }
 
+/// The one identity operation in flight.
+struct Active {
+    key: String,
+    task: tokio::task::JoinHandle<()>,
+    result: Arc<Mutex<Option<Result<Value, Error>>>>,
+    done: Arc<tokio::sync::Notify>,
+    login_cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    /// A dispatched exchange that finishes and saves its credentials even
+    /// after cancellation or the end of input.
+    finishes: bool,
+    cancelled: bool,
+}
+
+/// Identity tools on the shared tool server. Operations run on the command's
+/// runtime while the server keeps answering pings and cancellations.
+struct Identities {
+    server: Arc<tokio::sync::Mutex<Server>>,
+    runtime: tokio::runtime::Handle,
+    active: Option<Active>,
+    calls: u64,
+}
+
+impl Identities {
+    /// Awaits the dispatched exchange still finishing once the server has
+    /// stopped; [`ToolProvider::closed`] already ended every other operation.
+    fn finish(&mut self) {
+        if let Some(active) = self.active.take() {
+            let _ = futures::executor::block_on(active.task);
+        }
+    }
+}
+
+impl ToolProvider for Identities {
+    fn tools(&self) -> Value {
+        json!({ "tools": tools() })
+    }
+
+    fn call(&mut self, name: &str, arguments: &Value) -> acyclic_harness_core::Result<ToolCall> {
+        if !arguments.is_null()
+            && arguments
+                .as_object()
+                .is_none_or(|object| !object.is_empty())
+        {
+            return Ok(ToolCall::Invalid("Identity tools take no arguments".into()));
+        }
+        if self.active.is_some() {
+            return Ok(ToolCall::Busy("Identity operation in progress".into()));
+        }
+        let (login_cancel, login_cancelled) = if name == "identity_login_complete" {
+            let (sender, receiver) = tokio::sync::oneshot::channel();
+            (Some(sender), Some(receiver))
+        } else {
+            (None, None)
+        };
+        let result = Arc::new(Mutex::new(None));
+        let done = Arc::new(tokio::sync::Notify::new());
+        let task = {
+            let (server, name, result, done) = (
+                Arc::clone(&self.server),
+                name.to_owned(),
+                Arc::clone(&result),
+                Arc::clone(&done),
+            );
+            self.runtime.spawn(async move {
+                let mut server = server.lock().await;
+                server.login_cancelled = login_cancelled;
+                let outcome = server.call(&name).await;
+                *result.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome);
+                done.notify_one();
+            })
+        };
+        self.calls += 1;
+        let key = format!("identity-{}", self.calls);
+        self.active = Some(Active {
+            key: key.clone(),
+            task,
+            result,
+            done,
+            login_cancel,
+            finishes: matches!(
+                name,
+                "identity_login_complete"
+                    | "identity_refresh"
+                    | "identity_whoami"
+                    | "identity_orgs"
+            ),
+            cancelled: false,
+        });
+        Ok(ToolCall::Park(key))
+    }
+
+    fn cancel(&mut self, key: &str) {
+        let Some(active) = self.active.as_mut().filter(|active| active.key == key) else {
+            return;
+        };
+        // Cancellation stops further login polls; a dispatched exchange
+        // still finishes and keeps the operation until it does.
+        if let Some(cancel) = active.login_cancel.take() {
+            let _ = cancel.send(());
+        }
+        active.cancelled = true;
+        if !active.finishes
+            && let Some(active) = self.active.take()
+        {
+            active.task.abort();
+        }
+    }
+
+    fn closed(&mut self) {
+        // No answer is read any more: stop login polls and abort operations
+        // that need not finish.
+        let Some(active) = self.active.as_mut() else {
+            return;
+        };
+        if let Some(cancel) = active.login_cancel.take() {
+            let _ = cancel.send(());
+        }
+        if !active.finishes
+            && let Some(active) = self.active.take()
+        {
+            active.task.abort();
+        }
+    }
+
+    fn progress(
+        &mut self,
+        parked: &BTreeSet<String>,
+        settled: &mut Vec<(String, Settled)>,
+    ) -> acyclic_harness_core::Result<Option<Wake>> {
+        let Some(active) = &self.active else {
+            return Ok(None);
+        };
+        let finished = active
+            .result
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        let Some(outcome) = finished else {
+            let done = Arc::clone(&active.done);
+            return Ok(Some(Box::pin(async move { done.notified().await })));
+        };
+        if !active.cancelled && parked.contains(&active.key) {
+            settled.push((active.key.clone(), outcome.map_err(|error| error.json())));
+        }
+        self.active = None;
+        Ok(None)
+    }
+}
+
 pub(super) async fn serve(arguments: &[String]) -> Result<(), io::Error> {
     let options = Options::parse(arguments).map_err(io::Error::other)?;
     let server = Server::new(options).map_err(io::Error::other)?;
-    transport(server, tokio::io::stdin(), tokio::io::stdout()).await
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        serve_on(server, runtime, std::io::stdin(), std::io::stdout())
+    })
+    .await
+    .map_err(io::Error::other)?
 }
 
-fn frame_error(error: acyclic_native_runtime::lines::LineError) -> io::Error {
-    match error {
-        acyclic_native_runtime::lines::LineError::MaxLineLengthExceeded => {
-            io::Error::other("MCP frame exceeds 1 MiB")
-        }
-        acyclic_native_runtime::lines::LineError::Io(error) => error,
-    }
-}
-
-fn queue_response(
-    responses: &mut std::collections::VecDeque<Vec<u8>>,
-    response: &Value,
-) -> io::Result<()> {
-    if responses.len() >= 32 {
-        return Err(io::Error::other("MCP output queue is full"));
-    }
-    let mut bytes = serde_json::to_vec(response)?;
-    bytes.push(b'\n');
-    responses.push_back(bytes);
-    Ok(())
-}
-
-async fn write_response(
-    output: &mut (impl tokio::io::AsyncWrite + Unpin),
-    responses: &mut std::collections::VecDeque<Vec<u8>>,
-    written: &mut usize,
-) -> io::Result<()> {
-    let Some(bytes) = responses.front() else {
-        return Ok(());
-    };
-    let remaining = bytes
-        .get(*written..)
-        .ok_or_else(|| io::Error::other("invalid MCP output offset"))?;
-    if remaining.is_empty() {
-        output.flush().await?;
-        responses.pop_front();
-        *written = 0;
-    } else {
-        let count = output.write(remaining).await?;
-        if count == 0 {
-            return Err(io::ErrorKind::WriteZero.into());
-        }
-        // write is cancellation-safe; retain partial progress across select iterations.
-        *written += count;
-    }
-    Ok(())
-}
-
-async fn transport(
+/// Serves `server` over `input` and `output`, then ends its operation.
+fn serve_on(
     server: Server,
-    mut input: impl tokio::io::AsyncRead + Unpin + Send,
-    mut output: impl tokio::io::AsyncWrite + Unpin + Send,
-) -> Result<(), io::Error> {
-    transport_inner(server, &mut input, &mut output).await
-}
-
-// Keep the state machine and its select futures in one codegen instance across
-// stdin/stdout and the test transports.
-async fn transport_inner(
-    mut server: Server,
-    input: &mut (dyn tokio::io::AsyncRead + Unpin + Send),
-    mut output: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
-) -> Result<(), io::Error> {
-    // Preserve the transport's one-MiB frame budget including its delimiter.
-    let mut input = acyclic_native_runtime::lines::AsyncLines::new(input, FRAME_LIMIT - 1);
-    let mut responses = std::collections::VecDeque::new();
-    let mut written = 0;
-    loop {
-        let frame = loop {
-            tokio::select! {
-                biased;
-                result = write_response(&mut output, &mut responses, &mut written), if !responses.is_empty() => { result?; }
-                frame = input.next_line() => break frame.map_err(frame_error)?,
-            }
-        };
-        let Some(frame) = frame else {
-            while !responses.is_empty() {
-                write_response(&mut output, &mut responses, &mut written).await?;
-            }
-            return Ok(());
-        };
-        let Ok(request) = serde_json::from_str::<Value>(&frame) else {
-            queue_response(
-                &mut responses,
-                &rpc_error(&Value::Null, -32700, "Parse error"),
-            )?;
-            continue;
-        };
-        let login_completion = request.pointer("/params/name").and_then(Value::as_str)
-            == Some("identity_login_complete")
-            && request.get("method").and_then(Value::as_str) == Some("tools/call");
-        let finish_on_cancel = login_completion
-            || (request.get("method").and_then(Value::as_str) == Some("tools/call")
-                && matches!(
-                    request.pointer("/params/name").and_then(Value::as_str),
-                    Some("identity_refresh" | "identity_whoami" | "identity_orgs")
-                ));
-        let mut cancellation = if login_completion {
-            let (sender, receiver) = tokio::sync::oneshot::channel();
-            server.login_cancelled = Some(receiver);
-            Some(sender)
-        } else {
-            None
-        };
-        let mut cancelled = false;
-        let operation = server.request(&request);
-        tokio::pin!(operation);
-        let mut completed = false;
-        let outcome: io::Result<bool> = async {
-        loop {
-            tokio::select! {
-                biased;
-                response = &mut operation => {
-                    completed = true;
-                    if !cancelled && let Some(response) = response {
-                        queue_response(&mut responses, &response)?;
-                    }
-                    break;
-                }
-                result = write_response(&mut output, &mut responses, &mut written), if !responses.is_empty() => {
-                    result?;
-                }
-                frame = input.next_line() => {
-                    let Some(frame) = frame.map_err(frame_error)? else {
-                        return Ok(true);
-                    };
-                    if active_frame(&request, frame.as_bytes(), &mut responses, &mut cancelled)? {
-                        if let Some(sender) = cancellation.take() { let _ = sender.send(()); }
-                        if !finish_on_cancel { break; }
-                    }
-                }
-            }
-        }
-        Ok(false)
-        }.await;
-        if !matches!(outcome, Ok(false)) {
-            if let Some(sender) = cancellation.take() {
-                let _ = sender.send(());
-            }
-            if finish_on_cancel && !completed {
-                let _ = (&mut operation).await;
-            }
-        }
-        match outcome {
-            Ok(false) => {}
-            Ok(true) => return Ok(()),
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-fn active_frame(
-    request: &Value,
-    frame: &[u8],
-    responses: &mut std::collections::VecDeque<Vec<u8>>,
-    cancelled: &mut bool,
-) -> io::Result<bool> {
-    let Ok(incoming) = serde_json::from_slice::<Value>(frame) else {
-        queue_response(responses, &rpc_error(&Value::Null, -32700, "Parse error"))?;
-        return Ok(false);
+    runtime: tokio::runtime::Handle,
+    input: impl io::Read + Send + 'static,
+    output: impl io::Write + Send + 'static,
+) -> io::Result<()> {
+    let mut identities = Identities {
+        server: Arc::new(tokio::sync::Mutex::new(server)),
+        runtime,
+        active: None,
+        calls: 0,
     };
-    let method = incoming.get("method").and_then(Value::as_str);
-    let id = incoming.get("id");
-    if incoming.get("jsonrpc").and_then(Value::as_str) != Some("2.0") || method.is_none() {
-        queue_response(
-            responses,
-            &rpc_error(id.unwrap_or(&Value::Null), -32600, "Invalid Request"),
-        )?;
-    } else if id.is_none() {
-        if method == Some("notifications/cancelled")
-            && incoming.pointer("/params/requestId").is_some()
-            && incoming.pointer("/params/requestId") == request.get("id")
-        {
-            if !*cancelled {
-                *cancelled = true;
-                queue_response(
-                    responses,
-                    &rpc_error(
-                        request.get("id").unwrap_or(&Value::Null),
-                        -32800,
-                        "Request cancelled",
-                    ),
-                )?;
-            }
-            return Ok(true);
-        }
-    } else if let Some(id) = id {
-        let response = if !id.is_string() && !id.is_number() {
-            rpc_error(&Value::Null, -32600, "Invalid request ID")
-        } else if method == Some("ping") {
-            json!({"jsonrpc": "2.0", "id": id, "result": {}})
-        } else {
-            rpc_error(id, -32000, "Identity operation in progress")
-        };
-        queue_response(responses, &response)?;
+    let served = ToolServer {
+        name: "acyclic-identity",
+        version: env!("CARGO_PKG_VERSION"),
+        parked: 1,
+        // The one-MiB frame budget includes its delimiter.
+        frame_bytes: u32::try_from(FRAME_LIMIT - 1).map_err(io::Error::other)?,
     }
-    Ok(false)
+    .serve(&mut identities, input, output);
+    identities.finish();
+    served.map_err(io::Error::other)
 }
 
 #[cfg(test)]
@@ -428,58 +335,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn initialization_tools_notifications_and_errors() {
-        let directory = tempfile::tempdir().expect("directory");
-        let mut server = server(directory.path().join("identity.json"));
-        let before = server
-            .request(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}))
-            .await
-            .expect("response");
-        assert_eq!(before.pointer("/error/code"), Some(&json!(-32000)));
-        let initialized = server
-            .request(
-                &json!({"jsonrpc": "2.0", "id": "init", "method": "initialize",
-            "params": {"protocolVersion": "2025-11-25"}}),
-            )
-            .await
-            .expect("initialize");
-        assert_eq!(
-            initialized.pointer("/result/protocolVersion"),
-            Some(&json!("2025-11-25"))
-        );
-        assert!(
-            server
-                .request(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
-                .await
-                .is_none()
-        );
-        let listed = server
-            .request(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}))
-            .await
-            .expect("list");
-        assert_eq!(
-            listed
-                .pointer("/result/tools")
-                .and_then(Value::as_array)
-                .expect("tools")
-                .len(),
-            7
-        );
-        let unknown = server
-            .request(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-            "params": {"name": "unknown"}}))
-            .await
-            .expect("unknown");
-        assert_eq!(unknown.pointer("/error/code"), Some(&json!(-32602)));
-        let bad = server
-            .request(&json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call",
-            "params": {"name": "identity_whoami", "arguments": {"token": "untrusted"}}}))
-            .await
-            .expect("bad args");
-        assert_eq!(bad.pointer("/error/code"), Some(&json!(-32602)));
-    }
-
-    #[tokio::test]
     async fn logout_forgets_pending_device_approval() {
         let directory = tempfile::tempdir().expect("directory");
         let mut server = server(directory.path().join("identity.json"));
@@ -502,42 +357,11 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn transport_recovers_after_parse_error_and_emits_only_responses() {
-        let directory = tempfile::tempdir().expect("directory");
-        let input = b"not json\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"ping\"}\n";
-        let mut output = Vec::new();
-        transport(
-            server(directory.path().join("identity.json")),
-            input.as_slice(),
-            &mut output,
-        )
-        .await
-        .expect("transport");
-        let output = String::from_utf8(output).expect("UTF-8");
-        let responses = output
-            .lines()
-            .map(|line| serde_json::from_str::<Value>(line).expect("JSON"))
-            .collect::<Vec<_>>();
-        assert_eq!(responses.len(), 2);
-        assert_eq!(
-            responses
-                .first()
-                .and_then(|response| response.pointer("/error/code")),
-            Some(&json!(-32700))
-        );
-        assert_eq!(
-            responses.last().and_then(|response| response.get("id")),
-            Some(&json!(8))
-        );
-    }
-
     fn pending(server: &mut Server) {
         let device = serde_json::from_value(json!({"device_code": "device", "user_code": "ABCD",
             "verification_uri": "https://example.test", "expires_in": 60, "interval": 1}))
         .expect("device");
         server.pending = Some((device, tokio::time::Instant::now()));
-        server.initialized = true;
     }
 
     #[tokio::test]
@@ -733,151 +557,6 @@ mod tests {
         task.abort();
     }
 
-    #[tokio::test]
-    async fn login_transport_answers_ping_and_cancellation_and_retains_approval() {
-        let directory = tempfile::tempdir().expect("directory");
-        let mut server = server(directory.path().join("identity.json"));
-        pending(&mut server);
-        let (mut client, connection) = tokio::io::duplex(4096);
-        let (input, output) = tokio::io::split(connection);
-        let task = tokio::spawn(transport(server, input, output));
-        client.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"identity_login_complete\"}}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n").await.expect("requests");
-        let mut client = tokio::io::BufReader::new(client);
-        let mut line = String::new();
-        tokio::time::timeout(Duration::from_millis(500), client.read_line(&mut line))
-            .await
-            .expect("responsive ping")
-            .expect("read");
-        assert_eq!(
-            serde_json::from_str::<Value>(&line)
-                .expect("response")
-                .get("id"),
-            Some(&json!(2))
-        );
-        client.get_mut().write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":1}}\n").await.expect("cancel");
-        line.clear();
-        client
-            .read_line(&mut line)
-            .await
-            .expect("cancelled response");
-        assert_eq!(
-            serde_json::from_str::<Value>(&line)
-                .expect("response")
-                .pointer("/error/code"),
-            Some(&json!(-32800))
-        );
-        client.get_mut().write_all(b"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"identity_login_complete\"}}\n{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"ping\"}\n").await.expect("retry");
-        line.clear();
-        tokio::time::timeout(Duration::from_millis(500), client.read_line(&mut line))
-            .await
-            .expect("retry still polling")
-            .expect("read");
-        assert_eq!(
-            serde_json::from_str::<Value>(&line)
-                .expect("response")
-                .get("id"),
-            Some(&json!(4))
-        );
-        client.get_mut().shutdown().await.expect("EOF");
-        task.await.expect("transport task").expect("transport");
-    }
-
-    struct CountedInput<R> {
-        input: R,
-        count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-        failed: std::sync::Arc<tokio::sync::Notify>,
-    }
-
-    impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for CountedInput<R> {
-        fn poll_read(
-            mut self: std::pin::Pin<&mut Self>,
-            context: &mut std::task::Context<'_>,
-            buffer: &mut tokio::io::ReadBuf<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            let before = buffer.filled().len();
-            let result = std::pin::Pin::new(&mut self.input).poll_read(context, buffer);
-            let read = buffer.filled().len() - before;
-            // The bounded codec rejects once the delimiter budget is filled;
-            // waiting for another byte would wait beyond the reader's cut.
-            if self
-                .count
-                .fetch_add(read, std::sync::atomic::Ordering::Relaxed)
-                + read
-                >= FRAME_LIMIT
-            {
-                self.failed.notify_one();
-            }
-            result
-        }
-    }
-
-    struct BrokenOutput<W> {
-        output: W,
-        broken: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        failed: std::sync::Arc<tokio::sync::Notify>,
-    }
-
-    impl<W: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for BrokenOutput<W> {
-        fn poll_write(
-            mut self: std::pin::Pin<&mut Self>,
-            context: &mut std::task::Context<'_>,
-            bytes: &[u8],
-        ) -> std::task::Poll<io::Result<usize>> {
-            if self.broken.load(std::sync::atomic::Ordering::Relaxed) {
-                self.failed.notify_one();
-                return std::task::Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
-            }
-            std::pin::Pin::new(&mut self.output).poll_write(context, bytes)
-        }
-        fn poll_flush(
-            mut self: std::pin::Pin<&mut Self>,
-            context: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            std::pin::Pin::new(&mut self.output).poll_flush(context)
-        }
-        fn poll_shutdown(
-            mut self: std::pin::Pin<&mut Self>,
-            context: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            std::pin::Pin::new(&mut self.output).poll_shutdown(context)
-        }
-    }
-
-    struct PausedOutput<W> {
-        output: W,
-        paused: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        stalled: std::sync::Arc<tokio::sync::Notify>,
-        waker: std::sync::Arc<std::sync::Mutex<Option<std::task::Waker>>>,
-    }
-
-    impl<W: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for PausedOutput<W> {
-        fn poll_write(
-            mut self: std::pin::Pin<&mut Self>,
-            context: &mut std::task::Context<'_>,
-            bytes: &[u8],
-        ) -> std::task::Poll<io::Result<usize>> {
-            if self.paused.load(std::sync::atomic::Ordering::Relaxed) {
-                *self.waker.lock().expect("writer waker") = Some(context.waker().clone());
-                self.stalled.notify_one();
-                return std::task::Poll::Pending;
-            }
-            let bytes = bytes.get(..bytes.len().min(7)).expect("bounded write");
-            std::pin::Pin::new(&mut self.output).poll_write(context, bytes)
-        }
-        fn poll_flush(
-            mut self: std::pin::Pin<&mut Self>,
-            context: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            std::pin::Pin::new(&mut self.output).poll_flush(context)
-        }
-        fn poll_shutdown(
-            mut self: std::pin::Pin<&mut Self>,
-            context: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<io::Result<()>> {
-            std::pin::Pin::new(&mut self.output).poll_shutdown(context)
-        }
-    }
-
     struct ConsumedExchange {
         server: Server,
         path: PathBuf,
@@ -965,216 +644,6 @@ mod tests {
         .expect("credentials saved while stdout remains pending");
     }
 
-    async fn begin_exchange(
-        client: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
-        login: bool,
-    ) -> &'static str {
-        let name = if login {
-            "identity_login_complete"
-        } else {
-            "identity_refresh"
-        };
-        client
-            .write_all(
-                format!(
-                    "{}\n",
-                    json!({"jsonrpc": "2.0", "id": 1,
-            "method": "tools/call", "params": {"name": name}})
-                )
-                .as_bytes(),
-            )
-            .await
-            .expect("request");
-        name
-    }
-
-    #[tokio::test]
-    async fn blocked_output_keeps_consumed_device_and_refresh_exchanges_progressing() {
-        let _clock = crate::tests::poll_clock::Clock::start();
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        };
-        use tokio::io::AsyncReadExt as _;
-        for (login, eof) in [(false, false), (true, false), (false, true)] {
-            let ConsumedExchange {
-                server,
-                path,
-                endpoint: _endpoint,
-                http,
-                consumed,
-                released,
-                _directory,
-            } = consumed_exchange(login).await;
-            let (mut client, connection) = tokio::io::duplex(64 * 1024);
-            let (input, output) = tokio::io::split(connection);
-            let paused = Arc::new(AtomicBool::new(true));
-            let stalled = Arc::new(tokio::sync::Notify::new());
-            let waker = Arc::new(std::sync::Mutex::new(None));
-            let task = tokio::spawn(transport(
-                server,
-                input,
-                PausedOutput {
-                    output,
-                    paused: paused.clone(),
-                    stalled: stalled.clone(),
-                    waker: waker.clone(),
-                },
-            ));
-            begin_exchange(&mut client, login).await;
-            tokio::time::timeout(Duration::from_secs(3), consumed.notified())
-                .await
-                .expect("consumed");
-            client
-                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n")
-                .await
-                .expect("ping");
-            tokio::time::timeout(Duration::from_secs(3), stalled.notified())
-                .await
-                .expect("writer pending");
-            if eof {
-                client
-                    .shutdown()
-                    .await
-                    .expect("EOF while writer is pending");
-            }
-            released.notify_one();
-            wait_for_rotated_credentials(&path).await;
-            assert!(paused.load(Ordering::Relaxed));
-            if eof {
-                paused.store(false, Ordering::Relaxed);
-                if let Some(waker) = waker.lock().expect("writer waker").take() {
-                    waker.wake();
-                }
-                tokio::time::timeout(Duration::from_secs(3), task)
-                    .await
-                    .expect("EOF drained after persistence")
-                    .expect("transport task")
-                    .expect("EOF transport");
-                http.abort();
-                continue;
-            }
-            assert!(!task.is_finished());
-            client.shutdown().await.expect("EOF");
-            paused.store(false, Ordering::Relaxed);
-            if let Some(waker) = waker.lock().expect("writer waker").take() {
-                waker.wake();
-            }
-            let mut output = String::new();
-            tokio::time::timeout(Duration::from_secs(3), client.read_to_string(&mut output))
-                .await
-                .expect("output resumed")
-                .expect("read");
-            task.await.expect("transport task").expect("transport");
-            let responses = output
-                .lines()
-                .map(|line| serde_json::from_str::<Value>(line).expect("JSON"))
-                .collect::<Vec<_>>();
-            assert!(
-                responses
-                    .iter()
-                    .any(|value| value.get("id") == Some(&json!(1)))
-            );
-            assert!(
-                responses
-                    .iter()
-                    .any(|value| value.get("id") == Some(&json!(2)))
-            );
-            http.abort();
-        }
-    }
-
-    #[tokio::test]
-    async fn transport_errors_drain_consumed_device_and_refresh_exchanges() {
-        let _clock = crate::tests::poll_clock::Clock::start();
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicUsize, Ordering},
-        };
-        for login in [false, true] {
-            for fault in ["oversized", "ping", "cancel"] {
-                let ConsumedExchange {
-                    server,
-                    path,
-                    endpoint,
-                    http,
-                    consumed,
-                    released,
-                    _directory,
-                } = consumed_exchange(login).await;
-                let (mut client, connection) = tokio::io::duplex(64 * 1024);
-                let (input, output) = tokio::io::split(connection);
-                let count = Arc::new(AtomicUsize::new(0));
-                let broken = Arc::new(AtomicBool::new(false));
-                let failed = Arc::new(tokio::sync::Notify::new());
-                let task = tokio::spawn(transport(
-                    server,
-                    CountedInput {
-                        input,
-                        count: count.clone(),
-                        failed: failed.clone(),
-                    },
-                    BrokenOutput {
-                        output,
-                        broken: broken.clone(),
-                        failed: failed.clone(),
-                    },
-                ));
-                let name = begin_exchange(&mut client, login).await;
-                tokio::time::timeout(Duration::from_secs(3), consumed.notified())
-                    .await
-                    .expect("consumed");
-                if fault == "oversized" {
-                    count.store(0, Ordering::Relaxed);
-                    client
-                        .write_all(&vec![b'x'; FRAME_LIMIT + 1])
-                        .await
-                        .expect("oversized frame");
-                } else {
-                    broken.store(true, Ordering::Relaxed);
-                    let request = if fault == "ping" {
-                        json!({"jsonrpc": "2.0", "id": 2, "method": "ping"})
-                    } else {
-                        json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}})
-                    };
-                    client
-                        .write_all(format!("{request}\n").as_bytes())
-                        .await
-                        .expect("control");
-                }
-                tokio::time::timeout(Duration::from_secs(3), failed.notified())
-                    .await
-                    .expect("transport fault reached");
-                assert!(
-                    !task.is_finished(),
-                    "{name}/{fault} must drain before returning the transport error"
-                );
-                released.notify_one();
-                let error = tokio::time::timeout(Duration::from_secs(3), task)
-                    .await
-                    .expect("drained")
-                    .expect("transport task")
-                    .expect_err("transport error");
-                assert_eq!(
-                    error.kind(),
-                    if fault == "oversized" {
-                        io::ErrorKind::Other
-                    } else {
-                        io::ErrorKind::BrokenPipe
-                    }
-                );
-                assert_eq!(
-                    Store::open(&path)
-                        .expect("unlocked store")
-                        .read(&endpoint)
-                        .expect("saved")
-                        .refresh_token,
-                    "rotated"
-                );
-                http.abort();
-            }
-        }
-    }
     #[tokio::test]
     async fn interrupted_pending_response_keeps_approval_for_retry() {
         let _clock = crate::tests::poll_clock::Clock::start();
@@ -1249,5 +718,428 @@ mod tests {
             "rotated"
         );
         http.await.expect("fake server");
+    }
+
+    /// Client end of a served identity transport: requests in, replies out.
+    struct Client {
+        requests: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+        replies: tokio::sync::mpsc::UnboundedReceiver<Value>,
+        served: tokio::task::JoinHandle<io::Result<()>>,
+    }
+
+    impl Client {
+        fn send(&self, request: &Value) {
+            if let Some(requests) = &self.requests {
+                let _ = requests.send(format!("{request}\n").into_bytes());
+            }
+        }
+
+        fn send_bytes(&self, bytes: Vec<u8>) {
+            if let Some(requests) = &self.requests {
+                let _ = requests.send(bytes);
+            }
+        }
+
+        fn close(&mut self) {
+            self.requests = None;
+        }
+
+        async fn reply(&mut self) -> Value {
+            tokio::time::timeout(Duration::from_secs(3), self.replies.recv())
+                .await
+                .expect("reply in time")
+                .expect("reply")
+        }
+    }
+
+    /// Blocking input fed by the test, ending when the client closes.
+    struct Input {
+        requests: std::sync::mpsc::Receiver<Vec<u8>>,
+        chunk: Vec<u8>,
+        read: usize,
+        counted: Option<(usize, Arc<tokio::sync::Notify>)>,
+    }
+
+    impl io::Read for Input {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            while self.read == self.chunk.len() {
+                match self.requests.recv() {
+                    Ok(chunk) => (self.chunk, self.read) = (chunk, 0),
+                    Err(_) => return Ok(0),
+                }
+            }
+            let count = buffer.len().min(self.chunk.len() - self.read);
+            buffer
+                .get_mut(..count)
+                .expect("bounded read")
+                .copy_from_slice(self.chunk.get(self.read..self.read + count).expect("chunk"));
+            self.read += count;
+            if let Some((total, failed)) = &mut self.counted {
+                // The bounded codec rejects once the delimiter budget fills.
+                *total += count;
+                if *total >= FRAME_LIMIT {
+                    failed.notify_one();
+                }
+            }
+            Ok(count)
+        }
+    }
+
+    /// How the served output behaves.
+    #[derive(Clone, Default)]
+    struct Output {
+        /// While set, writes block, as a client that stopped reading.
+        paused: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        stalled: Arc<tokio::sync::Notify>,
+        /// While set, writes fail as a closed pipe.
+        broken: Arc<std::sync::atomic::AtomicBool>,
+        failed: Arc<tokio::sync::Notify>,
+    }
+
+    impl Output {
+        fn pause(&self, paused: bool) {
+            let (state, changed) = &*self.paused;
+            *state.lock().expect("pause") = paused;
+            changed.notify_all();
+        }
+    }
+
+    struct Writer {
+        output: Output,
+        line: Vec<u8>,
+        replies: tokio::sync::mpsc::UnboundedSender<Value>,
+    }
+
+    impl io::Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.output.broken.load(std::sync::atomic::Ordering::SeqCst) {
+                self.output.failed.notify_one();
+                return Err(io::ErrorKind::BrokenPipe.into());
+            }
+            let (state, changed) = &*self.output.paused;
+            let mut paused = state.lock().expect("pause");
+            while *paused {
+                self.output.stalled.notify_one();
+                paused = changed.wait(paused).expect("pause");
+            }
+            drop(paused);
+            self.line.extend_from_slice(bytes);
+            while let Some(end) = self.line.iter().position(|byte| *byte == b'\n') {
+                let line = self.line.drain(..=end).collect::<Vec<_>>();
+                let _ = self
+                    .replies
+                    .send(serde_json::from_slice(&line).expect("JSON reply"));
+            }
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn connect(
+        server: Server,
+        output: &Output,
+        counted: Option<Arc<tokio::sync::Notify>>,
+    ) -> Client {
+        let (requests, received) = std::sync::mpsc::channel();
+        let (sent, replies) = tokio::sync::mpsc::unbounded_channel();
+        let input = Input {
+            requests: received,
+            chunk: Vec::new(),
+            read: 0,
+            counted: counted.map(|failed| (0, failed)),
+        };
+        let writer = Writer {
+            output: output.clone(),
+            line: Vec::new(),
+            replies: sent,
+        };
+        let runtime = tokio::runtime::Handle::current();
+        let served = tokio::task::spawn_blocking(move || serve_on(server, runtime, input, writer));
+        let client = Client {
+            requests: Some(requests),
+            replies,
+            served,
+        };
+        client.send(&json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {"protocolVersion": "2025-11-25"}}));
+        client
+    }
+
+    fn call(id: u64, name: &str) -> Value {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name}})
+    }
+
+    #[tokio::test]
+    async fn identity_tools_list_and_refuse_arguments() {
+        let directory = tempfile::tempdir().expect("directory");
+        let mut client = connect(
+            server(directory.path().join("identity.json")),
+            &Output::default(),
+            None,
+        );
+        let initialized = client.reply().await;
+        assert_eq!(
+            initialized.pointer("/result/protocolVersion"),
+            Some(&json!("2025-11-25"))
+        );
+        client.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}));
+        let listed = client.reply().await;
+        assert_eq!(
+            listed
+                .pointer("/result/tools")
+                .and_then(Value::as_array)
+                .expect("tools")
+                .len(),
+            7
+        );
+        client.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "identity_whoami", "arguments": {"token": "untrusted"}}}));
+        assert_eq!(
+            client.reply().await.pointer("/error/code"),
+            Some(&json!(-32602))
+        );
+        client.close();
+        client.served.await.expect("served").expect("transport");
+    }
+
+    #[tokio::test]
+    async fn login_transport_answers_ping_and_cancellation_and_retains_approval() {
+        let directory = tempfile::tempdir().expect("directory");
+        let mut server = server(directory.path().join("identity.json"));
+        pending(&mut server);
+        let mut client = connect(server, &Output::default(), None);
+        client.reply().await;
+        client.send(&call(1, "identity_login_complete"));
+        client.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
+        assert_eq!(client.reply().await.get("id"), Some(&json!(2)));
+        client.send(
+            &json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": 1}}),
+        );
+        assert_eq!(
+            client.reply().await.pointer("/error/code"),
+            Some(&json!(-32800))
+        );
+        // The cancelled completion holds the operation until it stops polling.
+        let mut id = 3;
+        loop {
+            client.send(&call(id, "identity_login_complete"));
+            client.send(&json!({"jsonrpc": "2.0", "id": id + 1, "method": "ping"}));
+            let reply = client.reply().await;
+            if reply.get("id") == Some(&json!(id + 1)) {
+                break;
+            }
+            assert_eq!(reply.pointer("/error/code"), Some(&json!(-32000)));
+            assert_eq!(client.reply().await.get("id"), Some(&json!(id + 1)));
+            id += 2;
+        }
+        client.close();
+        client.served.await.expect("served").expect("transport");
+    }
+
+    #[tokio::test]
+    async fn blocked_output_still_reads_login_cancellation() {
+        let _clock = crate::tests::poll_clock::Clock::start();
+        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = Arc::clone(&polls);
+        let router = axum::Router::new().fallback(move || {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            async {
+                (
+                    StatusCode::BAD_REQUEST,
+                    axum::Json(json!({"error": "authorization_pending"})),
+                )
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+        let http = tokio::spawn(async move {
+            axum::serve(listener, router).await.expect("serve");
+        });
+        let directory = tempfile::tempdir().expect("directory");
+        let mut server = server(directory.path().join("identity.json"));
+        server.identity = Identity::new(&endpoint).expect("identity");
+        pending(&mut server);
+        let output = Output::default();
+        let mut client = connect(server, &output, None);
+        client.reply().await;
+        output.pause(true);
+        client.send(&call(1, "identity_login_complete"));
+        client.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
+        tokio::time::timeout(Duration::from_secs(3), output.stalled.notified())
+            .await
+            .expect("writer pending");
+        client.send(
+            &json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+            "params": {"requestId": 1}}),
+        );
+        // The poll stops although no reply can be written: the count settles.
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut last = (
+            polls.load(std::sync::atomic::Ordering::SeqCst),
+            std::time::Instant::now(),
+        );
+        loop {
+            tokio::task::yield_now().await;
+            let count = polls.load(std::sync::atomic::Ordering::SeqCst);
+            if count != last.0 {
+                last = (count, std::time::Instant::now());
+            } else if last.1.elapsed() >= Duration::from_millis(300) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "login polling continued after cancellation behind blocked output"
+            );
+        }
+        client.close();
+        output.pause(false);
+        let mut replies = Vec::new();
+        while let Some(reply) = client.replies.recv().await {
+            replies.push(reply);
+        }
+        client.served.await.expect("served").expect("transport");
+        assert!(
+            replies
+                .iter()
+                .any(|reply| reply.get("id") == Some(&json!(2)))
+        );
+        assert!(
+            replies
+                .iter()
+                .any(|reply| reply.get("id") == Some(&json!(1))
+                    && reply.pointer("/error/code") == Some(&json!(-32800)))
+        );
+        http.abort();
+    }
+
+    #[tokio::test]
+    async fn blocked_output_keeps_consumed_device_and_refresh_exchanges_progressing() {
+        let _clock = crate::tests::poll_clock::Clock::start();
+        for (login, eof) in [(false, false), (true, false), (false, true)] {
+            let ConsumedExchange {
+                server,
+                path,
+                endpoint: _endpoint,
+                http,
+                consumed,
+                released,
+                _directory,
+            } = consumed_exchange(login).await;
+            let output = Output::default();
+            let mut client = connect(server, &output, None);
+            client.reply().await;
+            output.pause(true);
+            client.send(&call(
+                1,
+                if login {
+                    "identity_login_complete"
+                } else {
+                    "identity_refresh"
+                },
+            ));
+            tokio::time::timeout(Duration::from_secs(3), consumed.notified())
+                .await
+                .expect("consumed");
+            client.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "ping"}));
+            tokio::time::timeout(Duration::from_secs(3), output.stalled.notified())
+                .await
+                .expect("writer pending");
+            if eof {
+                client.close();
+            }
+            released.notify_one();
+            wait_for_rotated_credentials(&path).await;
+            assert!(!client.served.is_finished());
+            client.close();
+            output.pause(false);
+            let mut ids = Vec::new();
+            while let Some(reply) = client.replies.recv().await {
+                ids.extend(reply.get("id").cloned());
+            }
+            tokio::time::timeout(Duration::from_secs(3), client.served)
+                .await
+                .expect("drained after persistence")
+                .expect("served")
+                .expect("transport");
+            assert!(ids.contains(&json!(2)));
+            if !eof {
+                assert!(ids.contains(&json!(1)));
+            }
+            http.abort();
+        }
+    }
+
+    #[tokio::test]
+    async fn transport_errors_drain_consumed_device_and_refresh_exchanges() {
+        let _clock = crate::tests::poll_clock::Clock::start();
+        for login in [false, true] {
+            for fault in ["oversized", "ping", "cancel"] {
+                let ConsumedExchange {
+                    server,
+                    path,
+                    endpoint,
+                    http,
+                    consumed,
+                    released,
+                    _directory,
+                } = consumed_exchange(login).await;
+                let output = Output::default();
+                let counted = Arc::new(tokio::sync::Notify::new());
+                let mut client = connect(server, &output, Some(Arc::clone(&counted)));
+                client.reply().await;
+                let name = if login {
+                    "identity_login_complete"
+                } else {
+                    "identity_refresh"
+                };
+                client.send(&call(1, name));
+                tokio::time::timeout(Duration::from_secs(3), consumed.notified())
+                    .await
+                    .expect("consumed");
+                let failed = if fault == "oversized" {
+                    client.send_bytes(vec![b'x'; FRAME_LIMIT + 1]);
+                    counted
+                } else {
+                    output
+                        .broken
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    client.send(&if fault == "ping" {
+                        json!({"jsonrpc": "2.0", "id": 2, "method": "ping"})
+                    } else {
+                        json!({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                            "params": {"requestId": 1}})
+                    });
+                    Arc::clone(&output.failed)
+                };
+                tokio::time::timeout(Duration::from_secs(3), failed.notified())
+                    .await
+                    .expect("transport fault reached");
+                assert!(
+                    !client.served.is_finished(),
+                    "{name}/{fault} must drain before returning the transport error"
+                );
+                released.notify_one();
+                tokio::time::timeout(Duration::from_secs(3), client.served)
+                    .await
+                    .expect("drained")
+                    .expect("served")
+                    .expect_err("transport error");
+                assert_eq!(
+                    Store::open(&path)
+                        .expect("unlocked store")
+                        .read(&endpoint)
+                        .expect("saved")
+                        .refresh_token,
+                    "rotated"
+                );
+                http.abort();
+            }
+        }
     }
 }
