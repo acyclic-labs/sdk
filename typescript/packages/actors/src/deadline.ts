@@ -1,8 +1,8 @@
 import type { Transport } from "@connectrpc/connect";
 
 /** One absolute deadline, split only at the host timer's signed 32-bit boundary. */
-export function deadlineSignal(timeoutMs: number | undefined, expired: () => unknown, parent?: AbortSignal) {
-  if (timeoutMs !== undefined && !Number.isFinite(timeoutMs)) throw new RangeError("timeoutMs must be finite");
+export function deadlineSignal(timeoutMs: number | bigint | undefined, expired: () => unknown, parent?: AbortSignal) {
+  if (typeof timeoutMs === "number" && !Number.isFinite(timeoutMs)) throw new RangeError("timeoutMs must be finite");
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const cleanup = () => { clearTimeout(timer); parent?.removeEventListener("abort", abort); };
@@ -10,11 +10,13 @@ export function deadlineSignal(timeoutMs: number | undefined, expired: () => unk
   parent?.addEventListener("abort", abort, { once: true });
   if (parent?.aborted) abort();
   if (!controller.signal.aborted && timeoutMs !== undefined && timeoutMs > 0) {
-    const end = performance.now() + timeoutMs;
+    const end = typeof timeoutMs === "bigint"
+      ? BigInt(Math.ceil(performance.now())) + timeoutMs : performance.now() + timeoutMs;
     const arm = () => {
-      const remaining = end - performance.now();
+      const remaining = typeof end === "bigint"
+        ? end - BigInt(Math.floor(performance.now())) : end - performance.now();
       if (remaining <= 0) { cleanup(); controller.abort(expired()); }
-      else timer = setTimeout(arm, Math.min(remaining, 0x7fff_ffff));
+      else timer = setTimeout(arm, remaining > 0x7fff_ffff ? 0x7fff_ffff : Number(remaining));
     };
     arm();
   }
