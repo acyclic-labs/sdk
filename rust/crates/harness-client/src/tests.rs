@@ -303,7 +303,7 @@ proptest! {
 }
 
 #[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "agents", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 fn skip(next: u64) -> acyclic_stream::wire::SessionFrame {
@@ -326,7 +326,7 @@ fn skip(next: u64) -> acyclic_stream::wire::SessionFrame {
 
 #[test]
 #[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
+    all(feature = "agents", not(target_arch = "wasm32")),
     all(feature = "wasm", target_arch = "wasm32")
 ))]
 fn only_a_filtered_fold_advances_past_skipped_records() {

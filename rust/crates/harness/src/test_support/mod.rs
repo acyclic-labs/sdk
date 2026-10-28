@@ -61,18 +61,15 @@ pub async fn prompt_settled(
     id: &str,
     prompt: &str,
 ) -> crate::Result<PromptOutcome> {
-    use crate::agent::{
-        AgentOutcome, AgentRecord as _, Delivered, IntentId, Phase, Reply, StatusRecord,
-    };
+    use crate::agent::{AgentOutcome, AgentRecord as _, IntentId, Phase, Reply, StatusRecord};
     use acyclic_stream::{FollowFilter, StreamProvider as _};
     use futures::TryStreamExt as _;
     let agent = |error: crate::agent::Error| crate::Error::Storage(error.to_string());
     let stream = |error: acyclic_stream::StreamError| crate::Error::Storage(error.to_string());
+    let inbox = crate::local::agent_conversation::Conversation::open(harness.connect().await?)?
+        .send(id, prompt)
+        .await?;
     let id = IntentId::try_from(id).map_err(agent)?;
-    let inbox = match harness.prompt(&id, prompt).await.map_err(agent)? {
-        Delivered::Committed { inbox } => inbox,
-        Delivered::Closed => return Err(crate::Error::Conflict("root agent is closed".into())),
-    };
     let (agents, root) = harness.agents().await?;
     let provider = agents.provider();
     let mut statuses = provider

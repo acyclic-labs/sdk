@@ -453,7 +453,7 @@ where
         approved: bool,
         reason: Option<String>,
     ) -> Result<()> {
-        let (_, bindings, files) = self.journal(self.admit(agent)?, &[])?;
+        let (_, bindings, files) = self.approval_journal(agent)?;
         let (policy, _) = self.approvals(agent, &bindings.content).await?;
         crate::approvals::decide(&*files, &policy, id, responder, approved, reason).await
     }
@@ -507,7 +507,7 @@ where
         let crate::agent::Phase::WaitingApproval { id } = &agent.phase else {
             return Ok(None);
         };
-        let (_, bindings, files) = self.journal(self.admit(agent)?, &[])?;
+        let (_, bindings, files) = self.approval_journal(agent)?;
         let (policy, _) = self.approvals(agent, &bindings.content).await?;
         let bytes = policy.request(&*files, id.as_str()).await?;
         let request = crate::contract::json_from_slice(&bytes)
@@ -524,7 +524,7 @@ where
         id: &crate::agent::IntentId,
         principal: &str,
     ) -> Result<Option<crate::interaction::Interaction>> {
-        let (_, bindings, files) = self.journal(self.admit(agent)?, &[])?;
+        let (_, bindings, files) = self.approval_journal(agent)?;
         let (policy, _) = self.approvals(agent, &bindings.content).await?;
         let Some(bytes) =
             crate::approvals::decided_request(&*files, &policy, id.as_str(), principal).await?
@@ -534,6 +534,20 @@ where
         crate::contract::json_from_slice(&bytes)
             .map(Some)
             .map_err(|error| Error::Invalid(error.to_string()))
+    }
+
+    /// The journal `agent`'s approvals are read and decided through: its
+    /// inherited approval policy, staged on an ancestor's private volume, is
+    /// granted by its exact version as its turns grant it.
+    fn approval_journal(
+        &self,
+        agent: &AgentState,
+    ) -> Result<(
+        FilesystemExecutionJournal<P, A, O>,
+        Bindings,
+        Arc<AgentInternalFiles<A, O>>,
+    )> {
+        self.journal(self.admit(agent)?, agent.policy.as_slice())
     }
 
     /// `agent`'s verified admission; it performs no IO.
@@ -775,6 +789,9 @@ where
                 let content = crate::agent::model_input(&entry.input).map_err(agent_error)?;
                 external.extend(input_files(&content));
             }
+            // A spawned agent runs under the approval policy it inherited,
+            // staged on an ancestor's private volume: it reads that exact file.
+            external.extend(agent.policy.iter().cloned());
             let (journal, bindings, files) = self.journal(admitted, &external)?;
             let effects = Some(Arc::new(FilesystemTurnEffects::new(
                 Arc::clone(&files),

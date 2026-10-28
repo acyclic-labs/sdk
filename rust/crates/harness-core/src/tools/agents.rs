@@ -261,6 +261,52 @@ fn definition<T: JsonSchema>(name: &str, description: &str) -> Result<ToolDefini
     Ok(definition)
 }
 
+/// The model definitions of the agent tools among `names`, exactly as
+/// [`bind_agent_tools`] registers them: a turn's context manifest lists them
+/// with its other tools, so the model sees the tools the turn binds.
+///
+/// # Errors
+/// When a definition's schema is invalid.
+pub fn definitions(names: &[String]) -> Result<Vec<ToolDefinition>> {
+    Ok(selected(names)?
+        .into_iter()
+        .map(|(_, definition)| definition)
+        .collect())
+}
+
+/// The agent tools among `names`, by name, with their definitions.
+fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
+    let mut selected = Vec::with_capacity(AGENT_TOOLS.len());
+    for (name, definition) in [
+        (
+            "spawn",
+            definition::<SpawnAgentInput>(
+                "spawn",
+                "Spawn a child agent on a fork of your volumes and conversation; returns its agent path",
+            )?,
+        ),
+        (
+            "send",
+            definition::<SendAgentInput>(
+                "send",
+                "Send a message to your parent or an open child, delivered when this turn ends",
+            )?,
+        ),
+        (
+            "archive",
+            definition::<ArchiveAgentInput>(
+                "archive",
+                "Archive an open child and its descendants when this turn ends",
+            )?,
+        ),
+    ] {
+        if names.iter().any(|selected| selected == name) {
+            selected.push((name, definition));
+        }
+    }
+    Ok(selected)
+}
+
 /// Registers `agent`'s tools for one turn into `registry`, bound to the turn's
 /// `effects` and its private `writer`, and selects them for the model over any
 /// other revision of the same names. Only the agent tools `names` selects are
@@ -285,32 +331,7 @@ pub fn bind_agent_tools(
         max_children,
         spawning: futures::lock::Mutex::new(()),
     });
-    for (name, definition) in [
-        (
-            "spawn",
-            definition::<SpawnAgentInput>(
-                "spawn",
-                "Spawn a child agent on a fork of your volumes and conversation; returns its agent path",
-            )?,
-        ),
-        (
-            "send",
-            definition::<SendAgentInput>(
-                "send",
-                "Send a message to your parent or an open child, delivered when this turn ends",
-            )?,
-        ),
-        (
-            "archive",
-            definition::<ArchiveAgentInput>(
-                "archive",
-                "Archive an open child and its descendants when this turn ends",
-            )?,
-        ),
-    ] {
-        if !names.iter().any(|selected| selected == name) {
-            continue;
-        }
+    for (name, definition) in selected(names)? {
         let tool = Tool {
             hook_names: &[],
             definition,

@@ -5,14 +5,18 @@ use super::super::LocalAgents;
 use super::{ScriptedModelProvider, text, volume, volume_config};
 use crate::{
     Error, LocalHarness, Result,
-    agent::{
-        AgentPath, AgentRecord, ConversationEntry, Delivered, IntentId, StatusRecord, TurnInput,
-    },
+    agent::{AgentPath, AgentRecord, ConversationEntry, StatusRecord, TurnInput},
+    local::agent_conversation::Conversation,
 };
 use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProvider};
 use futures::TryStreamExt;
 use serde_json::json;
 use std::sync::Arc;
+
+/// The root conversation `harness` serves to its own in-process session.
+async fn conversation(harness: &Arc<LocalHarness>) -> Result<Arc<Conversation>> {
+    Conversation::open(harness.connect().await?)
+}
 
 fn agent(error: impl std::fmt::Display) -> Error {
     Error::Storage(error.to_string())
@@ -74,13 +78,8 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
     );
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
-    let id = IntentId::try_from("hello").map_err(agent)?;
-    let delivered = harness.prompt(&id, "hello").await.map_err(agent)?;
-    let Delivered::Committed { inbox } = delivered else {
-        return Err(Error::Conflict(format!(
-            "prompt was not delivered: {delivered:?}"
-        )));
-    };
+    let client = conversation(&harness).await?;
+    let inbox = client.send("hello", "hello").await?;
     let conversation = root.conversation().map_err(agent)?;
     let entries = settled(&agents, &root).await?;
     assert_eq!(entries.len(), 1);
@@ -95,10 +94,7 @@ async fn a_prompt_runs_one_root_agent_turn_and_replays_exactly() -> Result<()> {
         .await?;
     assert!(!output.is_empty());
     // The same intent replays its commit at the same sequence; no second turn runs.
-    assert_eq!(
-        harness.prompt(&id, "hello").await.map_err(agent)?,
-        delivered
-    );
+    assert_eq!(client.send("hello", "hello").await?, inbox);
     assert_eq!(records(&**agents.provider(), conversation).await?.len(), 1);
     Ok(())
 }
@@ -153,11 +149,10 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
     );
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
-    let id = IntentId::try_from("shell").map_err(agent)?;
-    harness
-        .prompt(&id, "run one command")
-        .await
-        .map_err(agent)?;
+    conversation(&harness)
+        .await?
+        .send("shell", "run one command")
+        .await?;
     let entries = settled(&agents, &root).await?;
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
     let state = agents.state(&root).await.map_err(agent)?;
@@ -211,6 +206,7 @@ async fn observation(
             path,
             &authority.private.volume,
             Arc::new(acyclic_stream::SystemUnixMillisClock),
+            None,
         )
         .await
         .map(drop)
@@ -296,7 +292,7 @@ async fn follow_tool_output(
     let reader = structured(&[Action::List, Action::Read], &["tools", "tools/**"])?;
     observation(harness, &reader, path).await?;
     // From after the settled turn: its output stays the newest call's.
-    let mut observer = harness.observe(root, 1).await?;
+    let mut observer = conversation(harness).await?.observe(1).await?;
     let wait = std::time::Duration::from_secs(10);
     tokio::time::timeout(wait, async {
         loop {
@@ -310,8 +306,10 @@ async fn follow_tool_output(
     })
     .await
     .map_err(|_| Error::Conflict(format!("no output of turn {turn} arrived")))??;
-    // Revoking the scope the observation derives from ends it.
-    authority()?.issuer.revoke_workload(&observer.scope)?;
+    // Revoking the agent scope the connection's credential derives from
+    // ends its observation.
+    let revoked = authority()?;
+    revoked.issuer.revoke_workload(&revoked.scope)?;
     tokio::time::timeout(wait, async {
         loop {
             if observer.next().await.is_err() {
@@ -393,8 +391,10 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         crate::test_support::ScriptedEvent::Pending {},
     ])]);
     let harness = open(pending.clone()).await?;
-    let id = IntentId::try_from("hooked").map_err(agent)?;
-    harness.prompt(&id, "hello").await.map_err(agent)?;
+    conversation(&harness)
+        .await?
+        .send("hooked", "hello")
+        .await?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
     while pending.request_count() == 0 {
         if std::time::Instant::now() > deadline {

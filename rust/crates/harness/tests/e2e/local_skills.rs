@@ -51,8 +51,8 @@ async fn open(config: LocalHarnessConfig) -> TestResult<Arc<LocalHarness>> {
 async fn turn(harness: &Arc<LocalHarness>, prompt: &str, settles: bool) -> TestResult {
     let (agents, root) = harness.agents().await?;
     let before = agents.state(root).await?.conversation_tail;
-    harness
-        .prompt(&IntentId::try_from(format!("prompt-{before}"))?, prompt)
+    acyclic_harness::local::agent_conversation::Conversation::open(harness.connect().await?)?
+        .send(&format!("prompt-{before}"), prompt)
         .await?;
     let deadline = std::time::Instant::now()
         + std::time::Duration::from_millis(if settles { 8_000 } else { 500 });

@@ -489,6 +489,7 @@ dependencies = [
  "acyclic-auth",
  "acyclic-harness-core",
  "acyclic-stream",
+ "base64 0.22.1",
  "bytes",
  "futures",
  "proptest",

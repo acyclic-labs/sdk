@@ -211,6 +211,34 @@ where
         )
     }
 
+    /// [`Self::admitted`] over the host's own composed `volumes`, as
+    /// [`Self::local_host`] is to [`Self::local_root`]: a self-hosted
+    /// endpoint serves its harness's agents to its verified caller exactly as
+    /// a managed host does. `configure` sets the host's turn options.
+    ///
+    /// # Errors
+    /// As [`Self::admitted`].
+    pub fn admitted_host(
+        issuer: AuthorityRoot,
+        caller: VerifiedCaller,
+        volumes: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
+        within: ActorReference,
+        turns: Turns,
+        configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
+    ) -> Result<Self, Error> {
+        Self::on(
+            issuer,
+            TurnAdmission::Admitted {
+                audience: caller.audience,
+                scope: caller.scope,
+            },
+            volumes,
+            within,
+            turns,
+            configure,
+        )
+    }
+
     /// The explicit self-host enrollment: the host's own custody is the root
     /// of every agent it creates. Never selected by a request.
     ///
@@ -224,6 +252,30 @@ where
         Self::new(issuer, TurnAdmission::LocalRoot, placement, turns)
     }
 
+    /// The self-host enrollment over the host's own composed `volumes`, as
+    /// [`Self::local_root`]: the local harness, whose volumes carry its native
+    /// state, serves through the same binding. `configure` sets the host's
+    /// turn options (approval models, goals, system prompt).
+    ///
+    /// # Errors
+    /// As [`Self::admitted`].
+    pub fn local_host(
+        issuer: AuthorityRoot,
+        volumes: Arc<FilesystemHost<StreamAuthorityStore<P>, O>>,
+        within: ActorReference,
+        turns: Turns,
+        configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
+    ) -> Result<Self, Error> {
+        Self::on(
+            issuer,
+            TurnAdmission::LocalRoot,
+            volumes,
+            within,
+            turns,
+            configure,
+        )
+    }
+
     fn new(
         issuer: AuthorityRoot,
         admission: TurnAdmission,
@@ -235,12 +287,23 @@ where
             provider,
             within,
         } = placement;
-        let stream = filesystem.stream_provider();
         let volumes = FilesystemHost::new(filesystem, &provider, None).map_err(turn)?;
+        Self::on(issuer, admission, volumes, within, turns, |turner| turner)
+    }
+
+    fn on(
+        issuer: AuthorityRoot,
+        admission: TurnAdmission,
+        volumes: Arc<Host<P, O>>,
+        within: ActorReference,
+        turns: Turns,
+        configure: impl FnOnce(Turner<P, O>) -> Turner<P, O>,
+    ) -> Result<Self, Error> {
+        let stream = volumes.filesystem.stream_provider();
         let maximum_bytes = turns.limits.maximum_bytes;
         // The preset's policy binds before any agent runs under it.
         turns.approval_policy.bind().map_err(turn)?;
-        let turner = Arc::new(FilesystemTurnHost::new(
+        let turner = Arc::new(configure(FilesystemTurnHost::new(
             Arc::clone(&stream),
             Arc::clone(&volumes),
             issuer.clone(),
@@ -248,7 +311,7 @@ where
             turns.executors,
             turns.limits,
             turns.approval_policy,
-        ));
+        )));
         let driver = ExecutorDriver::new(Arc::clone(&turner));
         let spawns = Arc::new(FilesystemSpawnVolumes::new(
             Arc::clone(&volumes),
@@ -332,28 +395,180 @@ where
         &self.turns
     }
 
-    /// Reads immutable content under the binding's original admission, as a
-    /// turn does. Host custody cannot widen an admitted caller's file access.
-    pub async fn read_file(&self, agent: &AgentPath, file: &FileRef) -> Result<Vec<u8>, Error> {
+    /// The one credential a client of `root` holds: it invokes `calls`, the
+    /// actor resource of the server of this binding's tree, and observes
+    /// `root`'s conversation, status and tool output; with the session
+    /// authority admitting it.
+    ///
+    /// # Errors
+    /// When `root` is absent or its scope does not cover its observation.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn client_credential(
+        &self,
+        root: &AgentPath,
+        calls: &str,
+        clock: Arc<dyn acyclic_stream::UnixMillisClock>,
+    ) -> Result<super::AgentObservation, Error> {
+        self.admit_path(root)?;
+        let state = self.agents.state(root).await?;
+        let authority = agent_authority(
+            &self.issuer,
+            &self.admission,
+            &state.path,
+            &state.volumes,
+            &[],
+        )
+        .map_err(turn)?;
+        self.volumes
+            .agent_observation(
+                &authority,
+                &state.path,
+                &authority.private.volume,
+                clock,
+                Some(calls),
+            )
+            .await
+            .map_err(turn)
+    }
+
+    /// The `fs:/` resource of `agent`'s tool output, whose follow announces
+    /// each new chunk.
+    ///
+    /// # Errors
+    /// When `agent` is absent or its private volume cannot be opened.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn tool_resource(&self, agent: &AgentPath) -> Result<String, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;
-        let authority = agent_authority(&self.issuer, &self.admission, agent, &state.volumes, &[])
-            .map_err(turn)?;
+        let private = state
+            .volumes
+            .iter()
+            .find(|binding| binding.name == super::PRIVATE_VOLUME)
+            .ok_or(Error::Record("agent has no private volume"))?;
+        self.volumes
+            .tool_resource(&private.volume)
+            .await
+            .map_err(turn)
+    }
+
+    /// The change follows of this binding's volumes, for the session that
+    /// serves its tree.
+    ///
+    /// # Errors
+    /// As [`super::FilesystemHost::change_provider`].
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub fn changes(
+        &self,
+    ) -> Result<acyclic_fs::session::ChangeProvider<P, StreamAuthorityStore<P>, O>, Error>
+    where
+        P: Sized,
+    {
+        self.volumes
+            .change_provider(self.agents.provider().clone())
+            .map_err(turn)
+    }
+
+    /// Reads at most `maximum` bytes of `file` from `offset`, through
+    /// `agent`'s own authorized reader: only a file on one of `agent`'s
+    /// volumes, within its scope, is readable. Returns the bytes and the
+    /// file's length.
+    ///
+    /// # Errors
+    /// When `agent` is absent, the file is outside its scope, or `offset` is
+    /// past the file's end.
+    pub async fn read_file(
+        &self,
+        agent: &AgentPath,
+        file: &FileRef,
+        offset: u64,
+        maximum: u64,
+    ) -> Result<(Vec<u8>, u64), Error> {
+        self.admit_path(agent)?;
+        let state = self.agents.state(agent).await?;
+        let authority = agent_authority(
+            &self.issuer,
+            &self.admission,
+            &state.path,
+            &state.volumes,
+            &[],
+        )
+        .map_err(turn)?;
         let reader = super::FilesystemContentVerifier::new(
-            self.volumes.clone(),
+            Arc::clone(&self.volumes),
             &authority.verifier,
             &authority.scope,
             self.maximum_bytes,
             None,
         )
         .map_err(turn)?;
-        use crate::conversation::ContentResidencyVerifier as _;
-        let bytes = reader
-            .read(file, self.maximum_bytes, None, None)
-            .map_err(turn)?
-            .await
-            .map_err(turn)?;
-        Ok(bytes.as_slice().to_vec())
+        let length = file.descriptor().byte_length();
+        let remaining = length
+            .checked_sub(offset)
+            .ok_or(Error::Record("read offset is past the file's end"))?;
+        let range = acyclic_fs::ByteRange {
+            offset,
+            length: remaining.min(maximum),
+        };
+        let bytes = crate::conversation::ContentResidencyVerifier::read_range(
+            &*reader, file, range, None, None,
+        )
+        .map_err(turn)?
+        .await
+        .map_err(turn)?;
+        Ok((bytes.to_vec(), length))
+    }
+
+    /// Reads at most `maximum` bytes from `offset` of `path` below `agent`'s
+    /// tool output, through `agent`'s own authorized reader. Returns the
+    /// bytes and the chunk's length.
+    ///
+    /// # Errors
+    /// As [`Self::read_file`].
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn read_tool_output(
+        &self,
+        agent: &AgentPath,
+        path: &str,
+        offset: u64,
+        maximum: u64,
+    ) -> Result<(Vec<u8>, u64), Error> {
+        self.admit_path(agent)?;
+        let state = self.agents.state(agent).await?;
+        let authority = agent_authority(
+            &self.issuer,
+            &self.admission,
+            &state.path,
+            &state.volumes,
+            &[],
+        )
+        .map_err(turn)?;
+        let reader = super::FilesystemContentVerifier::new(
+            Arc::clone(&self.volumes),
+            &authority.verifier,
+            &authority.scope,
+            self.maximum_bytes,
+            None,
+        )
+        .map_err(turn)?;
+        let (_, bytes, _) = crate::conversation::ContentResidencyVerifier::read_private_path(
+            &*reader,
+            &authority.private.volume,
+            super::TOOL_OUTPUT,
+            path,
+            None,
+            self.maximum_bytes,
+            ContentAccess::default(),
+        )
+        .map_err(turn)?
+        .await
+        .map_err(turn)?;
+        let length = bytes.len() as u64;
+        let start = usize::try_from(offset)
+            .ok()
+            .filter(|start| *start <= bytes.len())
+            .ok_or(Error::Record("read offset is past the file's end"))?;
+        let end = start.saturating_add(usize::try_from(maximum).unwrap_or(usize::MAX));
+        Ok((bytes[start..end.min(bytes.len())].to_vec(), length))
     }
 
     /// The approval `agent` waits on, with the exact action it shows. An

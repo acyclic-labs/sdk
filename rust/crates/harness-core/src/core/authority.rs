@@ -505,13 +505,14 @@ impl AuthorityRoot {
     /// A credential for exactly `grants`, each `(resource, prefix, actions)`,
     /// under this root's audience, derived from `parent` at `now`: it lives
     /// no longer than `parent` and is revoked with it. Callers first check
-    /// that `parent` may reach everything `grants` names.
+    /// that `parent` may reach everything `grants` names. Returns it with
+    /// the principal it authenticates.
     pub(crate) fn resource_credential(
         &self,
         parent: &Scope,
         grants: &[(&str, bool, &[&str])],
         now: u64,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<(Vec<u8>, String)> {
         let capability = workload::verify(
             &self.verifier(&mut None)?,
             &self.audience,

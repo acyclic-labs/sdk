@@ -1,4 +1,4 @@
-use clap::{Parser, ValueEnum};
+use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
@@ -9,7 +9,10 @@ pub enum InputFormat {
 }
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Coding agent on the local harness's agents")]
+#[command(
+    version,
+    about = "Coding agent on the local harness's agents or an endpoint's"
+)]
 pub struct Args {
     /// Own workspace files for native coding hosts, without a provider or agent loop.
     #[arg(long, requires = "host_state_directory", conflicts_with_all = ["prompt", "model", "catalog", "credentials", "operation", "settings_root"])]
@@ -43,6 +46,38 @@ pub struct Args {
     pub operation: Option<String>,
     #[arg(long)]
     pub inline: bool,
+    /// Drive the agent tree an endpoint serves instead of this machine's
+    /// harness: the given URL, else `ACYCLIC_ENDPOINT`, else the managed
+    /// default, with `ACYCLIC_API_KEY` as the credential.
+    #[arg(long, num_args = 0..=1, conflicts_with = "host_workspace")]
+    pub endpoint: Option<Option<String>>,
+    #[command(subcommand)]
+    pub command: Option<Command>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum Command {
+    /// Serve this harness's agent tree through the harness server
+    /// (`acyclic_harness::server::serve`), as a managed host does; prints its
+    /// endpoint, credential and principal as one JSON line.
+    Serve(Serve),
+}
+
+#[derive(Debug, clap::Args)]
+pub struct Serve {
+    /// The address to listen on. Without a TLS identity, only a loopback
+    /// address is served.
+    pub address: std::net::SocketAddr,
+    /// PEM certificate chain of the server's TLS identity.
+    #[arg(long, requires_all = ["tls_key", "url"])]
+    pub tls_certificate: Option<PathBuf>,
+    /// PEM private key of the server's TLS identity.
+    #[arg(long, requires = "tls_certificate")]
+    pub tls_key: Option<PathBuf>,
+    /// The `https` URL clients reach the server at, which its certificate
+    /// names; the listening address need not be reachable.
+    #[arg(long, requires = "tls_certificate")]
+    pub url: Option<String>,
 }
 
 #[cfg(test)]
@@ -104,6 +139,16 @@ mod tests {
                 "operation"
             ])
             .is_err()
+        );
+    }
+
+    #[test]
+    fn serve_takes_an_address_and_a_complete_tls_identity() {
+        assert!(Args::try_parse_from(["graphcoder", "serve", "127.0.0.1:0"]).is_ok());
+        assert!(Args::try_parse_from(["graphcoder", "serve"]).is_err());
+        assert!(
+            Args::try_parse_from(["graphcoder", "serve", "0.0.0.0:443", "--tls-key", "key.pem"])
+                .is_err()
         );
     }
 

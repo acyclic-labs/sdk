@@ -3,7 +3,7 @@
 mod connection;
 pub use connection::{
     CREDENTIAL_ENV, ConnectionConfigError, ConnectionOptions, DEFAULT_ENDPOINT, ENDPOINT_ENV,
-    resolve_connection_options,
+    EndpointTransport, resolve_connection_options,
 };
 
 /// The same preset and defaults applied by local and hosted harnesses.
@@ -22,7 +22,7 @@ mod command;
 #[cfg(any(feature = "agents", feature = "wasm"))]
 pub use command::{
     AgentCommand, AgentPageRequest, CommandError, MAX_COMMAND_BYTES as MAX_AGENT_COMMAND_BYTES,
-    PreparedCommand,
+    MAX_READ_BYTES, PreparedCommand, ReadTarget,
 };
 #[cfg(any(feature = "agents", feature = "wasm"))]
 mod reply;
