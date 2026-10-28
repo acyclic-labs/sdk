@@ -410,7 +410,7 @@ fn bounded_index_prefix_never_authorizes_an_extension_outside_a_range() -> TestR
     }
     let path = NamespacePath::new(components, config.limits)?;
     let key = crate::publication_changes::entry::key(&path, config);
-    assert_eq!(key.slice().len(), acyclic_stream::MAX_RECORD_KEY_BYTES);
+    assert_eq!(key.slice().len(), acyclic_stream::RESOURCE_INDEX_PREFIX_BYTES);
     let full = path
         .components()
         .iter()
