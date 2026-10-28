@@ -3,7 +3,7 @@ use super::*;
 pub(in crate::session::client) fn fixture(
     channel: &TransportChannel,
 ) -> (Pool, mpsc::Receiver<Result<Delivery, StreamError>>) {
-    let (_, commands) = mpsc::channel(2);
+    let (_, commands) = commands::channel(2);
     let released = Arc::new(signal::Signal::new());
     let mut pool = Pool {
         credentials: BTreeMap::new(),
@@ -58,7 +58,7 @@ pub(in crate::session::client) fn fixture(
                     )),
                     None,
                 ),
-                sender: Arc::new(Outbound::new(4, crate::MAX_COMMAND_BYTES)),
+                sender: Arc::new(Outbound::new()),
                 revision: 0,
                 applied_revision: 0,
                 released: wire::SessionWindow::default(),
@@ -129,7 +129,7 @@ pub(in crate::session::client) fn route(
 }
 
 pub(in crate::session::client) fn client(pool: &Pool) -> Client {
-    let (commands, _) = mpsc::channel(2);
+    let (commands, _) = commands::channel(2);
     Client {
         registration_timeout: None,
         connections: super::super::super::Connections::new(),
