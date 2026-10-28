@@ -578,7 +578,7 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
                 &self.cancellation,
             )
             .map_err(MountSourceError::from)?;
-        let decision = checkout
+        let (decision, _allocation) = checkout
             .rebase_head(None, &work, &self.cancellation)
             .await
             .map_err(engine_error)?;
