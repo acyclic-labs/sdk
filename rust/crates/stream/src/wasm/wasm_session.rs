@@ -11,14 +11,18 @@ impl WasmSession {
     /// Its object exposes `next()`, `send(frameBytes)` and `close()` only.
     #[wasm_bindgen(constructor)]
     #[must_use]
-    pub fn new(connect: js_sys::Function, acknowledge: bool) -> Self {
+    pub fn new(
+        connect: js_sys::Function,
+        acknowledge: bool,
+        registration_timeout: Option<u32>,
+    ) -> Self {
         Self {
-            client: session_io::client(connect),
+            client: session_io::client(connect).with_registration_timeout(registration_timeout),
             acknowledge,
         }
     }
 
-    /// Adds, replaces or drops a bounded credential slot on every pooled session.
+    /// Adds, replaces or drops a credential slot on every pooled session.
     #[wasm_bindgen(js_name = registerCredential)]
     pub fn register_credential(
         &self,
