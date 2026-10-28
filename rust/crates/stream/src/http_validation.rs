@@ -72,10 +72,9 @@ fn id(value: &Value) -> Result {
 }
 
 fn key(value: &Value) -> Result {
-    let len = bytes(value)?.len();
-    (len > 0 && len <= crate::MAX_IDEMPOTENCY_KEY_BYTES)
-        .then_some(())
-        .ok_or("invalid idempotency key")
+    crate::IdempotencyKey::new(bytes(value)?)
+        .map(|_| ())
+        .map_err(|_| "invalid idempotency key")
 }
 
 fn validate_record(value: &Value) -> Result {
