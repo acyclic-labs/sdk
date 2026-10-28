@@ -1,0 +1,78 @@
+use super::*;
+use crate::{NativeMaterializationWork, WorkBudget};
+
+#[test]
+fn final_capture_packet_retires_before_returning_its_counter() {
+    crate::initialize_test_native_io();
+    let cancellation = CancellationToken::new();
+    let original = NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation).unwrap();
+    let baseline = original.live_allocation_bytes();
+    let capture = CaptureTransientCustody::new_native(&original).unwrap();
+    capture.claim(9);
+    let packet = Arc::clone(&capture);
+    let late = Arc::downgrade(&capture);
+    let barrier = capture.released.release_barrier();
+    std::thread::scope(|threads| {
+        let (started, observed) = std::sync::mpsc::sync_channel(0);
+        let retire = threads.spawn(move || {
+            started.send(()).unwrap();
+            capture.retire()
+        });
+        observed.recv().unwrap();
+        // A source may still upgrade its original weak custody while an
+        // accepted packet owns it. Both owners must precede retirement.
+        let late_packet = late.upgrade().unwrap();
+        late_packet.claim(3);
+        packet.release(2);
+        drop(packet);
+        assert!(!barrier.is_released());
+        cancellation.cancel();
+        drop(late_packet);
+        assert_eq!(retire.join().unwrap(), 10);
+    });
+    assert!(late.upgrade().is_none());
+    assert!(barrier.is_released());
+    assert_eq!(barrier.state().retained.load(Ordering::Acquire), 0);
+    // The observer still funds its own state after the custody header retires.
+    assert_eq!(
+        original.live_allocation_bytes(),
+        baseline
+            + acyclic_native_runtime::OwnershipReleaseSignal::<CaptureRetirement>::allocation_bytes(
+            ) as u64,
+    );
+    drop(barrier);
+    assert_eq!(original.live_allocation_bytes(), baseline);
+}
+
+#[test]
+fn capture_retirement_admits_all_control_storage_before_allocation() {
+    crate::initialize_test_native_io();
+    for admitted_headers in 0..=2 {
+        let original = NativeMaterializationWork::new(
+            WorkBudget {
+                allocation_operations: 1 + admitted_headers,
+                ..WorkBudget::UNBOUNDED
+            },
+            &CancellationToken::new(),
+        )
+        .unwrap();
+        let baseline = original.live_allocation_bytes();
+        let mut output = None;
+        let actual = acyclic_test_support::measure(|| {
+            output = Some(CaptureTransientCustody::new_native(&original));
+        });
+        let output = output.unwrap();
+        if admitted_headers == 2 {
+            let capture = output.unwrap();
+            assert_eq!(actual.count_current, 2);
+            let physical_bytes = u64::try_from(actual.bytes_current).unwrap();
+            assert_eq!(physical_bytes, CaptureTransientCustody::allocation_bytes());
+            assert_eq!(original.live_allocation_bytes() - baseline, physical_bytes);
+            assert_eq!(capture.retire(), 0);
+        } else {
+            assert!(output.is_err());
+            assert_eq!(actual.count_current, 0);
+        }
+        assert_eq!(original.live_allocation_bytes(), baseline);
+    }
+}
