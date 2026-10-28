@@ -33,4 +33,3 @@ test("unsafe, duplicate, extra and incomplete receipt inventories reject", async
     f => { f.receipt.outputs = f.receipt.outputs.filter(name => !name.endsWith("stream.grpc.pb.cc")); },
   ]) { const f = fixture(t); mutate(f); f.saveReceipt(); await assert.rejects(async () => await readPackage(f.args)); }
 });
-
