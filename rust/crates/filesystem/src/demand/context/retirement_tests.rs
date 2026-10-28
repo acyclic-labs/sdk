@@ -27,18 +27,18 @@ fn final_capture_packet_retires_before_returning_its_counter() {
         drop(packet);
         assert!(!barrier.is_released());
         cancellation.cancel();
-        drop(late_packet);
+        // A temporary Weak upgrade in demand accounting can release the final
+        // owner while the original leaf is still locked.
+        original.with_original_leaf(|_| drop(late_packet));
         assert_eq!(retire.join().unwrap(), 10);
     });
     assert!(late.upgrade().is_none());
     assert!(barrier.is_released());
     assert_eq!(barrier.state().retained.load(Ordering::Acquire), 0);
-    // The observer still funds its own state after the custody header retires.
+    // Both control guards remain funded until the observer is outside the leaf.
     assert_eq!(
         original.live_allocation_bytes(),
-        baseline
-            + acyclic_native_runtime::OwnershipReleaseSignal::<CaptureRetirement>::allocation_bytes(
-            ) as u64,
+        baseline + CaptureTransientCustody::allocation_bytes(),
     );
     drop(barrier);
     assert_eq!(original.live_allocation_bytes(), baseline);
