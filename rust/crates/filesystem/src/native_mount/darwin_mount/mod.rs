@@ -71,8 +71,8 @@ mod context;
 use context::*;
 
 mod requests;
+pub(super) use crate::native_mount::{callback_errno, shared::outcome::stops_mount as fatal};
 use requests::*;
-pub(super) use requests::{callback_errno, fatal};
 
 mod protocol;
 use protocol::*;

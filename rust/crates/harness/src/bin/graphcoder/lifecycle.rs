@@ -1,10 +1,10 @@
 use acyclic_native_runtime::obs::WaitReport;
-use futures::{FutureExt as _, future::LocalBoxFuture, future::Shared};
+use futures::{FutureExt as _, future::BoxFuture, future::Shared};
 use std::{future::Future, io, sync::Arc};
 use tracing_subscriber::{Layer as _, layer::SubscriberExt as _};
 
 type Failure = Box<dyn std::error::Error>;
-pub(super) type Shutdown = Shared<LocalBoxFuture<'static, Result<u8, Arc<io::Error>>>>;
+pub(super) type Shutdown = Shared<BoxFuture<'static, Result<u8, Arc<io::Error>>>>;
 
 pub(super) fn subscriber(
     report: &WaitReport,
@@ -48,7 +48,7 @@ pub(super) fn shutdown() -> Shutdown {
             .map(|()| 130)
             .map_err(Arc::new)
     }
-    .boxed_local()
+    .boxed()
     .shared()
 }
 

@@ -19,7 +19,7 @@ fn termination_reports_the_live_wait_before_cancellation_with_logging_disabled()
             signal.await.unwrap();
             Ok(143)
         }
-        .boxed_local()
+        .boxed()
         .shared();
         let mut output = Vec::new();
         let operation = async {
@@ -51,7 +51,7 @@ fn dropped_producer_exits_with_its_typed_error_and_no_live_wait() {
     let dispatch = tracing::Dispatch::new(subscriber(&report, Some("off".into())));
     tracing::dispatcher::with_default(&dispatch, || {
         let (producer, completion) = tokio::sync::oneshot::channel::<()>();
-        let shutdown = std::future::pending().boxed_local().shared();
+        let shutdown = std::future::pending().boxed().shared();
         let mut output = Vec::new();
         let operation = async {
             acyclic_native_runtime::obs::waiting("channel-close", "turn-18", completion).await?;
@@ -92,7 +92,7 @@ fn broken_diagnostic_output_does_not_skip_graceful_owner_cleanup() {
         signal.await.unwrap();
         Ok(143)
     }
-    .boxed_local()
+    .boxed()
     .shared();
     let stopped = shutdown.clone();
     let (release, retiring) = tokio::sync::oneshot::channel();

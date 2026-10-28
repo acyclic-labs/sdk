@@ -58,7 +58,11 @@ impl Visit for Fields {
     }
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn fmt::Debug) {
-        self.record_str(field, &format!("{value:?}"));
+        match field.name() {
+            "primitive" => self.primitive = format!("{value:?}"),
+            "key" => self.key = format!("{value:?}"),
+            _ => {}
+        }
     }
 }
 
@@ -135,30 +139,31 @@ impl WaitReport {
     /// A blocked or failed writer cannot hold the lock needed by a completing
     /// producer. Output errors are returned unchanged to the process owner.
     pub fn report(&self, output: &mut impl Write) -> io::Result<()> {
-        let lines = {
+        let nodes = {
             let chain = self.0.lock().unwrap_or_else(PoisonError::into_inner);
             let mut next = chain.first.clone();
-            let mut lines = Vec::new();
+            let mut nodes = Vec::new();
             while let Some(node) = next {
-                let since = node.started.duration_since(UNIX_EPOCH).unwrap_or_default();
-                lines.push(format!(
-                    "waiting: {} {} since {:.3} ({:.3}s elapsed)",
-                    node.fields.primitive,
-                    node.fields.key,
-                    since.as_secs_f64(),
-                    node.elapsed.elapsed().as_secs_f64(),
-                ));
                 next = node
                     .links
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
                     .next
                     .clone();
+                nodes.push(node);
             }
-            lines
+            nodes
         };
-        for line in lines {
-            writeln!(output, "{line}")?;
+        for node in nodes {
+            let since = node.started.duration_since(UNIX_EPOCH).unwrap_or_default();
+            writeln!(
+                output,
+                "waiting: {} {} since {:.3} ({:.3}s elapsed)",
+                node.fields.primitive,
+                node.fields.key,
+                since.as_secs_f64(),
+                node.elapsed.elapsed().as_secs_f64(),
+            )?;
         }
         output.flush()
     }
