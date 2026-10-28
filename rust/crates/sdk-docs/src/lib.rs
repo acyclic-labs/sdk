@@ -3,7 +3,7 @@
 //! The input boundary is the pinned [`rustdoc_types::Crate`] representation. The output is a
 //! deliberately small public projection: private rustdoc items and compiler-only metadata never
 //! cross this boundary.
-use rustdoc_types::{Crate, FORMAT_VERSION, Id, Item, ItemEnum, ItemKind};
+use rustdoc_types::{Crate, Id, Item, ItemEnum, ItemKind, FORMAT_VERSION};
 use schemars::JsonSchema;
 use semver::Version;
 use serde::{Deserialize, Serialize};
@@ -24,9 +24,9 @@ mod render_cache;
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub use child::with_command_executor;
-#[doc(hidden)]
-pub use child::{CommandOutput, command_directory, execute_metadata};
 pub use child::{command, command_environment, with_command_environment};
+#[doc(hidden)]
+pub use child::{command_directory, execute_metadata, CommandOutput};
 pub use render_cache::{read_rustdoc, read_rustdoc_json, rustdoc_worker, with_rustdoc_cache};
 /// Cargo/Rustdoc-owned profile projections.
 pub mod rustdoc_profiles;

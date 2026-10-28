@@ -18,12 +18,12 @@ mod execution;
 pub(crate) use execution::RustdocProducer;
 mod receipts;
 pub use execution::{
-    CargoExecutionContext, LockSelection, RustdocTarget, execute_profile, load_metadata,
-    rustdoc_host, rustdoc_platform_cfgs, rustdoc_targets,
+    execute_profile, load_metadata, rustdoc_host, rustdoc_platform_cfgs, rustdoc_targets,
+    CargoExecutionContext, LockSelection, RustdocTarget,
 };
 pub use receipts::{
-    OwnedApiItem, RustdocObservation, extract_owned_api, observe_binary_rustdoc, observe_rustdoc,
-    validate_rustdoc_version,
+    extract_owned_api, observe_binary_rustdoc, observe_rustdoc, validate_rustdoc_version,
+    OwnedApiItem, RustdocObservation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
