@@ -1,11 +1,24 @@
 use super::*;
 
+/// Storage selected by the caller before a prepared record's external effect.
+/// These capacities reserve the original operation's bytes and header controls;
+/// there is no implicit header count or default capacity.
+#[derive(Clone, Copy, Debug)]
+pub struct PreparedRecordCapacity {
+    /// Combined value, key, attribute-name and attribute-value bytes.
+    pub payload_bytes: usize,
+    /// Indexed key slots to reserve before issuance.
+    pub keys: usize,
+    /// Attribute slots to reserve before issuance.
+    pub attributes: usize,
+}
+
 /// A genuine prepared Commit-family ingress.
 pub struct PreparedNativeCommit {
     future: NativeProviderFuture<'static, CommitOutcome>,
     recovery: Option<NativeProviderFuture<'static, Option<IdempotencyObservation>>>,
     record: Arc<NativeCommitRecordSlot>,
-    maximum_record_bytes: usize,
+    capacity: PreparedRecordCapacity,
 }
 
 impl PreparedNativeCommit {
@@ -13,13 +26,13 @@ impl PreparedNativeCommit {
         future: NativeProviderFuture<'static, CommitOutcome>,
         recovery: NativeProviderFuture<'static, Option<IdempotencyObservation>>,
         record: Arc<NativeCommitRecordSlot>,
-        maximum_record_bytes: usize,
+        capacity: PreparedRecordCapacity,
     ) -> Self {
         Self {
             future,
             recovery: Some(recovery),
             record,
-            maximum_record_bytes,
+            capacity,
         }
     }
 
@@ -37,7 +50,10 @@ impl PreparedNativeCommit {
     ) -> NativeProviderFuture<'static, CommitOutcome> {
         let record = if record.value.is_empty() {
             Err(StreamError::InvalidArgument)
-        } else if record.payload_bytes() > self.maximum_record_bytes {
+        } else if record.payload_bytes() > self.capacity.payload_bytes
+            || record.headers.keys().len() > self.capacity.keys
+            || record.headers.attributes().len() > self.capacity.attributes
+        {
             Err(StreamError::LimitExceeded)
         } else {
             crate::changes::validate(&record.value, &record.headers).map(|()| record)

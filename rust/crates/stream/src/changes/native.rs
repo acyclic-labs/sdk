@@ -24,11 +24,8 @@ impl AppendRecord {
         encode_into(&mut buffer, context, entries);
         let mut key_allocation = ReadAllocation::new(meter, 0)?;
         let mut key_buffer = crate::native::vector(key_bytes, meter, &mut key_allocation)?;
-        let mut ranges = [(0, 0); crate::MAX_RECORD_KEYS];
-        for (entry, range) in entries.iter().zip(&mut ranges) {
-            let start = key_buffer.len();
+        for entry in entries {
             key_buffer.extend_from_slice(entry.key);
-            *range = (start, key_buffer.len());
         }
         meter.record_codec(length as u64, (length + key_bytes) as u64, 0)?;
         let mut allocation = Some(allocation);
@@ -42,8 +39,11 @@ impl AppendRecord {
         )?;
         let mut allocation = ReadAllocation::new(meter, 0)?;
         let mut keys = crate::native::vector(entries.len(), meter, &mut allocation)?;
-        for (start, end) in ranges.iter().take(entries.len()) {
-            keys.push(key_owner.slice(*start..*end));
+        let mut start = 0;
+        for entry in entries {
+            let end = start + entry.key.len();
+            keys.push(key_owner.slice(start..end));
+            start = end;
         }
         let mut attributes = crate::native::vector(1, meter, &mut allocation)?;
         let mut name = crate::native::vector(ATTRIBUTE.len(), meter, &mut allocation)?;
