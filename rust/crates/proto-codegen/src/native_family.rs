@@ -243,9 +243,23 @@ pub fn render(root: &Path, key: &str) -> Result<Value, Box<dyn std::error::Error
         "scripts/generated-bindings.mjs",
         "scripts/ensure-bun.ps1",
         "scripts/ensure-bun.sh",
-        "patches/napi-rs-cli-3.10.8.patch",
     ] {
         roots.insert(path.to_owned());
+    }
+    let workspace_npm: Value = serde_json::from_slice(&std::fs::read(root.join("package.json"))?)?;
+    if let Some(patches) = workspace_npm.get("patchedDependencies") {
+        for patch in patches
+            .as_object()
+            .ok_or("patched dependencies must be an object")?
+            .values()
+        {
+            let path = patch.as_str().ok_or("dependency patch path must be text")?;
+            let canonical = relative(&root.join(path))?;
+            if canonical != path {
+                return Err("dependency patch path must be canonical and relative".into());
+            }
+            roots.insert(canonical);
+        }
     }
     for path in [
         format!("scripts/build-{key}-native.mjs"),
