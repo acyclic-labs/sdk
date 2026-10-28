@@ -172,10 +172,14 @@ impl Drop for Saturation {
 
 #[derive(Default)]
 pub(super) struct ReadBudgetMeter {
+    #[cfg(windows)]
+    shared_owner: std::sync::Weak<Self>,
+    #[cfg(windows)]
+    pub(super) bytes_recorded: Mutex<Option<mpsc::Sender<(u64, u64)>>>,
     pub(super) used_operations: AtomicU64,
     pub(super) read_attempts: AtomicU64,
     pub(super) write_attempts: AtomicU64,
-    used_bytes: AtomicU64,
+    pub(super) used_bytes: AtomicU64,
     pub(super) used_allocations: AtomicU64,
     examined_items: AtomicU64,
     encoded: AtomicU64,
@@ -202,6 +206,13 @@ pub(super) struct ReadBudgetMeter {
 }
 
 impl ReadBudgetMeter {
+    #[cfg(windows)]
+    pub(super) fn shared(operation_limit: u64, byte_limit: u64) -> Arc<Self> {
+        Arc::new_cyclic(|owner| Self {
+            shared_owner: owner.clone(),
+            ..Self::new(operation_limit, byte_limit)
+        })
+    }
     pub(super) fn new(operation_limit: u64, byte_limit: u64) -> Self {
         Self {
             operation_limit,
@@ -233,6 +244,12 @@ impl ReadBudgetMeter {
 }
 
 impl NativeReadMeter for ReadBudgetMeter {
+    #[cfg(windows)]
+    fn allocation_owner(&self) -> Option<Arc<dyn NativeReadMeter>> {
+        self.shared_owner
+            .upgrade()
+            .map(|owner| owner as Arc<dyn NativeReadMeter>)
+    }
     fn check(&self) -> io::Result<()> {
         if self.cancelled.load(Ordering::Acquire) {
             Err(io::ErrorKind::Interrupted.into())
@@ -292,6 +309,12 @@ impl NativeReadMeter for ReadBudgetMeter {
                 >= maximum
         );
         self.read.fetch_add(actual, Ordering::AcqRel);
+        #[cfg(windows)]
+        if kind == NativeOperationKind::Write {
+            if let Some(recorded) = self.bytes_recorded.lock().unwrap().take() {
+                let _ = recorded.send((maximum, actual));
+            }
+        }
         if self.cancel_after_read && actual != 0 {
             self.cancelled.store(true, Ordering::Release);
         }

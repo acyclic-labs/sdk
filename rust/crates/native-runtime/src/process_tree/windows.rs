@@ -73,9 +73,27 @@ pub(super) fn write_pipe(
         None if operation.pending() => return Ok((None, Ok(()))),
         None => {}
     }
+    // A pending write can outlive this poll and its caller's cancellation.
+    // Retain the original ledger, never a replacement allowance, until IOCP
+    // reports the physical transfer, even if capture stops observing it.
+    let reservation = meter
+        .map(|meter| {
+            let owner = meter.allocation_owner().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "asynchronous process input requires the original meter owner",
+                )
+            })?;
+            crate::NativeByteReservation::new(
+                owner,
+                crate::NativeOperationKind::Write,
+                super::events::PipeOperation::write_length(bytes.len()),
+            )
+        })
+        .transpose()?;
     let (written, recorded) =
         super::pipe_operation_attempt(meter, crate::NativeOperationKind::Write, || {
-            operation.write(bytes)
+            operation.write(bytes, reservation)
         })?;
     match written {
         Ok(written) => Ok((written, recorded)),

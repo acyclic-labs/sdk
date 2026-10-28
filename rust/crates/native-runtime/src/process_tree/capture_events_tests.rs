@@ -11,7 +11,14 @@ fn event_capture_child() -> io::Result<()> {
     let Some(mode) = std::env::var_os("ACYCLIC_TEST_EVENT_CAPTURE") else {
         return Ok(());
     };
-    if mode == "backpressure" {
+    if mode == "metered-write" {
+        // The parent deliberately leaves this full pipe undrained until its
+        // stdin write is pending and the original caller has cancelled.
+        std::io::stderr().write_all(&[b'x'; 128 * 1024])?;
+        let mut bytes = [0; 64 * 1024];
+        std::io::stdin().read_exact(&mut bytes)?;
+        assert!(bytes.iter().all(|byte| *byte == b'w'));
+    } else if mode == "backpressure" {
         let bytes = [b'x'; 128 * 1024];
         std::io::stdout().write_all(&bytes)?;
         std::io::stderr().write_all(&bytes)?;
@@ -65,6 +72,57 @@ fn child(mode: &str) -> io::Result<ProcessTree> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     ProcessTree::spawn(&mut command)
+}
+
+#[cfg(windows)]
+#[test]
+fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_poll()
+-> io::Result<()> {
+    use crate::NativeReadMeter as _;
+    let mut process = child("metered-write")?;
+    let bytes = [b'w'; 64 * 1024];
+    let meter = crate::tests::ReadBudgetMeter::shared(u64::MAX, bytes.len() as u64);
+    let (recorded, completion) = std::sync::mpsc::channel();
+    *meter.bytes_recorded.lock().unwrap() = Some(recorded);
+    let pipe = process.child.as_mut().unwrap().stdin.as_mut().unwrap();
+    let (written, operation) =
+        platform::write_pipe(pipe, &mut process.writer, &bytes, Some(meter.as_ref()))?;
+    operation?;
+    assert_eq!(
+        written, None,
+        "the child must block on its real stderr pipe"
+    );
+    assert_eq!(meter.used_bytes.load(Ordering::Acquire), bytes.len() as u64);
+    assert!(
+        meter
+            .reserve_bytes(crate::NativeOperationKind::Write, 1)
+            .is_err()
+    );
+    meter.cancelled.store(true, Ordering::Release);
+    // Abandon the capture's writer reference: only IOCP now retains the
+    // accepted transfer, including its original reservation and meter owner.
+    process.writer.0.take();
+    let mut output = [0; 128 * 1024];
+    process
+        .child
+        .as_mut()
+        .unwrap()
+        .stderr
+        .as_mut()
+        .unwrap()
+        .read_exact(&mut output)?;
+    let result = completion
+        .recv_timeout(Duration::from_secs(3))
+        .map_err(io::Error::other);
+    process.terminate(None)?;
+    assert_eq!(result?, (bytes.len() as u64, bytes.len() as u64));
+    assert_eq!(meter.used_bytes.load(Ordering::Acquire), bytes.len() as u64);
+    assert!(
+        meter.check().is_err(),
+        "completion must not revive admission"
+    );
+    assert!(process.is_reaped());
+    Ok(())
 }
 
 #[test]

@@ -89,6 +89,7 @@ pub(in crate::process_tree) struct PipeOperation {
     token: AtomicU64,
     buffer: UnsafeCell<Vec<u8>>,
     result: Mutex<Option<io::Result<usize>>>,
+    write_reservation: Mutex<Option<crate::NativeByteReservation<Arc<dyn crate::NativeReadMeter>>>>,
 }
 
 // SAFETY: the kernel and this process share `overlapped` and `buffer` only
@@ -123,6 +124,7 @@ impl PipeOperation {
             token: AtomicU64::new(0),
             buffer: UnsafeCell::new(Vec::new()),
             result: Mutex::new(None),
+            write_reservation: Mutex::new(None),
         }))
     }
 
@@ -182,18 +184,23 @@ impl PipeOperation {
     pub(in crate::process_tree) fn write(
         self: &Arc<Self>,
         bytes: &[u8],
+        reservation: Option<crate::NativeByteReservation<Arc<dyn crate::NativeReadMeter>>>,
     ) -> io::Result<Option<usize>> {
         if self.pending.load(Ordering::SeqCst) {
             return Ok(None);
         }
-        let length = bytes.len().min(WRITE_CHUNK);
+        let length = Self::write_length(bytes.len());
         // SAFETY: no operation is pending, so this process owns the buffer.
         let buffer = unsafe { &mut *self.buffer.get() };
         buffer.clear();
         buffer.extend_from_slice(bytes.get(..length).unwrap_or(bytes));
         let pointer = buffer.as_ptr();
         let length = u32::try_from(buffer.len()).map_err(io::Error::other)?;
-        self.start(|overlapped| {
+        *self
+            .write_reservation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = reservation;
+        let result = self.start(|overlapped| {
             // SAFETY: the buffer and OVERLAPPED stay owned by this operation,
             // whose reference the port holds until the write completes.
             unsafe {
@@ -205,7 +212,29 @@ impl PipeOperation {
                     overlapped,
                 )
             }
-        })
+        });
+        match result {
+            Ok(None) => Ok(None),
+            Ok(Some(actual)) => self.finish_write(actual, Ok(actual)).map(Some),
+            Err(error) => self.finish_write(0, Err(error)).map(Some),
+        }
+    }
+
+    pub(in crate::process_tree) fn write_length(length: usize) -> usize {
+        length.min(WRITE_CHUNK)
+    }
+
+    fn finish_write(&self, actual: usize, result: io::Result<usize>) -> io::Result<usize> {
+        // Release the operation lock before visiting the original meter.
+        let reservation = self
+            .write_reservation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(mut reservation) = reservation {
+            reservation.record(actual)?;
+        }
+        result
     }
 
     /// Whether a write is still in flight.
@@ -258,6 +287,9 @@ impl PipeOperation {
                 let error = unsafe { RtlNtStatusToDosError(status) };
                 Err(io::Error::from_raw_os_error(error.cast_signed()))
             };
+            // The completion count remains work even when the kernel reports
+            // cancellation/error, or nobody polls the writer again.
+            let result = self.finish_write(entry.dwNumberOfBytesTransferred as usize, result);
             *self.result.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
         }
         self.pending.store(false, Ordering::SeqCst);

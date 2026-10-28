@@ -157,6 +157,7 @@ impl<'a> PendingStdin<'a> {
                 .bytes
                 .get(self.written..)
                 .ok_or_else(|| io::Error::other("invalid queued process input"))?;
+            #[cfg(unix)]
             let mut reservation = meter
                 .map(|meter| {
                     crate::NativeByteReservation::new(
@@ -179,6 +180,7 @@ impl<'a> PendingStdin<'a> {
                 .ok()
                 .and_then(|(written, _)| *written)
                 .unwrap_or(0);
+            #[cfg(unix)]
             let recorded_bytes = reservation
                 .as_mut()
                 .map_or(Ok(()), |token| token.record(actual));
@@ -187,6 +189,7 @@ impl<'a> PendingStdin<'a> {
             }
             self.written += actual;
             progressed |= actual != 0;
+            #[cfg(unix)]
             recorded_bytes?;
             let (written, recorded_operation) = transfer?;
             recorded_operation?;
