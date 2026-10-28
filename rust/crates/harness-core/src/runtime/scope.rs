@@ -266,35 +266,6 @@ impl RuntimeScope {
         self.run_limits
     }
 
-    /// Pins one committed agent selection for this scope and all descendants.
-    pub fn with_extensions_from(self, agent: &Reducer) -> Result<Self> {
-        self.with_original_extensions((agent.extension_admission()?, agent.schemas().clone()))
-    }
-
-    pub(crate) fn with_original_extensions(
-        mut self,
-        original: (Option<ExtensionAdmission>, SchemaRegistry),
-    ) -> Result<Self> {
-        if self.extensions_sealed {
-            return Err(Error::Unauthorized(
-                "descendant scope cannot change extension selection".into(),
-            ));
-        }
-        let (selection, schemas) = original;
-        if self.extensions.is_some() && self.extensions != selection {
-            return Err(Error::Conflict(
-                "runtime scope extension selection is already pinned".into(),
-            ));
-        }
-        self.extensions = selection;
-        self.extension_schemas = Some(schemas);
-        if let Some(runtime) = &self.extension_runtime {
-            self.validate_extension_runtime(runtime)?;
-        }
-        self.extensions_sealed = true;
-        Ok(self)
-    }
-
     /// Exact extension bindings selected when this scope was admitted.
     #[must_use]
     pub const fn extensions(&self) -> Option<&ExtensionAdmission> {

@@ -56,6 +56,7 @@ impl ProviderRef {
     pub(super) fn parts(&self) -> [&str; 3] {
         [&self.namespace, &self.family, &self.version]
     }
+    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         capacity_sum([
             self.namespace.capacity(),

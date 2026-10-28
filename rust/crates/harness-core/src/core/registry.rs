@@ -24,6 +24,7 @@ impl SchemaRegistry {
     pub const fn new() -> Self {
         Self { schemas: None }
     }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         if let Some(io) = work.as_deref_mut().filter(|io| copying::is_native(&**io)) {
             io.check_cancellation()?;
@@ -114,7 +115,7 @@ impl SchemaRegistry {
         selected: &[ExtensionDependency],
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(Vec<ExtensionDependency>, u64)> {
-        let mut owned = crate::fork::CodecQuota::observed(work)?;
+        let mut owned = crate::wire_codec::CodecQuota::observed(work)?;
         let mut chosen = BTreeMap::<&str, &ExtensionDependency>::new();
         let mut pending = BTreeSet::new();
         for extension in selected {
@@ -129,7 +130,7 @@ impl SchemaRegistry {
             extension.validate()?;
             if let Some(prior) = chosen.get(extension.name.as_str()) {
                 if prior.version != extension.version {
-                    return Err(crate::fork::boundary_error(
+                    return Err(crate::store::guarded_boundary(
                         owned.work(),
                         crate::wire::ErrorCode::Conflict,
                         "extension requires conflicting versions",
@@ -173,7 +174,7 @@ impl SchemaRegistry {
                 }
             }
             let next = next.ok_or_else(|| {
-                crate::fork::boundary_error(
+                crate::store::guarded_boundary(
                     owned.work(),
                     crate::wire::ErrorCode::Conflict,
                     "extension dependency cycle",
@@ -214,7 +215,7 @@ impl SchemaRegistry {
                     || implementation != binding.implementation_digest
                     || policy != binding.fork_policy
             }) {
-                return Err(crate::fork::boundary_error(
+                return Err(crate::store::guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Conflict,
                     "extension binding mismatch",
@@ -222,7 +223,7 @@ impl SchemaRegistry {
             }
             return Ok(binding);
         }
-        Err(crate::fork::boundary_error(
+        Err(crate::store::guarded_boundary(
             work,
             crate::wire::ErrorCode::Unsupported,
             "extension implementation is not installed",
@@ -252,29 +253,6 @@ impl SchemaRegistry {
             &mut None,
         )?;
         Ok(())
-    }
-
-    pub(in crate::core) fn configuration_record(
-        &self,
-        extension: &ExtensionDependency,
-        content: &FileRef,
-        quota: &mut CodecQuota<'_, '_>,
-    ) -> Result<ExtensionConfiguration> {
-        extension.validate()?;
-        let binding =
-            self.pinned_binding(&extension.name, extension.version, None, quota.work())?;
-        let schema_digest = binding
-            .configuration_schema_digest
-            .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
-        let record = ExtensionConfiguration {
-            extension: copy(extension, quota, |value: &ExtensionDependency, _| {
-                Ok(value.name.capacity() as u64)
-            })?,
-            schema_digest,
-            content: content.clone_in_quota(quota)?,
-        };
-        record.validate()?;
-        Ok(record)
     }
 
     /// Returns the exact installed implementation for a version.

@@ -5,21 +5,6 @@ pub(crate) use walk::{OwnedBytes, owned_enum, owned_struct, owned_tuple};
 #[cfg(test)]
 mod tests;
 
-pub(in crate::core) fn admit_tree_insertion<T>(
-    len: usize,
-    quota: &mut CodecQuota<'_, '_>,
-) -> Result<()> {
-    if quota
-        .work()
-        .as_deref()
-        .is_some_and(|io| !copying::is_native(io))
-    {
-        let bytes = walk::tree_insertion_bytes::<T>(len)?;
-        quota.replace(owned_sum([quota.retained(), bytes])?)?;
-    }
-    Ok(())
-}
-
 pub(crate) fn owned_sum(parts: impl IntoIterator<Item = u64>) -> Result<u64> {
     parts.into_iter().try_fold(0_u64, |sum, bytes| {
         sum.checked_add(bytes)
@@ -32,6 +17,8 @@ pub(crate) fn owned_buffer<T>(capacity: usize) -> Result<u64> {
         .map(|bytes| bytes as u64)
         .ok_or_else(|| Error::Invalid("component buffer ownership overflows".into()))
 }
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn owned_vector<T>(
     values: &Vec<T>,
     mut item: impl FnMut(&T) -> Result<u64>,
@@ -41,61 +28,6 @@ pub(crate) fn owned_vector<T>(
         .try_fold(owned_buffer::<T>(values.capacity())?, |sum, value| {
             owned_sum([sum, item(value)?])
         })
-}
-
-pub(crate) fn owned_effect(effect: &EffectState) -> Result<u64> {
-    effect.owned_heap_bytes()
-}
-/// Retained scope, causal parent and payload storage.
-pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
-    event.owned_heap_bytes()
-}
-
-impl<B> snapshot::Projection<ConversationState, B> {
-    /// Admission for cloned projection records; conversation owns its separate quota.
-    pub(in crate::core) fn owned_bytes<'a>(
-        &self,
-        authority: &Authority,
-        mut events: impl ExactSizeIterator<Item = &'a Event>,
-    ) -> Result<u64> {
-        let Self {
-            lifecycle: _,
-            active_extensions,
-            active_extension_revision: _,
-            extension_states,
-            configured_extensions,
-            active_configurations,
-            effects,
-            indexed_terminal_effects,
-            effects_archived: _,
-            forks,
-            published_merges,
-            conversation: _,
-            latest_context_checkpoint,
-            interactions,
-            bindings: _,
-        } = self;
-        let event_slots = owned_buffer::<Event>(events.len())?;
-        let event_bytes = events.try_fold(event_slots, |sum, event| {
-            owned_sum([sum, event.owned_heap_bytes()?])
-        })?;
-        [
-            authority.owned_heap_bytes(),
-            active_extensions.owned_heap_bytes(),
-            active_configurations.owned_heap_bytes(),
-            indexed_terminal_effects.owned_heap_bytes(),
-            effects.owned_heap_bytes(),
-            extension_states.owned_heap_bytes(),
-            configured_extensions.owned_heap_bytes(),
-            forks.owned_heap_bytes(),
-            published_merges.owned_heap_bytes(),
-            latest_context_checkpoint.owned_heap_bytes(),
-            interactions.owned_heap_bytes(),
-            Ok(event_bytes),
-        ]
-        .into_iter()
-        .try_fold(0, |sum, part| owned_sum([sum, part?]))
-    }
 }
 
 pub(crate) fn inspect_metadata<T: Serialize + ?Sized>(

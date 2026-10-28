@@ -52,7 +52,7 @@ impl Authority {
             || self.id.contains(AUTHORITY_ID_FORBIDDEN_SEPARATORS)
             || self.id.chars().any(char::is_control)
         {
-            return Err(crate::fork::boundary_error(
+            return Err(crate::store::guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "aggregate identity is not a safe path segment",
@@ -626,68 +626,6 @@ impl AuthorityRoot {
         }
         Ok(())
     }
-
-    #[cfg(test)]
-    pub(crate) fn authorize_effect(
-        &self,
-        effect_id: EffectId,
-        effect: &EffectState,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<std::sync::Arc<workload::AuthenticatedRecord>> {
-        self.verifier(work)?
-            .verify_effect_plan(effect_id, effect, work)
-    }
-
-    /// Signs the original provider observation with admitted encoding and hashing.
-    #[cfg(test)]
-    pub(crate) fn attest_effect(
-        &self,
-        effect_id: EffectId,
-        effect: &EffectState,
-        attempt_id: EffectAttemptId,
-        status: EffectStatus,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<EffectAttestation> {
-        let parent = self.authorize_effect(effect_id, effect, work)?;
-        let mut custody = CodecQuota::new(work, 0)?;
-        let mut observation = EffectAttestation {
-            provider: copying::copy_text(&effect.provider, &mut custody)?,
-            effect_id,
-            attempt_id,
-            request_digest: effect.request_digest,
-            guarantee: effect.guarantee,
-            result_schema_digest: effect.result_schema_digest,
-            status,
-            proof: Vec::new(),
-        };
-        let scope = self.issue_bound(
-            "effect-observation",
-            &Capabilities::new([
-                "effect:run".to_owned(),
-                capability::effect_provider(&effect.provider),
-            ]),
-            None,
-            parent.block_ids().last().copied(),
-            Some(&parent),
-            custody.work(),
-        )?;
-        let held = scope.logical_owned_bytes()?;
-        custody.adopt(held)?;
-        let payload = effect_attestation_digest(&self.audience, &observation, custody.work())?;
-        observation.proof = workload::record(
-            &self.runtime,
-            &self.id,
-            &self.audience,
-            &scope,
-            payload,
-            custody.work(),
-        )?;
-        custody.adopt(observation.proof.capacity() as u64)?;
-        drop(scope);
-        custody.relinquish(held)?;
-        custody.transfer();
-        Ok(observation)
-    }
 }
 
 /// Reducer-side verifier for host-issued scopes.
@@ -722,40 +660,6 @@ impl std::fmt::Debug for AuthorityVerifier {
             .field("key", &"[redacted]")
             .finish()
     }
-}
-
-#[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[path = "effect_root_tests.rs"]
-pub(crate) mod effect_root_tests;
-
-fn effect_attestation_digest(
-    audience: &Authority,
-    observation: &EffectAttestation,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<[u8; 32]> {
-    let mut custody = CodecQuota::new(work, 0)?;
-    let bytes = crate::store::history::canonical_bytes_with_work(
-        &(
-            audience,
-            &observation.provider,
-            observation.effect_id,
-            observation.attempt_id,
-            observation.request_digest,
-            observation.guarantee,
-            observation.result_schema_digest,
-            &observation.status,
-        ),
-        crate::store::default_projection_read_limits().maximum_bytes,
-        custody.work(),
-    )?;
-    custody.adopt(bytes.capacity() as u64)?;
-    if let Some(work) = custody.work().as_deref_mut() {
-        work.hashed_bytes(bytes.len() as u64)?;
-    }
-    let proof = *blake3::hash(&bytes).as_bytes();
-    drop(bytes);
-    Ok(proof)
 }
 
 crate::core::ownership::owned_enum!(AggregateKind {

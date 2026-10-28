@@ -6,15 +6,13 @@ use crate::filesystem::{
     FilesystemHost,
 };
 use crate::{
-    AgentId, Capabilities, ConversationId, Error, IdempotencyKey, InteractionId, OperationId,
-    Result,
+    AgentId, Capabilities, ConversationId, Error, OperationId, Result,
     conversation::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, VolumeClass, VolumeOperation,
         VolumeOwner, VolumeRef,
     },
-    core::{Action, AggregateKind, Authority, AuthorityRoot, Command, SchemaRegistry, Scope},
+    core::{AggregateKind, Authority, AuthorityRoot, Scope},
     executor::ExecutionJournal,
-    interaction::{InteractionOutcome, InteractionResponse},
     resources::{GenerationRef, ProviderRef},
     runtime::{ContentBindings, RuntimeScope},
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
@@ -69,42 +67,6 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
         host.for_workspace(&volume, workspace)?
     };
     Ok((host, volume))
-}
-
-async fn bind_memory_conversation<P: StreamProvider>(
-    stream: &Arc<P>,
-    conversation: &Authority,
-    verifier: &crate::core::AuthorityVerifier,
-    scope: &Scope,
-    agent: AgentId,
-) -> Result<()> {
-    crate::store::StreamAggregate::open(
-        stream,
-        (
-            conversation.clone(),
-            verifier.clone(),
-            SchemaRegistry::new(),
-        ),
-        None,
-        crate::store::default_projection_read_limits(),
-        crate::store::DEFAULT_TERMINAL_EFFECTS,
-        None,
-        &mut None,
-    )
-    .await?
-    .execute(
-        Command {
-            operation_id: OperationId::new(),
-            idempotency_key: IdempotencyKey::new("local-conversation-bind")?,
-            expected_revision: 0,
-            scope: scope.clone(),
-            causal_parent: None,
-            action: Action::BindConversation { agent },
-        },
-        &mut None,
-    )
-    .await?;
-    Ok(())
 }
 
 /// A fully bound journal and owner-private file volume.
@@ -258,7 +220,6 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
             FilesystemExecutionJournal::new(
                 stream.clone(),
                 Arc::clone(&host),
-                &SchemaRegistry::new(),
                 crate::filesystem::FilesystemJournalBinding {
                     volume: &volume,
                     verifier: &verifier,
@@ -269,7 +230,6 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
             )?
             .with_input_verifier(input.clone()),
         );
-        bind_memory_conversation(&stream, &conversation, &verifier, &scope, agent).await?;
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(&host),
             &volume,
@@ -321,12 +281,6 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
     #[must_use]
     pub fn content_reader(&self) -> &dyn ContentResidencyVerifier {
         self.content_verifier.as_ref()
-    }
-
-    /// Shares the authenticated reader with a store's admission checks.
-    #[cfg(test)]
-    pub(crate) fn content_verifier(&self) -> Arc<dyn ContentResidencyVerifier> {
-        self.content_verifier.clone()
     }
 
     /// Stages user content or an attachment before it is admitted to a turn.
@@ -470,30 +424,6 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
             self.maximum_file_bytes,
             None,
         )
-    }
-
-    /// Resolves an addressable local interaction under a host-issued exact responder grant.
-    pub async fn resolve_interaction(
-        &self,
-        id: InteractionId,
-        response: InteractionResponse,
-    ) -> Result<InteractionOutcome> {
-        let responder = self.issuer.bootstrap_scope(
-            &format!("local-responder:{id}"),
-            &Capabilities::new([
-                capability::INTERACTION_RESOLVE.to_owned(),
-                capability::interaction_respond(id),
-            ]),
-            None,
-            &mut None,
-        )?;
-        self.journal
-            .resolve_interaction(id, response, &responder)
-            .await?;
-        self.journal
-            .interaction_outcome(id, None)?
-            .await?
-            .ok_or_else(|| Error::Storage("resolved interaction has no committed outcome".into()))
     }
 
     /// Opens the bound conversation's exact Stream history to host adapters.

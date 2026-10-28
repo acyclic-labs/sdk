@@ -42,6 +42,7 @@ pub(crate) fn copy_provider(
     crate::resources::ProviderRef::new(namespace, family, version, quota.work())
 }
 
+#[cfg(feature = "filesystem")]
 pub(crate) fn copy_resource(
     source: &crate::resources::ResourceRef,
     quota: &mut CodecQuota<'_, '_>,
@@ -125,14 +126,6 @@ pub(crate) fn copy<T: Clone + Serialize>(
 }
 
 impl<'a, 'w> CodecQuota<'a, 'w> {
-    /// Formats one component into this assembly's existing custody.
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn format(&mut self, args: std::fmt::Arguments<'_>) -> Result<String> {
-        let value = crate::executor::preparation_format(args, self.work())?;
-        self.adopt(value.capacity() as u64)?;
-        Ok(value)
-    }
-
     pub(crate) fn produce<T>(
         work: &'a mut Option<&'w mut dyn HistoryIo>,
         copy: impl FnOnce(&mut Self) -> Result<T>,
@@ -152,65 +145,6 @@ pub(crate) fn copy_boxed<T>(
 ) -> Result<Box<T>> {
     retain_entry::<T>(quota)?;
     Ok(Box::new(copy(source, quota)?))
-}
-pub(in crate::core) fn box_value<T>(value: T, quota: &mut CodecQuota<'_, '_>) -> Result<Box<T>> {
-    retain_entry::<T>(quota)?;
-    Ok(Box::new(value))
-}
-pub(crate) fn copy_event(source: &Event, quota: &mut CodecQuota<'_, '_>) -> Result<Event> {
-    copy(source, quota, |value, work| {
-        match &value.payload {
-            EventPayload::Custom { record } => record.content.validate(work)?,
-            EventPayload::ExtensionStateMigrated { migration } => {
-                migration.record.content.validate(work)?;
-            }
-            EventPayload::ExtensionsSelected { configurations, .. } => {
-                for value in configurations {
-                    value.content.validate(work)?;
-                }
-            }
-            EventPayload::ExtensionConfigured { previous, record } => {
-                record.content.validate(work)?;
-                if let Some(value) = previous {
-                    value.content.validate(work)?;
-                }
-            }
-            EventPayload::EffectPlanned {
-                request,
-                result_schema,
-                ..
-            } => {
-                request.validate(work)?;
-                result_schema.validate(work)?;
-            }
-            EventPayload::EffectResolved { observation } => {
-                if let EffectStatus::Succeeded { result } = &observation.status {
-                    result.validate(work)?;
-                }
-            }
-            EventPayload::ForkPublished { seed } => seed.validate(work)?,
-            EventPayload::ProjectMergePublished { receipt } => {
-                receipt.validate_shape(work)?;
-            }
-            EventPayload::ConversationMessageAppended { message } => message.validate(work)?,
-            EventPayload::ModelContextSelected { selection } => {
-                if let Some(file) = &selection.checkpoint {
-                    file.validate(work)?;
-                }
-            }
-            EventPayload::InteractionOpened { ticket } => ticket.request.validate(work)?,
-            EventPayload::InteractionResolved { resolution } => {
-                if let InteractionOutcome::Answered { answer } = &resolution.outcome {
-                    answer.validate(work)?;
-                }
-                if let Some(file) = &resolution.detail {
-                    file.validate(work)?;
-                }
-            }
-            _ => {}
-        }
-        event_owned_bytes(value)
-    })
 }
 /// Logical inline map/set payload, never an estimate of opaque allocator nodes.
 pub(in crate::core) fn retain_entry<T>(quota: &mut CodecQuota<'_, '_>) -> Result<()> {

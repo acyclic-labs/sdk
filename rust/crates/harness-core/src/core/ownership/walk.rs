@@ -160,32 +160,6 @@ fn tree_nodes<T>(len: usize) -> Result<u64> {
         .ok_or_else(|| Error::Invalid("tree ownership overflows".into()))
 }
 
-pub(super) fn tree_insertion_bytes<T>(len: usize) -> Result<u64> {
-    // A fresh root allocates one node. A non-full leaf root allocates none.
-    // Otherwise a split can allocate a sibling at every level and a new root.
-    // A height-h tree needs at least 2 * 6^h - 1 entries (five per non-root
-    // node). Use that maximum possible height, without inspecting std internals.
-    let nodes = if len == 0 {
-        1
-    } else if len < 11 {
-        0
-    } else {
-        let mut nodes = 2_u64;
-        let mut minimum = 11_usize;
-        while len >= minimum {
-            nodes += 1;
-            let Some(next) = minimum.checked_add(1).and_then(|n| n.checked_mul(6)) else {
-                break;
-            };
-            minimum = next - 1;
-        }
-        nodes
-    };
-    tree_node_bytes::<T>()?
-        .checked_mul(nodes)
-        .ok_or_else(|| Error::Invalid("tree insertion ownership overflows".into()))
-}
-
 fn tree_node_bytes<T>() -> Result<u64> {
     // Account for header/slot/edge padding too, including over-aligned keys.
     let layout = std::alloc::Layout::array::<T>(11)

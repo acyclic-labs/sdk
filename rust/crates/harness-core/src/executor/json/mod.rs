@@ -32,22 +32,18 @@ pub(crate) use serialization::count_json_bytes_trusted;
 mod copy;
 mod decode;
 pub(crate) mod layout;
-#[cfg(test)]
-pub(crate) use layout::JsonLayout;
 #[cfg(feature = "filesystem")]
 pub(crate) use layout::LayoutCost;
 mod schema;
 mod serialization;
-#[cfg(test)]
-pub(crate) use admission::admit_json_layout;
 pub(crate) use admission::admit_value_layout;
 #[cfg(test)]
 pub(crate) use admission::assert_layout_covers_decode;
 pub(crate) use admission::json_owned_value_shape_bounded;
 #[cfg(test)]
 pub(crate) use admission::layout_reservation;
-#[cfg(feature = "filesystem")]
-pub(crate) use admission::{admit_json, lexical_json_diagnostic_bytes};
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(crate) use admission::lexical_json_diagnostic_bytes;
 pub use records::json_value_logical_owned_bytes;
 pub(crate) use records::json_value_retained_owned_bytes;
 pub use records::{json_from_slice_bounded, json_from_value_bounded};

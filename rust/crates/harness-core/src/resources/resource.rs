@@ -53,6 +53,7 @@ impl<'de> Deserialize<'de> for ResourceRef {
 }
 
 impl ResourceRef {
+    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         capacity_sum([
             self.key.capacity(),

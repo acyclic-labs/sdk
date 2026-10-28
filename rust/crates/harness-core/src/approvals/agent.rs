@@ -203,6 +203,36 @@ impl AgentApprovals {
         }
         Err(Error::Conflict("approval chain did not settle".into()))
     }
+
+    /// Proves `id` approved exactly `operation`'s action with `digest`: its
+    /// request names that intent and its chain settled to an approval.
+    pub async fn verify(
+        &self,
+        id: InteractionId,
+        operation: crate::OperationId,
+        digest: [u8; 32],
+    ) -> Result<()> {
+        let bytes = self.policy.request(&*self.files, &request_id(id)).await?;
+        let bound = match serde_json::from_slice::<Interaction>(&bytes) {
+            Ok(Interaction::Approval {
+                operation_id,
+                action_digest,
+                ..
+            }) => operation_id == operation && action_digest == digest,
+            _ => false,
+        };
+        if !bound {
+            return Err(Error::Unauthorized(
+                "approval does not authorize this definition".into(),
+            ));
+        }
+        match self.outcome(id).await? {
+            Some(InteractionOutcome::Approved {}) => Ok(()),
+            _ => Err(Error::Unauthorized(
+                "tool installation lacks a resolved approval".into(),
+            )),
+        }
+    }
 }
 
 /// The request bytes of approval `id` when `principal` has already decided

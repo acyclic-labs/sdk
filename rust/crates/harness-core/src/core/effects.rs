@@ -35,14 +35,7 @@ pub enum EffectStatus {
     Indeterminate,
 }
 
-impl EffectStatus {
-    pub(crate) fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::Succeeded { .. } | Self::Failed { .. } | Self::Indeterminate
-        )
-    }
-}
+impl EffectStatus {}
 
 /// Host-attested provider observation accepted by the pure reducer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
@@ -89,90 +82,6 @@ pub struct EffectState {
     pub(crate) planning: Option<Box<Event>>,
     /// Ordered unique attempts made against the provider.
     pub attempts: Vec<EffectAttemptId>,
-}
-
-pub(crate) fn settled_effect(status: &EffectStatus) -> bool {
-    matches!(
-        status,
-        EffectStatus::Succeeded { .. } | EffectStatus::Failed { .. }
-    )
-}
-
-pub(crate) fn event_effect_id(payload: &EventPayload) -> Option<EffectId> {
-    match payload {
-        EventPayload::EffectPlanned { effect_id, .. }
-        | EventPayload::EffectDispatched { effect_id, .. } => Some(*effect_id),
-        EventPayload::EffectResolved { observation } => Some(observation.effect_id),
-        _ => None,
-    }
-}
-
-pub(in crate::core) fn effect_request_digest_with_work(
-    provider: &str,
-    guarantee: EffectGuarantee,
-    effect_kind: &str,
-    request: &FileRef,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<[u8; 32]> {
-    crate::executor::json::canonical_json_digest(
-        &(provider, guarantee, effect_kind, request),
-        acyclic_stream::MAX_RECORD_BYTES as u64,
-        work,
-    )
-}
-
-fn validate_effect_result(status: &EffectStatus) -> Result<()> {
-    if let EffectStatus::Succeeded { result } = status {
-        result.validate(&mut None)?;
-        if result.descriptor().media_type() != "application/json" {
-            return Err(Error::Invalid("effect result must be JSON content".into()));
-        }
-    }
-    Ok(())
-}
-
-pub(in crate::core) fn validate_effect_dispatch(
-    effect: &EffectState,
-    attempt: &EffectAttemptId,
-) -> Result<()> {
-    let may_retry = effect.status == EffectStatus::Indeterminate
-        && effect.guarantee == EffectGuarantee::IdempotentRetry;
-    if effect.status != EffectStatus::Planned && !may_retry {
-        return Err(Error::Conflict("invalid effect dispatch transition".into()));
-    }
-    if effect.attempts.contains(attempt) {
-        return Err(Error::Conflict(
-            "effect attempt identity already exists".into(),
-        ));
-    }
-    Ok(())
-}
-
-pub(in crate::core) fn validate_effect_observation(
-    effect: &EffectState,
-    observation: &EffectAttestation,
-) -> Result<()> {
-    if observation.provider != effect.provider
-        || observation.request_digest != effect.request_digest
-        || observation.guarantee != effect.guarantee
-        || observation.result_schema_digest != effect.result_schema_digest
-    {
-        return Err(Error::Conflict(
-            "effect observation does not match durable state".into(),
-        ));
-    }
-    if !observation.status.is_terminal()
-        || effect.attempts.last() != Some(&observation.attempt_id)
-        || !matches!(
-            effect.status,
-            EffectStatus::Dispatched | EffectStatus::Indeterminate
-        )
-    {
-        return Err(Error::Conflict(
-            "invalid effect resolution transition".into(),
-        ));
-    }
-    validate_effect_result(&observation.status)
 }
 
 crate::core::ownership::owned_enum!(EffectGuarantee {

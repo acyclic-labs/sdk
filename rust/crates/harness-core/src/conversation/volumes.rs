@@ -112,6 +112,7 @@ impl VolumeRef {
         )
     }
 
+    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let owner = match &self.owner {
             VolumeOwner::Project(owner) | VolumeOwner::Session(owner) => owner.capacity() as u64,
@@ -547,6 +548,7 @@ impl ContentGrant {
     }
 
     /// Checks signed authority without constructing an owned grant.
+    #[cfg(feature = "filesystem")]
     pub(crate) fn authorize_volume(
         verifier: &AuthorityVerifier,
         scope: &Scope,

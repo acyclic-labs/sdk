@@ -55,7 +55,6 @@ async fn check_selection(native: bool) -> Result<()> {
         let reopened = FilesystemExecutionJournal::new(
             journal.stream.clone(),
             journal.host.clone(),
-            &SchemaRegistry::new(),
             crate::filesystem::FilesystemJournalBinding {
                 volume: &journal.volume,
                 verifier: &journal.verifier,

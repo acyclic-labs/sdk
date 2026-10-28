@@ -131,7 +131,8 @@ pub struct ExtensionAdmission {
 
 impl ExtensionAdmission {
     /// Actual heap ownership, excluding inline proofs and identifiers.
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn logical_owned_bytes(&self) -> Result<u64> {
         ownership::owned_sum([
             self.source.authority.id.capacity() as u64,
             ownership::owned_vector(&self.selected, |extension| {
@@ -141,7 +142,7 @@ impl ExtensionAdmission {
         ])
     }
 
-    #[cfg(any(test, feature = "filesystem"))]
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
         CodecQuota::produce(work, |quota| {
             copy(self, quota, |admission, work| {
@@ -183,7 +184,7 @@ impl ExtensionAdmission {
 
     /// Checks the frozen selection and its ordered configuration records.
     pub fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
-        use crate::fork::boundary_error;
+        use crate::store::guarded_boundary as boundary_error;
         use crate::wire::ErrorCode::{Conflict, Invalid};
         if self.source.authority.kind != AggregateKind::Agent || self.source.revision == 0 {
             return Err(boundary_error(

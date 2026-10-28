@@ -7,10 +7,10 @@
 //! new model request.
 use super::TestResult;
 use acyclic_harness::{
-    AgentId, Capabilities, ConversationId, IdempotencyKey, OperationId,
+    AgentId, Capabilities, ConversationId, OperationId,
     context::{ContextPipeline, ModelContextCapacity, ModelTokenCount},
     conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{Action, AggregateKind, Authority, AuthorityRoot, Command, SchemaRegistry},
+    core::{AggregateKind, Authority, AuthorityRoot},
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput},
     filesystem::{
         FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
@@ -18,7 +18,6 @@ use acyclic_harness::{
     },
     model::{Model, ModelContent, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
-    store::StreamAggregate,
     test_support::{ScriptedModelProvider, ScriptedReconciliation},
     tool::ToolRegistry,
 };
@@ -108,12 +107,10 @@ impl AsRef<dyn ExecutionJournal> for Journal {
 }
 
 /// Opens the journal of `identity` on `stream`, with its files under `files`.
-/// Only the first opening binds the conversation.
 async fn journal<P: StreamProvider + 'static>(
     stream: Arc<P>,
     files: &Path,
     identity: &Identity,
-    first: bool,
 ) -> TestResult<Journal> {
     let filesystem = acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(files)).await?;
     let provider = ProviderRef::new("resume".into(), "filesystem".into(), "2".into(), &mut None)?;
@@ -142,42 +139,11 @@ async fn journal<P: StreamProvider + 'static>(
         &mut None,
     )?;
     let verifier = issuer.verifier(&mut None)?;
-    if first {
-        StreamAggregate::open(
-            &stream,
-            (
-                conversation,
-                issuer.verifier(&mut None)?,
-                SchemaRegistry::new(),
-            ),
-            None,
-            acyclic_harness::store::default_projection_read_limits(),
-            acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS,
-            None,
-            &mut None,
-        )
-        .await?
-        .execute(
-            Command {
-                operation_id: OperationId::new(),
-                idempotency_key: IdempotencyKey::new("resume-conversation-bind")?,
-                expected_revision: 0,
-                scope: scope.clone(),
-                causal_parent: None,
-                action: Action::BindConversation {
-                    agent: identity.agent,
-                },
-            },
-            &mut None,
-        )
-        .await?;
-    }
     let input =
         FilesystemContentVerifier::new(host.clone(), &verifier, &scope, MAXIMUM_FILE_BYTES, None)?;
     let journal = FilesystemExecutionJournal::new(
         stream,
         host,
-        &SchemaRegistry::new(),
         FilesystemJournalBinding {
             volume: &volume,
             verifier: &verifier,
@@ -333,7 +299,7 @@ async fn child() -> TestResult {
     child_turn(async move {
         let identity = Identity::new(config.seed);
         let stream = config.remote.connect().await?;
-        let journal = journal(stream, &config.files, &identity, true).await?;
+        let journal = journal(stream, &config.files, &identity).await?;
         executor(Arc::new(PausedPrefix {
             journal: journal.inner.clone(),
             operation: identity.operation,
@@ -387,7 +353,7 @@ pub(super) async fn kill_and_resume<P: StreamProvider + 'static>(
         return Err(format!("the child exited ({status}) without journaling its prefix").into());
     }
     let identity = Identity::new(seed);
-    let resumed = journal(stream.clone(), files.path(), &identity, false).await?;
+    let resumed = journal(stream.clone(), files.path(), &identity).await?;
     let provider =
         Arc::new(
             ScriptedModelProvider::new([]).with_reconciliations([ScriptedReconciliation {
@@ -415,7 +381,7 @@ pub(super) async fn kill_and_resume<P: StreamProvider + 'static>(
     let events = observed(resumed.as_ref(), identity.operation).await?;
     check_resumed(&events)?;
     drop(resumed);
-    let reopened = journal(stream, files.path(), &identity, false).await?;
+    let reopened = journal(stream, files.path(), &identity).await?;
     let provider = Arc::new(ScriptedModelProvider::new([]));
     let replayed = executor(provider.clone())?
         .execute(identity.input(), reopened.as_ref())
@@ -442,7 +408,7 @@ pub(super) async fn kill_and_resume<P: StreamProvider + 'static>(
 pub(super) async fn resume_unjournaled<P: StreamProvider + 'static>(stream: Arc<P>) -> TestResult {
     let files = tempfile::tempdir()?;
     let identity = Identity::new(u128::from_be_bytes(*uuid::Uuid::new_v4().as_bytes()));
-    let journal = journal(stream, files.path(), &identity, true).await?;
+    let journal = journal(stream, files.path(), &identity).await?;
     let provider =
         Arc::new(
             ScriptedModelProvider::new([]).with_reconciliations([ScriptedReconciliation {

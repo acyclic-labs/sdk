@@ -57,10 +57,6 @@ required-features = ["test-support"]
 name = "explicit-image-conversion"
 required-features = ["filesystem"]
 
-[[example]]
-name = "native-wasm-fixture"
-required-features = ["filesystem"]
-
 # Selections real consumers compile (Cloud's native root, harness-conformance,
 # and the filesystem-napi N-API generator). The lite gate checks each one when
 # a batch touches this crate's feature gating; --all-features hides #1602.

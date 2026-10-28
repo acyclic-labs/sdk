@@ -401,15 +401,6 @@ impl Lexical {
     }
 }
 
-pub(super) fn source(
-    bytes: &[u8],
-    bounds: JsonBounds,
-    schema: Option<&'static JsonValueSchema>,
-    code: Option<crate::wire::ErrorCode>,
-    charge: &mut dyn FnMut(JsonCodecCharge) -> Result<()>,
-) -> Result<JsonValueShape> {
-    laid_out(bytes, bounds, schema, None, code, charge)
-}
 fn laid_out(
     bytes: &[u8],
     mut bounds: JsonBounds,
@@ -483,17 +474,9 @@ fn finish(
         origin,
     })
 }
-#[cfg(feature = "filesystem")]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) const fn lexical_json_diagnostic_bytes() -> u64 {
     "JSON exceeds declared structural bound".len() as u64
-}
-#[cfg(feature = "filesystem")]
-pub(crate) fn admit_json<F: FnMut(JsonCodecCharge) -> Result<()>>(
-    bytes: &[u8],
-    bounds: JsonBounds,
-    charge: &mut F,
-) -> Result<()> {
-    source(bytes, bounds, Some(JsonValueSchema::None), None, charge).map(|_| ())
 }
 
 /// Admits a typed document's value shape and the heap its decode allocates

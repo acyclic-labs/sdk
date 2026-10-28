@@ -154,7 +154,7 @@ where
         }
         let model = self.verify_event_refs_with_io(event, io).await?;
         let limits = Limits::default();
-        self.verify_canonical_publication_with_io(operation_id, event, limits, io)
+        self.verify_canonical_publication_with_io(event, limits, io)
             .await?;
         let digest = super::content::operation_digest(operation_id, claim_id, io)?;
         let retry_hold = io.map(|io| io.reserve_decode(64)).transpose()?;

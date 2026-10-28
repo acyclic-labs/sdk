@@ -24,44 +24,6 @@ impl ExtensionRuntime {
         }))
     }
 
-    /// Restores exact versions with the reducer's committed digest bindings.
-    pub fn from_reducer(registry: ExtensionRegistry, reducer: &Reducer) -> Result<Arc<Self>> {
-        let admission = reducer
-            .extension_admission()?
-            .ok_or_else(|| Error::Unsupported("agent has no committed extensions".into()))?;
-        admission.validate(&mut None)?;
-        let mut roots = Vec::with_capacity(admission.selected().len());
-        for dependency in admission.selected() {
-            let identity = registry
-                .exact(&dependency.name, dependency.version)?
-                .ok_or_else(|| {
-                    Error::Unsupported(format!("extension {} is not installed", dependency.name))
-                })?;
-            if reducer.schemas().implementation_digest(
-                &dependency.name,
-                dependency.version,
-                &mut None,
-            )? != identity.digest
-            {
-                return Err(Error::Conflict(format!(
-                    "extension {}@{} implementation digest differs from admission",
-                    dependency.name, dependency.version
-                )));
-            }
-            roots.push(identity);
-        }
-        let selected = registry.resolve(&roots, false)?;
-        let retained = selected
-            .iter()
-            .map(|identity| registry.pin_exact(identity, false))
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Arc::new(Self {
-            registry,
-            retained,
-            accepting: Mutex::new(true),
-        }))
-    }
-
     /// Disables new admissions for this composition.
     pub fn disable(&self) -> Result<()> {
         *self

@@ -1,116 +1,7 @@
 //! Admission for the closed event-envelope schema.
 use super::*;
-use prost::encoding::{DecodeContext, WireType, decode_key, skip_field};
 use std::mem::size_of;
 
-fn diagnostic(work: &mut Option<&mut dyn HistoryIo>) -> Result<NativeCustody> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = work
-        .as_deref_mut()
-        .filter(|io| io.original_native_work().is_some())
-    {
-        // Closed message nesting has at most four diagnostic location slots.
-        let bytes = (size_of::<(u64, String, String)>()
-            + size_of::<Vec<(&'static str, &'static str)>>()
-            + 4 * size_of::<(&'static str, &'static str)>()) as u64;
-        io.admit_owned(bytes)?;
-        io.retain_owned(bytes)?;
-        return Ok(Some(io.take_native_custody(bytes)?));
-    }
-    let _ = work;
-    Ok(None)
-}
-pub(super) fn prost_error(custody: NativeCustody, source: prost::DecodeError) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if custody.is_some() {
-        return Error::NativeProstDecode {
-            code: Storage,
-            source,
-            custody,
-        };
-    }
-    let _ = custody;
-    let message = source.to_string();
-    drop(source);
-    Error::Storage(message)
-}
-#[derive(Clone, Copy)]
-enum Carrier {
-    Envelope,
-    Protocol,
-    Authority,
-    Scope,
-    Reference,
-}
-fn scan(
-    mut input: &[u8],
-    carrier: Carrier,
-    work: &mut Option<&mut dyn HistoryIo>,
-    guard: &mut NativeCustody,
-) -> Result<(u64, u64)> {
-    use crate::executor::json::JsonCodecCharge::Work;
-    let (mut buffers, mut capabilities) = (0, 0);
-    // The SDK record bound and closed nesting bound all counters below.
-    while !input.is_empty() {
-        if let Some(io) = work.as_deref_mut() {
-            io.codec_charge(Work { bytes: 0, items: 1 })?;
-        }
-        let before = input.len();
-        let (tag, kind) =
-            decode_key(&mut input).map_err(|source| prost_error(guard.take(), source))?;
-        let framed = input;
-        skip_field(kind, tag, &mut input, DecodeContext::default())
-            .map_err(|source| prost_error(guard.take(), source))?;
-        let nested = match (carrier, tag) {
-            (Carrier::Envelope, 1) => Some(Carrier::Protocol),
-            (Carrier::Envelope, 2) | (Carrier::Reference, 1) => Some(Carrier::Authority),
-            (Carrier::Envelope, 6) => Some(Carrier::Scope),
-            (Carrier::Envelope, 7) => Some(Carrier::Reference),
-            _ => None,
-        };
-        let owned = matches!(
-            (carrier, tag),
-            (Carrier::Envelope, 4 | 5 | 8 | 9 | 10)
-                | (Carrier::Protocol, 1 | 2)
-                | (Carrier::Authority, 2)
-                | (Carrier::Scope, 1..=4)
-        );
-        let mut charged = before - input.len();
-        if kind == WireType::LengthDelimited && (nested.is_some() || owned) {
-            let header = framed
-                .iter()
-                .position(|byte| byte & 0x80 == 0)
-                .ok_or_else(|| boundary(work, Storage, "event length prefix is invalid"))?
-                + 1;
-            let length = framed.len() - input.len() - header;
-            if let Some(nested) = nested {
-                charged -= length;
-                if let Some(io) = work.as_deref_mut() {
-                    io.codec_charge(Work {
-                        bytes: charged as u64,
-                        items: 0,
-                    })?;
-                }
-                let payload = framed.get(header..header + length).ok_or_else(|| {
-                    boundary(work, Storage, "event length-delimited field is invalid")
-                })?;
-                let (bytes, caps) = scan(payload, nested, work, guard)?;
-                buffers += bytes;
-                capabilities += caps;
-                continue;
-            }
-            buffers += 2 * length as u64 + 8;
-            capabilities += u64::from(matches!(carrier, Carrier::Scope) && tag == 2);
-        }
-        if let Some(io) = work.as_deref_mut() {
-            io.codec_charge(Work {
-                bytes: charged as u64,
-                items: 0,
-            })?;
-        }
-    }
-    Ok((buffers, capabilities))
-}
 fn carrier_quota(buffers: u64, capabilities: u64) -> Result<u64> {
     let slots = if capabilities == 0 {
         Some(0)
@@ -122,17 +13,6 @@ fn carrier_quota(buffers: u64, capabilities: u64) -> Result<u64> {
         .and_then(|n| buffers.checked_add(n))
         .and_then(|n| n.checked_add(size_of::<wire::EventEnvelope>() as u64))
         .ok_or_else(|| Error::Storage("event custody overflow".into()))
-}
-pub(super) fn decode_quota(
-    input: &[u8],
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(u64, NativeCustody)> {
-    if input.len() > acyclic_stream::MAX_RECORD_BYTES {
-        return Err(boundary(work, Storage, "event exceeds SDK record boundary"));
-    }
-    let mut guard = diagnostic(work)?;
-    let (buffers, capabilities) = scan(input, Carrier::Envelope, work, &mut guard)?;
-    Ok((carrier_quota(buffers, capabilities)?, guard))
 }
 pub(super) fn metadata_quota(authority: &Authority, event: &Event) -> Result<(u64, u64)> {
     let (issuer, agent) = event.scope.wire_parts();
@@ -323,4 +203,56 @@ pub(super) fn envelope_owned(envelope: &wire::EventEnvelope) -> u64 {
         + envelope.event_type.capacity()
         + envelope.canonical_payload_json.capacity()
         + envelope.attestation.capacity()) as u64
+}
+
+impl<'a, 'b> Quota<'a, 'b> {
+    pub(crate) fn observed(work: &'a mut Option<&'b mut dyn HistoryIo>) -> Result<Self> {
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+        }
+        Ok(Self::from_retained(work, 0))
+    }
+
+    pub(crate) fn invalid(&mut self, reason: &'static str) -> Error {
+        crate::store::guarded_boundary(self.work(), crate::wire::ErrorCode::Invalid, reason)
+    }
+
+    pub(crate) fn checkpoint(&mut self) -> Result<()> {
+        if let Some(observer) = self.work().as_deref_mut() {
+            observer.check_cancellation()?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
+                bytes: 0,
+                items: 1,
+            })?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn retain(&mut self, bytes: u64) -> Result<()> {
+        if self.work().is_none() {
+            return Ok(());
+        }
+        let retained = self
+            .retained()
+            .checked_add(bytes)
+            .ok_or_else(|| self.invalid("fork validation storage overflows"))?;
+        self.replace(retained)
+    }
+
+    pub(crate) fn release(&mut self, bytes: u64) -> Result<()> {
+        if self.work().is_none() {
+            return Ok(());
+        }
+        self.retained()
+            .checked_sub(bytes)
+            .ok_or_else(|| self.invalid("fork validation storage underflows"))?;
+        self.relinquish(bytes)
+    }
+
+    pub(crate) fn slots<T>(&mut self, count: usize) -> Result<()> {
+        let bytes = (count as u64)
+            .checked_mul(std::mem::size_of::<T>() as u64)
+            .ok_or_else(|| self.invalid("fork validation slot count overflows"))?;
+        self.retain(bytes)
+    }
 }

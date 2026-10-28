@@ -1,11 +1,9 @@
 //! Operation-bound reads of trusted project snapshots.
 
-use crate::conversation::{VolumeClass, VolumeRef};
+use crate::conversation::VolumeRef;
 use crate::core::{Authority, Scope};
 use crate::resources::GenerationRef;
-use crate::store::{guarded_boundary, history::HistoryIo};
-use crate::wire::ErrorCode;
-use crate::{OperationId, Result, TaskId};
+use crate::{OperationId, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -53,26 +51,7 @@ pub struct ProjectSourceAuthorization {
     pub policy_scope: Scope,
 }
 
-impl ProjectSourceAuthorization {
-    pub(crate) fn validate(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
-        self.project.validate(work)?;
-        self.generation.validate(work)?;
-        if self.project.class() != VolumeClass::Project
-            || self.project.provider() != self.generation.as_resource().provider()
-            || self.maximum_work == 0
-            || self.maximum_work == u64::MAX
-            || self.maximum_bytes == 0
-            || self.maximum_bytes == u64::MAX
-        {
-            return Err(guarded_boundary(
-                work,
-                ErrorCode::Invalid,
-                "project source lacks an exact project or finite bounds",
-            ));
-        }
-        crate::executor::json::json_byte_length(self, self.maximum_bytes, work).map(|_| ())
-    }
-}
+impl ProjectSourceAuthorization {}
 
 crate::core::ownership::owned_struct!(LeaseFence {
     reservation_id,

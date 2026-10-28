@@ -1,29 +1,22 @@
 //! Deterministic, host-neutral durable substrate semantics.
 
-use crate::contract::capability;
-use crate::contract::next_revision;
 use crate::store::history::HistoryIo;
 use crate::wire_codec::CodecQuota;
 use crate::{
     AgentId, Capabilities, EffectAttemptId, EffectId, Error, IdempotencyKey, OperationId, Result,
     conversation::{
-        ContentGrant, ConversationMessage, ConversationState, FileRef, ModelContextSelection,
-        VolumeOperation, VolumeOwner, VolumeRef, is_internal_path,
+        ConversationMessage, FileRef, ModelContextSelection, VolumeOperation, VolumeOwner,
+        is_internal_path,
     },
-    fork::{ForkSeed, InheritedConversationPrefix},
-    interaction::{InteractionOutcome, InteractionResolution, InteractionTicket},
-    merge::ProjectMergeReceipt,
+    interaction::{InteractionResolution, InteractionTicket},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 mod authority;
 mod capability_bytes;
-#[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) use authority::effect_root_tests;
 mod copying;
 mod effects;
 #[cfg(test)]
@@ -36,24 +29,15 @@ pub(crate) use filesystem_access::{
 };
 pub(crate) mod ownership;
 mod records;
-mod reducer;
 mod registry;
-mod snapshot;
-#[cfg(test)]
-mod tests;
-#[cfg(test)]
-mod wire_layout;
-pub(in crate::core) use crate::fork::copy_seed;
 pub(crate) use authority::VerifiedScope;
 pub(crate) use copying::{
-    copy, copy_authority, copy_boxed, copy_boxed_text, copy_copy_vector, copy_event, copy_provider,
-    copy_resource, copy_text, copy_vector, reserve_copy_vector,
+    copy, copy_boxed, copy_boxed_text, copy_provider, copy_text, copy_vector, reserve_copy_vector,
 };
+#[cfg(feature = "filesystem")]
+pub(crate) use copying::{copy_copy_vector, copy_resource};
 pub(crate) use ownership::inspect_metadata;
-pub(crate) use ownership::{
-    OwnedBytes, event_owned_bytes, owned_buffer, owned_effect, owned_sum, owned_vector,
-};
-pub use snapshot::Snapshot;
+pub(crate) use ownership::{OwnedBytes, owned_buffer, owned_sum};
 
 pub use authority::{
     AUTHORITY_ID_FORBIDDEN_EXACT, AUTHORITY_ID_FORBIDDEN_SEPARATORS, AggregateKind, Authority,
@@ -74,13 +58,4 @@ pub use extension_types::{
 
 pub use registry::SchemaRegistry;
 
-pub(in crate::core) use effects::{
-    effect_request_digest_with_work, validate_effect_dispatch, validate_effect_observation,
-};
-pub(crate) use effects::{event_effect_id, settled_effect};
 pub(crate) use extension_types::validate_extension_name;
-pub(in crate::core) use records::{
-    Subject, require_capability, validate_causal_parent_with_work, validate_interaction_operation,
-    validate_interaction_transition, validate_lifecycle,
-};
-pub use reducer::Reducer;

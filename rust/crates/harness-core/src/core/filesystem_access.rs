@@ -37,7 +37,7 @@ pub(crate) fn filesystem_scope_label<'a>(
         }
         if label.starts_with(acyclic_fs::access::SCOPE_PREFIX) {
             if result.is_some() {
-                return Err(crate::fork::boundary_error(
+                return Err(crate::store::guarded_boundary(
                     work,
                     crate::wire::ErrorCode::Unauthorized,
                     "scope has multiple filesystem grants",

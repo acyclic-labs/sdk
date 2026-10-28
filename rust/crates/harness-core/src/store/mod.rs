@@ -1,60 +1,22 @@
-//! Direct Stream persistence for durable aggregate histories.
-
-mod admission;
-mod archive;
-mod configuration;
-mod execution;
-mod forks;
-mod opening;
-use execution::stream_idempotency_key_with_work;
-use forks::fork_child_binding_with_work;
-
-mod checkpoints;
-
-mod effect_certificate;
-mod effect_heads;
-
-mod effects;
+//! Bounded history IO shared by harness preparation and storage.
 
 pub(crate) mod history;
-
-pub use checkpoints::{DEFAULT_PROJECTION_EVENTS, default_projection_read_limits};
 
 #[doc(hidden)]
 pub mod operations;
 
-mod guarded;
-
 pub use history::*;
 
-pub use effects::effect_events;
+use crate::Error;
 
-use crate::{
-    Error, IdempotencyKey, OperationId, Result,
-    conversation::{
-        ContentResidencyVerifier, Limits, ReferencedAttachments, verified_attachment_manifest,
-        verified_content_bytes,
-    },
-    core::{
-        Action, ApplyResult, Authority, AuthorityVerifier, Command, EffectStatus, EventPayload,
-        EventReference, Reducer, SchemaRegistry, Scope, Snapshot,
-    },
-    fork::{CompositeForkVerifier, ForkReport, ForkSeed},
-    interaction::InteractionOutcome,
-    merge::ProjectMergeVerifier,
-};
-
-use acyclic_stream::{
-    CommitOutcome, IdempotencyKey as StreamIdempotencyKey, IdempotencyOutcome, StreamPath,
-    StreamProvider,
-};
-
-use acyclic_stream::OwnedBytes;
-
-use std::sync::Arc;
-
-/// Finite recent terminal cache.
-pub const DEFAULT_TERMINAL_EFFECTS: usize = 64;
+/// Default finite cold input allowance.
+#[must_use]
+pub const fn default_projection_read_limits() -> HistoryReadLimits {
+    HistoryReadLimits {
+        maximum_events: 64,
+        maximum_bytes: 32 * acyclic_stream::MAX_COMMAND_BYTES as u64,
+    }
+}
 
 pub(crate) fn guarded_boundary(
     work: &Option<&mut dyn history::HistoryIo>,
@@ -78,17 +40,3 @@ pub(crate) fn guarded_boundary(
         _ => Error::Storage(reason.into()),
     }
 }
-
-/// One authoritative reducer whose canonical history is stored directly in Stream.
-pub struct StreamAggregate<P: ?Sized> {
-    client: std::sync::Arc<P>,
-    path: StreamPath,
-    reducer: Reducer,
-    content_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
-    fork_verifier: Option<Arc<CompositeForkVerifier>>,
-    merge_verifier: Option<Arc<dyn ProjectMergeVerifier>>,
-    limits: Limits,
-}
-
-#[cfg(test)]
-pub(crate) mod tests;

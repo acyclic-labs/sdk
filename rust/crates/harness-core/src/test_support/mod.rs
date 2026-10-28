@@ -16,23 +16,6 @@ mod policy;
 mod scripted;
 pub use policy::FixedToolPolicy;
 
-/// One step of an effect-history root proof, in the order a differential
-/// capture observes it: the authority hashes `Hash` bytes, and a cut workflow
-/// reports each storage operation it performs.
-#[cfg(all(
-    any(test, feature = "test-support"),
-    feature = "filesystem",
-    not(target_arch = "wasm32")
-))]
-#[doc(hidden)]
-#[derive(Debug, PartialEq, Eq)]
-pub enum EffectRootObservation {
-    /// Bytes fed to the keyed effect-root hash.
-    Hash(u64),
-    /// A described storage operation.
-    Storage(String),
-}
-
 pub use scripted::{
     ScriptedEvent, ScriptedModelProvider, ScriptedReconciliation, ScriptedTurn, read_request_files,
 };

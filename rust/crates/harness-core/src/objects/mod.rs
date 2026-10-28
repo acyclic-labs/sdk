@@ -14,10 +14,6 @@ use crate::{
         VolumeOperation, VolumeRef, validate_content_path,
     },
     core::{AuthorityVerifier, Scope},
-    fork::{
-        Capture, CapturedResource, ForkCaptureProvider, ForkRequest, ForkSeed, ForkSeedVerifier,
-        ForkSelection, ResourceRevision,
-    },
     resources::{ArtifactRef, ProviderRef},
     runtime::ContentBindings,
 };

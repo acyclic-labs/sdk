@@ -577,18 +577,7 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         self.require_operation(operation, io)?;
-        if !self
-            .published_decision_for(id, Some((operation, digest)), io)
-            .await?
-            .approved()
-        {
-            return Err(canonical_boundary(
-                io,
-                crate::wire::ErrorCode::Unauthorized,
-                "tool installation lacks a resolved approval",
-            ));
-        }
-        Ok(())
+        self.approvals(io)?.verify(id, operation, digest).await
     }
 }
 

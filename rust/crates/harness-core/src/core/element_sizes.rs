@@ -1,5 +1,6 @@
 //! Inline storage bounds for records retained in checkpoints.
 use super::*;
+use crate::conversation::ConversationState;
 use std::mem::size_of;
 
 // NativeConversationCustody adds four allocation tickets (messages, digests,
@@ -27,13 +28,6 @@ macro_rules! ceiling {
         }
     };
 }
-ceiling!(reducer, Reducer, 1128 + CONVERSATION_CUSTODY_BYTES);
-ceiling!(snapshot, Snapshot, 1104 + CONVERSATION_CUSTODY_BYTES);
-ceiling!(
-    projection,
-    snapshot::Projection,
-    968 + CONVERSATION_CUSTODY_BYTES
-);
 ceiling!(event, Event, 376);
 ceiling!(event_payload, EventPayload, 152);
 ceiling!(effect_status, EffectStatus, 24);
@@ -51,18 +45,6 @@ ceiling!(extension_configuration, ExtensionConfiguration, 336);
 ceiling!(extension_dependency, ExtensionDependency, 32);
 ceiling!(authority, Authority, 32);
 ceiling!(event_reference, EventReference, 40);
-ceiling!(fork_seed, ForkSeed, 2264);
-ceiling!(fork_selection, crate::fork::ForkSelection, 80);
-ceiling!(fork_omission, crate::fork::ForkOmission, 104);
-ceiling!(captured_resource, crate::fork::CapturedResource, 144);
-ceiling!(resource_revision, crate::fork::ResourceRevision, 72);
-ceiling!(capture, crate::fork::Capture, 24);
-ceiling!(fork_history_policy, crate::fork::ForkHistoryPolicy, 16);
-ceiling!(shared_grant, crate::fork::SharedGrant, 176);
-ceiling!(reference_grant, crate::fork::ReferenceGrant, 560);
-ceiling!(summary_fork_capture, crate::fork::SummaryForkCapture, 672);
-ceiling!(attested_boundary, crate::fork::AttestedBoundary, 96);
-ceiling!(project_merge_receipt, ProjectMergeReceipt, 1504);
 ceiling!(conversation_message, ConversationMessage, 648);
 ceiling!(
     conversation_state,

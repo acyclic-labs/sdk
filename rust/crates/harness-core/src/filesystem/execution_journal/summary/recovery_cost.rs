@@ -45,7 +45,6 @@ async fn check_cold_recovery(native: bool) -> Result<()> {
         let reopened = FilesystemExecutionJournal::new(
             original.stream.clone(),
             original.host.clone(),
-            &SchemaRegistry::new(),
             crate::filesystem::FilesystemJournalBinding {
                 volume: &original.volume,
                 verifier: &original.verifier,

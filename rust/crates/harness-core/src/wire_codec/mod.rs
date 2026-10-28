@@ -1,14 +1,13 @@
 //! Canonical typed wire conversions.
+#[cfg(feature = "filesystem")]
+use crate::NativeCustody;
 #[cfg(test)]
 use crate::contract::canonical_json_bytes;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 use crate::core::ApplyResult;
 use crate::{
-    AgentId, Capabilities, Error, IdempotencyKey, NativeCustody, OperationId, Result,
-    core::{
-        Action, AggregateKind, Authority, Command, Event, EventPayload, EventReference,
-        RecordedScope, Scope,
-    },
+    AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
+    core::{Action, AggregateKind, Authority, Command, Event, EventPayload, EventReference, Scope},
     store::{guarded_boundary as boundary, history::HistoryIo},
     wire,
 };
@@ -22,7 +21,6 @@ const PAYLOAD_BOUNDS: crate::executor::json::JsonBounds = crate::executor::json:
 mod admission;
 pub(crate) use admission::Quota as CodecQuota;
 mod event;
-pub(crate) use event::{decode_event, encode_event};
 pub use event::{decode_event_payload, encode_event_envelope};
 mod command;
 pub use command::decode_command_envelope;
@@ -40,16 +38,13 @@ mod authority;
 pub use authority::decode_aggregate_kind;
 pub use authority::encode_authority;
 pub(crate) use authority::{decode_authority, decode_scope};
-use authority::{decode_reference, encode_reference, parse_scope_agent};
+use authority::{decode_reference, encode_reference};
 #[cfg(test)]
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod admission_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod command_tests;
-#[cfg(test)]
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-mod event_decode_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod protocol_tests;

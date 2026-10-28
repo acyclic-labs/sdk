@@ -53,7 +53,6 @@ async fn check(identity: [u8; 16], key: &str, bytes: &[u8]) -> Result<()> {
     let mut journal = FilesystemExecutionJournal::new(
         Arc::new(acyclic_stream::MemoryStream::default()),
         host,
-        &SchemaRegistry::new(),
         FilesystemJournalBinding {
             volume: &volume,
             verifier: &issuer.verifier(&mut None)?,

@@ -1,11 +1,6 @@
 //! Pinned, bounded reads from the existing authoritative aggregate Stream.
 
-use crate::{
-    Error, Result,
-    core::{Authority, AuthorityVerifier, Event},
-};
-
-use acyclic_stream::{StreamPath, StreamProvider};
+use crate::{Error, Result, core::Authority};
 
 use serde::{Deserialize, Serialize};
 
@@ -35,51 +30,7 @@ pub enum HistoryContentFuture<'a, T> {
     Native(crate::NativeFutureBundle<'a, T>),
 }
 
-impl<'a, T> HistoryContentFuture<'a, T> {
-    pub(crate) fn new<'w: 'a, F>(
-        work: &'a mut Option<&'w mut dyn HistoryIo>,
-        build: impl FnOnce(&'a mut Option<&'w mut dyn HistoryIo>) -> F,
-    ) -> Result<Self>
-    where
-        F: Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
-    {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(native) = work
-            .as_ref()
-            .and_then(|io| io.original_native_work())
-            .cloned()
-        {
-            return crate::NativeFutureBundle::new(&native, || build(work)).map(Self::Native);
-        }
-        let frame_bytes = if let Some(io) = work.as_deref_mut() {
-            let bytes = std::mem::size_of::<F>() as u64;
-            io.check_cancellation()?;
-            io.admit_owned(bytes)?;
-            io.retain_owned(bytes)?;
-            if bytes != 0
-                && let Err(error) = io.allocation_attempt(bytes)
-            {
-                let _ = io.release_owned(bytes);
-                return Err(error);
-            }
-            bytes
-        } else {
-            0
-        };
-        Ok(Self::Ordinary {
-            future: Box::pin(build(work)),
-            frame_bytes,
-        })
-    }
-
-    pub(crate) const fn frame_bytes(&self) -> u64 {
-        match self {
-            Self::Ordinary { frame_bytes, .. } => *frame_bytes,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::Native(_) => 0,
-        }
-    }
-}
+impl<'a, T> HistoryContentFuture<'a, T> {}
 
 impl<T> Future for HistoryContentFuture<'_, T> {
     type Output = Result<T>;
@@ -94,28 +45,6 @@ impl<T> Future for HistoryContentFuture<'_, T> {
             Self::Native(future) => std::pin::Pin::new(future).poll(cx),
         }
     }
-}
-
-pub(crate) async fn verify_content_with_work(
-    observer: &mut dyn HistoryIo,
-    verifier: &dyn crate::conversation::ContentResidencyVerifier,
-    reference: &crate::conversation::FileRef,
-) -> Result<()> {
-    observer.verify_content(verifier, reference)?.await
-}
-
-pub(crate) async fn read_content_with_work(
-    observer: &mut dyn HistoryIo,
-    verifier: &dyn crate::conversation::ContentResidencyVerifier,
-    reference: &crate::conversation::FileRef,
-) -> Result<(acyclic_stream::OwnedBytes, u64)> {
-    let bytes = observer.read_content(verifier, reference)?.await?;
-    let held = if super::operations::original_native_decode_mode(observer) {
-        0
-    } else {
-        bytes.retained_capacity().unwrap_or(0) as u64
-    };
-    Ok((bytes, held))
 }
 
 #[doc(hidden)]
@@ -303,44 +232,6 @@ pub(crate) fn reserve<T>(
     }
 }
 
-pub(crate) fn ensure_slot<T>(
-    values: &mut Vec<T>,
-    maximum: usize,
-    observer: &mut dyn HistoryIo,
-) -> Result<()> {
-    if values.len() < values.capacity() {
-        return Ok(());
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if observer.requires_prepared_native_dispatch() {
-        return observer.allocation_attempt(1);
-    }
-    let capacity = values
-        .capacity()
-        .checked_mul(2)
-        .unwrap_or(maximum)
-        .max(4)
-        .min(maximum);
-    if capacity <= values.capacity() {
-        return Err(Error::Invalid(
-            "history vector exceeds declared maximum".into(),
-        ));
-    }
-    reserve(values, capacity, observer)
-}
-
-/// Explicit archival position. Revisions are inclusive; later appends are excluded.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
-#[serde(deny_unknown_fields)]
-pub struct HistoryCursor {
-    /// Aggregate whose admission attestations must verify.
-    pub authority: Authority,
-    /// Last event already consumed (zero starts at the first event).
-    pub after_revision: u64,
-    /// Fixed committed boundary for this traversal.
-    pub through_revision: u64,
-}
-
 /// Finite work and output bounds for one history read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
@@ -351,63 +242,6 @@ pub struct HistoryReadLimits {
     /// Maximum total encoded record bytes, checked before decoding each record.
     #[cfg_attr(feature = "wasm", tsify(type = "bigint"))]
     pub maximum_bytes: u64,
-}
-
-/// One verified page and its resumable position. An empty page is terminal.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
-#[serde(deny_unknown_fields)]
-pub struct HistoryPage {
-    /// Ordered, gapless events attested by this aggregate's owner.
-    pub events: Vec<Event>,
-    /// Same pinned boundary, advanced only over returned events.
-    pub cursor: HistoryCursor,
-}
-
-/// An owner-bound Stream handle, with no reducer, history cache or replay on open.
-pub struct HistoryReader<P: ?Sized> {
-    client: std::sync::Arc<P>,
-    pub(in crate::store) path: StreamPath,
-    pub(in crate::store) verifier: AuthorityVerifier,
-}
-
-pub(crate) fn verify_history_record_with_retained_quota(
-    verifier: &AuthorityVerifier,
-    authority: &Authority,
-    sequence: u64,
-    record: &acyclic_stream::Record,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(Event, u64)> {
-    if record.sequence != sequence || record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
-        return Err(super::guarded_boundary(
-            work,
-            crate::wire::ErrorCode::Storage,
-            "history record position or byte bound is invalid",
-        ));
-    }
-    let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
-    let ((record_authority, event), owned_event) =
-        crate::wire_codec::decode_event(&record.value, quota.work())?;
-    quota.adopt(record_authority.id.capacity() as u64 + owned_event)?;
-    let revision = sequence.checked_add(1).ok_or_else(|| {
-        super::guarded_boundary(
-            quota.work(),
-            crate::wire::ErrorCode::Storage,
-            "history event revision overflows",
-        )
-    })?;
-    if &record_authority != authority || event.revision != revision {
-        return Err(super::guarded_boundary(
-            quota.work(),
-            crate::wire::ErrorCode::Storage,
-            "history event binding is invalid",
-        ));
-    }
-    verifier.verify_audience(authority, &mut None)?;
-    verifier.verify_event(&event, quota.work())?;
-    drop(record_authority);
-    quota.replace(owned_event)?;
-    quota.transfer();
-    Ok((event, owned_event))
 }
 
 /// The original canonical codec, admitting logical storage before growth.
@@ -453,12 +287,6 @@ pub(crate) fn canonical_bytes_for_bounds_with_work<T: Serialize + ?Sized>(
         work.codec_charge(charge)
     })
 }
-
-mod conversation;
-mod follow;
-mod forks;
-mod pages;
-pub(in crate::store) use pages::project_effect;
 
 crate::core::ownership::owned_struct!(HistoryReadLimits {
     maximum_events,
