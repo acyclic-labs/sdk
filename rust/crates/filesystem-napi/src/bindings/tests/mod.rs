@@ -148,7 +148,7 @@ async fn workspace_transaction_statuses_cross_the_boundary()
         .await?;
     assert_eq!(winner.commit().await?.status, "committed");
     assert_eq!(loser.commit().await?.status, "conflict");
-    let rebased = loser.rebase(NapiU32(16)).await?;
+    let rebased = loser.rebase(Some(NapiU32(16))).await?;
     assert_eq!(rebased.status, "conflicted");
     assert!(!rebased.conflicts.is_empty());
     Ok(())

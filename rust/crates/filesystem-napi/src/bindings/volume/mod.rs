@@ -26,9 +26,9 @@ impl NativeVolume {
         &self,
         before: Buffer,
         after: Buffer,
-        maximum_changes: NapiU32,
+        maximum_changes: Option<NapiU32>,
     ) -> Result<NativeGenerationDiff> {
-        let maximum_changes = maximum_changes.into_inner();
+        let maximum_changes = maximum_changes.map(NapiU32::into_inner);
 
         let before = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
             &before,

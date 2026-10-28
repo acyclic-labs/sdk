@@ -114,10 +114,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Generation
     pub async fn diff_to<W: crate::facade::FsWork>(
         &self,
         to: &Generation<A, O>,
-        maximum_changes: u32,
+        maximum_changes: impl Into<Option<u32>>,
         work: W,
         cancellation: &CancellationToken,
     ) -> W::Output<(ChangeSet<A, O>, crate::AuthorityAllocation), WorkspaceError> {
+        let maximum_changes = maximum_changes.into();
+
         let mut accounting = work.accounting(cancellation);
         let result = async {
             let (changes, allocation) = match &mut accounting {

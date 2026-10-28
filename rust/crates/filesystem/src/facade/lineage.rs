@@ -11,8 +11,8 @@ pub(crate) struct WorkspaceRebaseRequest<'a, A: 'static, O: 'static> {
     pub target: &'a Volume<A, O>,
     pub operation_id: OperationId,
     pub maximum_generations: Option<u32>,
-    pub maximum_changes: u32,
-    pub maximum_conflicts: u32,
+    pub maximum_changes: Option<u32>,
+    pub maximum_conflicts: Option<u32>,
 }
 
 /// Where a fork stands against the parent it was forked from.
