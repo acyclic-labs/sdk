@@ -177,19 +177,36 @@ export class NativeStreamProvider implements StreamProvider {
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
     const request = { kind: "read" as const, path, from: options.from, limit: options.limit };
     await validateWireRequest(request);
-    const result = await this.sequence("read", this.request(client => client.readResult(Buffer.from(wireRequest(request)))));
+    let cursor: GeneratedNative.NativeStreamFollow | undefined;
+    let release: (() => void) | undefined;
     let next = request.from;
     let count = 0;
-    for (const value of result) {
-      let response: wire.ReadResponse;
-      try { response = fromBinary(wire.ReadResponseSchema, value); }
-      catch (error) { throw invalidResponse("read", error); }
-      for (const decoded of readResponseRecords(response)) {
-        if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
-        const record = checkedRecord(decoded, next);
-        next = record.sequence + 1n;
-        yield record;
+    try {
+      release = this.credential?.retain();
+      const opened = await this.client.readResult(Buffer.from(wireRequest(request)));
+      if (opened.error !== undefined) throw nativeError(opened.error, "read");
+      if (opened.follow === undefined) throw new StreamError("invalid_response", "native read omitted its cursor");
+      cursor = opened.follow;
+      for (;;) {
+        const result = await cursor.nextResult();
+        if (result.error !== undefined) throw nativeError(result.error, "read");
+        if (result.value === undefined) return;
+        let response: wire.ReadResponse;
+        try { response = fromBinary(wire.ReadResponseSchema, result.value); }
+        catch (error) { throw invalidResponse("read", error); }
+        for (const decoded of readResponseRecords(response)) {
+          if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
+          const record = checkedRecord(decoded, next);
+          next = record.sequence + 1n;
+          yield record;
+        }
       }
+    } catch (error) {
+      if (error instanceof StreamError) throw error;
+      throw nativeError(error, "read");
+    } finally {
+      release?.();
+      if (cursor !== undefined) await cursor.close();
     }
   }
 
@@ -285,17 +302,6 @@ export class NativeStreamProvider implements StreamProvider {
       if (value.error !== undefined) throw nativeError(value.error, operation);
       if (value.value === undefined) throw new StreamError("invalid_response", `native ${operation} response omitted its value`);
       return new Uint8Array(value.value);
-    } catch (error) {
-      if (error instanceof StreamError) throw error;
-      throw nativeError(error, operation);
-    }
-  }
-
-  private async sequence(operation: string, result: Promise<GeneratedNative.NativeStreamSequenceResult>): Promise<readonly Buffer[]> {
-    try {
-      const value = await result;
-      if (value.error !== undefined) throw nativeError(value.error, operation);
-      return value.values.map(item => Buffer.from(item));
     } catch (error) {
       if (error instanceof StreamError) throw error;
       throw nativeError(error, operation);

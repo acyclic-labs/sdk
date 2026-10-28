@@ -111,3 +111,35 @@ fn credential_callbacks_preserve_current_headers_and_fail_before_transport() {
         )
         .unwrap();
 }
+
+#[tokio::test]
+async fn expired_context_refuses_before_the_actual_credential_callback()
+-> Result<(), Box<dyn std::error::Error>> {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let seen = calls.clone();
+    let client = Client::with_credential_provider(
+        "https://fixture.invalid",
+        CredentialProvider::new(move || {
+            seen.fetch_add(1, Ordering::Relaxed);
+            std::future::ready(Err(acyclic_auth::credential::CredentialError::Invalid))
+        }),
+        1024,
+    )?
+    .with_context(acyclic_auth::operation::Context::new(
+        1,
+        std::future::ready(()),
+        std::future::pending(),
+    ));
+    let request = wire::InspectActorRequest {
+        actor_id: "actor-a".into(),
+        ..Default::default()
+    };
+    for client in [client.clone(), client] {
+        assert!(matches!(
+            client.inspect_actor(&request).await,
+            Err(Error::Stopped(acyclic_auth::operation::Stopped::Deadline))
+        ));
+    }
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    Ok(())
+}

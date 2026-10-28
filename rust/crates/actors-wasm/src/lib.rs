@@ -54,20 +54,6 @@ pub fn validate_deployment_binding(
     .map_err(nominal_error)
 }
 
-/// Encode a validated source timer, retaining exact u64 milliseconds from JS bigint.
-#[wasm_bindgen(js_name = "timerRecord")]
-pub fn timer_record(task: String, operation: String, deadline: BigInt) -> Result<Vec<u8>, JsValue> {
-    let deadline = u64::try_from(deadline)
-        .map_err(|_| js_error("invalid_argument", "timer deadline must be a positive u64"))?;
-    acyclic_actors::timers::TimerRecord {
-        task_id: task,
-        operation_id: operation,
-        deadline_unix_ms: deadline,
-    }
-    .encode()
-    .map_err(|error| js_error("invalid_argument", error))
-}
-
 fn nominal_string(value: &JsValue, field: &str) -> Result<String, JsValue> {
     value
         .as_string()

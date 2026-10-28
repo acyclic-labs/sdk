@@ -97,12 +97,9 @@ export class HttpStreamProvider implements StreamProvider {
     const input = wireCreateTokenRequest(request);
     return this.#request("tokens/create", await encodeHttpRequest("tokens/create", input));
   }
-  async #read(path: string, options: ReadOptions, signal?: AbortSignal, checkEmptyCursor = true): Promise<readonly EncodedRecord[]> {
+  async #read(path: string, options: ReadOptions, signal?: AbortSignal): Promise<readonly EncodedRecord[]> {
     const { from, limit } = options;
     await validateWireRequest({ kind: "read", path, from, limit });
-    // Stream tails are monotonic. Validate before reading so a concurrent
-    // append cannot turn an invalid empty-read cursor into a valid one.
-    if (checkEmptyCursor && from > await this.#tail(path, signal)) throw new StreamError("out_of_range", "read cursor is beyond the stream tail");
     const atLeast = this.#sessions.revisionFloor();
     const input = wireRequest({ kind: "read", path, from, limit, atLeast });
     const { records, applied } = await this.#request("read", await encodeHttpRequest("read", input), signal);

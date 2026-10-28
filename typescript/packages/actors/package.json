@@ -57,7 +57,6 @@
     "check:native": "node ../../../scripts/build-actors-native.mjs check",
     "assemble:native": "node ../../../scripts/assemble-actors-native-package.mjs",
     "test": "bun run generate && bun run build:wasm && tsc -b --pretty false",
-    "test:timers": "node --test test/timers.test.mjs",
     "pack:dry": "bun pm pack --dry-run",
     "generate": "bun ../../../scripts/generate.mjs actors",
     "prepack": "bun run generate"

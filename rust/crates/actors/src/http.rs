@@ -17,6 +17,9 @@ pub enum Error {
     /// The current callback failed; a fixed credential is never substituted.
     #[error("Actors credential renewal failed")]
     Credential(#[from] acyclic_auth::credential::CredentialError),
+    /// The caller stopped waiting; a submitted mutation may still have committed.
+    #[error(transparent)]
+    Stopped(#[from] acyclic_auth::operation::Stopped),
     /// Network failure.
     #[error(transparent)]
     Transport(#[from] reqwest::Error),
@@ -45,6 +48,8 @@ impl Error {
         match self {
             Self::InvalidArgument => "invalid_argument",
             Self::Credential(_) => "unauthenticated",
+            Self::Stopped(acyclic_auth::operation::Stopped::Deadline) => "deadline_elapsed",
+            Self::Stopped(acyclic_auth::operation::Stopped::Cancelled) => "cancelled",
             Self::Transport(_) => "transport",
             Self::ResponseTooLarge => "response_too_large",
             Self::MalformedResponse => "malformed_response",
@@ -156,6 +161,7 @@ pub struct Client {
     credential: Option<CredentialProvider>,
     maximum: usize,
     descriptors: DescriptorPool,
+    context: Option<acyclic_auth::operation::Context>,
 }
 
 #[cfg(test)]
@@ -179,6 +185,14 @@ macro_rules! operations {
 }
 
 impl Client {
+    /// Bind credential resolution, connection and complete response reading to
+    /// one caller budget. Clones retain the same deadline and cancellation.
+    /// This adds no automatic retry or claim about remote mutation settlement.
+    pub fn with_context(mut self, context: acyclic_auth::operation::Context) -> Self {
+        self.context = Some(context);
+        self
+    }
+
     /// Create a client. HTTPS or loopback HTTP is required.
     pub fn new(endpoint: &str, token: &str, maximum_response_bytes: usize) -> Result<Self, Error> {
         Self::build(endpoint, Some(token), None, maximum_response_bytes)
@@ -206,6 +220,7 @@ impl Client {
             endpoint,
             authorization,
             credential,
+            context: None,
             maximum: maximum_response_bytes,
             descriptors: DescriptorPool::decode(FILE_DESCRIPTOR_SET)
                 .map_err(|_| Error::MalformedResponse)?,
@@ -239,7 +254,7 @@ impl Client {
         output: &str,
         request: &I,
     ) -> Result<O, Error> {
-        let result = async {
+        let operation = async {
             let body = encode(&self.descriptors, input, request)?;
             let mut response = self
                 .transport
@@ -273,8 +288,15 @@ impl Client {
                 });
             }
             decode(&self.descriptors, output, &bytes)
-        }
-        .await;
+        };
+        let result = if let Some(context) = &self.context {
+            match context.run(operation).await {
+                Ok(result) => result,
+                Err(reason) => Err(Error::Stopped(reason)),
+            }
+        } else {
+            operation.await
+        };
         let span = tracing::Span::current();
         match &result {
             Ok(_) => span.record("outcome", "ok"),

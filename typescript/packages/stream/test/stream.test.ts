@@ -946,17 +946,6 @@ describe("website Stream contract", () => {
     await expect(provider.read("events", { from: 0n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_response" });
   });
 
-  test("hosted reads reject an empty page beyond the canonical tail", async () => {
-    const routes: string[] = [];
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => {
-      const route = new URL(String(input)).pathname.split("/").pop();
-      routes.push(route!);
-      return route === "read" ? new Response('{"records":[]}') : new Response('{"tail":"1"}');
-    } });
-    await expect(provider.read("events", { from: 2n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "out_of_range" });
-    expect(routes).toEqual(["tail"]);
-  });
-
   test("HTTP provider rejects invalid paths and commit shapes before fetching", async () => {
     let calls = 0;
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => { calls += 1; return new Response("null"); } });

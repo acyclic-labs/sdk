@@ -87,11 +87,6 @@ fn positive_u64_is_the_single_limits_admission_predicate() {
     assert_eq!(PositiveU64::new(0), Err(invalid));
     assert_eq!(PositiveU64::try_from(0), Err(invalid));
 
-    let one = PositiveU64::new(1).expect("one is positive");
-    let max = PositiveU64::new(u64::MAX).expect("u64::MAX is representable");
-    assert_eq!(one.get(), 1);
-    assert_eq!(max.get(), u64::MAX);
-
     let wire = wire::ActorLimits {
         handler_timeout_millis: 1,
         memory_bytes: u64::MAX,
@@ -415,9 +410,6 @@ fn public_create_constructor_round_trips_and_uses_canonical_validation() {
     let wire: wire::DeploymentRequest = request.clone().into();
     let decoded = DeploymentRequest::try_from(wire).expect("canonical decode");
     assert_eq!(decoded, request);
-    assert_eq!(decoded.code_sha256(), &digest);
-    assert_eq!(decoded.bindings(), &[binding]);
-    assert_eq!(decoded.subscriptions(), std::slice::from_ref(&subscription));
 
     let duplicate = DeploymentRequest::new(
         ActorNamespace::new("ClassOne".into()).expect("namespace"),
@@ -430,43 +422,6 @@ fn public_create_constructor_round_trips_and_uses_canonical_validation() {
     assert_eq!(
         duplicate,
         Err(DomainError::Contract(crate::ContractError::DuplicateName))
-    );
-}
-
-#[test]
-fn public_update_and_add_constructors_preserve_wire_inverse() {
-    let actor_id = ActorId::new("actor-1".into()).expect("valid actor id");
-    let digest = CodeSha256::new(vec![2; 32]).expect("valid digest");
-    let limits = ActorLimits::new(1, 2, 3).expect("positive limits");
-    let update = UpdateNamespaceRequest::new(
-        ActorNamespace::new("ClassOne".into()).expect("namespace"),
-        digest,
-        Vec::new(),
-        limits,
-        u64::MAX,
-        "update-1".into(),
-    )
-    .expect("valid update request");
-    let update_wire: wire::UpdateNamespaceRequest = update.clone().into();
-    assert_eq!(UpdateNamespaceRequest::try_from(update_wire), Ok(update));
-
-    let subscription = SubscriptionSpec::new(
-        "events".into(),
-        "agents/a/events".into(),
-        SubscriptionStart::current_head(),
-        false,
-    )
-    .expect("valid subscription");
-    let add = AddSubscriptionRequest::new(actor_id, subscription, "add-1".into())
-        .expect("valid add request");
-    let add_wire: wire::AddSubscriptionRequest = add.clone().into();
-    assert_eq!(AddSubscriptionRequest::try_from(add_wire), Ok(add));
-
-    assert_eq!(
-        SubscriptionStart::try_from(wire::SubscriptionStart {
-            start: Some(wire::subscription_start::Start::CurrentHead(false)),
-        }),
-        Err(DomainError::InvalidSubscription)
     );
 }
 

@@ -445,3 +445,38 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
         "real TCP follow lifecycle failed: {result:?}"
     );
 }
+
+#[tokio::test]
+async fn finite_cursor_yields_before_the_rest_of_the_page_and_releases_on_close() {
+    use std::sync::atomic::AtomicUsize;
+    let polled = Arc::new(AtomicUsize::new(0));
+    let seen = polled.clone();
+    let dropped = Arc::new(AtomicBool::new(false));
+    let sentinel = DropSentinel(dropped.clone());
+    let records = futures::stream::poll_fn(move |_| {
+        let _retain = &sentinel;
+        let sequence = seen.fetch_add(1, Ordering::SeqCst) as u64;
+        Poll::Ready(Some(Ok(acyclic_stream::Record {
+            sequence,
+            value: vec![7].into(),
+            commit_id: Default::default(),
+            committed_at_micros: 0,
+            headers: Default::default(),
+        })))
+    });
+    let cursor = NativeStreamFollow {
+        state: FollowState {
+            records: Arc::new(Mutex::new(Some(record_frames(records)))),
+            token: CancellationToken::new(),
+            closed: Arc::new(AtomicBool::new(false)),
+        },
+    };
+    let first = cursor.next_result().await.expect("cursor read failed");
+    assert!(first.error.is_none());
+    assert!(first.value.is_some());
+    assert_eq!(polled.load(Ordering::SeqCst), 1);
+    assert!(!dropped.load(Ordering::SeqCst));
+    cursor.close().await;
+    assert!(dropped.load(Ordering::SeqCst));
+    assert_eq!(polled.load(Ordering::SeqCst), 1);
+}
