@@ -388,12 +388,11 @@ impl CompiledPolicy {
                 .copied()
         };
         let mut other = None;
-        for ch in (1..=0x10ffff).filter_map(char::from_u32) {
-            spend(
-                remaining,
-                self.alphabet.symbols.len() + view.alphabet.symbols.len() + 1,
-            )?;
-            if !symbols().any(|symbol| symbol == ch) {
+        for ch in (0..=0x10ffff).filter_map(char::from_u32) {
+            spend(remaining, 3)?;
+            if self.alphabet.symbol(ch) == Some(self.alphabet.symbols.len())
+                && view.alphabet.symbol(ch) == Some(view.alphabet.symbols.len())
+            {
                 other = Some(ch);
                 break;
             }
