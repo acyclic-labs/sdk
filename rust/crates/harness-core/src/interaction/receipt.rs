@@ -28,27 +28,4 @@ impl ResolutionReceipt {
         }
         Ok(())
     }
-
-    /// Converts only a committed interaction-resolution event into its receipt.
-    pub fn from_apply_result(result: crate::core::ApplyResult) -> Result<Self> {
-        let (event, replayed) = match result {
-            crate::core::ApplyResult::Applied { event } => (event, false),
-            crate::core::ApplyResult::Replayed { event } => (event, true),
-        };
-        let crate::core::EventPayload::InteractionResolved { resolution } = event.payload else {
-            return Err(Error::Conflict(
-                "operation did not resolve an interaction".into(),
-            ));
-        };
-        let receipt = Self {
-            id: resolution.id,
-            version: resolution.expected_version,
-            operation_id: event.operation_id,
-            conversation_revision: event.revision,
-            replayed,
-            outcome: resolution.outcome,
-        };
-        receipt.validate()?;
-        Ok(receipt)
-    }
 }

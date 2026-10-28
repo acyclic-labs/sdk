@@ -44,28 +44,6 @@ pub(crate) fn decode_authority(
         id: authority.id,
     })
 }
-pub(super) fn encode_reference(reference: &EventReference) -> wire::EventReference {
-    wire::EventReference {
-        authority: Some(encode_authority(&reference.authority)),
-        revision: reference.revision,
-    }
-}
-pub(super) fn decode_reference(
-    reference: wire::EventReference,
-    code: wire::ErrorCode,
-    work: &Option<&mut dyn HistoryIo>,
-) -> Result<EventReference> {
-    Ok(EventReference {
-        authority: decode_authority(
-            reference
-                .authority
-                .ok_or_else(|| boundary(work, code, "missing causal authority"))?,
-            code,
-            work,
-        )?,
-        revision: reference.revision,
-    })
-}
 pub(crate) fn decode_scope(scope: wire::Scope) -> Result<Scope> {
     let parent = if scope.parent_proof.is_empty() {
         None

@@ -12,7 +12,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=proto");
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc);
-    config.boxed(".acyclic.harness.v2.ClientFrame.command");
     let descriptor = std::path::PathBuf::from(
         native_environment::variable("OUT_DIR").ok_or("OUT_DIR is unset")?,
     )

@@ -6,22 +6,6 @@ pub fn validate_wire_handshake(request: Vec<u8>, response: Vec<u8>) -> Vec<u8> {
     validate_wire(|| crate::wire_validation::validate_wire_handshake(&request, &response))
 }
 
-/// Validates one complete protobuf command before it crosses a wire adapter.
-#[wasm_bindgen(js_name = validateWireCommand)]
-pub fn validate_wire_command(command: Vec<u8>) -> Vec<u8> {
-    validate_wire(|| crate::wire_codec::decode_command(&command).map(|_| ()))
-}
-
-/// Validates only the protocol identity of a command envelope.
-#[wasm_bindgen(js_name = validateWireCommandProtocol)]
-pub fn validate_wire_command_protocol(command: Vec<u8>) -> Vec<u8> {
-    validate_wire(|| {
-        let command = crate::wire::CommandEnvelope::decode(command.as_slice())
-            .map_err(|error| crate::Error::Invalid(format!("invalid command envelope: {error}")))?;
-        crate::wire_api::validate_command_protocol(&command)
-    })
-}
-
 /// Validates a protobuf replay request against the compiled protocol identity.
 #[wasm_bindgen(js_name = validateWireResume)]
 pub fn validate_wire_resume(request: Vec<u8>) -> Vec<u8> {
@@ -52,12 +36,6 @@ pub fn validate_wire_cancel(request: Vec<u8>) -> Vec<u8> {
     })
 }
 
-/// Validates a protobuf admission identity; returns encoded `Error` bytes, or empty on success.
-#[wasm_bindgen(js_name = validateWireAdmission)]
-pub fn validate_wire_admission(command: Vec<u8>, admission: Vec<u8>) -> Vec<u8> {
-    validate_wire(|| crate::wire_validation::validate_wire_admission(&command, &admission))
-}
-
 /// Validates a protobuf operation status identity; returns encoded `Error` bytes, or empty on success.
 #[wasm_bindgen(js_name = validateWireStatus)]
 pub fn validate_wire_status(request: Vec<u8>, status: Vec<u8>) -> Vec<u8> {
@@ -74,19 +52,6 @@ pub(super) fn validate_wire(validate: impl FnOnce() -> crate::Result<()>) -> Vec
     validate().map_or_else(
         |error| crate::encode_error(&error).encode_to_vec(),
         |_| Vec::new(),
-    )
-}
-
-/// Decodes one canonical event payload using the native event union.
-#[wasm_bindgen(js_name = decodeEventPayload)]
-pub fn decode_event_payload(
-    event_type: String,
-    canonical_payload_json: Vec<u8>,
-) -> Result<JsValue, JsValue> {
-    to_js(
-        &decode_payload_wire(&event_type, &canonical_payload_json, &mut None)
-            .map_err(js_error)?
-            .0,
     )
 }
 

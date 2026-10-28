@@ -1,32 +1,16 @@
-//! Canonical typed wire conversions.
+//! Canonical protocol, authority and error wire conversions.
 #[cfg(feature = "filesystem")]
 use crate::NativeCustody;
-#[cfg(test)]
-use crate::contract::canonical_json_bytes;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-use crate::core::ApplyResult;
 use crate::{
-    AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
-    core::{Action, AggregateKind, Authority, Command, Event, EventPayload, EventReference, Scope},
+    AgentId, Capabilities, Error, Result,
+    core::{AggregateKind, Authority, Scope},
     store::{guarded_boundary as boundary, history::HistoryIo},
     wire,
 };
 use wire::ErrorCode::{Invalid, Storage};
-const EVENT_WIRE_VERSION: &str = "2";
-const PAYLOAD_BOUNDS: crate::executor::json::JsonBounds = crate::executor::json::JsonBounds {
-    maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
-    maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64 + 1,
-    maximum_depth: 256,
-};
+const PROTOCOL_VERSION: &str = "2";
 mod admission;
 pub(crate) use admission::Quota as CodecQuota;
-mod event;
-pub use event::{decode_event_payload, encode_event_envelope};
-mod command;
-pub use command::decode_command_envelope;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-#[doc(hidden)]
-pub use command::{decode_command, encode_apply_result};
 mod protocol;
 #[doc(hidden)]
 pub use protocol::{COMPILED_PROTOCOL, protocol_identity, validate_protocol};
@@ -38,15 +22,9 @@ mod authority;
 pub use authority::decode_aggregate_kind;
 pub use authority::encode_authority;
 pub(crate) use authority::{decode_authority, decode_scope};
-use authority::{decode_reference, encode_reference};
 #[cfg(test)]
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 mod admission_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
-mod command_tests;
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
 mod protocol_tests;
-#[cfg(test)]
-mod tests;

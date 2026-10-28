@@ -43,33 +43,6 @@ macro_rules! fixture {
     };
 }
 
-#[test]
-fn every_admission_root_and_its_fields_have_accounting() {
-    fn covered<T: OwnedBytes>() {}
-    macro_rules! covered { ($($ty:ty),* $(,)?) => {$(covered::<$ty>();)*}; }
-    covered!(
-        Authority, Scope, RecordedScope, EventReference, Event, EventPayload,
-        Command, Action, EffectStatus, EffectAttestation, EffectState,
-        ExtensionRecord, ExtensionStateMigration, ExtensionDependency,
-        ExtensionConfiguration, ExtensionAdmission, crate::Capabilities,
-        ConversationMessage, FileRef, FileDescriptor, VolumeRef, VolumeOwner,
-        ReferencedAttachments, Attachment, ModelContextSelection,
-        InteractionTicket, InteractionKind, ApprovalBinding,
-        InteractionResolution, InteractionOutcome,
-        crate::runtime::TaskRunLimits,
-        crate::source_authorization::ProjectSourceAuthorization,
-        crate::registry::ComponentIdentity, crate::source_authorization::LeaseFence,
-        crate::resources::ProviderRef, crate::resources::ResourceRef,
-        crate::resources::GenerationRef, crate::resources::StreamRef,
-        crate::resources::ContextRef, crate::resources::ArtifactRef,
-        crate::resources::CheckpointRef, crate::resources::SandboxRef,
-        Limits, Value,
-        BTreeMap<crate::EffectId, EffectState>,
-        BTreeSet<(String, Vec<u8>)>,
-        VecDeque<Event>, Vec<(ExtensionDependency, [u8;32])>,
-    );
-}
-
 #[repr(align(256))]
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct AlignedKey(u64);
@@ -173,7 +146,7 @@ fn dto_corpus(payload: Value, spare: usize) -> Result<Vec<Box<dyn OwnedBytes>>> 
         planning: None,
         attempts: Vec::with_capacity(spare),
     };
-    let mut output: Vec<Box<dyn OwnedBytes>> = vec![
+    let output: Vec<Box<dyn OwnedBytes>> = vec![
         Box::new(effect),
         Box::new(payload),
         Box::new(fixture!(ConversationMessage, "conversation-message")?),
@@ -186,77 +159,8 @@ fn dto_corpus(payload: Value, spare: usize) -> Result<Vec<Box<dyn OwnedBytes>>> 
         Box::new(fixture!(ExtensionConfiguration, "extension-configuration")?),
         Box::new(fixture!(ExtensionAdmission, "extension-admission")?),
     ];
-    for payload in event_payloads()? {
-        output.push(Box::new(
-            serde_json::from_value::<EventPayload>(payload)
-                .map_err(|error| Error::Invalid(error.to_string()))?,
-        ));
-    }
-    for action in actions()? {
-        let action = serde_json::from_value::<Action>(action)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        output.push(Box::new(action));
-    }
     Ok(output)
 }
-fn wire(file: &str) -> Result<Value> {
-    match file {
-        "file" => fixture!(Value, "file-ref"),
-        "message" => fixture!(Value, "conversation-message"),
-        "record" => fixture!(Value, "extension-record"),
-        "migration" => fixture!(Value, "extension-state-migration"),
-        "configuration" => fixture!(Value, "extension-configuration"),
-        "resolution" => fixture!(Value, "interaction-resolution"),
-        _ => Err(Error::Invalid("unknown fixture".into())),
-    }
-}
-fn observation() -> Result<Value> {
-    Ok(
-        json!({"provider":"provider", "effect_id":"11111111-1111-1111-1111-111111111111", "attempt_id":"11111111-1111-1111-1111-111111111111", "request_digest":([1_u8;32]), "guarantee":"exactly_once", "result_schema_digest":([1_u8;32]), "status":{"state":"succeeded","result":wire("file")?}, "proof":"AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="}),
-    )
-}
-fn ticket() -> Result<Value> {
-    Ok(
-        json!({"id":"11111111-1111-1111-1111-111111111111", "kind":"question", "request":wire("file")?, "deadline_unix_ms":null, "approval":null}),
-    )
-}
-fn event_payloads() -> Result<Vec<Value>> {
-    let id = "11111111-1111-1111-1111-111111111111";
-    Ok(vec![
-        json!({"kind":"lifecycle_transitioned","from":"pending","to":"active","reason":"reason"}),
-        json!({"kind":"custom","record":wire("record")?}),
-        json!({"kind":"extension_state_migrated","migration":wire("migration")?}),
-        json!({"kind":"extensions_selected","previous":[],"selected":[],"configurations":[wire("configuration")?]}),
-        json!({"kind":"extension_configured","previous":wire("configuration")?,"record":wire("configuration")?}),
-        json!({"kind":"effect_planned","effect_id":id,"provider":"provider","guarantee":"exactly_once","effect_kind":"send","request":wire("file")?,"request_digest":([1_u8;32]),"result_schema":wire("file")?,"result_schema_digest":([1_u8;32])}),
-        json!({"kind":"effect_dispatched","effect_id":id,"attempt_id":id}),
-        json!({"kind":"effect_resolved","observation":observation()?}),
-        json!({"kind":"conversation_bound","agent":id}),
-        json!({"kind":"conversation_message_appended","message":wire("message")?}),
-        json!({"kind":"model_context_selected","selection":{"conversation_revision":1,"message_ids":[id],"checkpoint":wire("file")?}}),
-        json!({"kind":"interaction_opened","ticket":ticket()?}),
-        json!({"kind":"interaction_resolved","resolution":wire("resolution")?}),
-    ])
-}
-fn actions() -> Result<Vec<Value>> {
-    let id = "11111111-1111-1111-1111-111111111111";
-    Ok(vec![
-        json!({"kind":"transition_lifecycle","to":"active","reason":"reason"}),
-        json!({"kind":"append_custom","schema":"test.schema","version":1,"content":wire("file")?}),
-        json!({"kind":"migrate_extension_state","name":"test.schema","previous":{"authority":{"kind":"agent","id":"agent"},"revision":1},"to_version":2,"content":wire("file")?}),
-        json!({"kind":"select_extensions","roots":[]}),
-        json!({"kind":"configure_extension","extension":{"name":"test.schema","version":1},"content":wire("file")?}),
-        json!({"kind":"plan_effect","effect_id":id,"provider":"provider","guarantee":"exactly_once","effect_kind":"send","request":wire("file")?,"result_schema":wire("file")?}),
-        json!({"kind":"mark_effect_dispatched","effect_id":id,"attempt_id":id}),
-        json!({"kind":"resolve_effect","observation":observation()?}),
-        json!({"kind":"bind_conversation","agent":id}),
-        json!({"kind":"append_conversation_message","message":wire("message")?}),
-        json!({"kind":"select_model_context","selection":{"conversation_revision":1,"message_ids":[id],"checkpoint":wire("file")?}}),
-        json!({"kind":"open_interaction","ticket":ticket()?}),
-        json!({"kind":"resolve_interaction","resolution":wire("resolution")?}),
-    ])
-}
-
 #[test]
 fn json_ownership_preserves_the_codec_depth_limit() {
     let mut value = Value::Null;

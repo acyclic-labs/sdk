@@ -27,8 +27,6 @@ schema!(UNKNOWN, "", [], [], []);
 // unlike question/form Values, they have no RawValue expansion to inspect.
 schema!(INTERACTION => Interaction, "type", ["question" => 1, "form" => 2], ["response_schema" => ROOT : 1, "schema" => ROOT : 2], []);
 schema!(CONTROL_RESPONSE => ControlResponse, "", [], ["result" => ROOT : 0], []);
-schema!(EVENT_PAYLOAD => EventPayload, "kind", ["interaction_resolved" => 1, "fork_published" => 2, "project_merge_published" => 4], ["resolution" => RESOLUTION : 1, "seed" => FORK_SEED : 2, "receipt" => PROJECT_MERGE_RECEIPT : 4], []);
-schema!(SNAPSHOT => Snapshot, "", [], ["events" => EVENTS : 0, "projection" => PROJECTION : 0], []);
 schema!(CONTEXT => Context, "", [], ["messages" => MESSAGES : 0], []);
 schema!(SUMMARY_SOURCE => SummarySource, "", [], ["context" => CONTEXT : 0], []);
 schema!(RESPONSE_PROJECTION => ResponseProjection, "", [], ["context" => CONTEXT : 0], []);
@@ -67,16 +65,7 @@ schema!(FORK_SEED => ForkSeed, "", [], ["authorized_source" => PROJECT_SOURCE_AU
 schema!(RECURSIVE_FORK_SOURCE_INTENT => RecursiveForkSourceIntent, "", [], ["request" => FORK_REQUEST : 0], []);
 schema!(RECURSIVE_SOURCE_PIN => RecursiveSourcePin, "", [], ["intent" => RECURSIVE_FORK_SOURCE_INTENT : 0], []);
 schema!(FORK_PREPARATION_COMMAND_RESULTS => ForkPreparationCommandResults, "", [], ["commands" => FORK_PREPARATION_COMMANDS : 0], []);
-schema!(CONFIGURED_RECURSIVE_SOURCE_CHECKPOINT => ConfiguredRecursiveSourceCheckpoint, "", [], ["snapshot" => SNAPSHOT : 0, "request" => FORK_REQUEST : 0], []);
 schema!(RECURSIVE_MERGE_TOOL_PLAN => RecursiveMergeToolPlan, "", [], ["authorized_source" => PROJECT_SOURCE_AUTHORIZATION : 0], []);
-schema!(RESOLUTION, "", [], ["outcome" => ROOT : 0], []);
-schema!(EVENTS, "", [], [], [EVENT]);
-schema!(EVENT, "", [], ["payload" => EVENT_PAYLOAD : 0], []);
-schema!(PROJECTION, "", [], ["interactions" => RESOLUTIONS : 0, "forks" => FORKS : 0], []);
-schema!(RESOLUTIONS, "", [], ["*" => RESOLUTION_TUPLE : 0], []);
-schema!(RESOLUTION_TUPLE, "", [], [], [NONE, RESOLUTION]);
-schema!(FORKS, "", [], [], [FORK_TUPLE]);
-schema!(FORK_TUPLE, "", [], [], [NONE, FORK_SEED]);
 schema!(MESSAGES, "", [], [], [MESSAGE]);
 schema!(MESSAGE, "", [], ["content" => MODEL_CONTENT : 0], []);
 schema!(MODEL, "", [], ["options" => ROOT : 0], []);

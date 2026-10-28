@@ -11,7 +11,7 @@ proptest::proptest! {
         }
         let protocol = protocol_identity();
         let digest = hasher.finalize().to_hex();
-        proptest::prop_assert_eq!(protocol.version, EVENT_WIRE_VERSION);
+        proptest::prop_assert_eq!(protocol.version, PROTOCOL_VERSION);
         proptest::prop_assert_eq!(protocol.descriptor_digest, digest.as_str());
     }
 }

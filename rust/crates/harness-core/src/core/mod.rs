@@ -47,10 +47,7 @@ pub use authority::{
 
 pub use effects::{EffectAttestation, EffectGuarantee, EffectState, EffectStatus};
 
-pub use records::{
-    Action, ApplyResult, Command, Event, EventPayload, EventReference, LifecycleState,
-    RecordedScope,
-};
+pub use records::EventReference;
 
 pub use extension_types::{
     ExtensionAdmission, ExtensionConfiguration, ExtensionDependency, ExtensionForkPolicy,

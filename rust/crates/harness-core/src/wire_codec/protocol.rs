@@ -1,7 +1,7 @@
 use super::*;
 #[doc(hidden)]
 pub const COMPILED_PROTOCOL: (&str, &str) =
-    (EVENT_WIRE_VERSION, crate::build_metadata::DESCRIPTOR_DIGEST);
+    (PROTOCOL_VERSION, crate::build_metadata::DESCRIPTOR_DIGEST);
 #[doc(hidden)]
 pub fn protocol_identity() -> wire::ProtocolIdentity {
     wire::ProtocolIdentity {
