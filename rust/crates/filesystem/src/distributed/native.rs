@@ -400,6 +400,69 @@ impl<'a> AuthorityWork<'a> {
         self.key(&[], domain, &[digest.as_bytes()])
     }
 
+    /// Copies only request containers; immutable payload/path owners are shared.
+    /// Preparation, submission and Unknown retries all use the original ledger.
+    pub(super) fn copy_commit(
+        &mut self,
+        request: &CommitRequest,
+    ) -> Result<CommitRequest, AuthorityStoreError> {
+        let examined = WorkCounters {
+            items_examined: (request.conditions.len() + request.mutations.len()) as u64,
+            ..WorkCounters::UNCHARGED
+        };
+        self.admit(examined)?;
+        let mut conditions = self.vec(request.conditions.len())?;
+        conditions.extend(request.conditions.iter().cloned());
+        let mut mutations = self.vec(request.mutations.len())?;
+        for mutation in &request.mutations {
+            let (CommitMutation::Append { records, .. } | CommitMutation::Fork { records, .. }) =
+                mutation;
+            let copied = WorkCounters {
+                items_examined: records.len() as u64,
+                ..WorkCounters::UNCHARGED
+            };
+            self.admit(copied)?;
+            let mut copied_records = self.vec(records.len())?;
+            copied_records.extend(records.iter().cloned());
+            self.charge(copied)?;
+            mutations.push(match mutation {
+                CommitMutation::Append { path, .. } => CommitMutation::Append {
+                    path: path.clone(),
+                    records: copied_records,
+                },
+                CommitMutation::Fork {
+                    exclude,
+                    source,
+                    destination,
+                    at_tail,
+                    ..
+                } => {
+                    let copied = WorkCounters {
+                        items_examined: exclude.len() as u64,
+                        ..WorkCounters::UNCHARGED
+                    };
+                    self.admit(copied)?;
+                    let mut exclusions = self.vec(exclude.len())?;
+                    exclusions.extend(exclude.iter().cloned());
+                    self.charge(copied)?;
+                    CommitMutation::Fork {
+                        exclude: exclusions,
+                        source: source.clone(),
+                        destination: destination.clone(),
+                        at_tail: *at_tail,
+                        records: copied_records,
+                    }
+                }
+            });
+        }
+        self.charge(examined)?;
+        Ok(CommitRequest {
+            conditions,
+            mutations,
+            idempotency_key: request.idempotency_key.clone(),
+        })
+    }
+
     pub(super) fn request_write_work(
         &self,
         request: &CommitRequest,

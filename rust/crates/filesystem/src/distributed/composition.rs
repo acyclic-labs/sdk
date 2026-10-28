@@ -28,6 +28,12 @@ pub struct FilesystemCommit {
     /// Set once the request was fenced: retries resend these exact
     /// bytes and key, never a request re-fenced under a newer policy cut.
     sealed: bool,
+    /// Frozen provider-evaluated expiry, retained through an Unknown retry.
+    deadline: Option<u64>,
+    /// Every contribution and retry belongs to the same provider scope.
+    owner: Option<[u8; 16]>,
+    // Last: request vectors and held publication guards retire before funding.
+    allocation: AuthorityAllocation,
 }
 
 /// Terminal and nonterminal results of one composed submission.
@@ -49,6 +55,11 @@ pub enum FilesystemCommitOutcome {
 }
 
 impl FilesystemCommit {
+    pub(super) fn seal_request(&mut self, request: CommitRequest, deadline: Option<u64>) {
+        self.request = request;
+        self.deadline = deadline;
+        self.sealed = true;
+    }
     /// Starts from the caller's own conditions, mutations and idempotency key.
     pub fn new(request: CommitRequest) -> Self {
         Self {
@@ -57,6 +68,9 @@ impl FilesystemCommit {
             contributions: Vec::new(),
             holds: Vec::new(),
             sealed: false,
+            deadline: None,
+            owner: None,
+            allocation: None,
         }
     }
 
@@ -65,6 +79,13 @@ impl FilesystemCommit {
     #[must_use]
     pub fn request(&self) -> &CommitRequest {
         &self.request
+    }
+
+    /// Frozen exclusive expiry. External submitters must use `commit_before`
+    /// with this value when present, preserving it through an Unknown retry.
+    #[must_use]
+    pub fn deadline(&self) -> Option<u64> {
+        self.deadline
     }
 
     /// Adds caller conditions or mutations. Filesystem contributions own their
@@ -83,6 +104,34 @@ impl FilesystemCommit {
 
     pub(crate) fn hold(&mut self, hold: crate::PublicationHold) {
         self.holds.push(hold);
+    }
+
+    pub(super) fn reserve_hold(
+        &mut self,
+        work: &mut AuthorityWork<'_>,
+    ) -> Result<(), AuthorityStoreError> {
+        grow(&mut self.holds, 1, work)
+    }
+
+    pub(super) fn check_owner(&self, owner: [u8; 16]) -> Result<(), AuthorityStoreError> {
+        if self.owner.is_some_and(|bound| bound != owner) {
+            return Err(AuthorityStoreError::RejectedStatic(
+                "filesystem commit belongs to another Streams owner",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(super) fn bind_owner(&mut self, owner: [u8; 16]) {
+        self.owner = Some(owner);
+    }
+
+    pub(super) fn retain_request_custody(&mut self, work: &mut AuthorityWork<'_>) {
+        let _ = work;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.allocation = work.request_allocation.take();
+        }
     }
 
     fn ensure_unclaimed(&self, authority: AuthorityId) -> Result<(), AuthorityStoreError> {
@@ -126,6 +175,7 @@ impl FilesystemCommit {
             authorities: self.authorities.len(),
             contributions: self.contributions.len(),
             holds: self.holds.len(),
+            owner: self.owner,
         }
     }
 
@@ -137,12 +187,14 @@ impl FilesystemCommit {
         self.authorities.truncate(mark.authorities);
         self.contributions.truncate(mark.contributions);
         self.holds.truncate(mark.holds);
+        self.owner = mark.owner;
     }
 }
 
 /// A position in a [`FilesystemCommit`] that a failed preparation rolls back to.
 #[derive(Clone, Copy)]
 struct CommitMark {
+    owner: Option<[u8; 16]>,
     conditions: usize,
     mutations: usize,
     authorities: usize,
@@ -181,7 +233,7 @@ const CREATION_ENTRIES: usize = 9;
 
 /// Makes room for `additional` entries through funded authority work. The
 /// caller built its request with only its own capacity.
-fn grow<T>(
+pub(super) fn grow<T>(
     entries: &mut Vec<T>,
     additional: usize,
     work: &mut AuthorityWork<'_>,
@@ -208,6 +260,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         source: Option<(StreamPath, u64, GenerationId)>,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
+        let owner = self.operation_claims().owner_identity();
+        commit.check_owner(owner)?;
         commit.ensure_unclaimed(authority)?;
         // The creation is built in its own request and joins the caller's only
         // once every entry is prepared: a failed preparation leaves the
@@ -240,6 +294,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             revision,
             projection,
         });
+        commit.bind_owner(owner);
         Ok(())
     }
 
@@ -297,6 +352,8 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         generation: GenerationId,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
+        let owner = self.operation_claims().owner_identity();
+        commit.check_owner(owner)?;
         if commit.sealed {
             return Err(AuthorityStoreError::RejectedStatic(
                 "a sealed filesystem commit cannot accept contributions",
@@ -311,6 +368,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             CommitCondition::Tail { path, expected },
             work,
         )?;
+        commit.bind_owner(owner);
         Ok(())
     }
 
@@ -324,36 +382,48 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         commit: &mut FilesystemCommit,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityStoreError> {
+        let owner = self.operation_claims().owner_identity();
+        commit.check_owner(owner)?;
         if !commit.sealed {
-            let request = self.with_policy_cuts(commit.request.clone(), &[], work)?;
+            let copied = work.copy_commit(&commit.request)?;
+            let request = self.with_policy_cuts(copied, &[], work)?;
             commit.request = request;
             commit.sealed = true;
+            commit.bind_owner(owner);
+            commit.retain_request_custody(work);
         }
         Ok(())
     }
 
     /// Seals and submits a composed commit once, through this store's provider.
+    /// Local refusal also returns Unknown with the original owner: this may be
+    /// a retry of an earlier attempt whose publication is still uncertain.
     pub async fn submit(
         &self,
         mut commit: FilesystemCommit,
         work: &mut AuthorityWork<'_>,
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
-        self.seal(&mut commit, work)?;
+        let prepared = self
+            .seal(&mut commit, work)
+            .and_then(|()| work.copy_commit(&commit.request));
+        let request = match prepared {
+            Ok(request) => request,
+            Err(error) => return Ok(FilesystemCommitOutcome::Unknown { commit, error }),
+        };
         let result = self
-            .commit(commit.request.clone(), None, work, None::<&mut ()>)
+            .commit(request, commit.deadline, work, None::<&mut ()>)
             .await;
-        if !work.is_native() {
-            work.release_request()?;
+        if !work.is_native()
+            && let Err(error) = work.release_request()
+        {
+            return Ok(FilesystemCommitOutcome::Unknown { commit, error });
         }
         match result {
             Ok((outcome, _allocation)) => self.settle(commit, outcome, work).await,
-            Err(error) => match error.into_error(std::convert::identity) {
-                // The key already holds different bytes: a retry cannot succeed.
-                error @ AuthorityStoreError::NativeStream(
-                    acyclic_stream::StreamError::IdempotencyMismatch,
-                ) => Err(error),
-                error => Ok(FilesystemCommitOutcome::Unknown { commit, error }),
-            },
+            Err(error) => Ok(FilesystemCommitOutcome::Unknown {
+                commit,
+                error: error.into_error(std::convert::identity),
+            }),
         }
     }
 
@@ -365,7 +435,12 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         outcome: CommitOutcome,
         work: &mut AuthorityWork<'_>,
     ) -> Result<FilesystemCommitOutcome, AuthorityStoreError> {
-        commit.ensure_sealed()?;
+        if let Err(error) = commit
+            .check_owner(self.operation_claims().owner_identity())
+            .and_then(|()| commit.ensure_sealed())
+        {
+            return Ok(FilesystemCommitOutcome::Unknown { commit, error });
+        }
         Ok(match outcome {
             CommitOutcome::Committed(envelope) => {
                 self.refresh_committed(commit, envelope.commit_id, work)
@@ -389,6 +464,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         let FilesystemCommit {
             contributions,
             holds,
+            allocation,
             ..
         } = commit;
         for Contribution {
@@ -407,5 +483,6 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             drop(completed);
         }
         drop(holds);
+        drop(allocation);
     }
 }

@@ -618,7 +618,7 @@ async fn release_refuses_a_committed_different_request_or_mutation_family() -> T
     Ok(())
 }
 
-struct ReleaseSpy {
+pub(super) struct ReleaseSpy {
     inner: Arc<MemoryStream>,
     reads: AtomicBool,
     writes: AtomicBool,
@@ -632,6 +632,7 @@ struct ReleaseSpy {
     deny_probes_after_commit: bool,
     after_conflict: Option<crate::GuardedAppend>,
     corrupt_recovered_locator: Option<(StreamPath, u8)>,
+    commit_attempts: std::sync::atomic::AtomicUsize,
 }
 
 impl ReleaseSpy {
@@ -650,9 +651,20 @@ impl ReleaseSpy {
             deny_probes_after_commit: false,
             after_conflict: None,
             corrupt_recovered_locator: None,
+            commit_attempts: std::sync::atomic::AtomicUsize::new(0),
         }
     }
+    pub(super) fn losing_ack(inner: Arc<MemoryStream>) -> Self {
+        Self {
+            lose_ack: true,
+            ..Self::new(inner)
+        }
+    }
+    pub(super) fn commit_attempts(&self) -> usize {
+        self.commit_attempts.load(SeqCst)
+    }
     async fn interleave(&self) -> Result<(), StreamError> {
+        self.commit_attempts.fetch_add(1, SeqCst);
         self.writes.store(true, SeqCst);
         if let Some(path) = &self.before_lease_close {
             if self.race_once.swap(false, SeqCst) {

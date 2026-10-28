@@ -14,6 +14,10 @@ Choose the backend for your deployment: embedded storage for local durability, h
 
 Start with the [embedded workspace example](https://github.com/acyclic-labs/sdk/blob/main/rust/crates/filesystem/examples/embedded_workspace.rs), the [hosted example](https://github.com/acyclic-labs/sdk/blob/main/README.md), or the [Rust API](https://docs.rs/acyclic-fs/latest/acyclic_fs/). The [v2 protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem) defines compatibility.
 
+The [publication migration inventory](publication-migration.md) describes the
+portable Streams record contribution API, compatibility boundaries and pending
+caller migrations.
+
 ## Hosted generation custody adapter
 
 `AsyncObjectStore::prepare_generation_publication(request, proof, append, scope, budget, cancellation)` runs after the original closure flush and before the exact authority CAS, while `PublicationHold` remains live. It borrows the canonical `PublishGenerationRequest`, `GenerationProof`, and full `GuardedAppend` (original `ProposedCommit`, permit, epoch and expected head). The supplied closure scope includes the exact object identities and original collection sweep count. `StagedObjects` forwards this preparation to the durable provider after draining; it preserves the original collection hold through the CAS. Default preparation creates no hosted custody.
@@ -27,3 +31,110 @@ Before the callback returns, the actual filesystem adapter must durably journal 
 `PublicationHold::none()` lets an external provider complete the existing flush contract after its own durability work. It provides no collection gate, root claim, historical proof custody or release permission. Dropping a hold must not release provider-owned durable claims. Default preparation, an accounting page watermark and delivery ACKs never authorize collection. PR #215 remains incomplete until the filesystem owner implements and supplies the atomic original-proof custody boundary for every relevant transition.
 
 `kernel::decode_generation_publication_evidence` projects retained bytes against the SHA256 from protected original custody, with explicit byte/item bounds and canonical re-encoding. It returns original request, manifest/configuration, root, logical bytes and full append; it does not manufacture a fresh closure proof or final outcome. Execution can reuse this Rust decoder during journal recovery instead of defining a private Cloud proof serialization.
+
+## Filesystem publication migration
+
+M1 adds record contributions to the existing `distributed::FilesystemCommit`.
+It does not change the shipping workspace storage layout or implement G48's
+selected retirement of `Fs<A, O>` and `AsyncAuthorityStore` without a compatibility
+window. Those types are still exported in this milestone's source.
+
+### Record contract and compatibility
+
+The caller chooses a volume path inside its forkable subtree. Its first
+conditional append implicitly creates the stream. Root and companion snapshot
+occupy one `StateRecord::Volume` record. `PortableRoot` contains the root FileId
+and immutable file-table identity, without a volume identity, writer epoch,
+FS hash chain or locator. `From<&GenerationRoot>` is the compatibility
+construction path; legacy root codecs and volume checks still serve callers
+that have not migrated.
+
+V1 framing is `domain || key_length:u16-le || original_key || kind:u8 || body`.
+A volume body begins with `root_file_id:16 || file_table_digest:32`, then the
+companion codec bytes. Companion tags select existing context, sparse-workspace,
+Git-state or permanent-outcome codecs. Framing does not validate their semantic
+payloads: existing typed validators remain required at each consumer boundary.
+
+`observe_record` returns a provider-bound `AuthorizedObservation` with retained
+data. NotFound becomes Absent; empty state streams, transport failures and
+unavailable history are errors. Present state uses Head(path, sequence+1,
+commit_id). The external observation constructor rejects tail-only fences.
+Callers authorize the resolved paths and supply every policy/actor/metadata
+observation to `seal_observed`. These conditions are not capabilities.
+Immutable-root proofs may cover ancestor and symlink traversals without a
+separate fence per immutable object.
+
+Stage and verify the immutable closure before `contribute_record`, retaining
+its `PublicationHold` through submission. `PublicationHold::none()` alone proves
+no remote retention. `seal_observed` freezes explicit facts and the optional
+exclusive Unix-millis deadline without reading the legacy poll-local policy cut.
+It reuses Streams' canonical request validation and full protobuf encoded-total
+admission. Oversize requests are not chunked. Conflicts publish no mutations.
+Cross-provider observations and mixed-owner contributions are refused. Prepared
+commits remain bound to that owner through submission, settlement and retries;
+no cross-provider atomicity is claimed.
+Independent remote sessions may conservatively refuse composition.
+
+A committed envelope yields `RecordReceipt { path, sequence, commit_id }`.
+`read_receipt` performs one exact read and verifies history identity.
+`reconcile_record` handles a lost reply at its predicted append position by
+comparing the original key and complete encoded state, without an idempotency
+lookup. Missing/mismatched history never authorizes execution at a later position.
+Application retention must preserve permanent semantic outcomes; this API does
+not pin all records forever or create another receipt service.
+
+Unknown retains the original request/key, deadline, holds and native request
+custody, including when local retry preparation, cancellation, budget admission,
+owner validation or cleanup refuses. Such refusal cannot settle an earlier
+uncertain publication. Resubmit that commit unchanged. External submitters must honor
+`deadline()` with `commit_before` and settle their actual provider outcome.
+Current head reads still use tail plus exact read pending G01. Multiple
+observations are optimistic facts, not a coherent G05 snapshot. Legacy `seal`
+retains its policy bridge until callers migrate.
+
+### Caller and deletion inventory
+
+| Existing owner paths (relative to src/) | Adoption and deletion release |
+| --- | --- |
+| `facade/{fs,volume_creation,workspace_creation,checkout,publication}.rs`; `kernel/publication/**` | M2/M3: portable volume records and shared builder after live creation/open/publication/recovery parity; retain immutable algorithms |
+| `distributed/{lineage,authority,replay,operations,reservations}.rs`; `distributed/append/**`; `streams_record.rs` | M2/M3: caller subtree placement, exact receipts and actor/root fences before removing epoch/hash/locator/reservation families |
+| `core_state/{contexts,publications}.rs`; `core_state/nodes/store.rs`; `record_store.rs` | G27: conditional typed companion contributions first; del-fs-model deletes WAL/checkpoint/record stores after release |
+| `lazy_workspace/{model,store,fork}.rs`; `workspace_context.rs`; `lineage/**` | M2/M3: root+companion commit and subtree activation; preserve sparse indexes, routing and filtered forks |
+| `git_compat/{store,refs}.rs`; `git_compat/repository/{publication,transitions}.rs` | M2/M3: refs/outcomes in root commit; preserve permanent outcomes and physical write/capture custody |
+| `multi_root/{coordinator,publisher,validation}.rs` | M2: one admitted root/read-set commit before deleting reserve/release and roll-forward phases |
+| `operation_window/{coordinator,streams}.rs` | M3: owning actor checkpoint/alarm and exact provider expiry; delayed alarm cannot admit an expired write |
+| `workspace/access.rs`; `async_storage/policy.rs`; `distributed/policy.rs` | G26: explicit resolver observations before deleting TLS fallback; keep immutable-root proofs |
+| `distributed/actor/generations.rs`; `kernel/publication/combiner/{mod,volume}.rs` | M4: separate retained active ownership from bounded cached facts; evicted Unknown is never Absent or a second combiner |
+| sibling `filesystem-{napi,wasm}/src/**`, `harness-core/src/filesystem/**`, conformance | G48/G49: migrate consumers and retire authority exports without a compatibility window; share the existing G44 work context |
+
+No path is released for deletion by M1. del-fs-native owns native
+view/frontier/rebase integration; this API is not an implemented shared follow
+frontier. del-fs-model owns G44's actual shared work/custody implementation;
+del-core owns its harness consumers and state-free codecs. Propagation of public
+deadline and cancellation into all coordinators remains G49 work. No second work ledger is
+introduced. Report del-fs-model deletion separately from these additions.
+
+### Measurement and acceptance plan
+
+These are proposed experiments, not performance results. Use existing tooling
+on demand; merge admission is compile-only. Record exact SDK/provider revisions,
+host/transport/features, dataset, load, accepted/rejected work, duration and raw
+artifact location. Keep cold, reopened-warm and newly-created-warm paths separate.
+
+| Sweep | Measurements | Negative controls |
+| --- | --- | --- |
+| History 10²–10⁷; 100k dormant volumes and fixed active set | Paths, charged bytes/RSS, recovery reads, flushes, calls and p99 | Same tail/different history; evicted present fact; rejected preparations cannot grow resident history without bound |
+| N=1/8/64 roots, exact conditions+mutations+record bytes | Preparation reads, encoded total, all commits/companion IO, flushes and p99 | Advance one root, metadata, policy or actor cut: nothing moves; oversize refuses without a submitted prefix |
+| Full subtree fork across file count/history/depth | Root PUTs, activation/fork commits, lineage writes and retained paths | Source advances; lost reply; child cannot read unrelated roots. Filtered fork tree work is counted separately |
+| Tool lifecycle and long tools with renewals | Baseline 10 control calls plus 5 per renewal, retained paths, alarms/probes and physical starts | Exact expiry/superseded actor state despite delayed alarm; queued stale write; crash during final reconcile |
+| Lost reply/expired idempotency lookup | Original outcome identity, data/control recovery calls, duplicate effects | Permanent record is authoritative; missing/retention-lost history stays error/Unknown, never replay permission |
+
+New unit cases cover stale-root/policy atomicity, cross-provider refusal,
+encoded-total admission, receipt identity, recovery without idempotency lookup,
+malformed framing and exact expiry retention. Compilation is not runtime proof.
+
+Cloud input is the coordinator-located draft
+`Q:/lanes/cloud/design-audit-v2/fs-scale-draft1.md`, SHA256
+`980BA694CF42AABE595527F6EEB05EC10521BDF228E28A73ADA8AB3BC53CD4FF`.
+A final/superseding disposition remains pending. Subtree splitting and hot
+directory partitioning remain Streams capabilities.

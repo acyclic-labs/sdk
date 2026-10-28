@@ -190,7 +190,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         if !work.is_native() {
             work.hold_opaque(record.0.value.len() as u64)?;
         }
-        if !work.is_native() && record.0.sequence != from {
+        if record.0.sequence != from {
             return Err(authority_corrupt(
                 "Stream returned a non-contiguous record",
                 work,
