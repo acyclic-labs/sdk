@@ -348,7 +348,6 @@ public_names! {
         WrongVolume => "wrong-volume",
         StaleGeneration => "stale-generation",
         InvalidRequest => "invalid-request",
-        InputCapacity => "input-capacity",
         MissingSource => "missing-source",
         DuplicateObject => "duplicate-object",
         DuplicateOperation => "duplicate-operation",
