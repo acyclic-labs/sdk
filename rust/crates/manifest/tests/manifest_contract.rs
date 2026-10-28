@@ -448,7 +448,7 @@ async fn cron_inbox_append_reaches_lowered_actor_wake_subscription()
             .limits()
             .ok_or("namespace limits")?
             .handler_timeout_millis(),
-        1000
+        Some(1000)
     );
     assert_eq!(
         request.bindings().first().ok_or_else(missing)?.resource(),
