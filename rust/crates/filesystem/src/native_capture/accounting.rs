@@ -33,7 +33,7 @@ impl CaptureWorkScope {
         let Some(custody) = self.custody.take() else {
             return Ok(());
         };
-        let bytes = custody.retire();
+        let (bytes, _controls) = custody.retire();
         self.native
             .with_original_leaf(|work| {
                 work.scope(

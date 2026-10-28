@@ -143,5 +143,5 @@ test("receipt coverage matches the probe's checked and invoked method inventory"
   assert.equal(calls.length, count);
   assert.equal(new Set(calls).size, count);
   const f = installedFixture(t);
-  assert.equal(await qualify(f.args, f).native_in_process_rpc_methods, count);
+  assert.equal((await qualify(f.args, f)).native_in_process_rpc_methods, count);
 });

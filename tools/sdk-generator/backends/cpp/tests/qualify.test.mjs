@@ -68,7 +68,7 @@ test("qualifier accepts the maintained consumer's source-derived completion mark
   const marker = JSON.parse(printed[1]) + methods + JSON.parse(printed[2]);
   const f = fixture(t);
   f.hooks.consumer = result => { result.stdout = marker + result.stdout.slice(result.stdout.indexOf("\n") + 1); };
-  assert.equal(await qualify(f.args, f.options).populated_rpc_message_pairs, methods);
+  assert.equal((await qualify(f.args, f.options)).populated_rpc_message_pairs, methods);
 });
 
 test("qualifier rejects the retired 25-pair completion marker", async t => {
