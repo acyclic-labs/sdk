@@ -308,3 +308,48 @@ async fn head_preserves_each_inherited_cut_through_nested_forks_and_reopen()
     }
     Ok(())
 }
+
+#[test]
+fn long_fork_chains_drop_without_recursion() -> Result<(), Box<dyn std::error::Error>> {
+    // A 256 KiB stack overflows if each fork snapshot drops its source
+    // recursively through the whole chain.
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| -> Result<(), StreamError> {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .map_err(|_| StreamError::Unavailable)?;
+            runtime.block_on(async {
+                let provider = MemoryStream::default();
+                let mut source = StreamPath::new("c00000")?;
+                provider
+                    .append(AppendRequest {
+                        path: source.clone(),
+                        records: vec![Bytes::from_static(b"x").into()],
+                        if_tail: Some(0),
+                        idempotency_key: IdempotencyKey::new(b"chain-seed".as_slice())?,
+                    })
+                    .await?;
+                for index in 1..20_000 {
+                    let destination = StreamPath::new(format!("c{index:05}"))?;
+                    provider
+                        .fork(ForkRequest {
+                            exclude: Vec::new(),
+                            source,
+                            destination: destination.clone(),
+                            at_tail: None,
+                            idempotency_key: IdempotencyKey::new(
+                                format!("chain-{index}").into_bytes(),
+                            )?,
+                        })
+                        .await?;
+                    source = destination;
+                }
+                drop(provider);
+                Ok(())
+            })
+        })?
+        .join()
+        .map_err(|_| "stack overflow while dropping a fork chain")??;
+    Ok(())
+}

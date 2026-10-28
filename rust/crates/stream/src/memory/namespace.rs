@@ -117,6 +117,20 @@ struct NamespaceNode {
     origin: Option<ForkMarker>,
     _allocation: Allocation,
 }
+impl Drop for NamespaceNode {
+    fn drop(&mut self) {
+        // Fork snapshots chain through earlier destinations without bound.
+        // Retire uniquely owned links iteratively; children stay bounded by
+        // path depth.
+        let mut cursor = self.origin.take().map(|origin| origin.snapshot);
+        while let Some(node) = cursor {
+            let Ok(mut node) = Arc::try_unwrap(node) else {
+                break;
+            };
+            cursor = node.origin.take().map(|origin| origin.snapshot);
+        }
+    }
+}
 #[derive(Clone)]
 struct ForkMarker {
     source: StreamPath,
