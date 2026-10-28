@@ -12,7 +12,7 @@
     "actors": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:9019ecaff1861fbd6965b4ff39ed6e422a105235ead11d536aa7fc60cc97ea20",
+      "schemaDigest": "sha256:1542e31958b7f4e69f5b9c330acb2154f83b4114e14b140ee3facb550e1c64e3",
       "descriptorDigest": "sha256:e96e93fc1b4412020ef8d74b579c634eaa912d430dd19324334bb0012c0f0118"
     },
     "harness": {
@@ -30,7 +30,7 @@
     "stream": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:6aa38ad924b271abc1ba10da800db9baf8c69de9b36833c4c00756f793fcfd34",
+      "schemaDigest": "sha256:024499b7fe5c27e4ea499107fcbdd4b59b18f4197afea0890dcfa7a40cdb77ba",
       "descriptorDigest": "sha256:ecdc48a3522656c03571b869800a1451c83fa69a5deeb38f0dbcd7fa637f9ba0",
       "conformanceDigest": "sha256:5d7f705163d26f6067fffbc576ed5e8871c145307805bdc84af3f97b1d76d979"
     },
