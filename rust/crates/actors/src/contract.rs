@@ -63,11 +63,7 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
         || !domain::valid_code_sha256(&request.code_sha256)
         || !valid_idempotency_key(&request.idempotency_key)
         || !match (&request.limits, &request.worker_limits) {
-            (Some(limits), None) => {
-                limits.handler_timeout_millis > 0
-                    && limits.memory_bytes > 0
-                    && limits.checkpoint_bytes > 0
-            }
+            (Some(limits), None) => domain::ActorLimits::try_from(limits.clone()).is_ok(),
             (None, Some(limits)) => {
                 limits.cpu_millis > 0
                     && limits.memory_bytes > 0
@@ -115,11 +111,10 @@ pub fn validate_update(request: &wire::UpdateNamespaceRequest) -> Result<(), Con
         || crate::addressing::NamespaceId::for_deployment(request.namespace_id.as_bytes()).is_err()
         || !domain::valid_code_sha256(&request.code_sha256)
         || !valid_idempotency_key(&request.idempotency_key)
-        || !request.limits.as_ref().is_some_and(|limits| {
-            limits.handler_timeout_millis > 0
-                && limits.memory_bytes > 0
-                && limits.checkpoint_bytes > 0
-        })
+        || !request
+            .limits
+            .as_ref()
+            .is_some_and(|limits| domain::ActorLimits::try_from(limits.clone()).is_ok())
     {
         return Err(ContractError::InvalidArgument);
     }

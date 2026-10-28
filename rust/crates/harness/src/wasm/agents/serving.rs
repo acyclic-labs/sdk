@@ -144,12 +144,8 @@ impl WasmAgentServer {
                         })?,
                     history_turns: None,
                 },
-                actors: ActorLimits::new(
-                    options.handler_timeout_ms.unwrap_or(TURN_BACKSTOP_MS),
-                    1 << 20,
-                    1 << 16,
-                )
-                .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
+                actors: ActorLimits::new(options.handler_timeout_ms, None, None)
+                    .map_err(|error| js_error(Error::Invalid(error.to_string())))?,
                 clock: Arc::new(SystemClock),
                 approval_policy: options.preset.approval_policy.clone(),
             },
