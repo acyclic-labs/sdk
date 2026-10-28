@@ -304,7 +304,15 @@ async fn prepared_ingress(provider: &impl crate::NativeStreamProvider) {
         idempotency_key: IdempotencyKey::new("changes-invalid").unwrap(),
     };
     let (prepared, _guard) = provider
-        .native_prepare_commit(request.clone(), crate::MAX_RECORD_BYTES, meter.original())
+        .native_prepare_commit(
+            request.clone(),
+            crate::PreparedRecordCapacity {
+                payload_bytes: crate::MAX_RECORD_BYTES,
+                keys: 64,
+                attributes: 16,
+            },
+            meter.original(),
+        )
         .await
         .unwrap()
         .unwrap()
@@ -322,7 +330,15 @@ async fn prepared_ingress(provider: &impl crate::NativeStreamProvider) {
             .is_none()
     );
     let (prepared, _guard) = provider
-        .native_prepare_commit(request, crate::MAX_RECORD_BYTES, meter.original())
+        .native_prepare_commit(
+            request,
+            crate::PreparedRecordCapacity {
+                payload_bytes: crate::MAX_RECORD_BYTES,
+                keys: 64,
+                attributes: 16,
+            },
+            meter.original(),
+        )
         .await
         .unwrap()
         .unwrap()

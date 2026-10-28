@@ -42,7 +42,7 @@ impl MemoryStream {
     pub(crate) async fn prepare(
         &self,
         mut request: CommitRequest,
-        maximum: usize,
+        capacity: crate::PreparedRecordCapacity,
     ) -> Result<
         (
             PreparedCommit,
@@ -50,13 +50,19 @@ impl MemoryStream {
         ),
         StreamError,
     > {
+        let maximum = capacity.payload_bytes;
         let expected = prepared_tail(&mut request, maximum)?;
         let work = self.work.as_ref().ok_or(StreamError::Unavailable)?;
         let input = self.request_claim(&request)?;
-        let maximum_hash = prepared_hash_bytes(&request, maximum);
-        let headers = work.record(crate::record_headers::PreparedHeaders::new(
+        let maximum_hash = prepared_hash_bytes(&request, capacity)?;
+        let publication_hash = maximum_hash
+            .checked_add(identity_bytes())
+            .ok_or(StreamError::Capacity)?;
+        let headers = work.record(crate::record_headers::PreparedHeaders::new_shape(
             &work.meter,
             maximum,
+            capacity.keys,
+            capacity.attributes,
         ))?;
         let _publication = self.publication.lock().await;
         let mut state = self.state.write().await;
@@ -118,7 +124,7 @@ impl MemoryStream {
             NativeCodecWork {
                 copied: (2 * std::mem::size_of::<Record>())
                     .max(4 * std::mem::size_of::<CommitConflict>()) as u64,
-                hashed: maximum_hash + identity_bytes(),
+                hashed: publication_hash,
                 ..NativeCodecWork::default()
             },
         ))?;
@@ -433,13 +439,23 @@ fn record_codec(
     })
 }
 
-fn prepared_hash_bytes(request: &CommitRequest, maximum: usize) -> u64 {
-    // Header payload is included in `maximum`; its canonical length words
+fn prepared_hash_bytes(
+    request: &CommitRequest,
+    capacity: crate::PreparedRecordCapacity,
+) -> Result<u64, StreamError> {
+    // Header payload is included in `payload_bytes`; its canonical length words
     // are additional digest input, even for empty keys and attribute values.
+    let keys = (capacity.keys as u64)
+        .checked_mul(8)
+        .ok_or(StreamError::Capacity)?;
+    let attributes = (capacity.attributes as u64)
+        .checked_mul(16)
+        .ok_or(StreamError::Capacity)?;
     commit_hash_bytes(request)
-        + maximum as u64
-        + 8 * crate::MAX_RECORD_KEYS as u64
-        + 16 * crate::MAX_RECORD_ATTRIBUTES as u64
+        .checked_add(capacity.payload_bytes as u64)
+        .and_then(|bytes| bytes.checked_add(keys))
+        .and_then(|bytes| bytes.checked_add(attributes))
+        .ok_or(StreamError::Capacity)
 }
 
 fn bind_body(plan: &mut CommitPlan, body: crate::AppendRecord) -> Result<(), StreamError> {
