@@ -6,7 +6,9 @@
 //! - `r/<blake3(root)>/<blake3(batch)>` holds one retained reference batch;
 //! - `i/<child>/<holder>` marks one inbound reference: `e<parent>` for an
 //!   envelope, `r<blake3(root)>.<blake3(batch)>` for a root batch;
-//! - `d/<digest>/<nonce>` is one deleter's tombstone.
+//! - `d/<digest>/<nonce>` is one deleter's tombstone;
+//! - `g/<revision>` is a collection revision, created by its one collector;
+//! - `a/<revision>/<digest>` admits a put at that revision.
 //!
 //! Delete never breaks a live reference, across processes, by two flags over
 //! create-if-absent and listing: a referencing writer creates its `i/` keys,
@@ -16,10 +18,17 @@
 //! bytes being deleted are never reported durable. Index keys are written
 //! before their holder and removed after it, so a stale key only ever refuses.
 //!
-//! Collection excludes in-process puts, retains and deletes through one
-//! account gate; it runs as the account's single collector. A blob admitted
-//! since the previous collection cut stays protected until a root retains it
-//! or one full collection passes without that.
+//! Publish, then commit the reference. Collection is fenced by revision, never
+//! by wall clock: the collection that creates revision `n` keeps every blob
+//! admitted at `n - 1` or later, so a put protects its blob for one full
+//! collection after it returns, within which a retain or a referencing put
+//! must pin it. A put admits before its payload and again, at the revision
+//! then current, before its envelope; a collection sweeps through the delete
+//! protocol and refuses any blob admitted since its fence. A put whose one
+//! envelope create stalls across a whole collection can still lose its
+//! payload: closing that needs a medium commit conditioned on revision. An
+//! index key of a writer that crashed before committing pins its child until
+//! that holder commits; it never refuses wrongly in the unsafe direction.
 use crate::blob::{Envelope, corrupt, decode_batch, encode_batch, invalid};
 use crate::{
     ByteRange, Collection, Delete, Digest, Error, Head, Kind, Manifest, Medium, MediumError,
@@ -50,13 +59,6 @@ impl<M> Clone for Store<M> {
 #[derive(Default)]
 struct State {
     gate: tokio::sync::RwLock<()>,
-    admitted: Mutex<Admitted>,
-}
-
-#[derive(Default)]
-struct Admitted {
-    epoch: u64,
-    blobs: HashMap<Digest, u64>,
 }
 
 impl<M: Medium> Store<M> {
@@ -177,18 +179,6 @@ impl<M: Medium> Account<M> {
         format!("r{}.{}", Digest::of(root.as_bytes()).to_hex(), batch.to_hex())
     }
 
-    /// The key a holder tag names, to tell a live index key from a stale one.
-    fn holder_key(&self, tag: &str) -> Result<String, Error> {
-        match tag.split_at_checked(1) {
-            Some(("e", parent)) => Ok(self.envelope_key(&Digest::from_hex(parent).map_err(|_| corrupt())?)),
-            Some(("r", batch)) => {
-                let (root, batch) = batch.split_once('.').ok_or_else(corrupt)?;
-                Ok(format!("{}r/{root}/{batch}", self.prefix))
-            }
-            _ => Err(corrupt()),
-        }
-    }
-
     /// Marks `tag` as holding each of `children`, then admits them: refused
     /// when one is absent or tombstoned. `None` means an index write's outcome
     /// is unknown, so the holder must not commit.
@@ -241,12 +231,122 @@ impl<M: Medium> Account<M> {
             .and_then(|hex| Digest::from_hex(hex).map_err(|_| corrupt()))
     }
 
-    fn admit(&self, digests: impl IntoIterator<Item = Digest>) {
-        let mut admitted = self.state.admitted.lock().unwrap_or_else(PoisonError::into_inner);
-        let epoch = admitted.epoch;
-        for digest in digests {
-            admitted.blobs.insert(digest, epoch);
+    fn revision_key(&self, revision: u64) -> String {
+        format!("{}g/{revision:020}", self.prefix)
+    }
+
+    fn admission_prefix(&self, revision: u64) -> String {
+        format!("{}a/{revision:020}/", self.prefix)
+    }
+
+    /// The revision a `g/` or `a/` key names.
+    fn revision_of(key: &str, depth: usize) -> Result<u64, Error> {
+        key.rsplit('/')
+            .nth(depth)
+            .and_then(|revision| revision.parse().ok())
+            .ok_or_else(corrupt)
+    }
+
+    /// The current collection revision: the greatest `g/` key, zero before any.
+    async fn revision(&self) -> Result<u64, Error> {
+        let mut current = 0;
+        for (key, _) in self.list_all(&format!("{}g/", self.prefix)).await? {
+            current = current.max(Self::revision_of(&key, 0)?);
         }
+        Ok(current)
+    }
+
+    /// Admits `digest` at the current revision, confirmed by reading the
+    /// revision again after the write. `None` means a write's outcome is unknown.
+    async fn admit(&self, digest: &Digest) -> Result<Option<()>, Error> {
+        let mut revision = self.revision().await?;
+        loop {
+            let key = format!("{}{}", self.admission_prefix(revision), digest.to_hex());
+            match self.medium.create(&key, OwnedBytes::new()).await {
+                Ok(_) => {}
+                Err(MediumError::Ambiguous(_)) => return Ok(None),
+                Err(error) => return Err(medium(error)),
+            }
+            let current = self.revision().await?;
+            if current == revision {
+                return Ok(Some(()));
+            }
+            revision = current;
+        }
+    }
+
+    /// Whether `digest` was admitted at revision `from` or later.
+    async fn admitted(&self, digest: &Digest, from: u64) -> Result<bool, Error> {
+        for revision in from..=self.revision().await? {
+            let key = format!("{}{}", self.admission_prefix(revision), digest.to_hex());
+            if self.medium.read(&key, Some(0..0)).await.map_err(medium)?.is_some() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Removes `digest` under a tombstone unless it is referenced, or, for a
+    /// collection fenced at `fence`, admitted since. An absent envelope still
+    /// clears a collection's orphan payload.
+    async fn remove_blob(&self, digest: Digest, fence: Option<u64>) -> Result<Delete, Error> {
+        let mut nonce = [0; 16];
+        getrandom::fill(&mut nonce).map_err(|_| Error::from(ErrorCode::Unavailable))?;
+        let tombstone = format!("{}{}", self.tombstone_prefix(&digest), hex::encode(nonce));
+        match self.medium.create(&tombstone, OwnedBytes::new()).await {
+            Ok(_) => {}
+            Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
+            Err(error) => return Err(medium(error)),
+        }
+        let refusal = match fence {
+            Some(from) if self.admitted(&digest, from).await? => Some(Delete::Referenced),
+            _ => match self.envelope(&digest).await? {
+                None => {
+                    if fence.is_some() {
+                        self.medium
+                            .remove(&self.payload_key(&digest))
+                            .await
+                            .map_err(medium)?;
+                    }
+                    Some(Delete::Absent)
+                }
+                Some(_)
+                    if !self
+                        .medium
+                        .list(&self.index_prefix(&digest), None, 1)
+                        .await
+                        .map_err(medium)?
+                        .is_empty() =>
+                {
+                    Some(Delete::Referenced)
+                }
+                Some(envelope) => {
+                    self.medium
+                        .remove(&self.envelope_key(&digest))
+                        .await
+                        .map_err(medium)?;
+                    self.medium
+                        .remove(&self.payload_key(&digest))
+                        .await
+                        .map_err(medium)?;
+                    self.unreference(&envelope.references, &Self::envelope_tag(&digest))
+                        .await?;
+                    None
+                }
+            },
+        };
+        if let Some(refusal) = refusal {
+            self.medium.remove(&tombstone).await.map_err(medium)?;
+            return Ok(refusal);
+        }
+        // Writers that indexed this blob after its check saw the tombstone and
+        // refused; their keys, and every tombstone, a crashed deleter's too, go.
+        for prefix in [self.index_prefix(&digest), self.tombstone_prefix(&digest)] {
+            for (key, _) in self.list_all(&prefix).await? {
+                self.medium.remove(&key).await.map_err(medium)?;
+            }
+        }
+        Ok(Delete::Deleted)
     }
 
     async fn envelope(&self, digest: &Digest) -> Result<Option<Envelope>, Error> {
@@ -292,6 +392,9 @@ impl<M: Medium> Account<M> {
         if let Some(existing) = self.envelope(&digest).await? {
             return self.existing(digest, &existing, &envelope).await;
         }
+        if self.admit(&digest).await?.is_none() {
+            return Ok(Put::Unknown);
+        }
         if self
             .reference(&envelope.references, &Self::envelope_tag(&digest))
             .await?
@@ -304,8 +407,9 @@ impl<M: Medium> Account<M> {
             Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
             Err(error) => return Err(medium(error)),
         }
-        // A deleter past its checks may yet remove the payload just found.
-        if self.doomed(&digest).await? {
+        // Admit at the revision now current, then defer to a deleter or
+        // collector past its checks: it may yet remove the payload just found.
+        if self.admit(&digest).await?.is_none() || self.doomed(&digest).await? {
             return Ok(Put::Unknown);
         }
         match self
@@ -313,10 +417,7 @@ impl<M: Medium> Account<M> {
             .create(&self.envelope_key(&digest), envelope.encode().into())
             .await
         {
-            Ok(true) => {
-                self.admit([digest]);
-                Ok(Put::Created { verified })
-            }
+            Ok(true) => Ok(Put::Created { verified }),
             Ok(false) => {
                 let existing = self.envelope(&digest).await?.ok_or_else(corrupt)?;
                 self.existing(digest, &existing, &envelope).await
@@ -334,10 +435,9 @@ impl<M: Medium> Account<M> {
         if existing.references != wanted.references {
             return Err(ErrorCode::Conflict.into());
         }
-        if self.doomed(&digest).await? {
+        if self.admit(&digest).await?.is_none() || self.doomed(&digest).await? {
             return Ok(Put::Unknown);
         }
-        self.admit([digest]);
         Ok(Put::AlreadyExists {
             verified: Verified {
                 digest,
@@ -548,55 +648,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
 
     async fn delete(&self, digest: Digest) -> Result<Delete, Error> {
         let _gate = self.state.gate.read().await;
-        let mut nonce = [0; 16];
-        getrandom::fill(&mut nonce).map_err(|_| Error::from(ErrorCode::Unavailable))?;
-        let tombstone = format!("{}{}", self.tombstone_prefix(&digest), hex::encode(nonce));
-        match self.medium.create(&tombstone, OwnedBytes::new()).await {
-            Ok(_) => {}
-            Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
-            Err(error) => return Err(medium(error)),
-        }
-        let refusal = match self.envelope(&digest).await? {
-            None => Some(Delete::Absent),
-            Some(_)
-                if !self
-                    .medium
-                    .list(&self.index_prefix(&digest), None, 1)
-                    .await
-                    .map_err(medium)?
-                    .is_empty() =>
-            {
-                Some(Delete::Referenced)
-            }
-            Some(envelope) => {
-                self.medium
-                    .remove(&self.envelope_key(&digest))
-                    .await
-                    .map_err(medium)?;
-                self.medium
-                    .remove(&self.payload_key(&digest))
-                    .await
-                    .map_err(medium)?;
-                self.unreference(&envelope.references, &Self::envelope_tag(&digest))
-                    .await?;
-                None
-            }
-        };
-        if let Some(refusal) = refusal {
-            self.medium.remove(&tombstone).await.map_err(medium)?;
-            return Ok(refusal);
-        }
-        // Every tombstone, a crashed deleter's too: the blob is gone.
-        for (key, _) in self.list_all(&self.tombstone_prefix(&digest)).await? {
-            self.medium.remove(&key).await.map_err(medium)?;
-        }
-        self.state
-            .admitted
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .blobs
-            .remove(&digest);
-        Ok(Delete::Deleted)
+        self.remove_blob(digest, None).await
     }
 
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
@@ -639,10 +691,6 @@ impl<M: Medium> crate::Blobs for Account<M> {
             Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
             Err(error) => return Err(medium(error)),
         }
-        let mut admitted = self.state.admitted.lock().unwrap_or_else(PoisonError::into_inner);
-        for reference in &references {
-            admitted.blobs.remove(reference);
-        }
         Ok(Retained {
             references: references.len() as u64,
         })
@@ -669,17 +717,27 @@ impl<M: Medium> crate::Blobs for Account<M> {
 
     async fn collect(&self) -> Result<Collection, Error> {
         let _gate = self.state.gate.write().await;
-        let (epoch, protected) = {
-            let mut admitted = self.state.admitted.lock().unwrap_or_else(PoisonError::into_inner);
-            admitted.epoch += 1;
-            let cut = admitted.epoch - 1;
-            // Admitted before the previous cut and still unrooted: no longer protected.
-            admitted.blobs.retain(|_, admitted| *admitted >= cut);
-            (admitted.epoch, admitted.blobs.keys().copied().collect::<Vec<_>>())
-        };
+        let fence = self.revision().await?;
+        let epoch = fence + 1;
+        // One collector wins each revision, across processes.
+        match self.medium.create(&self.revision_key(epoch), OwnedBytes::new()).await {
+            Ok(true) => {}
+            Ok(false) => return Err(ErrorCode::Conflict.into()),
+            Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
+            Err(error) => return Err(medium(error)),
+        }
+        for (key, _) in self.list_all(&format!("{}g/", self.prefix)).await? {
+            if Self::revision_of(&key, 0)? < fence {
+                self.medium.remove(&key).await.map_err(medium)?;
+            }
+        }
         let mut marked = HashSet::new();
         let mut pending = self.rooted().await?;
-        pending.extend(protected);
+        for revision in [fence, epoch] {
+            for (key, _) in self.list_all(&self.admission_prefix(revision)).await? {
+                pending.push(self.digest_from_key(&key)?);
+            }
+        }
         while let Some(digest) = pending.pop() {
             if !marked.insert(digest) {
                 continue;
@@ -701,33 +759,26 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 collection.marked += 1;
                 continue;
             }
-            let references = self.envelope(&digest).await?.map(|envelope| envelope.references);
-            self.medium.remove(&key).await.map_err(medium)?;
-            self.unreference(&references.unwrap_or_default(), &Self::envelope_tag(&digest))
-                .await?;
-            collection.swept += 1;
-        }
-        // Index keys whose holder never committed: interrupted puts and retains.
-        for (key, _) in self.list_all(&format!("{}i/", self.prefix)).await? {
-            let tag = key.rsplit('/').next().ok_or_else(corrupt)?;
-            if self
-                .medium
-                .read(&self.holder_key(tag)?, Some(0..0))
-                .await
-                .map_err(medium)?
-                .is_none()
-            {
-                self.medium.remove(&key).await.map_err(medium)?;
+            let stored = self.envelope(&digest).await?.map_or(0, |envelope| envelope.stored);
+            if self.remove_blob(digest, Some(fence)).await? == Delete::Deleted {
+                collection.swept += 1;
+                collection.swept_bytes += stored;
             }
         }
-        // Payloads without an envelope: swept blobs and interrupted puts.
+        // Payloads without an envelope: interrupted puts past their grace.
         for (key, size) in self.list_all(&format!("{}p/", self.prefix)).await? {
             let digest = self.digest_from_key(&key)?;
-            if marked.contains(&digest) {
-                continue;
+            if !marked.contains(&digest)
+                && self.remove_blob(digest, Some(fence)).await? == Delete::Absent
+            {
+                collection.swept_bytes += size;
             }
-            self.medium.remove(&key).await.map_err(medium)?;
-            collection.swept_bytes += size;
+        }
+        // Admissions before the fence no longer protect anything.
+        for (key, _) in self.list_all(&format!("{}a/", self.prefix)).await? {
+            if Self::revision_of(&key, 1)? < fence {
+                self.medium.remove(&key).await.map_err(medium)?;
+            }
         }
         Ok(collection)
     }

@@ -315,7 +315,7 @@ async fn delete_reads_only_its_inbound_index() -> Result<(), Box<dyn std::error:
 }
 
 #[tokio::test]
-async fn collection_sweeps_index_keys_of_holders_that_never_committed() -> Result<(), Box<dyn std::error::Error>> {
+async fn an_interrupted_holders_index_key_pins_its_child() -> Result<(), Box<dyn std::error::Error>> {
     let store = Store::new(MemoryMedium::default());
     let blobs = store.account(b"acct")?;
     let child = blobs.put(vec![3; 8].into(), Vec::new()).await?.verified().ok_or("unknown")?.digest;
@@ -326,8 +326,29 @@ async fn collection_sweeps_index_keys_of_holders_that_never_committed() -> Resul
         Digest::of(b"interrupted put").to_hex()
     );
     store.medium().create(&stale, OwnedBytes::new()).await?;
+    // The holder may yet commit on retry, so the key is honoured: it leaks, never breaks.
+    for _ in 0..3 {
+        blobs.collect().await?;
+    }
     assert_eq!(blobs.delete(child).await?, Delete::Referenced);
-    blobs.collect().await?;
-    assert_eq!(blobs.delete(child).await?, Delete::Deleted);
+    assert_eq!(blobs.head(child).await?.length, 8);
+    Ok(())
+}
+
+#[tokio::test]
+async fn another_processs_collection_keeps_a_fresh_blob_for_one_full_pass() -> Result<(), Box<dyn std::error::Error>> {
+    let medium = MemoryMedium::default();
+    let (writing, collecting) = (Store::new(medium.clone()).account(b"acct")?, Store::new(medium).account(b"acct")?);
+    let pinned = writing.put(vec![4; 8].into(), Vec::new()).await?.verified().ok_or("unknown")?.digest;
+    let loose = writing.put(vec![5; 8].into(), Vec::new()).await?.verified().ok_or("unknown")?.digest;
+    // The writer's admission is durable: the other process's first pass keeps both.
+    assert_eq!(collecting.collect().await?.swept, 0);
+    writing.retain(&RootId::new(*b"root")?, vec![pinned]).await?;
+    assert_eq!(collecting.collect().await?.swept, 1);
+    assert_eq!(collecting.head(pinned).await?.length, 8);
+    assert_eq!(collecting.head(loose).await.map_err(|error| error.code), Err(ErrorCode::NotFound));
+    // A re-put refreshes the grace of bytes still present.
+    let refreshed = writing.put(vec![4; 8].into(), Vec::new()).await?;
+    assert!(matches!(refreshed, Put::AlreadyExists { .. }));
     Ok(())
 }
