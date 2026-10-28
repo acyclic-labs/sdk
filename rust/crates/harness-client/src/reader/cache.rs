@@ -372,6 +372,19 @@ impl RecordCache {
         }
     }
 
+    pub(super) fn clear_listings(&mut self) {
+        let keys: Vec<_> = self
+            .entries
+            .keys()
+            .chain(self.passed.keys())
+            .filter(|key| matches!(key, Key::Listing(..)))
+            .cloned()
+            .collect();
+        for key in keys {
+            self.remove(&key);
+        }
+    }
+
     /// Highest observed exclusive tail.
     #[must_use]
     pub fn tail(&self, stream: &StreamPath) -> Option<u64> {

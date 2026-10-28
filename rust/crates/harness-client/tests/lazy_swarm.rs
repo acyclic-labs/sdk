@@ -992,6 +992,11 @@ fn listings_follow_server_cursors_versions_and_witnesses() {
     // A path was created meanwhile: re-learn the version from a first page.
     reader.complete(id, Outcome::Failed(Failure::Changed), 0);
     assert!(matches!(reader.connectivity(), Connectivity::Online));
+    assert!(
+        reader.poll(0).is_empty(),
+        "old continuation cannot run before a new frame"
+    );
+    assert!(reader.cache().listing(&parent, 0).is_none());
     let (id, index, after, at) = one(&mut reader, vec![want(1, Some(&witness))]).unwrap();
     assert_eq!((index, after, at), (0, None, None));
     reader.complete(id, page(&[], Some("m"), 2), 0);

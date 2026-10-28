@@ -887,8 +887,23 @@ impl Reader {
         let protect = Some(self.frame_mark);
         let accepted = match (&flight.key, outcome) {
             (_, Outcome::Failed(Failure::Changed)) => {
-                // Not an outage: the next first page carries the new version.
+                // This witness covers the whole hierarchy, not just the page
+                // reporting it. Old continuations cannot be rebound to a new
+                // version by an intervening reply or another driver wake.
                 self.hierarchy = None;
+                self.cache.clear_listings();
+                self.anchors.clear();
+                self.demand
+                    .retain(|key, _| !matches!(key, OpKey::Children(..)));
+                let cancelled: Vec<_> = self
+                    .inflight
+                    .iter()
+                    .filter(|(_, flight)| matches!(flight.key, OpKey::Children(..)))
+                    .map(|(id, _)| *id)
+                    .collect();
+                for id in cancelled {
+                    self.cancel(id);
+                }
                 self.report_issue(flight.key.path(), ReadIssue::HierarchyChanged);
                 return;
             }

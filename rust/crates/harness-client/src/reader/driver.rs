@@ -309,6 +309,97 @@ mod tests {
     use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
 
     #[test]
+    fn changed_hierarchy_abandons_old_pages_before_another_driver_wake() {
+        use super::super::{Priority, ReaderPolicy, Want};
+
+        futures::executor::block_on(async {
+            let provider = MemoryStream::default();
+            for path in ["a/one", "a/two", "b/one", "b/two"] {
+                provider
+                    .append(AppendRequest {
+                        path: StreamPath::new(path).unwrap(),
+                        records: vec![b"value".as_slice().into()],
+                        if_tail: None,
+                        idempotency_key: IdempotencyKey::new(path.as_bytes().to_vec()).unwrap(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            let mut reader = Reader::new(ReaderPolicy {
+                listing_limit: 1,
+                ..ReaderPolicy::default()
+            })
+            .unwrap();
+            let record_path = StreamPath::new("a/one").unwrap();
+            let head = provider.head(record_path.clone()).await.unwrap();
+            reader.observed_head(&record_path, head, None);
+            let parents = [StreamPath::new("a").unwrap(), StreamPath::new("b").unwrap()];
+            let want = |parent: &StreamPath, index| {
+                (
+                    Want::Listing {
+                        parent: parent.clone(),
+                        index,
+                        tail: None,
+                        witness: None,
+                    },
+                    Priority::Visible,
+                )
+            };
+            for parent in &parents {
+                reader.plan([want(parent, 0)]);
+                let op = reader.poll(0).pop().unwrap();
+                let id = op.id();
+                reader.complete(id, execute(&provider, op).await, 0);
+            }
+            reader.plan(parents.iter().map(|parent| want(parent, 1)));
+            let mut ops = reader.poll(0);
+            assert_eq!(ops.len(), 2);
+            let changed = ops.pop().unwrap();
+            let late = ops.pop().unwrap();
+            let late_id = late.id();
+            let old_page = execute(&provider, late).await;
+            assert!(matches!(&old_page, Outcome::Children { .. }));
+            provider
+                .append(AppendRequest {
+                    path: StreamPath::new("a/new").unwrap(),
+                    records: vec![b"new".as_slice().into()],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::new(b"new child".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            let changed_id = changed.id();
+            let outcome = execute(&provider, changed).await;
+            assert!(matches!(&outcome, Outcome::Failed(Failure::Changed)));
+            reader.complete(changed_id, outcome, 0);
+            assert_eq!(reader.take_cancelled(), vec![late_id]);
+            reader.complete(late_id, old_page, 0);
+            assert!(reader.poll(0).is_empty());
+            assert!(
+                parents
+                    .iter()
+                    .all(|parent| reader.cache().listings(parent).next().is_none())
+            );
+            assert_eq!(
+                reader.cache().record(&record_path, 0).unwrap().as_ref(),
+                b"value"
+            );
+            reader.plan(parents.iter().map(|parent| want(parent, 1)));
+            let fresh = reader.poll(0);
+            assert_eq!(fresh.len(), 2);
+            assert!(fresh.iter().all(|op| matches!(
+                op,
+                Op::Children {
+                    index: 0,
+                    after: None,
+                    version: None,
+                    ..
+                }
+            )));
+        });
+    }
+
+    #[test]
     fn freed_credit_completes_the_plan_without_another_ui_frame() {
         use super::super::{Priority, ReaderPolicy, Want};
         use std::sync::atomic::{AtomicBool, Ordering};
