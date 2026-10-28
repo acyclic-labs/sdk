@@ -18,6 +18,8 @@ export interface ExplorerHistoryRow { sequence: bigint; value: Uint8Array | null
 
 /** Connectivity and residency; `stale` marks an offline, cache-only view. */
 export interface ExplorerHealth {
+  /** Trusted source custody, independently of transport connectivity. */
+  credentials: "unqualified" | "pending" | "current" | "unavailable";
   connectivity: "online" | "degraded" | "offline";
   retryAt: bigint | null;
   cacheBytes: number;

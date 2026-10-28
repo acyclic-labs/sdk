@@ -266,6 +266,19 @@ impl Explorer {
         })
     }
 
+    /// Register the actual provider's source before accepting retained state.
+    ///
+    /// # Errors
+    /// Refuses an invalid policy.
+    pub fn for_provider<P: acyclic_stream::StreamProvider + ?Sized>(
+        policy: ReaderPolicy,
+        provider: &P,
+    ) -> Result<Self, StreamError> {
+        let mut explorer = Self::new(policy)?;
+        explorer.reader = Reader::for_provider(policy, provider)?;
+        Ok(explorer)
+    }
+
     /// The reader the platform driver executes.
     pub fn reader(&mut self) -> &mut Reader {
         &mut self.reader
@@ -979,7 +992,11 @@ impl Explorer {
     /// Rows of the last frame.
     #[must_use]
     pub fn rows(&self) -> &[(Pos, Row)] {
-        &self.rows
+        if self.reader.readable() {
+            &self.rows
+        } else {
+            &[]
+        }
     }
 
     /// Parent stream of the top level.

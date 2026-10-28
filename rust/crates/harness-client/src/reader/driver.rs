@@ -30,6 +30,7 @@ type Opening = LocalBoxFuture<'static, Option<Opened>>;
 
 /// Executes one reader's ops and follows on one provider.
 pub struct Driver<P: ?Sized> {
+    identity: Arc<()>,
     provider: Arc<P>,
     ops: FuturesUnordered<LocalBoxFuture<'static, Option<(u64, Outcome)>>>,
     aborts: BTreeMap<u64, AbortHandle>,
@@ -43,6 +44,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
     /// A driver over one provider session.
     pub fn new(provider: Arc<P>) -> Self {
         Self {
+            identity: Arc::new(()),
             provider,
             ops: FuturesUnordered::new(),
             aborts: BTreeMap::new(),
@@ -61,13 +63,32 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
     /// Advance once: start admitted reads, fold completions, reconcile and
     /// drain follows within the frame budget. Wakes `cx` on progress.
     pub fn step(&mut self, reader: &mut Reader, now: u64, cx: &mut Context<'_>) {
+        let attached = reader
+            .driver
+            .as_ref()
+            .is_some_and(|driver| Arc::ptr_eq(driver, &self.identity));
+        if !attached {
+            reader.configure_source(self.provider.as_ref(), now);
+            reader.driver = Some(self.identity.clone());
+        }
+        let changed = reader.advance_credentials(now, cx);
+        if !attached || changed || !reader.readable() {
+            self.ops = FuturesUnordered::new();
+            self.aborts.clear();
+            self.opening = FuturesUnordered::new();
+            self.pending.clear();
+            self.follows.clear();
+        }
+        if !reader.readable() {
+            return;
+        }
         for id in reader.take_cancelled() {
             if let Some(abort) = self.aborts.remove(&id) {
                 abort.abort();
             }
         }
         for op in reader.poll(now) {
-            self.start(op);
+            self.start(op, reader.cache.access.clone());
         }
         let mut completed = false;
         while let Poll::Ready(Some(done)) = self.ops.poll_next_unpin(cx) {
@@ -123,14 +144,20 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         self.drain(reader, now, cx);
     }
 
-    fn start(&mut self, op: Op) {
+    fn start(&mut self, op: Op, access: super::Access) {
         let provider = Arc::clone(&self.provider);
         let id = op.id();
         let (abort, registration) = AbortHandle::new_pair();
         self.aborts.insert(id, abort);
-        let work = async move { (id, execute(provider.as_ref(), op).await) };
+        let work = async move {
+            if !access.allows() {
+                return None;
+            }
+            let outcome = execute(provider.as_ref(), op).await;
+            access.allows().then_some((id, outcome))
+        };
         self.ops.push(Box::pin(async move {
-            Abortable::new(work, registration).await.ok()
+            Abortable::new(work, registration).await.ok().flatten()
         }));
     }
 
@@ -162,9 +189,16 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             let anchor = reader.follow_anchor(&path, from);
             let observed = reader.cache().observation(&path);
             let provider = Arc::clone(&self.provider);
+            let access = reader.cache.access.clone();
             let open = async move {
                 let opened = async {
+                    if !access.allows() {
+                        return Err(StreamError::AccessDenied);
+                    }
                     let head = provider.head(path.clone()).await?;
+                    if !access.allows() {
+                        return Err(StreamError::AccessDenied);
+                    }
                     let records = provider
                         .follow(acyclic_stream::FollowRequest {
                             preceding: anchor,
@@ -175,10 +209,10 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                     Ok((head, records))
                 }
                 .await;
-                (path, from, observed, opened)
+                access.allows().then_some((path, from, observed, opened))
             };
             self.opening.push(Box::pin(async move {
-                Abortable::new(open, registration).await.ok()
+                Abortable::new(open, registration).await.ok().flatten()
             }));
         }
     }
@@ -433,6 +467,7 @@ mod tests {
                 .await
                 .unwrap();
             let head = provider.head(path.clone()).await.unwrap();
+            let mut driver = Driver::new(provider);
             let mut reader = Reader::new(ReaderPolicy {
                 requests: 2,
                 prefetch_requests: 1,
@@ -440,6 +475,10 @@ mod tests {
                 ..ReaderPolicy::default()
             })
             .unwrap();
+            let ready = Arc::new(Ready(AtomicBool::new(true)));
+            let waker = Waker::from(Arc::clone(&ready));
+            let mut cx = Context::from_waker(&waker);
+            driver.step(&mut reader, 0, &mut cx);
             reader.cache_mut().observe_origin(&path, head.origin);
             reader.cache_mut().observe_tail(&path, head.tail);
             reader.plan((0..head.tail).map(|from| {
@@ -452,10 +491,6 @@ mod tests {
                     Priority::Visible,
                 )
             }));
-            let mut driver = Driver::new(provider);
-            let ready = Arc::new(Ready(AtomicBool::new(true)));
-            let waker = Waker::from(Arc::clone(&ready));
-            let mut cx = Context::from_waker(&waker);
             // Drive only actual wakes to quiescence, without another plan.
             while ready.0.swap(false, Ordering::SeqCst) {
                 driver.step(&mut reader, 0, &mut cx);

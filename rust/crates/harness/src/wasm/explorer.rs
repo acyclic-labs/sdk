@@ -7,7 +7,7 @@ use super::json::to_js_client;
 use acyclic_harness_client::{
     Explorer, ReaderPolicy,
     explorer::{HistoryRow, Pos, Row},
-    reader::{Connectivity, Driver, ReadIssue},
+    reader::{Connectivity, CredentialStatus, Driver, ReadIssue},
 };
 use acyclic_stream::{StreamPath, StreamProvider, WasmStream};
 use js_sys::{Function, Uint8Array};
@@ -70,6 +70,7 @@ enum RowView<'a> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Health<'a> {
+    credentials: &'static str,
     connectivity: &'static str,
     retry_at: Option<u64>,
     cache_bytes: usize,
@@ -118,9 +119,10 @@ impl WasmExplorer {
         } else {
             ReaderPolicy::default()
         };
+        let provider = stream.provider();
         let state = Rc::new(RefCell::new(State {
-            explorer: Explorer::new(policy).map_err(error)?,
-            driver: Driver::new(stream.provider()),
+            explorer: Explorer::for_provider(policy, provider.as_ref()).map_err(error)?,
+            driver: Driver::new(provider),
             waker: None,
             changed,
             origin: js_sys::Date::now(),
@@ -226,6 +228,12 @@ impl WasmExplorer {
             Connectivity::Offline { retry_at, .. } => ("offline", Some(retry_at)),
         };
         to_js_client(&Health {
+            credentials: match reader.credential_status() {
+                CredentialStatus::Unqualified => "unqualified",
+                CredentialStatus::Pending => "pending",
+                CredentialStatus::Current => "current",
+                CredentialStatus::Unavailable => "unavailable",
+            },
             connectivity,
             retry_at,
             cache_bytes: residency.cache_bytes,

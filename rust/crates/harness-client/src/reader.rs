@@ -15,11 +15,14 @@
 
 mod backing;
 mod cache;
+mod credential;
 mod driver;
 
 pub use backing::RecordBytes;
 use cache::Key;
 pub use cache::{Listing, RecordCache, SnapshotError};
+pub use credential::CredentialStatus;
+use credential::{Access, Credentials};
 pub use driver::Driver;
 
 use acyclic_stream::OwnedBytes;
@@ -411,6 +414,8 @@ pub struct Residency {
 pub struct Reader {
     policy: ReaderPolicy,
     cache: RecordCache,
+    credentials: Option<Credentials>,
+    driver: Option<std::sync::Arc<()>>,
     demand: BTreeMap<OpKey, Demand>,
     next_ticket: u64,
     inflight: BTreeMap<u64, InFlight>,
@@ -445,6 +450,8 @@ impl Reader {
         Ok(Self {
             policy,
             cache: RecordCache::new(policy.cache_bytes, policy.streams),
+            credentials: None,
+            driver: None,
             demand: BTreeMap::new(),
             next_ticket: 0,
             inflight: BTreeMap::new(),
@@ -468,6 +475,82 @@ impl Reader {
             rtt_ms: 0,
             issued: 0,
         })
+    }
+
+    /// Register the configured source before restoring or reading retained data.
+    /// Providers without trusted custody remain explicitly unqualified.
+    ///
+    /// # Errors
+    /// Refuses an invalid policy.
+    pub fn for_provider<P: acyclic_stream::StreamProvider + ?Sized>(
+        policy: ReaderPolicy,
+        provider: &P,
+    ) -> Result<Self, StreamError> {
+        let mut reader = Self::new(policy)?;
+        reader.configure_source(provider, 0);
+        Ok(reader)
+    }
+
+    fn configure_source<P: acyclic_stream::StreamProvider + ?Sized>(
+        &mut self,
+        provider: &P,
+        now: u64,
+    ) {
+        self.credentials = provider
+            .credential_provider()
+            .cloned()
+            .map(|provider| Credentials::new(provider, now));
+        self.reset_source();
+    }
+
+    fn reset_source(&mut self) {
+        let ids: Vec<_> = self.inflight.keys().copied().collect();
+        for id in ids {
+            self.cancel(id);
+        }
+        self.demand.clear();
+        self.refused.clear();
+        self.issues.clear();
+        self.anchors.clear();
+        self.follows.clear();
+        self.hierarchy = None;
+        self.failures = 0;
+        self.since = None;
+        self.retry_at = 0;
+        self.follow_backoff = false;
+        self.prefetch_paused_until = 0;
+        let access = self
+            .credentials
+            .as_ref()
+            .map_or(Access::Unqualified, Credentials::access);
+        self.cache.reset_access(access);
+        self.generation += 1;
+    }
+
+    fn advance_credentials(&mut self, now: u64, cx: &mut std::task::Context<'_>) -> bool {
+        let changed = self
+            .credentials
+            .as_mut()
+            .is_some_and(|credentials| credentials.poll(now, cx));
+        if changed {
+            self.reset_source();
+            cx.waker().wake_by_ref();
+        }
+        changed
+    }
+
+    /// Qualification is independent of transport connectivity.
+    #[must_use]
+    pub fn credential_status(&self) -> CredentialStatus {
+        self.credentials
+            .as_ref()
+            .map_or(CredentialStatus::Unqualified, Credentials::status)
+    }
+
+    /// Revalidate custody before using any previously rendered projection.
+    #[must_use]
+    pub fn readable(&self) -> bool {
+        self.cache.access.allows()
     }
 
     /// Borrow the one cache for rendering.
@@ -546,6 +629,12 @@ impl Reader {
     pub fn network_changed(&mut self, online: bool, now: u64) {
         self.generation += 1;
         if online {
+            if let Some(credentials) = self.credentials.as_mut()
+                && credentials.status() == CredentialStatus::Unavailable
+            {
+                credentials.retry(now);
+                self.reset_source();
+            }
             self.failures = 0;
             self.since = None;
             self.retry_at = now;
@@ -772,7 +861,7 @@ impl Reader {
     pub fn poll(&mut self, now: u64) -> Vec<Op> {
         self.now = now;
         let mut ops = Vec::new();
-        if now < self.retry_at {
+        if !self.ready(now) {
             return ops;
         }
         let offline = matches!(self.connectivity(), Connectivity::Offline { .. });
@@ -873,6 +962,9 @@ impl Reader {
     /// Fold one op's outcome into the cache. Late or cancelled outcomes are
     /// ignored; malformed ones count as refusals.
     pub fn complete(&mut self, id: u64, outcome: Outcome, now: u64) {
+        if !self.readable() {
+            return;
+        }
         let Some(flight) = self.inflight.remove(&id) else {
             return;
         };
@@ -1226,12 +1318,15 @@ impl Reader {
     /// driver stops polling follows, so session credit applies backpressure.
     #[must_use]
     pub fn accepting(&self) -> bool {
-        self.delivered < self.policy.deliveries
+        self.readable() && self.delivered < self.policy.deliveries
     }
 
     /// Fold one live record. `accepted` is the stream's tail as the server
     /// reported it; a follow that falls behind it jumps on the next frame.
     pub fn deliver(&mut self, stream: &StreamPath, record: Fetched, accepted: u64) {
+        if !self.readable() {
+            return;
+        }
         self.delivered += 1;
         self.generation += 1;
         self.follow_backoff = false;
@@ -1315,7 +1410,7 @@ impl Reader {
     /// Whether connections may be attempted now (outside a backoff).
     #[must_use]
     pub fn ready(&self, now: u64) -> bool {
-        now >= self.retry_at
+        self.readable() && now >= self.retry_at
     }
 
     /// A follow failed to open or ended with an error: back off like a read.
@@ -1345,10 +1440,8 @@ impl Reader {
         let read = self.inflight.values().map(|flight| flight.deadline).min();
         let waiting = !self.demand.is_empty() || (self.follow_backoff && !self.follows.is_empty());
         let retry = (waiting && self.retry_at > self.now).then_some(self.retry_at);
-        match (read, retry) {
-            (Some(read), Some(retry)) => Some(read.min(retry)),
-            (read, retry) => read.or(retry),
-        }
+        let credential = self.credentials.as_ref().and_then(Credentials::deadline);
+        [read, retry, credential].into_iter().flatten().min()
     }
 }
 

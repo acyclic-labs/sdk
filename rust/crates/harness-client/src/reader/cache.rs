@@ -108,6 +108,7 @@ struct Meta {
 
 /// Bounded immutable record cache shared by every renderer.
 pub struct RecordCache {
+    pub(super) access: super::Access,
     entries: BTreeMap<Key, Entry>,
     lru: BTreeMap<u64, Key>,
     meta: BTreeMap<StreamPath, Meta>,
@@ -131,6 +132,7 @@ impl RecordCache {
     #[must_use]
     pub fn new(max_bytes: usize, max_streams: usize) -> Self {
         Self {
+            access: super::Access::default(),
             entries: BTreeMap::new(),
             lru: BTreeMap::new(),
             meta: BTreeMap::new(),
@@ -145,6 +147,15 @@ impl RecordCache {
             max_bytes,
             max_streams,
         }
+    }
+
+    pub(super) fn reset_access(&mut self, access: super::Access) {
+        let mut empty = Self::new(self.max_bytes, self.max_streams);
+        empty.backings = self.backings.clone();
+        empty.clock = self.clock;
+        empty.mark = self.mark;
+        empty.access = access;
+        *self = empty;
     }
 
     /// Cached charge under the byte budget: keys, values and bookkeeping of
@@ -227,7 +238,7 @@ impl RecordCache {
     /// Whether a primitive observation has established this path's origin.
     #[must_use]
     pub fn origin_known(&self, stream: &StreamPath) -> bool {
-        self.meta.get(stream).is_some_and(|meta| meta.origin_known)
+        self.access.allows() && self.meta.get(stream).is_some_and(|meta| meta.origin_known)
     }
 
     pub(super) fn observation(&self, stream: &StreamPath) -> Option<(u64, u64)> {
@@ -239,6 +250,9 @@ impl RecordCache {
     /// The fork origin, if learned.
     #[must_use]
     pub fn fork(&self, stream: &StreamPath) -> Option<&ForkOrigin> {
+        if !self.access.allows() {
+            return None;
+        }
         self.meta.get(stream).and_then(|meta| meta.fork.as_ref())
     }
 
@@ -262,6 +276,9 @@ impl RecordCache {
     /// The commit at `sequence`, if it is the stream's anchor.
     #[must_use]
     pub fn anchor(&self, stream: &StreamPath, sequence: u64) -> Option<CommitId> {
+        if !self.access.allows() {
+            return None;
+        }
         self.meta
             .get(stream)
             .and_then(|meta| {
@@ -388,6 +405,9 @@ impl RecordCache {
     /// Highest observed exclusive tail.
     #[must_use]
     pub fn tail(&self, stream: &StreamPath) -> Option<u64> {
+        if !self.access.allows() {
+            return None;
+        }
         self.meta.get(stream).and_then(|meta| meta.tail)
     }
 
@@ -459,6 +479,9 @@ impl RecordCache {
 
     /// A cached or passed-through value.
     fn value(&self, key: &Key) -> Option<&Value> {
+        if !self.access.allows() {
+            return None;
+        }
         self.entries
             .get(key)
             .map(|entry| &entry.value)
@@ -501,6 +524,7 @@ impl RecordCache {
                     .range(range)
                     .map(|(key, (value, _))| (key, value)),
             )
+            .filter(|_| self.access.allows())
             .filter_map(|(key, value)| match (key, value) {
                 (Key::Listing(_, index), Value::Listing(listing)) => Some((*index, listing)),
                 _ => None,
@@ -728,6 +752,10 @@ impl RecordCache {
     /// allocation sharing; an older entry is omitted when it cannot fit.
     #[must_use]
     pub fn snapshot(&self) -> Vec<u8> {
+        // Unbound local snapshots cannot establish a remote source partition.
+        if !self.access.local() {
+            return Vec::new();
+        }
         let mut out = Vec::with_capacity(self.bytes);
         out.extend_from_slice(MAGIC);
         put_u64(&mut out, self.meta.len() as u64);
@@ -814,6 +842,9 @@ impl RecordCache {
     /// # Errors
     /// Refuses malformed input without retaining any part of it.
     pub fn restore(&mut self, bytes: &[u8]) -> Result<(), SnapshotError> {
+        if !self.access.local() {
+            return Err(SnapshotError);
+        }
         let mut restored = Self::new(self.max_bytes, self.max_streams);
         // Views from the old cache remain charged through an atomic restore.
         restored.backings = self.backings.clone();
