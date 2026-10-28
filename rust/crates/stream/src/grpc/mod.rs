@@ -42,8 +42,6 @@ mod server;
 #[cfg(test)]
 pub(crate) mod tests;
 
-const OPERATION_DEADLINE: Duration = Duration::from_secs(10);
-const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(1);
 const RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Connection configuration failure.
@@ -58,7 +56,7 @@ pub enum ConnectError {
     /// Bearer credential cannot be represented as HTTP metadata.
     #[error("invalid Stream bearer credential")]
     InvalidCredential,
-    /// Caller-supplied private CA bundle is empty or exceeds its fixed bound.
+    /// Caller-supplied private CA bundle is empty.
     #[error("invalid Stream private CA certificate")]
     InvalidCaCertificate,
     /// The platform certificate verifier could not be initialized.
@@ -77,6 +75,7 @@ pub struct Client {
     authorization: Option<MetadataValue<Ascii>>,
     credential: Option<CredentialProvider>,
     acknowledge_deliveries: bool,
+    operation_timeout: Option<Duration>,
     sessions: Arc<crate::session::Cache>,
     /// Read-your-writes floors; kept across credential changes, which only
     /// replace the session pool.
@@ -129,6 +128,14 @@ impl Client {
         let mut client = Self::from_channel_with_credential(channel, credential);
         client.session_connector = Some(connect);
         client
+    }
+
+    /// Selects an optional whole-operation timeout, including credential resolution and retries.
+    /// The default waits for the operation outcome or cancellation by dropping its future.
+    #[must_use]
+    pub fn with_operation_timeout(mut self, timeout: Option<Duration>) -> Self {
+        self.operation_timeout = timeout;
+        self
     }
 
     /// Uses a request-local credential while retaining this client's TLS channel.
@@ -193,8 +200,7 @@ impl Client {
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, ConnectError> {
         let authorization = authorization(bearer_token.as_ref())?;
-        let endpoint =
-            Endpoint::from_shared(endpoint.as_ref().to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
+        let endpoint = Endpoint::from_shared(endpoint.as_ref().to_owned())?;
         let uri = endpoint.uri();
         let loopback = uri.host().is_some_and(|host| {
             let host = host.trim_start_matches('[').trim_end_matches(']');
@@ -240,6 +246,7 @@ impl Client {
             authorization: Some(authorization),
             credential: None,
             acknowledge_deliveries: true,
+            operation_timeout: None,
             operation_claims: Arc::new(crate::OperationClaims::default()),
             sessions: Arc::new(crate::session::Cache::new()),
             revisions: crate::query_sync::Arc::default(),
@@ -258,6 +265,7 @@ impl Client {
             authorization: None,
             credential: Some(credential),
             acknowledge_deliveries: true,
+            operation_timeout: None,
             operation_claims: Arc::new(crate::OperationClaims::default()),
             sessions: Arc::new(crate::session::Cache::new()),
             revisions: crate::query_sync::Arc::default(),
@@ -304,13 +312,8 @@ impl Client {
         Ok(request)
     }
 
-    /// Retries transport uncertainty with the same request until the operation deadline.
-    async fn unary<T, U, F>(
-        &self,
-        attempt_timeout: Duration,
-        body: T,
-        mut call: F,
-    ) -> Result<(U, Completion), StreamError>
+    /// Retries transport uncertainty with the same request under the optional caller deadline.
+    async fn unary<T, U, F>(&self, body: T, mut call: F) -> Result<(U, Completion), StreamError>
     where
         T: Clone,
         F: FnMut(
@@ -320,10 +323,17 @@ impl Client {
             Request<T>,
         ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
     {
-        let deadline = tokio::time::Instant::now() + OPERATION_DEADLINE;
+        let deadline = self
+            .operation_timeout
+            .map(|timeout| {
+                tokio::time::Instant::now()
+                    .checked_add(timeout)
+                    .ok_or(StreamError::InvalidArgument)
+            })
+            .transpose()?;
         let mut attempt = 0_u64;
         loop {
-            attempt += 1;
+            attempt = attempt.saturating_add(1);
             // One span describes one physical RPC attempt.
             let mut completion = Completion::new(tracing::info_span!(
                 "acyclic.stream.grpc.call",
@@ -333,44 +343,57 @@ impl Client {
                 outcome = Empty,
                 error.kind = Empty
             ));
-            let attempt_deadline = deadline.min(tokio::time::Instant::now() + attempt_timeout);
             let result = completion
                 .span
-                .scope(tokio::time::timeout_at(attempt_deadline, async {
-                    let request = self.request(body.clone()).await?;
-                    let lease = request
-                        .extensions()
-                        .get::<acyclic_auth::credential::ResolvedCredential>()
-                        .cloned();
-                    let result = call(self.service(), request).await;
-                    if result.as_ref().is_err_and(|error| {
-                        error.code() == Code::Unauthenticated
-                            && std::error::Error::source(error).is_none()
-                    }) {
-                        if let Some(lease) = &lease {
-                            lease.reject().await.map_err(|_| {
-                                Status::unauthenticated("credential source unavailable")
-                            })?;
+                .scope(async {
+                    let rpc = async {
+                        let mut request = self.request(body.clone()).await?;
+                        if let Some(deadline) = deadline {
+                            request.set_timeout(
+                                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                            );
                         }
-                    }
-                    if result.is_ok() {
-                        if let Some(lease) = &lease {
-                            lease.check().await.map_err(|error| {
-                                let mut status = Status::unauthenticated(
-                                    "credential source unavailable or changed",
-                                );
-                                status.set_source(Arc::new(error));
-                                status
-                            })?;
+                        let lease = request
+                            .extensions()
+                            .get::<acyclic_auth::credential::ResolvedCredential>()
+                            .cloned();
+                        let result = call(self.service(), request).await;
+                        if result.as_ref().is_err_and(|error| {
+                            error.code() == Code::Unauthenticated
+                                && std::error::Error::source(error).is_none()
+                        }) {
+                            if let Some(lease) = &lease {
+                                lease.reject().await.map_err(|_| {
+                                    Status::unauthenticated("credential source unavailable")
+                                })?;
+                            }
                         }
+                        if result.is_ok() {
+                            if let Some(lease) = &lease {
+                                lease.check().await.map_err(|error| {
+                                    let mut status = Status::unauthenticated(
+                                        "credential source unavailable or changed",
+                                    );
+                                    status.set_source(Arc::new(error));
+                                    status
+                                })?;
+                            }
+                        }
+                        result
+                    };
+                    match deadline {
+                        Some(deadline) => tokio::time::timeout_at(deadline, rpc)
+                            .await
+                            .unwrap_or_else(|_| {
+                                Err(Status::deadline_exceeded("operation expired"))
+                            }),
+                        None => rpc.await,
                     }
-                    result
-                }))
+                })
                 .await;
             let error = match result {
-                Ok(Ok(response)) => return Ok((response.into_inner(), completion)),
-                Ok(Err(error)) => error,
-                Err(_) => Status::deadline_exceeded("attempt expired"),
+                Ok(response) => return Ok((response.into_inner(), completion)),
+                Err(error) => error,
             };
             completion.status(&error);
             if !retryable(&error) {
@@ -381,9 +404,10 @@ impl Client {
                 rpc.code = error.code() as u64,
                 "stream rpc retried"
             );
-            tokio::time::sleep_until((tokio::time::Instant::now() + RETRY_DELAY).min(deadline))
+            let retry_at = tokio::time::Instant::now() + RETRY_DELAY;
+            tokio::time::sleep_until(deadline.map_or(retry_at, |deadline| retry_at.min(deadline)))
                 .await;
-            if tokio::time::Instant::now() >= deadline {
+            if deadline.is_some_and(|deadline| tokio::time::Instant::now() >= deadline) {
                 return Err(status(&error));
             }
         }
@@ -394,7 +418,7 @@ pub(crate) async fn channel_tls(
     endpoint: &str,
     certificate_pem: Option<&[u8]>,
 ) -> Result<Channel, ConnectError> {
-    let endpoint = Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
+    let endpoint = Endpoint::from_shared(endpoint.to_owned())?;
     if endpoint.uri().scheme_str() != Some("https") {
         return Err(ConnectError::InsecureEndpoint);
     }
@@ -410,7 +434,7 @@ pub(crate) async fn channel_with_verifier(
     endpoint: &str,
     verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
 ) -> Result<Channel, ConnectError> {
-    let endpoint = Endpoint::from_shared(endpoint.to_owned())?.connect_timeout(ATTEMPT_TIMEOUT);
+    let endpoint = Endpoint::from_shared(endpoint.to_owned())?;
     if endpoint.uri().scheme_str() != Some("https") {
         return Err(ConnectError::InsecureEndpoint);
     }
