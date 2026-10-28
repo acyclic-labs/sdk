@@ -12,7 +12,7 @@ use acyclic_harness_client::reader::{
 use acyclic_harness_core::agent::{
     AGENTS, AgentId, AgentPath, AgentRecord, ForkAdopted, InboxRecord, Phase, StatusRecord,
 };
-use acyclic_stream::{CommitId, StreamPath};
+use acyclic_stream::{CommitId, ForkOrigin, PathHead, Record, StreamPath};
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -99,6 +99,24 @@ fn kind(stream: &StreamPath) -> Option<Kind> {
 }
 
 impl Swarm {
+    /// Primitive path origin, with a distinct cut for inbox and conversation.
+    fn origin(&self, stream: &StreamPath) -> Option<ForkOrigin> {
+        let (root, child, conversation) = match kind(stream)? {
+            Kind::Conversation(root, Some(child)) => (root, child, true),
+            Kind::Inbox(root, Some(child)) => (root, child, false),
+            _ => return None,
+        };
+        Some(ForkOrigin {
+            source: if conversation {
+                agent(root, None).conversation().unwrap()
+            } else {
+                agent(root, None).inbox().unwrap()
+            },
+            forked_at: if conversation { INHERITED } else { FORKED_AT },
+            commit_id: commit(&agent(root, Some(child)).inbox().unwrap(), FORKED_AT),
+        })
+    }
+
     fn hot(&self, root: u64, child: Option<u64>) -> bool {
         (root * 1_000 + child.map_or(0, |c| c + 1)) % self.hot_every == 0
     }
@@ -140,6 +158,9 @@ impl Swarm {
             // A child's conversation prefix is its parent's records.
             Some(Kind::Conversation(root, Some(_))) if sequence < INHERITED => {
                 self.value(&agent(root, None).conversation().unwrap(), sequence)
+            }
+            Some(Kind::Inbox(root, Some(_))) if sequence < FORKED_AT => {
+                self.value(&agent(root, None).inbox().unwrap(), sequence)
             }
             Some(Kind::Inbox(root, Some(child))) if sequence == FORKED_AT => Bytes::from(
                 InboxRecord::ForkAdopted(Box::new(ForkAdopted {
@@ -193,10 +214,16 @@ impl Swarm {
 
     /// The record at `sequence` with a commit id unique to its position.
     fn fetch(&self, stream: &StreamPath, sequence: u64) -> Fetched {
+        let inherited = self
+            .origin(stream)
+            .filter(|origin| sequence < origin.forked_at);
         Fetched {
             sequence,
             value: self.value(stream, sequence),
-            commit: commit(stream, sequence),
+            commit: commit(
+                inherited.as_ref().map_or(stream, |origin| &origin.source),
+                sequence,
+            ),
         }
     }
 
@@ -215,7 +242,24 @@ impl Swarm {
                         .collect(),
                 )
             }
-            Op::Tail { stream, .. } => Outcome::Tail(self.tail(stream, now)),
+            Op::Head { stream, .. } => {
+                let tail = self.tail(stream, now);
+                Outcome::Head(PathHead {
+                    tail,
+                    durable: 0,
+                    origin: self.origin(stream),
+                    last: tail.checked_sub(1).map(|sequence| {
+                        let fetched = self.fetch(stream, sequence);
+                        Record {
+                            sequence,
+                            value: fetched.value.into(),
+                            commit_id: fetched.commit,
+                            committed_at_micros: 0,
+                            headers: Default::default(),
+                        }
+                    }),
+                })
+            }
             Op::Children {
                 parent,
                 after,
@@ -247,7 +291,8 @@ impl Swarm {
                                 let last = self.tail(&stream, now).checked_sub(1)?;
                                 Some(self.fetch(&stream, last))
                             });
-                            ListedChild { path, tail }
+                            let origin = self.origin(&path);
+                            ListedChild { path, origin, tail }
                         })
                         .collect(),
                 }
@@ -714,7 +759,7 @@ fn swarm_scroll_and_history_stay_bounded() {
         assert!(reads <= 2, "seek {seek}: {reads} reads");
     }
     // Fork = cache hit: a child's inherited prefix is served from the
-    // parent's cached records once its ForkAdopted record is read.
+    // parent's cached records once the primitive origin is read.
     let child = agent(3, Some(5));
     client.explorer.open(child.clone(), 40);
     client.run_until(3_000, full).unwrap();
@@ -900,6 +945,7 @@ fn listings_follow_server_cursors_versions_and_witnesses() {
             .iter()
             .map(|name| ListedChild {
                 path: child(name),
+                origin: None,
                 tail: None,
             })
             .collect(),
@@ -953,7 +999,7 @@ fn a_failed_follow_keeps_the_one_timer_armed() {
     let retry = reader.next_deadline().expect("a reopen deadline");
     assert!(retry > 10);
     // Control: once the follow reopens nothing is waiting on the timer.
-    reader.follow_opened();
+    reader.follow_opened(&stream, 1);
     assert_eq!(reader.next_deadline(), None);
 }
 
@@ -979,6 +1025,7 @@ fn a_shifted_page_boundary_drops_later_pages_and_reads_stop_at_the_end() {
             .iter()
             .map(|name| ListedChild {
                 path: child(name),
+                origin: None,
                 tail: None,
             })
             .collect(),

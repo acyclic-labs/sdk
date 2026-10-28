@@ -20,12 +20,9 @@
 //! (`follow_checked`). A changed anchor means the provisional suffix was
 //! replaced, and [`RecordCache::forget`] drops that stream's own entries.
 
-use acyclic_stream::{CommitId, StreamPath};
+use acyclic_stream::{CommitId, ForkOrigin, StreamPath};
 use bytes::Bytes;
-use std::collections::BTreeMap;
-
-/// Bound on fork-alias resolution; equals the deepest admitted agent nesting.
-const MAX_ALIAS_DEPTH: usize = 64;
+use std::collections::{BTreeMap, BTreeSet};
 /// Fixed accounting charge per entry: map nodes, key and LRU bookkeeping.
 const ENTRY_OVERHEAD: usize = 96;
 
@@ -71,10 +68,14 @@ struct Entry {
 struct Meta {
     /// Highest observed exclusive tail.
     tail: Option<u64>,
-    /// Source stream and exclusive inherited prefix end.
-    fork: Option<(StreamPath, u64)>,
+    /// Exact immediate inherited cut, including its publication identity.
+    fork: Option<ForkOrigin>,
+    /// A primitive Head or children page observed this path's origin.
+    origin_known: bool,
     /// Commit of the highest cached record, checked when a follow resumes.
     anchor: Option<(u64, CommitId)>,
+    /// Cached prefix to validate before a newer Head advances its anchor.
+    resume: Option<(u64, CommitId)>,
     /// Use clock of the last learn or display; facts used since the frame
     /// mark are never chosen as eviction victims.
     used: u64,
@@ -165,17 +166,32 @@ impl RecordCache {
         self.evict(None);
     }
 
-    /// Record that `stream`'s first `at` records are `source`'s.
-    pub fn set_fork(&mut self, stream: &StreamPath, source: StreamPath, at: u64) {
-        if &source == stream {
-            return;
+    /// Learn the exact primitive origin. A changed publication invalidates
+    /// records and dependent aliases, even when source and offset match.
+    pub fn observe_origin(&mut self, stream: &StreamPath, origin: Option<ForkOrigin>) {
+        if self.origin_changed(stream, &origin) {
+            self.remove_stream(stream);
         }
-        self.meta_mut(stream).fork = Some((source, at));
+        let meta = self.meta_mut(stream);
+        meta.fork = origin;
+        meta.origin_known = true;
+    }
+
+    pub(super) fn origin_changed(&self, stream: &StreamPath, origin: &Option<ForkOrigin>) -> bool {
+        self.meta
+            .get(stream)
+            .is_some_and(|meta| (meta.origin_known || meta.fork.is_some()) && &meta.fork != origin)
+    }
+
+    /// Whether a primitive observation has established this path's origin.
+    #[must_use]
+    pub fn origin_known(&self, stream: &StreamPath) -> bool {
+        self.meta.get(stream).is_some_and(|meta| meta.origin_known)
     }
 
     /// The fork origin, if learned.
     #[must_use]
-    pub fn fork(&self, stream: &StreamPath) -> Option<&(StreamPath, u64)> {
+    pub fn fork(&self, stream: &StreamPath) -> Option<&ForkOrigin> {
         self.meta.get(stream).and_then(|meta| meta.fork.as_ref())
     }
 
@@ -201,8 +217,36 @@ impl RecordCache {
     pub fn anchor(&self, stream: &StreamPath, sequence: u64) -> Option<CommitId> {
         self.meta
             .get(stream)
-            .and_then(|meta| meta.anchor)
-            .and_then(|(at, commit)| (at == sequence).then_some(commit))
+            .and_then(|meta| {
+                meta.resume
+                    .filter(|(at, _)| *at == sequence)
+                    .or_else(|| meta.anchor.filter(|(at, _)| *at == sequence))
+            })
+            .map(|(_, commit)| commit)
+    }
+
+    pub(super) fn resume_from(&self, stream: &StreamPath) -> Option<u64> {
+        self.meta.get(stream)?.resume?.0.checked_add(1)
+    }
+
+    pub(super) fn before_head(&mut self, stream: &StreamPath, tail: u64) {
+        let meta = self.meta_mut(stream);
+        if meta.resume.is_none()
+            && let Some(anchor) = meta.anchor
+            && anchor.0.checked_add(1).is_some_and(|from| from < tail)
+        {
+            meta.resume = Some(anchor);
+        }
+    }
+
+    pub(super) fn resumed(&mut self, stream: &StreamPath, from: u64) {
+        if let Some(meta) = self.meta.get_mut(stream)
+            && meta
+                .resume
+                .is_some_and(|(at, _)| at.checked_add(1) == Some(from))
+        {
+            meta.resume = None;
+        }
     }
 
     /// Drop `stream`'s own records and tail after its provisional suffix was
@@ -216,39 +260,39 @@ impl RecordCache {
         if let Some(meta) = self.meta.get_mut(stream) {
             meta.tail = None;
             meta.anchor = None;
+            meta.resume = None;
+            meta.origin_known = false;
         }
     }
 
     /// A denial or lost prefix cannot retain an alias into another history.
-    pub(super) fn remove_stream(&mut self, stream: &StreamPath) {
-        let mut affected = vec![stream.clone()];
-        for _ in 0..MAX_ALIAS_DEPTH {
-            let next: Vec<_> = self
-                .meta
-                .iter()
-                .filter(|(path, meta)| {
-                    !affected.contains(path)
-                        && meta
-                            .fork
-                            .as_ref()
-                            .is_some_and(|(source, _)| affected.contains(source))
-                })
-                .map(|(path, _)| path.clone())
-                .collect();
-            if next.is_empty() {
-                break;
+    pub(super) fn remove_stream(&mut self, stream: &StreamPath) -> BTreeSet<StreamPath> {
+        let mut dependents = BTreeMap::<_, Vec<_>>::new();
+        for (path, meta) in &self.meta {
+            if let Some(origin) = &meta.fork {
+                dependents.entry(&origin.source).or_default().push(path);
             }
-            affected.extend(next);
         }
-        for path in affected {
-            self.forget(&path);
-            self.meta.remove(&path);
+        let mut affected = BTreeSet::new();
+        let mut pending = vec![stream.clone()];
+        while let Some(path) = pending.pop() {
+            if !affected.insert(path.clone()) {
+                continue;
+            }
+            if let Some(children) = dependents.get(&path) {
+                pending.extend(children.iter().map(|child| (*child).clone()));
+            }
+        }
+        for path in &affected {
+            self.forget(path);
+            self.meta.remove(path);
         }
         let listings =
             self.keys_in(Key::Listing(stream.clone(), 0)..=Key::Listing(stream.clone(), u32::MAX));
         for key in listings {
             self.remove(&key);
         }
+        affected
     }
 
     /// Drop a parent's listing pages after `index`: their cursors were cut
@@ -315,9 +359,11 @@ impl RecordCache {
     /// Resolve a record through fork aliases to the key that would hold it.
     pub(super) fn resolve(&self, stream: &StreamPath, sequence: u64) -> Key {
         let mut path = stream;
-        for _ in 0..MAX_ALIAS_DEPTH {
+        // An acyclic chain has at most one edge per retained fact. This also
+        // terminates on malformed cyclic input without allocating per lookup.
+        for _ in 0..self.meta.len() {
             match self.meta.get(path).and_then(|meta| meta.fork.as_ref()) {
-                Some((source, at)) if sequence < *at => path = source,
+                Some(origin) if sequence < origin.forked_at => path = &origin.source,
                 _ => break,
             }
         }
@@ -376,10 +422,12 @@ impl RecordCache {
         let mut keys = Vec::new();
         let mut path = stream.clone();
         let mut end = to;
-        for _ in 0..MAX_ALIAS_DEPTH {
+        for _ in 0..=self.meta.len() {
             self.touch_stream(&path);
             let fork = self.fork(&path).cloned();
-            let own = fork.as_ref().map_or(from, |(_, at)| from.max(*at));
+            let own = fork
+                .as_ref()
+                .map_or(from, |origin| from.max(origin.forked_at));
             if own < end {
                 keys.extend(
                     self.entries
@@ -388,9 +436,9 @@ impl RecordCache {
                 );
             }
             match fork {
-                Some((source, at)) if from < at && from < end => {
-                    end = end.min(at);
-                    path = source;
+                Some(origin) if from < origin.forked_at && from < end => {
+                    end = end.min(origin.forked_at);
+                    path = origin.source;
                 }
                 _ => break,
             }
@@ -554,15 +602,25 @@ impl RecordCache {
         for (path, meta) in &self.meta {
             put_str(&mut out, path.as_str());
             put_u64(&mut out, meta.tail.map_or(0, |tail| tail + 1));
+            out.push(u8::from(meta.origin_known));
             match &meta.fork {
-                Some((source, at)) => {
+                Some(origin) => {
                     out.push(1);
-                    put_str(&mut out, source.as_str());
-                    put_u64(&mut out, *at);
+                    put_str(&mut out, origin.source.as_str());
+                    put_u64(&mut out, origin.forked_at);
+                    out.extend_from_slice(origin.commit_id.as_bytes());
                 }
                 None => out.push(0),
             }
             match &meta.anchor {
+                Some((at, commit)) => {
+                    out.push(1);
+                    put_u64(&mut out, *at);
+                    out.extend_from_slice(commit.as_bytes());
+                }
+                None => out.push(0),
+            }
+            match &meta.resume {
                 Some((at, commit)) => {
                     out.push(1);
                     put_u64(&mut out, *at);
@@ -627,9 +685,20 @@ impl RecordCache {
         for _ in 0..count {
             let path = input.path()?;
             let tail = input.u64()?.checked_sub(1);
+            let origin_known = match input.u8()? {
+                0 => false,
+                1 => true,
+                _ => return Err(SnapshotError),
+            };
             let fork = match input.u8()? {
                 0 => None,
-                1 => Some((input.path()?, input.u64()?)),
+                1 => Some(ForkOrigin {
+                    source: input.path()?,
+                    forked_at: input.u64()?,
+                    commit_id: CommitId::from_bytes(
+                        input.take(32)?.try_into().map_err(|_| SnapshotError)?,
+                    ),
+                }),
                 _ => return Err(SnapshotError),
             };
             let anchor = match input.u8()? {
@@ -641,15 +710,27 @@ impl RecordCache {
                 }
                 _ => return Err(SnapshotError),
             };
+            let resume = match input.u8()? {
+                0 => None,
+                1 => Some((
+                    input.u64()?,
+                    CommitId::from_bytes(input.take(32)?.try_into().map_err(|_| SnapshotError)?),
+                )),
+                _ => return Err(SnapshotError),
+            };
             if let Some(tail) = tail {
                 restored.observe_tail(&path, tail);
             }
-            if let Some((source, at)) = fork {
-                restored.set_fork(&path, source, at);
+            if fork.as_ref().is_some_and(|origin| origin.source == path) {
+                return Err(SnapshotError);
+            }
+            if origin_known {
+                restored.observe_origin(&path, fork);
             }
             if let Some((at, commit)) = anchor {
                 restored.note_commit(&path, at, commit);
             }
+            restored.meta_mut(&path).resume = resume;
         }
         // Facts are bounded by count above; bound the parsing work of the
         // entry section by the byte budget. Encoding overhead may exceed
@@ -793,6 +874,65 @@ impl<'a> Input<'a> {
 mod tests {
     use super::*;
 
+    /// Publication identity is part of an alias; the same source and offset
+    /// under a different fork must not retain either private bytes or aliases.
+    #[test]
+    fn changed_fork_publication_discards_dependent_history_and_round_trips() {
+        let source = StreamPath::new("source").unwrap();
+        let child = StreamPath::new("child").unwrap();
+        let grandchild = StreamPath::new("grandchild").unwrap();
+        let mut cache = RecordCache::new(64 * 1024, 128);
+        let origin = ForkOrigin {
+            source: source.clone(),
+            forked_at: 0,
+            commit_id: CommitId::from_bytes([1; 32]),
+        };
+        cache.observe_origin(&child, Some(origin.clone()));
+        cache.insert_record(&child, 0, Bytes::from_static(b"private"), None);
+        cache.observe_origin(
+            &grandchild,
+            Some(ForkOrigin {
+                source: child.clone(),
+                forked_at: 1,
+                commit_id: CommitId::from_bytes([2; 32]),
+            }),
+        );
+        assert_eq!(cache.record(&grandchild, 0).unwrap().as_ref(), b"private");
+        let mut restored = RecordCache::new(64 * 1024, 128);
+        restored.restore(&cache.snapshot()).unwrap();
+        assert_eq!(restored.fork(&child), Some(&origin));
+        cache.observe_origin(
+            &child,
+            Some(ForkOrigin {
+                commit_id: CommitId::from_bytes([3; 32]),
+                ..origin
+            }),
+        );
+        assert!(cache.record(&child, 0).is_none());
+        assert!(cache.record(&grandchild, 0).is_none());
+        assert!(!cache.origin_known(&grandchild));
+    }
+
+    #[test]
+    fn inherited_cache_resolution_has_no_depth_cutoff() {
+        let mut cache = RecordCache::new(64 * 1024, 256);
+        let mut source = StreamPath::new("root").unwrap();
+        cache.insert_record(&source, 0, Bytes::from_static(b"retained"), None);
+        for index in 0..100 {
+            let child = StreamPath::new(format!("fork{index}")).unwrap();
+            cache.observe_origin(
+                &child,
+                Some(ForkOrigin {
+                    source,
+                    forked_at: 1,
+                    commit_id: CommitId::from_bytes([1; 32]),
+                }),
+            );
+            source = child;
+        }
+        assert_eq!(cache.record(&source, 0).unwrap().as_ref(), b"retained");
+    }
+
     #[test]
     fn metadata_eviction_cannot_leave_old_bytes_under_a_new_anchor() {
         let stream = StreamPath::new("test/source").unwrap();
@@ -861,7 +1001,14 @@ mod tests {
         let child = StreamPath::new("test/child").unwrap();
         let mut cache = RecordCache::new(64 * 1024, 2);
         cache.observe_tail(&source, 2);
-        cache.set_fork(&child, source.clone(), 2);
+        cache.observe_origin(
+            &child,
+            Some(ForkOrigin {
+                source: source.clone(),
+                forked_at: 2,
+                commit_id: CommitId::from_bytes([1; 32]),
+            }),
+        );
         cache.insert_record(&source, 0, Bytes::from_static(b"a"), None);
         cache.insert_record(&child, 3, Bytes::from_static(b"c"), None);
         let mark = cache.begin_frame();
