@@ -80,8 +80,8 @@ fn public_names_are_pinned_and_round_trip() {
         StorageTier: [ProcessMemory, NodeLocal, SharedCache, DurableOrigin]
             => "process-memory node-local shared-cache durable-origin";
         PromotionRejection: [
-            WrongVolume, StaleGeneration, InvalidRequest, InputCapacity, MissingSource,
+            WrongVolume, StaleGeneration, InvalidRequest, MissingSource,
             DuplicateObject, DuplicateOperation, ActiveCapacity, NoDestination, LowUsefulness
-        ] => "wrong-volume stale-generation invalid-request input-capacity missing-source duplicate-object duplicate-operation active-capacity no-destination low-usefulness";
+        ] => "wrong-volume stale-generation invalid-request missing-source duplicate-object duplicate-operation active-capacity no-destination low-usefulness";
     }
 }
