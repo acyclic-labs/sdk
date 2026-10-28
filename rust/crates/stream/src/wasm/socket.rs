@@ -51,7 +51,7 @@ impl Endpoint {
 }
 
 struct Incoming {
-    sender: Option<mpsc::Sender<Result<wire::SessionFrame, StreamError>>>,
+    sender: Option<mpsc::UnboundedSender<Result<wire::SessionFrame, StreamError>>>,
     terminal: Option<StreamError>,
 }
 impl Incoming {
@@ -94,7 +94,7 @@ impl Transport for Endpoint {
             let socket = web_sys::WebSocket::new_with_str_sequence(&url, &protocols)
                 .map_err(|_| StreamError::Unavailable)?;
             socket.set_binary_type(web_sys::BinaryType::Arraybuffer);
-            let (sender, receiver) = mpsc::channel(crate::MAX_ITEMS);
+            let (sender, receiver) = mpsc::unbounded_channel();
             let incoming = Rc::new(RefCell::new(Incoming {
                 sender: Some(sender),
                 terminal: None,
@@ -123,9 +123,9 @@ impl Transport for Endpoint {
                         if incoming
                             .sender
                             .as_ref()
-                            .is_some_and(|sender| sender.try_send(Ok(frame)).is_err())
+                            .is_some_and(|sender| sender.send(Ok(frame)).is_err())
                         {
-                            incoming.fail(StreamError::Capacity);
+                            incoming.fail(StreamError::Unavailable);
                             let _ = message_socket.close();
                         }
                     }
@@ -190,11 +190,8 @@ impl Transport for Endpoint {
                             }
                             Either::Right(Some(frame)) => {
                                 let bytes = frame.encode_to_vec();
-                                if bytes.len() > MAX_COMMAND_BYTES
-                                    || guard.socket.buffered_amount() as usize + bytes.len()
-                                        > MAX_COMMAND_BYTES
-                                {
-                                    return Err(StreamError::Capacity);
+                                if bytes.len() > MAX_COMMAND_BYTES {
+                                    return Err(StreamError::LimitExceeded);
                                 }
                                 guard
                                     .socket

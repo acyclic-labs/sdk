@@ -1317,3 +1317,13 @@ The post-1747 Objects raw schema digest is bound to its actual current bytes (sh
 
 
 The browser session constructor now forwards the existing optional Rust registration policy instead of hiding it. Default absence still arms no timer. The EOF/reconnect finite deadline control explicitly selects its original10000ms policy; the former default retry-count assertion becomes a shared silent-handshake/caller-cancellation control. Browser bridge fixtures assert ordered SessionCredential frames, including exact initial/renewed bytes, rather than the removed aggregate Hello field. No finite cancellation/deadline model is filtered. Actual WASM/TypeScript/runtime qualification pending.
+
+
+Check165 finally reported job-lost at19:14:42 UTC, exit224, after its18:54:25 SSH interruption and unsuccessful reattachment. Only the already observed native workspace compile is credited; no core/filesystem runtime or WASM outcome is available. Check167 likewise acquired no source checkout: Spot InsufficientInstanceCapacity persisted through19:28:41 UTC. Its exact local waiting relay was stopped before editing the second browser transport; no remote result is inferred.
+
+| Constant / limit | File:line | Category | Action |
+|---|---|---|---|
+| Rust WASM WebSocket ingress1024 / aggregate buffered1MiB | `rust/crates/stream/src/wasm/socket.rs:97,193` | 1 deleted; 3 retained in shared session | The thin physical adapter uses an unbounded incoming channel, preserves transport EOF/cancellation and reports receiver closure as Unavailable. Aggregate buffered-byte refusal is removed; canonical session credit continues delaying payload production. Per-frame guards remain separately pending logical streaming. No new pool, timer or backend mechanism. Qualification pending. |
+| JavaScript credential spread argument count | `typescript/packages/stream/src/session-websocket.ts:16` | 1 -> 2 | Encode UTF-8 through8192-byte character chunks before base64 of the complete value. All chunks continue; no credential-length refusal. The existing fresh-credential/cancellation property now includes262145-byte exact identity. Qualification pending. |
+
+The Loom session fixture Client constructors now carry the canonical revision tracker introduced by main#1743, shared with their actual pool where present. No model or negative control is dropped.
