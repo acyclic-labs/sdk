@@ -44,7 +44,7 @@ impl BrowserVolume {
                 before,
                 after,
                 maximum_changes,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
+                acyclic_fs::WorkBudget::UNBOUNDED,
                 &cancellation,
             )
             .await
@@ -63,7 +63,7 @@ impl BrowserVolume {
                 .checkout(
                     GenerationSelector::Head,
                     mode,
-                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
                     &cancellation,
                 )
                 .await
