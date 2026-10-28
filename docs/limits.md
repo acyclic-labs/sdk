@@ -1147,3 +1147,11 @@ Canonical descriptor and Stream contract generation passed on `dabc96ee038356b37
 | Constant or policy | File:line | Category | Action |
 |---|---|---|---|
 | Browser deadline clamp to `i32::MAX` milliseconds | `rust/vendor/tonic-web-wasm-client-0.9.2/src/abort_guard.rs:35` | 1 → 2 | Deleted shortened deadline and its cap test. One callback rearms host-sized intervals using elapsed monotonic time; finite expiry, replacement and drop cleanup use the same timer owner. |
+
+
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
+| Implicit browser `TRAILER_BYTES` and metadata weight | `rust/vendor/tonic-web-wasm-client-0.9.2/src/limits.rs:7`; `src/response_body.rs:172`; `src/call.rs:67` | 1 → optional caller policy | Deleted the bundled 16 KiB browser metadata ceilings. Payload-only policies impose no trailer/header or aggregate ceiling; metadata policies are selected independently. Actual decoder regression covers large metadata in binary/text across chunk boundaries and original explicit payload/raw/weighted refusals. |
+| Native `HEADER_LIST_BYTES` | `rust/vendor/tonic-web-wasm-client-0.9.2/src/limits.rs:3`; `rust/crates/actors/src/client.rs` | 1, pending | Native HTTP/2 still has a 16 KiB metadata ceiling. Removing the explicit setting exposes the same underlying default; a shared transport change is required. No unbounded native metadata claim. |
+| TypeScript `positiveInteger` read/page `MAX_ITEMS` refusal | `typescript/packages/stream/src/client.ts:204` | 1 | Delete the 1024 upper check; retain positive safe-integer validation and canonical wire/protocol checks. Lazy read and page continuations remain responsible for incremental delivery. |
+| Decoder test helper 10000 poll refusal | `rust/vendor/tonic-web-wasm-client-0.9.2/src/test_support.rs:70` | 1 | Delete fixed retry count. Pending chunks wake their consumer; the synchronous native test driver waits on that wakeup. No readiness timer or poll loop. |
