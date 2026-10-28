@@ -1,5 +1,7 @@
 use super::*;
-use crate::probe::probe;
+#[path = "probe.rs"]
+mod probe;
+use probe::probe;
 use futures::StreamExt;
 use loom::sync::atomic::Ordering;
 use std::{

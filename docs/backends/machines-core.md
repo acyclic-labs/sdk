@@ -213,7 +213,10 @@ the same cursor as browser Stream follows: one item of demand, no producer
 task or item queue, close waking a pending pull, and upstream destruction
 outside the ownership lock. An overlapping pull is refused; abandoning a
 pending Rust pull closes it. Source errors reject once and retain `failed`.
-The TypeScript simulator closes that cursor when iteration ends. The gRPC
+The TypeScript simulator closes that cursor when iteration ends. Its optional
+`AbortSignal` closes a pending pull and preserves the consumer's reason. HTTP
+watch propagates that signal through credentials, Fetch, and body reading,
+including cancellation of an owned reader before decoding. The gRPC
 watch and exec share one RPC cancellation owner; breaking iteration aborts
 only that call. Watch validates the operation identity and terminal ordering,
 and retains the original transport error. These source changes do not yet

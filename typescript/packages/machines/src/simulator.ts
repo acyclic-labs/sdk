@@ -65,14 +65,22 @@ export class SimulatedMachines implements MachinesProvider {
   recoverOperation(key: IdempotencyKey): Promise<OperationId> { return this.#run(key, (inner, authored) => inner.recoverOperation(authored)).then(operationId); }
   inspectOperation(operationId: OperationId): Promise<OperationObservation> { return this.#run(operationId, (inner, authored) => inner.inspectOperation(authored)).then(asPublic<OperationOut, OperationObservation>); }
   cancel(operationId: OperationId): Promise<OperationObservation> { return this.#run(operationId, (inner, authored) => inner.cancel(authored)).then(asPublic<OperationOut, OperationObservation>); }
-  async *watchOperation(operationId: OperationId): AsyncIterable<OperationObservation> {
+  async *watchOperation(operationId: OperationId, signal?: AbortSignal): AsyncIterable<OperationObservation> {
+    signal?.throwIfAborted();
     const watch = await this.#run(operationId, (inner, authored) => inner.watchOperation(authored));
+    const close = () => watch.close();
+    signal?.addEventListener("abort", close, { once: true });
     try {
+      signal?.throwIfAborted();
       for (;;) {
         const value = await watch.next();
+        signal?.throwIfAborted();
         if (value === null) return;
         yield asPublic<OperationOut, OperationObservation>(value);
       }
-    } finally { watch.close(); watch.free(); }
+    } finally {
+      signal?.removeEventListener("abort", close);
+      watch.close(); watch.free();
+    }
   }
 }

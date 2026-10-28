@@ -9,13 +9,21 @@ use wasm_bindgen::prelude::*;
 /// A live operation watch with one observation of demand per `next` call.
 #[wasm_bindgen]
 pub struct OperationWatch {
-    state: PullCursor<acyclic_machines::OperationObservation, acyclic_machines::ProviderError>,
+    state: PullCursor<JsValue, JsValue>,
 }
 
 impl OperationWatch {
     pub(crate) fn new(stream: OperationStream) -> Self {
         Self {
-            state: PullCursor::new(stream.boxed_local()),
+            state: PullCursor::new(
+                stream
+                    .map(|item| {
+                        crate::public::to_js(&crate::public::operation_out(
+                            item.map_err(crate::public::provider_error)?,
+                        ))
+                    })
+                    .boxed_local(),
+            ),
         }
     }
 }
@@ -26,7 +34,7 @@ impl OperationWatch {
     #[wasm_bindgen(unchecked_return_type = "OperationOut | null")]
     pub async fn next(&self) -> Result<JsValue, JsValue> {
         match self.state.next().await.map_err(|error| match error {
-            PullError::Source(error) => crate::public::provider_error(error),
+            PullError::Source(error) => error,
             PullError::Busy => crate::js_error(
                 "busy",
                 "watch next already pending; recovery: await it before pulling again",
@@ -36,7 +44,7 @@ impl OperationWatch {
                 "watch ownership failed; recovery: reopen from the original operation identity",
             ),
         })? {
-            Some(value) => crate::public::to_js(&crate::public::operation_out(value)),
+            Some(value) => Ok(value),
             None => Ok(JsValue::NULL),
         }
     }

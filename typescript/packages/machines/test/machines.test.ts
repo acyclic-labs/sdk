@@ -234,6 +234,23 @@ describe("Machines simulation", () => {
     } finally { wasm.free(); }
   });
 
+  test("watch cancellation preserves the consumer reason and releases its cursor", async () => {
+    const provider = new SimulatedMachines();
+    await provider.create(request("abort-watch"));
+    const operation = await provider.recoverOperation("abort-watch");
+    const controller = new AbortController();
+    const watch = provider.watchOperation(operation, controller.signal)[Symbol.asyncIterator]();
+    expect((await watch.next()).value).toEqual({ id: operation, phase: "succeeded" });
+    const reason = new Error("consumer stopped watching");
+    controller.abort(reason);
+    await expect(watch.next()).rejects.toBe(reason);
+    await expect(provider.watchOperation(operation, controller.signal)[Symbol.asyncIterator]().next()).rejects.toBe(reason);
+    // Aborting one cursor leaves other watches usable.
+    const independent = [];
+    for await (const value of provider.watchOperation(operation)) independent.push(value);
+    expect(independent).toEqual([{ id: operation, phase: "succeeded" }]);
+  });
+
   test("uses the lineage receipt commitment instead of the retired quantity", async () => {
     const provider = new SimulatedMachines();
     const created = await provider.create(request("usage-1"));
@@ -470,6 +487,29 @@ describe("Machines simulation", () => {
     await expect(serve({ ...policy, policy: { kind: "after-idle", milliseconds: 30_000 } }).setSuspensionPolicy(created.machine.id, policy.policy, idempotencyKey("hosted-mutation-policy"))).rejects.toThrow();
 
     await expect(serve({ kind: "suspended", machineId: machineId("other-machine") }).suspend(created.machine.id, idempotencyKey("hosted-mutation-suspend"))).rejects.toThrow();
+  });
+
+  test("watch abort cancels a pending HTTP body read before decoding", async () => {
+    const controller = new AbortController();
+    const reason = new Error("consumer stopped the pending read");
+    let cancelled = 0;
+    let reading!: () => void;
+    const started = new Promise<void>(resolve => { reading = resolve; });
+    const body = new ReadableStream<Uint8Array>({
+      pull() { reading(); },
+      cancel(value) { expect(value).toBe(reason); cancelled += 1; },
+    }, { highWaterMark: 0 });
+    const provider = new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async (_input, init) => {
+      expect(init?.signal).toBe(controller.signal);
+      return new Response(body);
+    } });
+    const watch = provider.watchOperation(operationId("pending-read"), controller.signal)[Symbol.asyncIterator]();
+    const pending = watch.next();
+    await started;
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+    expect(cancelled).toBe(1);
+    expect(body.locked).toBe(false);
   });
 
   test("cancels oversized streaming transport responses at the configured bound", async () => {

@@ -59,18 +59,25 @@ export class HttpMachinesProvider implements MachinesProvider {
   recoverOperation(idempotencyKey: IdempotencyKey): Promise<OperationId> { return this.#call("OPERATIONS_RECOVER_ID", { idempotencyKey }).then(operationId); }
   inspectOperation(operationId: OperationId): Promise<OperationObservation> { return this.#call("OPERATIONS_INSPECT", { operationId }).then(asPublic<OperationOut, OperationObservation>); }
   cancel(operationId: OperationId): Promise<OperationObservation> { return this.#call("OPERATIONS_CANCEL", { operationId }).then(asPublic<OperationOut, OperationObservation>); }
-  async *watchOperation(operationId: OperationId): AsyncIterable<OperationObservation> { for (const observation of await this.#call("OPERATIONS_WATCH", { operationId })) yield asPublic<OperationOut, OperationObservation>(observation); }
-  #call<Key extends keyof MachinesHttpRoutes>(key: Key, request: MachinesHttpRequest<MachinesHttpRoutes[Key]>): Promise<MachinesHttpResponse<MachinesHttpRoutes[Key]>> {
-    const route = httpRoutes()[key];
-    return observed(this.#observer, "machines", route, sizes => this.#send(route, request, sizes));
+  async *watchOperation(operationId: OperationId, signal?: AbortSignal): AsyncIterable<OperationObservation> {
+    for (const observation of await this.#call("OPERATIONS_WATCH", { operationId }, signal)) {
+      signal?.throwIfAborted();
+      yield asPublic<OperationOut, OperationObservation>(observation);
+    }
   }
-  async #send<Route extends MachinesHttpRoute>(route: Route, request: MachinesHttpRequest<Route>, sizes?: OperationSizes): Promise<MachinesHttpResponse<Route>> {
+  #call<Key extends keyof MachinesHttpRoutes>(key: Key, request: MachinesHttpRequest<MachinesHttpRoutes[Key]>, signal?: AbortSignal): Promise<MachinesHttpResponse<MachinesHttpRoutes[Key]>> {
+    signal?.throwIfAborted();
+    const route = httpRoutes()[key];
+    return observed(this.#observer, "machines", route, sizes => this.#send(route, request, sizes, signal));
+  }
+  async #send<Route extends MachinesHttpRoute>(route: Route, request: MachinesHttpRequest<Route>, sizes?: OperationSizes, signal?: AbortSignal): Promise<MachinesHttpResponse<Route>> {
     const payload = WasmSimulatedMachines.encodeHttpRequest(request);
     if (sizes) sizes.requestBytes = new TextEncoder().encode(payload).byteLength;
-    const token = await this.#credential();
+    const token = await this.#credential(signal);
+    signal?.throwIfAborted();
     validateTransportOptions(token, this.#maximum);
-    const response = await this.#fetcher(new URL(`v1/machines/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: payload });
-    const bytes = await boundedBytes(response, this.#maximum);
+    const response = await this.#fetcher(new URL(`v1/machines/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: payload, ...(signal ? { signal } : {}) });
+    const bytes = await boundedBytes(response, this.#maximum, signal);
     if (sizes) sizes.responseBytes = bytes.byteLength;
     let body: string;
     try { body = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
@@ -90,19 +97,27 @@ export class HttpMachinesProvider implements MachinesProvider {
 }
 
 export class MachinesTransportError extends Error { constructor(message: string, readonly status: number) { super(message); } }
-async function boundedBytes(response: Response, maximum: number): Promise<Uint8Array> {
+async function boundedBytes(response: Response, maximum: number, signal?: AbortSignal): Promise<Uint8Array> {
   const reader = response.body?.getReader();
-  if (reader === undefined) return new Uint8Array();
+  if (reader === undefined) { signal?.throwIfAborted(); return new Uint8Array(); }
   const chunks: Uint8Array[] = []; let total = 0;
+  const cancel = () => { void reader.cancel(signal?.reason).catch(() => undefined); };
+  signal?.addEventListener("abort", cancel, { once: true });
   try {
+    if (signal?.aborted) cancel();
+    signal?.throwIfAborted();
     for (;;) {
       const { done, value } = await reader.read();
+      signal?.throwIfAborted();
       if (done) break;
       total += value.byteLength;
       if (total > maximum) { await reader.cancel().catch(() => undefined); throw new MachinesTransportError("response exceeds configured bound", response.status); }
       chunks.push(value);
     }
-  } finally { reader.releaseLock(); }
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    reader.releaseLock();
+  }
   const bytes = new Uint8Array(total); let offset = 0;
   for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
   return bytes;

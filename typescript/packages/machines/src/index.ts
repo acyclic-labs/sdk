@@ -153,7 +153,7 @@ export interface MachinesProvider {
   recoverOperation(key: IdempotencyKey): Promise<OperationId>;
   inspectOperation(operationId: OperationId): Promise<OperationObservation>;
   cancel(operationId: OperationId): Promise<OperationObservation>;
-  watchOperation(operationId: OperationId): AsyncIterable<OperationObservation>;
+  watchOperation(operationId: OperationId, signal?: AbortSignal): AsyncIterable<OperationObservation>;
 }
 
 /** Constructs a managed image using the Rust-generated OCI reference contract. */
