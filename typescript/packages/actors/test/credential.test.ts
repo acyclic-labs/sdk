@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import fc from "fast-check";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { credentialProvider, validateCredential } from "../src/credential.js";
+import { CredentialCache, CredentialSnapshot, credentialProvider, validateCredential } from "../src/credential.js";
 import { ActorsClient, type ActorsRustClient } from "../src/client.js";
 import { ACTORS_OPERATION_NAMES } from "../src/generated/actors-service.js";
 
@@ -115,6 +115,32 @@ test("Actors never falls back to a stale bridge credential", async () => {
     await expect(client.inspectActor(actor)).rejects.toThrow("per-request credentials");
     expect(sent).toBe(0);
   }), settings);
+});
+
+test("Actors refuses changed or expired reply custody before decoding", async () => {
+  for (const change of ["account", "expiry", "unavailable", "unchanged"] as const) {
+    let revision: string | undefined = "account/audience/1";
+    let nowUnixSeconds = 1;
+    const cache = new CredentialCache(async () => new CredentialSnapshot("synthetic", "account/audience/1", 100),
+      () => ({ revision, nowUnixSeconds }));
+    let started!: () => void;
+    let finish!: (response: Uint8Array) => void;
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    const response = new Promise<Uint8Array>(resolve => { finish = resolve; });
+    const client = new ActorsClient({
+      endpoint: "https://actors.example.test", credential: cache.provider,
+      binding: { connect: async () => ({ ...legacyClient(), withCredential: () => { started(); return response; } }) },
+    });
+    const call = client.inspectActor(actor);
+    await entered;
+    if (change === "account") revision = "other-account/audience/2";
+    if (change === "expiry") nowUnixSeconds = 100;
+    if (change === "unavailable") revision = undefined;
+    // Deliberately malformed protobuf distinguishes custody refusal from decode.
+    finish(change === "unchanged" ? new Uint8Array() : new Uint8Array([0xff]));
+    if (change === "unchanged") await call;
+    else await expect(call).rejects.toThrow(change === "unavailable" ? "source unavailable" : "source changed or expired");
+  }
 });
 
 test("Actors snapshots provider selection once even when configuration has getters", async () => {

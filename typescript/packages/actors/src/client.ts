@@ -117,6 +117,7 @@ export class ActorsClient {
         if (error instanceof ActorsTransportError && error.metadata?.credentialRejected) lease.reject();
         throw error;
       }
+      lease.check();
       if (sizes) sizes.responseBytes = response.byteLength;
       return canonicalSemantic(fromBinary(method.output, response));
     });

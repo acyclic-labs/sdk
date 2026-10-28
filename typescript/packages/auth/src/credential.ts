@@ -220,13 +220,23 @@ function abortable<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   });
 }
 
+async function rawCredential(provider: CredentialProvider, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  let result: string | Promise<string>;
+  try { result = provider(signal); }
+  catch (error) { signal?.throwIfAborted(); throw error; }
+  // Attach rejection custody even when the callback synchronously aborts.
+  // Deferring invocation can leave its already-created promise unobserved.
+  return abortable(Promise.resolve(result), signal);
+}
+
 /** Raw callbacks resolve afresh; snapshot-aware providers retain exact custody. */
 export function credentialProvider(options: CredentialOptions): CredentialProvider {
   const provider = options.credential;
   if (provider !== undefined) {
     if (typeof provider !== "function") throw new TypeError("credential must be a function");
     return Object.assign(async (signal?: AbortSignal) => {
-      const token = await abortable(Promise.resolve().then(() => { signal?.throwIfAborted(); return provider(signal); }), signal);
+      const token = await rawCredential(provider, signal);
       validateCredential(token);
       return token;
     }, {
@@ -248,7 +258,7 @@ export async function resolveCredential(provider: CredentialProvider, signal?: A
     request.check();
     return request;
   }
-  const token = await abortable(Promise.resolve().then(() => { signal?.throwIfAborted(); return provider(signal); }), signal);
+  const token = await rawCredential(provider, signal);
   validateCredential(token);
   return { token: () => token, check: () => signal?.throwIfAborted(), reject: () => false };
 }
