@@ -223,6 +223,10 @@ impl<
                 }
             }
             LazyLookup::Source { source, node } => {
+                let source_bound = match range {
+                    Some(range) => range.length,
+                    None => maximum.ok_or(LazyWorkspaceError::NotRegularFile)?,
+                };
                 let namespace = self.namespace_path(path, ctx)?;
                 let result = accounted!(ctx, |work, cancel| async {
                     if let Some(range) = range {
@@ -243,7 +247,7 @@ impl<
                                 *source,
                                 &namespace.value,
                                 node.version,
-                                maximum.ok_or(LazyWorkspaceError::NotRegularFile)?,
+                                source_bound,
                                 work,
                                 cancel,
                             )
