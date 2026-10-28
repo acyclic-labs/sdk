@@ -919,3 +919,24 @@ Check93 passed all 22 affected script tests in 2.24 seconds and Windows native-r
 |---|---|---|---|
 | Shared incomplete-file publication wait | `scripts/graphcoder-e2e/wait-path.mjs:25` | Filesystem event primitive | Extend the existing watch with a value predicate; incomplete writes return undefined and recheck only on native change events. The existing waitForFile uses the same implementation. An actual partial-file/completion regression joins atomic-publication, cancellation and deadline controls. Validation pending. |
 | Chrome DevTools endpoint probes | `typescript/packages/filesystem/test/browser-qualify.mjs:146`; `typescript/packages/actors/test/browser-http-conformance.mjs:209` | Harness readiness poll | Observe complete endpoint publication through the shared native filesystem watch. Actual child exit/error cancels readiness; owned failure deadlines and process cleanup remain. Page-result and authenticated cancellation polling are separately pending. Validation pending. |
+
+## Rebase onto the G24 Objects core (2026-10-28)
+
+Current base is `dea6019a5c272f9a44beedb1c11fbec2c204ea4c`. Main replaces the old bucket/current-value Objects implementation with one account-scoped blob core. Retired `objects/src/v1` and physical implementations, the old root publisher and their removed tests remain deleted. Their earlier entries and receipts describe historical source only, not current implementation or adopted proof. Optional filesystem logical-object admission is composed with the new core; the new content binding and immutable delivery cuts remain intact.
+
+| Constant / limit | File:line (rebased source) | Category | Action |
+|---|---|---|---|
+| `WakeIndex.maximumActors` required / journal `limits.paths` default | `typescript/packages/harness/src/event-storage.ts:36` | 1 | Make optional, with no fallback. Retain an explicit positive finite caller capacity and replay at capacity. Replace full registration scans with durable direct ownership keys and counters. |
+| Wake actor 1024 / owned path 4096 byte limits | `typescript/packages/harness/src/event-storage.ts:48,95` | 1 | Delete count/size checks. Exactly two distinct owned paths remains a semantic registration invariant. |
+| Wake subtree and pending enumeration | `typescript/packages/harness/src/event-storage.ts:60,134` | 2 | Shared index scans key-ordered pages of 256. Only matching paths and pending owners are visited; pending count is direct. SQLite uses the existing domain/key primary index and the original journal transaction. Generation acknowledgments retain later changes; no new journal or actor authority. |
+| SQLite journal domain 256 characters | `typescript/packages/harness/src/cloudflare-storage.ts:82` | 1 | Delete length refusal; nonempty identity and exact original configuration remain. |
+| G24 `MAX_PEM_BYTES` / `MAX_BEARER_TOKEN_BYTES` | `rust/crates/objects/src/lib.rs:94` | 1 | Delete new credential-size ceilings. PEM parsing, HTTPS authority, platform verifier, sensitive bearer validation and no-redirect controls remain. |
+| G24 `RootId::MAX_BYTES` 1024 | `rust/crates/objects/src/provider.rs:85` | 1 | Delete size ceiling; root identity remains nonempty and exact. |
+| G24 `REQUEST_TIMEOUT` / `MAX_TRANSFER_TIMEOUT` | `rust/crates/objects/src/grpc.rs:17` | 1 | Remove default request/channel ceilings. Retain positive finite `with_transfer_timeout` as an opt-in body deadline, with no maximum. HTTP has no default whole-request timeout. |
+| G24 Objects whole-message wire transport | `rust/crates/objects/src/grpc.rs:165`; `rust/crates/objects/src/http.rs:149` | 1 / primitive gap | Main's new blob core still uses whole logical messages; shared logical streaming remains pending. No physical frame bound is raised as part of this rebase. |
+
+Check91 passed native harness all-target compilation, the one process wake test, both quiet-owner tests, all six filesystem ownership tests, production generation/FS WASM, and FS TypeScript builds on its recorded pre-G24 source. Its final digest check failed with filesystem schemaDigest mismatch (`1793185888909-215612-1fcdcc13`, 11:36:09 UTC). Failed jobs do not copy generated artifacts back. This is not a current rebased-source receipt.
+
+Check94 passed actual harness-provider WASM compilation, production generation and harness WASM build on pre-G24 `2ac598873b`; TypeScript found three errors (`1793186970506-223588-54e5f81d`, 11:35:29 UTC). The optional brief literal, optional wake capacity and explorer scheduler guard are now corrected; guest integration and digest checks did not run. No runtime proof is inferred.
+
+Check95 passed all three filesystem-notification publication/cancellation/deadline regressions and both browser-controller syntax checks on pre-G24 `3fec244f42` (`1793187194258-224931-5ad73df9`, 11:33:53 UTC). The final Chromium PATH lookup returned unavailable; actual browser execution remains unverified.
