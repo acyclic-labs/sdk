@@ -14,9 +14,7 @@ provider declaration. Missing adapter implementations fail compilation,
 including future default methods. Its independent property checks every attested
 write family, original local/admitted authority, exact canonical digests and
 retry evidence. The external attestor retains its documented deterministic
-function obligation. These controls remain in `rust/proofs/spawn-slots/run.py`;
-run the producer only through canonical bb2 admission.
+function obligation. These controls remain in `rust/proofs/spawn-slots/run.py`.
 
 `rust/proofs/spawn-slots/proofs.json` retains the historical execution receipts
 with their exact source pins. Retired cap receipts do not qualify the new index.
-Raw captured logs remain at Q:/lanes/verify/evidence/1697/retained-raw.
