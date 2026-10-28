@@ -412,36 +412,31 @@ impl ContentGrant {
         self.authority.scope()
     }
 
-    /// Resolves an authenticated whole-volume, exact-file, or directory read.
+    /// Resolves an authenticated read of `file`: the one read decision
+    /// ([`crate::core::file_read_grant`]) every content path shares, signed.
     pub fn verify_read(
         verifier: &AuthorityVerifier,
         scope: &Scope,
         file: &FileRef,
     ) -> Result<Self> {
-        file.validate(&mut None)?;
+        Self::verify_read_with_work(verifier, scope, file, &mut None)
+    }
+
+    /// [`Self::verify_read`], charged to `work`.
+    pub(crate) fn verify_read_with_work(
+        verifier: &AuthorityVerifier,
+        scope: &Scope,
+        file: &FileRef,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<Self> {
+        file.validate(work)?;
         if is_internal_path(file.path()) && !is_inherited_context_path(file.path()) {
             return Err(Error::Unauthorized(
                 "internal storage file is not public content".into(),
             ));
         }
-        let grant = Self::build(verifier, scope, &mut None, |scope, quota| {
-            if contains_content_label(
-                scope.capabilities(),
-                VolumeOperation::Read.capability_prefix(),
-                file.volume().identity_digest(u64::MAX, quota.work())?,
-            ) {
-                return Ok(Boundary {
-                    volume: file.volume.clone_in_quota(quota)?,
-                    operation: VolumeOperation::Read,
-                    exact_file: None,
-                    directory_prefix: None,
-                });
-            }
-            if contains_content_label(
-                scope.capabilities(),
-                acyclic_fs::access::FILE_READ_PREFIX,
-                file.identity_digest(u64::MAX, quota.work())?,
-            ) {
+        let grant = Self::build(verifier, scope, work, |scope, quota| {
+            let exact = || {
                 let FileRef {
                     volume,
                     path,
@@ -450,41 +445,43 @@ impl ContentGrant {
                     display_name,
                     ..
                 } = file.clone();
-                return Ok(Boundary {
+                Boundary {
                     volume,
                     operation: VolumeOperation::Read,
                     exact_file: Some((path, version.into_string(), descriptor, display_name)),
                     directory_prefix: None,
-                });
-            }
-            if file.volume().class() == VolumeClass::AgentPrivate {
-                for prefix in std::iter::once("").chain(
-                    file.path()
-                        .match_indices('/')
-                        .filter_map(|(end, _)| file.path().get(..end)),
-                ) {
-                    if file
-                        .volume()
-                        .directory_read_capability(prefix, quota.work())
-                        .is_ok_and(|capability| scope.capabilities().contains(&capability))
-                    {
-                        if scope.agent().is_none() {
-                            return Err(Error::Unauthorized(
-                                "private directory read is not granted".into(),
-                            ));
-                        }
-                        return Ok(Boundary {
-                            volume: file.volume.clone_in_quota(quota)?,
-                            operation: VolumeOperation::Read,
-                            exact_file: None,
-                            directory_prefix: Some(prefix.to_owned()),
-                        });
-                    }
                 }
+            };
+            match crate::core::file_read_grant(scope.capabilities(), file, quota.work())? {
+                Some(crate::core::ReadGrant::Volume) => Ok(Boundary {
+                    volume: file.volume.clone_in_quota(quota)?,
+                    operation: VolumeOperation::Read,
+                    exact_file: None,
+                    directory_prefix: None,
+                }),
+                // A structured scope admits the request; the volume's
+                // persisted policy decides the path, and the grant reaches
+                // only this pinned version.
+                Some(crate::core::ReadGrant::Exact | crate::core::ReadGrant::Structured) => {
+                    Ok(exact())
+                }
+                Some(crate::core::ReadGrant::Directory(prefix)) => {
+                    if scope.agent().is_none() {
+                        return Err(Error::Unauthorized(
+                            "private directory read is not granted".into(),
+                        ));
+                    }
+                    Ok(Boundary {
+                        volume: file.volume.clone_in_quota(quota)?,
+                        operation: VolumeOperation::Read,
+                        exact_file: None,
+                        directory_prefix: Some(crate::core::copy_text(prefix, quota)?),
+                    })
+                }
+                None => Err(Error::Unauthorized(
+                    "file read is not granted by its owner".into(),
+                )),
             }
-            Err(Error::Unauthorized(
-                "file read is not granted by its owner".into(),
-            ))
         })?;
         grant.require_file_read(file, None)?;
         Ok(grant)
@@ -634,43 +631,6 @@ impl ContentGrant {
                 operation: VolumeOperation::Read,
                 exact_file: None,
                 directory_prefix: Some(crate::core::copy_text(prefix, quota)?),
-            })
-        })
-    }
-
-    /// Authorizes only one pinned file version, including across an owner boundary.
-    pub fn verify_file_read(
-        verifier: &AuthorityVerifier,
-        scope: &Scope,
-        file: &FileRef,
-    ) -> Result<Self> {
-        file.validate(&mut None)?;
-        if is_internal_path(file.path()) && !is_inherited_context_path(file.path()) {
-            return Err(Error::Unauthorized(
-                "internal storage file is not public content".into(),
-            ));
-        }
-        Self::build(verifier, scope, &mut None, |scope, quota| {
-            if !contains_content_label(
-                scope.capabilities(),
-                acyclic_fs::access::FILE_READ_PREFIX,
-                file.identity_digest(u64::MAX, quota.work())?,
-            ) {
-                return Err(Error::Unauthorized("exact file read is not granted".into()));
-            }
-            let FileRef {
-                volume,
-                path,
-                version,
-                descriptor,
-                display_name,
-                ..
-            } = file.clone();
-            Ok(Boundary {
-                volume,
-                operation: VolumeOperation::Read,
-                exact_file: Some((path, version.into_string(), descriptor, display_name)),
-                directory_prefix: None,
             })
         })
     }

@@ -23,6 +23,8 @@ use std::{
 
 const SCENARIO: &str = "conformance scenario";
 const CHILD: &str = "conformance child";
+/// The child's answer, which its result carries back to the root.
+const CHILD_REPLY: &str = "child reply";
 const FOLLOWUP: &str = "conformance follow-up";
 const WRITTEN: &str = "conformance write";
 const DEADLINE: Duration = Duration::from_secs(60);
@@ -116,7 +118,8 @@ struct Reply {
 
 /// The scripted turns, told apart by their newest user message: the root's
 /// scenario turn calls shell, write and spawn, then answers; the child
-/// answers at once; the root's follow-up answers once the child ran.
+/// answers at once; the root acknowledges its child's report; the root's
+/// follow-up answers once the child ran.
 fn answer(
     request: &Value,
     steps: &Mutex<BTreeSet<Step>>,
@@ -150,7 +153,13 @@ fn answer(
     if prompt.contains(CHILD) {
         steps.lock().unwrap().insert(("child", results));
         child.send_replace(true);
-        return reply(events(&[text("child reply")]));
+        return reply(events(&[text(CHILD_REPLY)]));
+    }
+    // The root's report of its child's result, which carries the child's
+    // reply. The child decides when it arrives, before or after the
+    // follow-up, so it records no step.
+    if prompt.contains(CHILD_REPLY) {
+        return reply(events(&[text("child noted")]));
     }
     if prompt.contains(FOLLOWUP) {
         steps.lock().unwrap().insert(("followup", results));

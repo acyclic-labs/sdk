@@ -38,15 +38,5 @@ pub(crate) fn read_granted_with_work(
         io.check_cancellation()?;
     }
     file.validate(work)?;
-    if contains_content_grant_with_work(grants, file, acyclic_fs::access::FILE_READ_PREFIX, work)? {
-        return Ok(true);
-    }
-    crate::core::directory_read_granted_with_work(
-        grants,
-        file.volume(),
-        file.path()
-            .rsplit_once('/')
-            .map_or("", |(parent, _)| parent),
-        work,
-    )
+    Ok(crate::core::file_read_grant(grants, file, work)?.is_some())
 }

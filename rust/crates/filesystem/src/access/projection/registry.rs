@@ -32,13 +32,19 @@ pub(super) struct Node {
 
 impl Registry {
     pub(super) fn counts(&self, volume: Volume) -> State {
-        let lower = prefix(&self.root, volume, false);
-        let upper = prefix(&self.root, volume, true);
+        let lower = prefix(&self.root, |key| key.0 < volume);
+        let upper = prefix(&self.root, |key| key.0 <= volume);
         State {
             projections: upper.projections - lower.projections,
             editors: upper.editors - lower.editors,
             observers: upper.observers - lower.observers,
         }
+    }
+
+    /// Live edits of `key`'s volume registered before `key`.
+    pub(super) fn editors_before(&self, key: Key) -> usize {
+        prefix(&self.root, |node| node < key).editors
+            - prefix(&self.root, |node| node.0 < key.0).editors
     }
 
     pub(super) fn insert(
@@ -157,6 +163,10 @@ fn totals(tree: &Tree) -> State {
 }
 
 impl Node {
+    pub(super) fn editor(&self) -> bool {
+        !self.projection && self.observer.is_none()
+    }
+
     fn refresh(&mut self) {
         let left = totals(&self.left);
         let right = totals(&self.right);
@@ -269,14 +279,16 @@ fn remove(tree: Tree, key: Key) -> (Tree, Option<Box<Node>>) {
     (Some(balance(node)), removed)
 }
 
-fn prefix(tree: &Tree, volume: Volume, inclusive: bool) -> State {
+/// Totals of the nodes whose keys satisfy `before`, a predicate true for a
+/// prefix of the key order.
+fn prefix(tree: &Tree, before: impl Fn(Key) -> bool) -> State {
     let mut current = tree;
     let mut sum = State::default();
     while let Some(node) = current {
-        if node.key.0 < volume || inclusive && node.key.0 == volume {
+        if before(node.key) {
             let left = totals(&node.left);
             sum.projections += left.projections + usize::from(node.projection);
-            sum.editors += left.editors + usize::from(!node.projection && node.observer.is_none());
+            sum.editors += left.editors + usize::from(node.editor());
             sum.observers += left.observers + usize::from(node.observer.is_some());
             current = &node.right;
         } else {

@@ -656,51 +656,24 @@ pub(in crate::filesystem) fn require_file_read(
             "internal storage file is not public content",
         ));
     }
-    if io.contains_capability(
-        scope.capabilities(),
-        reference.volume(),
-        acyclic_fs::access::VolumeOperation::Read.capability_prefix(),
-    )? {
-        return Ok(());
-    }
-    if internal_owner {
-        return Err(stock_boundary(
-            Some(io),
-            crate::wire::ErrorCode::Unauthorized,
-            "volume operation is not granted",
-        ));
-    }
-    if io.contains_capability(
+    // The one shared read decision; an owner's internal file needs its
+    // whole-volume grant.
+    match crate::core::file_read_grant(
         scope.capabilities(),
         reference,
-        acyclic_fs::access::FILE_READ_PREFIX,
+        &mut Some(&mut io.history_io()),
     )? {
-        return Ok(());
-    }
-    if !internal
-        && reference.volume().class() == VolumeClass::AgentPrivate
-        && scope.agent().is_some()
-    {
-        if io.contains_capability(
-            scope.capabilities(),
-            &(reference.volume(), ""),
-            acyclic_fs::access::DIRECTORY_READ_PREFIX,
-        )? {
-            return Ok(());
+        Some(crate::core::ReadGrant::Volume) => return Ok(()),
+        Some(_) if internal_owner => {
+            return Err(stock_boundary(
+                Some(io),
+                crate::wire::ErrorCode::Unauthorized,
+                "volume operation is not granted",
+            ));
         }
-        for prefix in reference
-            .path()
-            .match_indices('/')
-            .filter_map(|(end, _)| reference.path().get(..end))
-        {
-            if io.contains_capability(
-                scope.capabilities(),
-                &(reference.volume(), prefix),
-                acyclic_fs::access::DIRECTORY_READ_PREFIX,
-            )? {
-                return Ok(());
-            }
-        }
+        Some(crate::core::ReadGrant::Exact | crate::core::ReadGrant::Structured) => return Ok(()),
+        Some(crate::core::ReadGrant::Directory(_)) if scope.agent().is_some() => return Ok(()),
+        Some(crate::core::ReadGrant::Directory(_)) | None => {}
     }
     Err(stock_boundary(
         Some(io),

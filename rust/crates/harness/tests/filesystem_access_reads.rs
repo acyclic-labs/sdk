@@ -319,7 +319,7 @@ async fn public_host_grants_keep_their_scope_and_observe_current_policy()
         fixture.scope.agent(),
         &mut None,
     )?;
-    let exact = ContentGrant::verify_file_read(&verifier, &exact_scope, &fixture.file)?;
+    let exact = ContentGrant::verify_read(&verifier, &exact_scope, &fixture.file)?;
     let directory = ContentGrant::verify_directory_read(
         &verifier,
         &fixture.scope,

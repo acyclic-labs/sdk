@@ -227,7 +227,7 @@ async fn composite_manifest_admission_routes_members_to_exact_providers() -> Res
             &mut None,
         )
         .expect("scope proof");
-    let grant = ContentGrant::verify_file_read(
+    let grant = ContentGrant::verify_read(
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         &member,

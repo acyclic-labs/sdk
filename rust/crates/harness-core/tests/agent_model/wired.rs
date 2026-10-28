@@ -7,13 +7,13 @@ use acyclic_harness_core::{
     agent::*,
     context::{CompactionPolicy, ContextPipeline},
     contract::{Capabilities, capability::INTERACTION_ROUTE},
-    conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    conversation::{FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityRoot},
     executor::Executor,
     executor::StockExecutor,
     filesystem::{FilesystemHost, FilesystemTurnHost, PRIVATE_VOLUME, TurnLimits},
     filesystem::{TurnAdmission, TurnAuthority, TurnExecutors},
-    model::{Model, ModelContent, ModelRole},
+    model::{Model, ModelContent, ModelRequest, ModelRole},
     resources::ProviderRef,
     test_support::{ScriptedModelProvider, ScriptedTurn},
     tool::ToolRegistry,
@@ -389,6 +389,218 @@ async fn a_spawned_childs_first_request_holds_its_parents_conversation() -> Resu
         "the child's first request lacks its parent's settled turn: {:?}",
         requests[1].messages
     );
+    Ok(())
+}
+
+/// Which input reaches an admitted root first after its child settles.
+#[derive(Clone, Copy, Debug)]
+enum Arrival {
+    ChildResultFirst,
+    FollowUpFirst,
+}
+
+/// An admitted root's two turns after its child settles: the child's result
+/// (its settled turn output, staged as inherited conversation on the child's
+/// private volume) and a follow-up, in `arrival` order. `structured` is the
+/// admission's structured filesystem grant over every volume; without it the
+/// admission grants only the root's own volume. Returns the model requests
+/// and the child's result.
+async fn admitted_root_after_its_child(
+    arrival: Arrival,
+    structured: bool,
+    base: u8,
+) -> std::result::Result<(Vec<ModelRequest>, FileRef), String> {
+    let run = async {
+        let root = AgentPath::root(&id(base));
+        let child = root.child(&id(base + 1))?;
+        let stream = Arc::new(MemoryStream::default());
+        let model = Arc::new(ScriptedModelProvider::new([
+            ScriptedTurn::Text("child answer".into()),
+            ScriptedTurn::Text("first".into()),
+            ScriptedTurn::Text("second".into()),
+        ]));
+        let (host, binding) = private(&root).await?;
+        let own = VolumeRef::new(
+            binding.volume.provider().clone(),
+            "child-private".into(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(acyclic_harness_core::AgentId::from_bytes(
+                child.id().to_bytes(),
+            )),
+            &mut None,
+        )?;
+        host.create_volume(&own).await?;
+        let audience = Authority {
+            kind: AggregateKind::Conversation,
+            id: "workload".into(),
+        };
+        let issuer = AuthorityRoot::new("agents", [7; 32], audience.clone());
+        // Each agent's admission: the structured grant, or its own volume.
+        let admission = |volume: &VolumeRef| -> Result<_> {
+            let mut grants = vec![INTERACTION_ROUTE.to_owned()];
+            if structured {
+                grants.push(
+                    acyclic_fs::access::Capability::whole_volume(
+                        None,
+                        acyclic_fs::access::ActionSet::MountWrite.actions(),
+                    )
+                    .to_scope_label()?,
+                );
+            } else {
+                grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
+                grants.push(volume.capability(VolumeOperation::Write, &mut None)?);
+            }
+            Ok(issuer.bootstrap_scope("admitted", &Capabilities::new(grants), None, &mut None)?)
+        };
+        let (child_scope, root_scope) = (admission(&own)?, admission(&binding.volume)?);
+        let driver = |scope| {
+            ExecutorDriver::new(FilesystemTurnHost::new(
+                stream.clone(),
+                host.clone(),
+                issuer.clone(),
+                TurnAdmission::Admitted {
+                    audience: audience.clone(),
+                    scope,
+                },
+                executors(model.clone()).expect("executors"),
+                LIMITS,
+                Default::default(),
+            ))
+        };
+        // The child settles its turn; its result is that turn's output.
+        let mut adoption = adopted(id(base + 1));
+        adoption.parent = Some(root.clone());
+        adoption.volumes = vec![VolumeBinding {
+            name: PRIVATE_VOLUME.into(),
+            volume: own,
+        }];
+        let settled = step(
+            &driver(child_scope),
+            &child,
+            Some(AgentState::adopted(child.clone(), &adoption)),
+            0,
+            requested("c1", &child),
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        let Phase::Done {
+            outcome: AgentOutcome::Succeeded {
+                result: Some(result),
+            },
+        } = settled.state.phase.clone()
+        else {
+            return Err(format!("child did not settle: {:?}", settled.state.phase).into());
+        };
+        let done = Wake::Inbox {
+            sequence: 1,
+            record: InboxRecord::ChildDone(ChildDone {
+                child: child.clone(),
+                outcome: AgentOutcome::Succeeded {
+                    result: Some(result.clone()),
+                },
+            }),
+        };
+        let [first, second] = match arrival {
+            Arrival::ChildResultFirst => [done, requested("p1", &root)],
+            Arrival::FollowUpFirst => [requested("p1", &root), done],
+        };
+        let driver = driver(root_scope);
+        let mut adoption = adopted(id(base));
+        adoption.volumes = vec![binding];
+        let stepped = step(
+            &driver,
+            &root,
+            Some(AgentState::adopted(root.clone(), &adoption)),
+            0,
+            first,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        // Settle the first turn as its step commit would.
+        let records = stepped
+            .outs
+            .iter()
+            .filter_map(|out| match out {
+                Out::Conversation(bytes) => Some(bytes.clone().into()),
+                _ => None,
+            })
+            .collect();
+        stream
+            .commit(CommitRequest {
+                deadline_unix_millis: None,
+                conditions: vec![CommitCondition::Absent {
+                    path: root.conversation()?,
+                }],
+                mutations: vec![CommitMutation::Append {
+                    path: root.conversation()?,
+                    records,
+                }],
+                idempotency_key: intent_key("settle", &[root.as_str()])?,
+            })
+            .await?;
+        step(
+            &driver,
+            &root,
+            Some(stepped.state),
+            0,
+            second,
+            acyclic_actors::guest::CancellationToken::new(),
+        )
+        .await?;
+        Ok::<_, Box<dyn std::error::Error>>((model.requests(), *result))
+    };
+    run.await.map_err(|error| error.to_string())
+}
+
+/// The e2e race, forced both ways: an admitted root reads its child's result
+/// whichever of the result and a follow-up arrives first, because the turn's
+/// grant is derived from its whole context and every content path decides the
+/// read with one check.
+#[tokio::test]
+async fn an_admitted_root_reads_its_childs_result_whichever_input_arrives_first() -> Result {
+    for (base, arrival) in [
+        (30, Arrival::ChildResultFirst),
+        (40, Arrival::FollowUpFirst),
+    ] {
+        let (requests, result) = admitted_root_after_its_child(arrival, true, base)
+            .await
+            .map_err(|error| format!("{arrival:?}: {error}"))?;
+        assert!(
+            result
+                .path()
+                .starts_with(".system/inherited-conversation/turns/"),
+            "{arrival:?}: the result is the child's staged turn output"
+        );
+        assert_eq!(
+            requests.len(),
+            3,
+            "{arrival:?}: the child's and both root turns"
+        );
+        // The second root request holds the result, as its current input or
+        // in its settled history.
+        assert!(
+            requests[2]
+                .messages
+                .iter()
+                .any(|message| message.content.file_refs().any(|file| *file == result)),
+            "{arrival:?}: the root's context lacks its child's result"
+        );
+    }
+    Ok(())
+}
+
+/// Negative control: an admission granting only the root's own volume (no
+/// structured scope, no grant over the child's) cannot read the result, in
+/// either order; the read is checked, not bypassed.
+#[tokio::test]
+async fn an_admission_without_the_childs_volume_cannot_read_its_result() -> Result {
+    for (base, arrival) in [
+        (50, Arrival::ChildResultFirst),
+        (60, Arrival::FollowUpFirst),
+    ] {
+        let refused = admitted_root_after_its_child(arrival, false, base).await;
+        assert!(refused.is_err(), "{arrival:?}: {refused:?}");
+    }
     Ok(())
 }
 

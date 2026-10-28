@@ -114,6 +114,13 @@ where
                 StreamError::AccessDenied
             }),
             open: Box::pin(async move {
+                // An edit in flight at the follow finishes before its policy is
+                // read; later edits invalidate the observation instead.
+                opened
+                    .watch
+                    .admitted()
+                    .await
+                    .map_err(|_| StreamError::AccessDenied)?;
                 let cancellation = CancellationToken::new();
                 let volume = fs
                     .open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation)

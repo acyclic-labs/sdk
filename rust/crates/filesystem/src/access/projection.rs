@@ -21,15 +21,37 @@ struct State {
 struct ObservationSignal {
     invalid: crate::sync::atomic::AtomicBool,
     waker: futures::task::AtomicWaker,
+    // Woken when an edit registered before this observation retires.
+    admission: futures::task::AtomicWaker,
 }
 
 /// A non-blocking policy observation: edits invalidate it before authority CAS.
 /// It never holds a projection lease over an idle follow.
 pub(crate) struct PolicyWatch {
-    _registration: Lease,
+    registration: Lease,
     signal: Arc<ObservationSignal>,
 }
 impl PolicyWatch {
+    /// Completes once every edit registered before this observation retired.
+    /// Later edits see the observation and invalidate it before their CAS, so
+    /// a policy read after this completes cannot miss a change. Only those
+    /// earlier edits are awaited: later ones never delay admission.
+    pub(crate) async fn admitted(&self) -> Result<(), crate::FsError> {
+        futures::future::poll_fn(|cx| {
+            let entries = match self.registration.owner.entries.lock() {
+                Ok(entries) => entries,
+                Err(_) => return std::task::Poll::Ready(Err(crate::FsError::MutationNotAllowed)),
+            };
+            if entries.editors_before(self.registration.key) == 0 {
+                return std::task::Poll::Ready(Ok(()));
+            }
+            // Registered under the lock the retiring edit takes before it
+            // wakes, so its wake cannot be lost.
+            self.signal.admission.register(cx.waker());
+            std::task::Poll::Pending
+        })
+        .await
+    }
     pub(crate) fn valid(&self) -> bool {
         !self
             .signal
@@ -67,17 +89,17 @@ pub(crate) fn observe(
     let signal = Arc::new(ObservationSignal {
         invalid: crate::sync::atomic::AtomicBool::new(false),
         waker: futures::task::AtomicWaker::new(),
+        admission: futures::task::AtomicWaker::new(),
     });
-    let mut entries = policies
+    // Admitted at once: an edit already in flight is awaited by `admitted`
+    // rather than refusing the observation.
+    let key = policies
         .entries
         .lock()
-        .map_err(|_| crate::FsError::MutationNotAllowed)?;
-    if entries.counts(volume).editors != 0 {
-        return Err(crate::FsError::MutationNotAllowed);
-    }
-    let key = entries.insert_observer(volume, Arc::clone(&signal))?;
+        .map_err(|_| crate::FsError::MutationNotAllowed)?
+        .insert_observer(volume, Arc::clone(&signal))?;
     Ok(PolicyWatch {
-        _registration: Registration {
+        registration: Registration {
             owner: policies,
             key,
         },
@@ -220,6 +242,21 @@ impl Drop for Registration<'_> {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(self.key);
+        // A retiring edit wakes the observations admitted after it, which may
+        // await it; wakers run after the lock is released.
+        if removed.as_ref().is_some_and(|node| node.editor()) {
+            let mut previous = Some(self.key);
+            while let Some((key, signal)) = self
+                .owner
+                .entries
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .next_observer(self.key.0, previous)
+            {
+                previous = Some(key);
+                signal.admission.wake();
+            }
+        }
         drop(removed);
     }
 }
@@ -298,7 +335,9 @@ mod model {
                     drop(editor);
                 }
             });
-            if let Ok(watch) = observe(&owner, volume) {
+            if let Ok(watch) = observe(&owner, volume)
+                && loom::future::block_on(watch.admitted()).is_ok()
+            {
                 let pinned = revision.load(crate::sync::atomic::Ordering::SeqCst);
                 loom::thread::yield_now();
                 let current = revision.load(crate::sync::atomic::Ordering::SeqCst);
@@ -455,9 +494,22 @@ mod observation_tests {
         assert!(!watch.valid());
         assert!(wake.0.load(Ordering::SeqCst) > 0);
         assert!(pending.as_mut().poll(&mut cx).is_ready());
-        assert!(observe(&owner, volume).is_err());
+        // A follow arriving mid-edit is admitted once that edit retires.
+        let late = observe(&owner, volume).unwrap();
+        let mut admitted = Box::pin(late.admitted());
+        assert!(admitted.as_mut().poll(&mut cx).is_pending());
+        let woken = wake.0.load(Ordering::SeqCst);
+        let (after, _) = publication(&owner, volume).unwrap();
         drop(editor);
-        assert!(observe(&owner, volume).unwrap().valid());
+        assert!(wake.0.load(Ordering::SeqCst) > woken);
+        assert!(matches!(
+            admitted.as_mut().poll(&mut cx),
+            std::task::Poll::Ready(Ok(()))
+        ));
+        // An edit registered after the observation sees it and never delays it.
+        assert!(late.valid());
+        after.policy_changed(true).unwrap();
+        assert!(!late.valid());
     }
     #[test]
     fn deletion_invalidates_observations_while_mount_retirement_is_in_progress() {
@@ -468,9 +520,14 @@ mod observation_tests {
         let (editor, _) = publication(&owner, volume).unwrap();
         editor.retire_policy().unwrap();
         assert!(!watch.valid());
-        assert!(observe(&owner, volume).is_err());
+        let late = observe(&owner, volume).unwrap();
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let mut admitted = Box::pin(late.admitted());
+        assert!(admitted.as_mut().poll(&mut cx).is_pending());
         drop(editor);
-        assert!(observe(&owner, volume).unwrap().valid());
+        assert!(admitted.as_mut().poll(&mut cx).is_ready());
+        assert!(late.valid());
     }
     #[test]
     fn observations_keep_owner_and_volume_boundaries() {

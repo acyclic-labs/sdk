@@ -24,7 +24,7 @@ use crate::{
     },
     core::{AggregateKind, Authority, AuthorityRoot, AuthorityVerifier, Scope},
     executor::{Executor, TurnOutput},
-    model::{ModelContent, ModelContentPart, ModelMessage, ModelRole},
+    model::{ModelContent, ModelMessage, ModelRole},
     projection::SelectedModelContext,
     runtime::ContentBindings,
 };
@@ -662,19 +662,6 @@ where
     }
 }
 
-/// The files a turn input's model content names.
-fn input_files(content: &ModelContent) -> Vec<FileRef> {
-    let file = |part: &ModelContentPart| match part {
-        ModelContentPart::File { file, .. } => Some(file.clone()),
-        _ => None,
-    };
-    match content {
-        ModelContent::Part(part) => file(part).into_iter().collect(),
-        ModelContent::Parts(parts) => parts.iter().filter_map(file).collect(),
-        ModelContent::Text(_) => Vec::new(),
-    }
-}
-
 fn agent_error(error: crate::agent::Error) -> Error {
     Error::Invalid(error.to_string())
 }
@@ -698,62 +685,119 @@ fn prompt_id(prompt: &str) -> uuid::Uuid {
     uuid::Uuid::from_bytes(bytes)
 }
 
-/// The selection of the system `prompt`, `history` and the current `input`:
-/// one user and one assistant message per settled turn, assistant text read
-/// from its staged output through `reader`, which holds each output's exact
-/// version grant. Without either there is no selection.
-async fn select(
-    agent: &AgentState,
-    reader: &dyn ContentResidencyVerifier,
-    maximum_bytes: u64,
-    prompt: Option<&str>,
-    history: Vec<ConversationEntry>,
+/// A turn's context before its settled outputs are read: the system prompt,
+/// each settled turn (its model input and staged output), the current input,
+/// and the approval policy it runs under. It is the one place that names what
+/// a turn can reach, so the turn's read grant ([`Self::files`]) and its model
+/// messages ([`Self::select`]) cannot disagree: a source added here is granted
+/// before either a child's result or a follow-up can be observed.
+struct TurnContext<'a> {
+    prompt: Option<&'a str>,
+    settled: Vec<(OperationId, ModelContent, FileRef)>,
     turn: OperationId,
-    input: &ModelContent,
-) -> Result<Option<SelectedModelContext>> {
-    if history.is_empty() && prompt.is_none() {
-        return Ok(None);
+    input: &'a ModelContent,
+    policy: Option<&'a FileRef>,
+}
+
+impl<'a> TurnContext<'a> {
+    /// The context of `agent`'s `turn` over its settled `history`.
+    fn new(
+        agent: &'a AgentState,
+        prompt: Option<&'a str>,
+        history: Vec<ConversationEntry>,
+        turn: OperationId,
+        input: &'a ModelContent,
+    ) -> Result<Self> {
+        let settled = history
+            .into_iter()
+            .map(|entry| {
+                Ok((
+                    crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?,
+                    crate::agent::model_input(&entry.input).map_err(agent_error)?,
+                    entry.output,
+                ))
+            })
+            .collect::<Result<_>>()?;
+        Ok(Self {
+            prompt,
+            settled,
+            turn,
+            input,
+            // A spawned agent runs under the approval policy it inherited,
+            // staged on an ancestor's private volume.
+            policy: agent.policy.as_ref(),
+        })
     }
-    let mut messages = Vec::with_capacity(2 * history.len() + 2);
-    let mut message_ids = Vec::with_capacity(messages.capacity());
-    if let Some(prompt) = prompt {
-        messages.push(ModelMessage {
-            role: ModelRole::System,
-            content: ModelContent::Text(prompt.to_owned()),
-        });
-        message_ids.push(prompt_id(prompt));
+
+    /// Every file the turn can reach, each by its exact version: the files
+    /// each message names, each settled output (an inherited turn's is staged
+    /// on an ancestor's private volume, a child's result on the child's), and
+    /// the approval policy.
+    fn files(&self) -> impl Iterator<Item = &FileRef> {
+        self.settled
+            .iter()
+            .flat_map(|(_, input, output)| input.file_refs().chain(std::iter::once(output)))
+            .chain(self.input.file_refs())
+            .chain(self.policy)
     }
-    for entry in history {
-        let settled = crate::agent::turn_id(agent, &entry.input).map_err(agent_error)?;
-        let bytes = reader
-            .read(&entry.output, maximum_bytes, None, None)?
-            .await?;
-        let output: TurnOutput = serde_json::from_slice(&bytes)
-            .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
+
+    /// The selection: one user and one assistant message per settled turn,
+    /// assistant text read from its staged output through `reader`, which
+    /// holds [`Self::files`]. Without a prompt or history there is none.
+    async fn select(
+        self,
+        agent: &AgentState,
+        reader: &dyn ContentResidencyVerifier,
+        maximum_bytes: u64,
+    ) -> Result<Option<SelectedModelContext>> {
+        let Self {
+            prompt,
+            settled,
+            turn,
+            input,
+            ..
+        } = self;
+        if settled.is_empty() && prompt.is_none() {
+            return Ok(None);
+        }
+        let mut messages = Vec::with_capacity(2 * settled.len() + 2);
+        let mut message_ids = Vec::with_capacity(messages.capacity());
+        if let Some(prompt) = prompt {
+            messages.push(ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(prompt.to_owned()),
+            });
+            message_ids.push(prompt_id(prompt));
+        }
+        for (settled, content, output) in settled {
+            let bytes = reader.read(&output, maximum_bytes, None, None)?.await?;
+            let output: TurnOutput = serde_json::from_slice(&bytes)
+                .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
+            messages.push(ModelMessage {
+                role: ModelRole::User,
+                content,
+            });
+            message_ids.push(message_id(settled, ModelRole::User));
+            messages.push(ModelMessage {
+                role: ModelRole::Assistant,
+                content: ModelContent::Text(output.text),
+            });
+            message_ids.push(message_id(settled, ModelRole::Assistant));
+        }
         messages.push(ModelMessage {
             role: ModelRole::User,
-            content: crate::agent::model_input(&entry.input).map_err(agent_error)?,
+            content: input.clone(),
         });
-        message_ids.push(message_id(settled, ModelRole::User));
-        messages.push(ModelMessage {
-            role: ModelRole::Assistant,
-            content: ModelContent::Text(output.text),
-        });
-        message_ids.push(message_id(settled, ModelRole::Assistant));
+        message_ids.push(message_id(turn, ModelRole::User));
+        Ok(Some(SelectedModelContext {
+            selection: ModelContextSelection {
+                conversation_revision: agent.conversation_tail + 1,
+                message_ids,
+                checkpoint: None,
+            },
+            messages,
+        }))
     }
-    messages.push(ModelMessage {
-        role: ModelRole::User,
-        content: input.clone(),
-    });
-    message_ids.push(message_id(turn, ModelRole::User));
-    Ok(Some(SelectedModelContext {
-        selection: ModelContextSelection {
-            conversation_revision: agent.conversation_tail + 1,
-            message_ids,
-            checkpoint: None,
-        },
-        messages,
-    }))
 }
 
 impl<P, A, O> TurnHost for FilesystemTurnHost<P, A, O>
@@ -776,19 +820,19 @@ where
             // conversation, inherited ones included: a spawned child is a
             // clone of its parent at the fork cut.
             let history = self.history(&admitted, agent).await?;
-            // Every file the model context names stays readable by its exact
-            // version: the inputs, and each settled output, which an inherited
-            // turn staged on an ancestor's private volume.
-            let mut external = input_files(input);
-            for entry in &history {
-                let content = crate::agent::model_input(&entry.input).map_err(agent_error)?;
-                external.extend(input_files(&content));
-                external.push(entry.output.clone());
-            }
-            // A spawned agent runs under the approval policy it inherited,
-            // staged on an ancestor's private volume: it reads that exact file.
-            external.extend(agent.policy.iter().cloned());
+            // The turn's grant is derived from its context, before the turn
+            // can observe anything: every file the context can reach.
+            let context = TurnContext::new(agent, self.prompt.as_deref(), history, turn, input)?;
+            let external: Vec<FileRef> = context.files().cloned().collect();
             let (journal, bindings, files) = self.journal(admitted, &external)?;
+            // Every file the context reaches is readable under the turn's
+            // grant, by the one shared read check, before the turn runs: a
+            // missing grant fails here whichever input arrived first, not on
+            // whichever path happens to read the file.
+            let verifier = bindings.issuer.verifier(&mut None)?;
+            for file in &external {
+                crate::conversation::ContentGrant::verify_read(&verifier, &bindings.scope, file)?;
+            }
             let effects = Some(Arc::new(FilesystemTurnEffects::new(
                 Arc::clone(&files),
                 Arc::clone(&self.stream),
@@ -822,16 +866,9 @@ where
             let journal = journal
                 .with_stop(stop)
                 .with_agent_approvals(Arc::clone(&approvals));
-            let selected = select(
-                agent,
-                &*authority.content.reader,
-                self.limits.maximum_bytes,
-                self.prompt.as_deref(),
-                history,
-                turn,
-                input,
-            )
-            .await?;
+            let selected = context
+                .select(agent, &*authority.content.reader, self.limits.maximum_bytes)
+                .await?;
             let journal = match &selected {
                 Some(selected) => journal.with_bound_selection(selected.clone()),
                 None => journal,
