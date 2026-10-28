@@ -131,23 +131,29 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
             incoming.push((
                 blob(request.object_id),
                 ByteRange::FULL,
-                self.maximum_object_bytes.map_or(request.maximum_bytes, |limit| request.maximum_bytes.min(limit)),
+                self.maximum_object_bytes
+                    .map_or(request.maximum_bytes, |limit| {
+                        request.maximum_bytes.min(limit)
+                    }),
             ));
         }
         let (mut values, output) = vector::<ObjectRead>(requests.len(), work)?;
         let remaining = work.remaining()?;
-        let total = incoming.iter().try_fold(0u64, |total, request| {
-            total.checked_add(request.2).ok_or(WorkError::Overflow)
-        })?;
+        let total = incoming
+            .iter()
+            .try_fold(0u64, |total, request| total.checked_add(request.2));
         #[cfg(not(target_arch = "wasm32"))]
         let native = work.native_work().is_some();
         #[cfg(target_arch = "wasm32")]
         let native = false;
-        let mut quota = total.min(remaining.object_bytes_read);
-        if !native {
-            quota = quota.min(remaining.peak_allocation_bytes);
-        }
-        if total > quota {
+        let quota = total.and_then(|total| {
+            let mut quota = remaining.object_bytes_read;
+            if !native {
+                quota = quota.min(remaining.peak_allocation_bytes);
+            }
+            (total <= quota).then_some(total)
+        });
+        let Some(quota) = quota else {
             drop(incoming);
             release(work, custody, request_bytes)?;
             for request in requests {
@@ -160,7 +166,7 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
                 values.push(read);
             }
             return Ok((values, output));
-        }
+        };
         let body = if native {
             KernelOwnedAllocation::Standalone
         } else {
