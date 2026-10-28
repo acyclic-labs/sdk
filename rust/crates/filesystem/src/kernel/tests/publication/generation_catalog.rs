@@ -91,9 +91,13 @@ mod probe {
             self.read_request();
             self.inner.inspect_idempotency(key).await
         }
-        async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+
+        async fn heads(
+            &self,
+            request: acyclic_stream::HeadsRequest,
+        ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
             self.read_request();
-            self.inner.head(path).await
+            self.inner.heads(request).await
         }
         async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
             self.read_request();

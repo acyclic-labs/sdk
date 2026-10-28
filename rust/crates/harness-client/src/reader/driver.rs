@@ -9,6 +9,7 @@
 //! replaced is detected and dropped instead of joined to new history.
 
 use super::{Failure, Fetched, HeadObservation, ListedChild, Op, Outcome, Reader};
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     ChildrenPageRequest, PathHead, ReadRequest, Record, RecordStream, StreamError, StreamPath,
     StreamProvider,

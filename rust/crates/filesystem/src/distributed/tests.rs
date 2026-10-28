@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, CommittedMutation, ForkReceipt,
     ForkRequest, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, MemoryStream,
@@ -766,12 +767,16 @@ impl StreamProvider for ReleaseSpy {
         }
         Ok(result)
     }
-    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         self.reads.store(true, SeqCst);
         if self.deny_probes_after_commit && self.writes.load(SeqCst) {
             return Err(StreamError::InvalidArgument);
         }
-        self.inner.head(path).await
+        self.inner.heads(request).await
     }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.reads.store(true, SeqCst);

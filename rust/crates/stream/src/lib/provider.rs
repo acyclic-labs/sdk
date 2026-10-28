@@ -40,15 +40,10 @@ impl<T: ?Sized> ProviderPlatform for T {}
 pub trait StreamProvider: ProviderPlatform + 'static {
     /// Session ownership and backend publication policy.
     fn context(&self) -> ProviderContext<'_>;
-    /// Atomically observes accepted history, its last record, durable cut and fork origin.
-    async fn head(&self, path: StreamPath) -> Result<PathHead, StreamError>;
     /// Observes named heads, absence and a child page atomically at one snapshot.
     /// Adapters must forward this operation intact; separate head calls cannot
     /// establish this guarantee. Denial refuses the whole view, never absence.
-    async fn heads(&self, request: HeadsRequest) -> Result<Heads, StreamError> {
-        let _ = request;
-        Err(StreamError::Unsupported)
-    }
+    async fn heads(&self, request: HeadsRequest) -> Result<Heads, StreamError>;
     /// Makes every write accepted by this session before the call durable.
     /// Visibility and live delivery do not wait for this barrier.
     async fn durability_barrier(&self) -> Result<(), StreamError> {

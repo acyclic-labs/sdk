@@ -96,18 +96,6 @@ impl StreamProvider for Client {
         self.session()?.heads(request, 0).await
     }
 
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        let body = wire::HeadRequest {
-            path: path.to_string(),
-        };
-        let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.head(request).await })
-            })
-            .await?;
-        decode_response(response, crate::wire_codec::head_from_wire)
-    }
-
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         let session = self.session()?;
         let revisions = session.revisions();

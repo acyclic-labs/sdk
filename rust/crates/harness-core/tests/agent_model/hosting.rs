@@ -293,11 +293,12 @@ impl StreamProvider for Evidence {
     ) -> std::result::Result<Option<acyclic_stream::IdempotencyObservation>, StreamError> {
         self.inner.inspect_idempotency(key).await
     }
-    async fn head(
+
+    async fn heads(
         &self,
-        path: acyclic_stream::StreamPath,
-    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
-        self.inner.head(path).await
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        self.inner.heads(request).await
     }
     async fn tail(
         &self,

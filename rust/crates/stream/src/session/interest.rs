@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamProviderExt as _;
 struct Opened {
     identity: wire::SessionChannel,
     channel: Channel,

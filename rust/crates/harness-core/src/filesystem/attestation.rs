@@ -25,8 +25,8 @@ use acyclic_native_runtime::NativeReadMeter;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, BoxProviderFuture, ChildrenPage, ChildrenPageRequest, CommitId,
     CommitOutcome, CommitRequest, CommittedEnvelope, DurableReceipt, FollowStream, ForkReceipt,
-    ForkRequest, IdempotencyKey, IdempotencyObservation, ProviderPlatform,
-    ReadRequest, RecordStream, StreamError, StreamPath, StreamProvider, StreamWatermarks,
+    ForkRequest, IdempotencyKey, IdempotencyObservation, ProviderPlatform, ReadRequest,
+    RecordStream, StreamError, StreamPath, StreamProvider, StreamWatermarks,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_stream::{NativeProviderFuture, NativeRecordStream, PreparedNativeCommit};
@@ -172,9 +172,7 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     ) -> Result<acyclic_stream::Revision, StreamError> {
         self.inner.wait_applied(at_least).await
     }
-    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
-        self.inner.head(path).await
-    }
+
     async fn heads(
         &self,
         request: acyclic_stream::HeadsRequest,
@@ -407,11 +405,12 @@ mod tests {
         async fn tail(&self, path: super::StreamPath) -> Result<u64, super::StreamError> {
             self.inner.tail(path).await
         }
-        async fn head(
+
+        async fn heads(
             &self,
-            path: super::StreamPath,
-        ) -> Result<acyclic_stream::PathHead, super::StreamError> {
-            self.inner.head(path).await
+            request: acyclic_stream::HeadsRequest,
+        ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+            self.inner.heads(request).await
         }
         async fn append(
             &self,

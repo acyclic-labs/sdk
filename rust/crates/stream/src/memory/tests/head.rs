@@ -1,4 +1,5 @@
 use super::super::*;
+use crate::StreamProviderExt as _;
 
 #[tokio::test]
 async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reopen()

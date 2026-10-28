@@ -177,10 +177,6 @@ impl StreamProvider for MemoryStream {
         crate::ProviderContext::new(&self.operation_claims).with_process_exclusion()
     }
 
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        head_at(&*self.state.read().await, &path)?.ok_or(StreamError::NotFound)
-    }
-
     async fn heads(&self, mut request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
         request.validate()?;
         self.revisions.wait(&request.at_least).await?;

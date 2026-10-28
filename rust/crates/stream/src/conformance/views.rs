@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamProviderExt as _;
 
 pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
     let paths = [path("coherent/a/state")?, path("coherent/b/state")?];

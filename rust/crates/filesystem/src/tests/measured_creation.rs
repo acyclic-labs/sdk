@@ -283,6 +283,7 @@ mod source_bound_lost_ack {
         EmbeddedCapabilities, LazyWorkspace, LazyWorkspaceStore, LogicalObjectStore,
         MemoryLazyWorkspaceStore, StreamAuthorityStore,
     };
+    use acyclic_stream::StreamProviderExt as _;
     use acyclic_stream::{
         AppendRequest, CommitRequest, MemoryStream, ReadRequest, StreamError, StreamPath,
         StreamProvider,
@@ -311,8 +312,11 @@ mod source_bound_lost_ack {
             self.inner.inspect_idempotency(key).await
         }
 
-        async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
-            self.inner.head(path).await
+        async fn heads(
+            &self,
+            request: acyclic_stream::HeadsRequest,
+        ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+            self.inner.heads(request).await
         }
         async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
             self.inner.tail(path).await

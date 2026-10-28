@@ -47,10 +47,6 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.inner().heads(request).await
     }
 
-    async fn head(&self, path: StreamPath) -> Result<PathHead, StreamError> {
-        self.record(RequestClass::Head);
-        self.inner().head(path).await
-    }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         self.record(RequestClass::Head);
         self.inner().watermarks(path).await

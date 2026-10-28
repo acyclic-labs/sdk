@@ -93,8 +93,11 @@ impl StreamProvider for ModelStream {
         acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
     }
 
-    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
-        self.call(self.inner.head(path)).await
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        self.call(self.inner.heads(request)).await
     }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.call(self.inner.tail(path)).await

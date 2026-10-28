@@ -89,15 +89,6 @@ impl StreamProvider for LocalStream {
         .await?
     }
 
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        self.accepted(async {
-            let mut head = self.inner.provider.head(path.clone()).await?;
-            head.durable = self.durable_tail_for_accepted(path, head.tail)?;
-            Ok(head)
-        })
-        .await?
-    }
-
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.visible(self.inner.provider.tail(path)).await?
     }

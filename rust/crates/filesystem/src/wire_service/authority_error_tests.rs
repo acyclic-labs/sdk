@@ -44,11 +44,16 @@ impl StreamProvider for FaultStream {
         acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
     }
 
-    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
-        if let Some(error) = self.take_failure(&path) {
-            return Err(error);
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        for path in &request.paths {
+            if let Some(error) = self.take_failure(path) {
+                return Err(error);
+            }
         }
-        self.inner.head(path).await
+        self.inner.heads(request).await
     }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         if let Some(error) = self.take_failure(&path) {

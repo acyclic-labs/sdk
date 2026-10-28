@@ -31,10 +31,19 @@ impl StreamProvider for Provider {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         self.memory.inspect_idempotency(key).await
     }
-    async fn head(&self, path: StreamPath) -> Result<PathHead, StreamError> {
-        let mut head = self.memory.head(path.clone()).await?;
-        head.durable = self.durable(&path, head.tail);
-        Ok(head)
+
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        let paths = request.paths.clone();
+        let mut view = self.memory.heads(request).await?;
+        for (path, head) in paths.iter().zip(&mut view.heads) {
+            if let Some(head) = head {
+                head.durable = self.durable(path, head.tail);
+            }
+        }
+        Ok(view)
     }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.memory.tail(path).await

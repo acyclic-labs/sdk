@@ -368,19 +368,6 @@ impl StreamProvider for HttpStream {
         Ok(view)
     }
 
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        let value = self
-            .request(
-                "head",
-                wire::HeadRequest {
-                    path: path.to_string(),
-                }
-                .encode_to_vec(),
-            )
-            .await?;
-        parse_head(&value)
-    }
-
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         let revisions = self.revisions()?;
         let minimum = revisions.floor(&crate::RevisionCut::default());

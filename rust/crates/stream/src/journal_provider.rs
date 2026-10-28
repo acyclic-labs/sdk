@@ -225,15 +225,6 @@ impl StreamProvider for JournalStream {
         .await
     }
 
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        self.query(async move |provider| {
-            let mut head = provider.head(path).await?;
-            head.durable = head.tail;
-            Ok(head)
-        })
-        .await
-    }
-
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.query(async move |p| p.tail(path).await).await
     }

@@ -28,8 +28,12 @@ impl StreamProvider for Session {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.0.tail(path).await
     }
-    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
-        self.0.head(path).await
+
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        self.0.heads(request).await
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.0.append(request).await

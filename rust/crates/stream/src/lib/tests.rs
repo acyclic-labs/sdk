@@ -108,9 +108,7 @@ mod replay_tests {
         async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
             self.inner.heads(request).await
         }
-        async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-            self.inner.head(path).await
-        }
+
         async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
             self.inner.tail(path).await
         }

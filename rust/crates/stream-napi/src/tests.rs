@@ -238,10 +238,10 @@ impl StreamProvider for TcpDropProbe {
         Err(StreamError::Unsupported)
     }
 
-    async fn head(
+    async fn heads(
         &self,
-        _path: StreamPath,
-    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
+        _request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         Err(StreamError::Unsupported)
     }
 

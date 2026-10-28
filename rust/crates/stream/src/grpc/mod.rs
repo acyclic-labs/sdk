@@ -15,6 +15,7 @@ use tonic::{
 };
 use tracing::field::Empty;
 
+use crate::StreamProviderExt as _;
 use crate::obs;
 use crate::wire_codec::{
     append_from_wire, append_outcome_from_wire, append_outcome_to_wire, commit_from_wire,

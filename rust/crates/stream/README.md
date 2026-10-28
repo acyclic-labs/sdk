@@ -131,6 +131,11 @@ exclusion; a remote cache cannot provide it. Deferred durability is explicit:
 the session must be able to seal its accepted writes with its durability barrier.
 Forwarding adapters preserve these declarations only with the same boundaries.
 
+Single-path `head` is a `StreamProviderExt` projection of `heads`, with one
+provider request and the same revision floor and response validation. Providers
+implement `heads` once; a forwarding adapter cannot substitute separate head
+observations for a mixed view.
+
 Each handle retains a disposable Rust cache and catches up only new journal commands. Initial recovery and total retention are bounded by `BrowserStreamLimits` (default 65,536 commands and 256 MiB of journal bytes) and `MemoryLimits`. New work fails at capacity while exact retained replay still succeeds. Cancellation or persistence failure invalidates unpublished cached state. Live follow registers before reading and receives publication notifications over `BroadcastChannel`; subscribers catch up new durable commands on notification. Dropping the cursor releases its subscription. The provider does not run or schedule application work. Provider hooks use `BoxProviderFuture`, `BoxProviderStream`, `ProviderTask` and `ProviderPlatform`: native futures remain `Send` and native providers remain `Send + Sync`; WASM hooks retain event-loop ownership.
 
 `MemoryStream` and `LocalStream` retain successful retry outcomes and immutable commit envelopes indefinitely within their explicit capacity limits. Replay precedes capacity admission; a new identity fails closed when the store is full. An admitted identity cannot execute again or acquire another digest after a clock advance. `LocalStream` preserves these outcomes through journal replay and snapshots. Recovery enforces the same capacity limits as live admission. Hosted services must provide the same no-reexecution guarantee under their own durable account-wide retry authority; local checks do not qualify that service behavior.

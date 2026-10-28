@@ -217,6 +217,7 @@ pub use record_headers::{
 
 include!("lib/provider_context.rs");
 include!("lib/provider.rs");
+include!("lib/provider_ext.rs");
 
 include!("lib/stream.rs");
 

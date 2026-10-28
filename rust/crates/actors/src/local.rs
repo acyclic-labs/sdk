@@ -15,6 +15,7 @@ use crate::addressing::ActorReference;
 use crate::guest::{
     AlarmChange, Checkpoint, Composer, Composition, Effect, GuestError, Transition, Trigger,
 };
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     CommitCondition, CommitId, CommitMutation, CommitOutcome, CommitReceipt, CommitRequest,
     IdempotencyKey, Record, StreamError, StreamPath, StreamProvider,

@@ -138,9 +138,18 @@ impl StreamProvider for Observed {
         self.requests.record(RequestClass::Metadata);
         self.io(self.inner.inspect_idempotency(key)).await
     }
-    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
-        self.requests.record(RequestClass::Head);
-        self.io(self.inner.head(path)).await
+
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        self.requests
+            .record(if request.paths.is_empty() && request.children.is_some() {
+                RequestClass::List
+            } else {
+                RequestClass::Head
+            });
+        self.io(self.inner.heads(request)).await
     }
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.requests.record(RequestClass::Head);

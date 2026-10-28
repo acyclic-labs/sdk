@@ -386,13 +386,6 @@ impl StreamProvider for PostgresStream {
         Ok(view)
     }
 
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        self.refresh().await?;
-        let mut head = self.inner.core.head(path).await?;
-        head.durable = head.tail;
-        Ok(head)
-    }
-
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.refresh().await?;
         self.inner.core.tail(path).await
