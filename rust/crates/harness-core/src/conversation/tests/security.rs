@@ -176,15 +176,15 @@ fn configured_limits_reject_oversized_references() -> Result<()> {
     assert!(limits.validate_file(&file, &mut None).is_err());
     limits.file_bytes = 5;
     limits.validate_file(&file, &mut None)?;
-    limits.model_events_per_step = 1;
+    limits.model_events_per_step = Some(1);
     limits.validate(&mut None)?;
     limits.attachments = 0;
     assert!(limits.validate(&mut None).is_err());
     Limits {
         attachments: 65_537,
         model_steps: Some(1_000_001),
-        model_events_per_step: 1_000_001,
-        tool_calls_per_step: 1_000_001,
+        model_events_per_step: Some(1_000_001),
+        tool_calls_per_step: Some(1_000_001),
         context_messages: 1_000_001,
         ..Limits::default()
     }
