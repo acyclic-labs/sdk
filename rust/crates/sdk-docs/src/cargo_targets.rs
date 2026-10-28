@@ -1,6 +1,6 @@
 use cargo_metadata::{Target, TargetKind};
 
-pub(crate) fn is_library_target(target: &Target) -> bool {
+pub fn is_library_target(target: &Target) -> bool {
     target.kind.iter().any(|kind| {
         matches!(
             kind,
