@@ -57,7 +57,7 @@ Actions marked pending require implementation or a semantic follow-up within thi
 | `MAX_FORK_REFERENCE_BYTES` | `rust/crates/harness-core/src/fork/mod.rs:26` | 4 | Keep exact wire/OS/integer representation invariant; no smaller product ceiling. |
 | `MAX_FORK_INHERITED_MESSAGES` | `rust/crates/harness-core/src/fork/mod.rs:28` | 4 | Keep exact wire/OS/integer representation invariant; no smaller product ceiling. |
 | `MAX_SECRET_NAME_BYTES` | `rust/crates/harness-core/src/secrets.rs:12` | 1 | Deleted the default ceiling, its refusal checks and cap-only tests. Explicit caller budgets and structural validation remain. |
-| `MAX_PROJECTION_BYTES` | `rust/crates/harness-core/src/store/checkpoints/mod.rs:20` | 1 | DELETE refusal and cap-specific tests; page/stream growing state. Pending. |
+| `MAX_PROJECTION_BYTES` | `rust/crates/harness-core/src/store/checkpoints/mod.rs:20` (removed) | 1 | Removed with the aggregate engine by main #1735; preserve that deletion. |
 | `MAX_NODE_BYTES` | `rust/crates/harness-core/src/store/effect_heads.rs:17` | 4 | Keep fixed-schema encoding guard; canonical values have a structural size bound below it. |
 | `MAX_NODE_BYTES` | `rust/crates/harness-core/src/store/effect_heads/tests/old_effect_heads.rs:19` | 4 | Keep fixed-schema encoding guard; canonical values have a structural size bound below it. |
 | `MAX_CERTIFICATE_BYTES` | `rust/crates/harness-core/src/store/effect_heads/tests/old_effect_heads.rs:20` | 4 | Keep finite verification domain; remove cap-specific proofs/tests when production cap is deleted. |
@@ -453,3 +453,13 @@ Main #1735 (`49b39b0528`) is integrated by rebase, retaining aggregate-engine de
 
 
 Check84 passed native FS/NAPI all targets with s3-http/native-mount/native-watch and actual FS WASM all targets on signed `93a189d291` (`1793183037372-198678-20ac4758`, 10:26:47 UTC). This covers removal of hidden NAPI/WASM boundary defaults, the native install fixed-width index, and capture retry count deletion. The later source-ledger reuse changes are not included. Check83 already passed refreshed workspace all-targets and FS WASM; its runtime/production phases are still running.
+
+| Constant / policy | File:line | Category | Action |
+|---|---|---|---|
+| Object cache `maximum_in_flight`, `maximum_waiters_per_object` | `rust/crates/filesystem/src/cache.rs:38` (removed) | 1 | Delete options, refusal checks and cap-only tests across Rust/NAPI/WASM/TypeScript. Each follower awaits its own pinned event registration instead of a shared growing waker scan. Native cancellation registration uses the original ledger. The existing coalescing regression now holds 2,112 actual reads behind one backend read; validation pending. |
+| Object cache `maximum_entries`, `maximum_bytes` | `rust/crates/filesystem/src/cache.rs:35` | 2 | Keep disposable residency bounds: eviction or bypass permits every backend read; cache residency never refuses a valid object. |
+| Apple `POOL_BUDGET` | `rust/crates/native-runtime/src/apple.rs:88` | 2 | Keep free-buffer residency threshold. Excess returned buffers are freed; allocation continues when the pool has no reusable buffer. |
+| Generation-position `CAPACITY` | `rust/crates/filesystem/src/facade/generation_cache.rs:4` | 2 | Keep disposable lookup cache size; older generations remain resolvable through the authority store. |
+| Durable websocket `WEB_SOCKET_TAG_COUNT`, `WEB_SOCKET_TAG_CHARACTERS`, `WEB_SOCKET_ATTACHMENT_BYTES`, `WEB_SOCKET_AUTO_RESPONSE_CHARACTERS` | `rust/crates/actors/src/guest/durable.rs:11` | 1 / platform boundary | Audit pending: whole logical SDK values currently encounter raw host ABI limits. Coordinate with be-host before changing representation; deleting checks alone cannot expand the host ABI. |
+
+Check83 passed workspace/native and actual filesystem WASM all-targets on `7e29715abe`, then all 16 wire-service tests, seven change-set tests and two discovery tests. This validates the policy-stage allocation fix without removing authority/export/deadline/canonical-policy negatives. Production generation is still running. Check85 failed on `68f698ad79` because native rebase returns allocation custody with its decision and refresh accepted only standalone work. Both callers now use the shared native-aware primitive; no passing receipt yet covers those fixes or the cache changes.
