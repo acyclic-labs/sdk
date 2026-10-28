@@ -3,8 +3,8 @@
 The OSS Actors server accepts this concrete storage composition. Full endpoint
 observation and reopen remain unqualified and are listed under Live steps;
 missing filesystem resource follows fail closed. Historical emulator receipts
-below remain tied to their recorded source. The prepared-decision correction
-was transferred to Streams surface PR #1705 and is not included here.
+below remain tied to their recorded source. The canonical prepared-decision
+correction landed with Streams surface PR #1705.
 
 Enable `acyclic-stream/postgres` and call
 `postgres::PostgresStream::connect(connection_string, namespace)`. Each namespace
@@ -16,20 +16,24 @@ Unix socket or an authenticated TLS proxy;
 the initial adapter connection uses `NoTls`.
 
 Pass `Arc<PostgresStream>` to `StreamAuthorityStore::new`, combine with
-`LogicalObjectStore<S3Objects>`, and supply both to `Fs::new` with durable embedded
-capabilities. Filesystem does not inspect backend types.
+`LogicalObjectStore::new(Arc::new(Store::new(S3Medium::new(bucket, prefix, capabilities)?).account(account)?))`,
+and supply both to `Fs::new` with durable embedded capabilities. Enable
+`acyclic-objects/s3` for the S3 medium; its endpoint capabilities and qualification
+requirements are documented in [S3-compatible blob storage](s3.md).
+Filesystem does not inspect backend types.
 
 Postgres commits an ordered command journal under a transaction-scoped namespace
 advisory lock. Publication explicitly uses READ COMMITTED so catch-up obtains a
 fresh snapshot after lock acquisition, even when the database's default isolation
 is REPEATABLE READ. The canonical shared Stream core owns append-if-tail CAS, exact
-idempotency, hierarchical fork/commit, filters and bounded public paging. Commands
-include the database clock sample, so reopening preserves record times and retry
+idempotency, hierarchical fork/commit, filters and bounded public paging. Journal
+rows bind commands to the database clock sample, so reopening preserves record times and retry
 receipts. Publication survives caller cancellation; only committed commands enter
-the visible core. The current implementation journals before semantic application,
-so condition refusals can retain journal rows. The separate #1705 correction
-prepares the canonical decision before SQL publication and installs it after
-durability; its source-scoped receipts below do not qualify this source.
+the visible core. The shared `MemoryStream::apply_durable` prepares the canonical
+decision before invoking SQL publication and installs accepted state only after
+COMMIT. Refused conditions do not publish a journal row; successful same-key
+replays reuse their retained outcome. The historical runtime receipts below
+qualify their exact source, rather than every subsequent change to this path.
 SQL synchronous commit must remain enabled for durable acknowledgements.
 
 `acyclic_stream_publish(namespace, expected_revision, command_bytes, planned_millis, deadline)`
@@ -46,8 +50,8 @@ The current wrapper still takes its existing transaction fence and performs
 bounded catch-up before that call, then commits before exposing the canonical
 result. This is the first PLATFORM-9 change, not the one-round-trip target or
 closure of G07. Moving catch-up/replanning/batching into the one shared replica
-belongs with the Streams owner. The existing DG071 correction must be retained
-when that owner consumes this primitive; no condition evaluator is moved to SQL.
+belongs with the shared Streams replica. Extraction must preserve the existing
+DG071 prepare/persist/install boundary; no condition evaluator moves to SQL.
 The separate BEGIN, lock, catch-up and COMMIT exchanges still exist. Delayed
 NOTIFY is a wake hint, not evidence that a read is fresh; reads still catch up.
 
@@ -62,12 +66,11 @@ are dropped, even after the caller drops its last provider handle.
 
 Limits: command recovery uses bounded SQL pages; public pages retain the unchanged
 core bounds. Namespace writes serialize, and recovery replays retained history into
-one shared core per opened provider. Default core capacity is 100,000 paths (including implicit
-parents), one million records/commits/retry identities and 256 MiB of payloads.
-The local resource check opens 100,000 flat paths and 100,000 subscriptions with
-unchanged defaults. This measures idle control overhead, not an active-agent
-throughput qualification. Retained history remains bounded by the core limits;
-the SQL journal itself has no compaction yet.
+one shared core per opened provider, using `MemoryLimits::default()`.
+The historical resource check below opened 100,000 flat paths and 100,000
+subscriptions with its source's unchanged defaults. It measured idle control
+overhead, not active-agent throughput. Retained state remains subject to the
+configured core limits; the SQL journal itself has no compaction yet.
 
 ## Validation
 
@@ -100,8 +103,9 @@ Evidence: buildbox job `1793048750090-108901-0c54a923`, output log
 MinIO built from the pinned source release in the runner. The filesystem check
 uses the canonical public smoke export, which main explicitly distinguishes from
 full filesystem qualification; its full workload corpus has no executable runner.
-The conformance README labels the provider suites v2; its unchanged Stream export
-currently invokes the v1-protocol `acyclic_stream::conformance::verify`.
+At that checkpoint, the conformance README labeled the provider suites v2;
+its unchanged Stream export invoked the v1-protocol
+`acyclic_stream::conformance::verify`.
 
 On 2026-10-27 the same complete agent-host export passed over Postgres + memory
 Objects in 4.96 s and Postgres + MinIO in 6.16 s. The guest wire boundary, crash
@@ -115,9 +119,10 @@ That run also passed both local host baselines (6.38 s), the cross-session and
 listener-loss checks, and the idle 100,000-stream/subscription check in 17.65 s
 (700 ms path creation), with two provider connections, four total tasks including
 the observer, one OS thread and 321,380 KiB RSS. Browser and Cloudflare host
-fixtures compiled for wasm. The current storage draft's adapter inventory is
-508 Rust lines plus 62 SQL lines, pending the #1705 integration; the shared
-journal-orchestration extraction remains follow-up #1629.
+fixtures compiled for wasm. After #1705 and #1746, the adapter inventory is
+487 Rust lines plus 65 SQL lines. This exceeds the approximately 300-line budget;
+shared journal catch-up, dispatch and publication orchestration still need
+extraction under [follow-up #1629](https://github.com/acyclic-labs/sdk/issues/1629).
 
 The shared prepare/durability/install correction passed all 390 Stream library
 tests in 8.65 s, with no ignored or filtered tests. A real SQL observation of 48
