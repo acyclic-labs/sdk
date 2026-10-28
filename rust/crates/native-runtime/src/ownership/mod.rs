@@ -15,15 +15,26 @@ impl Clone for OwnershipAnchor {
     }
 }
 
-impl Drop for OwnershipReleaseBarrier {
+struct ReleaseState {
+    complete: Mutex<bool>,
+    synchronous: Condvar,
+    asynchronous: tokio::sync::Notify,
+}
+
+struct OwnerReleased(Arc<ReleaseState>);
+
+impl Drop for OwnerReleased {
     fn drop(&mut self) {
-        if self.owner.strong_count() == 0 {
-            let (lock, released) = &*self.released;
-            let _guard = lock
+        {
+            let mut complete = self
+                .0
+                .complete
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            released.notify_all();
+            *complete = true;
         }
+        self.0.synchronous.notify_all();
+        self.0.asynchronous.notify_waiters();
     }
 }
 
@@ -33,6 +44,8 @@ impl Drop for OwnershipReleaseBarrier {
 struct SharedOwner<Owner, Fence> {
     _owner: Owner,
     fences: crate::sync::Mutex<Vec<Fence>>,
+    // Last: observers learn completion only after payload and fences retire.
+    released: OwnerReleased,
 }
 
 impl<Owner, Fence> SharedOwner<Owner, Fence> {
@@ -40,6 +53,11 @@ impl<Owner, Fence> SharedOwner<Owner, Fence> {
         Self {
             _owner: owner,
             fences: crate::sync::Mutex::new(Vec::new()),
+            released: OwnerReleased(Arc::new(ReleaseState {
+                complete: Mutex::new(false),
+                synchronous: Condvar::new(),
+                asynchronous: tokio::sync::Notify::new(),
+            })),
         }
     }
 
@@ -88,14 +106,13 @@ impl OwnershipAnchor {
 
     /// Erases and retains one ownership value behind a cloneable lifetime token.
     pub fn new(owner: impl Send + Sync + 'static) -> Self {
-        let owner: Arc<dyn RetainFence> =
-            Arc::new(SharedOwner::<_, Box<dyn Send + Sync>>::new(owner));
+        let owner = SharedOwner::<_, Box<dyn Send + Sync>>::new(owner);
+        let release = OwnershipReleaseBarrier {
+            released: Arc::clone(&owner.released.0),
+        };
         Self {
-            release: OwnershipReleaseBarrier {
-                owner: Arc::downgrade(&owner),
-                released: Arc::new((Mutex::new(()), Condvar::new())),
-            },
-            _owner: owner,
+            release,
+            _owner: Arc::new(owner),
         }
     }
 
@@ -103,7 +120,6 @@ impl OwnershipAnchor {
     #[must_use]
     pub fn release_barrier(&self) -> OwnershipReleaseBarrier {
         OwnershipReleaseBarrier {
-            owner: self.release.owner.clone(),
             released: Arc::clone(&self.release.released),
         }
     }
@@ -111,27 +127,47 @@ impl OwnershipAnchor {
 
 /// A non-owning release condition for an [`OwnershipAnchor`] clone family.
 pub struct OwnershipReleaseBarrier {
-    owner: Weak<dyn RetainFence>,
-    released: Arc<(Mutex<()>, Condvar)>,
+    released: Arc<ReleaseState>,
 }
 
 impl OwnershipReleaseBarrier {
     /// Returns whether every ownership-anchor clone has released the owner.
     #[must_use]
     pub fn is_released(&self) -> bool {
-        self.owner.strong_count() == 0
+        *self
+            .released
+            .complete
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Blocks until every ownership-anchor clone has released the owner.
     pub fn wait(self) {
-        let (lock, released) = &*self.released;
-        let mut guard = lock
+        let mut guard = self
+            .released
+            .complete
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while self.owner.strong_count() != 0 {
-            guard = released
+        while !*guard {
+            guard = self
+                .released
+                .synchronous
                 .wait(guard)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    /// Awaits final payload and fence retirement without blocking an executor.
+    /// Dropping this future removes its notification registration.
+    pub async fn wait_async(self) {
+        loop {
+            let changed = self.released.asynchronous.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if self.is_released() {
+                return;
+            }
+            changed.await;
         }
     }
 }
