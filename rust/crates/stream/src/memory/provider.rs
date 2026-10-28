@@ -218,54 +218,58 @@ impl StreamProvider for MemoryStream {
                 &mut paths,
             )?;
         }
-        let has_more = paths.len() > limit as usize;
+        let mut has_more = paths.len() > limit as usize;
         paths.truncate(limit as usize);
-        let next_after = if has_more {
-            paths.last().cloned()
-        } else {
-            None
-        };
-        let mut page_bytes =
-            64usize.saturating_add(next_after.as_ref().map_or(0, |path| path.as_str().len()));
-        let children = paths
-            .into_iter()
-            .map(|path| {
-                let tail_record =
-                    projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
-                let origin = state.paths.origin(&path)?;
-                let child = Child {
-                    path,
-                    tail_record,
-                    origin,
-                };
-                let encoded = crate::wire::Child {
-                    origin: child
-                        .origin
-                        .clone()
-                        .map(crate::wire_codec::fork_origin_to_wire),
-                    path: child.path.to_string(),
-                    tail_record: child
-                        .tail_record
-                        .clone()
-                        .map(crate::wire_codec::record_wire),
-                };
-                #[cfg(all(loom, feature = "local"))]
-                let size = if crate::verification::fault_is(
-                    crate::verification::Fault::IgnorePageRecordBytes,
-                ) {
+        let mut page_bytes = 64usize;
+        let mut children = Vec::with_capacity(paths.len());
+        for path in paths {
+            let tail_record = projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
+            let origin = state.paths.origin(&path)?;
+            let child = Child {
+                path,
+                tail_record,
+                origin,
+            };
+            let encoded = crate::wire::Child {
+                origin: child
+                    .origin
+                    .clone()
+                    .map(crate::wire_codec::fork_origin_to_wire),
+                path: child.path.to_string(),
+                tail_record: child
+                    .tail_record
+                    .clone()
+                    .map(crate::wire_codec::record_wire),
+            };
+            #[cfg(all(loom, feature = "local"))]
+            let size =
+                if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes)
+                {
                     encoded.path.len()
                 } else {
                     prost::Message::encoded_len(&encoded)
                 };
-                #[cfg(not(all(loom, feature = "local")))]
-                let size = prost::Message::encoded_len(&encoded);
-                page_bytes = page_bytes.saturating_add(size).saturating_add(10);
-                if page_bytes > crate::MAX_COMMAND_BYTES {
-                    return Err(StreamError::LimitExceeded);
-                }
-                Ok(child)
-            })
-            .collect::<Result<Vec<_>, StreamError>>()?;
+            #[cfg(not(all(loom, feature = "local")))]
+            let size = prost::Message::encoded_len(&encoded);
+            let projected_bytes = page_bytes.saturating_add(size).saturating_add(10);
+            // Reserve the continuation path as well as each complete child.
+            // One child always makes progress; growing pages continue at the
+            // last returned child rather than refusing the original request.
+            if !children.is_empty()
+                && projected_bytes.saturating_add(child.path.as_str().len())
+                    > crate::MAX_COMMAND_BYTES
+            {
+                has_more = true;
+                break;
+            }
+            page_bytes = projected_bytes;
+            children.push(child);
+        }
+        let next_after = if has_more {
+            children.last().map(|child| child.path.clone())
+        } else {
+            None
+        };
         let result = ChildrenPage {
             hierarchy_version: state.hierarchy_version,
             children,
