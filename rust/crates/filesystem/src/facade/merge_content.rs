@@ -144,7 +144,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 page_bytes: u32::try_from(workspace.config.limits.maximum_object_bytes)
                     .unwrap_or(u32::MAX)
                     .max(1),
-                maximum_blob_bytes,
+                maximum_blob_bytes: Some(maximum_blob_bytes),
             },
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
