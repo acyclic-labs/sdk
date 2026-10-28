@@ -47,23 +47,23 @@ The filesystem contract generator builds one optional `filesystem-contracts` exa
 
 The test deletion inventory is pinned to main `736854cc314cd583872d6f5297158c0d209527db`. Each dedicated Rust test source was counted with `git grep -c '' origin/main -- <exact path>`, one path per command. The table counts complete dedicated test files, including helpers and proof entrypoints; inline test blocks are retained and are outside these subtotals. No unreviewed test is a deletion estimate. Product-body ownership stays with its existing lane.
 
-| Crate | Baseline dedicated test lines | Further deletable lines established | Coverage retained |
-|---|---:|---:|---|
-| `actors` | 5,403 | 0 | Original cases and oracles; target routing only. |
-| `auth` | 4,013 | 0 | Original cases and oracles; target routing only. |
-| `conformance` | 928 | 0 | Original cases and oracles; target routing only. |
-| `contract-derive` | 479 | 0 | Original cases and oracles; target routing only. |
-| `filesystem` | 162,963 | 0 | Original cases and oracles; target routing only. |
-| `harness` | 30,437 | 0 | Original cases and oracles; target routing only. |
-| `harness-conformance` | 826 | 0 | Original cases and oracles; target routing only. |
-| `harness-core` | 63,116 | 0 | Original cases and oracles; target routing only. |
-| `harness-mock-model` | 619 | 0 | Original cases and oracles; target routing only. |
-| `harness-providers` | 15,412 | 0 | Original cases and oracles; target routing only. |
-| `inference` | 1,009 | 0 | Original cases and oracles; target routing only. |
-| `manifest` | 1,044 | 0 | Original cases and oracles; target routing only. |
-| `objects` | 6,271 | 0 | Original cases and oracles; target routing only. |
-| `sdk-generation` | 7,792 | 24 | Actual decoder path/link/duplicate/truncation refusal and hostile-path property remain; remove one duplicate broken-predicate demonstration. |
-| `stream` | 23,221 | 0 | Original cases and oracles; target routing only. |
+| Crate | Baseline dedicated test lines | Reviewed semantic test lines removed | Net test-source lines added | Coverage retained |
+|---|---:|---:|---:|---|
+| `actors` | 5,403 | 0 | 39 | Original cases and oracles; target routing only. |
+| `auth` | 4,013 | 0 | 39 | Original cases and oracles; target routing only. |
+| `conformance` | 928 | 0 | 61 | Original cases and oracles; target routing only. |
+| `contract-derive` | 479 | 0 | 4 | Original cases and oracles; target routing only. |
+| `filesystem` | 162,963 | 0 | 73 | Original cases and oracles; target routing only. |
+| `harness` | 30,437 | 0 | 65 | Original cases and oracles; target routing only. |
+| `harness-conformance` | 826 | 0 | 5 | Original cases and oracles; target routing only. |
+| `harness-core` | 63,116 | 0 | 17 | Original cases and oracles; target routing only. |
+| `harness-mock-model` | 619 | 0 | 5 | Original cases and oracles; target routing only. |
+| `harness-providers` | 15,412 | 0 | 9 | Original cases and oracles; target routing only. |
+| `inference` | 1,009 | 0 | 4 | Original cases and oracles; target routing only. |
+| `manifest` | 1,044 | 0 | 46 | Original cases and oracles; target routing only. |
+| `objects` | 6,271 | 0 | 5 | Original cases and oracles; target routing only. |
+| `sdk-generation` | 7,792 | 24 | 433 | Actual decoder path/link/duplicate/truncation refusal and hostile-path property remain; remove one duplicate broken-predicate demonstration. |
+| `stream` | 23,221 | 0 | 37 | Original cases and oracles; target routing only. |
 
 Tooling scripts remove **426 net test lines** for retired CI behavior: six exclusive CI test files (396 lines) plus 30 net lines of static-workflow assertions in `tiny-ci.test.mjs`. This is the retired-things category; duplicate, tautology, compiler-restatement, formatting snapshot, over-mocked, removed-cap, timing-only, feature-copy and unused-helper categories have no additional established deletion in this batch. The lockfile checker itself remains live. No replacement test is needed for retired static-job assertions; the retained `tiny-ci.test.mjs` cases still cover the live qualifier selections and refusals. The full deleted-file inventory and baseline counts are bound in the lane evidence.
 
@@ -76,3 +76,5 @@ The actual compiled qualifier inventory at312bc lists1116 core and128 harness li
 SDK-generation removes 24 lines in `path_shape_oracle_detects_a_missing_root_guard`: its separately broken predicate never mutated the production decoder, and its actual `fixture-0.1.0//absolute` refusal is already checked by retained `archive_codec_rejects_paths_links_duplicates_and_truncated_bodies`. The retained hostile-path property also calls the actual decoder on every host. These source deletions supply no production omission-mutant result; historical receipts remain source-specific.
 
 The twelve harness caller-token removals preserve the original source and negative controls in two Git-derived parent captures (1,750 and 1,659 files). No old case is renamed to a new contract, no replacement suite is declared equivalent, and no test body is removed in this routing correction. Every surviving prefix retains the existing exact-name/nonempty refusal and process bounds.
+
+The test-source column counts physical changes in dedicated test files and root/helper routing, plus the new 43-line inline worker regression module. It excludes Cargo manifests/locks and other pre-existing inline blocks. SDK-generation adds 462 and removes29 scoped test lines (net433 added), including the24-line semantic duplicate retirement. Script test sources add116 and remove478 (net362 removed); the426-line CI-only retirement is a category subtotal, not the whole-test net. Other scoped test-source net additions are plugin15, Markdown5 (still awaiting #1714 reconciliation), TypeScript Stream model root5 and Workers19. Mechanical includes and moved proof/helper bytes earn no semantic deletion credit.
