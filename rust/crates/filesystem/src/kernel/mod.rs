@@ -42,6 +42,7 @@ mod merge;
 mod metadata;
 mod mutation;
 mod namespace_path;
+pub(crate) mod ordered_links;
 mod path_access;
 mod persistent_batch;
 mod persistent_btree;
