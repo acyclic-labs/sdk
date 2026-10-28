@@ -274,6 +274,83 @@ impl<V, const N: usize> FixedIndex<V, N> {
         }
         unreachable!("lookup follows a leaf already found or inserted")
     }
+
+    /// Retires one exact owner registration, including its now-unused parent.
+    /// Like dropping the index, cleanup cannot allocate or refuse admission.
+    /// The predicate prevents a delayed old owner from retiring its replacement.
+    pub(crate) fn retire_if(&mut self, key: [u8; N], matches: impl FnOnce(&V) -> bool) -> bool {
+        let mut cursor = self.root.as_deref();
+        let mut parent = None;
+        loop {
+            match cursor.map(|node| &node.kind) {
+                Some(Kind::Branch {
+                    bit,
+                    low,
+                    high: upper,
+                }) => {
+                    parent = Some(*bit);
+                    cursor = if high(&key, *bit) { upper } else { low }.as_deref();
+                }
+                Some(Kind::Leaf {
+                    key: observed,
+                    value,
+                }) if *observed == key => {
+                    if !matches(value) {
+                        return false;
+                    }
+                    break;
+                }
+                _ => return false,
+            }
+        }
+        let mut link = &mut self.root;
+        if let Some(parent) = parent {
+            loop {
+                match link.as_deref() {
+                    Some(Node {
+                        kind: Kind::Branch { bit, .. },
+                        ..
+                    }) if *bit == parent => break,
+                    _ => {}
+                }
+                match link.as_deref_mut() {
+                    Some(Node {
+                        kind:
+                            Kind::Branch {
+                                bit,
+                                low,
+                                high: upper,
+                            },
+                        ..
+                    }) => {
+                        link = if high(&key, *bit) { upper } else { low };
+                    }
+                    _ => unreachable!("retirement follows the verified parent"),
+                }
+            }
+        }
+        let mut retired = link
+            .take()
+            .unwrap_or_else(|| unreachable!("verified registration"));
+        if let Kind::Branch {
+            bit,
+            low,
+            high: upper,
+        } = &mut retired.kind
+        {
+            let (selected, sibling) = if high(&key, *bit) {
+                (upper, low)
+            } else {
+                (low, upper)
+            };
+            *link = sibling.take();
+            // The leaf's value drops before its original allocation. Taking
+            // both links also makes parent retirement constant-space.
+            drop(selected.take());
+        }
+        drop(retired);
+        true
+    }
 }
 
 impl<V, const N: usize> Drop for FixedIndex<V, N> {

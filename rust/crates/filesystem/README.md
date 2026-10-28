@@ -107,6 +107,15 @@ Current head reads still use tail plus exact read pending G01. Multiple
 observations are optimistic facts, not a coherent G05 snapshot. Legacy `seal`
 retains its policy bridge until callers migrate.
 
+Generation facts retain two bounded windows. Once a window is forgotten, a
+missing fact is Unknown and uses the existing durable lookup; it cannot establish
+absence. The shared actor registry keeps exact weak registrations for live
+actors and at most 256 strong idle references per owner. Cache collisions may
+discard idle state, but never replace a live actor. Final actor destruction
+retires its exact registration and index nodes; reopening reconstructs forgotten
+state from Streams. These bounds describe source structure, not measured RSS or
+latency at 100k volumes.
+
 ### Caller and deletion inventory
 
 | Existing owner paths (relative to src/) | Adoption and deletion release |

@@ -127,7 +127,10 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
         &self,
         authority: AuthorityId,
         work: &mut AuthorityWork<'_>,
-    ) -> Result<Arc<crate::kernel::AuthorityActor>, AuthorityStoreError> {
+    ) -> Result<
+        crate::kernel::allocation::retained::RetainedArc<crate::kernel::AuthorityActor>,
+        AuthorityStoreError,
+    > {
         crate::kernel::authority_actor(
             self.operation_claims(),
             self.placement.actor_scope(),

@@ -25,6 +25,35 @@ fn audit<V, const N: usize>(table: &FixedIndex<V, N>) {
     assert_eq!(branches, leaves.saturating_sub(1));
 }
 
+#[test]
+fn exact_retirement_preserves_every_sibling_and_can_finish_after_cancellation()
+-> Result<(), FsError> {
+    let cancel = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(crate::performance::BOUNDARY_BUDGET, &cancel);
+    let mut table = FixedIndex::default();
+    for key in 0..=u8::MAX {
+        table.get_or_try_insert_with([key], &mut accounting, |_| Ok(key))?;
+    }
+    let mut remaining: BTreeMap<_, _> = (0..=u8::MAX).map(|key| (key, key)).collect();
+    for ordinal in 0..=u8::MAX {
+        let key = ordinal.reverse_bits();
+        assert!(!table.retire_if([key], |_| false));
+        assert!(table.retire_if([key], |value| *value == key));
+        assert!(!table.retire_if([key], |_| true));
+        remaining.remove(&key);
+        audit(&table);
+        for remaining in remaining.keys() {
+            assert_eq!(table.get([*remaining], &mut accounting)?, Some(remaining));
+        }
+    }
+    assert!(table.root.is_none());
+    table.get_or_try_insert_with([7], &mut accounting, |_| Ok(9))?;
+    cancel.cancel();
+    assert!(table.retire_if([7], |value| *value == 9));
+    assert!(table.root.is_none());
+    Ok(())
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 64, failure_persistence: None, ..ProptestConfig::default() })]
     #[test]

@@ -10,7 +10,7 @@ use super::*;
 
 /// One prepared actor transition, sealed only by the composed commit receipt.
 struct Contribution {
-    actor: Arc<crate::kernel::AuthorityActor>,
+    actor: crate::kernel::allocation::retained::RetainedArc<crate::kernel::AuthorityActor>,
     revision: super::actor::Revision,
     projection: super::actor::PreparedProjection,
 }
