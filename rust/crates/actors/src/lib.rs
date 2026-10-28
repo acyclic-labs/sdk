@@ -91,9 +91,9 @@ mod tests {
 
             bindings: vec![],
             limits: Some(wire::ActorLimits {
-                handler_timeout_millis: 1_000,
-                memory_bytes: 1024,
-                checkpoint_bytes: 1024,
+                handler_timeout_millis: Some(1_000),
+                memory_bytes: Some(1024),
+                checkpoint_bytes: Some(1024),
             }),
             subscriptions: vec![wire::SubscriptionSpec {
                 subscription_id: "events".into(),
@@ -303,9 +303,9 @@ mod tests {
                     name: "tracing".into(),
                     code_sha256: vec![1; 32],
                     limits: Some(wire::ActorLimits {
-                        handler_timeout_millis: 1,
-                        memory_bytes: 1,
-                        checkpoint_bytes: 1
+                        handler_timeout_millis: Some(1),
+                        memory_bytes: Some(1),
+                        checkpoint_bytes: Some(1)
                     }),
                     idempotency_key: "tracing".into(),
                     ..Default::default()
