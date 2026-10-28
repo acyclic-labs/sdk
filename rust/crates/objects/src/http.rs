@@ -87,11 +87,9 @@ impl HttpObjects {
             endpoint.set_path(&format!("{}/", endpoint.path()));
         }
         let authorization = token.map(credential_header).transpose()?;
-        let mut transport = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(30));
+        let mut transport = Client::builder().redirect(reqwest::redirect::Policy::none());
         if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > crate::MAX_PEM_BYTES {
+            if ca.is_empty() {
                 return Err(invalid());
             }
             transport = transport
