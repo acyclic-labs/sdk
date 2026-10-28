@@ -237,7 +237,7 @@ impl BrowserStream {
             Some((command, deadline)) => replica
                 .execute_with(command, deadline, 64, &mut observe)
                 .await
-                .map(Some),
+                .map(|execution| Some(execution.outcome)),
             None => replica.refresh_with(64, &mut observe).await.map(|()| None),
         };
         let result = result?;

@@ -28,6 +28,7 @@ pub(crate) struct PreparedCommit {
     /// The request's publication deadline; an accepted retry precedes it.
     deadline: Option<u64>,
     plan: CommitPlan,
+    retained: Option<RetainedReservation>,
     namespace: NamespaceReserve,
     conflicts: (Vec<CommitConflict>, Allocation),
     capacity: Option<CapacityReservation>,
@@ -59,7 +60,7 @@ impl MemoryStream {
         ))?;
         let mut state = self.state.write().await;
         let capacity = self.reserve_prepared_capacity(&state, &request, maximum)?;
-        self.reserve_retained(&mut state)?;
+        let retained = self.reserve_retained(&state)?;
         // The tree can grow up to the admitted replay limit while this completion is pending.
         let mut probes = self.reserve_replay_probes(2 * self.maximum_replay_height() + 16)?;
         self.reserve_commit_index(&mut probes)?;
@@ -128,6 +129,7 @@ impl MemoryStream {
                 key,
                 deadline,
                 plan,
+                retained,
                 namespace,
                 conflicts: conflict,
                 capacity,
@@ -374,6 +376,7 @@ impl PreparedCommit {
                         2 * std::mem::size_of::<Record>() as u64,
                         identity_bytes(),
                     ));
+                    self.provider.install_retained(&mut state, self.retained)?;
                     self.plan.publish(
                         &mut state,
                         &mut NamespaceBuilder {

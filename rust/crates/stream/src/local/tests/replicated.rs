@@ -1,8 +1,8 @@
 use super::super::*;
-use std::sync::atomic::Ordering;
 use crate::replicated::{
     AppendIf, CommandJournal, JournalFrame, JournalPage, ReplicaClock, Replicated,
 };
+use std::sync::atomic::Ordering;
 
 struct Advancing {
     port: port::LocalPort,
@@ -26,10 +26,13 @@ impl CommandJournal for Advancing {
     async fn append_if(
         &mut self,
         expected: u64,
-        frames: Vec<JournalFrame>,
+        frames: &[JournalFrame<'_>],
     ) -> Result<AppendIf, StreamError> {
-        self.proposals
-            .extend(frames.iter().map(|frame| frame.command.clone()));
+        self.proposals.extend(
+            frames
+                .iter()
+                .map(|frame| crate::OwnedBytes::from(frame.command.encode_to_vec())),
+        );
         if let Some(clock) = self.advance_clock.take() {
             clock.0.store(20, Ordering::SeqCst);
         }
@@ -133,6 +136,7 @@ async fn a_lost_conditional_proposal_keeps_its_exact_command()
     let crate::journal::Outcome::Append(AppendOutcome::Committed(receipt)) = replica
         .execute(Command::Append(request.clone()), None, 1)
         .await?
+        .outcome
     else {
         panic!("conditional proposal did not commit")
     };
@@ -243,8 +247,10 @@ async fn a_prepared_stamp_matches_recovery_when_the_acceptance_clock_advances()
         clock,
         HEADER_BYTES as u64,
     );
-    let crate::journal::Outcome::Append(AppendOutcome::Committed(receipt)) =
-        replica.execute(Command::Append(request), None, 1).await?
+    let crate::journal::Outcome::Append(AppendOutcome::Committed(receipt)) = replica
+        .execute(Command::Append(request), None, 1)
+        .await?
+        .outcome
     else {
         panic!("prepared proposal did not commit")
     };

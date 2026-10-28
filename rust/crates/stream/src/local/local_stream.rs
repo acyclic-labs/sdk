@@ -157,6 +157,7 @@ impl LocalStream {
                 provider,
                 durability: limits.durability,
                 commit_clock,
+                replica_clock: Arc::new(crate::replicated::ReplicaClock::default()),
                 journal: Arc::new(Mutex::new(journal)),
                 visibility: RwLock::new(()),
                 publication: RwLock::new(()),
@@ -197,18 +198,21 @@ impl LocalStream {
         &self,
         command: Command,
         deadline: Option<u64>,
-    ) -> Result<crate::journal::Outcome, StreamError> {
+    ) -> Result<crate::replicated::Execution, StreamError> {
         let cursor = self
             .inner
             .journal
             .lock()
             .map_err(|_| self.inner.poison())?
             .bytes;
-        let clock = Arc::new(crate::replicated::ReplicaClock::default());
-        let provider = self
+        let clock = Arc::clone(&self.inner.replica_clock);
+        let mut provider = self
             .inner
             .provider
             .with_commit_clock(Arc::clone(&clock) as _);
+        if let Some(work) = &self.work {
+            provider = provider.with_context(Arc::clone(work));
+        }
         let mut replica = crate::replicated::Replicated::new(
             port::LocalPort {
                 stream: self.clone(),
@@ -220,26 +224,26 @@ impl LocalStream {
         let result = replica
             .execute(command, deadline, REPLAY_PIPELINE_COMMANDS)
             .await;
-        if matches!(
-            &result,
-            Ok(crate::journal::Outcome::Append(AppendOutcome::Committed(_))
-                | crate::journal::Outcome::Commit(CommitOutcome::Committed(_))
-                | crate::journal::Outcome::Fork(_))
-        ) {
+        if replica.cursor == cursor
+            && matches!(
+                result.as_ref().map(|execution| &execution.outcome),
+                Ok(crate::journal::Outcome::Append(AppendOutcome::Committed(_))
+                    | crate::journal::Outcome::Commit(CommitOutcome::Committed(_))
+                    | crate::journal::Outcome::Fork(_))
+            )
+        {
             // A retained success joins the original durability cut even when
             // the canonical decision correctly elides another journal frame.
             self.require_accepted::<true>()?;
         }
-        if matches!(
-            result,
-            Err(StreamError::Unavailable | StreamError::InvalidResponse | StreamError::Unsupported)
-        ) {
+        if replica.is_failed() {
             self.inner.poison();
         }
         result
     }
 
     /// Encodes the command and pins its recorded commit timestamp.
+    #[cfg(any(test, loom))]
     fn prepare(&self, command: &Command) -> Result<PreparedFrame, StreamError> {
         let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
         let frame = PreparedFrame::encode(command, committed_at_millis, self.work.clone())

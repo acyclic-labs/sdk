@@ -58,25 +58,11 @@ impl LocalStream {
                     let publication = stream.inner.publication.write().await;
                     let mut result = async {
                         stream.check_available()?;
-                        let command = Command::Commit(request);
-                        let frame = if replay {
-                            None
-                        } else {
-                            work.reserve_durability(4)?;
-                            Some(stream.prepare(&command)?)
+                        let execution = stream.execute(Command::Commit(request), deadline).await?;
+                        let crate::journal::Outcome::Commit(outcome) = execution.outcome else {
+                            return Err(StreamError::InvalidResponse);
                         };
-                        let Command::Commit(request) = command else {
-                            unreachable!()
-                        };
-                        let result = provider.commit_inner(request, deadline).await?;
-                        if let Some(frame) = frame
-                            && matches!(result.0, CommitOutcome::Committed(_))
-                        {
-                            stream.persist(frame).await?;
-                        } else {
-                            stream.require_accepted::<true>()?;
-                        }
-                        Ok(result)
+                        Ok((outcome, execution.allocation))
                     }
                     .await;
                     stream.inner.commit_clock.unpin();
@@ -129,7 +115,6 @@ impl LocalStream {
                 work: Some(Arc::clone(&work)),
                 ..stream
             };
-            let provider = stream.inner.provider.with_context(Arc::clone(&work));
             let input = work.record(acyclic_native_runtime::ReadAllocation::adopt(
                 &work.meter,
                 request.records.capacity() * std::mem::size_of::<crate::OwnedBytes>(),
@@ -146,30 +131,11 @@ impl LocalStream {
             let result = stream
                 .exclusive(&span, move |stream| async move {
                     let _input = input;
-                    let replay = provider.has_replay(&request.idempotency_key).await?;
-                    let command = Command::Append(request);
-                    let frame = if replay {
-                        None
-                    } else {
-                        stream
-                            .work
-                            .as_ref()
-                            .ok_or(StreamError::Unavailable)?
-                            .reserve_durability(4)?;
-                        Some(stream.prepare(&command)?)
+                    let execution = stream.execute(Command::Append(request), None).await?;
+                    let crate::journal::Outcome::Append(outcome) = execution.outcome else {
+                        return Err(StreamError::InvalidResponse);
                     };
-                    let Command::Append(request) = command else {
-                        unreachable!()
-                    };
-                    let result = provider.append_inner(request).await?;
-                    if let Some(frame) = frame
-                        && matches!(result.0, AppendOutcome::Committed(_))
-                    {
-                        stream.persist(frame).await?;
-                    } else if replay {
-                        stream.require_accepted::<true>()?;
-                    }
-                    Ok(result)
+                    Ok((outcome, execution.allocation))
                 })
                 .await;
             work.finish(result)

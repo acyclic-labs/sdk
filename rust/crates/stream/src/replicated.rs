@@ -39,8 +39,8 @@ pub(crate) struct JournalPage {
     pub(crate) at_millis: u64,
 }
 
-pub(crate) struct JournalFrame {
-    pub(crate) command: OwnedBytes,
+pub(crate) struct JournalFrame<'a> {
+    pub(crate) command: &'a Command,
     /// Trusted proposal clock sampled by the journal read. Installation and
     /// recovery use this same stamp; the port checks deadlines at acceptance.
     pub(crate) at_millis: u64,
@@ -50,8 +50,20 @@ pub(crate) struct JournalFrame {
 }
 
 pub(crate) enum AppendIf {
-    Accepted { sequence: u64, at_millis: u64 },
-    Stale { head: u64 },
+    Accepted {
+        sequence: u64,
+        at_millis: u64,
+    },
+    Stale {
+        head: u64,
+    },
+    /// Proven refusal before any durable edit.
+    Refused(StreamError),
+}
+
+pub(crate) struct Execution {
+    pub(crate) outcome: Outcome,
+    pub(crate) allocation: crate::memory::Allocation,
 }
 
 /// Storage owns physical ordering, durability, its acceptance clock and events.
@@ -62,7 +74,7 @@ pub(crate) trait CommandJournal: ProviderPlatform {
     async fn append_if(
         &mut self,
         expected: u64,
-        frames: Vec<JournalFrame>,
+        frames: &[JournalFrame<'_>],
     ) -> Result<AppendIf, StreamError>;
     async fn read(&mut self, from: u64, page: usize) -> Result<JournalPage, StreamError>;
     /// Registers atomically against `after`; an already advanced head is ready.
@@ -111,6 +123,10 @@ impl<J: CommandJournal> Replicated<J> {
             cursor,
             failed: false,
         }
+    }
+
+    pub(crate) fn is_failed(&self) -> bool {
+        self.failed
     }
 
     fn check(&self) -> Result<(), StreamError> {
@@ -207,7 +223,7 @@ impl<J: CommandJournal> Replicated<J> {
         command: Command,
         deadline: Option<u64>,
         page: usize,
-    ) -> Result<Outcome, StreamError> {
+    ) -> Result<Execution, StreamError> {
         self.execute_with(command, deadline, page, &mut NoopObserver)
             .await
     }
@@ -218,18 +234,18 @@ impl<J: CommandJournal> Replicated<J> {
         deadline: Option<u64>,
         page: usize,
         observe: &mut impl ReplayObserver,
-    ) -> Result<Outcome, StreamError> {
-        let mut command = command.validated()?;
+    ) -> Result<Execution, StreamError> {
+        let canonical = self.provider.canonicalize(command)?;
+        let command = &canonical.command;
         let deadline = deadline
             .into_iter()
-            .chain(match &command {
+            .chain(match command {
                 Command::Commit(request) => request.deadline_unix_millis,
                 _ => None,
             })
             .min();
-        let encoded = OwnedBytes::from(command.encode_to_vec());
         #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
-        let changes = match &command {
+        let changes = match command {
             Command::Append(request) => vec![(request.path.clone(), false)],
             Command::Fork(request) => vec![(request.destination.clone(), true)],
             Command::Commit(request) => request
@@ -245,13 +261,14 @@ impl<J: CommandJournal> Replicated<J> {
         };
         loop {
             self.refresh_with(page, observe).await?;
-            observe.observe(&self.provider, &command, false).await?;
+            observe.observe(&self.provider, command, false).await?;
             let expected = self.cursor;
             let mut appended = None;
+            let mut attempted = false;
             let clock = &self.clock;
             let journal = &mut self.journal;
             let frame = JournalFrame {
-                command: encoded.clone(),
+                command,
                 at_millis: clock.now_unix_millis(),
                 deadline,
                 #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
@@ -259,8 +276,9 @@ impl<J: CommandJournal> Replicated<J> {
             };
             let result = self
                 .provider
-                .apply_durable(&mut command, deadline, async {
-                    let result = journal.append_if(expected, vec![frame]).await?;
+                .apply_durable(&canonical, deadline, async {
+                    attempted = true;
+                    let result = journal.append_if(expected, &[frame]).await?;
                     match result {
                         AppendIf::Accepted {
                             sequence,
@@ -282,6 +300,10 @@ impl<J: CommandJournal> Replicated<J> {
                             appended = Some(AppendIf::Stale { head });
                             Err(StreamError::Unavailable)
                         }
+                        AppendIf::Refused(error) => {
+                            appended = Some(AppendIf::Refused(error.clone()));
+                            Err(error)
+                        }
                     }
                 })
                 .await;
@@ -294,15 +316,17 @@ impl<J: CommandJournal> Replicated<J> {
                 }
                 Some(AppendIf::Accepted { sequence, .. }) if result.is_ok() => {
                     self.cursor = sequence;
-                    observe.observe(&self.provider, &command, true).await?;
+                    observe.observe(&self.provider, command, true).await?;
                 }
+                Some(AppendIf::Refused(_)) => {}
                 Some(_) => self.fail(),
-                None if matches!(
-                    result,
-                    Err(StreamError::Unavailable
-                        | StreamError::InvalidResponse
-                        | StreamError::Unsupported)
-                ) =>
+                None if attempted
+                    && matches!(
+                        result,
+                        Err(StreamError::Unavailable
+                            | StreamError::InvalidResponse
+                            | StreamError::Unsupported)
+                    ) =>
                 {
                     self.fail()
                 }

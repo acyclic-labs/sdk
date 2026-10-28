@@ -61,6 +61,7 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
     Ok(LocalStream {
         handle: None,
         inner: Arc::new(LocalInner {
+            replica_clock: Arc::new(crate::replicated::ReplicaClock::default()),
             durability: limits.durability,
             provider: MemoryStream::new_with_commit_clock(
                 limits.memory,

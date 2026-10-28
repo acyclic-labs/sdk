@@ -63,7 +63,7 @@ impl CommandJournal for LocalPort {
     async fn append_if(
         &mut self,
         expected: u64,
-        frames: Vec<Frame>,
+        frames: &[Frame<'_>],
     ) -> Result<AppendIf, StreamError> {
         // LocalStream retains its visibility fence for this whole proposal.
         let head = self
@@ -87,15 +87,36 @@ impl CommandJournal for LocalPort {
         {
             return Err(StreamError::DeadlineElapsed);
         }
-        let mut prepared = Vec::with_capacity(frames.len());
-        for frame in frames {
-            let command = decode_command(&frame.command)?;
-            let mut encoded =
-                PreparedFrame::encode(&command, frame.at_millis, self.stream.work.clone())
-                    .map_err(|error| self.stream.frame_error(error))?;
-            encoded.deadline = encoded.deadline.into_iter().chain(frame.deadline).min();
-            prepared.push(encoded);
-        }
+        let prepared = (|| {
+            let (mut prepared, allocation) = if let Some(work) = &self.stream.work {
+                work.reserve_durability(
+                    (frames.len() as u64)
+                        .checked_mul(4)
+                        .ok_or(StreamError::Capacity)?,
+                )?;
+                let mut allocation = acyclic_native_runtime::ReadAllocation::empty(&work.meter);
+                let prepared = work.record(crate::native::vector(
+                    frames.len(),
+                    &work.meter,
+                    &mut allocation,
+                ))?;
+                (prepared, Some(allocation))
+            } else {
+                (Vec::with_capacity(frames.len()), None)
+            };
+            for frame in frames {
+                let mut encoded =
+                    PreparedFrame::encode(frame.command, frame.at_millis, self.stream.work.clone())
+                        .map_err(|error| self.stream.frame_error(error))?;
+                encoded.deadline = frame.deadline;
+                prepared.push(encoded);
+            }
+            Ok::<_, StreamError>((prepared, allocation))
+        })();
+        let (prepared, allocation) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => return Ok(AppendIf::Refused(error)),
+        };
         // Reserve the entire proposal before its first physical action.
         {
             let journal = self
@@ -120,7 +141,13 @@ impl CommandJournal for LocalPort {
                 return Err(StreamError::Capacity);
             }
         }
-        self.stream.persist_frames(prepared.into_iter()).await?;
+        let mut prepared = prepared.into_iter();
+        self.stream
+            .persist_frames(std::iter::from_fn(move || {
+                let _owner = &allocation;
+                prepared.next()
+            }))
+            .await?;
         let sequence = self
             .stream
             .inner

@@ -22,7 +22,7 @@ impl CommandJournal for PgJournal<'_> {
     async fn append_if(
         &mut self,
         expected: u64,
-        frames: Vec<JournalFrame>,
+        frames: &[JournalFrame<'_>],
     ) -> Result<AppendIf, StreamError> {
         let transaction = match &mut self.storage {
             Storage::Fenced(transaction) => transaction.take().ok_or(StreamError::Unavailable)?,
@@ -122,7 +122,7 @@ async fn append(
     publish: &Statement,
     namespace: &str,
     expected: u64,
-    frames: Vec<JournalFrame>,
+    frames: &[JournalFrame<'_>],
 ) -> Result<AppendIf, StreamError> {
     if frames.is_empty() {
         return Err(StreamError::InvalidArgument);
@@ -134,7 +134,7 @@ async fn append(
         let deadline = frame
             .deadline
             .map(|value| i64::try_from(value).unwrap_or(i64::MAX));
-        let bytes = frame.command.as_ref();
+        let bytes = frame.command.encode_to_vec();
         let row = transaction
             .query_one(
                 publish,

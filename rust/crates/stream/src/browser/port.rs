@@ -95,7 +95,7 @@ impl CommandJournal for BrowserPort<'_> {
     async fn append_if(
         &mut self,
         expected: u64,
-        frames: Vec<JournalFrame>,
+        frames: &[JournalFrame<'_>],
     ) -> Result<AppendIf, StreamError> {
         if expected != self.head {
             return Ok(AppendIf::Stale { head: self.head });
@@ -118,7 +118,7 @@ impl CommandJournal for BrowserPort<'_> {
         let bytes = frames
             .iter()
             .try_fold(self.bytes, |total, frame| {
-                total.checked_add(frame.command.len() as u64 + 8)
+                total.checked_add(frame.command.encoded_len() as u64 + 8)
             })
             .filter(|bytes| *bytes <= self.stream.inner.limits.journal_bytes)
             .ok_or(StreamError::Capacity)?;
@@ -128,9 +128,10 @@ impl CommandJournal for BrowserPort<'_> {
             .ok_or(StreamError::Unavailable)?
             .object_store(JOURNAL)
             .map_err(backend)?;
-        for (offset, frame) in frames.into_iter().enumerate() {
-            let mut encoded = frame.at_millis.to_le_bytes().to_vec();
-            encoded.extend_from_slice(&frame.command);
+        for (offset, frame) in frames.iter().enumerate() {
+            let mut encoded = Vec::with_capacity(8 + frame.command.encoded_len());
+            encoded.extend_from_slice(&frame.at_millis.to_le_bytes());
+            frame.command.encode(&mut encoded);
             let key = format!("{:016x}", expected + offset as u64);
             store
                 .add(Uint8Array::from(encoded))

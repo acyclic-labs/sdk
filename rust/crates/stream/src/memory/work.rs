@@ -4,11 +4,45 @@ use acyclic_native_runtime::{
 };
 
 #[cfg(not(target_arch = "wasm32"))]
-type Allocation = Option<ReadAllocation>;
+pub(crate) type Allocation = Option<ReadAllocation>;
 #[cfg(target_arch = "wasm32")]
-type Allocation = Option<()>;
+pub(crate) type Allocation = Option<()>;
+
+struct RetainedReservation {
+    buffer: Vec<Retained>,
+    allocation: Allocation,
+    #[cfg(not(target_arch = "wasm32"))]
+    codec: Option<acyclic_native_runtime::NativeCodecReservation<Arc<dyn NativeReadMeter>>>,
+}
 
 impl MemoryStream {
+    fn install_retained(
+        &self,
+        state: &mut State,
+        reservation: Option<RetainedReservation>,
+    ) -> Result<(), StreamError> {
+        if state.retained.len() < state.retained.capacity() {
+            return Ok(());
+        }
+        let mut reservation = reservation.ok_or(StreamError::Capacity)?;
+        if reservation.buffer.capacity() <= state.retained.len() {
+            return Err(StreamError::Capacity);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let copied = (state.retained.len() * std::mem::size_of::<Retained>()) as u64;
+        reservation.buffer.append(&mut state.retained);
+        state.retained = reservation.buffer;
+        state.retained_allocation = reservation.allocation;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let (Some(work), Some(codec)) = (&self.work, &mut reservation.codec) {
+            let _ = work.record(codec.record(acyclic_native_runtime::NativeCodecWork {
+                copied,
+                ..Default::default()
+            }));
+        }
+        Ok(())
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_context(&self, work: Arc<Work>) -> Self {
         Self {

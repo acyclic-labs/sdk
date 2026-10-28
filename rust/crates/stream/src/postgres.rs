@@ -331,7 +331,7 @@ impl PostgresStream {
             ) {
                 provider.fail();
             }
-            result
+            result.map(|execution| execution.outcome)
         })
         .await
         .map_err(unavailable)?

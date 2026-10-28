@@ -182,6 +182,7 @@ impl JournalStream {
             .await
             .execute(command, deadline, PAGE)
             .await
+            .map(|execution| execution.outcome)
     }
 
     fn retain<T: 'static>(

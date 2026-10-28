@@ -80,7 +80,7 @@ impl CommandJournal for HostPort {
     async fn append_if(
         &mut self,
         expected: u64,
-        frames: Vec<JournalFrame>,
+        frames: &[JournalFrame<'_>],
     ) -> Result<AppendIf, StreamError> {
         if frames.is_empty() {
             return Err(StreamError::InvalidArgument);
@@ -94,12 +94,12 @@ impl CommandJournal for HostPort {
         let bytes = frames
             .iter()
             .try_fold(self.bytes, |total, frame| {
-                total.checked_add(frame.command.len() as u64 + 17)
+                total.checked_add(frame.command.encoded_len() as u64 + 17)
             })
             .filter(|bytes| *bytes <= self.limits.journal_bytes)
             .ok_or(StreamError::Capacity)?;
         let changes = js_sys::Array::new();
-        for frame in &frames {
+        for frame in frames {
             for (path, subtree) in &frame.changes {
                 let change = js_sys::Array::new();
                 change.push(&JsValue::from_str(path.as_str()));
@@ -111,6 +111,18 @@ impl CommandJournal for HostPort {
         let sampled = accepted.clone();
         let at_millis = frames.last().ok_or(StreamError::InvalidArgument)?.at_millis;
         let deadline = frames.iter().filter_map(|frame| frame.deadline).min();
+        // Only owned encoded bytes escape into the host's deferred factory.
+        let encoded: Vec<_> = frames
+            .iter()
+            .map(|frame| {
+                let mut encoded = Vec::with_capacity(17 + frame.command.encoded_len());
+                encoded.extend_from_slice(&frame.at_millis.to_le_bytes());
+                encoded.push(u8::from(frame.deadline.is_some()));
+                encoded.extend_from_slice(&frame.deadline.unwrap_or(0).to_le_bytes());
+                frame.command.encode(&mut encoded);
+                encoded
+            })
+            .collect();
         let factory = Closure::<dyn FnMut() -> Result<js_sys::Array, JsValue>>::new(move || {
             if sampled.get().is_some() {
                 return Err(JsValue::from_str("STEP journal-accept failed: repeated frame admission; recovery: reopen and replay the original Stream request"));
@@ -121,11 +133,7 @@ impl CommandJournal for HostPort {
                 return Err(JsValue::from_str("STEP journal-accept refused: deadline elapsed; recovery: inspect the original request identity before submitting another operation"));
             }
             let output = js_sys::Array::new();
-            for frame in &frames {
-                let mut encoded = frame.at_millis.to_le_bytes().to_vec();
-                encoded.push(u8::from(frame.deadline.is_some()));
-                encoded.extend_from_slice(&frame.deadline.unwrap_or(0).to_le_bytes());
-                encoded.extend_from_slice(&frame.command);
+            for encoded in &encoded {
                 output.push(&Uint8Array::from(encoded.as_slice()));
             }
             Ok(output)

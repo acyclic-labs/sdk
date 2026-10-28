@@ -49,7 +49,7 @@ impl MemoryStream {
         };
         let (histories, _histories) = self.histories(&state, &envelope.mutations)?;
         let (paths, _paths) = self.paths(&state, std::iter::once(&receipt.destination))?;
-        self.reserve_retained(state)?;
+        let retained = self.reserve_retained(state)?;
         let time = crate::preparation::committed_time(
             state.last_committed_at_micros,
             self.commit_clock.now_unix_millis(),
@@ -66,6 +66,7 @@ impl MemoryStream {
             bytes: 0,
             install: move |state: &mut State, _durable| {
                 let _holds = (_histories, _paths);
+                self.install_retained(state, retained)?;
                 install_namespace(state, namespace, &envelope)?;
                 state.decision = decision;
                 state.last_committed_at_micros = time;

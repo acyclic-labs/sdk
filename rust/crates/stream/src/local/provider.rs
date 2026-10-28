@@ -161,8 +161,10 @@ impl StreamProvider for LocalStream {
         span.scope(async {
             let operation = span.clone();
             self.exclusive(&span, move |stream| async move {
-                let crate::journal::Outcome::Append(outcome) =
-                    stream.execute(Command::Append(request), None).await?
+                let crate::journal::Outcome::Append(outcome) = stream
+                    .execute(Command::Append(request), None)
+                    .await?
+                    .outcome
                 else {
                     return Err(StreamError::InvalidResponse);
                 };
@@ -192,7 +194,7 @@ impl StreamProvider for LocalStream {
         span.scope(async {
             self.exclusive(&span, |stream| async move {
                 let crate::journal::Outcome::Fork(outcome) =
-                    stream.execute(Command::Fork(request), None).await?
+                    stream.execute(Command::Fork(request), None).await?.outcome
                 else {
                     return Err(StreamError::InvalidResponse);
                 };
@@ -371,8 +373,10 @@ async fn commit(
     span.scope(async {
         stream
             .exclusive(&span, move |stream| async move {
-                let crate::journal::Outcome::Commit(outcome) =
-                    stream.execute(Command::Commit(request), deadline).await?
+                let crate::journal::Outcome::Commit(outcome) = stream
+                    .execute(Command::Commit(request), deadline)
+                    .await?
+                    .outcome
                 else {
                     return Err(StreamError::InvalidResponse);
                 };

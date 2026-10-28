@@ -18,6 +18,11 @@ pub(crate) enum Outcome {
     Commit(crate::CommitOutcome),
 }
 
+pub(crate) struct CanonicalCommand {
+    pub(crate) command: Command,
+    pub(crate) digest: Option<[u8; 32]>,
+}
+
 pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<(), StreamError> {
     match command {
         Command::Append(request) => match provider.append(request).await? {

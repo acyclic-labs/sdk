@@ -323,7 +323,7 @@ impl MemoryStream {
         Ok((paths, allocation))
     }
 
-    fn reserve_retained(&self, state: &mut State) -> Result<(), StreamError> {
+    fn reserve_retained(&self, state: &State) -> Result<Option<RetainedReservation>, StreamError> {
         let needed = state
             .retained
             .len()
@@ -331,22 +331,32 @@ impl MemoryStream {
             .and_then(|len| len.checked_add(1))
             .ok_or(StreamError::Capacity)?;
         if needed > state.retained.capacity() {
-            let (mut buffer, claim) = self.vector(needed.next_power_of_two())?;
+            let capacity = needed
+                .checked_next_power_of_two()
+                .ok_or(StreamError::Capacity)?;
+            let (buffer, allocation) = self.vector(capacity)?;
             #[cfg(not(target_arch = "wasm32"))]
-            let copied = (state.retained.len() * std::mem::size_of::<Retained>()) as u64;
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = &self.work {
-                work.record(work.meter.admit_codec(0, copied, 0))?;
-            }
-            buffer.append(&mut state.retained);
-            state.retained = buffer;
-            state.retained_allocation = claim;
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = &self.work {
-                work.record(work.meter.record_codec(0, copied, 0))?;
-            }
+            let codec = self
+                .work
+                .as_ref()
+                .map(|work| {
+                    work.record(acyclic_native_runtime::NativeCodecReservation::new(
+                        Arc::clone(&work.meter),
+                        acyclic_native_runtime::NativeCodecWork {
+                            copied: ((capacity - 1) * std::mem::size_of::<Retained>()) as u64,
+                            ..Default::default()
+                        },
+                    ))
+                })
+                .transpose()?;
+            return Ok(Some(RetainedReservation {
+                buffer,
+                allocation,
+                #[cfg(not(target_arch = "wasm32"))]
+                codec,
+            }));
         }
-        Ok(())
+        Ok(None)
     }
 
     fn plan_commit(
@@ -474,7 +484,7 @@ impl MemoryStream {
         if let Some(work) = &self.work {
             work.record(work.meter.record_codec(0, 0, identity_bytes()))?;
         }
-        self.reserve_retained(state)?;
+        let retained = self.reserve_retained(state)?;
         let time = crate::preparation::committed_time(
             state.last_committed_at_micros,
             self.commit_clock.now_unix_millis(),
@@ -492,6 +502,7 @@ impl MemoryStream {
                 if !durable {
                     check_deadline()?;
                 }
+                self.install_retained(state, retained)?;
                 publication.publish(
                     state,
                     &mut || self.record_replay_probe(&mut probes),

@@ -54,35 +54,54 @@ impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
     )
 ))]
 impl MemoryStream {
-    pub(crate) async fn apply_durable(
+    pub(crate) fn canonicalize(
         &self,
-        command: &mut crate::journal::Command,
-        deadline: Option<u64>,
-        persist: impl Future<Output = Result<(), StreamError>>,
-    ) -> Result<crate::journal::Outcome, StreamError> {
-        use crate::journal::{Command, Outcome};
-        let digest = match command {
+        command: crate::journal::Command,
+    ) -> Result<crate::journal::CanonicalCommand, StreamError> {
+        use crate::journal::{CanonicalCommand, Command};
+        let mut command = command.validated()?;
+        let digest = match &mut command {
             Command::Commit(request) => Some(self.commit_request_digest(request)?),
             _ => None,
         };
+        Ok(CanonicalCommand { command, digest })
+    }
+
+    pub(crate) async fn apply_durable(
+        &self,
+        canonical: &crate::journal::CanonicalCommand,
+        deadline: Option<u64>,
+        persist: impl Future<Output = Result<(), StreamError>>,
+    ) -> Result<crate::replicated::Execution, StreamError> {
+        use crate::journal::{Command, Outcome};
+        use crate::replicated::Execution;
         let mut state = self.state.write().await;
-        match command {
+        match &canonical.command {
             Command::Append(request) => self
                 .plan_append_locked(&mut state, request)?
                 .durable(self, &mut state, persist)
                 .await
-                .map(|(result, _)| Outcome::Append(result)),
+                .map(|(result, allocation)| Execution {
+                    outcome: Outcome::Append(result),
+                    allocation,
+                }),
             Command::Fork(request) => self
                 .plan_fork_locked(&mut state, request)?
                 .durable(self, &mut state, persist)
                 .await
-                .map(Outcome::Fork),
+                .map(|result| Execution {
+                    outcome: Outcome::Fork(result),
+                    allocation: None,
+                }),
             Command::Commit(request) => {
-                let digest = digest.ok_or(StreamError::InvalidResponse)?;
+                let digest = canonical.digest.ok_or(StreamError::InvalidResponse)?;
                 self.plan_commit_locked(&mut state, request, digest, deadline)?
                     .durable(self, &mut state, persist)
                     .await
-                    .map(|(result, _)| Outcome::Commit(result))
+                    .map(|(result, allocation)| Execution {
+                        outcome: Outcome::Commit(result),
+                        allocation,
+                    })
             }
         }
     }
