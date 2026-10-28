@@ -49,18 +49,21 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
                 ("path_bytes", value.path_bytes as u64),
                 ("attachments", value.attachments as u64),
                 ("render_bytes", value.render_bytes),
-                ("model_events_per_step", value.model_events_per_step as u64),
-                ("tool_calls_per_step", value.tool_calls_per_step as u64),
                 ("context_messages", value.context_messages as u64),
             ] {
                 set_js_field(&js, key, &exact_js_number(bound)?)?;
             }
-            let model_steps = value
-                .model_steps
-                .map(|steps| exact_js_number(steps as u64))
-                .transpose()?
-                .unwrap_or(JsValue::NULL);
-            set_js_field(&js, "model_steps", &model_steps)?;
+            for (key, bound) in [
+                ("model_steps", value.model_steps),
+                ("model_events_per_step", value.model_events_per_step),
+                ("tool_calls_per_step", value.tool_calls_per_step),
+            ] {
+                let bound = bound
+                    .map(|count| exact_js_number(count as u64))
+                    .transpose()?
+                    .unwrap_or(JsValue::NULL);
+                set_js_field(&js, key, &bound)?;
+            }
             Ok(js)
         }
         _ => Err(JsValue::from_str("unknown Harness v2 contract kind")),
