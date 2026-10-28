@@ -45,25 +45,25 @@ The filesystem contract generator builds one optional `filesystem-contracts` exa
 
 ## Tests
 
-The test deletion inventory is pinned to main `736854cc314cd583872d6f5297158c0d209527db`. Each dedicated Rust test source was counted with `git grep -c '' origin/main -- <exact path>`, one path per command. The table counts complete dedicated test files, including helpers and proof entrypoints; inline test blocks are retained and are outside these subtotals. No unreviewed test is a deletion estimate. Product-body ownership stays with its existing lane.
+The test deletion inventory is pinned to main `28d5c495b63e6d7efd7556d164a49f33574ac80c`. Each dedicated Rust test source was counted with `git grep -c '' 28d5c495b6 -- <exact path>`, one path per command. The table counts complete dedicated test files, including helpers and proof entrypoints; inline test blocks are retained and are outside these subtotals. No unreviewed test is a deletion estimate. Product-body ownership stays with its existing lane.
 
 | Crate | Baseline dedicated test lines | Reviewed semantic test lines removed | Net test-source lines added | Coverage retained |
 |---|---:|---:|---:|---|
-| `actors` | 5,403 | 0 | 39 | Original cases and oracles; target routing only. |
-| `auth` | 4,013 | 0 | 39 | Original cases and oracles; target routing only. |
-| `conformance` | 928 | 0 | 61 | Original cases and oracles; target routing only. |
+| `actors` | 5,440 | 0 | 39 | Original cases and oracles; target routing only. |
+| `auth` | 4,013 | 0 | 45 | Original cases and oracles; target routing only. |
+| `conformance` | 1,124 | 0 | 61 | Original cases and oracles; target routing only. |
 | `contract-derive` | 479 | 0 | 4 | Original cases and oracles; target routing only. |
-| `filesystem` | 162,963 | 0 | 73 | Original cases and oracles; target routing only. |
-| `harness` | 30,437 | 0 | 65 | Original cases and oracles; target routing only. |
-| `harness-conformance` | 826 | 0 | 5 | Original cases and oracles; target routing only. |
-| `harness-core` | 63,116 | 0 | 17 | Original cases and oracles; target routing only. |
+| `filesystem` | 162,354 | 0 | 73 | Original cases and oracles; target routing only. |
+| `harness` | 29,347 | 0 | 51 | Original cases and oracles; target routing only. |
+| `harness-conformance` | 687 | 0 | 5 | Original cases and oracles; target routing only. |
+| `harness-core` | 49,742 | 0 | 17 | Original cases and oracles; target routing only. |
 | `harness-mock-model` | 619 | 0 | 5 | Original cases and oracles; target routing only. |
-| `harness-providers` | 15,412 | 0 | 9 | Original cases and oracles; target routing only. |
+| `harness-providers` | 15,413 | 0 | 9 | Original cases and oracles; target routing only. |
 | `inference` | 1,009 | 0 | 4 | Original cases and oracles; target routing only. |
-| `manifest` | 1,044 | 0 | 46 | Original cases and oracles; target routing only. |
-| `objects` | 6,271 | 0 | 5 | Original cases and oracles; target routing only. |
+| `manifest` | 1,043 | 0 | 46 | Original cases and oracles; target routing only. |
+| `objects` | 790 | 0 | 0 | Original cases and oracles; target routing only. |
 | `sdk-generation` | 7,792 | 24 | 433 | Actual decoder path/link/duplicate/truncation refusal and hostile-path property remain; remove one duplicate broken-predicate demonstration. |
-| `stream` | 23,221 | 0 | 37 | Original cases and oracles; target routing only. |
+| `stream` | 24,909 | 0 | 37 | Original cases and oracles; target routing only. |
 
 Tooling scripts remove **426 net test lines** for retired CI behavior: six exclusive CI test files (396 lines) plus 30 net lines of static-workflow assertions in `tiny-ci.test.mjs`. This is the retired-things category; duplicate, tautology, compiler-restatement, formatting snapshot, over-mocked, removed-cap, timing-only, feature-copy and unused-helper categories have no additional established deletion in this batch. The lockfile checker itself remains live. No replacement test is needed for retired static-job assertions; the retained `tiny-ci.test.mjs` cases still cover the live qualifier selections and refusals. The full deleted-file inventory and baseline counts are bound in the lane evidence.
 
@@ -71,12 +71,21 @@ Keep the shared conformance suites, generators and freshness checks, DST/Loom/Ka
 
 Decisions: review only tooling-owned test bodies for semantic deletion. A mechanical integration-root release does not transfer another lane's oracle ownership. Further deletion requires an identified surviving case for every retained behavior and must not remove a sole regression, refusal or invariant check. The retired discovery-only item remains separately bound to its signed product-retirement mapping.
 
-The actual compiled qualifier inventory at312bc lists1116 core and128 harness library cases without running test bodies. The two orphan task-volume filters retire with the explicit #1644 product-retirement mapping in `docs/proofs/graphcoder-task-selector-retirement.json`; original source, candidate-count/full-history negatives and target manifests remain Git-addressed and captured. Remaining core filters select1 cancellation,2 diff and2 native-settings cases. The twelve old harness-library filters are also retired by the merged #1602 native-client and #1644 old-loop changes, with exact source and capture bindings in `docs/proofs/graphcoder-harness-selector-retirement.json`. The actual16-case checkout capture selection stays. This repairs the library selector inventory; remaining integration/search/binary/real-host qualification is not supplied by that inventory. No current approval vector is substituted for the retired task-index performance oracle.
+The actual compiled qualifier inventory at312bc lists1116 core and128 harness library cases without running test bodies. The two orphan task-volume filters retire with the explicit #1644 product-retirement mapping in `docs/proofs/graphcoder-task-selector-retirement.json`; original source, candidate-count/full-history negatives and target manifests remain Git-addressed and captured. Remaining core filters select1 cancellation,2 diff and2 native-settings cases. The twelve old harness-library filters are also retired by the merged #1602 native-client and #1644 old-loop changes, with exact source and capture bindings in `docs/proofs/graphcoder-harness-selector-retirement.json`. The actual16-case checkout capture selection stays. This original inventory covers only library selectors at its pinned source; it does not qualify current composed targets or real-host behavior. No current approval vector is substituted for the retired task-index performance oracle.
 
 SDK-generation removes 24 lines in `path_shape_oracle_detects_a_missing_root_guard`: its separately broken predicate never mutated the production decoder, and its actual `fixture-0.1.0//absolute` refusal is already checked by retained `archive_codec_rejects_paths_links_duplicates_and_truncated_bodies`. The retained hostile-path property also calls the actual decoder on every host. These source deletions supply no production omission-mutant result; historical receipts remain source-specific.
 
 The twelve harness caller-token removals preserve the original source and negative controls in two Git-derived parent captures (1,750 and 1,659 files). No old case is renamed to a new contract, no replacement suite is declared equivalent, and no test body is removed in this routing correction. Every surviving prefix retains the existing exact-name/nonempty refusal and process bounds.
 
-The test-source column counts physical changes in dedicated test files and root/helper routing, plus the new 43-line inline worker regression module. It excludes Cargo manifests/locks and other pre-existing inline blocks. SDK-generation adds 462 and removes29 scoped test lines (net433 added), including the24-line semantic duplicate retirement. Script test sources add116 and remove478 (net362 removed); the426-line CI-only retirement is a category subtotal, not the whole-test net. Other scoped test-source net additions are plugin15, Markdown5 (still awaiting #1714 reconciliation), TypeScript Stream model root5 and Workers19. Mechanical includes and moved proof/helper bytes earn no semantic deletion credit.
+The test-source column counts physical changes in dedicated test files and root/helper routing, plus the new 43-line inline worker regression module. It excludes Cargo manifests/locks and other pre-existing inline blocks. SDK-generation adds 462 and removes29 scoped test lines (net433 added), including the24-line semantic duplicate retirement. Script test sources add116 and remove478 (net362 removed); the426-line CI-only retirement is a category subtotal, not the whole-test net. Other scoped test-source net additions are plugin15 and TypeScript24 (Stream model root5 and Workers19). The landed #1714 Markdown retirement is preserved; no retired package or new test root is recreated. The current physical subtotal adds1,081 and removes575 scoped test-source lines (net506 added), including mechanical roots and helpers; net test lines removed across this subtotal is therefore-506. No moved or preserved proof earns deletion credit. Mechanical includes and moved proof/helper bytes earn no semantic deletion credit.
 
 Hosted Actors routing permits multiple original owners to subscribe to the same Stream path; each matching route receives its own generation and wake. Journal appends arm recovery before publication and again after the append completes, closing the window where concurrent cleanup could remove the earlier alarm before pending metadata is published. This uses the existing platform alarm, adds a visible scheduling call and has no hosted execution qualification.
+
+
+## Current main reconciliation
+
+M3 is rebased linearly onto main `28d5c495b63e6d7efd7556d164a49f33574ac80c`. It retains the landed Markdown/Objects/client retirements, Auth credential-cache and scope tests, browser read-file fix, protobuf-JSON dependency/release ordering and current Stream request types. Harness host-hooks and skills-context retain their original bodies and feature gates in the shared main root without duplicate Cargo targets; ordinary history selection remains excluded from Loom. Root lock resolution adds six compression packages and removes only the obsolete guest-fuzz prost edge, without upgrading or deleting existing registry package versions. The original default-member set remains the full gate scope. The existing gate-mover custody join must preserve that selection, Windows selection, full formatting and empty-selection refusal before admission.
+
+The remaining orphan file-query, search and GraphCoder TUI filters are mapped to exact merged #1593/#1644/#1588 product retirements in `docs/proofs/graphcoder-integration-selector-retirement.json`. Their original targets, assertions, properties and source are retained in three Git-derived parent archives with per-file blob/SHA256 inventories. Argument tests now route through the current GraphCoder library; the three current CLI selections invoke its shipping binary. These cases are distinct from the retired TUI/settlement contracts and supply no equivalence or historical proof pass. No test body is deleted by this selector repair. Actual current compiled case inventory remains pending; strict nonempty/exact-name refusal stays in the unchanged artifact runner.
+
+Audit v3b coordination keeps tooling16/18/19/20 with the unbounded owner: per-map worker bounds are not a global compiler/process/FD budget, archive protective limits are not an unlimited-default contract, and hosted wake ownership must not gain a second polling mechanism. Existing caps are recorded source behavior pending that concrete shared-owner join. Physical causal IDs, nested leader/ReadIndex/quorum/fsync/lock/auth/copy units, trace loss and failed-sample accounting remain open beyond the current logical ledger and adapter RPC counts. Unknown is not zero. Neither instrumentation nor target consolidation establishes a speedup.
