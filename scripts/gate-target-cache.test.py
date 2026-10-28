@@ -16,6 +16,33 @@ spec.loader.exec_module(gate)
 
 
 class MatrixArtifacts(unittest.TestCase):
+    def test_feature_target_skips_shared_lock_only_with_actual_job_custody(self):
+        # Use this real build job's receipt/mount oracle, never a pretend private
+        # environment flag. This control launches no Cargo or matrix workload.
+        if gate.private_inputs(os.environ, ['/work/target']) is None:
+            self.skipTest('requires the canonical bb2 job receipt and private mount')
+        source = Path(__file__).with_name('gate-feature-matrix.sh').read_text()
+        prefix = source.split('rc=0\nCARGO_TARGET_DIR=', 1)[0]
+        helper = Path(__file__).with_name('gate-target-cache.py').resolve()
+        with tempfile.TemporaryDirectory(dir='/work/target') as temporary, \
+             tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as shared:
+            root = Path(temporary)
+            (root / 'scripts').mkdir()
+            (root / 'scripts/gate-target-cache.py').symlink_to(helper)
+            for name, target, private, broken in [
+                ('private', root / 'private', 1, False),
+                ('manual', Path(shared) / 'manual', 0, False),
+                ('old-lock', root / 'old-lock', 0, True),
+            ]:
+                with self.subTest(name=name):
+                    script = prefix.replace('  private=1', '  private=0') if broken else prefix
+                    script += '\nprintf "SELECTED %s %s\\n" "$target" "$private"\n'
+                    result = subprocess.run(['bash', '-c', script], cwd=root, capture_output=True, text=True,
+                        env={**os.environ, 'GATE_FEATURE_TARGET_DIR': str(target), 'GATE_FEATURE_WORKERS': '1'})
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(f'SELECTED {target} {private}', result.stdout)
+                    self.assertEqual((target / '.gate.lock').exists(), private == 0)
+
     def test_shared_payload_requires_both_matrix_and_consumer_codegen_before_publication(self):
         with tempfile.TemporaryDirectory(dir='/mnt/bb/tmp') as temporary:
             root=Path(temporary);scripts=root/'scripts';scripts.mkdir()

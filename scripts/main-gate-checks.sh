@@ -60,6 +60,12 @@ fi
 ( CARGO_TARGET_DIR="$clippy_target" cargo clippy --locked --keep-going "${workspace_args[@]}" --all-targets --all-features --message-format=short \
     -- --cap-lints warn > "$gate_output/.gate-clippy.out" 2>&1; echo $? > "$gate_output/.gate-clippy.rc" ) &
 clippy=$!
+feature_candidate=${GATE_FEATURE_TARGET_DIR:-${CARGO_TARGET_DIR:-target}/.gate-features}
+if [ -f scripts/gate-target-cache.py ] && python3 scripts/gate-target-cache.py private "$feature_candidate"; then
+  export GATE_FEATURE_TARGET_DIR=$feature_candidate
+else
+  export GATE_FEATURE_TARGET_DIR=${GATE_FEATURE_TARGET_DIR:-/mnt/bb/targets/sdk/gate-features}
+fi
 ( bash scripts/gate-feature-matrix.sh > "$gate_output/.gate-features.out" 2>&1; echo $? > "$gate_output/.gate-features.rc" ) &
 features=$!
 # Invocation-owned runtime paths are not compiler inputs. Start compiler-only

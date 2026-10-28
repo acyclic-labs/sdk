@@ -90,6 +90,14 @@ gate_cache_finish(){
 }
 gate_boot=$(cat /proc/sys/kernel/random/boot_id) || exit 2
 target_root=${CARGO_TARGET_DIR:-target}
+# Independent sibling roots let the snapshot adapter seed every phase without
+# sharing mutable Cargo directories or holding a parent lease over its workers.
+feature_candidate=${GATE_FEATURE_TARGET_DIR:-$target_root/.gate-features}
+if [ -f scripts/gate-target-cache.py ] && python3 scripts/gate-target-cache.py private "$feature_candidate"; then
+  export GATE_FEATURE_TARGET_DIR=$feature_candidate
+else
+  export GATE_FEATURE_TARGET_DIR=${GATE_FEATURE_TARGET_DIR:-/mnt/bb/targets/sdk/gate-features}
+fi
 # Parent snapshots exclude descendant writers. Keep independent gate phases
 # as siblings so the hierarchy leases permit their intended parallel work.
 test_target="$target_root/.gate-pr-tests"
@@ -110,19 +118,10 @@ features=""
 # feature sets stay comparable to main; tests and clippy use only the PR scope.
 if [ -f scripts/check-feature-matrix.mjs ]; then
   ( feature_started=$SECONDS
-    feature_target=${GATE_FEATURE_TARGET_DIR:-/mnt/bb/targets/sdk/gate-features}
-    mkdir -p "$feature_target" && (
-      # Also protect measurement/manual jobs that do not hold the coordinator's
-      # lock. Cargo's own target lock alone would interleave the matrix's jobs.
-      flock -x 9 || exit 2
-      if [ -f scripts/gate-feature-matrix.sh ]; then
-        # The helper owns this same lock; release the legacy outer lock first.
-        flock -u 9
-        bash scripts/gate-feature-matrix.sh
-      else
-        CARGO_TARGET_DIR="$feature_target" node scripts/check-feature-matrix.mjs 6
-      fi
-    ) 9> "$feature_target/.gate.lock" > "$gate_output/.gate-features.out" 2>&1
+    feature_target=$GATE_FEATURE_TARGET_DIR
+    # The shared helper owns private-target admission and legacy manual locks.
+    # It keeps matrix checks and consumer codegen in one seeded lifetime.
+    bash scripts/gate-feature-matrix.sh > "$gate_output/.gate-features.out" 2>&1
     feature_rc=$?
     echo "$feature_rc" > "$gate_output/.gate-features.rc"
     echo "GATE_FEATURES_WALL seconds=$((SECONDS-feature_started)) rc=$feature_rc target=$feature_target" > "$gate_output/.gate-features.time" ) &
