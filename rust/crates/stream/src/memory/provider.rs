@@ -333,7 +333,6 @@ impl StreamProvider for MemoryStream {
                     .saturating_add(u64::from(crate::CHILDREN_PAGE_ITEMS)),
             );
             admit_windows(path, request.from, page_end, &*meter, &mut windows)?;
-            windows.reverse();
             let cursor_meter = Arc::clone(&meter);
             let cursor = NativeReadCursor {
                 windows,
@@ -361,7 +360,6 @@ impl StreamProvider for MemoryStream {
                             &*meter,
                             &mut cursor.windows,
                         )?;
-                        cursor.windows.reverse();
                         cursor.next = end;
                         if end == cursor.end {
                             cursor.path = None;
