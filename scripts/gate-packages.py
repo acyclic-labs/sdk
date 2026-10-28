@@ -70,5 +70,23 @@ def packages(checkout):
     return sorted(selected & members)
 
 
+def default_packages(metadata):
+    """The root SDK set, excluding explicitly selected fuzz/proof/tool packages."""
+    ids = set(metadata["workspace_default_members"])
+    names = sorted(p["name"] for p in metadata["packages"] if p["id"] in ids)
+    if (not ids.issubset(metadata["workspace_members"]) or not names
+            or len(names) != len(ids) or len(set(names)) != len(names)):
+        raise ValueError("default-member metadata is empty or incomplete")
+    return names
+
+
 if __name__ == "__main__":
-    print(" ".join(f"-p {shlex.quote(name)}" for name in packages(sys.argv[1])))
+    try:
+        if sys.argv[1:] == ["--defaults"]:
+            print("\n".join(default_packages(json.load(sys.stdin))))
+        else:
+            print(" ".join(f"-p {shlex.quote(name)}" for name in packages(sys.argv[1])))
+    except (KeyError, ValueError, OSError, subprocess.CalledProcessError) as error:
+        sys.exit(f"STEP_FAILED gate-package-selection: {error}; recovery: "
+                 "cargo metadata --locked --no-deps --format-version 1 | "
+                 "python3 scripts/gate-packages.py --defaults")

@@ -16,6 +16,24 @@ timing_start=$(($(date +%s) - SECONDS))
 trap 'printf "%s\t%s\0" "${EPOCHREALTIME:-$((timing_start + SECONDS))}" "$BASH_COMMAND" \
   >>"$observability/steps.tsv"' DEBUG
 
+# Preserve the original SDK qualification set as fuzz/proof/tool packages join
+# the shared workspace. Explicit docs, generation, proof and fuzz lanes remain.
+workspace_args=()
+sdk_workspace() {
+  local metadata names name
+  if [ ${#workspace_args[@]} -eq 0 ]; then
+    metadata=$(cargo metadata --locked --no-deps --format-version 1) || {
+      echo 'STEP_FAILED qualification-metadata; recovery: cargo metadata --locked --no-deps --format-version 1' >&2
+      return 2
+    }
+    names=$(printf '%s' "$metadata" | python3 scripts/gate-packages.py --defaults) || return 2
+    while IFS= read -r name; do workspace_args+=(-p "$name"); done <<< "$names"
+  fi
+  local command=("$1"); shift
+  if [ "${command[0]}" = cargo ]; then command+=("$1"); shift; fi
+  "${command[@]}" "${workspace_args[@]}" "$@"
+}
+
 # macOS ships shasum rather than sha256sum.
 sha256_matches() {
   local observed
@@ -132,7 +150,7 @@ client_bindings() {
 # Selecting them from the all-feature workspace build reuses its test binaries
 # instead of rebuilding acyclic-fs under a narrower feature resolution.
 native_mount_tests() {
-  cargo test --workspace --all-features --locked --lib -- \
+  sdk_workspace cargo test --all-features --locked --lib -- \
     --ignored --test-threads=1 native_mount::
 }
 
@@ -198,7 +216,7 @@ case "$lane" in
       harness_tests -p acyclic-harness-core --features model-checking \
         --lib workflow::model_checking::tests::
     node scripts/qualify-mcp-loom.mjs --gate
-    nextest --workspace --all-features --locked
+    sdk_workspace nextest --all-features --locked
     ;;
   mount-exclusion)
     bash scripts/fuzz-mount-exclusion.sh -runs=64 -max_len=4096 -timeout=2
@@ -377,7 +395,7 @@ case "$lane" in
     node scripts/test-verify-release-binary.mjs
     bun test scripts/qualify-rustfmt.test.mjs
     bash scripts/qualify-rustfmt.sh
-    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+    sdk_workspace cargo clippy --all-targets --all-features --locked -- -D warnings
     # Production-only reduced sets must not inherit test/dev features. Keep
     # these with the lane feature-set checks, outside the tiny SDK Static job.
     # Focused bb1 gate: Q:/lanes/bs.ps1 bash scripts/check-storage-feature-sets.sh
@@ -386,7 +404,7 @@ case "$lane" in
     # Every published crate alone with --all-features, the same selection the
     # bb2 merge gate checks on every PR and on main.
     node scripts/check-feature-matrix.mjs 2
-    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+    RUSTDOCFLAGS="-D warnings" sdk_workspace cargo doc --no-deps --locked
     install_tool cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz \
       https://github.com/EmbarkStudios/cargo-deny/releases/download/0.19.0/cargo-deny-0.19.0-x86_64-unknown-linux-musl.tar.gz \
       0e8c2aa59128612c90d9e09c02204e912f29a5b8d9a64671b94608cbe09e064f \
@@ -520,8 +538,8 @@ case "$lane" in
     fi
     source scripts/ensure-bun.sh
     cargo fetch --locked
-    nextest --workspace --all-features --locked
-    cargo test --workspace --all-features --locked --doc
+    sdk_workspace nextest --all-features --locked
+    sdk_workspace cargo test --all-features --locked --doc
     native_mount_tests
     installed_graphcoder
     native_host_contracts
@@ -555,8 +573,8 @@ case "$lane" in
     CARGO_BUILD_JOBS=1 background x86_64 cargo check -p acyclic-fs -p acyclic-fs-napi --all-features \
       --target x86_64-apple-darwin --locked --target-dir "$target_dir-x86_64"
     trap 'status=$?; finish_macos "$status" || status=$?; exit "$status"' EXIT
-    CARGO_BUILD_JOBS=8 nextest --workspace --all-features --locked
-    CARGO_BUILD_JOBS=8 cargo test --workspace --all-features --locked --doc
+    CARGO_BUILD_JOBS=8 sdk_workspace nextest --all-features --locked
+    CARGO_BUILD_JOBS=8 sdk_workspace cargo test --all-features --locked --doc
     finish_macos
     installed_graphcoder
     native_host_contracts

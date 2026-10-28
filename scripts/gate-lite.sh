@@ -4,8 +4,19 @@ set -u
 exec 2>&1
 started=$SECONDS
 args=(); selected=()
+full=0
+# Use the existing metadata phase before compilation so full scope remains the
+# original SDK set after on-demand fuzz, proof and generator packages join.
+meta=$(cargo metadata --locked --no-deps --format-version 1) || {
+  rc=$?; echo 'STEP_FAILED gate-metadata; recovery: cargo metadata --locked --no-deps --format-version 1'
+  echo "GATE_DONE rc=$rc"; exit "$rc"
+}
 if [ "$(tr -d '\r' < .gate-scope-mode)" = full ]; then
-  args=(--workspace)
+  full=1
+  names=$(printf '%s' "$meta" | python3 scripts/gate-packages.py --defaults) || {
+    rc=$?; echo "GATE_DONE rc=$rc"; exit "$rc"
+  }
+  while IFS= read -r p; do args+=(-p "$p"); selected+=("$p"); done <<< "$names"
   fmt_args=(--all)
 else
   while IFS= read -r p; do
@@ -14,13 +25,13 @@ else
   fmt_args=("${args[@]}")
 fi
 echo "GATE_LITE_START scope=$(tr -d '\r' < .gate-scope-mode) crates=$((${#args[@]} / 2))"
-if [ "${args[0]:-}" = --workspace ]; then
+if [ "$full" = 1 ]; then
   bash scripts/gate-rust-format.sh --stage; rc=$?
 else
   cargo fmt "${fmt_args[@]}" -- --check; rc=$?
 fi
 if [ "$rc" != 0 ]; then
-  if [ "${args[0]:-}" = --workspace ]; then
+  if [ "$full" = 1 ]; then
     printf 'GATE_LITE_FORMAT_FAILED rc=%s; recovery: format the reported files and rerun bash scripts/gate-rust-format.sh\n' "$rc"
   else
     printf 'GATE_LITE_FORMAT_FAILED rc=%s; recovery: cargo fmt' "$rc"
@@ -43,7 +54,6 @@ fi
 windows=()
 if [ "$rc" = 0 ]; then
   # A metadata failure leaves the selector unparseable input: never a silent skip.
-  meta=$(cargo metadata --locked --no-deps --format-version 1)
   list=$(printf '%s' "$meta" | python3 scripts/gate-windows-crates.py "${selected[@]}") || {
     rc=$?; echo "GATE_LITE_WINDOWS_SELECTION_FAILED rc=$rc"; }
   for p in $list; do windows+=(-p "$p"); done

@@ -16,6 +16,3 @@ path = "session_model.rs"
 [[test]]
 name = "latency"
 path = "latency.rs"
-
-[workspace]
-members = ["."]

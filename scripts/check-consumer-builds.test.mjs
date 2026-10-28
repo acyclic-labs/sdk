@@ -13,7 +13,7 @@ function item(name, { publish = [], kind = 'lib', fuzz = false, examples = false
 const packages = [item('acyclic-public', { publish: null }), item('acyclic-harness-conformance', { examples: true }),
   item('acyclic-harness-adapter'), item('fixture-tool', { kind: 'bin' }), item('registry-tool', { publish: ['internal'], kind: 'bin' }),
   item('acyclic-fuzz', { kind: 'bin', fuzz: true }), item('registry-library')];
-const metadata = { workspace_members: packages.slice(0, -1).map(entry => entry.id), packages };
+const metadata = { workspace_default_members: packages.slice(0, -1).map(entry => entry.id), packages };
 
 test('all public and internal library surfaces generate code separately with --all-features', () => {
   const selected = consumers(metadata);

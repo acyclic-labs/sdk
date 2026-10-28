@@ -7,8 +7,6 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
-[workspace]
-
 [features]
 # Included harness sources use the including crate's feature namespace.
 default = ["filesystem"]
@@ -33,4 +31,3 @@ path = "fuzz_targets/file_guidance.rs"
 test = false
 doc = false
 bench = false
-

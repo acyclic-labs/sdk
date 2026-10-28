@@ -38,8 +38,16 @@ the protocol descriptor and message tests. Qualification also covers consumers.
 bun install --frozen-lockfile
 bun run check   # tsc -b --force, project-wide type-check (also emits build output)
 bun run test    # type-check, then TypeScript and filesystem package tests
-cargo test --workspace --all-features --locked
+cargo test --all-features --locked
 ```
+
+The checkout has one Cargo workspace and one active root `Cargo.lock`. Root
+commands select the SDK's default members. Fuzzers, proof packages, SDK docs and
+generators share that lock and run on demand with `-p PACKAGE` or their existing
+`--manifest-path` command. `--workspace` explicitly includes these tools and
+compiler-negative fixtures; use it only when that expanded scope is intended.
+Historical captured source and the vendored upstream package retain their
+original lockfiles as evidence and upstream inputs.
 
 Rust-only workspace tests also need the ignored Actors authoring contracts.
 Generate them with the existing locked Rust producer before running Cargo tests;

@@ -14,9 +14,6 @@ proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 name = "session_model"
 path = "session_model.rs"
 
-[workspace]
-members = ["."]
-
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 

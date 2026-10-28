@@ -12,7 +12,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const libraryKinds = new Set(['lib', 'rlib', 'dylib', 'cdylib', 'staticlib', 'proc-macro']);
 
 export function consumers(metadata) {
-  const members = new Set(metadata.workspace_members);
+  const members = new Set(metadata.workspace_default_members);
   return metadata.packages.filter(item => members.has(item.id)
     && !item.metadata?.['cargo-fuzz']
     && (item.publish === null || item.publish?.length > 0

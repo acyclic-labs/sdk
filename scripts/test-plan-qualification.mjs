@@ -112,12 +112,12 @@ test("Windows qualification native builders exist in the maintained source", () 
 
 test("release lanes cover the Rust workspace, docs crate, and TypeScript workspace", () => {
   const script = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
-  assert.match(script, /^ +nextest --workspace --all-features --locked$/m);
+  assert.match(script, /^ +sdk_workspace nextest --all-features --locked$/m);
   assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo\.toml --locked/);
   assert.match(script, /cargo test --manifest-path rust\/crates\/sdk-generation\/Cargo\.toml --locked/);
   assert.match(script, /node --test rust\/crates\/sdk-generation\/scripts\/test-qualify-typescript-snippets\.mjs/);
   const policy = script.match(/^  policy\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1] ?? assert.fail("missing policy lane");
-  assert.match(policy, /^    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings$/m);
+  assert.match(policy, /^    sdk_workspace cargo clippy --all-targets --all-features --locked -- -D warnings$/m);
   assert.doesNotMatch(policy, /full_qualification|exit 0/);
   const linux = script.match(/^  linux\)\n([\s\S]*?)(?=^  \S[^\n]*\)\n|^esac\b)/m)?.[1];
   assert.ok(linux, "missing Linux package lane");
@@ -131,8 +131,8 @@ test("ARM native binding production runs independently and all original ARM chec
  const script=readFileSync("scripts/qualify-ci.sh","utf8").replaceAll("\r\n","\n");
  const branch=name=>script.match(new RegExp("^  "+name+"\\)\\n([\\s\\S]*?)(?=^  \\S[^\\n]*\\)\\n|^esac\\b)","m"))?.[1] ?? assert.fail(`missing qualification branch: ${name}`);
  const tests=branch("linux-arm64"),bindings=branch("linux-arm64-bindings");
- assert.match(tests,/nextest --workspace --all-features --locked/);
- assert.match(tests,/cargo test --workspace --all-features --locked --doc/);
+ assert.match(tests,/sdk_workspace nextest --all-features --locked/);
+ assert.match(tests,/sdk_workspace cargo test --all-features --locked --doc/);
  assert.match(tests,/native_mount_tests/);
  assert.doesNotMatch(tests,/native_binding|finish napi/);
  assert.match(bindings,/cargo fetch --locked/);assert.match(bindings,/native_binding/);
@@ -151,7 +151,7 @@ test("ARM native binding production runs independently and all original ARM chec
 test("the workspace gate, docs and generation run as independent required matrix lanes",()=>{
  const script=readFileSync("scripts/qualify-ci.sh","utf8").replaceAll("\r\n","\n");
  const branch=name=>script.match(new RegExp("^  "+name+"\\)\\n([\\s\\S]*?)(?=^  \\S[^\\n]*\\)\\n|^esac\\b)","m"))?.[1] ?? assert.fail(`missing qualification branch: ${name}`);
- assert.match(branch("gate"),/nextest --workspace --all-features --locked/);
+ assert.match(branch("gate"),/sdk_workspace nextest --all-features --locked/);
  assert.match(branch("gate"),/cargo check --locked -p acyclic-harness -p acyclic-harness-core -p acyclic-harness-search --features filesystem --lib --tests/);
  assert.doesNotMatch(branch("gate"),/sdk-docs|sdk-generation/);
  assert.match(branch("docs"),/cargo test --manifest-path rust\/crates\/sdk-docs\/Cargo.toml --locked/);
@@ -178,7 +178,7 @@ test("Windows native audits are independent required lanes without moving public
   assert.equal(matrix.find(lane => lane.lane === "windows").artifact, "stream-native-windows");
   const script = readFileSync("scripts/qualify-ci.ps1", "utf8");
   assert.doesNotMatch(script, /Start-Background|Complete-Background/);
-  for (const command of ["cargo test --workspace --all-features --locked", "cargo test -p acyclic-harness --all-features --locked --lib",
+  for (const command of ["cargo test @WorkspaceArgs --all-features --locked", "cargo test -p acyclic-harness --all-features --locked --lib",
     "bun test --isolate --reporter=junit", "bun run --filter '@acyclic-labs/fs' test:composition", "node scripts/build-wasm-groups.mjs", "bun x tsc -b --force --pretty false", "bun x tsc -p scripts --pretty false", "bun run check:docs"])
     assert.ok(script.includes(command), command);
   const packages = script.slice(script.indexOf("& .\\scripts\\test-qualify-ci-windows.ps1")).replaceAll("\r\n", "\n");
@@ -324,12 +324,12 @@ test("macOS workspace qualification uses all twelve CPUs without changing packag
   const join = '    finish_macos\n';
   const execute = '    fork_join_conformance';
   assert.doesNotMatch(macosBody, /fork-join-build|target_dir-fork-join|--test fork_join/);
-  for (const marker of [join, execute, "nextest --workspace --all-features --locked", "cargo test --workspace --all-features --locked --doc", "native_mount_tests"])
+  for (const marker of [join, execute, "sdk_workspace nextest --all-features --locked", "sdk_workspace cargo test --all-features --locked --doc", "native_mount_tests"])
     assert.ok(macosBody.includes(marker), marker);
   assert.ok(macosBody.includes("finish napi x86_64"));
-  for (const command of ["CARGO_BUILD_JOBS=2 background napi", "CARGO_BUILD_JOBS=1 background x86_64", "CARGO_BUILD_JOBS=8 nextest", "CARGO_BUILD_JOBS=8 cargo test --workspace"])
+  for (const command of ["CARGO_BUILD_JOBS=2 background napi", "CARGO_BUILD_JOBS=1 background x86_64", "CARGO_BUILD_JOBS=8 sdk_workspace nextest", "CARGO_BUILD_JOBS=8 sdk_workspace cargo test"])
     assert.ok(macosBody.includes(command), command);
-  assert.ok(macosBody.indexOf(join) > macosBody.indexOf("cargo test --workspace --all-features --locked --doc"));
+  assert.ok(macosBody.indexOf(join) > macosBody.indexOf("sdk_workspace cargo test --all-features --locked --doc"));
   assert.ok(macosBody.indexOf(execute) > macosBody.indexOf(join));
   assert.ok(macosBody.indexOf(execute) > macosBody.indexOf("native_mount_tests"));
   const fork = script.match(/^fork_join_conformance\(\) \{\n([\s\S]*?)^\}/m)?.[1] ?? assert.fail("missing fork/join selection");
@@ -346,10 +346,11 @@ test("macOS workspace qualification uses all twelve CPUs without changing packag
 test("macOS joins every background build on foreground and background failures", async () => {
   const source = readFileSync("scripts/qualify-ci.sh", "utf8").replaceAll("\r\n", "\n");
   const helpers = source.slice(source.indexOf("background() {"), source.indexOf("native_binding() {"));
+  const selection = source.slice(source.indexOf("sdk_workspace() {"), source.indexOf("# macOS ships shasum"));
   const macos = source.match(/^  macos\)\n([\s\S]*?)(?=^  \*\))/m)?.[1] ?? assert.fail("missing macOS lane");
   const commands = macos.slice(macos.indexOf("    finish_macos() {"), macos.indexOf("    stream_binding"));
   assert.ok(commands.includes("    finish_macos\n"));
-  assert.ok(commands.includes("CARGO_BUILD_JOBS=8 nextest --workspace --all-features --locked"));
+  assert.ok(commands.includes("CARGO_BUILD_JOBS=8 sdk_workspace nextest --all-features --locked"));
   mkdirSync(".tools", { recursive: true });
   const root = mkdtempSync(".tools/macos-joins-").replaceAll("\\", "/");
   assert.match(root, /^\.tools\/macos-joins-[A-Za-z0-9]+$/);
@@ -381,6 +382,8 @@ cargo() {
     [[ "$CARGO_BUILD_JOBS" == 8 && "$*" == *--doc* ]]; return ${docs}
   fi
 }
+workspace_args=(-p acyclic-harness)
+${selection}
 ${helpers}
 ${commands}
 printf 'joined\\n'

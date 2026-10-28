@@ -7,8 +7,6 @@ publish = false
 [package.metadata]
 cargo-fuzz = true
 
-[workspace]
-
 [dependencies]
 libfuzzer-sys = "0.4"
 toml = "=0.9.8"

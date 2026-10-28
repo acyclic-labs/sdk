@@ -41,6 +41,19 @@ if ($Lane -in @('windows', 'windows-arm64', 'windows-rust', 'windows-fork-join')
     }
 }
 cargo fetch --locked
+$workspaceMetadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+if ($LASTEXITCODE -ne 0) {
+    throw 'STEP_FAILED qualification-metadata; recovery: cargo metadata --locked --no-deps --format-version 1'
+}
+$WorkspaceArgs = @()
+foreach ($package in $workspaceMetadata.packages | Sort-Object name) {
+    if ($package.id -in $workspaceMetadata.workspace_default_members) {
+        $WorkspaceArgs += @('-p', $package.name)
+    }
+}
+if ($WorkspaceArgs.Count -eq 0) {
+    throw 'STEP_FAILED qualification-package-selection; recovery: cargo metadata --locked --no-deps --format-version 1'
+}
 
 $CargoTargetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $PWD 'target' }
 switch ($Lane) {
@@ -67,14 +80,14 @@ switch ($Lane) {
             cargo run --locked -p acyclic-actors --example actors-http-routes -- `
                 typescript/packages/actors/src/generated/actors-service.ts
             try {
-                cargo nextest run --workspace --all-features --locked --profile ci --test-threads "$env:RUST_TEST_THREADS"
+                cargo nextest run @WorkspaceArgs --all-features --locked --profile ci --test-threads "$env:RUST_TEST_THREADS"
             } finally {
                 $junit = Join-Path $CargoTargetDir 'nextest/ci/junit.xml'
                 if (Test-Path -LiteralPath $junit) {
                     Copy-Item -LiteralPath $junit -Destination "$env:SDK_TEMP_DIR/observability/rust.xml"
                 }
             }
-            cargo test --workspace --all-features --locked --doc
+            cargo test @WorkspaceArgs --all-features --locked --doc
         } finally {
             if ($null -eq $rustcWrapper) {
                 Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue

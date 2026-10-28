@@ -20,9 +20,6 @@ test = false
 doc = false
 bench = false
 
-[workspace]
-members = ["."]
-
 [[bin]]
 name = "input_events"
 path = "fuzz_targets/input_events.rs"

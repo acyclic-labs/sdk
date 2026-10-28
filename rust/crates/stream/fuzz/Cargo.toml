@@ -34,6 +34,3 @@ path = "fuzz_targets/path_text.rs"
 test = false
 doc = false
 bench = false
-
-[workspace]
-members = ["."]

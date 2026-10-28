@@ -7,8 +7,6 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
-[workspace]
-
 [dependencies]
 libfuzzer-sys = "0.4"
 

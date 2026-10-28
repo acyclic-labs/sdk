@@ -44,7 +44,10 @@ target="$cache/tests"
 clippy_target="$cache/clippy"
 echo "GATE_MAIN_START target=$target clippy_target=$clippy_target"
 cargo metadata --locked --offline --no-deps --format-version 1 > "$gate_output/.gate-main-metadata.json" || exit 2
-members=$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const ids=new Set(m.workspace_members); console.log(m.packages.filter(p=>ids.has(p.id)).map(p=>p.name).sort().join(","))' "$gate_output/.gate-main-metadata.json") || exit 2
+names=$(python3 scripts/gate-packages.py --defaults < "$gate_output/.gate-main-metadata.json") || exit 2
+workspace_args=()
+while IFS= read -r name; do workspace_args+=(-p "$name"); done <<< "$names"
+members=$(printf '%s' "$names" | paste -sd, -)
 gate_fuzz_executables="$gate_output/.gate-fuzz-executables"
 : > "$gate_fuzz_executables" || exit 2
 gate_base_test_runner=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-}
@@ -54,7 +57,7 @@ if [ -f scripts/gate-target-cache.py ]; then
 else
   chmod +x "$test_runner" || exit 2
 fi
-( CARGO_TARGET_DIR="$clippy_target" cargo clippy --locked --keep-going --workspace --all-targets --all-features --message-format=short \
+( CARGO_TARGET_DIR="$clippy_target" cargo clippy --locked --keep-going "${workspace_args[@]}" --all-targets --all-features --message-format=short \
     -- --cap-lints warn > "$gate_output/.gate-clippy.out" 2>&1; echo $? > "$gate_output/.gate-clippy.rc" ) &
 clippy=$!
 ( bash scripts/gate-feature-matrix.sh > "$gate_output/.gate-features.out" 2>&1; echo $? > "$gate_output/.gate-features.rc" ) &
@@ -70,11 +73,11 @@ run_tests(){
   status=(0 0)
   if [ "$phase" = targets ]; then
     CARGO_TARGET_DIR="$target" bash "$test_runner" --build "$gate_output/.gate-main-metadata.json" "$GATE_FUZZ_EXECUTABLES" -- \
-      cargo test --locked --workspace --all-features --no-fail-fast "${cargo_args[@]}" "$@" 2>&1 | tee "$gate_output/.gate-$phase.out"
+      cargo test --locked "${workspace_args[@]}" --all-features --no-fail-fast "${cargo_args[@]}" "$@" 2>&1 | tee "$gate_output/.gate-$phase.out"
     status=("${PIPESTATUS[@]}")
   fi
   if [ "${status[0]}" = 0 ] && [ "${status[1]}" = 0 ]; then
-    CARGO_TARGET_DIR="$target" bash scripts/with-owner-keychain.sh cargo test --locked --workspace --all-features --no-fail-fast \
+    CARGO_TARGET_DIR="$target" bash scripts/with-owner-keychain.sh cargo test --locked "${workspace_args[@]}" --all-features --no-fail-fast \
       "${cargo_args[@]}" "$@" -- "${harness[@]}" 2>&1 | tee -a "$gate_output/.gate-$phase.out"
     status=("${PIPESTATUS[@]}")
   fi

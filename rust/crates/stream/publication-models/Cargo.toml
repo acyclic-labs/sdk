@@ -15,12 +15,6 @@ proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 name = "publication"
 path = "publication.rs"
 
-[workspace]
-members = ["."]
-
-[profile.dev]
-opt-level = 1
-
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 

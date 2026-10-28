@@ -29,8 +29,6 @@ test = false
 doc = false
 bench = false
 
-[workspace]
-
 [[bin]]
 name = "addressing"
 path = "fuzz_targets/addressing.rs"

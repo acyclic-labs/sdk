@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Exercise gate derivation against a renamed transitive crate and target dependencies."""
+import copy
 import importlib.util
+import json
+import tomllib
 import pathlib
 import subprocess
 import tempfile
@@ -10,6 +13,41 @@ import unittest
 spec = importlib.util.spec_from_file_location("gate", pathlib.Path(__file__).with_name("gate-packages.py"))
 gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
+
+
+class DefaultPackages(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Capture real Cargo output; no fabricated external-tool fixture.
+        cls.root = pathlib.Path(__file__).resolve().parent.parent
+        cls.metadata = json.loads(subprocess.check_output(
+            ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
+            cwd=cls.root))
+
+    def test_default_set_preserves_original_sdk_scope(self):
+        manifest = tomllib.loads((self.root / "Cargo.toml").read_text())
+        expected = sorted(tomllib.loads((self.root / p / "Cargo.toml").read_text())
+                          ["package"]["name"] for p in manifest["workspace"]["default-members"])
+        self.assertEqual(gate.default_packages(self.metadata), expected)
+        self.assertIn("acyclic-harness-fuzz", expected)
+        self.assertIn("acyclic-fs-fuzz", expected)
+        self.assertIn("acyclic-sdk-fuzz", expected)
+        self.assertNotIn("hermetic-environment-ui", expected)
+        self.assertNotIn("agent-spawn-slot-proofs", expected)
+        self.assertLess(len(expected), len(self.metadata["workspace_members"]))
+
+    def test_incomplete_and_empty_default_sets_refuse(self):
+        for mutation in ("empty", "missing-package", "foreign-member"):
+            metadata = copy.deepcopy(self.metadata)
+            if mutation == "empty":
+                metadata["workspace_default_members"] = []
+            elif mutation == "missing-package":
+                missing = metadata["workspace_default_members"][0]
+                metadata["packages"] = [p for p in metadata["packages"] if p["id"] != missing]
+            else:
+                metadata["workspace_members"].remove(metadata["workspace_default_members"][0])
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                gate.default_packages(metadata)
 
 
 class GatePackages(unittest.TestCase):

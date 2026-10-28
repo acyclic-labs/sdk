@@ -20,7 +20,7 @@ test_pkgs=(); clippy_pkgs=()
 while IFS= read -r p; do p=${p%$'\r'}; [ -n "$p" ] && test_pkgs+=(-p "$p"); done < .gate-tests-packages
 while IFS= read -r p; do p=${p%$'\r'}; [ -n "$p" ] && clippy_pkgs+=(-p "$p"); done < .gate-clippy-packages
 case "$mode" in
-  full) clippy_pkgs=(--workspace);;
+  full) ;; # Resolve the original default-member set after metadata below.
   affected) ;;
   *) echo "error: invalid PR gate scope: $mode"; exit 2;;
 esac
@@ -35,6 +35,11 @@ fi
 bash scripts/gate-rust-format.sh || exit $?
 # Match main's target coverage, including test=false libFuzzer binaries.
 cargo metadata --locked --offline --no-deps --format-version 1 > "$gate_output/.gate-pr-metadata.json" || exit 2
+if [ "$mode" = full ]; then
+  names=$(python3 scripts/gate-packages.py --defaults < "$gate_output/.gate-pr-metadata.json") || exit 2
+  clippy_pkgs=()
+  while IFS= read -r name; do clippy_pkgs+=(-p "$name"); done <<< "$names"
+fi
 gate_fuzz_executables="$gate_output/.gate-fuzz-executables"
 : > "$gate_fuzz_executables" || exit 2
 gate_base_test_runner=${CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER:-}

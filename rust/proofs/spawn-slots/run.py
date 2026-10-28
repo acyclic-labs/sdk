@@ -166,7 +166,8 @@ try:
         env.pop("RUSTC_WRAPPER", None)
         env["KANI_HOME"] = "/home/var/.kani"
         env["PATH"] = "/home/var/.kani/kani-0.68.0/bin:" + env["PATH"]
-        command = ["cargo", "kani", "--manifest-path", "rust/proofs/spawn-slots/Cargo.toml"]
+        command = ["cargo", "kani", "--manifest-path", "rust/proofs/spawn-slots/Cargo.toml",
+                   "-p", "agent-spawn-slot-proofs"]
         run("kani-version", ["cargo", "kani", "--version"], env=env)
         run("kani-positive", command, env=env)
         slot_path = "rust/crates/harness-core/src/agent/slots.rs"
