@@ -6,8 +6,8 @@ import { render as renderWidths, rust as widthSource } from "./generate-inferenc
 
 test("Stream HTTP generator keeps route result types without a runtime contract export", () => {
   assert.deepEqual(httpSource, [["acyclic-stream", "bin", "stream-http-contract"]]);
-  const source = renderHttp([JSON.stringify([["tail", "tail"], ["read", "records"]])])["typescript/packages/stream/src/http-contract.ts"];
-  assert.match(source, /type HttpResponseContract = \{\n  "tail": "tail";\n  "read": "records";\n\};/);
+  const source = renderHttp([JSON.stringify([["tail", "tail"], ["read", "read"]])])["typescript/packages/stream/src/http-contract.ts"];
+  assert.match(source, /type HttpResponseContract = \{\n  "tail": "tail";\n  "read": "read";\n\};/);
   assert.match(source, /export type HttpRoute = keyof HttpResponseContract;/);
   assert.match(source, /HttpResponseByKind\[HttpResponseContract\[Route\]\]/);
   assert.match(source, /return decodeHttpResponseWasm\(route, responseJson\);/);

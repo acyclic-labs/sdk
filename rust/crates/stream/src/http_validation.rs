@@ -362,11 +362,17 @@ pub fn validate(route: &str, value: &Value) -> Result {
         }
         Some("append") => validate_append_result(value),
         Some("fork") => validate_fork_receipt(value),
-        Some("records") => {
-            for item in array(value)? {
-                validate_record(item)?;
+        Some("read") => {
+            let item = object(value)?;
+            for record in array(field(item, "records")?)? {
+                validate_record(record)?;
             }
-            Ok(())
+            // The applied revision the host served the page at, when it
+            // tracks revisions: a later read on a lagging replica floors here.
+            match item.get("applied") {
+                None | Some(Value::Null) => Ok(()),
+                Some(applied) => validate_revision(applied),
+            }
         }
         Some("children_page") => validate_children_page(value),
         Some("commit") => validate_commit_result(value),
@@ -427,12 +433,16 @@ mod tests {
     #[test]
     fn hosted_http_validation_accepts_empty_record_values() -> serde_json::Result<()> {
         let commit_id = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-        let response = format!(
-            r#"[{{"sequence":"0","value":"","commitId":"{commit_id}","committedAtMicros":"1000","keys":[],"attributes":[]}}]"#
+        let record = format!(
+            r#"{{"sequence":"0","value":"","commitId":"{commit_id}","committedAtMicros":"1000","keys":[],"attributes":[]}}"#
         );
+        let response = format!(r#"{{"records":[{record}]}}"#);
 
         assert!(super::validate("read", &json_fixture(&response)?).is_ok());
-        let missing_time = format!(r#"[{{"sequence":"0","value":"","commitId":"{commit_id}"}}]"#);
+        // Negative control: the pre-revision bare record array is refused.
+        assert!(super::validate("read", &json_fixture(&format!("[{record}]"))?).is_err());
+        let missing_time =
+            format!(r#"{{"records":[{{"sequence":"0","value":"","commitId":"{commit_id}"}}]}}"#);
         assert!(super::validate("read", &json_fixture(&missing_time)?).is_err());
         Ok(())
     }

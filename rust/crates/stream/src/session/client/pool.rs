@@ -397,6 +397,11 @@ impl Pool {
                     .map(wire_codec::revision_from_wire)
                     .transpose()
                 {
+                    // An open that does not prove the route's minimum, including
+                    // one carrying no applied revision, serves nothing.
+                    Ok(applied) if !Self::proves(&route.kind, applied.as_ref()) => {
+                        Some(StreamError::InvalidResponse)
+                    }
                     // Every open, including a resume on another replica, raises the floor.
                     Ok(applied) => {
                         if let Some(applied) = applied {
@@ -511,6 +516,17 @@ impl Pool {
         }
     }
     /// Accept an Open reply that resumes exactly where the route left off.
+    /// Whether `applied` covers every entry of the route's minimum cut. No
+    /// minimum is always proven; a missing revision proves no minimum.
+    fn proves(kind: &Kind, applied: Option<&crate::Revision>) -> bool {
+        match kind {
+            Kind::Follow(follow) if !follow.at_least.is_empty() => {
+                wire_codec::cut_from_wire(follow.at_least.clone())
+                    .is_ok_and(|minimum| minimum.proven_by(applied))
+            }
+            _ => true,
+        }
+    }
     fn opened(
         route: &mut Route,
         id: u64,

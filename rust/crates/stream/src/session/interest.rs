@@ -393,6 +393,7 @@ impl<P: StreamProvider + ?Sized> Follow<P> {
                 );
                 if !self.opened {
                     self.opened = true;
+                    let applied = crate::revision::captured(&*self.provider, applied).await?;
                     return Ok(Event::Opened(
                         self.preceding,
                         applied.as_ref().map(wire_codec::revision_to_wire),

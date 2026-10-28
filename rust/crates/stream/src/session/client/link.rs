@@ -142,9 +142,20 @@ impl Pool {
             opaque,
             preceding,
         } = route.progress.subscription()?;
+        let served = &self
+            .links
+            .get(&route.node)
+            .ok_or(StreamError::Unavailable)?
+            .served;
         if let Kind::Follow(follow) = &mut route.kind {
             follow.preceding_commit_id =
                 preceding.map_or_else(Bytes::new, |id| Bytes::copy_from_slice(&id));
+            // The route keeps the whole minimum it sends, so its open is
+            // checked against exactly that cut. Only a Streams source carries
+            // the stream floor; another source keeps its explicit minimum.
+            if wire_codec::session::tracks_revisions(follow) {
+                self.revisions.raise_uncovered(&mut follow.at_least, served);
+            }
         }
         route.received = next;
         route.received_opaque = opaque.clone().into();
@@ -165,7 +176,7 @@ impl Pool {
                 .follows_from_same_subscriber(&route.observation);
         }
         let revision = link.revision.checked_add(1).ok_or(StreamError::Capacity)?;
-        let mut subscription = wire::SessionSubscription {
+        let subscription = wire::SessionSubscription {
             channel: Some(wire::SessionChannel {
                 channel_id: id,
                 generation: route.generation,
@@ -178,10 +189,6 @@ impl Pool {
             credential: route.credential,
             filter: route.filter.clone(),
         };
-        if let Some(Kind::Follow(follow)) = &mut subscription.kind {
-            self.revisions
-                .raise_uncovered(&mut follow.at_least, &link.served);
-        }
         let value = frame(
             0,
             0,

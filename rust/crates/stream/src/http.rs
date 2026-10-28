@@ -321,6 +321,10 @@ impl StreamProvider for HttpStream {
             None | Some(serde_json::Value::Null) => None,
             Some(revision) => Some(parse_revision(revision)?),
         };
+        // A recovered write floors later reads exactly like its lost reply would have.
+        if let Some(revision) = &revision {
+            self.revisions()?.observe(revision);
+        }
         Ok(Some(IdempotencyObservation {
             idempotency_key: observed,
             request_digest,
@@ -364,18 +368,22 @@ impl StreamProvider for HttpStream {
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         let revisions = self.revisions()?;
+        let minimum = revisions.floor(&crate::RevisionCut::default());
         let body = wire::TailRequest {
             path: path.to_string(),
-            at_least: wire_codec::cut_to_wire(&revisions.floor(&crate::RevisionCut::default())),
+            at_least: wire_codec::cut_to_wire(&minimum),
             ..Default::default()
         };
         let value = self
             .request("tail", body.encode_to_vec())
             .await
             .inspect_err(|error| revisions.refused(error))?;
-        if let Some(applied) = value.get("applied").filter(|value| !value.is_null()) {
-            revisions.observe(&parse_revision(applied)?);
-        }
+        let applied = value
+            .get("applied")
+            .filter(|value| !value.is_null())
+            .map(parse_revision)
+            .transpose()?;
+        revisions.served(&minimum, applied.as_ref())?;
         parse_u64(field(&value, "tail")?)
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {

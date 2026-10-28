@@ -54,6 +54,13 @@ export class StreamSessions {
     if (revision !== undefined) this.#inner.observeRevision(toBinary(RevisionSchema, create(RevisionSchema, revision)));
   }
 
+  /** Accepts a direct read or tail reply served against `minimum`: its applied revision must prove it, then raises the floor. */
+  served(minimum: readonly Revision[], applied: Revision | undefined): void {
+    const encode = (revision: Revision) => toBinary(RevisionSchema, create(RevisionSchema, revision));
+    try { this.#inner.servedRevision(minimum.map(encode), applied === undefined ? undefined : encode(applied)); }
+    catch (error) { throw streamError(error, "session"); }
+  }
+
   /** Drops the floor after an authority refused it as foreign. */
   refused(error: unknown): void {
     if (error instanceof StreamError && error.code === "revision_foreign") this.#inner.revisionRefused();

@@ -64,6 +64,39 @@ impl WasmSession {
         Ok(())
     }
 
+    /// Accepts a direct read or tail reply: `applied` (an encoded `Revision`,
+    /// absent when the reply carried none) must prove the encoded `minimum`
+    /// the request sent, and then raises the floor.
+    #[wasm_bindgen(js_name = servedRevision)]
+    pub fn served_revision(
+        &self,
+        minimum: js_sys::Array,
+        applied: Option<Box<[u8]>>,
+    ) -> Result<(), JsValue> {
+        let minimum = minimum
+            .iter()
+            .map(|entry| {
+                use wasm_bindgen::JsCast as _;
+                let bytes = entry
+                    .dyn_into::<js_sys::Uint8Array>()
+                    .map_err(|_| js_error(StreamError::InvalidArgument))?
+                    .to_vec();
+                Ok(decode::<wire::Revision>(&bytes)?)
+            })
+            .collect::<Result<Vec<_>, JsValue>>()?;
+        let minimum = crate::wire_codec::cut_from_wire(minimum).map_err(js_error)?;
+        let applied = applied
+            .map(|bytes| {
+                crate::wire_codec::issued_from_wire(Some(decode::<wire::Revision>(&bytes)?))
+                    .map_err(js_error)
+            })
+            .transpose()?;
+        self.client
+            .revisions()
+            .served(&minimum, applied.as_ref())
+            .map_err(js_error)
+    }
+
     /// Drops the floor after an authority refused it as foreign.
     #[wasm_bindgen(js_name = revisionRefused)]
     pub fn revision_refused(&self) {

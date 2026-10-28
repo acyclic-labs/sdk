@@ -26,6 +26,13 @@ message Revision {
   uint64 index = 3;
 }
 
+// Waits until a provider has applied every revision of `at_least`; the reply
+// is its applied Revision. An injected provider port serves it as the
+// "wait_applied" operation, so a hosted session proves its minimum.
+message WaitAppliedRequest {
+  repeated Revision at_least = 1;
+}
+
 message Record {
   uint64 sequence = 1;
   bytes value = 2;

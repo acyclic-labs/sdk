@@ -13,7 +13,7 @@ import { grpcErrorCode, projectMemoryResponse } from "../generated/wasm/acyclic_
 import { validateAppend } from "./client.js";
 import { encodeHttpRequest, checkedRecord, normalizeWireCommitBytes, readResponseRecords, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError, type StreamFailureCode } from "./types.js";
-import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
+import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation, Revision } from "./types.js";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v1/stream_pb.js";
 import { observeInterceptors, resolveObserver, type AcyclicObserver } from "@acyclic-labs/actors/observe";
@@ -139,7 +139,10 @@ export class GrpcStreamProvider implements StreamProvider {
     const request = fromBinary(wire.InspectIdempotencyRequestSchema, wireInspectIdempotencyRequest(key));
     const response = await this.#call("inspect_idempotency", () => this.#client.inspectIdempotency(request));
     if (response.observation !== undefined && !sameBytes(response.observation.idempotencyKey, key)) throw new StreamError("invalid_response", "idempotency response names another retry identity");
-    return this.#project("inspect_idempotency", toBinary(wire.InspectIdempotencyResponseSchema, response));
+    const observation: IdempotencyObservation | undefined = this.#project("inspect_idempotency", toBinary(wire.InspectIdempotencyResponseSchema, response));
+    // A recovered write floors later reads exactly like its lost reply would have.
+    this.#sessions.observe(observation?.revision);
+    return observation;
   }
   async head(path: string): Promise<import("./types.js").PathHead> {
     const request = { kind: "head" as const, path };
@@ -149,9 +152,10 @@ export class GrpcStreamProvider implements StreamProvider {
   }
   async tail(path: string): Promise<bigint> {
     await validateWireRequest({ kind: "tail", path });
-    const request = wireRequest({ kind: "tail", path, atLeast: this.#sessions.revisionFloor() });
+    const atLeast = this.#sessions.revisionFloor();
+    const request = wireRequest({ kind: "tail", path, atLeast });
     const response = await this.#call("tail", () => this.#client.tail(fromBinary(wire.TailRequestSchema, request)));
-    this.#sessions.observe(response.applied);
+    this.#sessions.served(atLeast, response.applied);
     return response.tail;
   }
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> {
@@ -177,8 +181,9 @@ export class GrpcStreamProvider implements StreamProvider {
     await validateWireRequest(request);
     const controller = new AbortController();
     try {
-      const input = wireRequest({ ...request, atLeast: this.#sessions.revisionFloor() });
-      yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, input), { signal: controller.signal }), request.from, request.limit);
+      const atLeast = this.#sessions.revisionFloor();
+      const input = wireRequest({ ...request, atLeast });
+      yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, input), { signal: controller.signal }), request.from, request.limit, undefined, atLeast);
     } finally { controller.abort(); }
   }
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
@@ -194,11 +199,14 @@ export class GrpcStreamProvider implements StreamProvider {
     yield* this.#sessions.follow(path, authored);
   }
   async *#frames(operation: string, frames: AsyncIterable<wire.ReadResponse>, next: bigint,
-    remaining?: number, signal?: AbortSignal): AsyncIterable<EncodedRecord> {
+    remaining?: number, signal?: AbortSignal, atLeast?: readonly Revision[]): AsyncIterable<EncodedRecord> {
+    // The first frame carries the read's applied revision; it must prove the minimum sent.
+    let minimum = atLeast;
     try {
       for await (const response of frames) {
         if (signal?.aborted) return;
-        this.#sessions.observe(response.applied);
+        if (minimum !== undefined) { this.#sessions.served(minimum, response.applied); minimum = undefined; }
+        else this.#sessions.observe(response.applied);
         const values = readResponseRecords(response);
         if (remaining !== undefined && values.length > remaining) throw new StreamError("invalid_response", "read exceeds requested limit");
         const records = values.map((value, index) => checkedRecord(value, next + BigInt(index)));
@@ -209,6 +217,8 @@ export class GrpcStreamProvider implements StreamProvider {
           yield record;
         }
       }
+      // A reply that ends before its first frame proves no minimum.
+      if (minimum !== undefined && !signal?.aborted) this.#sessions.served(minimum, undefined);
     } catch (error) {
       if (signal?.aborted) return;
       const failure = providerError(error, operation);

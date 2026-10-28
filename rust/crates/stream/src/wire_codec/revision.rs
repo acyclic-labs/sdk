@@ -55,15 +55,16 @@ pub async fn tail_response<P: crate::StreamProvider + ?Sized>(
 ) -> Result<wire::TailResponse, StreamError> {
     let path = crate::StreamPath::new(request.path)?;
     let at_least = cut_from_wire(request.at_least)?;
-    let applied = crate::revision::served(provider, &at_least)
-        .await?
-        .as_ref()
-        .map(revision_to_wire);
+    let waited = crate::revision::served(provider, &at_least).await?;
     if !request.accepted {
+        let tail = provider.tail(path).await?;
         return Ok(wire::TailResponse {
-            tail: provider.tail(path).await?,
+            tail,
             durable: None,
-            applied,
+            applied: crate::revision::captured(provider, waited)
+                .await?
+                .as_ref()
+                .map(revision_to_wire),
         });
     }
     let durable = match request.durable_through {
@@ -79,6 +80,9 @@ pub async fn tail_response<P: crate::StreamProvider + ?Sized>(
     Ok(wire::TailResponse {
         tail: watermarks.accepted,
         durable: Some(durable.unwrap_or(watermarks.durable)),
-        applied,
+        applied: crate::revision::captured(provider, waited)
+            .await?
+            .as_ref()
+            .map(revision_to_wire),
     })
 }

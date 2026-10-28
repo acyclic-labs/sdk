@@ -613,7 +613,7 @@ describe("website Stream contract", () => {
       const route = new URL(String(input)).pathname.split("/").pop();
       if (route === "tail") return new Response('{"tail":"0"}');
       requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-      return new Response("[]");
+      return new Response('{"records":[]}');
     }, async () => {
       const provider = new DefaultStreamProvider({ endpoint: "https://example.test", token: "x" });
       const next = provider.read("events", options)[Symbol.asyncIterator]().next();
@@ -815,7 +815,7 @@ describe("website Stream contract", () => {
     expect(localReads).toBe(1);
 
     let hostedReads = 0;
-    const remote = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => new Response(new URL(String(input)).pathname.endsWith("/tail") ? '{"tail":"0"}' : "[]") });
+    const remote = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => new Response(new URL(String(input)).pathname.endsWith("/tail") ? '{"tail":"0"}' : '{"records":[]}') });
     const hostedOptions = { get from() { hostedReads += 1; return 0n; }, limit: 1 };
     for await (const _record of remote.read("events", hostedOptions)) { /* consume */ }
     expect(hostedReads).toBe(1);
@@ -940,9 +940,9 @@ describe("website Stream contract", () => {
   });
 
   test("hosted reads keep the canonical cursor contiguous", async () => {
-    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(JSON.stringify([{
-      sequence: "1", value: "AQ==", commitId: encodedCommitId,
-    }])) });
+    const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => new URL(String(input)).pathname.endsWith("/tail") ? new Response('{"tail":"2"}') : new Response(JSON.stringify({ records: [{
+      sequence: "1", value: "AQ==", commitId: encodedCommitId, committedAtMicros: "1000", keys: [], attributes: [],
+    }] })) });
     await expect(provider.read("events", { from: 0n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "invalid_response" });
   });
 
@@ -951,7 +951,7 @@ describe("website Stream contract", () => {
     const provider = new HttpStreamProvider({ endpoint: "https://example.test", token: "x", fetcher: async input => {
       const route = new URL(String(input)).pathname.split("/").pop();
       routes.push(route!);
-      return route === "read" ? new Response("[]") : new Response('{"tail":"1"}');
+      return route === "read" ? new Response('{"records":[]}') : new Response('{"tail":"1"}');
     } });
     await expect(provider.read("events", { from: 2n, limit: 1 })[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: "out_of_range" });
     expect(routes).toEqual(["tail"]);
@@ -1067,11 +1067,11 @@ describe("website Stream contract", () => {
   test("Rust owns HTTP scalar projection after validating the response schema", async () => {
     await ensureStreamWasm();
     const maximum = 0xffff_ffff_ffff_ffffn;
-    const record = decodeHttpResponse("read", JSON.stringify([{
+    const { records: record } = decodeHttpResponse("read", JSON.stringify({ records: [{
       sequence: maximum.toString(), value: "AQI=", commitId: encodedCommitId, committedAtMicros: maximum.toString(), keys: [], attributes: [],
     }, {
       sequence: (maximum - 1n).toString(), value: "", commitId: encodedCommitId, committedAtMicros: "1000", keys: [], attributes: [],
-    }])) as { readonly sequence: bigint; readonly value: Uint8Array; readonly commitId: Uint8Array; readonly committedAtMicros: bigint }[];
+    }] })) as { readonly records: { readonly sequence: bigint; readonly value: Uint8Array; readonly commitId: Uint8Array; readonly committedAtMicros: bigint }[] };
     expect(record[0]?.sequence).toBe(maximum);
     expect(record[0]?.value).toEqual(new Uint8Array([1, 2]));
     expect(record[0]?.commitId).toEqual(new Uint8Array(32).fill(7));

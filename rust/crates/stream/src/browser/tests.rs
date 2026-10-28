@@ -382,3 +382,32 @@ async fn browser_wave1_conformance() {
         .await
         .unwrap();
 }
+
+#[wasm_bindgen_test]
+async fn every_opener_of_one_database_proves_the_others_revisions() {
+    let database = name();
+    let writer = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("writer");
+    let reader = BrowserStream::open(&database, BrowserStreamLimits::default())
+        .await
+        .expect("reader");
+    let Ok(AppendOutcome::Committed(receipt)) = append(&writer, "events").await else {
+        panic!("append");
+    };
+    let applied = reader
+        .wait_applied(&crate::RevisionCut::of(receipt.revision.clone()))
+        .await
+        .expect("shared identity");
+    assert!(applied.same_authority(&receipt.revision) && applied.index >= receipt.revision.index);
+    // Negative control: another database mints its own identity.
+    let other = BrowserStream::open(&name(), BrowserStreamLimits::default())
+        .await
+        .expect("other");
+    assert_eq!(
+        other
+            .wait_applied(&crate::RevisionCut::of(receipt.revision))
+            .await,
+        Err(StreamError::RevisionForeign)
+    );
+}

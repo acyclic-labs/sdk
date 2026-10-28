@@ -135,16 +135,19 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             let request = request.into_inner();
             let request =
                 wire_codec::read_from_wire(request).map_err(|error| error_status(&error))?;
-            let mut applied = crate::revision::served(&*self.provider, &request.at_least)
+            let waited = crate::revision::served(&*self.provider, &request.at_least)
                 .await
-                .map_err(|error| error_status(&error))?
-                .as_ref()
-                .map(wire_codec::revision_to_wire);
+                .map_err(|error| error_status(&error))?;
             let records = self
                 .provider
                 .read(request)
                 .await
                 .map_err(|error| error_status(&error))?;
+            let mut applied = crate::revision::captured(&*self.provider, waited)
+                .await
+                .map_err(|error| error_status(&error))?
+                .as_ref()
+                .map(wire_codec::revision_to_wire);
             let mut records = records.peekable();
             if std::pin::Pin::new(&mut records).peek().await.is_none() {
                 // An empty read still reports the revision it was served at.

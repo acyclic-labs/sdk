@@ -84,6 +84,10 @@ impl StreamProvider for Client {
             {
                 return Err(StreamError::Unavailable);
             }
+            // A recovered write floors later reads exactly like its lost reply would have.
+            if let Some(revision) = observation.as_ref().and_then(|o| o.revision.as_ref()) {
+                self.revisions.observe(revision);
+            }
             Ok(observation)
         })
     }
@@ -103,11 +107,10 @@ impl StreamProvider for Client {
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         let session = self.session()?;
         let revisions = session.revisions();
+        let minimum = revisions.floor(&crate::RevisionCut::default());
         let body = wire::TailRequest {
             path: path.to_string(),
-            at_least: crate::wire_codec::cut_to_wire(
-                &revisions.floor(&crate::RevisionCut::default()),
-            ),
+            at_least: crate::wire_codec::cut_to_wire(&minimum),
             ..Default::default()
         };
         let response = self
@@ -117,9 +120,11 @@ impl StreamProvider for Client {
             .await
             .inspect_err(|error| revisions.refused(error))?;
         decode_response(response, |response| {
-            if let Some(applied) = response.applied {
-                revisions.observe(&crate::wire_codec::issued_from_wire(Some(applied))?);
-            }
+            let applied = response
+                .applied
+                .map(|applied| crate::wire_codec::issued_from_wire(Some(applied)))
+                .transpose()?;
+            revisions.served(&minimum, applied.as_ref())?;
             Ok(response.tail)
         })
     }

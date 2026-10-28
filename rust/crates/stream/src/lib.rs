@@ -169,7 +169,7 @@ pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
     ("tail", "tail"),
     ("append", "append"),
     ("fork", "fork"),
-    ("read", "records"),
+    ("read", "read"),
     ("children/page", "children_page"),
     ("commit", "commit"),
     ("commits/read", "envelope"),

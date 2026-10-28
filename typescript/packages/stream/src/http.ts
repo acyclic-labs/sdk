@@ -33,7 +33,13 @@ export class HttpStreamProvider implements StreamProvider {
     this.#maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024;
     if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
   }
-  async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> { const input = wireInspectIdempotencyRequest(key); return this.#request("idempotency/inspect", await encodeHttpRequest("idempotency/inspect", input)); }
+  async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
+    const input = wireInspectIdempotencyRequest(key);
+    const observation: IdempotencyObservation | undefined = await this.#request("idempotency/inspect", await encodeHttpRequest("idempotency/inspect", input));
+    // A recovered write floors later reads exactly like its lost reply would have.
+    this.#sessions.observe(observation?.revision);
+    return observation;
+  }
   async tail(path: string): Promise<Sequence> { return this.#tail(path); }
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult> { const records = values.map(value => value.slice()); const authored = options === undefined ? undefined : structuredClone(options); await validateAppend(path, records, authored); const input = wireAppendRequest(path, records, authored); const result = await this.#request("append", await encodeHttpRequest("append", input)); if (result.ok) this.#sessions.observe(result.revision); return result; }
   async fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt> { const authored = options === undefined ? undefined : structuredClone(options); await validateWireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const input = wireRequest({ kind: "fork", source, destination, ...(authored === undefined ? {} : { options: authored }) }); const receipt = await this.#request("fork", await encodeHttpRequest("fork", input)); this.#sessions.observe(receipt.revision); return receipt; }
@@ -97,8 +103,12 @@ export class HttpStreamProvider implements StreamProvider {
     // Stream tails are monotonic. Validate before reading so a concurrent
     // append cannot turn an invalid empty-read cursor into a valid one.
     if (checkEmptyCursor && from > await this.#tail(path, signal)) throw new StreamError("out_of_range", "read cursor is beyond the stream tail");
-    const input = wireRequest({ kind: "read", path, from, limit, atLeast: this.#sessions.revisionFloor() });
-    const records = await this.#request("read", await encodeHttpRequest("read", input), signal);
+    const atLeast = this.#sessions.revisionFloor();
+    const input = wireRequest({ kind: "read", path, from, limit, atLeast });
+    const { records, applied } = await this.#request("read", await encodeHttpRequest("read", input), signal);
+    // The page's own served revision must prove the minimum sent, and then
+    // floors later reads: a lagging replica cannot serve older data.
+    this.#sessions.served(atLeast, applied);
     // A canonical read is a contiguous page beginning at the requested
     // cursor.  Checking this at the transport boundary prevents a malformed
     // hosted response from making follow skip records or move its cursor
@@ -119,9 +129,10 @@ export class HttpStreamProvider implements StreamProvider {
   }
   async #tail(path: string, signal?: AbortSignal): Promise<Sequence> {
     await validateWireRequest({ kind: "tail", path });
-    const input = wireRequest({ kind: "tail", path, atLeast: this.#sessions.revisionFloor() });
+    const atLeast = this.#sessions.revisionFloor();
+    const input = wireRequest({ kind: "tail", path, atLeast });
     const { tail, applied } = await this.#request("tail", await encodeHttpRequest("tail", input), signal);
-    this.#sessions.observe(applied);
+    this.#sessions.served(atLeast, applied);
     return tail;
   }
   #request<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal): Promise<HttpResponseFor<Route>> {

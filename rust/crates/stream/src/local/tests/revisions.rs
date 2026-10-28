@@ -69,9 +69,13 @@ async fn a_lagging_read_parks_until_its_minimum_applies() -> Result {
 
 #[tokio::test]
 async fn a_foreign_token_is_refused_and_an_own_token_survives_reopen() -> Result {
-    let directory = tempfile::tempdir()?;
+    let outer = tempfile::tempdir()?;
+    let directory = outer.path().join("store");
+    // Another spelling of the same directory.
+    let alias = outer.path().join("side").join("..").join("store");
+    std::fs::create_dir(outer.path().join("side"))?;
     let key = crate::IdempotencyKey::unique();
-    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    let provider = LocalStream::open(&directory, LocalStreamLimits::default()).await?;
     let issued = append(&provider, key.clone()).await?;
     let foreign = crate::AppliedRevisions::in_process().at(0);
     assert_eq!(
@@ -82,8 +86,9 @@ async fn a_foreign_token_is_refused_and_an_own_token_survives_reopen() -> Result
     );
     drop(provider);
 
-    // A reopen keeps the incarnation, and a replay carries the original revision.
-    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    // A reopen, even through another path spelling, keeps the scope and the
+    // incarnation, and a replay carries the original revision.
+    let provider = LocalStream::open(&alias, LocalStreamLimits::default()).await?;
     let served = provider
         .wait_applied(&crate::RevisionCut::of(issued.clone()))
         .await?;
@@ -93,14 +98,38 @@ async fn a_foreign_token_is_refused_and_an_own_token_survives_reopen() -> Result
 
     // Negative control: wiping the same store issues a new incarnation, which
     // refuses the earlier token instead of matching its reused index.
-    for entry in std::fs::read_dir(directory.path())? {
+    for entry in std::fs::read_dir(&directory)? {
         std::fs::remove_file(entry?.path())?;
     }
-    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    let provider = LocalStream::open(&directory, LocalStreamLimits::default()).await?;
     append(&provider, crate::IdempotencyKey::unique()).await?;
     assert_eq!(
         provider.wait_applied(&crate::RevisionCut::of(issued)).await,
         Err(StreamError::RevisionForeign)
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_run_that_issued_revisions_ahead_of_a_flush_rotates_its_incarnation() -> Result {
+    let directory = tempfile::tempdir()?;
+    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    // Negative control: a device-flushed write keeps the record in place.
+    let flushed = append(&provider, crate::IdempotencyKey::unique()).await?;
+    assert!(directory.path().join(INCARNATION_FILE).exists());
+    // A deferred write's revision can be issued before its frame is durable;
+    // a crash could lose it and recovery would reissue its index.
+    let deferred =
+        crate::deferring_durability(append(&provider, crate::IdempotencyKey::unique())).await?;
+    assert!(!directory.path().join(INCARNATION_FILE).exists());
+    drop(provider);
+
+    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    for issued in [flushed, deferred] {
+        assert_eq!(
+            provider.wait_applied(&crate::RevisionCut::of(issued)).await,
+            Err(StreamError::RevisionForeign)
+        );
+    }
     Ok(())
 }

@@ -92,6 +92,17 @@ impl RevisionCut {
             .is_some_and(|held| held.same_authority(revision) && held.index >= revision.index)
     }
 
+    /// Whether `applied` proves every participant of this minimum. An empty
+    /// minimum is always proven; a missing revision proves no minimum.
+    #[must_use]
+    pub fn proven_by(&self, applied: Option<&Revision>) -> bool {
+        self.iter().all(|minimum| {
+            applied.is_some_and(|applied| {
+                applied.same_authority(minimum) && applied.index >= minimum.index
+            })
+        })
+    }
+
     /// Removes one scope's floor, after its authority refused the incarnation.
     pub fn forget(&mut self, scope: &RevisionScope) {
         self.0.retain(|entry| &entry.scope != scope);
@@ -137,6 +148,24 @@ impl RevisionTracker {
         if cut.get(&revision.scope) != Some(revision) {
             cut.observe(revision.clone());
         }
+    }
+
+    /// Accepts a reply served against the `minimum` this client sent: the
+    /// reply's applied revision must prove it, so a peer that ignored the
+    /// minimum cannot return older data as success. The revision then raises
+    /// the floor. Every direct read and tail shares this one check.
+    pub fn served(
+        &self,
+        minimum: &RevisionCut,
+        applied: Option<&Revision>,
+    ) -> Result<(), StreamError> {
+        if !minimum.proven_by(applied) {
+            return Err(StreamError::InvalidResponse);
+        }
+        if let Some(applied) = applied {
+            self.observe(applied);
+        }
+        Ok(())
     }
 
     /// Records an append's committed revision.
@@ -211,6 +240,20 @@ pub async fn served<P: crate::StreamProvider + ?Sized>(
     }
 }
 
+/// The revision to report for data captured after [`served`] returned
+/// `waited`: sampled again once the capture is pinned, so it covers every
+/// write the captured data includes, and still proves the minimum `served`
+/// waited for. Every server read, tail and open reports through this.
+pub async fn captured<P: crate::StreamProvider + ?Sized>(
+    provider: &P,
+    waited: Option<Revision>,
+) -> Result<Option<Revision>, StreamError> {
+    match waited {
+        None => Ok(None),
+        Some(_) => served(provider, &RevisionCut::default()).await,
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Applied {
     index: u64,
@@ -271,6 +314,14 @@ impl AppliedRevisions {
         hash.update(b"\0");
         hash.update(location);
         RevisionScope::new(hash.finalize().to_vec())
+    }
+
+    /// A staging authority with this identity, applied through nothing yet.
+    /// A provider that applies before it persists issues from the staging
+    /// authority and advances this one only once its writes are durable.
+    #[must_use]
+    pub fn staging(&self) -> Self {
+        Self::new(self.scope.clone(), self.incarnation, 0)
     }
 
     /// The authority's scope.

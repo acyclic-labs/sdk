@@ -223,6 +223,16 @@ impl WasmStream {
                 let head = self.provider.head(path).await.map_err(js_error)?;
                 wire_codec::head_to_wire(head).encode_to_vec()
             }
+            "wait_applied" => {
+                let request = decode::<wire::WaitAppliedRequest>(input)?;
+                let at_least = wire_codec::cut_from_wire(request.at_least).map_err(js_error)?;
+                let applied = self
+                    .provider
+                    .wait_applied(&at_least)
+                    .await
+                    .map_err(js_error)?;
+                wire_codec::revision_to_wire(&applied).encode_to_vec()
+            }
             "tail" => {
                 let request = decode::<wire::TailRequest>(input)?;
                 wire_codec::tail_response(&*self.provider, request)

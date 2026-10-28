@@ -49,6 +49,8 @@ export type Sequence = WireRecord["sequence"];
 export type Revision = PublicWire<WireRevision>;
 /** A stream tail and the applied revision the host served it at, when it tracks revisions. */
 export interface TailResult { readonly tail: Sequence; readonly applied?: Revision }
+/** One read page and the applied revision the host served it at, when it tracks revisions. */
+export interface ReadResult { readonly records: readonly EncodedRecord[]; readonly applied?: Revision }
 /** Opaque stable 32-byte commit identity. */
 export type CommitId = Uint8Array & { readonly [streamIdentityBrand]: "CommitId" };
 /** Opaque non-empty caller retry identity, bounded by the canonical Stream contract. */

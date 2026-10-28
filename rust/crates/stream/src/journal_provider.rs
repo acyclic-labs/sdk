@@ -362,6 +362,10 @@ impl JournalStream {
                     | StreamError::InvalidResponse
                     | StreamError::Unsupported)
             );
+        if cache.failed {
+            // No write can advance a failed cache: parked reads end as unavailable.
+            cache.provider.revisions.close();
+        }
         if published {
             cache.cursor += 1;
             cache.bytes = bytes.ok_or(StreamError::Capacity)?;

@@ -47,6 +47,8 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
         syncing: false,
         root: PathBuf::new(),
         torn_tail: None,
+        // The model journal has no root and no incarnation record to forget.
+        volatile: true,
         _ownership_anchor: None,
         #[cfg(feature = "test-support")]
         flushed: 0,

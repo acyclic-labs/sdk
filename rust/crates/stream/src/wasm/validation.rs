@@ -598,6 +598,10 @@ mod http {
             _ => return Err("invalid idempotency outcome type"),
         }
         set(&result, "outcome", &outcome_result.into())?;
+        // A recovered commit carries no nested receipt: its revision lives here.
+        if let Some(revision) = item.get("revision").filter(|value| !value.is_null()) {
+            set(&result, "revision", &revision_js(revision)?)?;
+        }
         Ok(result.into())
     }
 
@@ -658,7 +662,19 @@ mod http {
             Some("head") => head_js(value),
             Some("append") => append_result_js(value),
             Some("fork") => fork_receipt_js(value),
-            Some("records") => array_js(value, record_js),
+            Some("read") => {
+                let item = object(value)?;
+                let result = Object::new();
+                set(
+                    &result,
+                    "records",
+                    &array_js(field(item, "records")?, record_js)?,
+                )?;
+                if let Some(applied) = item.get("applied").filter(|value| !value.is_null()) {
+                    set(&result, "applied", &revision_js(applied)?)?;
+                }
+                Ok(result.into())
+            }
             Some("children_page") => children_page_js(value),
             Some("commit") => commit_result_js(value),
             Some("envelope") => envelope_js(value),

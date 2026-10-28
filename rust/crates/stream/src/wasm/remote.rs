@@ -89,6 +89,10 @@ impl StreamProvider for Remote {
         if observed.as_ref().is_some_and(|o| o.idempotency_key != key) {
             return Err(StreamError::Unavailable);
         }
+        // A recovered write floors later reads exactly like its lost reply would have.
+        if let Some(revision) = observed.as_ref().and_then(|o| o.revision.as_ref()) {
+            self.sessions.revisions().observe(revision);
+        }
         Ok(observed)
     }
     async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
@@ -108,6 +112,7 @@ impl StreamProvider for Remote {
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         let revisions = self.sessions.revisions();
+        let minimum = revisions.floor(&crate::RevisionCut::default());
         let response = self
             .service()
             .tail(
@@ -115,9 +120,7 @@ impl StreamProvider for Remote {
                     path: path.to_string(),
                     accepted: false,
                     durable_through: None,
-                    at_least: wire_codec::cut_to_wire(
-                        &revisions.floor(&crate::RevisionCut::default()),
-                    ),
+                    at_least: wire_codec::cut_to_wire(&minimum),
                 })
                 .await?,
             )
@@ -125,9 +128,11 @@ impl StreamProvider for Remote {
             .map_err(|e| wire_codec::status(&e))
             .inspect_err(|error| revisions.refused(error))?
             .into_inner();
-        if let Some(applied) = response.applied {
-            revisions.observe(&wire_codec::issued_from_wire(Some(applied))?);
-        }
+        let applied = response
+            .applied
+            .map(|applied| wire_codec::issued_from_wire(Some(applied)))
+            .transpose()?;
+        revisions.served(&minimum, applied.as_ref())?;
         Ok(response.tail)
     }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {

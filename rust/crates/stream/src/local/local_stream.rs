@@ -65,8 +65,6 @@ impl LocalStream {
         ownership_anchor: Option<OwnershipAnchor>,
     ) -> Result<Self, LocalStreamError> {
         validate_limits(limits)?;
-        let scope =
-            crate::AppliedRevisions::storage_scope("local", root.as_os_str().as_encoded_bytes());
         let (recovered, mut receiver) = mpsc::channel(REPLAY_PIPELINE_COMMANDS);
         #[cfg(test)]
         let submitted_root = root.clone();
@@ -102,8 +100,8 @@ impl LocalStream {
         while let Some(recovered) = receiver.recv().await {
             let replayed = match recovered {
                 // Arrives first, before any state is installed or replayed.
-                Recovered::Incarnation(incarnation) => {
-                    provider = provider.with_authority(scope.clone(), incarnation);
+                Recovered::Incarnation(scope, incarnation) => {
+                    provider = provider.with_authority(scope, incarnation);
                     continue;
                 }
                 Recovered::Validate(complete) => {

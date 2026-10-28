@@ -138,9 +138,11 @@ impl PostgresStream {
         // Both planning and recorded admission use the transaction's database
         // clock. A process wall-clock skew cannot override SQL admission.
         // Every process replays the namespace journal in one order, so all
-        // replicas share its scope, its generation and revision indexes.
-        let mut location = database.as_bytes().to_vec();
-        location.push(0);
+        // replicas share its scope, its generation and revision indexes. The
+        // scope comes from the database's own generation row, never from
+        // connection settings: replicas that reach one database through
+        // different credentials, hosts or parameters share one scope.
+        let mut location = generation.to_vec();
         location.extend_from_slice(namespace.as_bytes());
         let core = MemoryStream::new_with_commit_clock(
             MemoryLimits::default(),
