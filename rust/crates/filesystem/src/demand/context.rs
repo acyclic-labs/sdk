@@ -58,14 +58,15 @@ mod lock_probe;
 mod model_checking;
 
 pub(crate) struct CaptureTransientCustody {
-    #[cfg(any(test, feature = "native-watch"))]
-    header: crate::NativeAllocation,
-    // Last: worker/packet custody and its header retire before notification.
     released: acyclic_native_runtime::OwnershipReleaseSignal<CaptureRetirement>,
 }
 
 struct CaptureRetirement {
     retained: AtomicU64,
+    // The final packet may drop while the original leaf is locked. Keep both
+    // control guards with the observer, which retires them outside that lock.
+    #[cfg(any(test, feature = "native-watch"))]
+    header: crate::NativeAllocation,
     #[cfg(any(test, feature = "native-watch"))]
     _allocation: crate::NativeAllocation,
 }
@@ -94,13 +95,18 @@ impl CaptureTransientCustody {
         )?;
         let released = acyclic_native_runtime::OwnershipReleaseSignal::new(CaptureRetirement {
             retained: AtomicU64::new(0),
+            header,
             _allocation: allocation,
         });
-        Ok(Arc::new(Self { header, released }))
+        Ok(Arc::new(Self { released }))
     }
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn owns_native_work(&self, work: &crate::NativeMaterializationWork) -> bool {
-        self.header.work().shares_allocation_context(work)
+        self.released
+            .state()
+            .header
+            .work()
+            .shares_allocation_context(work)
     }
     #[cfg(any(test, feature = "native-watch"))]
     pub(crate) fn take_retained_bytes(&self) -> u64 {
