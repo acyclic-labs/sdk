@@ -61,11 +61,11 @@ impl NativeCheckout {
     pub async fn prepare_merge(
         &self,
         theirs: Buffer,
-        maximum_changes: NapiU32,
-        maximum_conflicts: NapiU32,
+        maximum_changes: Option<NapiU32>,
+        maximum_conflicts: Option<NapiU32>,
     ) -> Result<NativeMergePreparation> {
-        let maximum_changes = maximum_changes.into_inner();
-        let maximum_conflicts = maximum_conflicts.into_inner();
+        let maximum_changes = maximum_changes.map(NapiU32::into_inner);
+        let maximum_conflicts = maximum_conflicts.map(NapiU32::into_inner);
 
         let theirs = acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
             &theirs,

@@ -48,19 +48,21 @@ async fn diff_with_accounting<
     store: &S,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
-    maximum_changes: u32,
+    maximum_changes: impl Into<Option<u32>>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Diff<F::Key, F::Value>, KernelOwnedAllocation), FsError> {
+    let maximum_changes = maximum_changes.into();
+
     if before.is_some_and(|id| id.kind != F::kind())
         || after.is_some_and(|id| id.kind != F::kind())
-        || maximum_changes == 0
+        || maximum_changes == Some(0)
     {
         return Err(FsError::InvalidDiff);
     }
     accounting.check()?;
-    let maximum = usize::try_from(maximum_changes).unwrap_or(usize::MAX);
+    let maximum = maximum_changes.map_or(usize::MAX, |maximum| maximum as usize);
     let initial = match (before, after) {
         (Some(left), Some(right)) if left != right => Some(Task::Compare(left, right)),
         (Some(left), None) => Some(Task::Before(left)),
@@ -576,11 +578,13 @@ pub(crate) async fn diff_file_records_with_accounting<S: AsyncObjectStore>(
     store: &S,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
-    maximum_changes: u32,
+    maximum_changes: impl Into<Option<u32>>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Diff<crate::FileId, FileRecord>, KernelOwnedAllocation), FsError> {
+    let maximum_changes = maximum_changes.into();
+
     diff_with_accounting::<S, FileTableFormat, true, true>(
         store,
         before,
@@ -597,11 +601,13 @@ pub(crate) async fn diff_tree_entries_with_accounting<S: AsyncObjectStore>(
     store: &S,
     before: Option<ObjectId>,
     after: Option<ObjectId>,
-    maximum_changes: u32,
+    maximum_changes: impl Into<Option<u32>>,
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Diff<LogicalName, TreeEntry>, KernelOwnedAllocation), FsError> {
+    let maximum_changes = maximum_changes.into();
+
     diff_with_accounting::<S, TreeFormat, true, true>(
         store,
         before,
