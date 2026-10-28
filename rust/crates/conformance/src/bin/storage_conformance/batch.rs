@@ -1,6 +1,10 @@
 //! Ordered partial batch results and durable receipts against actual MinIO IO.
 use super::s3::observed_store::ObservedStore;
-use acyclic_objects::{Blobs, ByteRange, Digest, Put, Store, s3::S3Medium, wire};
+use acyclic_objects::{
+    Blobs, ByteRange, Digest, Put, Store,
+    s3::{Capabilities as S3Capabilities, S3Medium},
+    wire,
+};
 use acyclic_stream::OwnedBytes;
 use object_store::path::Path;
 use std::sync::{
@@ -18,8 +22,14 @@ pub async fn verify(
         body_gets: AtomicUsize::new(0),
         metadata_bytes: AtomicUsize::new(0),
         envelope_creates: AtomicUsize::new(0),
+        multipart_parts: AtomicUsize::new(0),
     });
-    let account = Store::new(S3Medium::new(observed.clone(), prefix.as_ref())).account(b"batch")?;
+    let account = Store::new(S3Medium::new(
+        observed.clone(),
+        prefix.as_ref(),
+        S3Capabilities::REQUIRED,
+    )?)
+    .account(b"batch")?;
     let alpha = OwnedBytes::from_static(b"alpha");
     let beta = OwnedBytes::from_static(b"beta");
     let missing = Digest::of(b"never stored");
@@ -45,7 +55,12 @@ pub async fn verify(
         "each new blob commits exactly one envelope; refusals and replays commit none"
     );
     drop(account);
-    let reopened = Store::new(S3Medium::new(observed, prefix.as_ref())).account(b"batch")?;
+    let reopened = Store::new(S3Medium::new(
+        observed,
+        prefix.as_ref(),
+        S3Capabilities::REQUIRED,
+    )?)
+    .account(b"batch")?;
     for body in [alpha, beta] {
         let object = reopened.get(Digest::of(&body), ByteRange::FULL, 64).await?;
         assert_eq!(object.body().as_ref(), body.as_ref());

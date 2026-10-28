@@ -19,7 +19,10 @@ use acyclic_harness::{
     tool::ToolRegistry,
 };
 use acyclic_harness_client::{AgentCommand, ConnectionOptions};
-use acyclic_objects::{Blobs, MemoryObjects, Store, s3::S3Medium};
+use acyclic_objects::{
+    Blobs, MemoryObjects, Store,
+    s3::{Capabilities as S3Capabilities, S3Medium},
+};
 use acyclic_stream::{BoxProviderStream, StreamProvider};
 use serde_json::Value;
 use std::{sync::Arc, time::Duration};
@@ -92,7 +95,12 @@ pub(super) async fn verify<P: StreamProvider + 'static>(
                 reopen,
                 async || {
                     Ok(Arc::new(
-                        Store::new(S3Medium::new(store.clone(), &prefix)).account(b"endpoint")?,
+                        Store::new(S3Medium::new(
+                            store.clone(),
+                            &prefix,
+                            S3Capabilities::REQUIRED,
+                        )?)
+                        .account(b"endpoint")?,
                     ))
                 },
                 acyclic_fs::EmbeddedCapabilities { durable: true },

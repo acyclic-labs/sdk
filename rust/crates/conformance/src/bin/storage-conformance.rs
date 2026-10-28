@@ -7,7 +7,10 @@ mod filesystem;
 mod host;
 #[path = "storage_conformance/s3.rs"]
 mod s3;
-use acyclic_objects::{Store, s3::S3Medium};
+use acyclic_objects::{
+    Store,
+    s3::{Capabilities as S3Capabilities, S3Medium},
+};
 use acyclic_stream::postgres::PostgresStream;
 use object_store::{
     aws::{AmazonS3Builder, S3ConditionalPut},
@@ -41,7 +44,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .build()?,
     );
     let prefix = Path::from(format!("conformance/{}", uuid::Uuid::new_v4()));
-    let objects = Store::new(S3Medium::new(store.clone(), prefix.as_ref()));
+    let objects = Store::new(S3Medium::new(
+        store.clone(),
+        prefix.as_ref(),
+        S3Capabilities::REQUIRED,
+    )?);
     let filesystem_objects = Arc::new(objects.account(b"filesystem")?);
     let step = Instant::now();
     acyclic_conformance::stream(&acyclic_stream::conformance::Fixture::new(
@@ -72,8 +79,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     PostgresStream::connect(&database, &namespace).await?,
                 )),
                 acyclic_fs::LogicalObjectStore::new(Arc::new(
-                    Store::new(S3Medium::new(store.clone(), prefix.as_ref()))
-                        .account(b"filesystem")?,
+                    Store::new(S3Medium::new(
+                        store.clone(),
+                        prefix.as_ref(),
+                        S3Capabilities::REQUIRED,
+                    )?)
+                    .account(b"filesystem")?,
                 )),
                 acyclic_fs::EmbeddedCapabilities { durable: true },
             ))

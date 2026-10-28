@@ -13,6 +13,36 @@ pub struct ObservedStore {
     pub body_gets: AtomicUsize,
     pub metadata_bytes: AtomicUsize,
     pub envelope_creates: AtomicUsize,
+    pub multipart_parts: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl object_store::multipart::MultipartStore for ObservedStore {
+    async fn create_multipart(&self, path: &Path) -> Result<MultipartId> {
+        self.inner.create_multipart(path).await
+    }
+    async fn put_part(
+        &self,
+        path: &Path,
+        id: &MultipartId,
+        index: usize,
+        bytes: PutPayload,
+    ) -> Result<object_store::multipart::PartId> {
+        let result = self.inner.put_part(path, id, index, bytes).await?;
+        self.multipart_parts.fetch_add(1, Ordering::Relaxed);
+        Ok(result)
+    }
+    async fn complete_multipart(
+        &self,
+        path: &Path,
+        id: &MultipartId,
+        parts: Vec<object_store::multipart::PartId>,
+    ) -> Result<PutResult> {
+        self.inner.complete_multipart(path, id, parts).await
+    }
+    async fn abort_multipart(&self, path: &Path, id: &MultipartId) -> Result<()> {
+        self.inner.abort_multipart(path, id).await
+    }
 }
 
 impl std::fmt::Display for ObservedStore {

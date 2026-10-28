@@ -1,4 +1,8 @@
-use acyclic_objects::{Blobs, ByteRange, Delete, Digest, Put, Store, s3::S3Medium, wire};
+use acyclic_objects::{
+    Blobs, ByteRange, Delete, Digest, Put, Store,
+    s3::{Capabilities as S3Capabilities, S3Medium},
+    wire,
+};
 use acyclic_stream::OwnedBytes;
 use object_store::path::Path;
 use std::{
@@ -14,8 +18,13 @@ pub(super) mod observed_store;
 fn account(
     store: Arc<dyn acyclic_objects::s3::Bucket>,
     prefix: &Path,
-) -> Result<acyclic_objects::Account<S3Medium>, acyclic_objects::Error> {
-    Store::new(S3Medium::new(store, prefix.as_ref())).account(b"storage-conformance")
+) -> Result<acyclic_objects::Account<S3Medium>, Box<dyn std::error::Error>> {
+    Ok(Store::new(S3Medium::new(
+        store,
+        prefix.as_ref(),
+        S3Capabilities::REQUIRED,
+    )?)
+    .account(b"storage-conformance")?)
 }
 
 pub async fn verify(
@@ -23,8 +32,16 @@ pub async fn verify(
     prefix: Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
+    let store = Arc::new(observed_store::ObservedStore {
+        inner: store,
+        body_bytes: AtomicUsize::new(0),
+        body_gets: AtomicUsize::new(0),
+        metadata_bytes: AtomicUsize::new(0),
+        envelope_creates: AtomicUsize::new(0),
+        multipart_parts: AtomicUsize::new(0),
+    });
     acyclic_objects::conformance::verify_medium(
-        &S3Medium::new(store.clone(), prefix.as_ref()),
+        &S3Medium::new(store.clone(), prefix.as_ref(), S3Capabilities::REQUIRED)?,
         "s3",
     )
     .await?;
@@ -40,7 +57,11 @@ pub async fn verify(
     // This exceeds the physical multipart threshold, not merely small fixture bodies.
     let body = OwnedBytes::from(vec![0x5a; 6 * 1024 * 1024 + 17]);
     let digest = Digest::of(&body);
+    let parts_before = store.multipart_parts.load(Ordering::Relaxed);
     left.put(body.clone(), Vec::new()).await?;
+    if store.multipart_parts.load(Ordering::Relaxed) - parts_before != 2 {
+        return Err("step=s3-multipart: expected two successful UploadPart responses; recovery: inspect conditional multipart support and rerun storage-conformance".into());
+    }
     let reopened = account(store.clone(), &prefix)?;
     assert!(matches!(
         reopened.put(body.clone(), Vec::new()).await?,
@@ -98,6 +119,7 @@ async fn cold_ranges(
         body_gets: AtomicUsize::new(0),
         metadata_bytes: AtomicUsize::new(0),
         envelope_creates: AtomicUsize::new(0),
+        multipart_parts: AtomicUsize::new(0),
     });
     let provider = account(observed.clone(), &prefix)?;
     for generation in 1..=8u8 {
