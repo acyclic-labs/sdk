@@ -40,7 +40,8 @@ try {
   assert(await turnText(agents, a, entries[1]) === "echo:again", "prompt turn output differs");
   assert(fixture.requests.length === 2 && fixture.requests[1].request.messages.length === 3,
     `second turn lacks its history: ${describe(fixture.requests.at(-1)?.request.messages)}`);
-  const status = await until(agents, a, "status", records => records.at(-1)?.value.phase === "idle");
+  const status = await until(agents, a, "status", records => records.at(-1)?.value.phase === "idle"
+    && records.at(-1).value.cursor > sent.inbox);
   assert(status.at(-1).value.cursor > sent.inbox, "status cursor does not cover the consumed prompt");
 
   phase("list root agents in bounded pages");
