@@ -139,3 +139,24 @@ fn archive_codec_rejects_paths_links_duplicates_and_truncated_bodies() {
     gzip[last] ^= 1;
     assert!(decode_archive_members(&gzip, "fixture", "0.1.0").is_err());
 }
+
+#[test]
+fn archive_admission_bounds_cover_input_members_and_complete_expansion() {
+    let members = BTreeMap::from([("a".into(), vec![0; 4096]), ("b".into(), vec![1; 8])]);
+    let plain = encode(&members, false);
+    for compressed in [false, true] {
+        let bytes = encode(&members, compressed);
+        let exact = ArchiveLimits { compressed_bytes: bytes.len() as u64,
+            expanded_bytes: plain.len() as u64, member_bytes: 4096, members: 2 };
+        assert_eq!(decode_archive_members_with_limits(&bytes, "fixture", "0.1.0", exact).unwrap(), members);
+        for (limits, refusal) in [
+            (ArchiveLimits { compressed_bytes: exact.compressed_bytes - 1, ..exact }, "compressed-byte"),
+            (ArchiveLimits { expanded_bytes: exact.expanded_bytes - 1, ..exact }, "expanded-byte"),
+            (ArchiveLimits { member_bytes: 4095, ..exact }, "member-byte"),
+            (ArchiveLimits { members: 1, ..exact }, "member-count"),
+        ] {
+            let error = decode_archive_members_with_limits(&bytes, "fixture", "0.1.0", limits).unwrap_err();
+            assert!(error.contains(refusal), "{error}");
+        }
+    }
+}
