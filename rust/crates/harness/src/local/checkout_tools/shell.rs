@@ -26,7 +26,7 @@ impl CheckoutTools {
             cwd: workspace.path.clone(),
             environment: Default::default(),
             inherit_environment: false,
-            timeout_ms: 300_000,
+            timeout_ms: None,
             control_timeout_ms: output::CONTROL_TIMEOUT_MS,
             maximum_output_bytes: maximum_output,
             standard_input: None,
