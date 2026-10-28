@@ -263,3 +263,4 @@ pub(super) async fn read_commit(
     .await?;
     encode(&wire_codec::envelope_to_wire(value), "read_commit")
 }
+use acyclic_stream::StreamProviderExt as _;

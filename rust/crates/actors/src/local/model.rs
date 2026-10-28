@@ -66,7 +66,7 @@ macro_rules! delegate {
 }
 
 delegate! {
-    head(path: StreamPath) -> acyclic_stream::PathHead;
+    heads(request: acyclic_stream::HeadsRequest) -> acyclic_stream::Heads;
     inspect_idempotency(key: IdempotencyKey) -> Option<IdempotencyObservation>;
     tail(path: StreamPath) -> u64;
     append(request: AppendRequest) -> AppendOutcome;
