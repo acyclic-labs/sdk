@@ -384,8 +384,8 @@ async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
         ContextPipeline::default(),
         ToolRegistry::default(),
     );
-    executor.limits.model_events_per_step = Some(usize::MAX);
-    executor.limits.tool_calls_per_step = Some(usize::MAX);
+    executor.limits.model_events_per_step = std::num::NonZeroUsize::new(usize::MAX);
+    executor.limits.tool_calls_per_step = std::num::NonZeroUsize::new(usize::MAX);
     let journal = Journal::default();
     let operation = OperationId::from_bytes([27; 16]);
     journal
@@ -409,7 +409,7 @@ async fn prefix_replay_accepts_platform_maximum_counts() -> Result<()> {
 #[test]
 fn independently_selected_event_budget_still_rejects_excess_observations() -> Result<()> {
     let limits = Limits {
-        model_events_per_step: Some(1),
+        model_events_per_step: std::num::NonZeroUsize::new(1),
         ..Limits::default()
     };
     limits.validate(&mut None)?;
@@ -838,11 +838,11 @@ async fn optional_count_policies_preserve_unbounded_execution_and_finite_authori
             ..limits
         },
         Limits {
-            model_events_per_step: Some(1),
+            model_events_per_step: std::num::NonZeroUsize::new(1),
             ..limits
         },
         Limits {
-            tool_calls_per_step: Some(1),
+            tool_calls_per_step: std::num::NonZeroUsize::new(1),
             ..limits
         },
     ] {

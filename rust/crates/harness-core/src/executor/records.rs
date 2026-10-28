@@ -14,7 +14,8 @@ impl StockExecution<'_> {
             .zip(self.stock.limits.tool_calls_per_step)
             .map(|(events, calls)| {
                 events
-                    .saturating_add(calls.saturating_mul(3))
+                    .get()
+                    .saturating_add(calls.get().saturating_mul(3))
                     .saturating_add(4)
             });
         let (_, records) = self
@@ -75,7 +76,7 @@ impl StockExecution<'_> {
             self.stock
                 .limits
                 .model_events_per_step
-                .map(|maximum| maximum.saturating_add(3)),
+                .map(|maximum| maximum.get().saturating_add(3)),
             |event| {
                 matches!(event,
                 ExecutionEvent::ModelStarted { step: event_step, purpose: event_purpose, .. }

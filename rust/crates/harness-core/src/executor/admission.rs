@@ -9,10 +9,10 @@ impl ModelEventAdmission {
         if state.text_bytes > limits.file_bytes
             || limits
                 .model_events_per_step
-                .is_some_and(|maximum| state.count > maximum)
+                .is_some_and(|maximum| state.count > maximum.get())
             || limits
                 .tool_calls_per_step
-                .is_some_and(|maximum| state.calls.len() > maximum)
+                .is_some_and(|maximum| state.calls.len() > maximum.get())
         {
             return Err(Error::Invalid(
                 "model event admission state exceeds its limit".into(),
@@ -46,7 +46,7 @@ impl ModelEventAdmission {
         })?;
         if limits
             .model_events_per_step
-            .is_some_and(|maximum| self.count >= maximum)
+            .is_some_and(|maximum| self.count >= maximum.get())
         {
             return Err(stock_boundary(io, Invalid, "model event limit exceeded"));
         }
@@ -82,7 +82,7 @@ impl ModelEventAdmission {
         let call_id = &call.call_id;
         if limits
             .tool_calls_per_step
-            .is_some_and(|maximum| self.calls.len() >= maximum)
+            .is_some_and(|maximum| self.calls.len() >= maximum.get())
         {
             return Err(stock_boundary(
                 io,
