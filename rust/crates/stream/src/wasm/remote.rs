@@ -221,7 +221,7 @@ impl StreamProvider for Remote {
         &self,
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.sessions.follow(request).await
+        Ok(Box::pin(self.sessions.follow(request).await?))
     }
 
     async fn children_page(
