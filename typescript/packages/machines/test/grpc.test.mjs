@@ -45,6 +45,7 @@ async function exec(client, request, options) {
 }
 
 test("Cloud create, exec, console read and destroy retain exact identities", async t => {
+  const argv = ["/bin/echo", "sdk-token", "é".repeat(4097), ...Array(65).fill("a".repeat(512))];
   const request = create(wire.CreateMachineRequestSchema, {
     protocol, idempotencyKey: identity(3),
     image: { kind: wire.ImageKind.MANAGED_OCI, immutableReference: { case: "managedDigest", value: new Uint8Array(32).fill(4) } },
@@ -69,7 +70,7 @@ test("Cloud create, exec, console read and destroy retain exact identities", asy
     },
     async *exec(query, context) {
       authenticate(context);
-      assert.deepEqual(query, create(wire.ExecRequestSchema, { protocol, machine, argv: ["/bin/echo", "sdk-token"], timeoutMs: 60000 }));
+      assert.deepEqual(query, create(wire.ExecRequestSchema, { protocol, machine, argv, timeoutMs: 0xffff_ffff }));
       assert.ok(context.timeoutMs() > 30000);
       calls.push("exec");
       yield { machine, output: { case: "data", value: new TextEncoder().encode("sdk-token\n") } };
@@ -94,7 +95,7 @@ test("Cloud create, exec, console read and destroy retain exact identities", asy
   const observation = await machines.inspectMachine({ protocol, machine: admission.machine });
   assert.equal(observation.status, wire.MachineStatus.RUNNING);
   assert.equal(observation.createdAtUnixMs, 9007199254740993n);
-  assert.equal(await exec(machines, { protocol, machine: admission.machine, argv: ["/bin/echo", "sdk-token"], timeoutMs: 60000 }), 0);
+  assert.equal(await exec(machines, { protocol, machine: admission.machine, argv, timeoutMs: 0xffff_ffff }), 0);
   assert.equal(new TextDecoder().decode((await machines.readOutput({ protocol, machine: admission.machine, offset: 0n, limit: MAX_OUTPUT_READ_BYTES })).data), "sdk-token\n");
   assert.deepEqual((await machines.destroyMachine({ protocol, machine: admission.machine, idempotencyKey: identity(6) })).machine, admission.machine);
   assert.deepEqual(calls, ["create", "inspect", "exec", "read", "destroy"]);
@@ -263,10 +264,10 @@ test("exec and console request bounds fail before reaching the server", async t 
     readOutput() { attempts++; return { machine }; },
   });
   const request = { protocol, machine, argv: ["echo"], timeoutMs: 1 };
-  for (const argv of [[], [""], ["a\0b"], ["echo", "a\0b"], Array(65).fill("a"), ["é".repeat(2049)], Array(9).fill("a".repeat(4096))]) {
+  for (const argv of [[], [""], ["a\0b"], ["echo", "a\0b"]]) {
     await assert.rejects(exec(machines, { ...request, argv }), RangeError);
   }
-  for (const timeoutMs of [0, 60001, 1.5]) await assert.rejects(exec(machines, { ...request, timeoutMs }), RangeError);
+  for (const timeoutMs of [0, -1, 0x1_0000_0000, 1.5]) await assert.rejects(exec(machines, { ...request, timeoutMs }), RangeError);
   for (const limit of [0, 65537, 1.5]) await assert.rejects(machines.readOutput({ protocol, machine, offset: 0n, limit }), RangeError);
   for (const offset of [-1n, 1n << 64n]) await assert.rejects(machines.readOutput({ protocol, machine, offset, limit: 1 }), RangeError);
   assert.equal(attempts, 0);

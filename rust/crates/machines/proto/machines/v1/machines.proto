@@ -372,10 +372,10 @@ message UsageReceipt {
 message ExecRequest {
   ProtocolVersion protocol = 1;
   MachineId machine = 2;
-  // 1..64 entries, no NUL, at most 4096 UTF-8 bytes each and 32768 total.
+  // Nonempty argument vector with no NUL in any argument.
   // argv[0] is nonempty. Shell evaluation requires an explicit shell program.
   repeated string argv = 3;
-  // Command deadline in milliseconds, 1..60000.
+  // Positive caller-selected command deadline in milliseconds.
   uint32 timeout_ms = 4;
 }
 message ExecOutput {
