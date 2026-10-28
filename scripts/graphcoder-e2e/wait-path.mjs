@@ -15,22 +15,31 @@ function present(path) {
 // Missing intermediate directories are covered by the recursive ancestor watch.
 // Rechecks happen only after actual filesystem events; the timer is a caller's
 // failure deadline, never an interval or an application readiness source.
-export function waitForFile(path, { timeoutMs, signal } = {}) {
+export function waitForFile(path, options) {
+  return waitForFileValue(path, () => true, options).then(() => {});
+}
+
+// The predicate may return undefined while a producer is still writing. Its
+// next invocation follows a native filesystem event, with no periodic retry.
+export function waitForFileValue(path, read, { timeoutMs, signal } = {}) {
   path = resolve(path);
   return new Promise((accept, reject) => {
     let subscription;
     let deadline;
-    const finish = error => {
+    const finish = (error, value) => {
       subscription?.close();
       clearTimeout(deadline);
       signal?.removeEventListener('abort', aborted);
       if (error) reject(error);
-      else accept();
+      else accept(value);
     };
     const aborted = () => finish(signal.reason ?? new Error('file wait cancelled'));
     const observe = () => {
       try {
-        if (present(path)) finish();
+        if (present(path)) {
+          const value = read(path);
+          if (value !== undefined) finish(undefined, value);
+        }
       } catch (error) { finish(error); }
     };
     if (signal?.aborted) return aborted();
