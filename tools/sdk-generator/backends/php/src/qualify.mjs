@@ -191,7 +191,7 @@ export async function qualify(args, { command = spawnSync, toolchain = pinned } 
   put("qualification.json", JSON.stringify(result, null, 2) + "\n");
   return result;
 }
-runCli(import.meta.url, values => {
-  const result = qualify(values);
+runCli(import.meta.url, async values => {
+  const result = await qualify(values);
   return { scope: result.scope, archive_sha256: result.archive_sha256, qualification: join(resolve(values.output), "qualification.json") };
 }, ["package", "authority", "php-home", "composer", "grpc-extension", "archiver", "cache", "output"], "all qualification paths are required");
