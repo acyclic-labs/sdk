@@ -62,9 +62,9 @@ pub struct Limits {
     /// Optional maximum model round trips in the stock agent loop.
     pub model_steps: Option<usize>,
     /// Optional maximum streamed observations admitted in one model round trip.
-    pub model_events_per_step: Option<usize>,
+    pub model_events_per_step: Option<std::num::NonZeroUsize>,
     /// Optional maximum distinct tool calls admitted in one model round trip.
-    pub tool_calls_per_step: Option<usize>,
+    pub tool_calls_per_step: Option<std::num::NonZeroUsize>,
     /// Maximum canonical messages selected into one model request.
     pub context_messages: usize,
 }
@@ -99,8 +99,8 @@ impl Limits {
             || [self.path_bytes, self.attachments, self.context_messages]
                 .into_iter()
                 .chain(self.model_steps)
-                .chain(self.model_events_per_step)
-                .chain(self.tool_calls_per_step)
+                .chain(self.model_events_per_step.map(std::num::NonZeroUsize::get))
+                .chain(self.tool_calls_per_step.map(std::num::NonZeroUsize::get))
                 .any(|limit| limit == 0 || limit as u64 > MAX_PORTABLE_COUNT as u64)
         {
             return Err(conversation_error(
