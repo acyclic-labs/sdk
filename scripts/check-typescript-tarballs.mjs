@@ -46,7 +46,6 @@ export const representativeExports = {
   "@acyclic-labs/inference": "InferenceClient",
   "@acyclic-labs/machines": "machineId",
   "@acyclic-labs/objects": "MemoryObjectsV1",
-  "@acyclic-labs/pi": "configurePiModel",
   "@acyclic-labs/sdk": "harness",
   "@acyclic-labs/stream": "MemoryStreamProvider",
   "@acyclic-labs/workers": "WorkersDeploymentClient",
@@ -145,7 +144,6 @@ const checks = {
     const fetched = await provider.get(create(m.GetObjectRequestSchema, { bucket: bucket.bucket, objectKey: "smoke" }), 1n);
     return fetched.body.length === 1 && fetched.body[0] === 7 && typeof m.HttpObjectsV1 === "function";
   },
-  "@acyclic-labs/pi": (m) => typeof m.configurePiModel === "function" && !("piProvider" in m),
   "@acyclic-labs/sdk": (m) => typeof m.harness === "object" && typeof m.machines === "object",
   "@acyclic-labs/workers": (m) => typeof m.WorkersDeploymentClient === "function",
   "@acyclic-labs/stream": async (m) => {

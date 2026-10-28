@@ -90,6 +90,10 @@ pub(super) struct Session {
     pub(super) settled: u64,
     /// The last settled turn's outcome.
     pub(super) result: Option<crate::Outcome<TurnOutput>>,
+    /// The last settled turn's native event log: every event its host
+    /// emitted, so each conversation entry carries its turn's own.
+    #[serde(default)]
+    pub(super) events: Option<FileRef>,
     /// Opaque native resume reference; never a transcript or credential.
     pub(super) native: Option<Value>,
     /// Requested lifecycle.
@@ -163,6 +167,9 @@ pub(super) enum Event {
         operation: OperationId,
         /// Native outcome.
         outcome: crate::Outcome<TurnOutput>,
+        /// The turn's whole native event log, staged on the agent's volume.
+        #[serde(default)]
+        events: Option<FileRef>,
     },
     /// Save the native resume reference.
     Native {
@@ -190,7 +197,7 @@ pub(super) struct HostDriver {
 }
 
 impl HostDriver {
-    fn content(&self, agent: &AgentState) -> Result<Content> {
+    fn content(&self, agent: &AgentState, bound: u64) -> Result<Content> {
         let AgentAuthority {
             scope,
             verifier,
@@ -208,7 +215,7 @@ impl HostDriver {
                 Arc::clone(&self.files),
                 &verifier,
                 &scope,
-                MAXIMUM_BYTES,
+                bound,
                 None,
             )?,
             writer: FilesystemContentPublisher::new(
@@ -216,7 +223,7 @@ impl HostDriver {
                 &private.volume,
                 &verifier,
                 &scope,
-                MAXIMUM_BYTES,
+                bound,
                 None,
             )?,
         })
@@ -224,7 +231,7 @@ impl HostDriver {
 
     /// Reads one file the agent's own volumes hold.
     pub(super) async fn read(&self, agent: &AgentState, file: &FileRef) -> Result<Vec<u8>> {
-        let content = self.content(agent)?;
+        let content = self.content(agent, MAXIMUM_BYTES)?;
         Ok(content
             .reader
             .read(file, MAXIMUM_BYTES, None, None)?
@@ -239,7 +246,7 @@ impl HostDriver {
         operation: OperationId,
         bytes: &[u8],
     ) -> Result<FileRef> {
-        let content = self.content(agent)?;
+        let content = self.content(agent, MAXIMUM_BYTES)?;
         Ok(content
             .writer
             .stage_once(
@@ -247,6 +254,33 @@ impl HostDriver {
                 &format!("native/{operation}.json"),
                 bytes,
                 "application/json",
+                "native",
+                ContentAccess::default(),
+            )?
+            .await?
+            .0)
+    }
+
+    /// Stages the native event log of the turn claimed under `claim` once.
+    async fn stage_events(
+        &self,
+        agent: &AgentState,
+        claim: OperationId,
+        bytes: &[u8],
+    ) -> Result<FileRef> {
+        let mut hasher = blake3::Hasher::new_derive_key("acyclic.native-host.events.v1");
+        hasher.update(&claim.into_bytes());
+        let mut operation = [0; 16];
+        hasher.finalize_xof().fill(&mut operation);
+        let operation = OperationId::from_bytes(operation);
+        let content = self.content(agent, crate::local::host_process::EVENT_LOG_BYTES)?;
+        Ok(content
+            .writer
+            .stage_once(
+                operation,
+                &format!("native/{claim}.events.jsonl"),
+                bytes,
+                "application/x-ndjson",
                 "native",
                 ContentAccess::default(),
             )?
@@ -511,6 +545,17 @@ impl NativeAgents {
     /// The committed state of `agent`.
     pub(super) async fn state(&self, agent: &AgentPath) -> Result<AgentState> {
         self.host.state(agent).await.map_err(storage)
+    }
+
+    /// Stages `agent`'s native event log of the turn claimed under `claim`.
+    pub(super) async fn stage_events(
+        &self,
+        agent: &AgentPath,
+        claim: OperationId,
+        bytes: &[u8],
+    ) -> Result<FileRef> {
+        let state = self.state(agent).await?;
+        self.driver.stage_events(&state, claim, bytes).await
     }
 
     /// The brief spawned `child` was created with.

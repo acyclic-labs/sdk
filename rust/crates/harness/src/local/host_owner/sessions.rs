@@ -238,6 +238,16 @@ impl HostWorkspaceOwner {
         match session.claimed() {
             Some(claimed) if claimed == claim.operation => {
                 view.capture(operation).await?;
+                // The process recorded its whole event stream; the settled
+                // conversation entry carries it.
+                let events = match quiescence.events()? {
+                    Some(bytes) => Some(
+                        self.native
+                            .stage_events(child, claim.operation, &bytes)
+                            .await?,
+                    ),
+                    None => None,
+                };
                 self.native
                     .request(
                         child,
@@ -245,6 +255,7 @@ impl HostWorkspaceOwner {
                         &Event::Complete {
                             operation: claim.operation,
                             outcome,
+                            events,
                         },
                     )
                     .await
@@ -263,7 +274,7 @@ impl HostWorkspaceOwner {
         let pending = session.pending(&state);
         Ok(json!({"task":child,"cwd":self.view(child)?.path(),
             "status":{"settled":session.claimed().is_none(),"turn":session.settled},
-            "control":session.control,"results":session.result.into_iter()
+            "control":session.control,"events":session.events,"results":session.result.into_iter()
                 .map(|outcome| json!({ "outcome": outcome })).collect::<Vec<_>>(),
             "pending":pending}))
     }

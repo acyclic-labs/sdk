@@ -1,23 +1,25 @@
 //! Hold a real stderr writer outside child containment: the same EOF condition
 //! as a detached macOS descendant, without waiting for a watchdog to detect it.
 use super::*;
-use acyclic_harness::local::{LocalHarness, LocalHarnessConfig};
+use crate::local::{LocalHarness, LocalHarnessConfig};
 use std::{fs, process::Stdio, sync::Arc};
 
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn codex_exited_session_settles_with_an_external_stderr_writer() -> Result<()> {
+async fn codex_exited_session_settles_with_an_external_stderr_writer() -> Result {
     held_stderr("codex").await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn claude_exited_session_settles_with_an_external_stderr_writer() -> Result<()> {
+async fn claude_exited_session_settles_with_an_external_stderr_writer() -> Result {
     held_stderr("claude-code").await
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn pi_exited_session_settles_with_an_external_stderr_writer() -> Result<()> {
+async fn pi_exited_session_settles_with_an_external_stderr_writer() -> Result {
     held_stderr("pi").await
 }
 
-async fn held_stderr(host: &str) -> Result<()> {
+async fn held_stderr(host: &str) -> Result {
     let checkout = tempfile::tempdir()?;
     let state = tempfile::tempdir()?;
     let cwd = checkout.path().canonicalize()?;
@@ -44,7 +46,7 @@ async fn held_stderr(host: &str) -> Result<()> {
     result
 }
 
-fn exercise(host: &str, cwd: &Path, state: &Path) -> Result<()> {
+fn exercise(host: &str, cwd: &Path, state: &Path) -> Result {
     let root = host_files::request(
         cwd,
         HostAction::Open {
@@ -52,7 +54,7 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result<()> {
             session: "held-stderr".into(),
         },
     )?;
-    let parent: acyclic_harness::agent::AgentPath = serde_json::from_value(root["task"].clone())?;
+    let parent: AgentPath = serde_json::from_value(root["task"].clone())?;
     let held = acyclic_fs::hold_root(cwd)?.create_directories(
         &PathBuf::from(".acyclic-sdk/host-processes").join(parent.id().as_str()),
     )?;
@@ -60,7 +62,7 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result<()> {
         held.open_file(Path::new("fixture.lock"), true)?,
         FileLockMode::Exclusive,
     )?;
-    let sessions = Sessions {
+    let sessions = NativeChildren {
         host: host.into(),
         cwd: cwd.to_path_buf(),
         parent: parent.clone(),
@@ -83,7 +85,7 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result<()> {
         process: lease.funded_process()?,
         claim: serde_json::from_value(claimed["claim"].clone())?,
         failure: None,
-        events: EventLines::default(),
+        events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
         answer: String::new(),
         session: None,
     };
@@ -116,7 +118,7 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result<()> {
         "negative input must withhold stderr EOF"
     );
     assert!(
-        sessions.refresh_running("held", &mut running)?,
+        sessions.refresh("held", &mut running)?,
         "exited native session still waits for inherited stderr EOF"
     );
     let completed = sessions.request("held", SessionAction::Observe)?;

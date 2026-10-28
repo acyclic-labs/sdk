@@ -128,17 +128,6 @@
         "typescript": "7.0.2",
       },
     },
-    "typescript/packages/pi": {
-      "name": "@acyclic-labs/pi",
-      "version": "0.2.0",
-      "devDependencies": {
-        "@acyclic-labs/harness": "workspace:*",
-        "typescript": "7.0.2",
-      },
-      "peerDependencies": {
-        "@acyclic-labs/harness": "0.2.0",
-      },
-    },
     "typescript/packages/sdk": {
       "name": "@acyclic-labs/sdk",
       "version": "0.2.0",
@@ -205,8 +194,6 @@
     "@acyclic-labs/machines": ["@acyclic-labs/machines@workspace:typescript/packages/machines"],
 
     "@acyclic-labs/objects": ["@acyclic-labs/objects@workspace:typescript/packages/objects"],
-
-    "@acyclic-labs/pi": ["@acyclic-labs/pi@workspace:typescript/packages/pi"],
 
     "@acyclic-labs/sdk": ["@acyclic-labs/sdk@workspace:typescript/packages/sdk"],
 

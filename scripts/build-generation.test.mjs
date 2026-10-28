@@ -83,7 +83,7 @@ test("generated runtime bindings stay out of the source index", () => {
 });
 
 test("every TypeScript package prepares generation for build, test and prepack", () => {
-  for (const name of ["actors", "auth", "filesystem", "harness", "inference", "machines", "objects", "pi", "sdk", "stream", "workers"]) {
+  for (const name of ["actors", "auth", "filesystem", "harness", "inference", "machines", "objects", "sdk", "stream", "workers"]) {
     const { scripts } = JSON.parse(readFileSync(`typescript/packages/${name}/package.json`, "utf8"));
     assert.equal(scripts.generate, `bun ../../../scripts/generate.mjs ${name}`);
     for (const operation of ["build", "check", "test", "prepack"]) if (scripts[operation]) assert.match(scripts[operation], /^bun run generate(?: && |$)/, `${name}: ${operation}`);

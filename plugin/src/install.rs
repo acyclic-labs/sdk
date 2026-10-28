@@ -26,7 +26,7 @@ pub(super) fn run(args: &[String]) -> Result<()> {
     if command == "doctor" {
         println!(
             "{}",
-            json!({"host":host,"minimum_codex":acyclic_harness::host_hooks::MINIMUM_CODEX_VERSION,"transport":"workspace files","writable_paths":[".acyclic-sdk/host-files/requests",".acyclic-sdk/host-files/results",".acyclic-sdk/host-processes",".volumes/agents"],"additional_sandbox_roots":[]})
+            json!({"host":host,"minimum_codex":acyclic_harness::host_hooks::MINIMUM_CODEX_VERSION,"transport":"workspace files","writable_paths":[".acyclic-sdk/host-files/requests",".acyclic-sdk/host-files/status",".acyclic-sdk/host-processes",".volumes/agents"],"additional_sandbox_roots":[]})
         );
         return Ok(());
     }

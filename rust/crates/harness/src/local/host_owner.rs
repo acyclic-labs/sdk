@@ -93,8 +93,8 @@ pub struct HostWorkspaceOwner {
     local: Arc<LocalHarness>,
     native: agents::NativeAgents,
     views: BTreeMap<AgentPath, host_workspace::HostWorkspace>,
-    /// The native owner directory, whose `requests` and `results` files say
-    /// which requests still await their reply.
+    /// The native owner directory, whose `requests` files say which
+    /// requests' clients have not yet read their reply.
     requests: Option<std::path::PathBuf>,
     #[cfg(test)]
     retirement_observer: Option<std::sync::mpsc::SyncSender<std::thread::ThreadId>>,
@@ -270,10 +270,8 @@ impl HostWorkspaceOwner {
                 ));
             }
         }
-        // A native request's saved result lives until its reply is written
-        // (the owner serves requests one at a time, so at most the requests
-        // in flight when it stopped are unanswered), or until its client
-        // withdrew the request.
+        // A native request's saved result lives until its client withdraws
+        // the request, which it does once it has read the reply.
         let request = self
             .requests
             .clone()
@@ -282,7 +280,6 @@ impl HostWorkspaceOwner {
                 unanswered: std::sync::Arc::new(move |request: acyclic_fs::OperationId| {
                     let file = format!("{}.json", OperationId::from_bytes(request.into_bytes()));
                     directory.join("requests").join(&file).exists()
-                        && !directory.join("results").join(&file).exists()
                 }),
             });
         serde_json::to_value(self.view(task)?.fs(operation, command, request).await?)

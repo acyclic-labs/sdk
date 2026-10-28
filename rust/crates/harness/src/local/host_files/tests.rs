@@ -1,5 +1,6 @@
 use super::*;
 use crate::local::host_owner::SessionAction;
+use std::time::Duration;
 
 #[test]
 fn projection_reads_cannot_wake_either_endpoint() {
@@ -226,12 +227,28 @@ async fn workspace_projection_uses_shared_results_without_client_state() -> Resu
             .count(),
         0
     );
-    assert_eq!(
-        std::fs::read_dir(checkout.path().join(DIRECTORY).join("results"))
-            .map_err(storage)?
-            .count(),
-        0
-    );
+    // Every read reply is dropped from its agent's latest status.
+    let statuses = checkout.path().join(DIRECTORY).join("status");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let mut pending = 0;
+            for entry in std::fs::read_dir(&statuses).map_err(storage)? {
+                if let Some((_, path)) = latest(&entry.map_err(storage)?.path())? {
+                    // A status superseded while read is counted as pending.
+                    pending += std::fs::read(path).ok().map_or(1, |bytes| {
+                        serde_json::from_slice::<Status>(&bytes)
+                            .map_or(1, |status| status.replies.len())
+                    });
+                }
+            }
+            if pending == 0 {
+                return Ok::<_, Error>(());
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .map_err(storage)??;
     assert!(local.agent.is_none());
     assert!(local.tools().definitions(None)?.is_empty());
     owner.abort();

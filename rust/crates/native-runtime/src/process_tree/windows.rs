@@ -255,6 +255,7 @@ fn spawn_in_job(
         custody: record,
         writer: Writer::default(),
         queued_stdin: None,
+        readers: [None, None],
         _events: events,
     });
     // The physical record may already exist when completion accounting fails.
