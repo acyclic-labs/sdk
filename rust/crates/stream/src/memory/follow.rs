@@ -8,14 +8,16 @@ impl MemoryStream {
         filter: crate::FollowFilter,
     ) -> Result<(crate::follow_index::FollowInterest, HistoryCursor), StreamError> {
         let state = self.state.write().await;
-        let stream = state.paths.get(path);
-        let mut cursor = HistoryCursor::initial(stream, from, anchor, when_absent)?;
-        let tail = stream.map_or(0, |path| path.tail);
+        let snapshot = state.paths.get(path).cloned();
+        let tail = snapshot.as_ref().map_or(0, |path| path.tail);
         let registration = state
             .signals
             .subscribe_with(path.clone(), || Signals::new(tail))?;
         let signals = registration.value();
         let interest = crate::follow_index::FollowIndex::subscribe(&signals.follows, filter, tail)?;
+        drop(state);
+        let mut cursor =
+            HistoryCursor::initial(snapshot.as_ref(), from, anchor, when_absent).await?;
         cursor.registration = Some(registration);
         Ok((interest, cursor))
     }
@@ -28,8 +30,10 @@ impl MemoryStream {
         filter: &crate::FollowFilter,
     ) -> Result<Option<Record>, StreamError> {
         let state = self.state.read().await;
-        let path = state.paths.get(path);
-        if !cursor.observe_creation(path, *anchor)? {
+        let snapshot = state.paths.get(path).cloned();
+        drop(state);
+        let path = snapshot.as_ref();
+        if !cursor.observe_creation(path, *anchor).await? {
             return Ok(None);
         }
         let path = path.ok_or(if anchor.is_some() {
@@ -37,19 +41,27 @@ impl MemoryStream {
         } else {
             StreamError::NotFound
         })?;
-        if cursor.next > path.tail {
+        if cursor.position() > path.tail {
             return Err(StreamError::OutOfRange);
         }
         if let Some(anchor) = anchor {
-            cursor.check_anchor(path, *anchor)?;
+            cursor.check_anchor(path, *anchor).await?;
         }
         cursor.sync(path.history.as_ref(), path.tail);
-        while let Some(record) = cursor.next_record() {
+        let mut examined = 0;
+        while let Some(record) = cursor.next_record().await? {
             if anchor.is_some() {
                 *anchor = Some(record.commit_id);
             }
             if let Some(record) = filter.project(record)? {
                 return Ok(Some(record));
+            }
+            examined += 1;
+            if examined == crate::REPLAY_PAGE {
+                // Known finite snapshot work, chunked for cancellation and
+                // fairness. No readiness or publication is rechecked here.
+                crate::runtime::yield_now().await?;
+                examined = 0;
             }
         }
         Ok(None)

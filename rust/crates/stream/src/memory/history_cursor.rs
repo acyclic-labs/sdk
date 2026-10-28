@@ -1,21 +1,18 @@
 /// Incremental cursor over immutable history.
 pub(crate) struct HistoryCursor {
-    root: Option<Arc<History>>,
-    first: Option<HistoryWindow>,
-    windows: VecDeque<HistoryWindow>,
-    next: u64,
+    records: crate::pages::PinnedCursor<PinnedHistory>,
     awaiting_creation: bool,
     registration: Option<crate::interest::Interest<StreamPath, Signals>>,
 }
 impl HistoryCursor {
-    fn initial(
+    async fn initial(
         path: Option<&PathState>,
         from: u64,
         anchor: Option<CommitId>,
         when_absent: crate::WhenAbsent,
     ) -> Result<Self, StreamError> {
         match path {
-            Some(path) => Self::prepare(path, from, anchor),
+            Some(path) => Self::prepare(path, from, anchor).await,
             None if anchor.is_some() && when_absent == crate::WhenAbsent::Wait => {
                 Err(StreamError::PrefixNotRetained)
             }
@@ -27,7 +24,7 @@ impl HistoryCursor {
             None => Err(StreamError::NotFound),
         }
     }
-    fn observe_creation(
+    async fn observe_creation(
         &mut self,
         path: Option<&PathState>,
         anchor: Option<CommitId>,
@@ -36,13 +33,17 @@ impl HistoryCursor {
             let Some(path) = path else {
                 return Ok(false);
             };
-            let mut cursor = Self::prepare(path, self.next, anchor)?;
+            let mut cursor = Self::prepare(path, self.position(), anchor).await?;
             cursor.registration = self.registration.take();
             *self = cursor;
         }
         Ok(true)
     }
-    fn prepare(path: &PathState, from: u64, anchor: Option<CommitId>) -> Result<Self, StreamError> {
+    async fn prepare(
+        path: &PathState,
+        from: u64,
+        anchor: Option<CommitId>,
+    ) -> Result<Self, StreamError> {
         if from > path.tail {
             return Err(StreamError::OutOfRange);
         }
@@ -53,31 +54,47 @@ impl HistoryCursor {
         };
         let mut cursor = Self::new(path, path.tail, start);
         if let Some(anchor) = anchor {
-            let record = cursor.next_record().ok_or(StreamError::PrefixNotRetained)?;
+            let record = cursor
+                .next_record()
+                .await?
+                .ok_or(StreamError::PrefixNotRetained)?;
             if record.sequence != from - 1 || record.commit_id != anchor {
                 return Err(StreamError::PrefixNotRetained);
             }
         }
         Ok(cursor)
     }
-    fn peek_record(&self) -> Option<&Record> {
-        let window = self.first.as_ref()?;
-        window.records.records.get(window.start)
+    async fn peek_record(&mut self) -> Result<Option<&Record>, StreamError> {
+        self.records.peek().await
     }
-    fn check_anchor(&self, path: &PathState, anchor: CommitId) -> Result<(), StreamError> {
-        if let Some(root) = &self.root
-            && HistoryWalk::new(path.history.as_ref(), path.tail, 0)
-                .any(|(node, _)| std::ptr::eq(node, root.as_ref()))
-        {
-            return Ok(());
+    fn position(&self) -> u64 {
+        self.records.position()
+    }
+    async fn check_anchor(&self, path: &PathState, anchor: CommitId) -> Result<(), StreamError> {
+        if let Some(root) = &self.records.source().root {
+            if path
+                .history
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(root, current))
+            {
+                return Ok(());
+            }
+            if matches!(path.history.as_deref(), Some(History::Batch { parent: Some(parent), .. }) if Arc::ptr_eq(root, parent))
+            {
+                return Ok(());
+            }
         }
         let from = self
-            .next
+            .position()
             .checked_sub(1)
             .ok_or(StreamError::InvalidArgument)?;
-        let mut previous = Self::new(path, self.next, from);
+        let pinned = PinnedHistory {
+            root: path.history.clone(),
+            tail: path.tail,
+        };
+        let previous = crate::pages::PageSource::next_page(&pinned, from, 1).await?;
         if previous
-            .next_record()
+            .and_then(|window| window.records.records.get(window.start).cloned())
             .is_none_or(|record| record.sequence != from || record.commit_id != anchor)
         {
             return Err(StreamError::PrefixNotRetained);
@@ -86,102 +103,60 @@ impl HistoryCursor {
     }
     pub(crate) fn at(next: u64) -> Self {
         Self {
-            root: None,
-            first: None,
-            windows: VecDeque::new(),
-            next,
+            records: Self::pinned(
+                PinnedHistory {
+                    root: None,
+                    tail: next,
+                },
+                next,
+            ),
             awaiting_creation: false,
             registration: None,
         }
     }
+    fn pinned(history: PinnedHistory, next: u64) -> crate::pages::PinnedCursor<PinnedHistory> {
+        crate::pages::PinnedCursor::new(history, next, crate::REPLAY_PAGE)
+            .expect("the stream replay page is nonzero")
+    }
     fn new(path: &PathState, tail: u64, next: u64) -> Self {
-        if let Some(window) = path.prefix_window(next, tail) {
-            return Self {
+        let mut records = Self::pinned(
+            PinnedHistory {
                 root: path.history.clone(),
-                first: Some(window),
-                windows: VecDeque::new(),
-                next,
-                awaiting_creation: false,
-                registration: None,
-            };
+                tail,
+            },
+            next,
+        );
+        if let Some(page) = path.prefix_window(next, tail) {
+            records.seed_page(page);
         }
-        let mut cursor = Self::at(next);
-        cursor.sync(path.history.as_ref(), tail);
-        cursor
+        Self {
+            records,
+            awaiting_creation: false,
+            registration: None,
+        }
     }
     fn sync(&mut self, root: Option<&Arc<History>>, tail: u64) {
-        if match (&self.root, root) {
-            (Some(old), Some(root)) => Arc::ptr_eq(old, root),
+        let history = self.records.source();
+        let same = match (&history.root, root) {
+            (Some(old), Some(current)) => Arc::ptr_eq(old, current),
             (None, None) => true,
             _ => false,
-        } {
+        };
+        if same && history.tail == tail {
             return;
         }
-        // The common follow update is one append above the retained root.
-        // Reuse the cursor queue directly instead of allocating a scratch Vec.
-        if let (Some(old), Some(current)) = (&self.root, root) {
-            #[cfg(test)]
-            HISTORY_VISITS.with(|count| count.set(count.get() + 1));
-            if let History::Batch {
-                parent: Some(parent),
-                records,
-                ..
-            } = current.as_ref()
-                && Arc::ptr_eq(old, parent)
-            {
-                if let Some(window) = history_window(Arc::clone(records), tail, self.next) {
-                    self.push_window(window);
-                }
-                self.root = root.cloned();
-                return;
-            }
-        }
-        let mut added = Self::at(self.next);
-        let mut crossed_prefix = false;
-        for (node, ceiling) in HistoryWalk::new(root, tail, self.next) {
-            if !crossed_prefix
-                && self
-                    .root
-                    .as_ref()
-                    .is_some_and(|old| std::ptr::eq(old.as_ref(), node))
-            {
-                if let Some(first) = added.first.take() {
-                    self.push_window(first);
-                }
-                self.windows.extend(added.windows);
-                self.root = root.cloned();
-                return;
-            }
-            match node {
-                History::Batch { records, .. } => {
-                    if let Some(window) = history_window(Arc::clone(records), ceiling, self.next)
-                        && let Some(first) = added.first.replace(window)
-                    {
-                        added.windows.push_front(first);
-                    }
-                }
-                History::Prefix { .. } => crossed_prefix = true,
-            }
-        }
-        self.first = added.first;
-        self.windows = added.windows;
-        self.root = root.cloned();
+        let appended = matches!((&history.root, root.map(AsRef::as_ref)),
+            (Some(old), Some(History::Batch { parent: Some(parent), .. })) if Arc::ptr_eq(old, parent));
+        let keep_page = appended && tail >= history.tail;
+        self.records.repin(
+            PinnedHistory {
+                root: root.cloned(),
+                tail,
+            },
+            keep_page,
+        );
     }
-    fn push_window(&mut self, window: HistoryWindow) {
-        if self.first.is_none() {
-            self.first = Some(window);
-        } else {
-            self.windows.push_back(window);
-        }
-    }
-    fn next_record(&mut self) -> Option<Record> {
-        let window = self.first.as_mut()?;
-        let record = window.records.records.get(window.start)?.clone();
-        window.start += 1;
-        self.next = record.sequence.checked_add(1)?;
-        if window.start == window.end {
-            self.first = self.windows.pop_front();
-        }
-        Some(record)
+    async fn next_record(&mut self) -> Result<Option<Record>, StreamError> {
+        self.records.next().await
     }
 }

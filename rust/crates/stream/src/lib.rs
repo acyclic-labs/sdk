@@ -31,6 +31,7 @@ pub mod grpc;
 #[cfg(not(target_arch = "wasm32"))]
 mod head_tests;
 pub mod http_response;
+pub mod pages;
 mod pending;
 pub mod persistence;
 #[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]

@@ -205,3 +205,62 @@ std::thread_local! { static HISTORY_VISITS: std::cell::Cell<usize> = const { std
 
 #[cfg(test)]
 std::thread_local! { static HISTORY_METADATA_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+/// Immutable page source, shared by lazy reads and follows. A page may end at
+/// a batch or inherited cut before exhausting the caller's record budget.
+struct PinnedHistory {
+    root: Option<Arc<History>>,
+    tail: u64,
+}
+impl PinnedHistory {
+    fn page<E>(
+        &self,
+        after: u64,
+        budget: u32,
+        mut examine: impl FnMut() -> Result<(), E>,
+    ) -> Result<Option<HistoryWindow>, E> {
+        if budget == 0 || after >= self.tail {
+            return Ok(None);
+        }
+        let mut node = self.root.as_ref();
+        let mut ceiling = self.tail;
+        while let Some(current) = node {
+            examine()?;
+            #[cfg(test)]
+            HISTORY_VISITS.with(|count| count.set(count.get() + 1));
+            if after >= ceiling {
+                return Ok(None);
+            }
+            if let History::Batch { records, .. } = current.as_ref() {
+                if records
+                    .records
+                    .first()
+                    .is_some_and(|first| first.sequence <= after)
+                {
+                    return Ok(history_window(
+                        Arc::clone(records),
+                        ceiling.min(after.saturating_add(u64::from(budget))),
+                        after,
+                    ));
+                }
+            }
+            let jump = current.jump();
+            if let Some(target) = jump.target.as_ref().filter(|_| jump.minimum > after) {
+                ceiling = ceiling.min(jump.minimum);
+                node = Some(target);
+            } else {
+                ceiling = ceiling.min(current.boundary());
+                node = current.parent();
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl crate::pages::PageSource for PinnedHistory {
+    type Page = HistoryWindow;
+
+    async fn next_page(&self, after: u64, budget: u32) -> Result<Option<Self::Page>, StreamError> {
+        self.page(after, budget, || Ok(()))
+    }
+}
