@@ -20,36 +20,51 @@ pub trait Backend: Send + Sync {
     fn provider(&self) -> &dyn MachinesProvider;
     /// Ledger measured at the provider or instrumented transport boundary.
     fn requests(&self) -> RequestLedger;
+    /// Immutable image enrolled by this fixture's production provider.
+    fn image(&self) -> &Image;
+    /// Enrolled network policy commitment used by every create request.
+    fn network_policy(&self) -> [u8; 32];
 }
 
 /// Wraps a concrete provider before type erasure, preserving all provider errors.
-pub struct Fixture<P>(Counted<P>);
+pub struct Fixture<P> {
+    provider: Counted<P>,
+    image: Image,
+    network_policy: [u8; 32],
+}
 impl<P> Fixture<P> {
-    /// Starts independent accounting around a fresh provider.
-    pub fn new(provider: P) -> Self {
-        Self(Counted::new(provider))
+    /// Starts independent accounting with the provider's enrolled test resources.
+    pub fn new(provider: P, image: Image, network_policy: [u8; 32]) -> Self {
+        Self {
+            provider: Counted::new(provider),
+            image,
+            network_policy,
+        }
     }
 }
 impl<P: MachinesProvider> Backend for Fixture<P> {
     fn provider(&self) -> &dyn MachinesProvider {
-        &self.0
+        &self.provider
     }
     fn requests(&self) -> RequestLedger {
-        self.0.ledger()
+        self.provider.ledger()
     }
-}
-impl<P: MachinesProvider> Backend for Counted<P> {
-    fn provider(&self) -> &dyn MachinesProvider {
-        self
+    fn image(&self) -> &Image {
+        &self.image
     }
-    fn requests(&self) -> RequestLedger {
-        self.ledger()
+    fn network_policy(&self) -> [u8; 32] {
+        self.network_policy
     }
 }
 
 /// Runs all lifecycle, replay, capability, fork, operation and payload-read cases.
 pub async fn verify(backend: &dyn Backend) -> Result<(), String> {
-    verify_provider(backend.provider()).await?;
+    verify_provider(
+        backend.provider(),
+        backend.image().clone(),
+        backend.network_policy(),
+    )
+    .await?;
     workload(backend, 3, "b0").await?;
     Ok(())
 }
@@ -84,9 +99,12 @@ async fn workload(
         IdempotencyKey::parse(&format!("00000000-0000-0000-0000-000000{suffix}{tail}"))
             .map_err(|error| error.to_string())
     };
-    let image = Image::custom([7; 32]).map_err(|error| error.to_string())?;
     let created = provider
-        .create(CreateMachine::new(key("0001")?, image, [8; 32]))
+        .create(CreateMachine::new(
+            key("0001")?,
+            backend.image().clone(),
+            backend.network_policy(),
+        ))
         .await
         .map_err(|error| error.to_string())?;
     let MutationOutcome::Created(machine) = created else {
@@ -161,13 +179,16 @@ macro_rules! machines_conformance_suite {
               checkpoint, fork, suspend/wake, events, usage, teardown) threaded through shared \
               local state, and splitting it would only move the same checks behind indirection"
 )]
-async fn verify_provider(provider: &dyn MachinesProvider) -> Result<(), String> {
+async fn verify_provider(
+    provider: &dyn MachinesProvider,
+    image: Image,
+    network_policy: [u8; 32],
+) -> Result<(), String> {
     let key = |suffix: u8| {
         IdempotencyKey::parse(&format!("00000000-0000-0000-0000-0000000000{suffix:02x}"))
             .map_err(|error| error.to_string())
     };
     let assurance = provider.assurance();
-    let image = Image::custom([7; 32]).map_err(|error| error.to_string())?;
     let qualification = provider
         .qualify_image(image.clone())
         .await
@@ -187,7 +208,7 @@ async fn verify_provider(provider: &dyn MachinesProvider) -> Result<(), String> 
     for (capability, create_suffix, destroy_suffix) in capability_cases {
         let required = std::collections::BTreeSet::from([capability]);
         let mut capability_request =
-            CreateMachine::new(key(create_suffix)?, image.clone(), [8; 32]);
+            CreateMachine::new(key(create_suffix)?, image.clone(), network_policy);
         capability_request.compatibility = CompatibilityPolicy::Require(required.clone());
         let admission = provider.create(capability_request).await;
         if qualification.capabilities.contains(&capability) {
@@ -213,7 +234,7 @@ async fn verify_provider(provider: &dyn MachinesProvider) -> Result<(), String> 
         }
     }
     let create_key = key(1)?;
-    let request = CreateMachine::new(create_key, image, [8; 32]);
+    let request = CreateMachine::new(create_key, image, network_policy);
     let created = provider
         .create(request.clone())
         .await
@@ -454,7 +475,11 @@ mod tests {
     use crate::SimulatedMachines;
     use acyclic_stream::testing::RequestClass;
     async fn simulated() -> Result<Fixture<SimulatedMachines>, String> {
-        Ok(Fixture::new(SimulatedMachines::default()))
+        Ok(Fixture::new(
+            SimulatedMachines::default(),
+            Image::custom([17; 32]).map_err(|error| error.to_string())?,
+            [19; 32],
+        ))
     }
     suite!(public_simulated_suite, simulated);
 
@@ -464,9 +489,11 @@ mod tests {
             std::collections::BTreeSet::from([Capability::DiskFork, Capability::SuspendResume]),
             std::collections::BTreeSet::from([Capability::SuspendResume]),
         ] {
-            verify(&Fixture::new(SimulatedMachines::with_capabilities(
-                capabilities,
-            )))
+            verify(&Fixture::new(
+                SimulatedMachines::with_capabilities(capabilities),
+                Image::custom([17; 32]).map_err(|error| error.to_string())?,
+                [19; 32],
+            ))
             .await?;
         }
         Ok(())
