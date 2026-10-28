@@ -331,8 +331,11 @@ impl WasmAgentServer {
             .read_file(
                 &AgentPath::try_from(agent).map_err(agent_error)?,
                 &from_js(file)?,
+                0,
+                self.observation.maximum_bytes,
             )
             .await
+            .map(|(bytes, _length)| bytes)
             .map_err(agent_error)
     }
 
