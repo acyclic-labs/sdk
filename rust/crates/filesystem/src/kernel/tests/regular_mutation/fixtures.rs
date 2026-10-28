@@ -29,7 +29,7 @@ async fn blob(
             chunk_bytes: 64,
             page_items: 8,
             page_bytes: 4096,
-            maximum_blob_bytes: u64::try_from(bytes.len())?,
+            maximum_blob_bytes: Some(u64::try_from(bytes.len())?),
         },
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
