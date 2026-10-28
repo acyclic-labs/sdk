@@ -86,7 +86,7 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
     let delegated =
         issuer.delegate_private_file_read(&scope, attached, "attached-read", &exact_file)?;
     assert_eq!(delegated.agent(), Some(attached));
-    ContentGrant::verify_file_read(&issuer.verifier(&mut None)?, &delegated, &exact_file)?;
+    ContentGrant::verify_read(&issuer.verifier(&mut None)?, &delegated, &exact_file)?;
     let internal = file(owner, ".system/execution/state.json")?;
     assert!(matches!(
         ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &internal),
@@ -99,7 +99,7 @@ fn owner_bound_private_write_rejects_an_attached_agent_with_a_copied_capability(
         &mut None,
     )?;
     assert!(matches!(
-        ContentGrant::verify_file_read(&issuer.verifier(&mut None)?, &internal_exact, &internal),
+        ContentGrant::verify_read(&issuer.verifier(&mut None)?, &internal_exact, &internal),
         Err(Error::Unauthorized(_))
     ));
     assert!(matches!(
@@ -271,7 +271,6 @@ fn retained_content_grants_reject_revoked_workload_ancestors() -> Result<()> {
     let verifier = issuer.verifier(&mut None)?;
     let reads = [
         ContentGrant::verify_read(&verifier, &scope, &selected)?,
-        ContentGrant::verify_file_read(&verifier, &scope, &selected)?,
         ContentGrant::verify_directory_read(&verifier, &scope, volume, "scratch", &mut None)?,
     ];
     let write = ContentGrant::verify(
@@ -285,7 +284,7 @@ fn retained_content_grants_reject_revoked_workload_ancestors() -> Result<()> {
     for grant in &reads {
         grant.require_file_read(&selected, None)?;
     }
-    reads[2].require_directory_path(volume, "scratch", None)?;
+    reads[1].require_directory_path(volume, "scratch", None)?;
     write.require(volume, VolumeOperation::Write, None)?;
     issuer.revoke_workload(&scope)?;
     for grant in &reads {
@@ -295,7 +294,7 @@ fn retained_content_grants_reject_revoked_workload_ancestors() -> Result<()> {
         ));
     }
     assert!(matches!(
-        reads[2].require_directory_path(volume, "scratch", None),
+        reads[1].require_directory_path(volume, "scratch", None),
         Err(Error::Unauthorized(_))
     ));
     assert!(matches!(

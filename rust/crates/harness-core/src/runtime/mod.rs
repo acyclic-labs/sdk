@@ -1,6 +1,5 @@
 //! The authority, content bindings and tool context of one agent turn.
 
-use crate::core::contains_content_grant_with_work;
 use crate::{
     Capabilities, Error, NativeCustody, OperationId, Result, TaskId,
     conversation::{

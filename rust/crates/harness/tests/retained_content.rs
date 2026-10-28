@@ -117,7 +117,7 @@ async fn admitted_and_orphaned_generations_survive_restart_and_gc() -> Result<()
             &mut None,
         )
         .expect("scope proof");
-    let attached_read = ContentGrant::verify_file_read(
+    let attached_read = ContentGrant::verify_read(
         &issuer.verifier(&mut None).expect("verifier copy"),
         &attached_scope,
         &admitted,

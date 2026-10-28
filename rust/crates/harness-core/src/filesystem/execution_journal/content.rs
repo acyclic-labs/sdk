@@ -425,19 +425,14 @@ where
                         "internal storage file is not public content",
                     ));
                 }
+                // Another agent's file: the one shared read check.
                 let mut work = io.history_io();
-                self.verifier.verify(&self.scope, &mut Some(&mut work))?;
-                if !io.contains_capability(
-                    self.scope.capabilities(),
+                ContentGrant::verify_read_with_work(
+                    &self.verifier,
+                    &self.scope,
                     reference,
-                    acyclic_fs::access::FILE_READ_PREFIX,
-                )? {
-                    return Err(canonical_boundary(
-                        Some(io),
-                        crate::wire::ErrorCode::Unauthorized,
-                        "exact file read is not granted",
-                    ));
-                }
+                    &mut Some(&mut work),
+                )?;
             } else {
                 crate::executor::with_history_io(Some(io), |work| {
                     ContentGrant::authorize_volume(
@@ -462,7 +457,7 @@ where
             let grant = if reference.volume().class() == VolumeClass::AgentPrivate
                 && reference.volume().owner() != self.volume.owner()
             {
-                ContentGrant::verify_file_read(&self.verifier, &self.scope, reference)?
+                ContentGrant::verify_read(&self.verifier, &self.scope, reference)?
             } else {
                 ContentGrant::verify(
                     &self.verifier,

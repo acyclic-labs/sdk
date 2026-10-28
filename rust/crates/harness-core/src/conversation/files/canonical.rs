@@ -137,15 +137,10 @@ mod tests {
                 &mut None,
             )?;
             ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &file)?;
-            ContentGrant::verify_file_read(&issuer.verifier(&mut None)?, &scope, &file)?;
             let mut changed = file.clone();
             changed.version = format!("{}-changed", changed.version).into_boxed_str();
             assert!(
                 ContentGrant::verify_read(&issuer.verifier(&mut None)?, &scope, &changed).is_err()
-            );
-            assert!(
-                ContentGrant::verify_file_read(&issuer.verifier(&mut None)?, &scope, &changed)
-                    .is_err()
             );
             eprintln!(
                 "FILE_IDENTITY_ALLOCS new={} old={}",
