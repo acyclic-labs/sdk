@@ -79,6 +79,7 @@ fn key(value: &'static [u8]) -> Result<crate::IdempotencyKey, StreamError> {
 #[test]
 fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
     let records = vec![crate::AppendRecord::from(vec![0_u8; MAX_RECORD_BYTES]); 16];
+    let idempotency_key = key(b"size")?;
     let mut low = 1_usize;
     let mut high = crate::MAX_PATH_BYTES;
     while low < high {
@@ -92,7 +93,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
                 .map(crate::wire_codec::append_record_wire)
                 .collect(),
             if_tail: None,
-            idempotency_key: bytes::Bytes::new(),
+            idempotency_key: bytes::Bytes::copy_from_slice(idempotency_key.as_bytes()),
         };
         if wire.encoded_len() <= MAX_COMMAND_BYTES {
             low = middle;
@@ -104,7 +105,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
         path: StreamPath::new("x".repeat(low))?,
         records,
         if_tail: None,
-        idempotency_key: crate::IdempotencyKey::unique(),
+        idempotency_key: idempotency_key.clone(),
     };
     assert!(validate_append_size(&request).is_ok());
     let next = StreamPath::new("x".repeat(low + 1))?;
@@ -117,7 +118,7 @@ fn command_size_uses_exact_protobuf_encoding() -> Result<(), StreamError> {
             .map(crate::wire_codec::append_record_wire)
             .collect(),
         if_tail: None,
-        idempotency_key: bytes::Bytes::new(),
+        idempotency_key: bytes::Bytes::copy_from_slice(idempotency_key.as_bytes()),
     };
     assert!(next_wire.encoded_len() > MAX_COMMAND_BYTES);
     Ok(())
