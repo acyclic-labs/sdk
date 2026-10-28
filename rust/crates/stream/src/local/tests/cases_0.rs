@@ -221,7 +221,9 @@ fn cancellation_keeps_accepted_visibility_and_durable_receipts_distinct()
             .inspect_idempotency(key.clone())
             .await?
             .ok_or("missing accepted outcome")?;
-        let crate::IdempotencyOutcome::Append(accepted) = observed.outcome else {
+        let crate::IdempotencyOutcome::Append(AppendOutcome::Committed(accepted)) =
+            observed.outcome
+        else {
             return Err("unexpected accepted family".into());
         };
         let envelope = provider.read_commit(accepted.commit_id).await?;
