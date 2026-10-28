@@ -62,6 +62,7 @@ The test deletion inventory is pinned to main `28d5c495b63e6d7efd7556d164a49f335
 | `inference` | 1,009 | 0 | 4 | Original cases and oracles; target routing only. |
 | `manifest` | 1,043 | 0 | 46 | Original cases and oracles; target routing only. |
 | `objects` | 790 | 0 | 0 | Original cases and oracles; target routing only. |
+| `sdk-docs` | 3,307 | 0 | 0 | Source/cache fencing, historical release identity, actual Cargo/Rustdoc projections and generator publication checks remain. |
 | `sdk-generation` | 7,792 | 24 | 433 | Actual decoder path/link/duplicate/truncation refusal and hostile-path property remain; remove one duplicate broken-predicate demonstration. |
 | `stream` | 24,909 | 0 | 37 | Original cases and oracles; target routing only. |
 
