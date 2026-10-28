@@ -40,7 +40,11 @@ where
         None,
         &crate::workers::PERSISTENCE_WORKERS,
     );
-    let task = spawn(async move { completion?.await });
+    let task = spawn(crate::obs::waiting(
+        "persistence-completion",
+        "durable-storage",
+        async move { completion?.await },
+    ));
     async move { task.await? }
 }
 
