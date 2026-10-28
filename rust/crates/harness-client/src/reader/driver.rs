@@ -22,6 +22,7 @@ use std::task::{Context, Poll};
 type Opened = (
     StreamPath,
     u64,
+    Option<u64>,
     Result<(PathHead, RecordStream), StreamError>,
 );
 type Opening = LocalBoxFuture<'static, Option<Opened>>;
@@ -76,7 +77,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         self.reconcile(reader, now);
         while let Poll::Ready(Some(done)) = self.opening.poll_next_unpin(cx) {
             // Cancelled opens never complete, so this is the current one.
-            let Some((stream, from, opened)) = done else {
+            let Some((stream, from, observed, opened)) = done else {
                 continue;
             };
             self.pending.remove(&stream);
@@ -88,8 +89,8 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             }
             match opened {
                 Ok((head, records)) => {
-                    let accepted = head.tail;
-                    if !reader.observed_head(&stream, head) {
+                    let accepted = head.tail.max(reader.cache().tail(&stream).unwrap_or(0));
+                    if !reader.observed_head(&stream, head, observed) {
                         reader.follow_failed(Failure::Refused, now);
                         continue;
                     }
@@ -144,6 +145,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             let (abort, registration) = AbortHandle::new_pair();
             self.pending.insert(path.clone(), (from, abort));
             let anchor = reader.follow_anchor(&path, from);
+            let observed = reader.cache().observation(&path);
             let provider = Arc::clone(&self.provider);
             let open = async move {
                 let opened = async {
@@ -158,7 +160,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                     Ok((head, records))
                 }
                 .await;
-                (path, from, opened)
+                (path, from, observed, opened)
             };
             self.opening.push(Box::pin(async move {
                 Abortable::new(open, registration).await.ok()
@@ -369,7 +371,8 @@ mod tests {
             assert_eq!(child.tail.as_ref().unwrap().value.as_ref(), b"second");
 
             let mut reader = Reader::new(super::super::ReaderPolicy::default()).unwrap();
-            assert!(reader.observed_head(&path, head));
+            let observed = reader.cache().observation(&path);
+            assert!(reader.observed_head(&path, head, observed));
             reader.plan([(
                 super::super::Want::Range {
                     stream: path.clone(),

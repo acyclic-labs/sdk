@@ -349,6 +349,7 @@ struct InFlight {
     deadline: u64,
     issued: u64,
     paging: Paging,
+    observed: Option<u64>,
 }
 
 /// Exact listing continuations at strided page indexes, so any page is
@@ -797,6 +798,7 @@ impl Reader {
                     deadline: now.saturating_add(self.policy.timeout_ms),
                     issued: now,
                     paging: paging.clone(),
+                    observed: self.cache.observation(key.path()),
                 },
             );
             self.keys.insert(key.clone(), id);
@@ -865,7 +867,9 @@ impl Reader {
                 }
                 valid
             }
-            (OpKey::Head(stream), Outcome::Head(head)) => self.observed_head(stream, head),
+            (OpKey::Head(stream), Outcome::Head(head)) => {
+                self.observed_head(stream, head, flight.observed)
+            }
             (
                 OpKey::Children(parent, index),
                 Outcome::Children {
@@ -990,7 +994,12 @@ impl Reader {
     }
 
     /// Fold the same atomic head whether requested by demand or follow recovery.
-    pub(super) fn observed_head(&mut self, stream: &StreamPath, head: PathHead) -> bool {
+    pub(super) fn observed_head(
+        &mut self,
+        stream: &StreamPath,
+        head: PathHead,
+        observed: Option<u64>,
+    ) -> bool {
         let valid = head.durable <= head.tail
             && match &head.last {
                 Some(last) => last.sequence.checked_add(1) == Some(head.tail),
@@ -1001,6 +1010,12 @@ impl Reader {
                 .as_ref()
                 .is_none_or(|origin| origin.source != *stream && origin.forked_at <= head.tail);
         if valid {
+            // Another response published facts while this request waited.
+            // Its smaller tail or different anchor cannot prove rollback.
+            // A fresh demand Head or the checked follow validates the cut.
+            if self.cache.observation(stream) != observed {
+                return true;
+            }
             let replaced = self.cache.tail(stream).is_some_and(|old| head.tail < old)
                 || head.last.as_ref().is_some_and(|last| {
                     self.cache
@@ -1008,6 +1023,17 @@ impl Reader {
                         .is_some_and(|commit| commit != last.commit_id)
                 });
             if replaced {
+                // An inherited entry is stored under its source key. Drop
+                // that backing namespace and its aliases before relearning
+                // the child, or insert_record would retain the old bytes.
+                if let Some(last) = &head.last {
+                    let Key::Record(source, _) = self.cache.resolve(stream, last.sequence) else {
+                        unreachable!("a record resolves to a record key");
+                    };
+                    if source != *stream {
+                        self.replaced(&source);
+                    }
+                }
                 self.replaced(stream);
             }
             self.learn_origin(stream, head.origin);
@@ -1299,6 +1325,81 @@ fn covers(cache: &RecordCache, want: &Want, key: &Key) -> bool {
 mod reader_tests {
     use super::*;
 
+    fn head(tail: u64, commit: CommitId, value: &[u8], origin: Option<ForkOrigin>) -> PathHead {
+        PathHead {
+            tail,
+            durable: 0,
+            origin,
+            last: tail.checked_sub(1).map(|sequence| acyclic_stream::Record {
+                sequence,
+                value: value.to_vec().into(),
+                commit_id: commit,
+                committed_at_micros: 0,
+                headers: Default::default(),
+            }),
+        }
+    }
+
+    #[test]
+    fn delayed_head_cannot_roll_back_a_newer_projected_tail() {
+        let stream = StreamPath::new("test/history").unwrap();
+        let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+        reader.cache.observe_origin(&stream, None);
+        reader.cache.observe_tail(&stream, 10);
+        let observed = reader.cache.observation(&stream);
+        let old = head(10, CommitId::from_bytes([1; 32]), b"old", None);
+        // A children projection completes while the saved Head awaits the
+        // follow opening. Rendering recency changes do not count as cuts.
+        reader.cache.touch_stream(&stream);
+        assert_eq!(reader.cache.observation(&stream), observed);
+        reader.cache.observe_tail(&stream, 11);
+        reader.keep(&stream, fetched(10, 3), None);
+        assert!(reader.observed_head(&stream, old, observed));
+        assert_eq!(reader.cache.tail(&stream), Some(11));
+        assert!(reader.cache.record(&stream, 10).is_some());
+        assert!(reader.issues().next().is_none());
+
+        // A fresh Head requested after that observation can establish a
+        // genuine rollback; ignoring delayed responses must not hide it.
+        let observed = reader.cache.observation(&stream);
+        assert!(reader.observed_head(
+            &stream,
+            head(10, CommitId::from_bytes([2; 32]), b"replacement", None),
+            observed,
+        ));
+        assert_eq!(reader.cache.tail(&stream), Some(10));
+        assert_eq!(reader.issues.get(&stream), Some(&ReadIssue::RetentionLost));
+    }
+
+    #[test]
+    fn replacement_head_discards_inherited_source_bytes_before_relearning() {
+        let source = StreamPath::new("test/source").unwrap();
+        let child = StreamPath::new("test/child").unwrap();
+        let origin = ForkOrigin {
+            source: source.clone(),
+            forked_at: 1,
+            commit_id: CommitId::from_bytes([9; 32]),
+        };
+        let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+        reader.cache.observe_origin(&source, None);
+        reader.cache.observe_origin(&child, Some(origin.clone()));
+        reader.cache.observe_tail(&child, 1);
+        reader.keep(&child, fetched(0, 3), None);
+        let observed = reader.cache.observation(&child);
+        assert!(reader.observed_head(
+            &child,
+            head(1, CommitId::from_bytes([2; 32]), b"new", Some(origin)),
+            observed,
+        ));
+        assert_eq!(reader.cache.record(&child, 0).unwrap().as_ref(), b"new");
+        assert_eq!(reader.cache.record(&source, 0).unwrap().as_ref(), b"new");
+        assert_eq!(
+            reader.cache.anchor(&child, 0),
+            Some(CommitId::from_bytes([2; 32]))
+        );
+        assert_eq!(reader.issues.get(&child), Some(&ReadIssue::RetentionLost));
+    }
+
     #[test]
     fn newer_head_preserves_the_cached_resume_check() {
         let stream = StreamPath::new("test/history").unwrap();
@@ -1307,6 +1408,7 @@ mod reader_tests {
         reader.cache.observe_origin(&stream, None);
         reader.cache.observe_tail(&stream, 1);
         reader.keep(&stream, fetched(0, 10), None);
+        let observed = reader.cache.observation(&stream);
         assert!(reader.observed_head(
             &stream,
             PathHead {
@@ -1320,7 +1422,8 @@ mod reader_tests {
                     committed_at_micros: 0,
                     headers: Default::default(),
                 }),
-            }
+            },
+            observed,
         ));
         let mut restored = Reader::new(ReaderPolicy::default()).unwrap();
         restored.restore(&reader.snapshot()).unwrap();
@@ -1407,6 +1510,7 @@ mod reader_tests {
                 deadline: 100,
                 issued: 0,
                 paging: paging.clone(),
+                observed: None,
             },
         );
         reader.keys.insert(key.clone(), 7);

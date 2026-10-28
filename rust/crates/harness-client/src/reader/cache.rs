@@ -76,6 +76,9 @@ struct Meta {
     anchor: Option<(u64, CommitId)>,
     /// Cached prefix to validate before a newer Head advances its anchor.
     resume: Option<(u64, CommitId)>,
+    /// Local publication order, distinct from display recency. An older
+    /// in-flight Head cannot replace facts learned after it was requested.
+    observed: u64,
     /// Use clock of the last learn or display; facts used since the frame
     /// mark are never chosen as eviction victims.
     used: u64,
@@ -189,6 +192,10 @@ impl RecordCache {
         self.meta.get(stream).is_some_and(|meta| meta.origin_known)
     }
 
+    pub(super) fn observation(&self, stream: &StreamPath) -> Option<u64> {
+        self.meta.get(stream).map(|meta| meta.observed)
+    }
+
     /// The fork origin, if learned.
     #[must_use]
     pub fn fork(&self, stream: &StreamPath) -> Option<&ForkOrigin> {
@@ -258,6 +265,8 @@ impl RecordCache {
             self.remove(&key);
         }
         if let Some(meta) = self.meta.get_mut(stream) {
+            self.clock += 1;
+            meta.observed = self.clock;
             meta.tail = None;
             meta.anchor = None;
             meta.resume = None;
@@ -345,6 +354,7 @@ impl RecordCache {
         self.clock += 1;
         let meta = self.meta.entry(stream.clone()).or_default();
         meta.used = self.clock;
+        meta.observed = self.clock;
         meta
     }
 
