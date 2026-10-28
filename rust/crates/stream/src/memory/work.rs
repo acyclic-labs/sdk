@@ -9,10 +9,32 @@ pub(crate) type Allocation = Option<ReadAllocation>;
 pub(crate) type Allocation = Option<()>;
 
 struct RetainedReservation {
-    buffer: Vec<Retained>,
-    allocation: Allocation,
+    growth: Arc<RetainedGrowth>,
     #[cfg(not(target_arch = "wasm32"))]
     codec: Option<acyclic_native_runtime::NativeCodecReservation<Arc<dyn NativeReadMeter>>>,
+}
+
+#[derive(Default)]
+struct RetainedPool(crate::query_sync::SyncMutex<std::sync::Weak<RetainedGrowth>>);
+
+struct RetainedGrowth {
+    buffer: crate::query_sync::SyncMutex<Option<(Vec<Retained>, Allocation)>>,
+    pool: std::sync::Weak<RetainedPool>,
+    _allocation: Allocation,
+}
+
+impl Drop for RetainedGrowth {
+    fn drop(&mut self) {
+        if let Some(pool) = self.pool.upgrade() {
+            let mut pending = pool
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if std::ptr::eq(pending.as_ptr(), self) {
+                *pending = std::sync::Weak::new();
+            }
+        }
+    }
 }
 
 impl MemoryStream {
@@ -21,24 +43,35 @@ impl MemoryStream {
         state: &mut State,
         reservation: Option<RetainedReservation>,
     ) -> Result<(), StreamError> {
-        if state.retained.len() < state.retained.capacity() {
-            return Ok(());
+        if let Some(reservation) = reservation {
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut codec = reservation.codec;
+            let mut pending = reservation
+                .growth
+                .buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if pending
+                .as_ref()
+                .is_some_and(|(buffer, _)| buffer.capacity() > state.retained.capacity())
+            {
+                let (mut buffer, allocation) = pending.take().ok_or(StreamError::Capacity)?;
+                #[cfg(not(target_arch = "wasm32"))]
+                let copied = (state.retained.len() * std::mem::size_of::<Retained>()) as u64;
+                buffer.append(&mut state.retained);
+                state.retained = buffer;
+                state.retained_allocation = allocation;
+                #[cfg(not(target_arch = "wasm32"))]
+                if let (Some(work), Some(codec)) = (&self.work, &mut codec) {
+                    let _ = work.record(codec.record(acyclic_native_runtime::NativeCodecWork {
+                        copied,
+                        ..Default::default()
+                    }));
+                }
+            }
         }
-        let mut reservation = reservation.ok_or(StreamError::Capacity)?;
-        if reservation.buffer.capacity() <= state.retained.len() {
+        if state.retained.len() >= state.retained.capacity() {
             return Err(StreamError::Capacity);
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        let copied = (state.retained.len() * std::mem::size_of::<Retained>()) as u64;
-        reservation.buffer.append(&mut state.retained);
-        state.retained = reservation.buffer;
-        state.retained_allocation = reservation.allocation;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let (Some(work), Some(codec)) = (&self.work, &mut reservation.codec) {
-            let _ = work.record(codec.record(acyclic_native_runtime::NativeCodecWork {
-                copied,
-                ..Default::default()
-            }));
         }
         Ok(())
     }

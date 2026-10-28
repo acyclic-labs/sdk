@@ -321,7 +321,57 @@ impl MemoryStream {
             let capacity = needed
                 .checked_next_power_of_two()
                 .ok_or(StreamError::Capacity)?;
-            let (buffer, allocation) = self.vector(capacity)?;
+            let pending = state
+                .retained_growth
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .upgrade();
+            let growth = match pending {
+                Some(pending)
+                    if pending
+                        .buffer
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_ref()
+                        .is_some_and(|(buffer, _)| buffer.capacity() >= capacity) =>
+                {
+                    pending
+                }
+                _ => {
+                    let (buffer, allocation) = self.vector(capacity)?;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let header = self.allocate(acyclic_native_runtime::arc_allocation_bytes::<
+                        RetainedGrowth,
+                    >())?;
+                    #[cfg(target_arch = "wasm32")]
+                    let header = None;
+                    let growth = Arc::new(RetainedGrowth {
+                        buffer: crate::query_sync::SyncMutex::new(Some((buffer, allocation))),
+                        pool: Arc::downgrade(&state.retained_growth),
+                        _allocation: header,
+                    });
+                    *state
+                        .retained_growth
+                        .0
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Arc::downgrade(&growth);
+                    growth
+                }
+            };
+            #[cfg(not(target_arch = "wasm32"))]
+            let copied = growth
+                .buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .ok_or(StreamError::Capacity)?
+                .0
+                .capacity()
+                .checked_sub(1)
+                .and_then(|count| count.checked_mul(std::mem::size_of::<Retained>()))
+                .ok_or(StreamError::Capacity)? as u64;
             #[cfg(not(target_arch = "wasm32"))]
             let codec = self
                 .work
@@ -330,15 +380,14 @@ impl MemoryStream {
                     work.record(acyclic_native_runtime::NativeCodecReservation::new(
                         Arc::clone(&work.meter),
                         acyclic_native_runtime::NativeCodecWork {
-                            copied: ((capacity - 1) * std::mem::size_of::<Retained>()) as u64,
+                            copied,
                             ..Default::default()
                         },
                     ))
                 })
                 .transpose()?;
             return Ok(Some(RetainedReservation {
-                buffer,
-                allocation,
+                growth,
                 #[cfg(not(target_arch = "wasm32"))]
                 codec,
             }));

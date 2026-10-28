@@ -365,7 +365,8 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
         drop(issued.take_recovery_future());
         pending.push((key, issued, guard));
     }
-    for index in 0..64 {
+    // Together with the two seed entries this reaches an exact growth boundary.
+    for index in 0..62 {
         provider
             .native_append(
                 AppendRequest {
@@ -837,7 +838,8 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
         commits: 3,
         records: 3,
         payload_bytes: 72,
-        idempotency_results: 1,
+        // Two retained seed receipts and exactly one promised completion.
+        idempotency_results: 3,
         ..MemoryLimits::default()
     };
     for abandon in [false, true] {
