@@ -87,3 +87,73 @@ async fn prepared_memory_and_local_commits_cover_every_late_header_field()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn prepared_recovery_refuses_unreserved_header_counts_before_codec_work()
+-> Result<(), Box<dyn std::error::Error>> {
+    for local in [false, true] {
+        for attributes in [false, true] {
+            let directory = tempfile::tempdir()?;
+            let provider: Arc<dyn StreamProvider> = if local {
+                Arc::new(LocalStream::open(directory.path(), LocalStreamLimits::default()).await?)
+            } else {
+                Arc::new(MemoryStream::new(MemoryLimits::default()))
+            };
+            let mut request = prepared_fixture(provider.as_ref()).await?;
+            let meter = Arc::new(Meter::default());
+            let packet = provider
+                .native_prepare_commit(
+                    request.clone(),
+                    crate::PreparedRecordCapacity {
+                        payload_bytes: 64,
+                        keys: 0,
+                        attributes: 0,
+                    },
+                    meter.original(),
+                )
+                .await??;
+            let (mut packet, guard) = packet.into_parts();
+            let recovery = packet.take_recovery_future().ok_or("missing recovery")?;
+            let keys = if attributes {
+                vec![]
+            } else {
+                (0..16).map(|key| OwnedBytes::from(vec![key])).collect()
+            };
+            let fields = if attributes {
+                (0..16)
+                    .map(|index| crate::Attribute {
+                        name: format!("k{index:02}"),
+                        value: OwnedBytes::from_static(b""),
+                    })
+                    .collect()
+            } else {
+                vec![]
+            };
+            let [crate::CommitMutation::Append { records, .. }] = request.mutations.as_mut_slice()
+            else {
+                return Err("fixture changed request family".into());
+            };
+            *records = vec![crate::AppendRecord {
+                value: OwnedBytes::from_static(b"v"),
+                headers: crate::RecordHeaders::new(keys, fields)?,
+            }];
+            assert!(matches!(
+                provider.commit(request).await?,
+                CommitOutcome::Committed(_)
+            ));
+            let hashed = meter.hashed.load(Ordering::SeqCst);
+            let allocations = meter.allocations.load(Ordering::SeqCst);
+            meter.deny_allocation.store(true, Ordering::SeqCst);
+            meter.deny_codec.store(true, Ordering::SeqCst);
+            meter.cancelled.store(true, Ordering::SeqCst);
+            assert!(matches!(recovery.await?, Err(StreamError::LimitExceeded)));
+            assert_eq!(meter.hashed.load(Ordering::SeqCst), hashed);
+            assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
+            drop(packet);
+            drop(guard);
+            drop(provider);
+            meter.assert_refunded();
+        }
+    }
+    Ok(())
+}
