@@ -94,66 +94,7 @@ impl ConversationMessage {
     }
 }
 
-impl ConversationMessage {
-    pub(crate) fn clone_in_quota(
-        &self,
-        quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-    ) -> Result<Self> {
-        if quota.work().is_none() {
-            return Ok(self.clone());
-        }
-        self.validate(quota.work())?;
-        let content = self.content.clone_in_quota(quota)?;
-        let attachments = match &self.attachments {
-            ReferencedAttachments::Inline { items } => {
-                let items = crate::core::copy_vector(items, quota, |item, quota| {
-                    let file = item.file.clone_in_quota(quota)?;
-                    let label = item
-                        .label
-                        .as_deref()
-                        .map(|label| crate::core::copy_text(label, quota))
-                        .transpose()?;
-                    Ok(Attachment { file, label })
-                })?;
-                ReferencedAttachments::Inline { items }
-            }
-            ReferencedAttachments::Manifest {
-                manifest,
-                item_count,
-            } => ReferencedAttachments::Manifest {
-                manifest: manifest.clone_in_quota(quota)?,
-                item_count: *item_count,
-            },
-        };
-        let tool_call_id = self
-            .tool_call_id
-            .as_deref()
-            .map(|id| crate::core::copy_text(id, quota))
-            .transpose()?;
-        let mut extensions = BTreeMap::new();
-        for (key, file) in &self.extensions {
-            let bytes = std::mem::size_of::<(String, FileRef)>() as u64;
-            if let Some(io) = quota.work().as_deref_mut() {
-                io.admit_owned(bytes)?;
-                io.retain_owned(bytes)?;
-            }
-            quota.adopt(bytes)?;
-            let key = crate::core::copy_text(key, quota)?;
-            let file = file.clone_in_quota(quota)?;
-            extensions.insert(key, file);
-        }
-        Ok(Self {
-            id: self.id,
-            sequence: self.sequence,
-            kind: self.kind.clone(),
-            content,
-            attachments,
-            reply_to: self.reply_to,
-            tool_call_id,
-            extensions,
-        })
-    }
-}
+impl ConversationMessage {}
 
 crate::core::ownership::owned_enum!(MessageKind {
     User,

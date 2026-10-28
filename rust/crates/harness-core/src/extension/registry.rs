@@ -131,15 +131,6 @@ impl ExtensionRegistry {
         Ok(())
     }
 
-    pub(super) fn exact(&self, name: &str, version: u32) -> Result<Option<ExtensionIdentity>> {
-        Ok(self
-            .lock()?
-            .versions
-            .keys()
-            .find(|identity| identity.name == name && identity.version == version)
-            .cloned())
-    }
-
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, RegistryState>> {
         self.0
             .lock()

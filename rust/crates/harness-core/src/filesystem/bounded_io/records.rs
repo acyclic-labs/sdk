@@ -47,7 +47,7 @@ macro_rules! records {
 records!(
     crate::Capabilities => None,
     crate::model::ModelRequest => ModelRequest, crate::model::ModelContent => ModelContent, crate::model::ModelContentPart => ModelContentPart,
-    crate::fork::InheritedConversationPrefix => None, crate::core::ExtensionConfiguration => None,
+    crate::core::ExtensionConfiguration => None,
     FileRef => None, Vec<crate::conversation::Attachment> => None,
 );
 impl PreparationRecord for crate::executor::ResponseProjection {

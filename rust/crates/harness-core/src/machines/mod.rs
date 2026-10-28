@@ -10,10 +10,6 @@
 
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
-    fork::{
-        Capture, CapturedResource, ForkCaptureProvider, ForkRequest, ForkSeed, ForkSeedVerifier,
-        ForkSelection, ResourceRevision,
-    },
     resources::{ArtifactRef, CheckpointRef, ProviderRef, SandboxRef},
 };
 use acyclic_machines::{
@@ -21,10 +17,8 @@ use acyclic_machines::{
     ImageQualification, MachineId, MachineObservation, MachinesProvider, MutationOutcome,
     OperationId as MachinesOperationId, OperationObservation, ProviderError,
 };
-use acyclic_stream::BoxProviderFuture as BoxFuture;
 use std::{num::NonZeroU32, sync::Arc};
 
-mod fork;
 mod host;
 mod identity;
 pub use host::MachinesHost;

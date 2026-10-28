@@ -3,18 +3,20 @@
 use crate::contract::capability;
 use crate::filesystem::{
     FilesystemContentPublisher, FilesystemContentVerifier, FilesystemExecutionJournal,
-    FilesystemHost,
+    FilesystemHost, agent_internal::AgentInternalFiles,
 };
 use crate::{
-    AgentId, Capabilities, ConversationId, Error, IdempotencyKey, InteractionId, OperationId,
-    Result,
+    AgentId, Capabilities, ConversationId, Error, InteractionId, OperationId, Result,
+    approvals::{
+        AgentApprovalPolicy, AgentApprovals, ApprovalFiles, ApprovalPolicy, ApprovalResponder,
+    },
     conversation::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, VolumeClass, VolumeOperation,
         VolumeOwner, VolumeRef,
     },
-    core::{Action, AggregateKind, Authority, AuthorityRoot, Command, SchemaRegistry, Scope},
+    core::{AggregateKind, Authority, AuthorityRoot, Scope},
     executor::ExecutionJournal,
-    interaction::{InteractionOutcome, InteractionResponse},
+    interaction::InteractionOutcome,
     resources::{GenerationRef, ProviderRef},
     runtime::{ContentBindings, RuntimeScope},
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
@@ -71,40 +73,22 @@ async fn new_memory_content<A: AsyncAuthorityStore + 'static, O: AsyncObjectStor
     Ok((host, volume))
 }
 
-async fn bind_memory_conversation<P: StreamProvider>(
-    stream: &Arc<P>,
-    conversation: &Authority,
-    verifier: &crate::core::AuthorityVerifier,
-    scope: &Scope,
-    agent: AgentId,
-) -> Result<()> {
-    crate::store::StreamAggregate::open(
-        stream,
-        (
-            conversation.clone(),
-            verifier.clone(),
-            SchemaRegistry::new(),
-        ),
-        None,
-        crate::store::default_projection_read_limits(),
-        crate::store::DEFAULT_TERMINAL_EFFECTS,
-        None,
-        &mut None,
-    )
-    .await?
-    .execute(
-        Command {
-            operation_id: OperationId::new(),
-            idempotency_key: IdempotencyKey::new("local-conversation-bind")?,
-            expected_revision: 0,
-            scope: scope.clone(),
-            causal_parent: None,
-            action: Action::BindConversation { agent },
-        },
-        &mut None,
-    )
-    .await?;
-    Ok(())
+/// The one harness approval owner over `files` under `policy`, for an agent
+/// with no parent.
+fn agent_approvals(
+    files: &Arc<dyn ApprovalFiles>,
+    policy: ApprovalPolicy,
+    maximum_file_bytes: u64,
+) -> Result<Arc<AgentApprovals>> {
+    let limits = Limits {
+        file_bytes: maximum_file_bytes,
+        ..Limits::default()
+    };
+    let policy = AgentApprovalPolicy::new(policy, None, Default::default(), limits)?;
+    Ok(Arc::new(AgentApprovals::new(
+        Arc::clone(files),
+        Arc::new(policy),
+    )))
 }
 
 /// A fully bound journal and owner-private file volume.
@@ -118,6 +102,8 @@ pub struct MemoryHarnessStorage<
     O: 'static = MemoryObjectBackend,
 > {
     journal: Arc<FilesystemExecutionJournal<P, A, O>>,
+    approval_files: Arc<dyn ApprovalFiles>,
+    approvals: Arc<AgentApprovals>,
     content_verifier: Arc<FilesystemContentVerifier<A, O>>,
     publisher: Arc<FilesystemContentPublisher<A, O>>,
     host: Arc<FilesystemHost<A, O>>,
@@ -254,11 +240,29 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
             maximum_file_bytes,
             None,
         )?;
+        // Approvals are the agent's own files on its private volume, as for
+        // every hosted agent; only where those files live differs.
+        let approval_files: Arc<dyn ApprovalFiles> = Arc::new(AgentInternalFiles::new(
+            Arc::clone(&host),
+            volume.clone(),
+            crate::conversation::ContentGrant::verify(
+                &verifier,
+                &scope,
+                &volume,
+                VolumeOperation::Write,
+                u64::MAX,
+                &mut None,
+            )?,
+        ));
+        let approvals = agent_approvals(
+            &approval_files,
+            ApprovalPolicy::default(),
+            maximum_file_bytes,
+        )?;
         let journal = Arc::new(
             FilesystemExecutionJournal::new(
                 stream.clone(),
                 Arc::clone(&host),
-                &SchemaRegistry::new(),
                 crate::filesystem::FilesystemJournalBinding {
                     volume: &volume,
                     verifier: &verifier,
@@ -267,9 +271,9 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
                     io: None,
                 },
             )?
-            .with_input_verifier(input.clone()),
+            .with_input_verifier(input.clone())
+            .with_agent_approvals(Arc::clone(&approvals)),
         );
-        bind_memory_conversation(&stream, &conversation, &verifier, &scope, agent).await?;
         let publisher = FilesystemContentPublisher::new(
             Arc::clone(&host),
             &volume,
@@ -280,6 +284,8 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
         )?;
         Ok(Self {
             journal,
+            approval_files,
+            approvals,
             content_verifier: input,
             publisher,
             host,
@@ -294,6 +300,36 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
             conversation,
             maximum_file_bytes,
         })
+    }
+
+    /// Runs every approval under `policy`, normally the caller's preset
+    /// approval policy (`Preset::approval_policy`). Without it the storage
+    /// uses the harness default policy chain. Binds before the journal is
+    /// shared, so every approval of this storage sees one policy.
+    pub fn with_approval_policy(mut self, policy: ApprovalPolicy) -> Result<Self> {
+        let approvals = agent_approvals(&self.approval_files, policy, self.maximum_file_bytes)?;
+        let journal = Arc::try_unwrap(self.journal).map_err(|_| {
+            Error::Conflict("approval policy must be bound before the journal is shared".into())
+        })?;
+        self.journal = Arc::new(journal.with_agent_approvals(Arc::clone(&approvals)));
+        self.approvals = approvals;
+        Ok(self)
+    }
+
+    /// Records `responder`'s decision on approval `id` through the bound
+    /// approval owner, then returns its settled outcome: `None` while a later
+    /// stage of the policy chain still waits on its decider.
+    pub async fn decide_approval(
+        &self,
+        id: InteractionId,
+        responder: ApprovalResponder<'_>,
+        approved: bool,
+        reason: Option<String>,
+    ) -> Result<Option<InteractionOutcome>> {
+        self.approvals
+            .decide(id, responder, approved, reason)
+            .await?;
+        self.approvals.outcome(id).await
     }
 
     /// Supplies the exact ref-only journal required by `HarnessBuilder`.
@@ -321,12 +357,6 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
     #[must_use]
     pub fn content_reader(&self) -> &dyn ContentResidencyVerifier {
         self.content_verifier.as_ref()
-    }
-
-    /// Shares the authenticated reader with a store's admission checks.
-    #[cfg(test)]
-    pub(crate) fn content_verifier(&self) -> Arc<dyn ContentResidencyVerifier> {
-        self.content_verifier.clone()
     }
 
     /// Stages user content or an attachment before it is admitted to a turn.
@@ -470,30 +500,6 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
             self.maximum_file_bytes,
             None,
         )
-    }
-
-    /// Resolves an addressable local interaction under a host-issued exact responder grant.
-    pub async fn resolve_interaction(
-        &self,
-        id: InteractionId,
-        response: InteractionResponse,
-    ) -> Result<InteractionOutcome> {
-        let responder = self.issuer.bootstrap_scope(
-            &format!("local-responder:{id}"),
-            &Capabilities::new([
-                capability::INTERACTION_RESOLVE.to_owned(),
-                capability::interaction_respond(id),
-            ]),
-            None,
-            &mut None,
-        )?;
-        self.journal
-            .resolve_interaction(id, response, &responder)
-            .await?;
-        self.journal
-            .interaction_outcome(id, None)?
-            .await?
-            .ok_or_else(|| Error::Storage("resolved interaction has no committed outcome".into()))
     }
 
     /// Opens the bound conversation's exact Stream history to host adapters.

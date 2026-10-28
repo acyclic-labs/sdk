@@ -4,7 +4,7 @@ mod observation;
 mod request;
 mod sdk;
 pub(super) use observation::observe_commit;
-pub(crate) use request::{add_condition, add_record, commit_request};
+pub(crate) use request::{add_condition, commit_request};
 pub(super) use sdk::inspect_idempotency;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use sdk::native_call_result;

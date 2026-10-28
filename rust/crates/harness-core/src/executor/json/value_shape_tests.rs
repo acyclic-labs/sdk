@@ -1,38 +1,6 @@
 #![cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 
 use super::*;
-#[test]
-fn fixed_input_failures_keep_their_kind_independent_of_the_wire_code() {
-    for code in [
-        crate::wire::ErrorCode::Invalid,
-        crate::wire::ErrorCode::Storage,
-    ] {
-        for (bytes, expected) in [
-            (b"]".as_slice(), JsonInputError::Nesting),
-            (b"{".as_slice(), JsonInputError::Incomplete),
-            (b"[0]".as_slice(), JsonInputError::Depth),
-        ] {
-            let error = admission::source(
-                bytes,
-                JsonBounds {
-                    maximum_bytes: 3,
-                    maximum_items: 3,
-                    maximum_depth: 0,
-                },
-                None,
-                Some(code),
-                &mut |_| Ok(()),
-            )
-            .unwrap_err();
-            assert!(
-                matches!(error, Error::NativeJsonAdmission { code: actual, kind }
-                if actual == code && kind == expected)
-            );
-            assert!(error.is_native_failure());
-        }
-    }
-}
-
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[test]
 fn hidden_raw_values_are_bounded_before_decode() {

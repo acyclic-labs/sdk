@@ -22,7 +22,7 @@ use crate::{
         ContentResidencyVerifier, FileRef, ModelContextSelection, VolumeClass, VolumeOperation,
         VolumeOwner,
     },
-    core::{AggregateKind, Authority, AuthorityRoot, AuthorityVerifier, SchemaRegistry, Scope},
+    core::{AggregateKind, Authority, AuthorityRoot, AuthorityVerifier, Scope},
     executor::{Executor, TurnOutput},
     model::{ModelContent, ModelContentPart, ModelMessage, ModelRole},
     projection::SelectedModelContext,
@@ -341,7 +341,6 @@ pub struct FilesystemTurnHost<P: ?Sized, A: 'static, O: 'static> {
     issuer: AuthorityRoot,
     admission: TurnAdmission,
     executors: Arc<dyn TurnExecutors>,
-    schemas: SchemaRegistry,
     limits: TurnLimits,
     approvers: crate::approvals::ApproverModels,
     goals: Option<crate::goal::GoalContinuationPolicy>,
@@ -384,7 +383,6 @@ where
             issuer,
             admission,
             executors,
-            schemas: SchemaRegistry::new(),
             limits,
             approvers: Default::default(),
             goals: Some(Default::default()),
@@ -596,7 +594,6 @@ where
         let journal = FilesystemExecutionJournal::new(
             Arc::clone(&self.stream),
             Arc::clone(&self.host),
-            &self.schemas,
             FilesystemJournalBinding {
                 volume: &private.volume,
                 verifier: &verifier,

@@ -3,10 +3,6 @@
 use acyclic_harness::conversation::{
     Limits, MAX_EXACT_JS_INTEGER, MAX_LABEL_BYTES, MAX_PATH_BYTES, MAX_PORTABLE_COUNT,
 };
-use acyclic_harness::fork::{
-    MAX_FORK_AGENTS, MAX_FORK_ATTACHMENT_MANIFEST_BYTES, MAX_FORK_INHERITED_BYTES,
-    MAX_FORK_INHERITED_MESSAGES, MAX_FORK_REFERENCE_BYTES, MAX_FORK_REFERENCES, MAX_FORK_RESOURCES,
-};
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -32,15 +28,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "exact_js_integer": MAX_EXACT_JS_INTEGER,
                 "max_path_bytes": MAX_PATH_BYTES,
                 "max_label_bytes": MAX_LABEL_BYTES,
-            },
-            "fork": {
-                "agents": MAX_FORK_AGENTS,
-                "resources": MAX_FORK_RESOURCES,
-                "references": MAX_FORK_REFERENCES,
-                "attachment_manifest_bytes": MAX_FORK_ATTACHMENT_MANIFEST_BYTES.to_string(),
-                "inherited_bytes": MAX_FORK_INHERITED_BYTES.to_string(),
-                "reference_bytes": MAX_FORK_REFERENCE_BYTES.to_string(),
-                "inherited_messages": MAX_FORK_INHERITED_MESSAGES.to_string(),
             },
             "projection": {
                 "default_max_resolved_bytes": MAX_EXACT_JS_INTEGER,

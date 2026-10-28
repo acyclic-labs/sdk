@@ -1,7 +1,7 @@
 //! Native extension identities and retained admissions.
 use crate::{
     Error, Result,
-    core::{ExtensionAdmission, ExtensionDependency, Reducer, validate_extension_name},
+    core::{ExtensionAdmission, ExtensionDependency, validate_extension_name},
 };
 use serde::{Deserialize, Serialize};
 use std::{

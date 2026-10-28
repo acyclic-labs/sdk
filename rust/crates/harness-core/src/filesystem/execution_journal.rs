@@ -1,8 +1,7 @@
 //! Stream-backed execution observations with private Filesystem payloads.
 
 use super::bounded_io::{PreparationIo, PreparationRecord};
-use super::interaction_host::interaction_boundary as canonical_boundary;
-use super::{FilesystemHost, FilesystemInteractionHost, InternalContentClass};
+use super::{FilesystemHost, InternalContentClass};
 use crate::obs::{obs_span, traced};
 use crate::{
     Error, IdempotencyKey, InteractionId, OperationId, Result,
@@ -10,14 +9,14 @@ use crate::{
         ContentGrant, ContentResidencyVerifier, FileRef, Limits, VolumeClass, VolumeOperation,
         VolumeRef,
     },
-    core::{AuthorityVerifier, SchemaRegistry, Scope},
+    core::{AuthorityVerifier, Scope},
     executor::{
         EXECUTION_REPLAY_PAGE_RECORDS, ExecutionEvent, ExecutionJournal, ExecutionRecord,
         ModelEventAdmission, decode_json,
     },
-    interaction::{Interaction, InteractionOutcome, InteractionResponse},
+    interaction::{Interaction, InteractionOutcome},
     model::{ModelContent, ModelEvent},
-    projection::{SelectedModelContext, select_model_context},
+    projection::SelectedModelContext,
     tool::ToolApprovalVerifier,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
@@ -30,7 +29,6 @@ use bytes::Bytes;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-mod approvals;
 mod cancellation;
 mod canonical;
 mod checkpoint;
@@ -64,7 +62,6 @@ mod test_support;
 #[cfg(test)]
 mod tests;
 mod traits;
-use selected::JournalSelectedResolver;
 use summary::*;
 use summary_cache::SummaryCache;
 
@@ -85,10 +82,23 @@ pub struct FilesystemExecutionJournal<P: ?Sized, A: 'static, O: 'static> {
     stop: Option<acyclic_actors::guest::CancellationToken>,
     /// A native agent's approval files; its interactions never touch the ledger.
     agent_approvals: Option<Arc<crate::approvals::AgentApprovals>>,
-    interactions: Option<FilesystemInteractionHost<P, A, O>>,
     execution: Option<(OperationId, OperationId)>,
     verified: tokio::sync::Mutex<SummaryCache>,
     history_read_limits: Option<crate::store::HistoryReadLimits>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
+}
+
+fn canonical_boundary(
+    io: Option<&PreparationIo>,
+    code: crate::wire::ErrorCode,
+    reason: &'static str,
+) -> Error {
+    if code == crate::wire::ErrorCode::NotFound
+        && io.is_none_or(|io| io.original_native_work().is_none())
+    {
+        Error::NotFound(reason.into())
+    } else {
+        crate::executor::stock_boundary(io, code, reason)
+    }
 }

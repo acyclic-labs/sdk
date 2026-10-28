@@ -1,14 +1,5 @@
 use super::*;
 
-#[derive(Serialize)]
-struct ConversationPage<'a> {
-    agent: Option<AgentId>,
-    event_revision: u64,
-    total_messages: u64,
-    messages: &'a [ConversationMessage],
-    next_sequence: Option<u64>,
-}
-
 #[derive(Deserialize)]
 struct SchemaDefinition {
     name: String,
@@ -18,7 +9,7 @@ struct SchemaDefinition {
     fork_policy: ExtensionForkPolicy,
 }
 
-pub(super) fn schema_registry(value: JsValue) -> Result<SchemaRegistry, JsValue> {
+fn schema_registry(value: JsValue) -> Result<SchemaRegistry, JsValue> {
     let definitions: Vec<SchemaDefinition> = from_js(value)?;
     let mut registry = SchemaRegistry::new();
     for definition in definitions {
@@ -52,7 +43,8 @@ impl WasmReducer {
 
 #[wasm_bindgen]
 impl WasmReducer {
-    /// Creates an empty reducer with explicit host-managed authority.
+    /// Creates the authority root of `authority`. `schemas` stays validated so
+    /// hosts keep one registration contract.
     #[wasm_bindgen(constructor)]
     pub fn new(
         authority: JsValue,
@@ -61,57 +53,10 @@ impl WasmReducer {
         schemas: JsValue,
     ) -> Result<Self, JsValue> {
         let authority: Authority = from_js(authority)?;
-        let issuer = AuthorityRoot::new(issuer_id, key_bytes(issuer_key)?, authority.clone());
+        schema_registry(schemas)?;
         Ok(Self {
-            reducer: Reducer::new(
-                authority,
-                issuer.verifier(&mut None).map_err(js_error)?,
-                schema_registry(schemas)?,
-            ),
-            issuer,
+            issuer: AuthorityRoot::new(issuer_id, key_bytes(issuer_key)?, authority),
         })
-    }
-
-    /// Restores a snapshot under explicit host-managed authority.
-    pub fn restore(
-        snapshot: JsValue,
-        issuer_id: String,
-        issuer_key: Vec<u8>,
-        schemas: JsValue,
-    ) -> Result<Self, JsValue> {
-        let snapshot: Snapshot = from_js(snapshot)?;
-        let issuer = AuthorityRoot::new(
-            issuer_id,
-            key_bytes(issuer_key)?,
-            snapshot.authority.clone(),
-        );
-        let reducer = Reducer::restore(
-            snapshot,
-            issuer.verifier(&mut None).map_err(js_error)?,
-            schema_registry(schemas)?,
-            &mut None,
-        )
-        .map_err(js_error)?;
-        Ok(Self { reducer, issuer })
-    }
-
-    pub fn apply(&mut self, command: JsValue) -> Result<JsValue, JsValue> {
-        let command: Command = from_js(command)?;
-        let result: ApplyResult = self.reducer.apply(&command).map_err(js_error)?;
-        to_js(&result)
-    }
-
-    /// Applies an authority-bound canonical Protobuf command.
-    #[wasm_bindgen(js_name = applyWire)]
-    pub fn apply_wire(&mut self, command: Vec<u8>) -> Result<Vec<u8>, JsValue> {
-        let (authority, command) = decode_command(&command).map_err(js_error)?;
-        if &authority != self.reducer.authority() {
-            return Err(JsValue::from_str(
-                "command authority does not match reducer",
-            ));
-        }
-        let result = self.reducer.apply(&command).map_err(js_error)?;
-        encode_apply_result(&authority, &result).map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = protocolIdentity)]
@@ -121,20 +66,6 @@ impl WasmReducer {
             version: identity.version,
             descriptor_digest: identity.descriptor_digest,
         })
-    }
-
-    pub fn head(&self) -> Result<JsValue, JsValue> {
-        to_js(&(self.reducer.authority(), self.reducer.revision()))
-    }
-
-    pub fn snapshot(&self) -> Result<JsValue, JsValue> {
-        to_js(
-            &self
-                .reducer
-                .snapshot(usize::MAX, &mut None)
-                .map_err(js_error)?
-                .0,
-        )
     }
 
     /// Issues a host grant, optionally bound to an acting agent.
@@ -328,57 +259,6 @@ impl WasmReducer {
         let file: FileRef = from_js(file)?;
         let limits: Limits = from_js(limits)?;
         limits.validate_file(&file, &mut None).map_err(js_error)
-    }
-
-    /// Selects fork history against this reducer before provider preparation.
-    #[wasm_bindgen(js_name = prepareForkRequest, unchecked_return_type = "ForkRequest")]
-    pub fn prepare_fork_request(
-        &self,
-        #[wasm_bindgen(unchecked_param_type = "unknown")] request: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "ForkHistoryPolicy | null")] policy: JsValue,
-    ) -> Result<JsValue, JsValue> {
-        let request: ForkRequest = from_js(request)?;
-        let policy: crate::fork::ForkHistoryPolicy = if policy.is_null() || policy.is_undefined() {
-            crate::fork::ForkHistoryPolicy::default()
-        } else {
-            from_js(policy)?
-        };
-        let request = request
-            .with_history_policy(&self.reducer, policy, &mut None)
-            .map_err(js_error)?;
-        to_js_admitted(&request)
-    }
-
-    /// Returns a bounded conversation page with exact revisions and cursors.
-    #[wasm_bindgen(js_name = conversationPage)]
-    pub fn conversation_page(&self, after_sequence: u64, limit: u32) -> Result<JsValue, JsValue> {
-        if limit == 0 || limit as usize > crate::conversation::MAX_CONVERSATION_PAGE_MESSAGES {
-            return Err(JsValue::from_str("conversation page limit is invalid"));
-        }
-        let conversation = self
-            .reducer
-            .conversation()
-            .ok_or_else(|| JsValue::from_str("aggregate is not a conversation"))?;
-        let total_messages = conversation.logical_revision();
-        let messages = conversation
-            .page(after_sequence, total_messages, limit as usize)
-            .map_err(js_error)?;
-        let end = messages
-            .last()
-            .map_or(after_sequence, |message| message.sequence);
-        to_js_admitted(&ConversationPage {
-            agent: conversation.agent,
-            event_revision: self.reducer.revision(),
-            total_messages,
-            messages,
-            next_sequence: (end < total_messages).then_some(end),
-        })
-    }
-
-    #[wasm_bindgen(js_name = contextSelectionForOperation)]
-    pub fn context_selection_for_operation(&self, operation: JsValue) -> Result<JsValue, JsValue> {
-        let operation = from_js(operation)?;
-        to_js_admitted(&self.reducer.context_selection_for_operation(operation))
     }
 
     /// Composes a captured immutable prefix after owner authorization.

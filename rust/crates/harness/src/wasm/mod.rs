@@ -1,13 +1,10 @@
-//! Thin JavaScript host for the exact native reducer.
+//! Thin JavaScript host for the native authority and content contracts.
 #![allow(
     clippy::needless_pass_by_value,
     reason = "wasm-bindgen's exported ABI owns JavaScript values and byte buffers"
 )]
 
-use crate::wire_codec::{
-    decode_command, decode_event_payload as decode_payload_wire, encode_apply_result,
-    protocol_identity,
-};
+use crate::wire_codec::{decode_event_payload as decode_payload_wire, protocol_identity};
 use crate::{
     AgentId, BatchId, Capabilities, ConversationId, EffectId, GroupId, OperationId, PolicyLayer,
     SessionId, TaskId, TurnId,
@@ -18,14 +15,12 @@ use crate::{
         VolumeRef, decode_attachment_manifest, encode_attachment_manifest,
     },
     core::{
-        AggregateKind, ApplyResult, Authority, AuthorityRoot, Command, ExtensionAdmission,
-        ExtensionConfiguration, ExtensionDependency, ExtensionForkPolicy, ExtensionRecord,
-        ExtensionStateMigration, Reducer, SchemaRegistry, Scope, Snapshot,
+        AggregateKind, Authority, AuthorityRoot, ExtensionAdmission, ExtensionConfiguration,
+        ExtensionDependency, ExtensionForkPolicy, ExtensionRecord, ExtensionStateMigration,
+        SchemaRegistry, Scope,
     },
     executor::ModelEventAdmission,
-    fork::{ForkReport, ForkRequest, ForkSeed, ReferenceGrant, ResourceRevision},
     interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
-    merge::ProjectMergeReceipt,
     model::{ModelContent, ModelEvent, ModelMessage},
     projection::{SelectedModelContext, select_model_context, validate_model_context_selection},
     resources::{ProviderRef, ResourceRef},
@@ -56,7 +51,6 @@ use json::*;
 mod model;
 use model::*;
 mod reducer;
-use reducer::schema_registry;
 mod tool;
 use tool::*;
 #[cfg(target_arch = "wasm32")]
@@ -75,13 +69,12 @@ mod wire_session;
 mod agents;
 #[cfg(target_arch = "wasm32")]
 mod context_discovery;
-mod history;
 mod mcp;
 
-/// Opaque synchronous reducer hosted in WebAssembly.
+/// Host-managed authority root hosted in WebAssembly: it issues and verifies
+/// the scopes of browser agents and their content grants.
 #[wasm_bindgen]
 pub struct WasmReducer {
-    reducer: Reducer,
     issuer: AuthorityRoot,
 }
 

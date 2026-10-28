@@ -15,13 +15,6 @@ test = false
 doc = false
 bench = false
 
-[[bin]]
-name = "effect_certificate"
-path = "fuzz_targets/effect_certificate.rs"
-test = false
-doc = false
-bench = false
-
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(loom)", "cfg(fuzzing)"] }
 

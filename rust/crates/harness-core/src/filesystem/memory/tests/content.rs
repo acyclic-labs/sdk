@@ -1,4 +1,5 @@
 use super::*;
+use crate::IdempotencyKey;
 
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(32))]

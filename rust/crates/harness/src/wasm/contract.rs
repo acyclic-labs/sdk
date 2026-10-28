@@ -17,20 +17,12 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         "provider_ref" => admit(value, |v: &ProviderRef| v.validate(&mut None)),
         "file_descriptor" => admit(value, |_: &FileDescriptor| Ok(())),
         "approval_binding" => admit(value, |v: &ApprovalBinding| v.validate()),
-        "project_merge_receipt" => {
-            admit(value, |v: &ProjectMergeReceipt| v.validate_shape(&mut None))
-        }
         "volume_ref" => admit(value, |v: &VolumeRef| v.validate(&mut None)),
         "file_ref" => admit(value, |v: &FileRef| v.validate(&mut None)),
         "attachments" => admit(value, |v: &ReferencedAttachments| v.validate(&mut None)),
         "task_outcome" => admit(value, |v: &TaskOutcomeRecord| v.validate()),
         "resource_ref" => admit(value, |v: &ResourceRef| v.validate(&mut None)),
         "private_directory_page" => admit(value, |v: &PrivateDirectoryPage| v.validate()),
-        "resource_revision" => admit(value, |v: &ResourceRevision| v.validate(&mut None)),
-        "fork_request" => admit(value, |v: &ForkRequest| v.validate(&mut None)),
-        "fork_report" => admit(value, |v: &ForkReport| v.validate(&mut None)),
-        "fork_seed" => admit(value, |v: &ForkSeed| v.validate(&mut None)),
-        "reference_grant" => admit(value, |v: &ReferenceGrant| v.validate(&mut None)),
         "extension_record" => admit(value, |v: &ExtensionRecord| v.validate()),
         "extension_state_migration" => admit(value, |v: &ExtensionStateMigration| v.validate()),
         "extension_dependency" => admit(value, |v: &ExtensionDependency| v.validate()),
@@ -116,11 +108,4 @@ pub fn decode_attachment_manifest_bytes(
     to_js_admitted(
         &decode_attachment_manifest(&manifest, &bytes, Some(item_count), None).map_err(js_error)?,
     )
-}
-
-/// Converts a fully captured report into its canonical publishable child seed.
-#[wasm_bindgen(js_name = forkSeedFromReport)]
-pub fn fork_seed_from_report(report: JsValue) -> Result<JsValue, JsValue> {
-    let report: ForkReport = from_js(report)?;
-    to_js_admitted(&report.into_seed(&mut None).map_err(js_error)?)
 }

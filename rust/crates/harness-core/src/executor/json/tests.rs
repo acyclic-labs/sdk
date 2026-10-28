@@ -347,39 +347,6 @@ fn resident_copy_preserves_literal_raw_keys_and_enforces_bounds() -> Result<()> 
 #[cfg(not(target_arch = "wasm32"))]
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(64))]
-    // Every source byte is funded before lexical inspection; denial never
-    // starts inspection, and successful admission charges exactly its input.
-    #[test]
-    fn source_admission_funds_all_bytes_before_inspection(text in ".{0,4096}", allowance in 0_u64..16384) {
-        let bytes = serde_json::to_vec(&text).unwrap();
-        let mut read = 0;
-        let mut inspected = false;
-        let result = admission::source(&bytes, BOUNDS, None, None, &mut |event| {
-            match event {
-                JsonCodecCharge::Read { bytes } => {
-                    if bytes > allowance - read {
-                        return Err(Error::Unsupported("read denied".into()));
-                    }
-                    read += bytes;
-                }
-                JsonCodecCharge::Work { items, .. } if items > 0 => {
-                    assert_eq!(read, bytes.len() as u64);
-                    inspected = true;
-                }
-                _ => {}
-            }
-            Ok(())
-        });
-        proptest::prop_assert_eq!(result.is_ok(), bytes.len() as u64 <= allowance);
-        if result.is_ok() {
-            proptest::prop_assert_eq!(read, bytes.len() as u64);
-            proptest::prop_assert!(inspected);
-        } else {
-            proptest::prop_assert_eq!(read, 0);
-            proptest::prop_assert!(!inspected);
-            proptest::prop_assert!(matches!(result, Err(Error::Unsupported(_))));
-        }
-    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -171,7 +171,6 @@ impl Fixture {
         Ok(TestJournal::new(
             stream,
             self.host.clone(),
-            &acyclic_harness::core::SchemaRegistry::new(),
             acyclic_harness::filesystem::FilesystemJournalBinding {
                 volume: &private,
                 verifier: &self.issuer.verifier(&mut None).expect("verifier copy"),

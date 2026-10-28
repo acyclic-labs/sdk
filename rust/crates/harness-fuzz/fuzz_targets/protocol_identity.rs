@@ -1,4 +1,4 @@
-//! Fuzz protocol validation and protobuf round-trip stability.
+//! Fuzz command protocol validation and protobuf round-trip stability.
 #![no_main]
 
 use acyclic_harness::{core::Action, wire, wire_api, wire_codec};
@@ -32,92 +32,7 @@ fn canonical_action_matches_reference(bytes: &[u8]) {
     assert_eq!(result.is_ok(), encoded == bytes);
 }
 
-fn event_protocol_round_trip(data: &[u8]) {
-    if data.len() > acyclic_stream::MAX_RECORD_BYTES {
-        return;
-    }
-    let Ok(event) = wire::EventEnvelope::decode(data) else {
-        return;
-    };
-    let expected = match event.protocol.as_ref() {
-        None => Err(wire::ErrorCode::Storage),
-        Some(protocol) if protocol != &wire_api::current_protocol() => {
-            Err(wire::ErrorCode::Unsupported)
-        }
-        Some(_) => Ok(()),
-    };
-    let canonical = event.encode_to_vec();
-    let raw = read_event(data).map_err(|error| (error.code(), error.to_string()));
-    if data == include_bytes!("../corpus/protocol_identity/event-valid") {
-        assert!(
-            raw.is_ok(),
-            "valid event seed must reach attested history decoding"
-        );
-    }
-    if let Err(code) = expected {
-        assert!(matches!(&raw, Err((actual, _)) if *actual == code));
-    }
-    if data != canonical {
-        assert!(raw.is_err(), "noncanonical event bytes were admitted");
-    }
-    let restored = wire::EventEnvelope::decode(canonical.as_slice());
-    assert!(matches!(&restored, Ok(restored) if restored == &event));
-    if let Ok(restored) = restored {
-        assert_eq!(
-            read_event(&canonical).map_err(|error| (error.code(), error.to_string())),
-            read_event(&restored.encode_to_vec())
-                .map_err(|error| (error.code(), error.to_string())),
-        );
-    }
-}
-
-fn read_event(data: &[u8]) -> acyclic_harness::Result<acyclic_harness::store::HistoryPage> {
-    use acyclic_harness::{
-        core::{AggregateKind, Authority, AuthorityRoot},
-        store::{HistoryReadLimits, HistoryReader},
-    };
-    use acyclic_stream::{MemoryStream, Stream};
-    use std::sync::Arc;
-
-    futures::executor::block_on(async {
-        let authority = Authority {
-            kind: AggregateKind::Conversation,
-            id: "conversation-1".into(),
-        };
-        let issuer = AuthorityRoot::new("test", [7; 32], authority.clone());
-        let client = Arc::new(MemoryStream::default());
-        let stream = Stream::new(client.clone(), authority.stream_path(&mut None)?)?;
-        // The canonical fixture is revision two. Its predecessor is outside the pinned page.
-        stream
-            .append(
-                Vec::new(),
-                acyclic_stream::IdempotencyKey::new(b"fixture-predecessor".to_vec())?,
-            )
-            .await?;
-        stream
-            .append(
-                data.to_vec(),
-                acyclic_stream::IdempotencyKey::new(b"fixture-canonical".to_vec())?,
-            )
-            .await?;
-        let reader =
-            HistoryReader::new(&client, &authority, &issuer.verifier(&mut None)?, &mut None)?;
-        let cursor = reader.pin(1, None).await?;
-        reader
-            .read_page(
-                &cursor,
-                HistoryReadLimits {
-                    maximum_events: 1,
-                    maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
-                },
-                None,
-            )
-            .await
-    })
-}
-
 fuzz_target!(|data: &[u8]| {
-    event_protocol_round_trip(data);
     let Ok(command) = wire::CommandEnvelope::decode(data) else {
         return;
     };

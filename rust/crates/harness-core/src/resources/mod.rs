@@ -33,6 +33,7 @@ fn validate_text<'a>(
     }
     Ok(())
 }
+#[cfg(feature = "filesystem")]
 fn capacity_sum(parts: impl IntoIterator<Item = usize>) -> Result<u64> {
     parts.into_iter().try_fold(0_u64, |sum, n| {
         sum.checked_add(n as u64)

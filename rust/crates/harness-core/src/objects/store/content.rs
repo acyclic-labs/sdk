@@ -126,68 +126,6 @@ impl ObjectContentStore {
             None,
         )
     }
-
-    pub(in crate::objects) async fn verify_artifact(&self, artifact: &ArtifactRef) -> Result<()> {
-        artifact.validate(&mut None)?;
-        ContentGrant::verify(
-            &self.verifier,
-            &self.scope,
-            &self.volume,
-            VolumeOperation::Read,
-            self.maximum_bytes,
-            &mut None,
-        )?;
-        if artifact.as_resource().provider() != self.volume.provider() {
-            return Err(Error::Unauthorized(
-                "artifact belongs to another Objects provider".into(),
-            ));
-        }
-        let key = std::str::from_utf8(artifact.as_resource().key())
-            .map_err(|_| Error::Invalid("Objects artifact key is not UTF-8".into()))?;
-        let prefix = format!("{}/", self.volume.storage_name(&mut None)?);
-        let relative_key = key
-            .strip_prefix(&prefix)
-            .filter(|relative| !relative.is_empty())
-            .ok_or_else(|| Error::Unauthorized("artifact is outside this Objects volume".into()))?;
-        let (path, content) = relative_key
-            .rsplit_once("/@content/")
-            .ok_or_else(|| Error::Invalid("Objects artifact has no content identity".into()))?;
-        if artifact.as_resource().version().is_some() || self.key(path, content)? != key {
-            return Err(Error::Invalid(
-                "Objects artifact key is not canonical".into(),
-            ));
-        }
-        let observed = self
-            .objects
-            .get(
-                wire::GetObjectRequest {
-                    bucket: Some(self.bucket.clone()),
-                    object_key: key.to_owned(),
-                    ..Default::default()
-                },
-                self.maximum_bytes,
-            )
-            .await
-            .map_err(storage)?;
-        let metadata = observed
-            .header()
-            .object
-            .as_ref()
-            .and_then(|object| object.metadata.as_ref())
-            .ok_or_else(|| Error::Storage("Objects artifact metadata is missing".into()))?;
-        let display_name = metadata
-            .user
-            .get("harness-display-name")
-            .ok_or_else(|| Error::Storage("Objects artifact display name is missing".into()))?;
-        let descriptor =
-            FileDescriptor::from_bytes(observed.body(), &metadata.content_type, &mut None)?;
-        if content_identity(&descriptor, display_name)? != content {
-            return Err(Error::Conflict(
-                "Objects artifact content identity does not match its bytes".into(),
-            ));
-        }
-        Ok(())
-    }
 }
 
 #[allow(

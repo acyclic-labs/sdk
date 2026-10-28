@@ -40,7 +40,6 @@ async fn journal() -> Result<(Journal, AuthorityRoot)> {
     let journal = FilesystemExecutionJournal::new(
         Arc::new(crate::test_stream::LostSessionAck::default()),
         host,
-        &SchemaRegistry::new(),
         crate::filesystem::FilesystemJournalBinding {
             volume: &volume,
             verifier: &issuer.verifier(&mut None)?,

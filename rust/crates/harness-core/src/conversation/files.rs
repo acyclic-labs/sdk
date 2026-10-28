@@ -345,6 +345,7 @@ impl FileRef {
 }
 
 impl FileRef {
+    #[cfg(feature = "filesystem")]
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         [
             self.path.capacity(),

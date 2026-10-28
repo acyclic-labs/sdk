@@ -7,7 +7,7 @@ use crate::{
         ContentPublisher, ContentResidencyVerifier, FileRef, Limits, MAX_PRIVATE_DIRECTORY_PAGE,
         PrivateDirectoryPage, VolumeRef, verified_content_bytes,
     },
-    core::{ExtensionAdmission, Reducer, SchemaRegistry},
+    core::{ExtensionAdmission, SchemaRegistry},
     extension::ExtensionRuntime,
     interaction::{ApprovalSubject, Interaction, InteractionOutcome},
     registry::ComponentIdentity,

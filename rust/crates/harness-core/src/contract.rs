@@ -17,20 +17,14 @@ pub const COMPONENT_LABEL_FORBIDDEN_SEPARATORS: [char; 2] = ['/', '\\'];
 pub mod capability {
     use std::fmt::Display;
 
-    pub(crate) const LIFECYCLE_MANAGE: &str = "lifecycle:manage";
-    pub(crate) const EVENT_APPEND: &str = "event:append";
-    pub(crate) const EXTENSION_MIGRATE: &str = "extension:migrate";
-    pub(crate) const EXTENSION_ACTIVATE: &str = "extension:activate";
-    pub(crate) const EXTENSION_CONFIGURE: &str = "extension:configure";
-    pub(crate) const EFFECT_RUN: &str = "effect:run";
-    pub(crate) const EFFECT_PLAN: &str = "effect:plan";
-    pub(crate) const FORK_PUBLISH: &str = "fork:publish";
-    pub(crate) const PROJECT_MERGE: &str = "project:merge";
+    #[cfg(feature = "filesystem")]
     pub(crate) const CONVERSATION_BIND: &str = "conversation:bind";
+    #[cfg(feature = "filesystem")]
     pub(crate) const CONVERSATION_APPEND: &str = "conversation:append";
+    #[cfg(feature = "filesystem")]
     pub(crate) const CONVERSATION_SELECT_CONTEXT: &str = "conversation:select_context";
+    #[cfg(feature = "filesystem")]
     pub(crate) const INTERACTION_OPEN: &str = "interaction:open";
-    pub(crate) const INTERACTION_RESOLVE: &str = "interaction:resolve";
     #[doc(hidden)]
     pub const INTERACTION_ROUTE: &str = "interaction:route";
     pub(crate) const OPERATION_OBSERVE: &str = "operation:observe";
@@ -39,10 +33,6 @@ pub mod capability {
     pub const MODEL_GENERATE: &str = "model:generate";
     #[doc(hidden)]
     pub const CONTEXT_BUILD: &str = "context:build";
-
-    pub(crate) fn effect_provider(provider: impl Display) -> String {
-        format!("effect:provider:{provider}")
-    }
 
     pub(crate) fn tool_call(tool: impl Display) -> String {
         format!("tool:call:{tool}")

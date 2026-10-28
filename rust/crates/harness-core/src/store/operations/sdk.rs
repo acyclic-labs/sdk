@@ -163,7 +163,7 @@ pub(crate) async fn read_records<P: StreamProvider + ?Sized>(
 }
 
 /// Preserves the provider's `NotFound` result for the canonical CAS selector.
-pub(crate) async fn tail_result_with_work<P: StreamProvider + ?Sized>(
+async fn tail_result_with_work<P: StreamProvider + ?Sized>(
     client: &Arc<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -183,16 +183,6 @@ pub(crate) async fn tail_result_with_work<P: StreamProvider + ?Sized>(
         observer.begin_call()?;
     }
     Ok(client.tail(path.clone()).await)
-}
-
-pub(crate) async fn tail_with_work<P: StreamProvider + ?Sized>(
-    client: &Arc<P>,
-    path: &StreamPath,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<u64> {
-    tail_optional_with_work(client, path, work)
-        .await?
-        .ok_or_else(|| stream_error_with_work(StreamError::NotFound, work))
 }
 
 pub(crate) async fn tail_optional_with_work<P: StreamProvider + ?Sized>(
@@ -251,23 +241,4 @@ pub(crate) async fn one_record<P: StreamProvider + ?Sized>(
     }
     quota.transfer();
     Ok(first)
-}
-
-pub(in crate::store) async fn publication_record<P: StreamProvider + ?Sized>(
-    client: &Arc<P>,
-    stream: (StreamPath, u64),
-    from: u64,
-    quota: &mut CodecQuota<'_, '_>,
-) -> Result<Option<ObservedRecord>> {
-    let (stream, held) = stream;
-    quota.adopt(held)?;
-    let received = one_record(client, &stream, from, quota.work()).await;
-    drop(stream);
-    quota.relinquish(held)?;
-    let record = received?;
-    let held = record
-        .as_ref()
-        .map_or(0, |record| sdk_record_retained_bytes(record, quota.work()));
-    quota.adopt(held)?;
-    Ok(record)
 }

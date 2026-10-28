@@ -12,9 +12,6 @@ use crate::{
     wire_codec::{COMPILED_PROTOCOL, decode_authority, decode_scope, validate_protocol},
 };
 
-mod history;
-pub use history::replay_history;
-
 /// Whether a replay stops at its opening cut or remains subscribed to appends.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReplayMode {

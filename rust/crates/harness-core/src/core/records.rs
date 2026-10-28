@@ -18,11 +18,7 @@ pub enum LifecycleState {
     Cancelled,
 }
 
-impl LifecycleState {
-    pub(in crate::core) fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
-    }
-}
+impl LifecycleState {}
 
 /// Schema-validated event payload retained in canonical history.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
@@ -94,16 +90,6 @@ pub enum EventPayload {
         /// Complete host-attested provider observation.
         observation: Box<EffectAttestation>,
     },
-    /// Prepared immutable environment references became atomically visible.
-    ForkPublished {
-        /// Complete child publication record.
-        seed: Box<ForkSeed>,
-    },
-    /// An inspected project join and its parent-conversation notice became visible.
-    ProjectMergePublished {
-        /// Exact provider result, bound to a previously published child fork.
-        receipt: Box<ProjectMergeReceipt>,
-    },
     /// An agent acquired permanent ownership of this conversation.
     ConversationBound {
         /// Owning agent.
@@ -173,20 +159,6 @@ impl RecordedScope {
     pub(crate) fn wire_parts(&self) -> (&str, Option<AgentId>) {
         (&self.issuer, self.agent)
     }
-
-    pub(crate) fn from_wire(
-        id: String,
-        capabilities: Capabilities,
-        issuer: String,
-        agent: Option<AgentId>,
-    ) -> Self {
-        Self {
-            id,
-            capabilities,
-            issuer,
-            agent,
-        }
-    }
 }
 
 /// One canonical event in an aggregate history.
@@ -211,21 +183,7 @@ pub struct Event {
     pub payload: EventPayload,
 }
 
-impl Event {
-    pub(in crate::core) fn replay(
-        &self,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<(ApplyResult, u64)> {
-        if let Some(io) = work.as_deref_mut().filter(|io| !copying::is_native(&**io))
-            && matches!(&self.payload, EventPayload::ForkPublished { .. })
-        {
-            io.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
-        }
-        let (event, retained) =
-            CodecQuota::produce(work, |quota| copying::copy_event(self, quota))?;
-        Ok((ApplyResult::Replayed { event }, retained))
-    }
-}
+impl Event {}
 
 /// Immutable command envelope accepted by the reducer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
@@ -315,16 +273,6 @@ pub enum Action {
         /// Provider observation attested by the aggregate authority host.
         observation: Box<EffectAttestation>,
     },
-    /// Atomically publishes one fully prepared child environment.
-    PublishFork {
-        /// Immutable references prepared outside the reducer.
-        seed: Box<ForkSeed>,
-    },
-    /// Records an already-applied parent-controlled project join.
-    PublishProjectMerge {
-        /// Provider-verified merge result and ref-only notice.
-        receipt: Box<ProjectMergeReceipt>,
-    },
     /// Binds an empty conversation to an agent exactly once.
     BindConversation {
         /// Owning agent.
@@ -368,30 +316,23 @@ pub enum ApplyResult {
     },
 }
 
-// Keep wire tags and authorization in the same transition table.
+// Action and event wire tags share one transition table.
 macro_rules! transitions {
-    ($($action:pat => $event:pat => $action_tag:literal, $event_tag:literal,
-        $capability:ident, $subject:expr;)*) => {
+    ($($action:pat => $event:pat => $action_tag:literal, $event_tag:literal;)*) => {
         impl Action {
-            pub(in crate::core) fn admission(&self) -> (&'static str, &'static str, Subject<'_>) {
-                match self {
-                    $($action => ($action_tag, capability::$capability, $subject),)*
-                }
-            }
             /// Serde action tag carried beside canonical JSON.
             pub(crate) fn tag(&self) -> &'static str {
-                self.admission().0
+                match self {
+                    $($action => $action_tag,)*
+                }
             }
         }
         impl EventPayload {
-            pub(in crate::core) fn admission(&self) -> (&'static str, &'static str, Subject<'_>) {
-                match self {
-                    $($event => ($event_tag, capability::$capability, $subject),)*
-                }
-            }
             /// Serde payload tag carried beside canonical JSON.
             pub(crate) fn tag(&self) -> &'static str {
-                self.admission().0
+                match self {
+                    $($event => $event_tag,)*
+                }
             }
         }
     };
@@ -399,140 +340,31 @@ macro_rules! transitions {
 
 transitions! {
     Self::TransitionLifecycle { .. } => Self::LifecycleTransitioned { .. } =>
-        "transition_lifecycle", "lifecycle_transitioned", LIFECYCLE_MANAGE, Subject::None;
+        "transition_lifecycle", "lifecycle_transitioned";
     Self::AppendCustom { .. } => Self::Custom { .. } =>
-        "append_custom", "custom", EVENT_APPEND, Subject::None;
+        "append_custom", "custom";
     Self::MigrateExtensionState { .. } => Self::ExtensionStateMigrated { .. } =>
-        "migrate_extension_state", "extension_state_migrated", EXTENSION_MIGRATE, Subject::None;
+        "migrate_extension_state", "extension_state_migrated";
     Self::SelectExtensions { .. } => Self::ExtensionsSelected { .. } =>
-        "select_extensions", "extensions_selected", EXTENSION_ACTIVATE, Subject::None;
+        "select_extensions", "extensions_selected";
     Self::ConfigureExtension { .. } => Self::ExtensionConfigured { .. } =>
-        "configure_extension", "extension_configured", EXTENSION_CONFIGURE, Subject::None;
+        "configure_extension", "extension_configured";
     Self::PlanEffect { .. } => Self::EffectPlanned { .. } =>
-        "plan_effect", "effect_planned", EFFECT_RUN, Subject::PlannedEffect;
-    Self::MarkEffectDispatched { effect_id, .. } => Self::EffectDispatched { effect_id, .. } =>
-        "mark_effect_dispatched", "effect_dispatched", EFFECT_RUN, Subject::Effect(effect_id);
-    Self::ResolveEffect { observation } => Self::EffectResolved { observation } =>
-        "resolve_effect", "effect_resolved", EFFECT_RUN, Subject::Effect(&observation.effect_id);
-    Self::PublishFork { seed } => Self::ForkPublished { seed } =>
-        "publish_fork", "fork_published", FORK_PUBLISH, Subject::Fork(seed);
-    Self::PublishProjectMerge { receipt } => Self::ProjectMergePublished { receipt } =>
-        "publish_project_merge", "project_merge_published", PROJECT_MERGE, Subject::Merge(receipt);
+        "plan_effect", "effect_planned";
+    Self::MarkEffectDispatched { .. } => Self::EffectDispatched { .. } =>
+        "mark_effect_dispatched", "effect_dispatched";
+    Self::ResolveEffect { .. } => Self::EffectResolved { .. } =>
+        "resolve_effect", "effect_resolved";
     Self::BindConversation { .. } => Self::ConversationBound { .. } =>
-        "bind_conversation", "conversation_bound", CONVERSATION_BIND, Subject::None;
+        "bind_conversation", "conversation_bound";
     Self::AppendConversationMessage { .. } => Self::ConversationMessageAppended { .. } =>
-        "append_conversation_message", "conversation_message_appended", CONVERSATION_APPEND, Subject::None;
+        "append_conversation_message", "conversation_message_appended";
     Self::SelectModelContext { .. } => Self::ModelContextSelected { .. } =>
-        "select_model_context", "model_context_selected", CONVERSATION_SELECT_CONTEXT, Subject::None;
+        "select_model_context", "model_context_selected";
     Self::OpenInteraction { .. } => Self::InteractionOpened { .. } =>
-        "open_interaction", "interaction_opened", INTERACTION_OPEN, Subject::None;
-    Self::ResolveInteraction { resolution } => Self::InteractionResolved { resolution } =>
-        "resolve_interaction", "interaction_resolved", INTERACTION_RESOLVE, Subject::Interaction(resolution);
-}
-
-/// Transition input whose authorization depends on reducer state.
-pub(in crate::core) enum Subject<'a> {
-    None,
-    PlannedEffect,
-    Effect(&'a EffectId),
-    Interaction(&'a InteractionResolution),
-    Fork(&'a ForkSeed),
-    Merge(&'a ProjectMergeReceipt),
-}
-
-pub(in crate::core) fn validate_interaction_transition(
-    ticket: &InteractionTicket,
-    prior: Option<&InteractionResolution>,
-    resolution: &InteractionResolution,
-) -> Result<()> {
-    resolution.validate(ticket)?;
-    if prior.is_some_and(|value| value.outcome.is_terminal()) {
-        return Err(Error::Conflict("interaction is already resolved".into()));
-    }
-    let expected = prior.map_or(Ok(1_u64), |value| next_revision(value.expected_version))?;
-    if resolution.expected_version != expected {
-        return Err(Error::Conflict(
-            "interaction resolution version mismatch".into(),
-        ));
-    }
-    Ok(())
-}
-
-pub(in crate::core) fn validate_interaction_operation(
-    resolution: &InteractionResolution,
-    operation_id: OperationId,
-) -> Result<()> {
-    if matches!(&resolution.outcome,
-        InteractionOutcome::Indeterminate { operation_id: pending } if *pending != operation_id)
-    {
-        return Err(Error::Conflict(
-            "indeterminate interaction names another operation".into(),
-        ));
-    }
-    Ok(())
-}
-
-pub(in crate::core) fn require_capability(
-    (id, capabilities): (&str, &Capabilities),
-    capability: &str,
-) -> Result<()> {
-    if capabilities.contains(capability) {
-        Ok(())
-    } else {
-        Err(Error::Unauthorized(format!(
-            "scope {id} lacks capability {capability}"
-        )))
-    }
-}
-
-pub(in crate::core) fn validate_causal_parent_with_work(
-    authority: &Authority,
-    current_revision: u64,
-    reference: Option<&EventReference>,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<()> {
-    let Some(reference) = reference else {
-        return Ok(());
-    };
-    if reference.revision == 0 {
-        return Err(crate::fork::boundary_error(
-            work,
-            crate::wire::ErrorCode::Invalid,
-            "causal event revision must be positive",
-        ));
-    }
-    if reference.authority == *authority && reference.revision > current_revision {
-        return Err(crate::fork::boundary_error(
-            work,
-            crate::wire::ErrorCode::Invalid,
-            "causal event is in the future",
-        ));
-    }
-    reference.authority.validate_with_work(work)?;
-    Ok(())
-}
-
-pub(in crate::core) fn validate_lifecycle(from: LifecycleState, to: LifecycleState) -> Result<()> {
-    let valid = matches!(
-        (from, to),
-        (LifecycleState::Pending, LifecycleState::Active)
-            | (LifecycleState::Pending, LifecycleState::Cancelled)
-            | (LifecycleState::Active, LifecycleState::Waiting)
-            | (LifecycleState::Active, LifecycleState::Completed)
-            | (LifecycleState::Active, LifecycleState::Failed)
-            | (LifecycleState::Active, LifecycleState::Cancelled)
-            | (LifecycleState::Waiting, LifecycleState::Active)
-            | (LifecycleState::Waiting, LifecycleState::Completed)
-            | (LifecycleState::Waiting, LifecycleState::Failed)
-            | (LifecycleState::Waiting, LifecycleState::Cancelled)
-    );
-    if valid {
-        Ok(())
-    } else if from.is_terminal() {
-        Err(Error::Conflict("terminal lifecycle cannot advance".into()))
-    } else {
-        Err(Error::Conflict("invalid lifecycle transition".into()))
-    }
+        "open_interaction", "interaction_opened";
+    Self::ResolveInteraction { .. } => Self::InteractionResolved { .. } =>
+        "resolve_interaction", "interaction_resolved";
 }
 
 crate::core::ownership::owned_enum!(LifecycleState {
@@ -552,8 +384,6 @@ crate::core::ownership::owned_enum!(EventPayload {
     EffectPlanned { effect_id, provider, guarantee, effect_kind, request, request_digest, result_schema, result_schema_digest },
     EffectDispatched { effect_id, attempt_id },
     EffectResolved { observation },
-    ForkPublished { seed },
-    ProjectMergePublished { receipt },
     ConversationBound { agent },
     ConversationMessageAppended { message },
     ModelContextSelected { selection },
@@ -596,8 +426,6 @@ crate::core::ownership::owned_enum!(Action {
     PlanEffect { effect_id, provider, guarantee, effect_kind, request, result_schema },
     MarkEffectDispatched { effect_id, attempt_id },
     ResolveEffect { observation },
-    PublishFork { seed },
-    PublishProjectMerge { receipt },
     BindConversation { agent },
     AppendConversationMessage { message },
     SelectModelContext { selection },

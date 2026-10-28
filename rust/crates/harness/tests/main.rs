@@ -22,10 +22,6 @@ mod retained_content;
 #[cfg(feature = "test-support")]
 mod volume_composition;
 
-// Included production source modules use these crate-root imports.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-use acyclic_harness::{Error, Result};
-
 #[cfg(feature = "test-support")]
 #[path = "cases/client_mention_attachments.rs"]
 mod client_mention_attachments;
@@ -52,9 +48,6 @@ mod context_continuation;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]
 #[path = "cases/context_discovery.rs"]
 mod context_discovery;
-
-#[path = "cases/client_history.rs"]
-mod client_history;
 
 #[cfg(feature = "mcp-oauth")]
 #[path = "cases/mcp_oauth_provider.rs"]

@@ -268,7 +268,6 @@ async fn a_second_writer_refreshes_the_authenticated_cut_and_preserves_retry_and
     let second = FilesystemExecutionJournal::new(
         first.stream.clone(),
         first.host.clone(),
-        &SchemaRegistry::new(),
         crate::filesystem::FilesystemJournalBinding {
             volume: &first.volume,
             verifier: &first.verifier,

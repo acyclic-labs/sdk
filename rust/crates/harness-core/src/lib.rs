@@ -41,13 +41,13 @@ pub mod context;
 pub mod contract;
 pub mod conversation;
 pub mod core;
+#[cfg(feature = "filesystem")]
 pub mod distributed;
 mod effects;
 pub mod executor;
 pub mod extension;
 #[cfg(feature = "filesystem")]
 pub mod filesystem;
-pub mod fork;
 pub mod goal;
 #[cfg(all(feature = "hooks", not(target_arch = "wasm32")))]
 pub mod hooks;
@@ -61,7 +61,6 @@ pub mod mcp;
 #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 #[doc(hidden)]
 pub mod memory_store;
-pub mod merge;
 pub mod model;
 #[cfg(any(
     test,

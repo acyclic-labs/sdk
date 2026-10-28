@@ -44,7 +44,6 @@ pub(in crate::filesystem::execution_journal) async fn journal() -> Result<(
     let journal = FilesystemExecutionJournal::new(
         Arc::new(acyclic_stream::MemoryStream::default()),
         host,
-        &SchemaRegistry::new(),
         crate::filesystem::FilesystemJournalBinding {
             volume: &volume,
             verifier: &issuer.verifier(&mut None)?,

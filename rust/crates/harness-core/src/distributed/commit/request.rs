@@ -37,18 +37,3 @@ pub(crate) fn add_condition(
     request.conditions.push(condition);
     Ok(())
 }
-
-pub(crate) fn add_record(
-    (request, custody): &mut (acyclic_stream::CommitRequest, CodecQuota<'_, '_>),
-    path: acyclic_stream::StreamPath,
-    record: OwnedBytes,
-) -> Result<()> {
-    custody.reserve(request.mutations.len() + 1, &mut request.mutations)?;
-    let mut records = Vec::new();
-    custody.reserve(1, &mut records)?;
-    records.push(record.into());
-    request
-        .mutations
-        .push(acyclic_stream::CommitMutation::Append { path, records });
-    Ok(())
-}

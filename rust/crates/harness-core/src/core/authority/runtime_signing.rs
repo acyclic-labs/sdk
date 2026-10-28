@@ -31,7 +31,6 @@ impl RuntimeSigner {
             trust: std::sync::RwLock::new(Arc::new(workload::trust(id, &workload))),
             metadata_key: metadata.verifying_key().to_bytes(),
             workload: Default::default(),
-            historical: Default::default(),
             revision: tokio::sync::watch::channel(0).0,
         });
         Self {
@@ -49,7 +48,6 @@ pub(super) struct PublicAuthority {
     // scopes retires the old workload without reauthenticating identical roots.
     // Admission decisions are never retained.
     pub(super) workload: std::sync::Mutex<workload::WorkloadOwner>,
-    pub(super) historical: std::sync::Mutex<workload::HistoricalOwner>,
     pub(super) revision: tokio::sync::watch::Sender<u64>,
 }
 
@@ -71,17 +69,6 @@ impl AdmissionPort {
     }
     pub(super) fn sign(&self, digest: &[u8; 32]) -> Result<[u8; 64]> {
         Ok(self.runtime()?.metadata.sign(digest).to_bytes())
-    }
-    pub(super) fn record(
-        &self,
-        id: &str,
-        audience: &Authority,
-        scope: &Scope,
-        payload: [u8; 32],
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<Vec<u8>> {
-        let runtime = self.runtime()?;
-        workload::record(&runtime, id, audience, scope, payload, work)
     }
 }
 
@@ -197,83 +184,6 @@ mod tests {
             verifier
                 .canonical_proof(b"test-checkpoint", &42u64, &mut None)
                 .is_err()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn revocation_reaches_existing_verifiers_and_closes_descendant_admission() -> Result<()> {
-        let runtime = AuthorityRoot::new(
-            "runtime",
-            [88; 32],
-            Authority {
-                kind: AggregateKind::Task,
-                id: "task".into(),
-            },
-        );
-        let verifier = runtime.verifier(&mut None)?;
-        let parent = runtime.bootstrap_scope(
-            "parent",
-            &Capabilities::new(["event:append"]),
-            None,
-            &mut None,
-        )?;
-        let child = runtime.attenuate(&parent, "child", parent.capabilities())?;
-        let recorded =
-            verifier
-                .admission
-                .record("runtime", &runtime.audience, &child, [1; 32], &mut None)?;
-        workload::verify_record(&verifier, &recorded, [1; 32], None, &[], &mut None)?;
-        let online_child = runtime.issue_derived(
-            &child,
-            "new-agent",
-            &Capabilities::new(["event:append"]),
-            Some(AgentId::from_bytes([3; 16])),
-            &mut None,
-        )?;
-        verifier.verify(&online_child, &mut None)?;
-        let (before, revision) = runtime.public_trust_revision()?;
-        let (same, same_revision) = runtime.public_trust_revision()?;
-        assert_eq!(revision, same_revision);
-        assert!(Arc::ptr_eq(&before, &same));
-        // The former per-read copy passes value equality but not shared custody.
-        let copied = Arc::new(before.as_ref().clone());
-        assert!(before.as_ref() == copied.as_ref());
-        assert!(!Arc::ptr_eq(&before, &copied));
-        let mut exported = runtime.public_workload_trust()?;
-        exported.minimum_key_epoch = u64::MAX;
-        assert_ne!(before.minimum_key_epoch, exported.minimum_key_epoch);
-        assert!(Arc::ptr_eq(&before, &runtime.public_trust_revision()?.0));
-        let revisions = runtime.trust_revisions();
-        runtime.revoke_workload(&parent)?;
-        let (revoked, next_revision) = runtime.public_trust_revision()?;
-        assert_eq!(next_revision, revision + 1);
-        assert_eq!(*revisions.borrow(), next_revision);
-        assert!(!Arc::ptr_eq(&before, &revoked));
-        assert!(!before.revoked_block_ids.contains(parent.proof.as_ref()));
-        assert!(revoked.revoked_block_ids.contains(parent.proof.as_ref()));
-        assert!(Arc::ptr_eq(&revoked, &runtime.public_trust_revision()?.0));
-        assert!(verifier.verify(&online_child, &mut None).is_err());
-        assert!(
-            runtime
-                .issue_derived(
-                    &child,
-                    "again",
-                    child.capabilities(),
-                    child.agent(),
-                    &mut None
-                )
-                .is_err()
-        );
-        assert!(verifier.verify(&child, &mut None).is_err());
-        assert!(
-            verifier
-                .admission
-                .record("runtime", &runtime.audience, &child, [1; 32], &mut None)
-                .is_err()
-        );
-        assert!(
-            workload::verify_record(&verifier, &recorded, [1; 32], None, &[], &mut None).is_err()
         );
         Ok(())
     }
