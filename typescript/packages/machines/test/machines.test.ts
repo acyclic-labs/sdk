@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { HttpMachinesProvider, createMachine, listMachines, machineEvents, MachinesTransportError, SimulatedMachines, checkpointId, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
-import { normalize_identity as rustNormalizeIdentity, validatePageSize, validateTransportOptions, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
+import { normalize_identity as rustNormalizeIdentity, pageSize as normalizePageSize, validateTransportOptions, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
 
 const request = (idempotencyKey: string): CreateMachine => ({
   idempotencyKey,
@@ -148,10 +148,16 @@ describe("Machines simulation", () => {
     expect(none).toEqual([]);
   });
 
-  test("does not impose a client-side maximum beyond safe integer precision", async () => {
+  test("lists every actual machine across pages without a default maximum", async () => {
     const provider = new SimulatedMachines();
-    const iterator = listMachines(provider, { maximum: 65_537 });
-    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
+    const expected = new Set<string>();
+    for (let index = 0; index < 1_025; index++) {
+      expected.add(await createMachine(provider, request(idempotencyKey(`paged-${index}`))));
+    }
+    const listed = [];
+    for await (const machine of listMachines(provider, { pageSize: Number.MAX_SAFE_INTEGER })) listed.push(machine);
+    expect(listed.length).toBe(expected.size);
+    expect(new Set(listed)).toEqual(expected);
   });
 
   test("uses Rust-generated page limits for high-level defaults", async () => {
@@ -310,7 +316,7 @@ describe("Machines simulation", () => {
 
   test("Rust transport validators reject coerced JavaScript values", () => {
     const validateTransport = validateTransportOptions as unknown as (token: unknown, maximum: unknown) => void;
-    const validatePage = validatePageSize as unknown as (pageSize: unknown) => void;
+    const validatePage = (value: unknown) => normalizePageSize(value as number, 256);
     for (const maximum of ["1", true, new Number(1), 1n, Symbol("maximum"), null, undefined]) {
       expect(() => validateTransport("x", maximum)).toThrow();
     }
@@ -320,16 +326,10 @@ describe("Machines simulation", () => {
     expect(() => validateTransport("\uFEFF", 1)).toThrow();
     expect(() => validateTransport(" \uFEFF ", 1)).toThrow();
     validateTransport("x", 1);
-    for (const pageSize of ["1", true, new Number(1), 1n, Symbol("page-size"), null, undefined, 0, 257, 1.5]) {
+    for (const pageSize of ["1", true, new Number(1), 1n, Symbol("page-size"), null, undefined, 0, Number.MAX_SAFE_INTEGER + 1, 1.5]) {
       expect(() => validatePage(pageSize)).toThrow();
     }
     validatePage(1);
-  });
-
-  test("delegates machine page limits to the Rust provider boundary", async () => {
-    const provider = new SimulatedMachines();
-    await expect(listMachines(provider, { pageSize: 0, maximum: 1 }).next()).rejects.toThrow();
-    await expect(listMachines(provider, { pageSize: 257, maximum: 257 }).next()).rejects.toThrow();
   });
 
   test("validates page size before custom providers are called", async () => {
@@ -341,7 +341,7 @@ describe("Machines simulation", () => {
       }
     }
     const provider = new RecordingProvider();
-    for (const pageSize of [0, 257, 1.5]) {
+    for (const pageSize of [0, Number.MAX_SAFE_INTEGER + 1, 1.5]) {
       await expect(listMachines(provider, { pageSize, maximum: 1 }).next()).rejects.toThrow(RangeError);
     }
     expect(provider.calls).toBe(0);

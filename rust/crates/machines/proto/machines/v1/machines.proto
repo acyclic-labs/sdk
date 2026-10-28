@@ -392,7 +392,7 @@ message ReadOutputRequest {
   ProtocolVersion protocol = 1;
   MachineId machine = 2;
   uint64 offset = 3;
-  // Maximum returned bytes, 1..65536.
+  // Positive requested byte count; larger hints return a chunk of at most 65536.
   uint32 limit = 4;
 }
 message MachineOutput {
