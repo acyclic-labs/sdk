@@ -430,6 +430,32 @@ test("watch refuses substituted identities, invalid status and incomplete EOF wi
   assert.equal(attempts, 4);
 });
 
+test("original guest deadlines bound stalled credentials even with timeout zero", { timeout: 5000 }, async t => {
+  let dispatched = 0;
+  const { options } = await fixture(t, {
+    readFile() { dispatched++; },
+    writeFile() { dispatched++; },
+    async *exec() { dispatched++; },
+  });
+  const deadlineArmed = [];
+  const client = createMachinesGrpcClient({ ...options, credential(signal) {
+    deadlineArmed.push(signal);
+    return new Promise(() => {});
+  } });
+  t.after(() => client.close());
+  const expired = error => error instanceof ConnectError && error.code === Code.DeadlineExceeded;
+  for (const method of ["readFile", "writeFile", "exec"]) {
+    const deadline = BigInt(Date.now() + 100);
+    const access = { machine, path: "/file", deadlineUnixMs: deadline };
+    if (method === "exec") await assert.rejects(exec(client.machines, { protocol, machine, argv: ["sleep"], timeoutMs: 300000, expiryUnixMs: deadline }, { timeoutMs: 0 }), expired);
+    else if (method === "readFile") await assert.rejects(client.machines.readFile({ protocol, access, limit: 1 }, { timeoutMs: 0 }), expired);
+    else await assert.rejects(client.machines.writeFile({ protocol, access, data: new Uint8Array([1]) }, { timeoutMs: 0 }), expired);
+  }
+  assert.equal(dispatched, 0);
+  assert.equal(deadlineArmed.length, 3);
+  assert.ok(deadlineArmed.every(signal => signal.aborted));
+});
+
 test("authentication failures preserve gRPC status and requests are not retried", async t => {
   let attempts = 0;
   const { options } = await fixture(t, {

@@ -154,7 +154,9 @@ impl ToolExecutor for MachinesWorkspace {
                 })?;
             let output = capture_exec(stream, maximum)
                 .await
-                .map_err(|error| map_error(error, Some(context.operation_id())))?;
+                // Dispatch already happened. Without a terminal receipt,
+                // dropping capture cannot attest physical process retirement.
+                .map_err(|_| Error::Indeterminate(context.operation_id()))?;
             if output
                 .stop
                 .as_ref()

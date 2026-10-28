@@ -65,7 +65,12 @@ export function createMachinesGrpcClient(options: MachinesGrpcOptions) {
         if (!Number.isInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 0xffffffff) throw new RangeError("timeoutMs must be a positive uint32");
         if (query.cwd !== undefined && (!query.cwd || query.cwd.includes("\0"))) throw new RangeError("cwd must be nonempty and NUL-free");
         return ownedStream(async function* (signal) {
-          for await (const frame of machines.exec(query, { ...callOptions, signal, timeoutMs: callOptions?.timeoutMs ?? query.timeoutMs + 1000 })) {
+          let remaining = BigInt(query.timeoutMs) + 1000n;
+          if (query.expiryUnixMs !== undefined) {
+            const expiry = query.expiryUnixMs - BigInt(Date.now());
+            if (expiry < remaining) remaining = expiry;
+          }
+          for await (const frame of machines.exec(query, { ...deadlineOptions(remaining, callOptions), signal })) {
             checkIdentity(query.machine, frame.machine, "machine");
             if (frame.output.case === "stopped") {
               if (![wire.ExecStopKind.TIMEOUT, wire.ExecStopKind.EXPIRED, wire.ExecStopKind.OUTPUT_LIMIT, wire.ExecStopKind.CONTROL_STOPPED, wire.ExecStopKind.CAPTURE_FAILED].includes(frame.output.value.kind)) throw new ConnectError("invalid exec stop kind", Code.DataLoss);
@@ -150,12 +155,16 @@ function checkFileAccess(access: wire.FileAccess | undefined, length: number): w
 }
 
 function fileOptions(access: wire.FileAccess, options?: CallOptions): CallOptions {
-  const remaining = access.deadlineUnixMs - BigInt(Date.now());
-  if (remaining <= 0n || remaining > BigInt(Number.MAX_SAFE_INTEGER)) throw new RangeError("file deadline expired or not representable by this transport");
-  return { ...options, timeoutMs: Math.min(Number(remaining), options?.timeoutMs ?? Infinity) };
+  return deadlineOptions(access.deadlineUnixMs - BigInt(Date.now()), options);
 }
 
-function checkFileResult(access: wire.FileAccess, result: { machine: wire.MachineId | undefined; offset: bigint }): void {
+function deadlineOptions(remaining: bigint, options?: CallOptions): CallOptions {
+  if (remaining <= 0n || remaining > BigInt(Number.MAX_SAFE_INTEGER)) throw new RangeError("guest deadline expired or not representable by this transport");
+  const caller = options?.timeoutMs;
+  return { ...options, timeoutMs: Math.min(Number(remaining), caller === undefined || caller === 0 ? Infinity : caller) };
+}
+
+function checkFileResult(access: wire.FileAccess, result: { machine?: wire.MachineId | undefined; offset: bigint }): void {
   checkIdentity(access.machine, result.machine, "machine");
   if (access.offset !== result.offset) throw new ConnectError("file result offset substituted", Code.DataLoss);
 }
