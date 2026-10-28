@@ -223,9 +223,11 @@ impl StreamProvider for Client {
         &self,
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
-        self.session()?
-            .follow_with_ack(request, self.acknowledge_deliveries)
-            .await
+        Ok(Box::pin(
+            self.session()?
+                .follow_with_ack(request, self.acknowledge_deliveries)
+                .await?,
+        ))
     }
 
     async fn children_page(
