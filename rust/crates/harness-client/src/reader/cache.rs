@@ -79,6 +79,9 @@ struct Meta {
     /// Local publication order, distinct from display recency. An older
     /// in-flight Head cannot replace facts learned after it was requested.
     observed: u64,
+    /// Only primitive origin observations advance this stamp. Ordinary
+    /// record reads cannot make a changed fork publication look stale.
+    origin_observed: u64,
     /// Use clock of the last learn or display; facts used since the frame
     /// mark are never chosen as eviction victims.
     used: u64,
@@ -178,6 +181,7 @@ impl RecordCache {
         let meta = self.meta_mut(stream);
         meta.fork = origin;
         meta.origin_known = true;
+        meta.origin_observed = meta.observed;
     }
 
     pub(super) fn origin_changed(&self, stream: &StreamPath, origin: &Option<ForkOrigin>) -> bool {
@@ -192,8 +196,10 @@ impl RecordCache {
         self.meta.get(stream).is_some_and(|meta| meta.origin_known)
     }
 
-    pub(super) fn observation(&self, stream: &StreamPath) -> Option<u64> {
-        self.meta.get(stream).map(|meta| meta.observed)
+    pub(super) fn observation(&self, stream: &StreamPath) -> Option<(u64, u64)> {
+        self.meta
+            .get(stream)
+            .map(|meta| (meta.observed, meta.origin_observed))
     }
 
     /// The fork origin, if learned.

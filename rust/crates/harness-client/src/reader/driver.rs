@@ -8,7 +8,7 @@
 //! against the commit of the last one, so a provisional suffix the server
 //! replaced is detected and dropped instead of joined to new history.
 
-use super::{Failure, Fetched, ListedChild, Op, Outcome, Reader};
+use super::{Failure, Fetched, HeadObservation, ListedChild, Op, Outcome, Reader};
 use acyclic_stream::{
     ChildrenPageRequest, PathHead, ReadRequest, Record, RecordStream, StreamError, StreamPath,
     StreamProvider,
@@ -22,7 +22,7 @@ use std::task::{Context, Poll};
 type Opened = (
     StreamPath,
     u64,
-    Option<u64>,
+    Option<(u64, u64)>,
     Result<(PathHead, RecordStream), StreamError>,
 );
 type Opening = LocalBoxFuture<'static, Option<Opened>>;
@@ -90,9 +90,16 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             match opened {
                 Ok((head, records)) => {
                     let accepted = head.tail.max(reader.cache().tail(&stream).unwrap_or(0));
-                    if !reader.observed_head(&stream, head, observed) {
-                        reader.follow_failed(Failure::Refused, now);
-                        continue;
+                    match reader.observed_head(&stream, head, observed) {
+                        HeadObservation::Invalid => {
+                            reader.follow_failed(Failure::Refused, now);
+                            continue;
+                        }
+                        HeadObservation::Superseded => {
+                            cx.waker().wake_by_ref();
+                            continue;
+                        }
+                        HeadObservation::Applied => {}
                     }
                     // A changed origin invalidated this opening and its old
                     // cursor. The next frame opens the newly learned history.
@@ -372,7 +379,10 @@ mod tests {
 
             let mut reader = Reader::new(super::super::ReaderPolicy::default()).unwrap();
             let observed = reader.cache().observation(&path);
-            assert!(reader.observed_head(&path, head, observed));
+            assert_eq!(
+                reader.observed_head(&path, head, observed),
+                HeadObservation::Applied
+            );
             reader.plan([(
                 super::super::Want::Range {
                     stream: path.clone(),

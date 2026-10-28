@@ -349,7 +349,14 @@ struct InFlight {
     deadline: u64,
     issued: u64,
     paging: Paging,
-    observed: Option<u64>,
+    observed: Option<(u64, u64)>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum HeadObservation {
+    Applied,
+    Superseded,
+    Invalid,
 }
 
 /// Exact listing continuations at strided page indexes, so any page is
@@ -868,7 +875,7 @@ impl Reader {
                 valid
             }
             (OpKey::Head(stream), Outcome::Head(head)) => {
-                self.observed_head(stream, head, flight.observed)
+                self.observed_head(stream, head, flight.observed) != HeadObservation::Invalid
             }
             (
                 OpKey::Children(parent, index),
@@ -998,8 +1005,8 @@ impl Reader {
         &mut self,
         stream: &StreamPath,
         head: PathHead,
-        observed: Option<u64>,
-    ) -> bool {
+        observed: Option<(u64, u64)>,
+    ) -> HeadObservation {
         let valid = head.durable <= head.tail
             && match &head.last {
                 Some(last) => last.sequence.checked_add(1) == Some(head.tail),
@@ -1010,11 +1017,32 @@ impl Reader {
                 .as_ref()
                 .is_none_or(|origin| origin.source != *stream && origin.forked_at <= head.tail);
         if valid {
-            // Another response published facts while this request waited.
-            // Its smaller tail or different anchor cannot prove rollback.
-            // A fresh demand Head or the checked follow validates the cut.
-            if self.cache.observation(stream) != observed {
-                return true;
+            let current = self.cache.observation(stream);
+            if current != observed {
+                if self.cache.origin_known(stream)
+                    && self.cache.fork(stream) == head.origin.as_ref()
+                {
+                    // The exact origin still agrees. Newer value facts win;
+                    // this smaller tail cannot establish rollback.
+                    return HeadObservation::Applied;
+                }
+                if current.map(|(_, origin)| origin) != observed.map(|(_, origin)| origin) {
+                    // A different origin observation won the race. The
+                    // driver must obtain a fresh Head before accepting its
+                    // follow, without treating this as transport failure.
+                    return HeadObservation::Superseded;
+                }
+                let known = self.cache.origin_known(stream);
+                self.learn_origin(stream, head.origin.clone());
+                if !known {
+                    // First origin observation after a projected tail. Keep
+                    // newer value facts and let misses use the learned cut.
+                    self.generation += 1;
+                    return HeadObservation::Applied;
+                }
+                // Only values changed while this request waited. Its exact
+                // changed publication supersedes the old known origin and
+                // learn_origin has discarded that incompatible history.
             }
             let replaced = self.cache.tail(stream).is_some_and(|old| head.tail < old)
                 || head.last.as_ref().is_some_and(|last| {
@@ -1043,8 +1071,10 @@ impl Reader {
                 self.keep(stream, driver::fetched(&last), Some(self.frame_mark));
             }
             self.generation += 1;
+            HeadObservation::Applied
+        } else {
+            HeadObservation::Invalid
         }
-        valid
     }
 
     fn anchor(&mut self, parent: &StreamPath, index: u32, after: StreamPath) {
@@ -1354,7 +1384,10 @@ mod reader_tests {
         assert_eq!(reader.cache.observation(&stream), observed);
         reader.cache.observe_tail(&stream, 11);
         reader.keep(&stream, fetched(10, 3), None);
-        assert!(reader.observed_head(&stream, old, observed));
+        assert_eq!(
+            reader.observed_head(&stream, old, observed),
+            HeadObservation::Applied
+        );
         assert_eq!(reader.cache.tail(&stream), Some(11));
         assert!(reader.cache.record(&stream, 10).is_some());
         assert!(reader.issues().next().is_none());
@@ -1362,11 +1395,14 @@ mod reader_tests {
         // A fresh Head requested after that observation can establish a
         // genuine rollback; ignoring delayed responses must not hide it.
         let observed = reader.cache.observation(&stream);
-        assert!(reader.observed_head(
-            &stream,
-            head(10, CommitId::from_bytes([2; 32]), b"replacement", None),
-            observed,
-        ));
+        assert_eq!(
+            reader.observed_head(
+                &stream,
+                head(10, CommitId::from_bytes([2; 32]), b"replacement", None),
+                observed,
+            ),
+            HeadObservation::Applied
+        );
         assert_eq!(reader.cache.tail(&stream), Some(10));
         assert_eq!(reader.issues.get(&stream), Some(&ReadIssue::RetentionLost));
     }
@@ -1386,11 +1422,14 @@ mod reader_tests {
         reader.cache.observe_tail(&child, 1);
         reader.keep(&child, fetched(0, 3), None);
         let observed = reader.cache.observation(&child);
-        assert!(reader.observed_head(
-            &child,
-            head(1, CommitId::from_bytes([2; 32]), b"new", Some(origin)),
-            observed,
-        ));
+        assert_eq!(
+            reader.observed_head(
+                &child,
+                head(1, CommitId::from_bytes([2; 32]), b"new", Some(origin)),
+                observed,
+            ),
+            HeadObservation::Applied
+        );
         assert_eq!(reader.cache.record(&child, 0).unwrap().as_ref(), b"new");
         assert_eq!(reader.cache.record(&source, 0).unwrap().as_ref(), b"new");
         assert_eq!(
@@ -1398,6 +1437,61 @@ mod reader_tests {
             Some(CommitId::from_bytes([2; 32]))
         );
         assert_eq!(reader.issues.get(&child), Some(&ReadIssue::RetentionLost));
+    }
+
+    #[test]
+    fn record_completion_cannot_hide_a_changed_fork_publication() {
+        let stream = StreamPath::new("test/child").unwrap();
+        let origin = ForkOrigin {
+            source: StreamPath::new("test/source").unwrap(),
+            forked_at: 1,
+            commit_id: CommitId::from_bytes([9; 32]),
+        };
+        let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+        reader.cache.observe_origin(&stream, Some(origin.clone()));
+        reader.cache.observe_tail(&stream, 2);
+        reader.keep(&stream, fetched(1, 3), None);
+        let observed = reader.cache.observation(&stream);
+        // Only the publication changes; a preceding record commit still
+        // matches. A concurrent history read must not erase that distinction.
+        reader.keep(&stream, fetched(0, 3), None);
+        let changed = ForkOrigin {
+            commit_id: CommitId::from_bytes([10; 32]),
+            ..origin
+        };
+        assert_eq!(
+            reader.observed_head(
+                &stream,
+                head(
+                    2,
+                    CommitId::from_bytes([1; 32]),
+                    b"same",
+                    Some(changed.clone())
+                ),
+                observed,
+            ),
+            HeadObservation::Applied
+        );
+        assert_eq!(reader.cache.fork(&stream), Some(&changed));
+        assert_eq!(reader.issues.get(&stream), Some(&ReadIssue::RetentionLost));
+
+        // If a later primitive origin observation already won, an older
+        // conflicting Head must reobserve before its follow can be accepted.
+        let observed = reader.cache.observation(&stream);
+        let newer = ForkOrigin {
+            commit_id: CommitId::from_bytes([11; 32]),
+            ..changed.clone()
+        };
+        reader.learn_origin(&stream, Some(newer.clone()));
+        assert_eq!(
+            reader.observed_head(
+                &stream,
+                head(2, CommitId::from_bytes([1; 32]), b"same", Some(changed)),
+                observed,
+            ),
+            HeadObservation::Superseded
+        );
+        assert_eq!(reader.cache.fork(&stream), Some(&newer));
     }
 
     #[test]
@@ -1409,22 +1503,25 @@ mod reader_tests {
         reader.cache.observe_tail(&stream, 1);
         reader.keep(&stream, fetched(0, 10), None);
         let observed = reader.cache.observation(&stream);
-        assert!(reader.observed_head(
-            &stream,
-            PathHead {
-                tail: 2,
-                durable: 0,
-                origin: None,
-                last: Some(acyclic_stream::Record {
-                    sequence: 1,
-                    value: b"later".to_vec().into(),
-                    commit_id: CommitId::from_bytes([2; 32]),
-                    committed_at_micros: 0,
-                    headers: Default::default(),
-                }),
-            },
-            observed,
-        ));
+        assert_eq!(
+            reader.observed_head(
+                &stream,
+                PathHead {
+                    tail: 2,
+                    durable: 0,
+                    origin: None,
+                    last: Some(acyclic_stream::Record {
+                        sequence: 1,
+                        value: b"later".to_vec().into(),
+                        commit_id: CommitId::from_bytes([2; 32]),
+                        committed_at_micros: 0,
+                        headers: Default::default(),
+                    }),
+                },
+                observed,
+            ),
+            HeadObservation::Applied
+        );
         let mut restored = Reader::new(ReaderPolicy::default()).unwrap();
         restored.restore(&reader.snapshot()).unwrap();
         restored.set_follows([stream.clone()]);
