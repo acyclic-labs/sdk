@@ -316,12 +316,6 @@ impl StreamProvider for Evidence {
     ) -> std::result::Result<u64, StreamError> {
         self.inner.tail(path).await
     }
-    async fn bounds(
-        &self,
-        path: acyclic_stream::StreamPath,
-    ) -> std::result::Result<acyclic_stream::StreamBounds, StreamError> {
-        self.inner.bounds(path).await
-    }
     async fn append(
         &self,
         request: acyclic_stream::AppendRequest,

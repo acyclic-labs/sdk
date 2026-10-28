@@ -11,7 +11,7 @@ use super::*;
 use crate::guest::CodecIdentity;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, ForkReceipt,
-    ForkRequest, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamBounds,
+    ForkRequest, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
 };
 use bytes::Bytes;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -68,7 +68,6 @@ delegate! {
     head(path: StreamPath) -> acyclic_stream::PathHead;
     inspect_idempotency(key: IdempotencyKey) -> Option<IdempotencyObservation>;
     tail(path: StreamPath) -> u64;
-    bounds(path: StreamPath) -> StreamBounds;
     append(request: AppendRequest) -> AppendOutcome;
     fork(request: ForkRequest) -> ForkReceipt;
     read(request: ReadRequest) -> RecordStream;

@@ -26,7 +26,7 @@ use acyclic_stream::{
     AppendOutcome, AppendRequest, BoxProviderFuture, ChildrenPage, ChildrenPageRequest, CommitId,
     CommitOutcome, CommitRequest, CommittedEnvelope, DurableReceipt, FollowStream,
     ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, OperationClaims,
-    ProviderPlatform, ReadRequest, RecordStream, StreamBounds, StreamError, StreamPath,
+    ProviderPlatform, ReadRequest, RecordStream, StreamError, StreamPath,
     StreamProvider, StreamWatermarks,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -173,9 +173,6 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
         self.inner.tail(path).await
     }
-    async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        self.inner.bounds(path).await
-    }
     async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
         self.inner.watermarks(path).await
     }
@@ -251,14 +248,6 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeProviderFuture<'_, u64> {
         self.inner.native_tail(path, meter)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_bounds(
-        &self,
-        path: StreamPath,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, StreamBounds> {
-        self.inner.native_bounds(path, meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn native_read(
@@ -406,12 +395,6 @@ mod tests {
         }
         async fn tail(&self, path: super::StreamPath) -> Result<u64, super::StreamError> {
             self.inner.tail(path).await
-        }
-        async fn bounds(
-            &self,
-            path: super::StreamPath,
-        ) -> Result<super::StreamBounds, super::StreamError> {
-            self.inner.bounds(path).await
         }
         async fn append(
             &self,
