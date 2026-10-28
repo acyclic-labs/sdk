@@ -62,9 +62,10 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         self.follows.len() + self.pending.len()
     }
 
-    /// Advance once: start admitted reads, fold completions, reconcile and
-    /// drain follows within the frame budget. Wakes `cx` on progress.
-    pub fn step(&mut self, reader: &mut Reader, now: u64, cx: &mut Context<'_>) {
+    /// Register this provider's source before restoring or accessing retained
+    /// state. Repeated attachment of the same pair does no work. Replacing
+    /// either member retires outstanding observations and cached authority.
+    pub fn attach(&mut self, reader: &mut Reader, now: u64) {
         let attached = self
             .reader
             .as_ref()
@@ -77,16 +78,30 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             reader.configure_source(self.provider.as_ref(), now);
             reader.driver = Some(self.identity.clone());
             self.reader = Some(reader.identity.clone());
+            self.clear();
         }
+    }
+
+    fn clear(&mut self) {
+        self.ops = FuturesUnordered::new();
+        self.aborts.clear();
+        self.opening = FuturesUnordered::new();
+        self.pending.clear();
+        self.follows.clear();
+    }
+
+    /// Advance once: start admitted reads, fold completions, reconcile and
+    /// drain follows within the frame budget. Wakes `cx` on progress.
+    pub fn step(&mut self, reader: &mut Reader, now: u64, cx: &mut Context<'_>) {
+        self.attach(reader, now);
         let changed = reader.advance_credentials(now, cx);
-        if !attached || changed || !reader.readable() {
-            self.ops = FuturesUnordered::new();
-            self.aborts.clear();
-            self.opening = FuturesUnordered::new();
-            self.pending.clear();
-            self.follows.clear();
+        if changed {
+            self.clear();
         }
         if !reader.readable() {
+            if !changed {
+                self.clear();
+            }
             return;
         }
         for id in reader.take_cancelled() {
@@ -485,7 +500,7 @@ mod tests {
             let ready = Arc::new(Ready(AtomicBool::new(true)));
             let waker = Waker::from(Arc::clone(&ready));
             let mut cx = Context::from_waker(&waker);
-            driver.step(&mut reader, 0, &mut cx);
+            driver.attach(&mut reader, 0);
             reader.cache_mut().observe_origin(&path, head.origin);
             reader.cache_mut().observe_tail(&path, head.tail);
             reader.plan((0..head.tail).map(|from| {
@@ -498,6 +513,9 @@ mod tests {
                     Priority::Visible,
                 )
             }));
+            // An explicit startup attachment and subsequent steps retain the
+            // same plan; attachment must not register/reset the source twice.
+            driver.attach(&mut reader, 0);
             // Drive only actual wakes to quiescence, without another plan.
             while ready.0.swap(false, Ordering::SeqCst) {
                 driver.step(&mut reader, 0, &mut cx);

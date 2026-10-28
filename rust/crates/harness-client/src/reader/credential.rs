@@ -20,6 +20,9 @@ pub enum CredentialStatus {
     Current,
     /// Source availability, invalidation or expiry prevents reuse.
     Unavailable,
+    /// The registered notification producer ended. Replace the configured
+    /// source to recover; connectivity changes cannot revive this producer.
+    SourceLost,
 }
 
 #[derive(Clone, Default)]
@@ -142,16 +145,34 @@ impl Credentials {
     }
 
     pub(super) fn retry(&mut self, now: u64) {
-        self.restart(now);
+        if self.status != CredentialStatus::SourceLost {
+            self.restart(now);
+        }
+    }
+
+    fn poll_watch(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), ()>> {
+        match self.watch.as_mut().map(|watch| Pin::new(watch).poll(cx)) {
+            Some(Poll::Ready(Ok(()))) => Poll::Ready(Ok(())),
+            Some(Poll::Ready(Err(_))) => {
+                self.watch = None;
+                self.resolving = None;
+                self.lease = None;
+                self.deadline = None;
+                self.status = CredentialStatus::SourceLost;
+                Poll::Ready(Err(()))
+            }
+            _ => Poll::Pending,
+        }
     }
 
     /// A source transition invalidates all data even when a replacement uses
     /// the same revision. Exact-current rejection also ends the old custody.
     pub(super) fn poll(&mut self, now: u64, cx: &mut Context<'_>) -> bool {
-        let changed = self
-            .watch
-            .as_mut()
-            .is_some_and(|watch| Pin::new(watch).poll(cx).is_ready());
+        let changed = match self.poll_watch(cx) {
+            Poll::Ready(Ok(())) => true,
+            Poll::Ready(Err(())) => return true,
+            Poll::Pending => false,
+        };
         let expired = self.status == CredentialStatus::Current
             && (self
                 .lease
@@ -199,13 +220,12 @@ impl Credentials {
             }
             // Wake/register the source watch after resolving as well: a
             // refresh may have invalidated its registration while awaited.
-            if self
-                .watch
-                .as_mut()
-                .is_some_and(|watch| Pin::new(watch).poll(cx).is_ready())
-            {
-                self.restart(now);
-                cx.waker().wake_by_ref();
+            match self.poll_watch(cx) {
+                Poll::Ready(Ok(())) => {
+                    self.restart(now);
+                    cx.waker().wake_by_ref();
+                }
+                Poll::Ready(Err(())) | Poll::Pending => {}
             }
             reset = true;
         }
@@ -235,6 +255,128 @@ mod tests {
         fn wake_by_ref(self: &Arc<Self>) {
             self.0.store(true, Ordering::SeqCst);
         }
+    }
+
+    #[test]
+    fn lost_producer_ends_pending_and_admitted_custody_without_rearming() {
+        use acyclic_auth::credential::{
+            CredentialCacheError, CredentialError, CredentialResolution, CredentialSource,
+        };
+        use std::sync::atomic::AtomicUsize;
+
+        struct Source {
+            provider: CredentialProvider,
+            watch: Mutex<Option<CredentialWatch>>,
+            registrations: Arc<AtomicUsize>,
+        }
+        impl CredentialSource for Source {
+            fn resolve(&self) -> CredentialResolution<'_> {
+                Box::pin(self.provider.resolve())
+            }
+            fn watch(&self) -> Result<Option<CredentialWatch>, CredentialError> {
+                self.registrations.fetch_add(1, Ordering::SeqCst);
+                self.watch
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .map(Some)
+                    .ok_or(CredentialError::Invalid)
+            }
+        }
+
+        futures::executor::block_on(async {
+            let stream = MemoryStream::default();
+            let path = StreamPath::new("source/lost").unwrap();
+            stream
+                .append(AppendRequest {
+                    path: path.clone(),
+                    records: vec![b"committed".as_slice().into()],
+                    if_tail: None,
+                    idempotency_key: IdempotencyKey::new(b"lost source".to_vec()).unwrap(),
+                })
+                .await
+                .unwrap();
+            let head = stream.head(path.clone()).await.unwrap();
+            // Lose the event producer while resolution is pending, during its
+            // completion, and after admission. No deadline or retry drives it.
+            for loss in 0..3 {
+                let (producer, receive) = futures::channel::oneshot::channel::<()>();
+                let producer = Arc::new(Mutex::new(Some(producer)));
+                let resolving = producer.clone();
+                let validity = CredentialValidity {
+                    now_unix_seconds: 10,
+                    revision: Some(CredentialRevision::from([1; 32])),
+                };
+                let observed = validity.clone();
+                let cache = CredentialCache::new(
+                    move |_| {
+                        let producer = resolving.clone();
+                        async move {
+                            if loss == 0 {
+                                futures::future::pending::<()>().await;
+                            }
+                            if loss == 1 {
+                                drop(producer.lock().unwrap().take());
+                            }
+                            CredentialSnapshot::new(
+                                "credential".into(),
+                                CredentialRevision::from([1; 32]),
+                                20,
+                            )
+                        }
+                    },
+                    move || observed.clone(),
+                );
+                let registrations = Arc::new(AtomicUsize::new(0));
+                let provider = CredentialProvider::from_custodian(Source {
+                    provider: cache.into(),
+                    watch: Mutex::new(Some(CredentialWatch::from_custodian(
+                        validity,
+                        async move { receive.await.map_err(|_| CredentialCacheError::Unavailable) },
+                    ))),
+                    registrations: registrations.clone(),
+                });
+                let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+                reader.credentials = Some(Credentials::new(provider, 0, 10_000));
+                reader.reset_source();
+                let ready = Arc::new(Ready(AtomicBool::new(false)));
+                let waker = Waker::from(ready.clone());
+                let mut cx = Context::from_waker(&waker);
+                reader.advance_credentials(0, &mut cx);
+                let mut late = None;
+                if loss == 2 {
+                    assert_eq!(reader.credential_status(), CredentialStatus::Current);
+                    reader.plan([(
+                        Want::Last {
+                            stream: path.clone(),
+                            count: 1,
+                        },
+                        Priority::Visible,
+                    )]);
+                    late = Some(reader.poll(0).pop().unwrap().id());
+                }
+                if loss != 1 {
+                    ready.0.store(false, Ordering::SeqCst);
+                    drop(producer.lock().unwrap().take());
+                    assert!(ready.0.load(Ordering::SeqCst), "producer drop did not wake");
+                    assert!(reader.advance_credentials(0, &mut cx));
+                }
+                assert_eq!(reader.credential_status(), CredentialStatus::SourceLost);
+                assert!(!reader.readable());
+                assert_eq!(reader.residency().requests, 0);
+                assert_eq!(reader.next_deadline(), None);
+                if let Some(id) = late {
+                    reader.complete(id, Outcome::Head(head.clone()), 0);
+                }
+                assert!(reader.cache().record(&path, 0).is_none());
+                assert!(reader.snapshot().is_empty());
+                reader.network_changed(true, 0);
+                assert!(!reader.advance_credentials(0, &mut cx));
+                reader.credentials.as_mut().unwrap().retry(0);
+                assert_eq!(reader.credential_status(), CredentialStatus::SourceLost);
+                assert_eq!(registrations.load(Ordering::SeqCst), 1);
+            }
+        });
     }
 
     #[test]

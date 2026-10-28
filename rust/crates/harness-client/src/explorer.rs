@@ -296,7 +296,7 @@ impl Explorer {
         provider: &P,
     ) -> Result<Self, StreamError> {
         let mut explorer = Self::new(policy)?;
-        explorer.reader = Reader::for_provider(policy, provider)?;
+        explorer.reader.configure_source(provider, 0);
         Ok(explorer)
     }
 

@@ -121,9 +121,12 @@ impl WasmExplorer {
             ReaderPolicy::default()
         };
         let provider = stream.provider();
+        let mut explorer = Explorer::new(policy).map_err(error)?;
+        let mut driver = Driver::new(provider);
+        driver.attach(explorer.reader(), 0);
         let state = Rc::new(RefCell::new(State {
-            explorer: Explorer::for_provider(policy, provider.as_ref()).map_err(error)?,
-            driver: Driver::new(provider),
+            explorer,
+            driver,
             waker: None,
             changed,
             origin: js_sys::Date::now(),
@@ -235,6 +238,7 @@ impl WasmExplorer {
                 CredentialStatus::Pending => "pending",
                 CredentialStatus::Current => "current",
                 CredentialStatus::Unavailable => "unavailable",
+                CredentialStatus::SourceLost => "sourceLost",
             },
             connectivity,
             retry_at,

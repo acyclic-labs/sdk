@@ -499,7 +499,7 @@ impl Reader {
         Ok(reader)
     }
 
-    fn configure_source<P: acyclic_stream::StreamProvider + ?Sized>(
+    pub(crate) fn configure_source<P: acyclic_stream::StreamProvider + ?Sized>(
         &mut self,
         provider: &P,
         now: u64,
@@ -513,10 +513,9 @@ impl Reader {
 
     fn reset_source(&mut self) {
         self.source_generation += 1;
-        let ids: Vec<_> = self.inflight.keys().copied().collect();
-        for id in ids {
-            self.cancel(id);
-        }
+        self.cancelled.extend(self.inflight.keys().copied());
+        self.inflight.clear();
+        self.keys.clear();
         self.demand.clear();
         self.refused.clear();
         self.issues.clear();
