@@ -15,7 +15,8 @@ pub type Client = wire::actors_service_client::ActorsServiceClient<
 >;
 
 /// Shared transport-status channel retaining the originating trace context.
-pub type TracedChannel = acyclic_grpc_observability::TracedChannel<Channel>;
+pub type TracedChannel =
+    acyclic_grpc_observability::TracedChannel<acyclic_auth::channel::CredentialChannel>;
 
 /// Statically named actors RPC span factory.
 pub(crate) fn transport_span(rpc: Option<&str>) -> tracing::Span {
@@ -89,7 +90,7 @@ pub(crate) async fn connect_authorized(
     let channel = connect_channel(endpoint, ca).await?;
     Ok(
         wire::actors_service_client::ActorsServiceClient::with_interceptor(
-            TracedChannel::new(channel, transport_span),
+            TracedChannel::new(acyclic_auth::channel::guard(channel), transport_span),
             authorization,
         )
         .max_decoding_message_size(16 * 1024 * 1024)

@@ -257,7 +257,10 @@ mod tests {
     ) -> Result<tonic::codegen::http::Response<tonic::body::Body>, Box<dyn std::error::Error>> {
         use tonic::codegen::Service as _;
         let mut channel = grpc::TracedChannel::new(
-            tonic::transport::Endpoint::from_shared(format!("http://{address}"))?.connect_lazy(),
+            acyclic_auth::channel::guard(
+                tonic::transport::Endpoint::from_shared(format!("http://{address}"))?
+                    .connect_lazy(),
+            ),
             grpc::transport_span,
         );
         std::future::poll_fn(|cx| channel.poll_ready(cx)).await?;

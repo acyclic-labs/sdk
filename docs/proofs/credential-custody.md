@@ -80,7 +80,7 @@ Rust Actors, Streams and Objects retain leases across their HTTP/gRPC attempts.
 JS gRPC also retains custody through streaming trailers. Browser WebSocket
 setup checks its exact lease before connection; browser handshake transport
 failure does not reveal an authenticated HTTP rejection and cannot invalidate
-it. Native tonic interceptors recheck leases after tonic readiness, before
+it. The shared native tonic service rechecks leases after readiness, before
 submitting to the transport. This does not make an atomic promise about a
 later remote receive or replace the server's admission check.
 

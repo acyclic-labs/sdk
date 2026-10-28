@@ -43,6 +43,7 @@ proptest.workspace = true
 prost-reflect.workspace = true
 tempfile = "3.27.0"
 prost-types.workspace = true
+tonic-prost.workspace = true
 protoc-bin-vendored = "=3.3.0"
 
 [lints]

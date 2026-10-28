@@ -1,9 +1,18 @@
 //! Shared native TLS channel and exact credential dispatch. A cloned tonic
 //! Channel shares its connection; no per-product authority pool or refresh loop.
 use crate::credential::{CredentialError, CredentialProvider, ResolvedCredential};
-use std::{future::Future, sync::Arc};
+use futures::{
+    TryFutureExt,
+    future::{Either, MapErr},
+};
+use std::{
+    future::{Future, Ready},
+    sync::Arc,
+};
 use tonic::{
     Request, Response, Status,
+    body::Body,
+    codegen::{Service, http},
     transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity},
 };
 
@@ -32,32 +41,61 @@ pub enum ConnectError {
     Transport(#[from] tonic::transport::Error),
 }
 
-/// Recheck the retained request lease after tonic channel readiness, immediately
-/// before transport dispatch. Requests carrying fixed credentials pass through.
-#[derive(Clone, Copy)]
-pub struct LeaseCheck;
-
-impl tonic::service::Interceptor for LeaseCheck {
-    fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
-        if let Some(lease) = request.extensions().get::<ResolvedCredential>() {
-            lease.check().map_err(credential_error)?;
-        }
-        Ok(request)
-    }
-}
-
 fn credential_error(error: CredentialError) -> Status {
     let mut status = Status::unauthenticated("credential source unavailable or changed");
     status.set_source(Arc::new(error));
     status
 }
 
-/// Reusable channel with a dispatch-boundary lease check.
-pub type CredentialChannel = tonic::service::interceptor::InterceptedService<Channel, LeaseCheck>;
+/// Reusable channel with a dispatch-boundary lease check. Local refusals remain
+/// typed service errors; an interceptor would serialize them as remote statuses.
+#[derive(Clone, Debug)]
+pub struct CredentialChannel {
+    channel: Channel,
+}
+
+/// Dispatch future with no allocation beyond the maintained channel's future.
+pub type CredentialDispatch = Either<
+    Ready<Result<http::Response<Body>, Status>>,
+    MapErr<
+        <Channel as Service<http::Request<Body>>>::Future,
+        fn(tonic::transport::Error) -> Status,
+    >,
+>;
+
+fn transport_error(error: tonic::transport::Error) -> Status {
+    Status::from_error(Box::new(error))
+}
+
+impl Service<http::Request<Body>> for CredentialChannel {
+    type Response = http::Response<Body>;
+    type Error = Status;
+    type Future = CredentialDispatch;
+
+    fn poll_ready(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Status>> {
+        self.channel.poll_ready(cx).map_err(transport_error)
+    }
+
+    fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+        if let Some(lease) = request.extensions().get::<ResolvedCredential>()
+            && let Err(error) = lease.check()
+        {
+            return Either::Left(std::future::ready(Err(credential_error(error))));
+        }
+        Either::Right(
+            self.channel
+                .call(request)
+                .map_err(transport_error as fn(_) -> _),
+        )
+    }
+}
 
 /// Retain the same pooled connection while checking each request's exact lease.
 pub fn guard(channel: Channel) -> CredentialChannel {
-    tonic::service::interceptor::InterceptedService::new(channel, LeaseCheck)
+    CredentialChannel { channel }
 }
 
 /// Establish one reusable native channel. Configure the original connection

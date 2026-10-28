@@ -84,7 +84,10 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
         let client = Client {
             credential: None,
             inner: wire::actors_service_client::ActorsServiceClient::with_interceptor(
-                crate::grpc::TracedChannel::new(channel, crate::grpc::transport_span),
+                crate::grpc::TracedChannel::new(
+                    acyclic_auth::channel::guard(channel),
+                    crate::grpc::transport_span,
+                ),
                 BearerAuth::new("fixture")?,
             ),
         };
