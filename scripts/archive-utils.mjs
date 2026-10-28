@@ -162,9 +162,9 @@ export async function readTarGzip(input, visit, options = /** @type {{ algorithm
 
 // Validate names before retaining individual files. The expanded tar itself is
 // never materialized; exact inventories and digests remain caller authority.
-export async function readArchivePayload(input, { canonical, caseInsensitive = process.platform === "win32", declared, expected, regularOnly = false } = {}) {
+export async function readPayloadEntries(visitEntries, { canonical, caseInsensitive = process.platform === "win32", declared, expected, regularOnly = false } = {}) {
   const payload = new Map(), seen = new Set();
-  const evidence = await readTarGzip(input, async entry => {
+  const evidence = await visitEntries(async entry => {
     const name = entry.type === "5" ? entry.path.replace(/\/$/, "") : entry.path;
     const alias = caseInsensitive ? name.toLowerCase() : name;
     if (!canonical(name) || seen.has(alias) || (entry.type !== "0" && (declared || regularOnly || entry.type !== "5"))) throw new Error("unsafe or duplicate archive member");
@@ -178,6 +178,10 @@ export async function readArchivePayload(input, { canonical, caseInsensitive = p
   if (expected !== undefined && evidence.digest !== expected) throw new Error("archive digest differs");
   if (!payload.size || (declared && payload.size !== Object.keys(declared).length)) throw new Error("archive inventory differs");
   return { payload, ...evidence };
+}
+
+export async function readArchivePayload(input, options = {}) {
+  return readPayloadEntries(visit => readTarGzip(input, visit), options);
 }
 
 export async function copyVerifiedArchive(source, destination, expected) {

@@ -1,8 +1,10 @@
-import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { createReadStream, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { readArchivePayload } from "../../../../../scripts/archive-utils.mjs";
+import { readArchivePayload, readPayloadEntries } from "../../../../../scripts/archive-utils.mjs";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { canonical, inventory, readGenerationReceipt, qualificationOutput, readInput, sha256, verifyInstalledPayload, runCli } from "../../../shared/authority.mjs";
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -20,29 +22,54 @@ const packageName = "acyclic-sdk-transport-0.2.0-alpha.1.tar.gz";
 async function archivePayload(bytes) {
   return (await readArchivePayload(bytes, { canonical, caseInsensitive: true })).payload;
 }
-function zipPayload(text) {
-  const entries = JSON.parse(text), seen = new Set(), payload = new Map();
-  if (!Array.isArray(entries) || !entries.length || entries.length > 20000) throw new Error("invalid dependency ZIP inventory");
-  let root, expanded = 0;
-  for (const entry of entries) {
-    if (!entry || typeof entry.directory !== "boolean" || typeof entry.path !== "string" || typeof entry.data !== "string") throw new Error("invalid ZIP member");
-    const name = entry.directory ? entry.path.replace(/\/$/, "") : entry.path, key = name.toLowerCase();
-    if (!canonical(name) || seen.has(key)) throw new Error("unsafe or duplicate ZIP member");
-    seen.add(key);
-    const parts = name.split("/"); root ??= parts[0];
-    if (parts[0] !== root || (parts.length === 1 && !entry.directory)) throw new Error("ZIP archive lacks a single package root");
-    const bytes = Buffer.from(entry.data, "base64");
-    if (bytes.toString("base64") !== entry.data || (entry.directory && bytes.length)) throw new Error("invalid ZIP contents");
-    expanded += bytes.length; if (expanded > 32 * 1024 * 1024) throw new Error("ZIP expansion exceeds bound");
-    if (!entry.directory) payload.set(parts.slice(1).join("/"), bytes);
+async function zipPayload(file) {
+  const source = createReadStream(file), lines = createInterface({ input: source, crlfDelay: Infinity });
+  const iterator = lines[Symbol.asyncIterator]();
+  let root;
+  try {
+    const { payload: rooted } = await readPayloadEntries(async visit => {
+      for (;;) {
+        const next = await iterator.next();
+        if (next.done) break;
+        const entry = JSON.parse(next.value);
+        if (!entry || typeof entry.directory !== "boolean" || typeof entry.path !== "string"
+          || !Number.isSafeInteger(entry.size) || entry.size < 0 || (entry.directory && entry.size !== 0)) throw new Error("invalid ZIP member");
+        const name = entry.directory ? entry.path.replace(/\/$/, "") : entry.path;
+        const parts = name.split("/"); root ??= parts[0];
+        if (parts[0] !== root || (parts.length === 1 && !entry.directory)) throw new Error("ZIP archive lacks a single package root");
+        const body = (async function* () {
+          let remaining = entry.size;
+          for (;;) {
+            const chunk = await iterator.next();
+            if (chunk.done) throw new Error("truncated ZIP inspection");
+            const value = JSON.parse(chunk.value);
+            if (value?.end === true) {
+              if (remaining !== 0) throw new Error("ZIP contents length differs");
+              return;
+            }
+            if (typeof value?.data !== "string") throw new Error("invalid ZIP contents");
+            const bytes = Buffer.from(value.data, "base64");
+            if (!bytes.length || bytes.toString("base64") !== value.data || bytes.length > remaining) throw new Error("invalid ZIP contents");
+            remaining -= bytes.length;
+            yield bytes;
+          }
+        })();
+        await visit({ path: name, type: entry.directory ? "5" : "0", size: entry.size, body });
+        for await (const _ of body) {} // Consume directory terminators too.
+      }
+    }, { canonical, caseInsensitive: true });
+    const payload = new Map([...rooted].map(([name, bytes]) => [name.slice(root.length + 1), bytes]));
+    if (!payload.has("composer.json")) throw new Error("ZIP package metadata missing");
+    return payload;
+  } finally {
+    lines.close();
+    source.destroy();
   }
-  if (!payload.has("composer.json")) throw new Error("ZIP package metadata missing");
-  return payload;
 }
 
 // Commands and pins are injectable for offline staging; the CLI uses real tools.
-export async function qualify(args, { command = spawnSync, toolchain = pinned } = {}) {
-  if (process.platform !== "win32" && command === spawnSync) throw new Error("PHP qualification requires the admitted Windows runtime");
+export async function qualify(args, { command = captureCommand, toolchain = pinned } = {}) {
+  if (process.platform !== "win32" && command === captureCommand) throw new Error("PHP qualification requires the admitted Windows runtime");
   const packageRoot = realpathSync(args.package), authorityRoot = realpathSync(args.authority), runtime = realpathSync(args["php-home"]);
   const composer = realpathSync(args.composer), extension = realpathSync(args["grpc-extension"]), archiver = realpathSync(args.archiver), cache = realpathSync(args.cache);
   const output = qualificationOutput(args.output, [packageRoot, authorityRoot, runtime, composer, extension, archiver, cache, dirname(directory)]);
@@ -70,7 +97,7 @@ export async function qualify(args, { command = spawnSync, toolchain = pinned } 
   verifyTools();
   const controls = ["installed_consumer.php", "native_client.php", "archive_inventory.php", ...Object.keys(negatives).map(name => `${name}.php`)];
   const controlBytes = new Map(controls.map(name => [name, read(`../tests/fixtures/consumer/${name}`)]));
-  const code = new Map([["qualifier", readFileSync(fileURLToPath(import.meta.url))], ["authority_reader", read("../../../shared/authority.mjs")], ["archive_reader", read("../../../../../scripts/archive-utils.mjs")]]);
+  const code = new Map([["qualifier", readFileSync(fileURLToPath(import.meta.url))], ["authority_reader", read("../../../shared/authority.mjs")], ["archive_reader", read("../../../../../scripts/archive-utils.mjs")], ["process_capture", read("../../../../../scripts/process-capture.mjs")]]);
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (/^(COMPOSER|PHP|TAR_OPTIONS$|XDG_)/i.test(key)) delete env[key];
   const home = join(output, "home"), project = join(output, "project");
@@ -79,9 +106,9 @@ export async function qualify(args, { command = spawnSync, toolchain = pinned } 
     COMPOSER_HOME: join(home, "composer"), COMPOSER_CACHE_DIR: join(output, "cache"), COMPOSER_DISABLE_NETWORK: "1",
     PATH: [runtime, dirname(archiver)].join(delimiter) });
   const php = realpathSync(join(runtime, "php.exe"));
-  const phpArgs = ["-n", "-d", "memory_limit=256M", "-d", "display_errors=stderr", "-d", `extension=${join(runtime, "ext/php_zip.dll")}`,
+  const phpArgs = ["-n", "-d", "memory_limit=-1", "-d", "display_errors=stderr", "-d", `extension=${join(runtime, "ext/php_zip.dll")}`,
     "-d", `extension=${join(runtime, "ext/php_openssl.dll")}`, "-d", `extension=${extension}`];
-  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 180_000, maxBuffer: 48 * 1024 * 1024 });
+  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8" });
   const version = execute(php, [...phpArgs, "-r", 'echo json_encode([PHP_VERSION,PHP_INT_SIZE,phpversion("grpc")]);'], directory);
   if (version.error || version.status !== 0 || version.stderr || version.stdout !== JSON.stringify([toolchain.php_version, 8, toolchain.grpc_extension.version])) throw new Error("PHP runtime or extension version differs");
   const composerVersion = execute(php, [...phpArgs, composer, "--version", "--no-ansi"], directory);
@@ -94,10 +121,17 @@ export async function qualify(args, { command = spawnSync, toolchain = pinned } 
     const filename = `${pin.name.replace("/", "-")}-${pin.version}.zip`;
     if (archives.has(filename)) throw new Error("duplicate dependency archive");
     const bytes = readInput(cache, filename, pin.archive_sha256);
-    if (!bytes.length || bytes.length > 16 * 1024 * 1024) throw new Error("ZIP archive exceeds size bound");
-    const inspection = execute(php, [...phpArgs, join(directory, "../tests/fixtures/consumer/archive_inventory.php"), join(cache, filename)], directory);
-    if (inspection.error || inspection.status !== 0 || inspection.stderr) throw new Error("dependency ZIP inspection failed");
-    const contents = zipPayload(inspection.stdout);
+    if (!bytes.length) throw new Error("empty dependency ZIP archive");
+    const scratch = mkdtempSync(join(tmpdir(), "acyclic-zip-inspection-"));
+    let contents;
+    try {
+      const inspected = join(scratch, "entries.jsonl");
+      const inspection = execute(php, [...phpArgs, join(directory, "../tests/fixtures/consumer/archive_inventory.php"), join(cache, filename), inspected], directory);
+      if (inspection.error || inspection.status !== 0 || inspection.stderr) throw new Error("dependency ZIP inspection failed");
+      contents = await zipPayload(inspected);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
     if (JSON.stringify(JSON.parse(contents.get("composer.json"))) !== JSON.stringify(pin.composer)) throw new Error("dependency metadata differs");
     archives.set(filename, bytes); dependencies.push({ pin, filename, contents });
   }
