@@ -1,7 +1,6 @@
 //! Source custody for the shared reader, driven by its existing task.
 
 use acyclic_auth::credential::{CredentialProvider, CredentialWatch, ResolvedCredential};
-use futures::future::LocalBoxFuture;
 use std::{
     future::Future,
     pin::Pin,
@@ -45,8 +44,10 @@ impl Access {
     }
 }
 
-type Resolution =
-    LocalBoxFuture<'static, Result<ResolvedCredential, acyclic_auth::credential::CredentialError>>;
+type Resolution = acyclic_stream::BoxProviderFuture<
+    'static,
+    Result<ResolvedCredential, acyclic_auth::credential::CredentialError>,
+>;
 
 pub(super) struct Credentials {
     provider: CredentialProvider,
@@ -54,18 +55,20 @@ pub(super) struct Credentials {
     resolving: Option<Resolution>,
     lease: Option<ResolvedCredential>,
     registered_at: u64,
+    timeout_ms: u64,
     deadline: Option<u64>,
     status: CredentialStatus,
 }
 
 impl Credentials {
-    pub(super) fn new(provider: CredentialProvider, now: u64) -> Self {
+    pub(super) fn new(provider: CredentialProvider, now: u64, timeout_ms: u64) -> Self {
         let mut state = Self {
             provider,
             watch: None,
             resolving: None,
             lease: None,
             registered_at: now,
+            timeout_ms,
             deadline: None,
             status: CredentialStatus::Pending,
         };
@@ -100,6 +103,7 @@ impl Credentials {
             return;
         }
         self.status = CredentialStatus::Pending;
+        self.deadline = Some(now.saturating_add(self.timeout_ms));
         let provider = self.provider.clone();
         self.resolving = Some(Box::pin(async move { provider.resolve().await }));
     }
@@ -150,6 +154,14 @@ impl Credentials {
         if reset {
             self.restart(now);
         }
+        if self.status == CredentialStatus::Pending
+            && self.deadline.is_some_and(|deadline| now >= deadline)
+        {
+            self.resolving = None;
+            self.deadline = None;
+            self.status = CredentialStatus::Unavailable;
+            return true;
+        }
         let resolved = match self.resolving.as_mut() {
             Some(resolving) => match resolving.as_mut().poll(cx) {
                 Poll::Ready(result) => Some(result),
@@ -159,6 +171,7 @@ impl Credentials {
         };
         if let Some(result) = resolved {
             self.resolving = None;
+            self.deadline = None;
             self.status = CredentialStatus::Unavailable;
             if let Ok(lease) = result
                 && let Some(binding) = lease.binding()
@@ -217,6 +230,46 @@ mod tests {
     }
 
     #[test]
+    fn pending_source_uses_the_original_deadline_without_retry() {
+        use std::sync::atomic::AtomicUsize;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let available = Arc::new(AtomicBool::new(false));
+        let refreshed = calls.clone();
+        let renewed = available.clone();
+        let source = CredentialCache::new(
+            move |_| {
+                refreshed.fetch_add(1, Ordering::SeqCst);
+                let available = renewed.clone();
+                async move {
+                    if !available.load(Ordering::SeqCst) {
+                        futures::future::pending::<()>().await;
+                    }
+                    CredentialSnapshot::new("credential".into(), CredentialRevision([1; 32]), 20)
+                }
+            },
+            || CredentialValidity {
+                now_unix_seconds: 10,
+                revision: Some(CredentialRevision([1; 32])),
+            },
+        );
+        let mut credentials = Credentials::new(source.clone().into(), 10, 25);
+        let waker = futures::task::noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        assert!(!credentials.poll(10, &mut cx));
+        assert_eq!(credentials.deadline(), Some(35));
+        assert!(credentials.poll(35, &mut cx));
+        assert_eq!(credentials.status(), CredentialStatus::Unavailable);
+        assert_eq!(credentials.deadline(), None);
+        assert!(!credentials.poll(1_000, &mut cx));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        available.store(true, Ordering::SeqCst);
+        source.invalidate().unwrap();
+        assert!(credentials.poll(1_000, &mut cx));
+        assert_eq!(credentials.status(), CredentialStatus::Current);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
     fn source_change_hides_retained_data_before_the_watch_is_driven() {
         futures::executor::block_on(async {
             let validity = Arc::new(Mutex::new(CredentialValidity {
@@ -239,7 +292,7 @@ mod tests {
                 move || *observed.lock().unwrap(),
             );
             let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
-            reader.credentials = Some(Credentials::new(source.clone().into(), 500));
+            reader.credentials = Some(Credentials::new(source.clone().into(), 500, 10_000));
             reader.reset_source();
             assert!(!reader.readable());
             let ready = Arc::new(Ready(AtomicBool::new(false)));

@@ -412,6 +412,8 @@ pub struct Residency {
 
 /// One client's scheduler and cache.
 pub struct Reader {
+    identity: std::sync::Arc<()>,
+    pub(super) source_generation: u64,
     policy: ReaderPolicy,
     cache: RecordCache,
     credentials: Option<Credentials>,
@@ -448,6 +450,8 @@ impl Reader {
     pub fn new(policy: ReaderPolicy) -> Result<Self, StreamError> {
         policy.validate()?;
         Ok(Self {
+            identity: std::sync::Arc::new(()),
+            source_generation: 0,
             policy,
             cache: RecordCache::new(policy.cache_bytes, policy.streams),
             credentials: None,
@@ -499,11 +503,12 @@ impl Reader {
         self.credentials = provider
             .credential_provider()
             .cloned()
-            .map(|provider| Credentials::new(provider, now));
+            .map(|provider| Credentials::new(provider, now, self.policy.timeout_ms));
         self.reset_source();
     }
 
     fn reset_source(&mut self) {
+        self.source_generation += 1;
         let ids: Vec<_> = self.inflight.keys().copied().collect();
         for id in ids {
             self.cancel(id);

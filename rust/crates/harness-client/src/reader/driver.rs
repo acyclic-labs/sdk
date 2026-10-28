@@ -31,6 +31,7 @@ type Opening = LocalBoxFuture<'static, Option<Opened>>;
 /// Executes one reader's ops and follows on one provider.
 pub struct Driver<P: ?Sized> {
     identity: Arc<()>,
+    reader: Option<Arc<()>>,
     provider: Arc<P>,
     ops: FuturesUnordered<LocalBoxFuture<'static, Option<(u64, Outcome)>>>,
     aborts: BTreeMap<u64, AbortHandle>,
@@ -45,6 +46,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
     pub fn new(provider: Arc<P>) -> Self {
         Self {
             identity: Arc::new(()),
+            reader: None,
             provider,
             ops: FuturesUnordered::new(),
             aborts: BTreeMap::new(),
@@ -63,13 +65,18 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
     /// Advance once: start admitted reads, fold completions, reconcile and
     /// drain follows within the frame budget. Wakes `cx` on progress.
     pub fn step(&mut self, reader: &mut Reader, now: u64, cx: &mut Context<'_>) {
-        let attached = reader
-            .driver
+        let attached = self
+            .reader
             .as_ref()
-            .is_some_and(|driver| Arc::ptr_eq(driver, &self.identity));
+            .is_some_and(|identity| Arc::ptr_eq(identity, &reader.identity))
+            && reader
+                .driver
+                .as_ref()
+                .is_some_and(|driver| Arc::ptr_eq(driver, &self.identity));
         if !attached {
             reader.configure_source(self.provider.as_ref(), now);
             reader.driver = Some(self.identity.clone());
+            self.reader = Some(reader.identity.clone());
         }
         let changed = reader.advance_credentials(now, cx);
         if !attached || changed || !reader.readable() {
