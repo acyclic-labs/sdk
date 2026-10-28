@@ -263,7 +263,9 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                 (Unbounded, after.as_ref().map_or(Unbounded, Included)),
             ];
             for bounds in passes.into_iter().take(1 + usize::from(after.is_some())) {
-                for (path, (position, accepted, records)) in self.follows.range_mut::<StreamPath, _>(bounds) {
+                for (path, (position, accepted, records)) in
+                    self.follows.range_mut::<StreamPath, _>(bounds)
+                {
                     if !reader.accepting() {
                         break;
                     }
@@ -389,7 +391,8 @@ async fn read<P: StreamProvider + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
+    use crate::reader::ReaderPolicy;
+    use acyclic_stream::{AppendRequest, FollowRequest, ForkRequest, IdempotencyKey, MemoryStream};
 
     #[test]
     fn lost_check_producer_retires_the_request_without_waiting_for_timeout() {
@@ -807,6 +810,46 @@ mod tests {
                 matches!(ops.as_slice(), [Op::Read { stream, from: 0, .. }] if stream == &path),
                 "{ops:?}"
             );
+        });
+    }
+
+    #[test]
+    fn every_busy_follow_progresses_across_delivery_frames() {
+        futures::executor::block_on(async {
+            let provider = Arc::new(MemoryStream::default());
+            let mut driver = Driver::new(Arc::clone(&provider));
+            let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+            // More than two frames of streams; every early stream remains
+            // ready after its first delivery, reproducing starvation.
+            for index in 0..513 {
+                let path = StreamPath::new(format!("fair/{index:04}")).unwrap();
+                provider
+                    .append(AppendRequest {
+                        path: path.clone(),
+                        records: vec![b"record".as_slice().into(); 4],
+                        if_tail: Some(0),
+                        idempotency_key: IdempotencyKey::unique(),
+                    })
+                    .await
+                    .unwrap();
+                let records = provider
+                    .follow(FollowRequest::new(path.clone(), 0))
+                    .await
+                    .unwrap();
+                reader.follows.insert(path.clone(), 0);
+                driver
+                    .follows
+                    .insert(path, (0, 0, acyclic_stream::records_only(records)));
+            }
+            let waker = futures::task::noop_waker();
+            let mut context = Context::from_waker(&waker);
+            for frame in 0..3 {
+                reader.begin_frame(frame);
+                driver.drain(&mut reader, frame, &mut context);
+                assert!(!reader.accepting());
+            }
+            assert_eq!(driver.open_follows(), 513);
+            assert!(reader.follows().all(|(_, position)| position >= 1));
         });
     }
 }
