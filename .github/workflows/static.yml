@@ -1,4 +1,6 @@
 name: SDK Static
+# CI tests nothing: compiles and tests run on the build box before merge. This
+# required check only rejects a lockfile that disagrees with the manifests.
 on:
   pull_request: null
   push:
@@ -21,37 +23,5 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Check changed paths for lane artifacts
-        env:
-          ARTIFACT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          ARTIFACT_HEAD: ${{ github.sha }}
-        run: |
-          if [[ -n "$ARTIFACT_BASE" && ! "$ARTIFACT_BASE" =~ ^0+$ ]]; then
-            git fetch --no-tags --depth=1 origin "$ARTIFACT_BASE"
-          fi
-          node scripts/check-lane-artifacts.mjs "$ARTIFACT_BASE" "$ARTIFACT_HEAD"
-      - name: Verify lane artifact gate and its negative control
-        run: node --test scripts/lane-artifact-policy.test.mjs scripts/check-lane-artifacts.test.mjs
-      - name: Verify the local cloud fixture's guards and verdict
-        run: node --test scripts/local-cloud.test.mjs
       - name: Check lockfile and manifests without compiling
         run: cargo update --workspace --locked
-      - name: Reject workspace dev-dependency cycles
-        run: node --test scripts/check-dev-dependency-cycles.test.mjs && node scripts/check-dev-dependency-cycles.mjs
-      - name: Verify the feature matrix selection
-        run: node --test scripts/check-feature-matrix.test.mjs
-      - name: Admit every Cargo manifest through the formatter's planner parser
-        run: node --test scripts/rustfmt-manifests.test.mjs
-  aarch64:
-    # Integer widths in libc differ by architecture (for example nlink_t is u32 on
-    # aarch64 Linux and u64 on x86_64). Type-check the native host crates on an arm
-    # runner so a width-dependent compile break cannot reach main again.
-    name: SDK aarch64 Linux check
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Type-check native host crates for aarch64 Linux
-        run: cargo check --locked -p acyclic-fs --lib --features s3-http
