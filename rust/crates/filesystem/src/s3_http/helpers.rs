@@ -226,7 +226,7 @@ fn s3_error(error: &S3Error) -> s3s::S3Error {
         }
         S3Error::NotFound => s3s::s3_error!(NoSuchKey),
         S3Error::NotRegularFile => s3s::s3_error!(InvalidObjectState),
-        S3Error::ListLimit | S3Error::MultipartLimit | S3Error::WriteConflict => {
+        S3Error::MultipartLimit | S3Error::WriteConflict => {
             s3s::s3_error!(SlowDown)
         }
         S3Error::MissingPart(_) => s3s::s3_error!(InvalidPart),

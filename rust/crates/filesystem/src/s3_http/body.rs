@@ -112,8 +112,8 @@ impl AsyncBlobSource for StreamingBodySource {
     }
 }
 
-fn validate_http_key(key: &str, maximum: u32) -> S3Result {
-    if key.is_empty() || key.len() > maximum as usize {
+fn validate_http_key(key: &str) -> S3Result {
+    if key.is_empty() {
         return Err(s3s::s3_error!(InvalidArgument));
     }
     Ok(())
@@ -264,7 +264,7 @@ fn decode_multipart_header(
     let mut cursor = RecordCursor::new(created);
     cursor.header(1)?;
     let key_length = cursor.u32()?;
-    if key_length == 0 || key_length > limits.maximum_key_bytes {
+    if key_length == 0 {
         return Err(s3s::s3_error!(InvalidRequest));
     }
     let key = std::str::from_utf8(cursor.take(key_length as usize)?)
