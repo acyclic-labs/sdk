@@ -695,9 +695,6 @@ fn storage(error: impl std::fmt::Display) -> Error {
 fn native_work(
     cancellation: &acyclic_fs::CancellationToken,
 ) -> Result<acyclic_fs::NativeMaterializationWork> {
-    acyclic_fs::NativeMaterializationWork::new(
-        acyclic_fs::performance::BOUNDARY_BUDGET,
-        cancellation,
-    )
-    .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
+    acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::UNBOUNDED, cancellation)
+        .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
 }
