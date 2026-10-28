@@ -158,11 +158,15 @@ where
             {
                 acyclic_stream::CommitOutcome::Committed(_) => break,
                 acyclic_stream::CommitOutcome::Conflict(_) => {
-                    if let Ok(snapshot) = self.multipart_snapshot(&workspace, &upload_id).await {
-                        if snapshot.key != request.input.key {
-                            return Err(s3s::s3_error!(InvalidRequest));
+                    match self.multipart_snapshot(&workspace, &upload_id).await {
+                        Ok(snapshot) => {
+                            if snapshot.key != request.input.key {
+                                return Err(s3s::s3_error!(InvalidRequest));
+                            }
+                            break;
                         }
-                        break;
+                        Err(error) if error.code() == &s3s::S3ErrorCode::NoSuchUpload => {}
+                        Err(error) => return Err(error),
                     }
                     acyclic_stream::runtime::yield_now()
                         .await
