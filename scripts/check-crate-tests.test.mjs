@@ -5,7 +5,7 @@ import { dirname, join, resolve, sep } from "node:path";
 import test from "node:test";
 import { checkCrateTests, workspacePackages } from "./check-crate-tests.mjs";
 
-test("checks original default members alone, reusing one target with bounded workers", async () => {
+test("checks original default members alone in bounded worker targets", async () => {
   // Capture the real workspace; fabricated metadata cannot establish Kani routing.
   const metadata = JSON.parse(execFileSync("cargo",
     ["metadata", "--locked", "--no-deps", "--format-version", "1"],
@@ -39,9 +39,10 @@ test("checks original default members alone, reusing one target with bounded wor
   });
   assert.equal(peak, 2);
   assert.deepEqual(failures, ["second"]);
-  assert.deepEqual(commands, packages.map(name =>
-    ["check", "--locked", "--tests", "-p", name, "--target-dir", "/shared target"]));
-  assert.deepEqual(buildDirectories, [0, 1, 0].map(index => resolve("/shared target", "crate-test-checks", String(index))));
+  const targets = [0, 1, 0].map(index => resolve("/shared target", "crate-test-checks", String(index)));
+  assert.deepEqual(commands, packages.map((name, index) =>
+    ["check", "--locked", "--tests", "-p", name, "--target-dir", targets[index]]));
+  assert.deepEqual(buildDirectories, targets);
 });
 
 test("real Cargo compilations overlap; restoring the shared build lock is rejected", async () => {
@@ -82,7 +83,11 @@ test("real Cargo compilations overlap; restoring the shared build lock is reject
           CARGO_BUILD_BUILD_DIR: shared ? target : buildDirectory };
         delete env.COMPILE_BARRIER;
         if (measure) env.COMPILE_BARRIER = barrier;
-        const child = spawn("cargo", args, {
+        // Negative control restores the original shared target and build lock.
+        const cargoArgs = shared
+          ? args.map((arg, index) => args[index - 1] === "--target-dir" ? target : arg)
+          : args;
+        const child = spawn("cargo", cargoArgs, {
           cwd: fixture, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
           env,
         });

@@ -1,7 +1,6 @@
 // Each Cargo invocation selects exactly one workspace member, so another
-// member's features cannot make its tests compile. Reuse one target directory,
-// with one persistent intermediate cache per worker: cargo check does not write
-// final artifacts, so independent build-directory locks permit real overlap.
+// member's features cannot make its tests compile. Each worker owns a stable
+// target directory so Cargo and target-store leases permit actual overlap.
 import { spawn, execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,7 +18,7 @@ export async function checkCrateTests(packages, workers, target, run) {
     // Stable assignment keeps a crate in the same warm cache on later runs.
     for (let position = index; position < packages.length; position += workers) {
       const name = packages[position];
-      const args = ["check", "--locked", "--tests", "-p", name, "--target-dir", target];
+      const args = ["check", "--locked", "--tests", "-p", name, "--target-dir", buildDirectory];
       if (await run(args, buildDirectory) !== 0) failures.push(name);
     }
   }
