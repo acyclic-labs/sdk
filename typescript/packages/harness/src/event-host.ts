@@ -151,7 +151,7 @@ export class EventAgentHost {
   create(intent: string, brief?: string): Promise<string> {
     const path = this.host.validateCreate(intent, brief);
     return this.event(async () => {
-      await this.place({ intent, brief, path, create: true, stage: "claiming" });
+      await this.place({ intent, ...(brief === undefined ? {} : { brief }), path, create: true, stage: "claiming" });
       return path;
     });
   }

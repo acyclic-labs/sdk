@@ -150,7 +150,7 @@ export class AgentExplorer {
     if (this.#timer !== undefined) clearTimeout(this.#timer);
     // Cancel with the counterpart of whichever scheduler `schedule` used.
     if (this.#frame !== undefined) {
-      if (globalThis.requestAnimationFrame) globalThis.cancelAnimationFrame(this.#frame);
+      if (typeof globalThis.requestAnimationFrame === "function") globalThis.cancelAnimationFrame(this.#frame);
       else clearTimeout(this.#frame as unknown as ReturnType<typeof setTimeout>);
     }
     this.#core.free();

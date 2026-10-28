@@ -111,7 +111,7 @@ export class SqliteJournal {
     const view = new DataView(captured.buffer);
     view.setBigUint64(0, BigInt(head), true);
     view.setBigUint64(8, BigInt(count(metadata.bytes)), true);
-    const frames = [captured];
+    const frames: Uint8Array[] = [captured];
     for (let index = from; index < Math.min(head, from + page); index += 1) frames.push(this.readFrame(index));
     return frames;
   }
