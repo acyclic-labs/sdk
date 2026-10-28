@@ -326,7 +326,9 @@ impl StockExecution<'_> {
                 }
                 let token_pressure = policy.needs_compaction(accounting.capacity, input_tokens)?;
                 let possible_message_pressure = projection.canonical.is_some()
-                    && prepared.request().messages.len() > self.compaction_message_limit(true, 0);
+                    && self
+                        .compaction_message_limit(true, 0)
+                        .is_some_and(|maximum| prepared.request().messages.len() > maximum);
                 if !possible_message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
@@ -344,7 +346,9 @@ impl StockExecution<'_> {
                     .saturating_sub(source.messages.len());
                 let message_pressure = projection.canonical.is_some()
                     && source.messages.len() > 1
-                    && source.messages.len() > self.compaction_message_limit(true, stage_messages);
+                    && self
+                        .compaction_message_limit(true, stage_messages)
+                        .is_some_and(|maximum| source.messages.len() > maximum);
                 if !message_pressure && !token_pressure {
                     return Ok(prepared);
                 }
