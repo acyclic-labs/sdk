@@ -182,14 +182,22 @@ impl WasmMcpHttpTransport {
         endpoint: String,
         session: Option<String>,
         #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_bytes: JsValue,
-        #[wasm_bindgen(unchecked_param_type = "number | undefined")] timeout_ms: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | bigint | undefined")] timeout_ms: JsValue,
     ) -> std::result::Result<Self, JsValue> {
         HttpMcpTransport::new(
             Arc::new(BrowserProvider(provider)),
             endpoint,
             session,
-            from_js::<Option<u32>>(maximum_bytes)?,
-            from_js::<Option<u64>>(timeout_ms)?,
+            if maximum_bytes.is_undefined() {
+                None
+            } else {
+                from_js(maximum_bytes)?
+            },
+            if timeout_ms.is_undefined() {
+                None
+            } else {
+                from_js::<Option<u64>>(timeout_ms)?
+            },
             None,
         )
         .map(Self)
