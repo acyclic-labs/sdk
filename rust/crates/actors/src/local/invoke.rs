@@ -249,6 +249,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let state = self
             .provider
             .read(ReadRequest {
+                key: None,
                 path: ticket.state.clone(),
                 from: wire.revision - 1,
                 limit: 1,

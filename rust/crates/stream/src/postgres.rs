@@ -205,6 +205,7 @@ impl PostgresStream {
                             namespace: &inner.namespace,
                             wakes,
                             at_millis: 0,
+                            head: *cursor,
                         },
                         inner.core.clone(),
                         Arc::clone(&inner.clock),
@@ -268,6 +269,7 @@ impl PostgresStream {
                 namespace: &self.inner.namespace,
                 wakes,
                 at_millis: 0,
+                head: *cursor,
             },
             self.inner.core.clone(),
             Arc::clone(&self.inner.clock),
@@ -314,6 +316,7 @@ impl PostgresStream {
                     namespace: &provider.inner.namespace,
                     wakes,
                     at_millis: 0,
+                    head: *cursor,
                 },
                 provider.inner.core.clone(),
                 Arc::clone(&provider.inner.clock),
@@ -423,9 +426,16 @@ impl StreamProvider for PostgresStream {
         &self,
         at_least: &crate::RevisionCut,
     ) -> Result<crate::Revision, StreamError> {
-        // A token was issued after its publication reached the journal, so a
-        // refreshed replica covers it.
-        self.refresh().await?;
+        self.check()?;
+        let revisions = &self.inner.core.revisions;
+        if revisions
+            .floor(at_least)?
+            .is_some_and(|floor| floor > revisions.current().index)
+        {
+            // A token was issued after its publication reached the journal.
+            // An already-applied floor needs no unrelated catch-up.
+            self.refresh().await?;
+        }
         self.inner.core.wait_applied(at_least).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
@@ -433,6 +443,13 @@ impl StreamProvider for PostgresStream {
         self.inner.core.read(request).await
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
+        self.check()?;
+        match self.inner.core.read_commit(id).await {
+            Err(StreamError::NotFound) => {}
+            result => return result,
+        }
+        // Success is immutable; only a missing envelope needs a fresh journal
+        // observation. A miss is never cached as an authoritative absence.
         self.refresh().await?;
         self.inner.core.read_commit(id).await
     }
