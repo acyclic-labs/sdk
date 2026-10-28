@@ -801,11 +801,11 @@ pub fn stable_intent_key(retain_conflicts: bool) {
                 retried
             }
         };
-        let CommitOutcome::Committed(envelope) = &settled else {
+        let CommitOutcome::Committed(receipt) = &settled else {
             unreachable!("settled above");
         };
-        let expected = match &envelope.mutations[..] {
-            [CommittedMutation::Append(append)] => append.start,
+        let expected = match (receipt.appends.as_slice(), receipt.forks.as_slice()) {
+            ([append], []) => append.start,
             _ => unreachable!("one append"),
         };
         assert_eq!(

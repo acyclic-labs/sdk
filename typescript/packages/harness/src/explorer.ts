@@ -68,7 +68,7 @@ export class AgentExplorer {
   readonly #core: WasmExplorer;
   readonly #options: ExplorerOptions;
   readonly #db: IDBDatabase | undefined;
-  #frame: number | undefined;
+  #cancelFrame: (() => void) | undefined;
   #timer: ReturnType<typeof setTimeout> | undefined;
   readonly #online = () => { this.#core.networkChanged(true); this.schedule(); };
   readonly #offline = () => { this.#core.networkChanged(false); this.schedule(); };
@@ -104,13 +104,19 @@ export class AgentExplorer {
 
   /** Renders on the next animation frame; repeated calls coalesce. */
   schedule(): void {
-    if (this.#frame !== undefined) return;
-    const raf = globalThis.requestAnimationFrame ?? ((run: () => void) => setTimeout(run, 16) as unknown as number);
-    this.#frame = raf(() => {
-      this.#frame = undefined;
+    if (this.#cancelFrame !== undefined) return;
+    const render = () => {
+      this.#cancelFrame = undefined;
       this.#options.render(this.#core.frame() as ExplorerRow[], this);
       this.#arm();
-    });
+    };
+    if (typeof globalThis.requestAnimationFrame === "function") {
+      const frame = globalThis.requestAnimationFrame(render);
+      this.#cancelFrame = () => globalThis.cancelAnimationFrame(frame);
+    } else {
+      const timer = setTimeout(render, 16);
+      this.#cancelFrame = () => clearTimeout(timer);
+    }
   }
 
   /** The reader's one deadline becomes the page's one timer. */
@@ -148,11 +154,8 @@ export class AgentExplorer {
     globalThis.removeEventListener?.("offline", this.#offline);
     globalThis.document?.removeEventListener("visibilitychange", this.#hidden);
     if (this.#timer !== undefined) clearTimeout(this.#timer);
-    // Cancel with the counterpart of whichever scheduler `schedule` used.
-    if (this.#frame !== undefined) {
-      if (typeof globalThis.requestAnimationFrame === "function") globalThis.cancelAnimationFrame(this.#frame);
-      else clearTimeout(this.#frame as unknown as ReturnType<typeof setTimeout>);
-    }
+    this.#cancelFrame?.();
+    this.#cancelFrame = undefined;
     this.#core.free();
   }
 }

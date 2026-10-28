@@ -52,11 +52,17 @@ impl Requests {
     }
 
     /// Requests issued since an earlier snapshot of this same ledger.
+    ///
+    /// # Panics
+    /// Panics if any counter precedes the earlier snapshot. Take both snapshots
+    /// in order from the same ledger, without counter overflow.
     pub fn since(self, earlier: Self) -> Self {
         Self(std::array::from_fn(|index| {
-            self.0[index]
-                .checked_sub(earlier.0[index])
-                .expect("request ledger moved backwards; take both snapshots from the same wrapper")
+            assert!(
+                self.0[index] >= earlier.0[index],
+                "request ledger moved backwards; take both snapshots from the same wrapper"
+            );
+            self.0[index] - earlier.0[index]
         }))
     }
 }

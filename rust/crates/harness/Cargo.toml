@@ -58,10 +58,10 @@ name = "explicit-image-conversion"
 required-features = ["filesystem"]
 
 # Selections real consumers compile (Cloud's native root, harness-conformance,
-# and the filesystem-napi N-API generator). The lite gate checks each one when
-# a batch touches this crate's feature gating; --all-features hides #1602.
+# the filesystem-napi N-API generator, and browser Wasm). Explicit targets keep
+# each selection on the platform that implements its contract.
 [package.metadata.acyclic]
-consumer-features = [["filesystem"], ["filesystem-local", "test-support"], ["filesystem-local", "native-execution"]]
+consumer-features = [["filesystem"], ["filesystem-local", "test-support"], ["filesystem-local", "native-execution"], { features = ["browser"], target = "wasm32-unknown-unknown" }]
 
 [features]
 conformance = ["hosting", "oidc", "acyclic-fs/conformance", "dep:acyclic-objects", "acyclic-auth/test-support", "acyclic-stream/conformance", "acyclic-stream/session", "acyclic-stream/test-support", "dep:ed25519-dalek", "dep:jsonwebtoken"]

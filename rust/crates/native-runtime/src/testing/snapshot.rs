@@ -18,6 +18,7 @@ mod windows_tests;
 #[derive(Debug, PartialEq)]
 struct PermissionWrite;
 
+/// Independent fixture bytes, permissions and private-file custody metadata.
 #[derive(Debug, PartialEq)]
 pub struct Snapshot(Vec<Entry>);
 
@@ -48,6 +49,11 @@ fn capture_file(path: &Path) -> io::Result<(Vec<u8>, bool)> {
 }
 
 impl Snapshot {
+    /// Captures a quiescent fixture tree without copying provider or host caches.
+    ///
+    /// # Errors
+    /// Returns an I/O error if an entry cannot be read or classified, or if the
+    /// tree contains a symlink or an entry other than a regular file or directory.
     pub fn capture(root: &Path) -> io::Result<Self> {
         let mut pending = vec![(PathBuf::new(), std::fs::symlink_metadata(root)?)];
         let mut entries = Vec::new();
@@ -85,6 +91,15 @@ impl Snapshot {
         Ok(Self(entries))
     }
 
+    /// Restores an independent tree, installing permissions after its descendants.
+    ///
+    /// # Errors
+    /// Returns an I/O error if creating, writing, setting permissions or verifying
+    /// the restored tree fails. A partially restored destination may remain.
+    ///
+    /// # Panics
+    /// Panics if the destination already exists or its recaptured bytes,
+    /// permissions or private-file custody differ from this snapshot.
     pub fn restore(&self, root: &Path) -> io::Result<()> {
         assert!(!root.exists(), "snapshot destination must be independent");
         for Entry {
