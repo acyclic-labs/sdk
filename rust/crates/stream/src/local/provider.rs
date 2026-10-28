@@ -56,24 +56,55 @@ impl StreamProvider for LocalStream {
     }
 
     async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        request.validate()?;
         self.inner
             .provider
             .revisions
             .wait(&request.at_least)
             .await?;
-        self.accepted(async {
-            let projection = request.projection;
-            let paths = request.paths.clone();
-            let mut view = self.inner.provider.heads(request).await?;
-            if projection == crate::HeadProjection::Tail || paths.is_empty() {
-                return Ok(view);
-            }
-            let synced = self
-                .inner
-                .synced
-                .borrow()
-                .flushed
-                .is_some_and(|cut| cut >= *self.inner.revision.borrow());
+        let projection = request.projection;
+        let through = request.durable_through;
+        let paths = request.paths.clone();
+        let (mut view, revision) = self
+            .accepted(async {
+                let mut view = self.inner.provider.heads(request).await?;
+                let revision = *self.inner.revision.borrow();
+                if projection == crate::HeadProjection::Tail || paths.is_empty() {
+                    return Ok::<_, StreamError>((view, revision));
+                }
+                let synced = self
+                    .inner
+                    .synced
+                    .borrow()
+                    .flushed
+                    .is_some_and(|cut| cut >= revision);
+                let mut tails = self
+                    .inner
+                    .durable_tails
+                    .lock()
+                    .map_err(|_| StreamError::Unavailable)?;
+                for (path, head) in paths.iter().zip(&mut view.heads) {
+                    if let Some(head) = head {
+                        let durable = tails.entry(path.clone()).or_default();
+                        if synced {
+                            *durable = (*durable).max(head.tail);
+                        }
+                        head.durable = (*durable).min(head.tail);
+                        head.retained_through = through.filter(|through| *through <= head.durable);
+                    }
+                }
+                Ok((view, revision))
+            })
+            .await??;
+        if through.is_some_and(|through| {
+            view.heads
+                .iter()
+                .flatten()
+                .any(|head| through <= head.tail && head.retained_through.is_none())
+        }) {
+            // Flush exactly the captured publication cut, outside its read lock.
+            // Concurrent appends cannot change the view or enlarge its proof.
+            let flushed = self.await_flushed(revision).await?;
             let mut tails = self
                 .inner
                 .durable_tails
@@ -82,38 +113,13 @@ impl StreamProvider for LocalStream {
             for (path, head) in paths.into_iter().zip(&mut view.heads) {
                 if let Some(head) = head {
                     let durable = tails.entry(path).or_default();
-                    if synced {
-                        *durable = (*durable).max(head.tail);
-                    }
-                    head.durable = (*durable).min(head.tail);
+                    let marks = flushed_watermarks(durable, head.tail, flushed);
+                    head.durable = marks.durable;
+                    head.retained_through = through.filter(|through| *through <= marks.durable);
                 }
             }
-            Ok(view)
-        })
-        .await?
-    }
-
-    /// The explicit durability barrier: frames written under
-    /// `deferring_durability` are flushed here before any receipt covers them.
-    async fn durable_receipt(
-        &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
-        let observed = self.watermarks(path.clone()).await?;
-        if let Some(receipt) = crate::DurableReceipt::covering(path.clone(), &observed, through) {
-            return Ok(Some(receipt));
         }
-        // Every frame behind this path's accepted tail is at or before the
-        // published revision observed under the same publication guard.
-        let (accepted, revision) = self
-            .accepted(async {
-                let accepted = self.inner.provider.tail(path.clone()).await?;
-                Ok::<_, StreamError>((accepted, *self.inner.revision.borrow()))
-            })
-            .await??;
-        let flushed = self.await_flushed(revision).await?;
-        self.receipt_for_flushed_snapshot(path, accepted, through, flushed)
+        Ok(view)
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -243,7 +249,7 @@ impl StreamProvider for LocalStream {
     ) -> crate::NativeProviderFuture<'_, u64> {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::new(&original, async move {
-            self.visible(self.inner.provider.native_tail(path, meter))
+            self.accepted(self.inner.provider.native_tail(path, meter))
                 .await
                 .unwrap_or_else(|error| Ok(Err(error)))
         })
@@ -365,6 +371,7 @@ fn describe_commit(request: &CommitRequest) {
     });
 }
 
+#[cfg(loom)]
 impl LocalStream {
     fn receipt_for_flushed_snapshot(
         &self,
@@ -381,21 +388,28 @@ impl LocalStream {
             .lock()
             .map_err(|_| StreamError::Unavailable)?;
         let durable = tails.entry(path.clone()).or_default();
-        *durable = (*durable).max(accepted);
-        // This call flushed this exact snapshot. Later callers may have advanced
-        // durable_tails beyond it; never pair that newer prefix with this cut.
-        let covered = accepted;
-        #[cfg(loom)]
-        let covered = if crate::verification::fault_is(crate::verification::Fault::MixedReceiptCut)
-        {
-            *durable
-        } else {
-            covered
-        };
-        let marks = crate::StreamWatermarks {
-            accepted,
-            durable: covered,
-        };
+        let marks = flushed_watermarks(durable, accepted, _flushed);
         Ok(crate::DurableReceipt::covering(path, &marks, through))
+    }
+}
+
+// Pair a completed device flush with its captured accepted cut, never a newer
+// cached watermark. The cache can advance independently after this observation.
+fn flushed_watermarks(
+    durable: &mut u64,
+    accepted: u64,
+    _flushed: DeviceFlushed,
+) -> crate::StreamWatermarks {
+    *durable = (*durable).max(accepted);
+    let covered = accepted;
+    #[cfg(loom)]
+    let covered = if crate::verification::fault_is(crate::verification::Fault::MixedReceiptCut) {
+        *durable
+    } else {
+        covered
+    };
+    crate::StreamWatermarks {
+        accepted,
+        durable: covered,
     }
 }

@@ -625,6 +625,9 @@ mod http {
     fn head_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
         let result = Object::new();
+        if let Some(through) = item.get("retainedThrough").filter(|value| !value.is_null()) {
+            set(&result, "retainedThrough", &bigint_js(through)?)?;
+        }
         set(&result, "tail", &bigint_js(field(item, "tail")?)?)?;
         set(&result, "durable", &bigint_js(field(item, "durable")?)?)?;
         let last = field(item, "last")?;

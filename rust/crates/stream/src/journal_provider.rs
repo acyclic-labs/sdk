@@ -230,14 +230,6 @@ impl StreamProvider for JournalStream {
         .await
     }
 
-    async fn durable_receipt(
-        &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<DurableReceipt>, StreamError> {
-        self.query(async move |p| p.durable_receipt(path, through).await)
-            .await
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         match self.execute(Command::Append(request), None).await? {
             Outcome::Append(value) => Ok(value),

@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 #[cfg(feature = "filesystem")]
 use futures::Stream as _;
 use futures::TryStreamExt as _;

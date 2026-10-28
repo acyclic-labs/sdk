@@ -328,7 +328,7 @@ pub struct StreamWatermarks {
 
 /// Proof that a path's records before `through` are in the provider's
 /// irreversible prefix: no crash short of losing the whole stream removes them.
-/// Only [`StreamProvider::durable_receipt`] issues it, from a confirmed durable
+/// Only [`StreamProviderExt::durable_receipt`] issues it, from a confirmed durable
 /// watermark (or, for `MemoryStream`, its retained tail, which it never
 /// rolls back). A commit acknowledgement alone never yields one, so writes made
 /// under `deferring_durability` cannot be mistaken for durable ones.
@@ -358,6 +358,7 @@ impl DurableReceipt {
         self.through
     }
 
+    #[cfg(any(test, loom))]
     pub(crate) fn covering(
         path: StreamPath,
         watermarks: &StreamWatermarks,
@@ -365,10 +366,6 @@ impl DurableReceipt {
     ) -> Option<Self> {
         (through <= watermarks.durable && watermarks.durable <= watermarks.accepted)
             .then_some(Self { path, through })
-    }
-
-    pub(crate) fn retained(path: StreamPath, tail: u64, through: u64) -> Option<Self> {
-        (through <= tail).then_some(Self { path, through })
     }
 }
 

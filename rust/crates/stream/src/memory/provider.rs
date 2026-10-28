@@ -2,12 +2,14 @@ fn head_at(
     state: &State,
     path: &StreamPath,
     projection: crate::HeadProjection,
+    through: Option<u64>,
 ) -> Result<Option<crate::PathHead>, StreamError> {
     state
         .paths
         .get(path)
         .map(|stream| {
             Ok(crate::PathHead {
+                retained_through: through.filter(|through| *through <= stream.tail),
                 tail: stream.tail,
                 last: (projection == crate::HeadProjection::History)
                     .then(|| last_record(stream))
@@ -183,7 +185,7 @@ impl StreamProvider for MemoryStream {
         let heads = request
             .paths
             .iter()
-            .map(|path| head_at(&state, path, request.projection))
+            .map(|path| head_at(&state, path, request.projection, request.durable_through))
             .collect::<Result<_, _>>()?;
         if let Some(children) = &mut request.children {
             children.limit = children
@@ -218,17 +220,6 @@ impl StreamProvider for MemoryStream {
                 outcome: replay.result.clone(),
                 revision: Some(self.revisions.at(replay.index)),
             }))
-    }
-
-    /// Memory never rolls back part of a path: its retained tail is its
-    /// irreversible prefix, although it makes no crash-persistence claim.
-    async fn durable_receipt(
-        &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
-        let tail = self.tail(path.clone()).await?;
-        Ok(crate::DurableReceipt::retained(path, tail, through))
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {

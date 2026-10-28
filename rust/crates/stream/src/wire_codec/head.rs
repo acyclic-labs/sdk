@@ -3,6 +3,7 @@ use super::*;
 /// Validates the canonical mixed observation request before provider admission.
 pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<crate::HeadsRequest, StreamError> {
     let request = crate::HeadsRequest {
+        durable_through: value.durable_through,
         projection: projection_from_wire(value.projection)
             .map_err(|_| StreamError::InvalidArgument)?,
         paths: value
@@ -21,6 +22,7 @@ pub fn heads_from_wire(value: wire::HeadsRequest) -> Result<crate::HeadsRequest,
 /// Encodes one mixed observation without splitting it into separate requests.
 pub fn heads_request_to_wire(value: crate::HeadsRequest) -> wire::HeadsRequest {
     wire::HeadsRequest {
+        durable_through: value.durable_through,
         projection: projection_to_wire(value.projection),
         paths: value
             .paths
@@ -86,6 +88,7 @@ fn head_observation_from_wire(
         return Err(StreamError::InvalidResponse);
     }
     let mut head = crate::PathHead {
+        retained_through: value.retained_through,
         tail: value.tail,
         last: value.last.map(record).transpose()?,
         durable: value.durable,
@@ -118,6 +121,7 @@ fn projection_to_wire(value: crate::HeadProjection) -> i32 {
 /// Projects one provider observation, retaining the original record bytes.
 pub fn head_to_wire(value: crate::PathHead) -> wire::PathHead {
     wire::PathHead {
+        retained_through: value.retained_through,
         tail: value.tail,
         last: value.last.map(record_wire),
         durable: value.durable,

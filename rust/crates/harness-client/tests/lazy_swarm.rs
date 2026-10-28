@@ -245,6 +245,7 @@ impl Swarm {
             Op::Head { stream, .. } => {
                 let tail = self.tail(stream, now);
                 Outcome::Head(PathHead {
+                    retained_through: None,
                     tail,
                     durable: 0,
                     origin: self.origin(stream),

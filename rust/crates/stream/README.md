@@ -194,3 +194,19 @@ fetches history nor waits for persistence. `watermarks` requests durability
 metadata explicitly. A durability receipt or barrier joins persistence when
 that guarantee is required. Empty and single-path observation sets use inline
 storage; larger sets grow with the requested budget.
+
+`HeadsRequest::durable_through` asks for an irreversible-prefix confirmation in
+that same captured view. `PathHead::retained_through` carries this proof
+separately from `durable`: retained memory history makes no crash-persistence
+claim. Local storage releases the publication read lock before joining a
+required device flush. Already confirmed and out-of-range requests add no flush.
+
+The observation consolidation removes repeated source-level work: the wire tail
+handler takes one provider view instead of separate revision, offset and final
+revision observations. A local receipt takes one publication snapshot instead
+of a watermark snapshot followed by another accepted snapshot. Ordinary and
+native accepted-tail reads join zero durability barriers. Empty and single-path
+request/result collections add zero collection allocations; larger views grow
+with their actual cardinality. These are source counts, not measured latency or
+throughput results. Physical flush counts depend on the requested guarantee and
+concurrent work already in the device buffer.

@@ -96,28 +96,6 @@ impl StreamProvider for Remote {
         self.sessions.heads(request, 0).await
     }
 
-    async fn durable_receipt(
-        &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
-        let result = self
-            .service()
-            .tail(
-                self.request(wire::TailRequest {
-                    path: path.to_string(),
-                    accepted: true,
-                    durable_through: Some(through),
-                    at_least: Default::default(),
-                })
-                .await?,
-            )
-            .await
-            .map_err(|e| wire_codec::status(&e))?
-            .into_inner();
-        let marks = wire_codec::watermarks_from_wire(result)?;
-        Ok(crate::DurableReceipt::covering(path, &marks, through))
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         let key = request.idempotency_key;
         let body = wire::AppendRequest {

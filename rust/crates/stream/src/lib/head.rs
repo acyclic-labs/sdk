@@ -5,6 +5,9 @@ pub type HeadSet<T> = smallvec::SmallVec<[T; 1]>;
 /// One atomic observation of a path's accepted history and durable prefix.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PathHead {
+    /// Explicit irreversible-prefix proof, independent of crash persistence.
+    /// Present only in response to a requested `durable_through` confirmation.
+    pub retained_through: Option<u64>,
     /// Next accepted sequence.
     pub tail: u64,
     /// Last accepted record when history is requested, absent for an empty path.
@@ -30,6 +33,10 @@ pub enum HeadProjection {
 /// Named observations and an optional hierarchy page at one authority cut.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeadsRequest {
+    /// Requests an irreversible-prefix proof through this sequence for each
+    /// named path. A deferred backend seals the captured prefix only when the
+    /// requested sequence is accepted and not already confirmed.
+    pub durable_through: Option<u64>,
     /// Selects history details or an offset-only observation.
     pub projection: HeadProjection,
     /// Exact paths, in response order. An absent path has a `None` observation.
@@ -46,7 +53,10 @@ pub struct HeadsRequest {
 impl HeadsRequest {
     pub(crate) fn validate(&self) -> Result<(), StreamError> {
         let named = u32::try_from(self.paths.len()).map_err(|_| StreamError::InvalidArgument)?;
-        if self.limit == 0 || named > self.limit || (self.children.is_some() && named == self.limit)
+        if self.limit == 0
+            || named > self.limit
+            || (self.children.is_some() && named == self.limit)
+            || (self.projection == HeadProjection::Tail && self.durable_through.is_some())
         {
             return Err(StreamError::InvalidArgument);
         }
@@ -85,6 +95,9 @@ impl Heads {
         }
         for head in self.heads.iter().flatten() {
             head.validate_projection(self.projection)?;
+            if head.retained_through.is_some() && head.retained_through != request.durable_through {
+                return Err(StreamError::InvalidResponse);
+            }
         }
         Ok(())
     }
@@ -95,6 +108,13 @@ impl PathHead {
         &self,
         projection: HeadProjection,
     ) -> Result<(), StreamError> {
+        if self
+            .retained_through
+            .is_some_and(|through| through > self.tail)
+            || (projection == HeadProjection::Tail && self.retained_through.is_some())
+        {
+            return Err(StreamError::InvalidResponse);
+        }
         match projection {
             HeadProjection::History => self.validate(),
             HeadProjection::Tail if self.durable != 0 => Err(StreamError::InvalidResponse),

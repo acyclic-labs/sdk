@@ -216,6 +216,7 @@ fn cancellation_keeps_accepted_visibility_and_durable_receipts_distinct()
         assert!(appending.await.is_err_and(|error| error.is_cancelled()));
 
         assert_eq!(provider.tail(path.clone()).await?, 1);
+        assert!(provider.durable_receipt(path.clone(), 2).await?.is_none());
         let receipt = provider.durable_receipt(path, 1);
         futures::pin_mut!(receipt);
         assert!(

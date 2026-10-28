@@ -228,25 +228,6 @@ impl StreamProvider for InjectedStream {
         Ok(view)
     }
 
-    async fn durable_receipt(
-        &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<DurableReceipt>, StreamError> {
-        let marks = wire_codec::watermarks_from_wire(
-            self.call(
-                "tail",
-                wire::TailRequest {
-                    path: path.to_string(),
-                    accepted: true,
-                    durable_through: Some(through),
-                    at_least: Default::default(),
-                },
-            )
-            .await?,
-        )?;
-        Ok(DurableReceipt::covering(path, &marks, through))
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         let request = crate::journal::Command::Append(request).validated()?;
         let crate::journal::Command::Append(request) = request else {

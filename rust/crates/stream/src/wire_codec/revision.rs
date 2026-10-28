@@ -1,5 +1,4 @@
 //! The one wire spelling of the shared applied-revision token.
-use crate::StreamProviderExt as _;
 use crate::{Revision, RevisionCut, RevisionScope, StreamError, wire};
 
 /// Encodes one revision.
@@ -55,35 +54,31 @@ pub async fn tail_response<P: crate::StreamProvider + ?Sized>(
     request: wire::TailRequest,
 ) -> Result<wire::TailResponse, StreamError> {
     let path = crate::StreamPath::new(request.path)?;
-    let at_least = cut_from_wire(request.at_least)?;
-    let waited = crate::revision::served(provider, &at_least).await?;
-    if !request.accepted {
-        let tail = provider.tail(path).await?;
-        return Ok(wire::TailResponse {
-            tail,
-            durable: None,
-            applied: crate::revision::captured(provider, waited)
-                .await?
-                .as_ref()
-                .map(revision_to_wire),
-        });
-    }
-    let durable = match request.durable_through {
-        Some(through) => Some(
-            provider
-                .durable_receipt(path.clone(), through)
-                .await?
-                .map_or(0, |receipt| receipt.through()),
-        ),
-        None => None,
+    let projection = if request.accepted {
+        crate::HeadProjection::Watermarks
+    } else {
+        crate::HeadProjection::Tail
     };
-    let watermarks = provider.watermarks(path).await?;
+    let through = request
+        .accepted
+        .then_some(request.durable_through)
+        .flatten();
+    let observation = crate::HeadsRequest {
+        durable_through: through,
+        projection,
+        paths: [path].into(),
+        children: None,
+        limit: 1,
+        at_least: cut_from_wire(request.at_least)?,
+    };
+    let mut view = provider.heads(observation.clone()).await?;
+    view.validate_for(&observation)?;
+    let head = view.heads.pop().flatten().ok_or(StreamError::NotFound)?;
     Ok(wire::TailResponse {
-        tail: watermarks.accepted,
-        durable: Some(durable.unwrap_or(watermarks.durable)),
-        applied: crate::revision::captured(provider, waited)
-            .await?
-            .as_ref()
-            .map(revision_to_wire),
+        tail: head.tail,
+        durable: request
+            .accepted
+            .then_some(through.map_or(head.durable, |_| head.retained_through.unwrap_or(0))),
+        applied: Some(revision_to_wire(&view.snapshot)),
     })
 }

@@ -216,6 +216,7 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
     tree(&provider).await?;
     let client = local(&provider)?;
     let request = crate::HeadsRequest {
+        durable_through: None,
         projection: Default::default(),
         paths: [
             StreamPath::new("tree/a/status")?,
@@ -293,6 +294,7 @@ async fn remote_provider_reads_and_pages_never_use_unary_rpcs() -> TestResult {
         provider.children_page(page("tree", 10)?).await?
     );
     let view = crate::HeadsRequest {
+        durable_through: None,
         projection: Default::default(),
         paths: [StreamPath::new("tree/a/status")?].into(),
         children: Some(page("tree", 10)?),

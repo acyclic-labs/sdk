@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 
 use crate::{executor::stock_boundary, wire::ErrorCode};
 

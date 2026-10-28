@@ -274,6 +274,7 @@ fn observation_value(value: wire::InspectIdempotencyResponse) -> Result<Option<V
 
 fn head_json(head: &wire::PathHead) -> Value {
     json!({
+        "retainedThrough": head.retained_through.map(|through| through.to_string()),
         "tail": head.tail.to_string(),
         "last": head.last.as_ref().map(record_json),
         "durable": head.durable.to_string(),

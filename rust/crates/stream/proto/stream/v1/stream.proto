@@ -115,6 +115,8 @@ message HeadsRequest {
   uint32 limit = 3;
   repeated Revision at_least = 4;
   HeadProjection projection = 5;
+  // Confirm this irreversible prefix at the captured view; distinct from crash durability.
+  optional uint64 durable_through = 6;
 }
 
 message HeadObservation {
@@ -141,6 +143,8 @@ message PathHead {
   Record last = 2;
   uint64 durable = 3;
   ForkOrigin origin = 4;
+  // Explicit proof requested by HeadsRequest, bounded by this accepted tail.
+  optional uint64 retained_through = 5;
 }
 
 message TailRequest {

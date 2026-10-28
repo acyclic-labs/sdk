@@ -163,6 +163,7 @@ async fn head_refuses_incoherent_cuts_without_another_provider_request()
 -> Result<(), Box<dyn std::error::Error>> {
     let snapshot = MemoryStream::default()
         .heads(HeadsRequest {
+            durable_through: None,
             projection: Default::default(),
             paths: Default::default(),
             children: None,
@@ -201,6 +202,7 @@ async fn head_refuses_incoherent_cuts_without_another_provider_request()
         .await;
         let actual = server.client.head(StreamPath::new("head/child")?).await;
         let wire = crate::wire::PathHead {
+            retained_through: None,
             tail,
             durable,
             last: sequence

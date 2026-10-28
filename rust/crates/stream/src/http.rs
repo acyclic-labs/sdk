@@ -372,13 +372,6 @@ impl StreamProvider for HttpStream {
         Ok(view)
     }
 
-    async fn durable_receipt(
-        &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
-        self.session_client()?.durable_receipt(path, through).await
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         let outcome = parse_append(
             &self
@@ -629,6 +622,11 @@ fn parse_head_projection(
     projection: crate::HeadProjection,
 ) -> Result<crate::PathHead, StreamError> {
     let head = crate::PathHead {
+        retained_through: value
+            .get("retainedThrough")
+            .filter(|value| !value.is_null())
+            .map(parse_u64)
+            .transpose()?,
         tail: parse_u64(field(&value, "tail")?)?,
         last: value
             .get("last")

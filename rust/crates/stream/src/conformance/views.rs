@@ -23,6 +23,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
             return Err(StreamError::Unavailable);
         };
         let request = crate::HeadsRequest {
+            durable_through: None,
             projection: Default::default(),
             paths: [paths[0].clone(), paths[1].clone(), path("coherent/absent")?]
                 .into_iter()
@@ -51,12 +52,17 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                 return Err(StreamError::Unavailable);
             }
         }
-        for projection in [
-            crate::HeadProjection::Watermarks,
-            crate::HeadProjection::Tail,
+        for (projection, through) in [
+            (crate::HeadProjection::Watermarks, None),
+            (crate::HeadProjection::Tail, None),
+            (
+                crate::HeadProjection::Watermarks,
+                Some(u64::from(generation) + 1),
+            ),
         ] {
             let mut offsets = request.clone();
             offsets.projection = projection;
+            offsets.durable_through = through;
             let projected = provider.heads(offsets.clone()).await?;
             projected.validate_for(&offsets)?;
             for observed in [&view, &projected] {
@@ -76,7 +82,8 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                     .any(|(offsets, full)| match (offsets, full) {
                         (None, None) => false,
                         (Some(offsets), Some(full)) => {
-                            offsets.tail != full.tail
+                            offsets.retained_through != through
+                                || offsets.tail != full.tail
                                 || (projection == crate::HeadProjection::Watermarks
                                     && offsets.durable < full.durable)
                                 || (projection == crate::HeadProjection::Tail

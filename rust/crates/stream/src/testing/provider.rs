@@ -47,14 +47,6 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.inner().heads(request).await
     }
 
-    async fn durable_receipt(
-        &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<DurableReceipt>, StreamError> {
-        self.record(RequestClass::Head);
-        self.inner().durable_receipt(path, through).await
-    }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.record(RequestClass::Data);
         self.inner().append(request).await

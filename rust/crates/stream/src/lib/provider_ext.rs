@@ -20,6 +20,14 @@ pub trait StreamProviderExt: StreamProvider {
         path: StreamPath,
     ) -> impl std::future::Future<Output = Result<StreamWatermarks, StreamError>> + ProviderTask;
 
+    /// Confirms an irreversible prefix at one captured view. A retained memory
+    /// prefix is valid without asserting crash persistence.
+    fn durable_receipt(
+        &self,
+        path: StreamPath,
+        through: u64,
+    ) -> impl std::future::Future<Output = Result<Option<DurableReceipt>, StreamError>> + ProviderTask;
+
     /// One bounded direct-child page at a coherent authority snapshot.
     fn children_page(
         &self,
@@ -34,6 +42,30 @@ pub trait StreamProviderExt: StreamProvider {
 }
 
 impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
+    fn durable_receipt(
+        &self,
+        path: StreamPath,
+        through: u64,
+    ) -> impl std::future::Future<Output = Result<Option<DurableReceipt>, StreamError>> + ProviderTask
+    {
+        async move {
+            let request = HeadsRequest {
+                durable_through: Some(through),
+                projection: HeadProjection::Watermarks,
+                paths: [path.clone()].into(),
+                children: None,
+                limit: 1,
+                at_least: Default::default(),
+            };
+            let mut view = self.heads(request.clone()).await?;
+            view.validate_for(&request)?;
+            let head = view.heads.pop().flatten().ok_or(StreamError::NotFound)?;
+            Ok(head
+                .retained_through
+                .map(|through| DurableReceipt { path, through }))
+        }
+    }
+
     fn head(
         &self,
         path: StreamPath,
@@ -70,6 +102,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
             let limit = request.limit;
             let view = self
                 .heads(HeadsRequest {
+                    durable_through: None,
                     projection: HeadProjection::Watermarks,
                     paths: Default::default(),
                     children: Some(request),
@@ -95,6 +128,7 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         async move {
             let view = self
                 .heads(HeadsRequest {
+                    durable_through: None,
                     projection: Default::default(),
                     paths: Default::default(),
                     children: None,
@@ -121,6 +155,7 @@ async fn named_head<P: StreamProvider + ?Sized>(
 ) -> Result<PathHead, StreamError> {
     let mut view = provider
         .heads(HeadsRequest {
+            durable_through: None,
             projection,
             paths: [path].into(),
             children: None,

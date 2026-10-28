@@ -24,7 +24,7 @@ use super::TurnAdmission;
 use acyclic_native_runtime::NativeReadMeter;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, BoxProviderFuture, CommitId, CommitOutcome, CommitRequest,
-    CommittedEnvelope, DurableReceipt, FollowStream, ForkReceipt, ForkRequest, IdempotencyKey,
+    CommittedEnvelope, FollowStream, ForkReceipt, ForkRequest, IdempotencyKey,
     IdempotencyObservation, ProviderPlatform, ReadRequest, RecordStream, StreamError, StreamPath,
     StreamProvider,
 };
@@ -169,13 +169,6 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
         request: acyclic_stream::HeadsRequest,
     ) -> Result<acyclic_stream::Heads, StreamError> {
         self.inner.heads(request).await
-    }
-    async fn durable_receipt(
-        &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<DurableReceipt>, StreamError> {
-        self.inner.durable_receipt(path, through).await
     }
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
         self.target(|| acyclic_stream::request::append_digest(&request))
