@@ -1,4 +1,4 @@
-//! Bounded Merkle-aware value diffs for persistent authenticated B+trees.
+//! Merkle-aware value diffs for persistent authenticated B+trees.
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::file_table_mutation::FileTableFormat;
@@ -35,7 +35,9 @@ enum Task {
     After(ObjectId),
 }
 
-type Changes<F> = Owned<Vec<ValueChange<<F as Format>::Key, <F as Format>::Value>>>;
+mod changes;
+use super::ordered_links::{Links, Metered, Tree};
+use changes::Changes;
 
 async fn diff_with_accounting<
     S: AsyncObjectStore,
@@ -78,7 +80,7 @@ async fn diff_with_accounting<
         ));
     };
     let mut tasks = Owned::<Vec<Task>>::allocate(0, accounting).map_err(allocation_error)?;
-    let mut values = match Changes::<F>::allocate(0, accounting) {
+    let mut values = match Changes::<F>::allocate(maximum, accounting) {
         Ok(values) => values,
         Err(error) => {
             tasks.retire(accounting)?;
@@ -87,12 +89,11 @@ async fn diff_with_accounting<
     };
     let result = async {
         push_task(&mut tasks, initial, accounting)?;
-        let mut truncated = false;
         while let Some(task) = tasks.value.pop() {
             cancellation.check()?;
             accounting.check()?;
-            if values.value.len() > maximum {
-                truncated = true;
+            if values.len() > maximum {
+                values.truncated = true;
                 break;
             }
             match task {
@@ -154,8 +155,6 @@ async fn diff_with_accounting<
                             true,
                             &mut tasks,
                             &mut values,
-                            maximum,
-                            &mut truncated,
                             accounting,
                         );
                         if let Err(error) = pushed {
@@ -167,8 +166,6 @@ async fn diff_with_accounting<
                             false,
                             &mut tasks,
                             &mut values,
-                            maximum,
-                            &mut truncated,
                             accounting,
                         )?;
                     }
@@ -190,18 +187,17 @@ async fn diff_with_accounting<
                         before,
                         &mut tasks,
                         &mut values,
-                        maximum,
-                        &mut truncated,
                         accounting,
                     )?;
                 }
             }
-            if truncated {
+            if values.truncated {
                 break;
             }
         }
-        truncated |= retain_changes::<F>(&mut values, maximum, accounting)?;
-        Ok(truncated)
+        values.order(accounting)?;
+        values.truncated |= retain_changes::<F>(&mut values.values, maximum, accounting)?;
+        Ok(values.truncated)
     }
     .await;
     tasks.retire(accounting)?;
@@ -211,11 +207,12 @@ async fn diff_with_accounting<
             Err(allocation_error(error))
         }
         Ok(truncated) => {
+            values.links.retire(accounting)?;
             let Owned {
                 value: changes,
                 allocation,
                 bytes,
-            } = values;
+            } = values.values;
             Ok((
                 Diff {
                     changes,
@@ -319,19 +316,14 @@ fn internal_children<F: Format>(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one page updates the guarded frontier and bounded sorted changes"
-)]
 fn push_page<F: Format, const PREFIX: bool, const RESET: bool>(
     mut page: Owned<OwnedPage<F>>,
     before: bool,
     tasks: &mut Owned<Vec<Task>>,
     values: &mut Changes<F>,
-    maximum: usize,
-    truncated: &mut bool,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
+    let maximum = values.maximum;
     let result = (|| {
         if let Some(children) = internal_children(&page.value) {
             for child in children.iter().rev() {
@@ -352,18 +344,14 @@ fn push_page<F: Format, const PREFIX: bool, const RESET: bool>(
         // start before it. No changes are removed while this cursor is live.
         // The false variant deliberately carries an end-of-previous-leaf
         // cursor into the next page, for the traversal reset negative control.
-        let mut cursor = if RESET {
-            None
-        } else {
-            Some(values.value.len())
-        };
+        let mut cursor = if RESET { None } else { Some(values.len()) };
         match &mut page.value.page {
             PageLease::Owned(Page::Leaf(entries)) => {
                 // Move owned leaf payloads; split their original guard instead
                 // of copying names or adopting them after the allocation.
                 for value in std::mem::take(entries) {
-                    if values.value.len() > maximum {
-                        *truncated = true;
+                    if values.len() > maximum {
+                        values.truncated = true;
                         break;
                     }
                     let bytes = F::value_owned_bytes(&value);
@@ -382,8 +370,8 @@ fn push_page<F: Format, const PREFIX: bool, const RESET: bool>(
             PageLease::Shared { page, .. } => {
                 if let Page::Leaf(entries) = page.as_ref() {
                     for value in entries {
-                        if values.value.len() > maximum {
-                            *truncated = true;
+                        if values.len() > maximum {
+                            values.truncated = true;
                             break;
                         }
                         let (value, guard) =
@@ -417,52 +405,82 @@ fn insert_value<F: Format, const PREFIX: bool>(
     cursor: &mut Option<usize>,
 ) -> Result<(), FsError> {
     let prepared = (|| {
-        let compare = |entry: &ValueChange<F::Key, F::Value>| {
-            #[cfg(all(test, feature = "memory"))]
-            tests::ordered::record_comparison();
-            entry.key.cmp(F::key(&value.value))
+        let position = super::search::binary_search_indexed_with_accounting(
+            values.len(),
+            if PREFIX { cursor.unwrap_or(0) } else { 0 },
+            accounting,
+            |rank| {
+                let index = values.select(rank)?;
+                let entry = values.values.value.get(index).ok_or(FsError::InvalidDiff)?;
+                #[cfg(all(test, feature = "memory"))]
+                tests::ordered::record_comparison();
+                Ok(entry.key.cmp(F::key(&value.value)))
+            },
+        )?;
+        let rank = match position {
+            Ok(rank) | Err(rank) => rank,
         };
-        let position = match if PREFIX { *cursor } else { None } {
-            None => {
-                super::search::binary_search_with_accounting(&values.value, accounting, compare)?
-            }
-            Some(start) => super::search::binary_search_from_with_accounting(
-                &values.value,
-                start,
-                accounting,
-                compare,
-            )?,
-        };
-        if let Err(index) = position {
+        let index = if position.is_err() {
+            let (parent, side, _) = values.insertion(rank)?;
             values
+                .values
+                .ensure_for_push(maximum.saturating_add(1), accounting)
+                .map_err(allocation_error)?;
+            values
+                .links
                 .ensure_for_push(maximum.saturating_add(1), accounting)
                 .map_err(allocation_error)?;
             let (key, mut guard) =
                 persistent_io::clone_key::<F>(F::key(&value.value), accounting, None, 0)?;
             let bytes = F::key_owned_bytes(&key);
-            values.allocation.absorb(&mut guard)?;
-            values.bytes = values.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
-            values.value.insert(
-                index,
-                ValueChange {
-                    key,
-                    before: None,
-                    after: None,
+            values.values.allocation.absorb(&mut guard)?;
+            values.values.bytes = values
+                .values
+                .bytes
+                .checked_add(bytes)
+                .ok_or(WorkError::Overflow)?;
+            let index = values.len();
+            values.ordered &= rank == index;
+            accounting.perform(
+                WorkCounters {
+                    bytes_copied: (std::mem::size_of::<ValueChange<F::Key, F::Value>>()
+                        + std::mem::size_of::<Links>()) as u64,
+                    ..WorkCounters::UNCHARGED
                 },
-            );
-        }
-        Ok(match position {
-            Ok(index) | Err(index) => index,
-        })
+                || {
+                    values.values.value.push(ValueChange {
+                        key,
+                        before: None,
+                        after: None,
+                    });
+                    values.links.value.push(Links {
+                        parent,
+                        height: 1,
+                        count: 1,
+                        ..Links::default()
+                    });
+                },
+            )?;
+            Metered {
+                tree: &mut *values,
+                accounting,
+            }
+            .attach(index, parent, side, &mut 0)?;
+            index
+        } else {
+            values.select(rank)?
+        };
+        Ok((rank, index))
     })();
-    let index = match prepared {
-        Ok(index) => index,
+    let (rank, index) = match prepared {
+        Ok(position) => position,
         Err(error) => {
             value.retire(accounting)?;
             return Err(error);
         }
     };
     let slot = values
+        .values
         .value
         .get_mut(index)
         .ok_or(FsError::DiffAllocationFailed)?;
@@ -473,8 +491,12 @@ fn insert_value<F: Format, const PREFIX: bool>(
     };
     if let Some(old) = destination.take() {
         let bytes = F::value_owned_bytes(&old);
-        let guard = split_allocation(&mut values.allocation, bytes)?;
-        values.bytes = values.bytes.checked_sub(bytes).ok_or(WorkError::Overflow)?;
+        let guard = split_allocation(&mut values.values.allocation, bytes)?;
+        values.values.bytes = values
+            .values
+            .bytes
+            .checked_sub(bytes)
+            .ok_or(WorkError::Overflow)?;
         drop(old);
         retire_allocation(guard, bytes, accounting)?;
     }
@@ -483,15 +505,25 @@ fn insert_value<F: Format, const PREFIX: bool>(
         mut allocation,
         bytes,
     } = value;
-    values.allocation.absorb(&mut allocation)?;
-    values.bytes = values.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
-    *destination = Some(value);
-    *cursor = Some(index + 1);
+    values.values.allocation.absorb(&mut allocation)?;
+    values.values.bytes = values
+        .values
+        .bytes
+        .checked_add(bytes)
+        .ok_or(WorkError::Overflow)?;
+    accounting.perform(
+        WorkCounters {
+            bytes_copied: std::mem::size_of::<Option<F::Value>>() as u64,
+            ..WorkCounters::UNCHARGED
+        },
+        || *destination = Some(value),
+    )?;
+    *cursor = Some(rank + 1);
     Ok(())
 }
 
 fn retain_changes<F: Format>(
-    values: &mut Changes<F>,
+    values: &mut Owned<Vec<ValueChange<F::Key, F::Value>>>,
     maximum: usize,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<bool, FsError> {
