@@ -10,6 +10,7 @@
   "acyclic-tonic-web-wasm-client",
   "acyclic-grpc-observability",
   "acyclic-stream",
+  "acyclic-protobuf-json",
   "acyclic-actors",
   "acyclic-objects",
   "acyclic-manifest",
