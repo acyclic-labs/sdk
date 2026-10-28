@@ -180,9 +180,7 @@ fn checked_subtree(
 ) -> Result<Arc<NamespaceNode>, StreamError> {
     let source = state.paths.node(source).ok_or(StreamError::NotFound)?;
     let node = Namespace::excluded(source, exclude, &mut NamespaceBuilder::new(&|_| Ok(None)))?;
-    if destination.as_str().len().saturating_add(node.max_suffix()) > crate::MAX_PATH_BYTES
-        || destination.as_str().split('/').count() + node.depth() - 1 > MAX_ITEMS
-    {
+    if destination.as_str().split('/').count() + node.depth() - 1 > MAX_ITEMS {
         return Err(StreamError::InvalidPath);
     }
     Ok(node)
