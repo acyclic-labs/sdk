@@ -2,7 +2,7 @@ use super::*;
 use crate::kernel::DecodeLimits;
 use crate::{MemoryObjectStore, ObjectKind, object_digest};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::task::Waker;
+use std::task::{Context, Waker};
 
 fn object(value: &'static [u8]) -> (ObjectId, OwnedBytes) {
     let bytes = OwnedBytes::from_static(value);
