@@ -9,7 +9,7 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderValue},
 };
 use serde_json::Value;
-use std::{net::IpAddr, sync::Arc, time::Duration};
+use std::{net::IpAddr, sync::Arc};
 use tracing::{Span, field::Empty};
 mod session;
 mod shared;
@@ -19,7 +19,7 @@ mod shared;
 #[error("invalid Stream HTTP configuration")]
 pub struct ConnectError;
 
-/// Bounded authenticated HTTP provider. Mutations are never automatically retried.
+/// Authenticated HTTP provider with optional caller response policy. Mutations are never automatically retried.
 #[derive(Clone)]
 pub struct HttpStream {
     operation_claims: Arc<crate::OperationClaims>,
@@ -27,7 +27,7 @@ pub struct HttpStream {
     endpoint: Url,
     authorization: Option<HeaderValue>,
     credential: Option<CredentialProvider>,
-    maximum: usize,
+    maximum: Option<usize>,
     sessions: Arc<crate::query_sync::SyncMutex<Option<crate::grpc::Client>>>,
     session_endpoint: tonic::transport::Endpoint,
     session_verifier: Arc<dyn rustls::client::danger::ServerCertVerifier>,
@@ -37,7 +37,7 @@ impl HttpStream {
     pub fn new(
         endpoint: &str,
         token: &str,
-        maximum_response_bytes: usize,
+        maximum_response_bytes: impl Into<Option<usize>>,
     ) -> Result<Self, ConnectError> {
         Self::with_ca_certificate(endpoint, token, maximum_response_bytes, None)
     }
@@ -45,27 +45,27 @@ impl HttpStream {
     pub fn with_credential_provider(
         endpoint: &str,
         credential: CredentialProvider,
-        maximum: usize,
+        maximum: impl Into<Option<usize>>,
         ca: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
-        Self::build(endpoint, None, Some(credential), maximum, ca)
+        Self::build(endpoint, None, Some(credential), maximum.into(), ca)
     }
 
     /// Extends system trust with a caller-supplied PEM CA certificate.
     pub fn with_ca_certificate(
         endpoint: &str,
         token: &str,
-        maximum: usize,
+        maximum: impl Into<Option<usize>>,
         ca: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
-        Self::build(endpoint, Some(token), None, maximum, ca)
+        Self::build(endpoint, Some(token), None, maximum.into(), ca)
     }
 
     fn build(
         endpoint: &str,
         token: Option<&str>,
         credential: Option<CredentialProvider>,
-        maximum: usize,
+        maximum: Option<usize>,
         ca: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
         let mut endpoint = Url::parse(endpoint).map_err(|_| ConnectError)?;
@@ -82,7 +82,7 @@ impl HttpStream {
             || endpoint.password().is_some()
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()
-            || maximum == 0
+            || maximum == Some(0)
         {
             return Err(ConnectError);
         }
@@ -90,9 +90,7 @@ impl HttpStream {
             endpoint.set_path(&format!("{}/", endpoint.path()));
         }
         let authorization = token.map(credential_header).transpose()?;
-        let mut client = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(Duration::from_secs(30));
+        let mut client = Client::builder().redirect(reqwest::redirect::Policy::none());
         if let Some(ca) = ca {
             if ca.is_empty() {
                 return Err(ConnectError);
@@ -183,10 +181,11 @@ impl HttpStream {
             .map_err(|_| StreamError::Unavailable)?;
         let success = response.status().is_success();
         span.record("http.status", response.status().as_u16());
-        if response
-            .content_length()
-            .is_some_and(|length| length > self.maximum as u64)
-        {
+        if self.maximum.is_some_and(|maximum| {
+            response
+                .content_length()
+                .is_some_and(|length| length > maximum as u64)
+        }) {
             return Err(StreamError::Unavailable);
         }
         let mut body = Vec::new();
@@ -195,9 +194,14 @@ impl HttpStream {
             .await
             .map_err(|_| StreamError::Unavailable)?
         {
-            if chunk.len() > self.maximum.saturating_sub(body.len()) {
+            if self
+                .maximum
+                .is_some_and(|maximum| chunk.len() > maximum.saturating_sub(body.len()))
+            {
                 return Err(StreamError::Unavailable);
             }
+            body.try_reserve(chunk.len())
+                .map_err(|_| StreamError::Capacity)?;
             body.extend_from_slice(&chunk);
         }
         span.record("bytes", body.len());
