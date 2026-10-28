@@ -199,7 +199,7 @@ project!(GenerationExportManifestError, {
     E::Config(_) => Code::InvalidArgument,
     E::Decode(error) => kernel_code(error),
     E::WrongRootKind | E::GenerationMismatch | E::MissingRoot | E::NonCanonicalObjectOrder => Code::DataLoss,
-    E::TooManyObjects | E::TooManyFiles => Code::ResourceExhausted,
+    E::TooManyObjects => Code::ResourceExhausted,
 });
 project!(CanonicalDecodeError, {
     E::AllocationFailed | E::ObjectTooLarge { .. } | E::FieldTooLarge { .. } | E::LengthOverflow => Code::ResourceExhausted,
@@ -208,8 +208,7 @@ project!(CanonicalDecodeError, {
     | E::UnknownTag { .. } | E::Invariant(_) => Code::DataLoss,
 });
 project!(ClosureError, {
-    E::TooManyObjects { .. } | E::TooManyFiles { .. } | E::ClosureBytesExceeded { .. }
-    | E::LogicalBytesOverflow | E::RangeOverflow | E::Work(_) => Code::ResourceExhausted,
+    E::LogicalBytesOverflow | E::RangeOverflow | E::Work(_) => Code::ResourceExhausted,
     E::WrongObjectKind | E::RoutingAlias | E::RoutingBoundsMismatch | E::DuplicateFileRecord(_)
     | E::MissingRootFile | E::RootIsNotDirectory | E::UnsupportedVolumeSemantics
     | E::MissingFileRecord(_) | E::NamespaceKindMismatch(_) | E::LinkCountMismatch(_)

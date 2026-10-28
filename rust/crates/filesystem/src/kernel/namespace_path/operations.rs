@@ -13,13 +13,10 @@ impl NamespacePath {
         lengths: impl IntoIterator<Item = usize>,
         limits: VolumeLimits,
     ) -> Result<u32, NamespacePathError> {
-        let mut depth = 0;
+        let mut depth = 0_usize;
         let mut encoded = 1_u32;
         for length in lengths {
             depth += 1;
-            if depth > usize::from(limits.maximum_path_depth) {
-                return Err(NamespacePathError::TooDeep);
-            }
             let length = u32::try_from(length).map_err(|_| NamespacePathError::ComponentTooLong)?;
             if length > limits.maximum_component_bytes {
                 return Err(NamespacePathError::ComponentTooLong);
@@ -31,9 +28,6 @@ impl NamespacePath {
         }
         if depth != 0 {
             encoded -= 1;
-        }
-        if encoded > limits.maximum_path_bytes {
-            return Err(NamespacePathError::PathTooLong);
         }
         Ok(encoded)
     }
@@ -140,7 +134,7 @@ impl NamespacePath {
         let names = self
             .components
             .get(..depth)
-            .ok_or(NamespacePathError::TooDeep)?;
+            .ok_or(NamespacePathError::PrefixOutOfRange)?;
         let encoded = Self::validate_component_lengths(
             names.iter().map(|name| name.as_bytes().len()),
             limits,
@@ -228,9 +222,6 @@ fn validate(
     }
     if depth != 0 {
         encoded -= 1;
-    }
-    if encoded > limits.maximum_path_bytes {
-        return Err(NamespacePathError::PathTooLong.into());
     }
     Ok((depth, encoding, encoded))
 }

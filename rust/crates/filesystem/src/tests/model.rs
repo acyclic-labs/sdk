@@ -43,12 +43,6 @@ fn default_limits_are_valid() {
         invalid.validate(),
         Err(VolumeConfigError::InsufficientPageFanout)
     );
-    invalid = config;
-    invalid.limits.maximum_component_bytes = invalid.limits.maximum_path_bytes + 1;
-    assert_eq!(
-        invalid.validate(),
-        Err(VolumeConfigError::ComponentExceedsPath)
-    );
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -3,7 +3,7 @@ fn join_plan_id(
     target: &wire::GenerationRef,
     base: &wire::GenerationRef,
     history: JoinHistory,
-    maximum_generations: u32,
+    maximum_generations: Option<u32>,
     maximum_changes: u32,
     maximum_conflicts: u32,
 ) -> [u8; 32] {
@@ -23,7 +23,10 @@ fn join_plan_id(
         hasher.update(&reference.generation_id);
     }
     hasher.update(&[join_history_code(history)]);
-    hasher.update(&maximum_generations.to_le_bytes());
+    hasher.update(&[u8::from(maximum_generations.is_some())]);
+    if let Some(maximum) = maximum_generations {
+        hasher.update(&maximum.to_le_bytes());
+    }
     hasher.update(&maximum_changes.to_le_bytes());
     hasher.update(&maximum_conflicts.to_le_bytes());
     *hasher.finalize().as_bytes()

@@ -269,7 +269,6 @@ mod read {
                 if config.case_sensitivity == CaseSensitivity::ProfileFolded
                     || key.is_empty()
                     || key.len() >= acyclic_stream::MAX_RECORD_KEY_BYTES
-                    || text.split('/').count() > config.limits.maximum_path_depth as usize
                 {
                     return Err(Malformed);
                 }
@@ -279,7 +278,7 @@ mod read {
             }
             depth => {
                 let depth = depth - 1;
-                if depth > config.limits.maximum_path_depth as usize || depth > reader.0.len() / 2 {
+                if depth > reader.0.len() / 2 {
                     return Err(Malformed);
                 }
                 for _ in 0..depth {

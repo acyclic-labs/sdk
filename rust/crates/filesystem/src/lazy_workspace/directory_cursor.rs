@@ -142,11 +142,7 @@ fn decode_fields(
     limits: crate::VolumeLimits,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), crate::FsError>,
 ) -> Result<(LazySnapshotRef, String, LazyDirectoryPhase), crate::FsError> {
-    let maximum = DOMAIN.len() as u64
-        + 175
-        + u64::from(limits.maximum_path_bytes)
-        + u64::from(limits.maximum_component_bytes);
-    let mut decoder = Decoder::new(bytes, DOMAIN, 1, maximum, observe)?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, 1, bytes.len() as u64, observe)?;
     let workspace = WorkspaceId::from_bytes(decoder.fixed::<16, crate::FsError>(observe)?);
     let generation = crate::GenerationId::new(crate::Digest::from_bytes(
         decoder.fixed::<32, crate::FsError>(observe)?,
@@ -164,8 +160,7 @@ fn decode_fields(
     observe(ReadAllocationStep::Hashed(
         LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
     ))?;
-    let directory = String::from_utf8(decoder.bounded_bytes(limits.maximum_path_bytes, observe)?)
-        .map_err(|_| {
+    let directory = String::from_utf8(decoder.bytes(observe)?).map_err(|_| {
         CanonicalDecodeError::Invariant(CanonicalInvariant::Static("cursor directory is not UTF-8"))
     })?;
     let phase = match decoder.u8(observe)? {

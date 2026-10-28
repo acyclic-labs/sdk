@@ -26,12 +26,12 @@ kernel_cases! { directory: DirectoryReadError {
     NotFound => [E::Storage(ObjectStoreError::Missing)];
 }}
 kernel_cases! { namespace: NamespacePathError, namespace_code {
-    InvalidArgument => [E::TooDeep, E::ComponentTooLong, E::PathTooLong, E::Name(TreePageError::EmptyName), E::Path(crate::path::PathError::NotAbsolute), E::NonUnicodeProjection];
+    InvalidArgument => [E::PrefixOutOfRange, E::ComponentTooLong, E::PathTooLong, E::Name(TreePageError::EmptyName), E::Path(crate::path::PathError::NotAbsolute), E::NonUnicodeProjection];
     ResourceExhausted => [E::Work(WorkError::Overflow), E::AllocationFailed];
     Cancelled => [E::Cancelled];
 }}
 kernel_cases! { path: PathLookupError, path_code {
-    InvalidArgument => [E::Config(crate::model::VolumeConfigError::ZeroLimit), E::EmptyBatch, E::PathBounds, E::NotDirectory, E::NamespacePath(NamespacePathError::TooDeep)];
+    InvalidArgument => [E::Config(crate::model::VolumeConfigError::ZeroLimit), E::EmptyBatch, E::PathBounds, E::NotDirectory, E::NamespacePath(NamespacePathError::PrefixOutOfRange)];
     ResourceExhausted => [E::AllocationFailed, E::Work(WorkError::Overflow)];
     FailedPrecondition => [E::UnsupportedNameEncoding];
     DataLoss => [E::MissingRootRecord, E::KindMismatch];
@@ -67,7 +67,7 @@ kernel_cases! { publication: PublicationError {
     NotFound => [E::Closure(ClosureError::Storage(ObjectStoreError::Missing)), E::Objects(ObjectStoreError::Missing), E::Authority(AuthorityStoreError::Missing)];
 }}
 kernel_cases! { closure: ClosureError {
-    ResourceExhausted => [E::TooManyObjects {observed: 2, maximum: 1}, E::TooManyFiles {observed: 2, maximum: 1}, E::ClosureBytesExceeded {observed: 2, maximum: 1}, E::LogicalBytesOverflow, E::RangeOverflow, E::Work(WorkError::Overflow)];
+    ResourceExhausted => [E::LogicalBytesOverflow, E::RangeOverflow, E::Work(WorkError::Overflow)];
     DataLoss => [E::WrongObjectKind, E::RoutingAlias, E::RoutingBoundsMismatch, E::DuplicateFileRecord(crate::FileId::from_bytes([1;16])), E::MissingRootFile, E::RootIsNotDirectory, E::UnsupportedVolumeSemantics, E::MissingFileRecord(crate::FileId::from_bytes([1;16])), E::NamespaceKindMismatch(crate::FileId::from_bytes([1;16])), E::LinkCountMismatch(crate::FileId::from_bytes([1;16])), E::DirectoryHardLink(crate::FileId::from_bytes([1;16])), E::MissingDirectoryTree(crate::FileId::from_bytes([1;16])), E::UnreachableFileRecords, E::BlobLengthMismatch, E::BlobSpanOutsideObject, E::Decode(CanonicalDecodeError::Truncated)];
     NotFound => [E::Storage(ObjectStoreError::Missing), E::FileRead(FileRangeReadError::Blob(BlobReadError::Storage(ObjectStoreError::Missing))), E::BlobRead(BlobReadError::Storage(ObjectStoreError::Missing))];
     Cancelled => [E::Native(crate::NativeTreeMaterializationError::Cancelled)];
@@ -192,7 +192,7 @@ kernel_cases! { transfer: GenerationTransferError {
 kernel_cases! { manifest: GenerationExportManifestError {
     InvalidArgument => [E::Config(crate::model::VolumeConfigError::ZeroLimit)];
     DataLoss => [E::Decode(CanonicalDecodeError::Truncated), E::WrongRootKind, E::GenerationMismatch, E::MissingRoot, E::NonCanonicalObjectOrder];
-    ResourceExhausted => [E::TooManyObjects, E::TooManyFiles];
+    ResourceExhausted => [E::TooManyObjects];
 }}
 kernel_cases! { decode: CanonicalDecodeError {
     ResourceExhausted => [E::AllocationFailed, E::ObjectTooLarge {observed: 2, maximum: 1}, E::FieldTooLarge {observed: 2, maximum: 1}, E::LengthOverflow, E::Invariant(CanonicalInvariant::Work(WorkError::Overflow))];

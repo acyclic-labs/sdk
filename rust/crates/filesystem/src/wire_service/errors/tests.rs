@@ -45,7 +45,7 @@ cases! {
     workspace_name_character: WorkspaceError::Name(WorkspaceNameError::InvalidCharacter) => InvalidArgument;
     workspace_name_allocation: WorkspaceError::Name(WorkspaceNameError::Allocation) => ResourceExhausted;
     workspace_path: WorkspaceError::Path("not canonical".into()) => InvalidArgument;
-    workspace_namespace: WorkspaceError::NamespacePath(NamespacePathError::TooDeep) => InvalidArgument;
+    workspace_namespace: WorkspaceError::NamespacePath(NamespacePathError::PrefixOutOfRange) => InvalidArgument;
     workspace_engine: WorkspaceError::Engine("invalid internal state".into()) => Internal;
     workspace_filesystem: fs(FsError::WorkspaceDeleted) => NotFound;
     workspace_cancelled: WorkspaceError::Cancelled(CancellationError) => Cancelled;

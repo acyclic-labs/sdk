@@ -135,14 +135,14 @@ impl NamespacePath {
 /// Profile-independent namespace path failures.
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum NamespacePathError {
-    /// Component count exceeds the volume bound.
-    #[error("namespace path exceeds its depth bound")]
-    TooDeep,
+    /// A requested prefix contains more components than this path.
+    #[error("namespace prefix exceeds the path depth")]
+    PrefixOutOfRange,
     /// One exact encoded component exceeds the volume bound.
     #[error("namespace path component exceeds its byte bound")]
     ComponentTooLong,
-    /// Total canonical encoded path bytes exceed the volume bound.
-    #[error("namespace path exceeds its byte bound")]
+    /// Canonical encoded path length cannot be represented as u32.
+    #[error("namespace path length cannot be encoded")]
     PathTooLong,
     /// One portable component could not become a canonical logical name.
     #[error(transparent)]

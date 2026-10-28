@@ -209,23 +209,8 @@ fn string_paths_use_the_volume_name_encoding() -> Result<(), Box<dyn std::error:
 
 #[test]
 fn bounds_are_checked_without_storage() -> Result<(), Box<dyn std::error::Error>> {
-    let limits = VolumeLimits {
-        maximum_path_bytes: 4,
-        maximum_component_bytes: 2,
-        maximum_path_depth: 1,
-        ..VolumeLimits::default()
-    };
-    let name = LogicalName::new(NameEncoding::Utf8, b"ab".to_vec(), 2)?;
-    assert!(NamespacePath::new(vec![name.clone()], limits).is_ok());
-    assert_eq!(
-        NamespacePath::new(vec![name.clone(), name], limits),
-        Err(NamespacePathError::TooDeep)
-    );
-
     let wide_limits = VolumeLimits {
-        maximum_path_bytes: 64,
         maximum_component_bytes: 1,
-        maximum_path_depth: 4,
         ..VolumeLimits::default()
     };
     let wide = LogicalName::new(NameEncoding::Utf8, b"ab".to_vec(), 2)?;
@@ -234,18 +219,6 @@ fn bounds_are_checked_without_storage() -> Result<(), Box<dyn std::error::Error>
         Err(NamespacePathError::ComponentTooLong)
     );
 
-    let short_path_limits = VolumeLimits {
-        maximum_path_bytes: 2,
-        maximum_component_bytes: 2,
-        maximum_path_depth: 4,
-        ..VolumeLimits::default()
-    };
-    let first = LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 2)?;
-    let second = LogicalName::new(NameEncoding::Utf8, b"b".to_vec(), 2)?;
-    assert_eq!(
-        NamespacePath::new(vec![first, second], short_path_limits),
-        Err(NamespacePathError::PathTooLong)
-    );
     Ok(())
 }
 
@@ -282,29 +255,13 @@ fn invalid_and_cancelled_paths_do_not_allocate() {
 #[test]
 fn native_encoded_bounds_reject_before_owned_path_allocation() {
     let cancellation = CancellationToken::new();
-    for (path, limits) in [
-        (
-            "/ab",
-            VolumeLimits {
-                maximum_component_bytes: 3,
-                ..VolumeLimits::default()
-            },
-        ),
-        (
-            "/ab/c",
-            VolumeLimits {
-                maximum_path_bytes: 7,
-                ..VolumeLimits::default()
-            },
-        ),
-        (
-            "/a/b",
-            VolumeLimits {
-                maximum_path_depth: 1,
-                ..VolumeLimits::default()
-            },
-        ),
-    ] {
+    for (path, limits) in [(
+        "/ab",
+        VolumeLimits {
+            maximum_component_bytes: 3,
+            ..VolumeLimits::default()
+        },
+    )] {
         let failure = parse_path(
             path,
             FilesystemProfile::Windows,

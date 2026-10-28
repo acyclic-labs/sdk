@@ -1,7 +1,7 @@
 //! Descriptor-derived protobuf JSON boundary for native HTTP adapters.
 //!
 //! Enable `http-codec` independently of `host`. This module handles bounded
-//! serialization, not service authorization, semantic admission or caller-bound
+//! serialization and streaming output, not service authorization, semantic admission or caller-bound
 //! response validation. Adapters must apply those checks to the generated wire
 //! messages. For `runs/watch`, encode each event separately and frame it as NDJSON.
 
@@ -10,7 +10,7 @@ use std::{io::Write, sync::OnceLock};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, MethodDescriptor, Value};
 
-use crate::{MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES};
+use crate::MAXIMUM_MESSAGE_BYTES;
 
 /// One canonical POST route, relative to `/v1/inference/`.
 #[derive(Clone, Debug)]
@@ -84,9 +84,6 @@ fn method(path: &str) -> Result<MethodDescriptor, &'static str> {
 /// # Errors
 /// Rejects unknown routes/fields, malformed or trailing JSON and transport limits.
 pub fn decode_http_request(path: &str, json: &[u8]) -> Result<Vec<u8>, &'static str> {
-    if json.len() > MAXIMUM_HTTP_JSON_BYTES {
-        return Err("inference HTTP request exceeds JSON ceiling");
-    }
     let mut deserializer = serde_json::Deserializer::from_slice(json);
     let message = DynamicMessage::deserialize(method(path)?.input(), &mut deserializer)
         .map_err(|_| "malformed inference protobuf JSON request")?;
@@ -99,39 +96,34 @@ pub fn decode_http_request(path: &str, json: &[u8]) -> Result<Vec<u8>, &'static 
     Ok(message.encode_to_vec())
 }
 
-struct BoundedJson(Vec<u8>);
-
-impl Write for BoundedJson {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if bytes.len() > MAXIMUM_HTTP_JSON_BYTES.saturating_sub(self.0.len()) {
-            return Err(std::io::Error::other(
-                "inference HTTP response exceeds JSON ceiling",
-            ));
-        }
-        self.0.extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 /// Encode a bounded generated response or one server-streaming event as JSON.
 ///
 /// Protobuf's JSON mapping preserves uint64 values as decimal strings, bytes as
 /// base64 and enum names. The returned bytes contain no NDJSON line terminator.
 ///
 /// # Errors
-/// Rejects unknown routes, malformed protobuf and wire/JSON transport limits.
+/// Rejects unknown routes, malformed protobuf and wire frame limits.
 pub fn encode_http_response(path: &str, bytes: &[u8]) -> Result<Vec<u8>, &'static str> {
+    let mut output = Vec::new();
+    write_http_response(path, bytes, &mut output)?;
+    Ok(output)
+}
+
+/// Writes protobuf JSON directly to a caller-owned output stream.
+///
+/// Escaped strings and base64 bytes may expand without a second whole-value limit.
+/// # Errors
+/// Rejects unknown routes, invalid wire messages, the wire frame ceiling or output errors.
+pub fn write_http_response(
+    path: &str,
+    bytes: &[u8],
+    output: impl Write,
+) -> Result<(), &'static str> {
     if bytes.len() > MAXIMUM_MESSAGE_BYTES {
         return Err("inference HTTP response exceeds wire ceiling");
     }
     let message = DynamicMessage::decode(method(path)?.output(), bytes)
         .map_err(|_| "malformed inference protobuf response")?;
-    let mut output = BoundedJson(Vec::new());
-    serde_json::to_writer(&mut output, &message)
-        .map_err(|_| "inference HTTP response serialization failed or exceeds JSON ceiling")?;
-    Ok(output.0)
+    serde_json::to_writer(output, &message)
+        .map_err(|_| "inference HTTP response serialization failed")
 }

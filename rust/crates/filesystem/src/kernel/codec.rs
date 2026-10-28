@@ -400,6 +400,17 @@ impl<'a> Decoder<'a> {
         copy_bytes(source, u64::from(!source.is_empty()), observe)
     }
 
+    /// Copies one length-prefixed value after checking it fits the actual input.
+    pub(crate) fn bytes<E: From<CanonicalDecodeError>>(
+        &mut self,
+        observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
+    ) -> Result<Vec<u8>, E> {
+        let length = usize::try_from(self.u32(observe)?)
+            .map_err(|_| CanonicalDecodeError::LengthOverflow)?;
+        let source = self.take(length)?;
+        copy_bytes(source, u64::from(!source.is_empty()), observe)
+    }
+
     pub(crate) fn skip_bounded_bytes(
         &mut self,
         maximum: u32,

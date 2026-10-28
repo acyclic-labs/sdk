@@ -191,9 +191,6 @@ fn entry(name: &[u8], file_id: FileId) -> TestResult<TreeEntry> {
 fn limits() -> ClosureLimits {
     ClosureLimits {
         decode: DecodeLimits::default(),
-        maximum_objects: 16,
-        maximum_files: 16,
-        maximum_object_bytes: 64 * 1024,
         profile: crate::model::FilesystemProfile::Portable,
         symbolic_links: true,
         hard_links: true,

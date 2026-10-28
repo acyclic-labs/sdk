@@ -354,11 +354,11 @@ impl NativeWorkspace {
     pub async fn live_rebase(
         &self,
         idempotency_key: Option<Buffer>,
-        maximum_generations: NapiU32,
+        maximum_generations: Option<NapiU32>,
         maximum_changes: NapiU32,
         maximum_conflicts: NapiU32,
     ) -> Result<NativeWorkspaceRebaseResult> {
-        let maximum_generations = maximum_generations.into_inner();
+        let maximum_generations = maximum_generations.map(NapiU32::into_inner);
         let maximum_changes = maximum_changes.into_inner();
         let maximum_conflicts = maximum_conflicts.into_inner();
 
@@ -400,7 +400,7 @@ impl NativeWorkspace {
             .join_into(&target.inner)
             .history(history)
             .bounds(
-                options.maximum_generations.into_inner(),
+                options.maximum_generations.map(NapiU32::into_inner),
                 options.maximum_changes.into_inner(),
                 options.maximum_conflicts.into_inner(),
             )

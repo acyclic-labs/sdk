@@ -50,17 +50,6 @@ fn manifest_rejects_mismatch_missing_root_duplicates_and_disorder() {
         Err(GenerationExportManifestError::WrongRootKind)
     );
 
-    let mut value = manifest();
-    value.file_count = value
-        .config
-        .limits
-        .maximum_files_per_generation
-        .saturating_add(1);
-    assert_eq!(
-        validate_generation_export_manifest(&value, u64::MAX),
-        Err(GenerationExportManifestError::TooManyFiles)
-    );
-
     let value = manifest();
     assert_eq!(
         validate_generation_export_manifest(&value, 1),

@@ -122,27 +122,6 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         assert_eq!(*failure.work, WorkCounters::default());
     }
 
-    let excessive_range = ByteRange {
-        offset: 0,
-        length: limited.limits.maximum_generation_bytes + 1,
-    };
-    for failure in [
-        (checkout.plan_file_extents(&file, excessive_range, 1, B, &cancellation))
-            .await
-            .err()
-            .ok_or("oversized path plan succeeded")?,
-        (checkout.plan_file_extents(file_id, excessive_range, 1, B, &cancellation))
-            .await
-            .err()
-            .ok_or("oversized identity plan succeeded")?,
-    ] {
-        assert!(matches!(
-            failure.error,
-            FsError::FileRead(FileRangeReadError::InvalidRange)
-        ));
-        assert_eq!(*failure.work, WorkCounters::default());
-    }
-
     let symbolic = (checkout.create(
         AuthoredMutation::CreateSymbolicLink {
             path: path("link")?,

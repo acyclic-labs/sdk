@@ -32,7 +32,7 @@ pub(super) fn clone_capture_prefix(
     meter: &NativeMaterializationWork,
 ) -> Result<NamespacePath, CaptureError> {
     let names = path.components().get(..depth).ok_or(CaptureError::from(
-        crate::kernel::NamespacePathError::TooDeep,
+        crate::kernel::NamespacePathError::PrefixOutOfRange,
     ))?;
     NamespacePath::validate_component_lengths(
         names.iter().map(|name| name.as_bytes().len()),
@@ -165,9 +165,7 @@ pub(super) fn clone_capture_path(
     meter.clone().check().map_err(capture_demand_error)?;
     // A full prefix preserves the already validated path's exact bounds.
     let limits = crate::model::VolumeLimits {
-        maximum_path_bytes: path.encoded_bytes(),
         maximum_component_bytes: path.encoded_bytes(),
-        maximum_path_depth: path.depth().try_into().map_err(|_| WorkError::Overflow)?,
         ..crate::model::VolumeLimits::default()
     };
     clone_capture_prefix(path, path.depth(), limits, meter)

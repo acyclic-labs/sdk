@@ -49,22 +49,16 @@ pub enum GenerationExportManifestError {
     /// Object identities must be in strict canonical order without duplicates.
     #[error("export manifest objects are not strictly canonically ordered")]
     NonCanonicalObjectOrder,
-    /// Closure exceeds either the volume or caller item bound.
+    /// Closure exceeds an explicitly selected caller item allowance.
     #[error("export manifest object count exceeds its bound")]
     TooManyObjects,
-    /// File count exceeds the immutable volume bound.
-    #[error("export manifest file count exceeds its bound")]
-    TooManyFiles,
 }
 
 /// Encodes one complete manifest using a serializer-independent binary format.
 pub fn encode_generation_export_manifest(
     manifest: &GenerationExportManifest,
 ) -> Result<Vec<u8>, GenerationExportManifestError> {
-    validate_generation_export_manifest(
-        manifest,
-        manifest.config.limits.maximum_objects_per_generation,
-    )?;
+    validate_generation_export_manifest(manifest, None)?;
     let count = u32::try_from(manifest.objects.len())
         .map_err(|_| GenerationExportManifestError::TooManyObjects)?;
     let mut encoder = Encoder::new(DOMAIN, VERSION);
@@ -106,11 +100,7 @@ pub fn decode_generation_export_manifest(
     ));
     let file_count = decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     let count = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
-    let admitted = maximum_objects
-        .map_or(config.limits.maximum_objects_per_generation, |maximum| {
-            maximum.min(config.limits.maximum_objects_per_generation)
-        });
-    if u64::from(count) > admitted {
+    if maximum_objects.is_some_and(|maximum| u64::from(count) > maximum) {
         return Err(GenerationExportManifestError::TooManyObjects);
     }
     let capacity =
@@ -153,13 +143,8 @@ pub fn validate_generation_export_manifest(
     if manifest.generation_id.digest() != manifest.generation_root.digest {
         return Err(GenerationExportManifestError::GenerationMismatch);
     }
-    if manifest.file_count > manifest.config.limits.maximum_files_per_generation {
-        return Err(GenerationExportManifestError::TooManyFiles);
-    }
     let count = usize_to_u64(manifest.objects.len());
-    if maximum_objects.is_some_and(|maximum| count > maximum)
-        || count > manifest.config.limits.maximum_objects_per_generation
-    {
+    if maximum_objects.is_some_and(|maximum| count > maximum) {
         return Err(GenerationExportManifestError::TooManyObjects);
     }
     if !manifest.objects.contains(&manifest.generation_root) {

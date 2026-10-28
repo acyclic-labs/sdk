@@ -340,26 +340,20 @@ async fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dy
 {
     let store = MemoryObjectStore::default();
     let (generation, path) = fixture(&store).await?;
-    let mut shallow = config();
-    shallow.limits.maximum_path_depth = 1;
     let mut small_component = config();
     small_component.limits.maximum_component_bytes = 3;
-    for candidate in [shallow, small_component] {
-        let examined = if path.depth() > usize::from(candidate.limits.maximum_path_depth) {
-            0
-        } else {
-            u64::try_from(
-                path.components()
-                    .iter()
-                    .position(|component| {
-                        component.as_bytes().len()
-                            > usize::try_from(candidate.limits.maximum_component_bytes)
-                                .unwrap_or(usize::MAX)
-                    })
-                    .ok_or("component-bound fixture no longer rejects a reached component")?
-                    + 1,
-            )?
-        };
+    for candidate in [small_component] {
+        let examined = u64::try_from(
+            path.components()
+                .iter()
+                .position(|component| {
+                    component.as_bytes().len()
+                        > usize::try_from(candidate.limits.maximum_component_bytes)
+                            .unwrap_or(usize::MAX)
+                })
+                .ok_or("component-bound fixture no longer rejects a reached component")?
+                + 1,
+        )?;
         let failure = lookup_path(
             &store,
             &generation,
@@ -380,27 +374,6 @@ async fn path_bound_violations_reject_before_backend_work() -> Result<(), Box<dy
             }
         );
     }
-
-    let large_component = LogicalName::new(NameEncoding::Utf8, vec![b'x'; 200], 255)?;
-    let long_path = NamespacePath::new(
-        vec![large_component.clone(), large_component],
-        config().limits,
-    )?;
-    let mut short_path = config();
-    short_path.limits.maximum_path_bytes = 255;
-    let failure = lookup_path(
-        &store,
-        &generation,
-        &long_path,
-        short_path,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await
-    .err()
-    .ok_or("oversized encoded path unexpectedly succeeded")?;
-    assert!(matches!(failure.error, PathLookupError::PathBounds));
-    assert_eq!(*failure.work, WorkCounters::default());
 
     let windows_name = LogicalName::new(NameEncoding::WindowsUtf16Le, vec![b'a', 0], 255)?;
     let windows_path = NamespacePath::new(vec![windows_name], config().limits)?;

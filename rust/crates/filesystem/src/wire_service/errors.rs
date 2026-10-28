@@ -243,7 +243,7 @@ fn stream_code(error: &acyclic_stream::StreamError) -> Code {
 fn namespace_code(error: &crate::kernel::NamespacePathError) -> Code {
     use crate::kernel::NamespacePathError as E;
     match error {
-        E::TooDeep
+        E::PrefixOutOfRange
         | E::ComponentTooLong
         | E::PathTooLong
         | E::Name(_)

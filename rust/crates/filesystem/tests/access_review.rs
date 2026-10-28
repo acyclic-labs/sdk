@@ -424,7 +424,7 @@ fn native_name_views_reject_unsupported_encodings_and_names() -> Result<(), Inva
 }
 
 #[test]
-fn windows_access_paths_obey_encoded_name_and_path_limits() -> Result<(), InvalidPolicy> {
+fn windows_access_paths_obey_encoded_name_limits() -> Result<(), InvalidPolicy> {
     let caller = principal();
     let policy = super::policy(vec![rule("allow", Effect::Allow, &Action::ALL, "**")]);
     let cap = capability();
@@ -435,13 +435,12 @@ fn windows_access_paths_obey_encoded_name_and_path_limits() -> Result<(), Invali
     let mut res = resource(&caller.lineage, "", 10);
     res.config.profile = FilesystemProfile::Windows;
     res.config.limits.maximum_component_bytes = 4;
-    res.config.limits.maximum_path_bytes = 8;
     let trie = PathTrie::compile(&policy, &caller, res, context, &cap)?;
     for (path, allowed) in [
         ("ab", true),
         ("abc", false),
         ("ab/c", true),
-        ("ab/cd", false),
+        ("ab/cd", true),
         ("😀", true),
     ] {
         res.path = path;

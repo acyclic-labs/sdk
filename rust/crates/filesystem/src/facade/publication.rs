@@ -664,9 +664,6 @@ pub(super) fn durable_head(commit: &DurableCommit) -> Head {
 pub(crate) fn closure_limits(config: VolumeConfig) -> ClosureLimits {
     ClosureLimits {
         decode: DecodeLimits::for_volume(config),
-        maximum_objects: config.limits.maximum_objects_per_generation,
-        maximum_files: config.limits.maximum_files_per_generation,
-        maximum_object_bytes: config.limits.maximum_generation_bytes,
         profile: config.profile,
         symbolic_links: config.symbolic_links,
         hard_links: config.hard_links,

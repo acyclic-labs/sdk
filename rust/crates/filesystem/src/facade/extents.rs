@@ -34,9 +34,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         let maximum_spans = maximum_spans.into();
         let mut accounting = work.accounting(cancellation);
         let result = async {
-            if maximum_spans == Some(0)
-                || range.length > self.volume.config.limits.maximum_generation_bytes
-            {
+            if maximum_spans == Some(0) {
                 return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -220,9 +218,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Checkout<A
         cancellation: &CancellationToken,
     ) -> FsResult<Option<ExtentPlan>> {
         let maximum_spans = maximum_spans.into();
-        if maximum_spans == Some(0)
-            || range.length > self.volume.config.limits.maximum_generation_bytes
-        {
+        if maximum_spans == Some(0) {
             return Err(OperationFailure::before_work(FsError::FileRead(
                 FileRangeReadError::InvalidRange,
             )));

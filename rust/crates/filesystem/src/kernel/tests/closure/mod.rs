@@ -12,9 +12,6 @@ use crate::kernel::{AttributePage, Child};
 fn limits() -> ClosureLimits {
     ClosureLimits {
         decode: DecodeLimits::default(),
-        maximum_objects: 100,
-        maximum_files: 100,
-        maximum_object_bytes: 1024 * 1024,
         profile: FilesystemProfile::Portable,
         symbolic_links: true,
         hard_links: true,

@@ -583,9 +583,6 @@ pub(super) fn generation_namespace_from_host(
             return Err(MaterializeError::InvalidPath);
         }
         count += 1;
-        if count > usize::from(limits.maximum_path_depth) {
-            return Err(MaterializeError::InvalidPath);
-        }
     }
     if count == 0 {
         return Err(MaterializeError::InvalidPath);

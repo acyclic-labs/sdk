@@ -457,9 +457,7 @@ pub(crate) async fn stage_content_for_volume_with_accounting<
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<StagedContent, FsError> {
-    if maximum_source_bytes == 0
-        || maximum_source_bytes > volume.config.limits.maximum_generation_bytes
-    {
+    if maximum_source_bytes == 0 {
         return Err(FsError::FileRead(FileRangeReadError::InvalidRange));
     }
     accounting.check()?;

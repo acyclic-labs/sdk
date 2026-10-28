@@ -170,7 +170,7 @@ export interface JoinResult {
   readonly truncated: boolean;
 }
 export interface WorkspaceRebaseOptions {
-  readonly maximumGenerations: number;
+  readonly maximumGenerations?: number;
   readonly maximumChanges: number;
   readonly maximumConflicts: number;
 }

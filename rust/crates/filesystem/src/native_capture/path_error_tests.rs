@@ -123,11 +123,8 @@ fn check(
             ..WorkCounters::UNCHARGED
         };
         prop_assert_eq!(work.receipt(), before);
-        match bound {
-            1 => limits.maximum_path_depth = parent.depth() as u16,
-            2 => limits.maximum_component_bytes = 0,
-            3 => limits.maximum_path_bytes = 1,
-            _ => {}
+        if bound == 1 {
+            limits.maximum_component_bytes = 0;
         }
         if cancelled {
             cancellation.cancel();
@@ -212,7 +209,7 @@ fn appending_paths_has_exact_heap_and_work_counts() {
         NameEncoding::WindowsUtf16Le,
     ] {
         for lengths in [vec![], vec![1, 7, 3]] {
-            for bound in 0..4 {
+            for bound in 0..2 {
                 for denied in 0..4 {
                     for cancelled in [false, true] {
                         check(&lengths, 5, encoding, bound, denied, cancelled).unwrap();
@@ -232,7 +229,7 @@ fn appending_paths_has_exact_heap_and_work_counts() {
                 prop::collection::vec(1_u8..16, 0..5),
                 1_u8..16,
                 0_u8..3,
-                0_u8..4,
+                0_u8..2,
                 0_u8..4,
                 any::<bool>(),
             ),

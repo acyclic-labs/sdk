@@ -112,11 +112,6 @@ impl<'a> PreparedPath<'a> {
             .and_then(|length| self.bytes.checked_add(length))
             .ok_or(InvalidPolicy("path length overflow"))?;
         let depth = self.depth + 1;
-        if bytes > self.trie.config.limits.maximum_path_bytes as usize
-            || depth > self.trie.config.limits.maximum_path_depth as usize
-        {
-            return Err(InvalidPolicy("path exceeds volume limits"));
-        }
         let mut state = self.state;
         if self.depth != 0 {
             state = self.trie.step(state, '/')?;

@@ -336,11 +336,16 @@ impl BrowserWorkspace {
     pub async fn live_rebase(
         &self,
         idempotency_key: Option<Vec<u8>>,
-        #[wasm_bindgen(unchecked_param_type = "number")] maximum_generations: JsValue,
+        #[wasm_bindgen(unchecked_param_type = "number | undefined")] maximum_generations: JsValue,
         #[wasm_bindgen(unchecked_param_type = "number")] maximum_changes: JsValue,
         #[wasm_bindgen(unchecked_param_type = "number")] maximum_conflicts: JsValue,
     ) -> Result<Ts<BrowserWorkspaceRebaseResult>, JsValue> {
-        let maximum_generations = wasm_u32(&maximum_generations)?;
+        let maximum_generations =
+            if maximum_generations.is_undefined() || maximum_generations.is_null() {
+                None
+            } else {
+                Some(wasm_u32(&maximum_generations)?)
+            };
         let maximum_changes = wasm_u32(&maximum_changes)?;
         let maximum_conflicts = wasm_u32(&maximum_conflicts)?;
 

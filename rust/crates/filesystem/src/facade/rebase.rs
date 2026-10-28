@@ -34,7 +34,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             maximum_changes,
             maximum_conflicts,
         } = request;
-        if maximum_generations == 0 || maximum_changes == 0 || maximum_conflicts == 0 {
+        if maximum_generations == Some(0) || maximum_changes == 0 || maximum_conflicts == 0 {
             return Err(WorkspaceError::JoinLimit);
         }
         let cancellation = CancellationToken::new();

@@ -14,7 +14,7 @@ use thiserror::Error;
 const DOMAIN: &[u8] = b"acyclic-fs-volume-created-v1\0";
 const VERSION: u16 = 1;
 
-pub(crate) const CONFIG_ENCODED_BYTES: usize = 76;
+pub(crate) const CONFIG_ENCODED_BYTES: usize = 44;
 /// Immutable creation fact at sequence one of a volume authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VolumeCreated {
@@ -172,18 +172,13 @@ pub(crate) fn encode_config(encoder: &mut Encoder, config: VolumeConfig) {
     encoder.u8(u8::from(config.symbolic_links));
     encoder.u8(u8::from(config.hard_links));
     encoder.u8(u8::from(config.sparse_files));
-    encoder.u32(config.limits.maximum_path_bytes);
     encoder.u32(config.limits.maximum_component_bytes);
-    encoder.u32(u32::from(config.limits.maximum_path_depth));
     encoder.u64(config.limits.maximum_object_bytes);
     encoder.u32(config.limits.maximum_mutations_per_batch);
     encoder.u32(config.limits.maximum_paths_per_batch);
     encoder.u32(config.limits.maximum_directory_page_entries);
     encoder.u32(u32::from(config.limits.maximum_page_height));
     encoder.u64(config.limits.maximum_read_bytes);
-    encoder.u64(config.limits.maximum_files_per_generation);
-    encoder.u64(config.limits.maximum_objects_per_generation);
-    encoder.u64(config.limits.maximum_generation_bytes);
 }
 
 pub(crate) fn decode_config<E: From<CanonicalDecodeError>>(
@@ -221,10 +216,7 @@ pub(crate) fn decode_config<E: From<CanonicalDecodeError>>(
     let symbolic_links = decode_bool(decoder.u8(observe)?)?;
     let hard_links = decode_bool(decoder.u8(observe)?)?;
     let sparse_files = decode_bool(decoder.u8(observe)?)?;
-    let maximum_path_bytes = decoder.u32(observe)?;
     let maximum_component_bytes = decoder.u32(observe)?;
-    let maximum_path_depth = u16::try_from(decoder.u32(observe)?)
-        .map_err(|_| invariant("maximum path depth exceeds u16"))?;
     Ok(VolumeConfig {
         profile,
         concurrency,
@@ -235,9 +227,7 @@ pub(crate) fn decode_config<E: From<CanonicalDecodeError>>(
         hard_links,
         sparse_files,
         limits: VolumeLimits {
-            maximum_path_bytes,
             maximum_component_bytes,
-            maximum_path_depth,
             maximum_object_bytes: decoder.u64(observe)?,
             maximum_mutations_per_batch: decoder.u32(observe)?,
             maximum_paths_per_batch: decoder.u32(observe)?,
@@ -245,9 +235,6 @@ pub(crate) fn decode_config<E: From<CanonicalDecodeError>>(
             maximum_page_height: u16::try_from(decoder.u32(observe)?)
                 .map_err(|_| invariant("maximum page height exceeds u16"))?,
             maximum_read_bytes: decoder.u64(observe)?,
-            maximum_files_per_generation: decoder.u64(observe)?,
-            maximum_objects_per_generation: decoder.u64(observe)?,
-            maximum_generation_bytes: decoder.u64(observe)?,
         },
     })
 }

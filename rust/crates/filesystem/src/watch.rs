@@ -824,9 +824,6 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
         })?;
         let _ = name?;
         count = count.checked_add(1).ok_or(WorkError::Overflow)?;
-        if count > usize::from(limits.maximum_path_depth) {
-            return Err(DemandError::InvalidRequest);
-        }
     }
     let backing = count
         .checked_mul(size_of::<LogicalName>())

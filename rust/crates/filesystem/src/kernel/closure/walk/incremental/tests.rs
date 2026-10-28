@@ -68,9 +68,6 @@ fn validate(diff: &crate::GenerationDiff, budget: WorkBudget) -> TestResult<(boo
         &store,
         ClosureLimits {
             decode: crate::kernel::DecodeLimits::default(),
-            maximum_objects: 1024,
-            maximum_files: 1024,
-            maximum_object_bytes: 1_000_000,
             profile: FilesystemProfile::Portable,
             symbolic_links: false,
             hard_links: false,
@@ -159,9 +156,6 @@ fn ordered_child_matching_is_metered_and_linear() -> TestResult<()> {
             .collect::<Vec<_>>();
         let limits = ClosureLimits {
             decode: crate::kernel::DecodeLimits::default(),
-            maximum_objects: 4096,
-            maximum_files: 4096,
-            maximum_object_bytes: 1_000_000,
             profile: FilesystemProfile::Portable,
             symbolic_links: false,
             hard_links: false,

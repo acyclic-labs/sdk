@@ -86,20 +86,6 @@ fn finite_codec_preserves_opaque_names_absence_and_candidate_identity() -> Resul
         .value
         .is_none()
     );
-    assert!(
-        decode(
-            &bytes,
-            generation,
-            &ids,
-            VolumeLimits {
-                maximum_path_depth: 1,
-                ..VolumeLimits::default()
-            },
-            &mut accounting
-        )?
-        .value
-        .is_none()
-    );
     let table = ObjectId {
         kind: crate::storage::ObjectKind::FileTablePage,
         digest: Digest::from_bytes([1; 32]),

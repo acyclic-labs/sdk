@@ -1,4 +1,5 @@
 use super::*;
+use crate::kernel::allocation::VisitedObjectSet;
 
 #[derive(Clone, Copy)]
 pub(crate) struct WorkspaceCommonAncestor {
@@ -9,7 +10,7 @@ pub(crate) struct WorkspaceCommonAncestor {
 pub(crate) struct WorkspaceRebaseRequest<'a, A: 'static, O: 'static> {
     pub target: &'a Volume<A, O>,
     pub operation_id: OperationId,
-    pub maximum_generations: u32,
+    pub maximum_generations: Option<u32>,
     pub maximum_changes: u32,
     pub maximum_conflicts: u32,
 }
@@ -33,11 +34,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         &self,
         source: &crate::Generation<A, O>,
         target: &crate::Generation<A, O>,
-        maximum_generations: u32,
+        maximum_generations: Option<u32>,
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<WorkspaceCommonAncestor, WorkspaceError> {
-        if maximum_generations == 0
+        if maximum_generations == Some(0)
             || !Arc::ptr_eq(&self.inner, &source.workspace.volume.fs.inner)
             || !Arc::ptr_eq(&self.inner, &target.workspace.volume.fs.inner)
         {
@@ -143,7 +144,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub(super) async fn rebase_lineage(
         &self,
         target: &Volume<A, O>,
-        maximum_generations: u32,
+        maximum_generations: Option<u32>,
         cancellation: &CancellationToken,
     ) -> Result<RebaseLineage<A, O>, WorkspaceError> {
         let (target_object, target_head) = target
@@ -166,7 +167,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let mut cursor = target_object;
         let mut adopted = None;
         let mut filtered_baseline = None;
-        for _ in 0..maximum_generations {
+        let mut examined = 0_u64;
+        loop {
+            if maximum_generations.is_some_and(|maximum| examined >= u64::from(maximum)) {
+                break;
+            }
+            examined = examined.checked_add(1).ok_or(WorkError::Overflow)?;
             let (root, _) = read_generation_root(
                 &self.inner.objects,
                 cursor,
@@ -226,7 +232,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     pub(crate) async fn parent_advance(
         &self,
         target: &Volume<A, O>,
-        maximum_generations: u32,
+        maximum_generations: Option<u32>,
     ) -> Result<Option<GenerationId>, WorkspaceError> {
         let lineage = self
             .rebase_lineage(target, maximum_generations, &CancellationToken::new())
@@ -236,23 +242,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     }
 }
 
-pub(super) fn insert_lineage_value<T: Copy>(
+pub(super) fn append_lineage_value<T: Copy>(
     values: &mut Owned<Vec<T>>,
-    index: usize,
     value: T,
     accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
     values.ensure_for_push(usize::MAX, accounting)?;
     let copied = WorkCounters {
-        bytes_copied: usize_to_u64(
-            (values.value.len() - index + 1)
-                .checked_mul(size_of::<T>())
-                .ok_or(WorkError::Overflow)?,
-        ),
+        bytes_copied: usize_to_u64(size_of::<T>()),
         ..WorkCounters::UNCHARGED
     };
     accounting.admit(copied)?;
-    values.value.insert(index, value);
+    values.value.push(value);
     accounting.record_completed(copied)
 }
 
@@ -280,7 +281,7 @@ pub(super) async fn collect_generation_ancestors<O: AsyncObjectStore>(
     objects: &O,
     start: GenerationId,
     config: VolumeConfig,
-    maximum_generations: u32,
+    maximum_generations: Option<u32>,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<
@@ -290,41 +291,47 @@ pub(super) async fn collect_generation_ancestors<O: AsyncObjectStore>(
     ),
     crate::workspace::WorkspaceError,
 > {
-    let maximum = usize::try_from(maximum_generations).unwrap_or(usize::MAX);
+    let maximum = maximum_generations
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(usize::MAX);
     let mut visited =
         crate::kernel::Owned::<Vec<(GenerationId, Option<VolumeId>)>>::allocate(0, accounting)?;
     let mut pending = crate::kernel::Owned::<Vec<GenerationId>>::allocate(0, accounting)?;
+    let mut seen = VisitedObjectSet::new_with_accounting(accounting)?;
     let mut cursor = 0;
     let result = async {
-        insert_lineage_value(&mut pending, 0, start, accounting)?;
+        append_lineage_value(&mut pending, start, accounting)?;
         while let Some(generation) = next_lineage_value(&pending.value, &mut cursor, accounting)? {
-            let position = crate::kernel::binary_search_with_accounting(
-                &visited.value,
+            if !VisitedObjectSet::insert_with_accounting(
+                &mut seen,
+                ObjectId {
+                    kind: ObjectKind::GenerationRoot,
+                    digest: generation.digest(),
+                },
                 accounting,
-                |candidate| candidate.0.cmp(&generation),
-            )?;
-            let Err(position) = position else {
+            )?
+            .inserted
+            {
                 continue;
-            };
+            }
             if visited.value.len() == maximum {
-                // Retain the entire unread target frontier, not just the item
+                // Preserve the exact unread frontier for explicit finite policies.
+                append_lineage_value(&mut visited, (generation, None), accounting)?;
                 while let Some(frontier) =
                     next_lineage_value(&pending.value, &mut cursor, accounting)?
                 {
-                    if let Err(index) = crate::kernel::binary_search_with_accounting(
-                        &visited.value,
+                    if VisitedObjectSet::insert_with_accounting(
+                        &mut seen,
+                        ObjectId {
+                            kind: ObjectKind::GenerationRoot,
+                            digest: frontier.digest(),
+                        },
                         accounting,
-                        |candidate| candidate.0.cmp(&frontier),
-                    )? {
-                        insert_lineage_value(&mut visited, index, (frontier, None), accounting)?;
+                    )?
+                    .inserted
+                    {
+                        append_lineage_value(&mut visited, (frontier, None), accounting)?;
                     }
-                }
-                if let Err(index) = crate::kernel::binary_search_with_accounting(
-                    &visited.value,
-                    accounting,
-                    |candidate| candidate.0.cmp(&generation),
-                )? {
-                    insert_lineage_value(&mut visited, index, (generation, None), accounting)?;
                 }
                 return Ok(true);
             }
@@ -342,15 +349,13 @@ pub(super) async fn collect_generation_ancestors<O: AsyncObjectStore>(
             let bytes = root_parent_bytes(&decoded.0)?;
             let root = crate::kernel::Owned::new(decoded.0, decoded.1, bytes);
             let expanded = (|| -> Result<(), FsError> {
-                insert_lineage_value(
+                append_lineage_value(
                     &mut visited,
-                    position,
                     (generation, Some(root.value.volume_id)),
                     accounting,
                 )?;
                 for parent in &root.value.parents {
-                    let index = pending.value.len();
-                    insert_lineage_value(&mut pending, index, *parent, accounting)?;
+                    append_lineage_value(&mut pending, *parent, accounting)?;
                 }
                 Ok(())
             })();
@@ -361,6 +366,31 @@ pub(super) async fn collect_generation_ancestors<O: AsyncObjectStore>(
     }
     .await;
     pending.retire(accounting)?;
+    seen.retire(accounting)?;
+    let result = result.and_then(|truncated| {
+        crate::kernel::sort::heap_sort(
+            &mut visited.value,
+            accounting,
+            |left, right, accounting| {
+                accounting.charge(WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                Ok::<_, FsError>(left.0.cmp(&right.0))
+            },
+            |values, left, right, accounting| {
+                let copied = WorkCounters {
+                    bytes_copied: (2 * size_of::<(GenerationId, Option<VolumeId>)>()) as u64,
+                    ..WorkCounters::UNCHARGED
+                };
+                accounting.admit(copied)?;
+                values.swap(left, right);
+                accounting.record_completed(copied)
+            },
+            |_| Ok(()),
+        )?;
+        Ok(truncated)
+    });
     match result {
         Ok(truncated) => Ok((visited, truncated)),
         Err(error) => {
@@ -374,21 +404,24 @@ pub(super) async fn find_first_generation_ancestor<O: AsyncObjectStore>(
     objects: &O,
     start: GenerationId,
     config: VolumeConfig,
-    maximum_generations: u32,
+    maximum_generations: Option<u32>,
     candidates: (&[(GenerationId, Option<VolumeId>)], bool),
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<WorkspaceCommonAncestor, crate::workspace::WorkspaceError> {
     let (candidates, candidates_truncated) = candidates;
-    let maximum = usize::try_from(maximum_generations).unwrap_or(usize::MAX);
-    let mut visited = crate::kernel::Owned::<Vec<GenerationId>>::allocate(0, accounting)?;
+    let maximum = maximum_generations
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(usize::MAX);
+    let mut visited = VisitedObjectSet::new_with_accounting(accounting)?;
+    let mut examined = 0_usize;
     let mut pending =
         crate::kernel::Owned::<Vec<(GenerationId, Option<WorkspaceCommonAncestor>)>>::allocate(
             0, accounting,
         )?;
     let mut cursor = 0;
     let result = async {
-        insert_lineage_value(&mut pending, 0, (start, None), accounting)?;
+        append_lineage_value(&mut pending, (start, None), accounting)?;
         while let Some((generation, baseline)) =
             next_lineage_value(&pending.value, &mut cursor, accounting)?
         {
@@ -407,15 +440,19 @@ pub(super) async fn find_first_generation_ancestor<O: AsyncObjectStore>(
                 }));
             }
             let is_candidate_frontier = matches!(candidate, Some(None));
-            let position = crate::kernel::binary_search_with_accounting(
-                &visited.value,
+            if !VisitedObjectSet::insert_with_accounting(
+                &mut visited,
+                ObjectId {
+                    kind: ObjectKind::GenerationRoot,
+                    digest: generation.digest(),
+                },
                 accounting,
-                |candidate| candidate.cmp(&generation),
-            )?;
-            let Err(position) = position else {
+            )?
+            .inserted
+            {
                 continue;
-            };
-            if visited.value.len() == maximum {
+            }
+            if examined == maximum {
                 return Err(crate::workspace::WorkspaceError::LineageLimit);
             }
             let decoded = crate::kernel::read_generation_root_with_accounting(
@@ -432,7 +469,7 @@ pub(super) async fn find_first_generation_ancestor<O: AsyncObjectStore>(
             let bytes = root_parent_bytes(&decoded.0)?;
             let root = crate::kernel::Owned::new(decoded.0, decoded.1, bytes);
             let expanded = (|| -> Result<Option<WorkspaceCommonAncestor>, FsError> {
-                insert_lineage_value(&mut visited, position, generation, accounting)?;
+                examined = examined.checked_add(1).ok_or(WorkError::Overflow)?;
                 if is_candidate_frontier {
                     return Ok(Some(baseline.unwrap_or(WorkspaceCommonAncestor {
                         id: generation,
@@ -451,8 +488,7 @@ pub(super) async fn find_first_generation_ancestor<O: AsyncObjectStore>(
                     baseline
                 };
                 for parent in &root.value.parents {
-                    let index = pending.value.len();
-                    insert_lineage_value(&mut pending, index, (*parent, boundary), accounting)?;
+                    append_lineage_value(&mut pending, (*parent, boundary), accounting)?;
                 }
                 Ok(None)
             })();

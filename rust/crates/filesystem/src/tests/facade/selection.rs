@@ -30,8 +30,6 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
             "/{}",
             "x".repeat(limits.maximum_component_bytes as usize + 1)
         ),
-        format!("/{}", "a/".repeat(limits.maximum_path_depth as usize + 1)),
-        format!("/{}", "x".repeat(limits.maximum_path_bytes as usize + 1)),
     ] {
         let paths = vec![invalid];
         let owned = (paths.capacity() * std::mem::size_of::<String>() + paths[0].capacity()) as u64;
