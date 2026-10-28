@@ -27,7 +27,7 @@ pub struct OpenTurn {
     /// Journal of this agent's turns, on its private volume.
     pub journal: Arc<dyn ExecutionJournal>,
     /// Model and tool steps allowed in one turn.
-    pub max_steps: u32,
+    pub max_steps: Option<u32>,
     /// Signing custody of the journal's authority; the journal holds only a
     /// weak admission port, so the custody lives exactly as long as the turn.
     pub custody: Option<crate::core::AuthorityRoot>,
