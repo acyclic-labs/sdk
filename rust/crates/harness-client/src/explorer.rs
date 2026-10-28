@@ -4,16 +4,15 @@
 //! layer adds no data API: it lists `harness/agents` and `<agent>/children`
 //! with `children_page` (projecting each child's `conversation` head), reads
 //! `harness/status/<id>` heads and conversation ranges with `read`, follows
-//! only the displayed live tails, and tells the cache that a child's
-//! conversation prefix is its parent's (learned from the child's committed
-//! `ForkAdopted` record), so opening a forked child reuses the parent's
-//! cached history.
+//! only the displayed live tails. The reader learns each stream's exact
+//! inherited cut from the primitive Head/origin, so opening a forked child
+//! reuses cached history without reconstructing lineage from agent records.
 //!
 //! Per frame the work is bounded by the viewport, overscan and fixed
 //! budgets; agents that are not displayed cost nothing.
 
 use crate::reader::{Priority, Reader, ReaderPolicy, Want};
-use acyclic_harness_core::agent::{AGENTS, AgentPath, AgentRecord, InboxRecord, StatusRecord};
+use acyclic_harness_core::agent::{AGENTS, AgentPath, AgentRecord, StatusRecord};
 use acyclic_stream::{StreamError, StreamPath};
 use bytes::Bytes;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -85,7 +84,6 @@ pub struct HistoryRow {
 }
 
 struct History {
-    agent: AgentPath,
     stream: StreamPath,
     from: u64,
     rows: usize,
@@ -266,7 +264,6 @@ impl Explorer {
         };
         self.push_recent(&agent);
         self.history = Some(History {
-            agent,
             stream,
             from: 0,
             rows: rows.clamp(1, MAX_HISTORY_ROWS),
@@ -610,7 +607,6 @@ impl Explorer {
     /// Lay out one frame and hand the reader its needs. Returns the rows.
     pub fn frame(&mut self, now: u64) -> &[(Pos, Row)] {
         self.reader.begin_frame(now);
-        self.learn();
         // A loaded gap becomes its first row.
         if let Pos::Gap { parent, page } = &self.anchor
             && let Some(listing) = self.reader.cache().listing(parent, *page)
@@ -848,36 +844,6 @@ impl Explorer {
                 Priority::Visible,
             ));
         }
-        // Learn the fork origin from committed records: the first status
-        // record's cursor is the child's `ForkAdopted` inbox position.
-        if history.agent.depth() > 0
-            && self.reader.cache().fork(&history.stream).is_none()
-            && let (Ok(status), Ok(inbox)) = (history.agent.status(), history.agent.inbox())
-        {
-            let first = self
-                .reader
-                .cache()
-                .record(&status, 0)
-                .and_then(|bytes| StatusRecord::decode(bytes).ok());
-            match first {
-                None => wants.push((
-                    Want::Range {
-                        stream: status,
-                        from: 0,
-                        to: 1,
-                    },
-                    Priority::Visible,
-                )),
-                Some(first) => wants.push((
-                    Want::Range {
-                        stream: inbox,
-                        from: first.cursor,
-                        to: first.cursor + 1,
-                    },
-                    Priority::Visible,
-                )),
-            }
-        }
         // The page before the window is the likely next scroll.
         let start = self.history_start(history);
         if let Some(start) = start
@@ -901,39 +867,6 @@ impl Explorer {
         } else {
             Some(history.from)
         }
-    }
-
-    /// Learn the open child's fork origin once its records are cached.
-    fn learn(&mut self) {
-        let Some(history) = &self.history else {
-            return;
-        };
-        if history.agent.depth() == 0 || self.reader.cache().fork(&history.stream).is_some() {
-            return;
-        }
-        let (Ok(status), Ok(inbox)) = (history.agent.status(), history.agent.inbox()) else {
-            return;
-        };
-        let cache = self.reader.cache();
-        let Some(first) = cache
-            .record(&status, 0)
-            .and_then(|bytes| StatusRecord::decode(bytes).ok())
-        else {
-            return;
-        };
-        let Some(InboxRecord::ForkAdopted(adopted)) = cache
-            .record(&inbox, first.cursor)
-            .and_then(|bytes| InboxRecord::decode(bytes).ok())
-        else {
-            return;
-        };
-        let Some(source) = adopted.parent.and_then(|parent| parent.conversation().ok()) else {
-            return;
-        };
-        let stream = history.stream.clone();
-        self.reader
-            .cache_mut()
-            .set_fork(&stream, source, adopted.conversation_tail);
     }
 
     /// The open history window: cached records, or `None` placeholders.
