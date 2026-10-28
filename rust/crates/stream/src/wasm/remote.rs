@@ -29,10 +29,7 @@ impl Remote {
         })
     }
     fn service(&self) -> Service {
-        self.service_with_options(
-            tonic_web_wasm_client::options::FetchOptions::new()
-                .timeout(std::time::Duration::from_secs(1)),
-        )
+        self.service_with_options(tonic_web_wasm_client::options::FetchOptions::new())
     }
     fn service_with_options(
         &self,
