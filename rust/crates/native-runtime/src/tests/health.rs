@@ -242,6 +242,8 @@ fn last_native_file_owner_releases_both_physical_allocations() -> io::Result<()>
     // their headers, without assuming the standard library's Arc layout.
     let payload = Arc::new(NativeFilePayload {
         file: temporary.reopen()?,
+        #[cfg(windows)]
+        completion_attached: std::sync::atomic::AtomicBool::new(false),
         _allocation: None,
     });
     let health = Arc::new(FileHealth::default());

@@ -1,12 +1,8 @@
-//! Bounded watch-change queue whose storage follows its occupancy.
+//! Watch-change queue whose storage follows its occupancy.
 //!
-//! `std::sync::mpsc::sync_channel(capacity)` allocates every slot when it is
-//! created. A watch admits up to tens of thousands of queued changes, but an
-//! idle watch holds none, so the eager array made each open watch retain
-//! megabytes. This queue keeps the same `try_send`/`try_recv` contract: a full
-//! queue refuses the change, a dropped receiver disconnects senders, and the
-//! receiver observes disconnection only once the queue is empty and every
-//! sender is gone.
+//! Every accepted change is retained until received. Storage grows geometrically
+//! under its original native allocation guard; a denied allocation leaves the
+//! queue unchanged. Receiver and sender retirement retain standard channel semantics.
 use std::collections::VecDeque;
 use std::sync::mpsc::{TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -22,14 +18,13 @@ struct State<T> {
 }
 
 impl<T> State<T> {
-    fn reserve_slot(&mut self, maximum: usize) -> bool {
+    fn reserve_slot(&mut self) -> bool {
         if self.queue.len() < self.queue.capacity() {
             return true;
         }
         let Some(capacity) = self.queue.capacity().max(2).checked_mul(2) else {
             return false;
         };
-        let capacity = capacity.min(maximum);
         let Some(bytes) = capacity.checked_mul(std::mem::size_of::<T>()) else {
             return false;
         };
@@ -70,7 +65,6 @@ impl<T> State<T> {
 }
 
 struct Shared<T> {
-    capacity: usize,
     state: Mutex<State<T>>,
 }
 
@@ -80,19 +74,17 @@ impl<T> Shared<T> {
     }
 }
 
-/// Sending half; clones share the bound.
+/// Sending half; clones share the original queue and allocation custody.
 pub(crate) struct QueueSender<T>(Arc<Shared<T>>);
 
 /// Receiving half.
 pub(crate) struct QueueReceiver<T>(Arc<Shared<T>>);
 
-/// Creates a queue admitting at most `capacity` undelivered items.
-pub(crate) fn bounded<T>(
-    capacity: usize,
+/// Creates an initially empty queue with optional original allocation custody.
+pub(crate) fn channel<T>(
     allocation: Option<crate::NativeAllocation>,
 ) -> (QueueSender<T>, QueueReceiver<T>) {
     let shared = Arc::new(Shared {
-        capacity,
         state: Mutex::new(State {
             queue: VecDeque::new(),
             allocation,
@@ -104,14 +96,14 @@ pub(crate) fn bounded<T>(
 }
 
 impl<T> QueueSender<T> {
-    /// Queues `value` unless the queue is full, its receiver is gone, or the
-    /// allocator refuses the slot; a refused slot reports `Full`.
+    /// Queues `value` unless its receiver is gone or allocation admission fails.
+    /// A denied allocation reports `Full` without modifying accepted items.
     pub(crate) fn try_send(&self, value: T) -> Result<(), TrySendError<T>> {
         let mut state = self.0.lock();
         if !state.receiver {
             return Err(TrySendError::Disconnected(value));
         }
-        if state.queue.len() >= self.0.capacity || !state.reserve_slot(self.0.capacity) {
+        if !state.reserve_slot() {
             return Err(TrySendError::Full(value));
         }
         state.queue.push_back(value);
@@ -168,18 +160,20 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    /// A fresh queue sized like a watch's default bound retains no slots.
-    /// Negative control: the eager `sync_channel` retains its full array.
+    /// Idle queues retain no slots; large drained backing retires its custody.
     #[test]
     fn idle_queue_retains_no_slots() {
-        let (_sender, receiver) = bounded::<[u8; 256]>(16_384, None);
+        let (_sender, receiver) = channel::<[u8; 256]>(None);
         assert_eq!(receiver.retained_slots(), 0);
-        let (sender, receiver) = bounded(16_384, None);
-        for value in 0..1_000u32 {
+        let (sender, receiver) = channel(None);
+        for value in 0..65_537u32 {
             sender.try_send(value).unwrap();
         }
-        assert!(receiver.retained_slots() >= 1_000);
-        while receiver.try_recv().is_ok() {}
+        assert!(receiver.retained_slots() >= 65_537);
+        for value in 0..65_537u32 {
+            assert_eq!(receiver.try_recv(), Ok(value));
+        }
+        assert_eq!(receiver.try_recv(), Err(TryRecvError::Empty));
         assert_eq!(receiver.retained_slots(), 0);
     }
 
@@ -196,7 +190,7 @@ mod tests {
         .unwrap();
         let baseline = work.live_allocation_bytes();
         let allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED).unwrap();
-        let (sender, receiver) = bounded(65_536, Some(allocation));
+        let (sender, receiver) = channel(Some(allocation));
         assert_eq!(
             work.live_allocation_bytes(),
             baseline,
@@ -255,14 +249,13 @@ mod tests {
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(256))]
-        /// Every observable result equals the standard bounded channel's.
+        /// Every observable result equals the standard unbounded channel's.
         #[test]
-        fn matches_the_standard_bounded_channel(
-            capacity in 1usize..6,
+        fn matches_the_standard_channel(
             steps in proptest::collection::vec(step(), 0..64),
         ) {
-            let (sender, receiver) = bounded(capacity, None);
-            let (std_sender, std_receiver) = std::sync::mpsc::sync_channel(capacity);
+            let (sender, receiver) = channel(None);
+            let (std_sender, std_receiver) = std::sync::mpsc::channel();
             let (mut senders, mut std_senders) = (vec![sender], vec![std_sender]);
             let (mut receiver, mut std_receiver) = (Some(receiver), Some(std_receiver));
             for step in steps {
@@ -271,7 +264,7 @@ mod tests {
                         if let (Some(sender), Some(std_sender)) = (senders.last(), std_senders.last()) {
                             prop_assert_eq!(
                                 format!("{:?}", sender.try_send(value)),
-                                format!("{:?}", std_sender.try_send(value))
+                                format!("{:?}", std_sender.send(value).map_err(|error| TrySendError::Disconnected(error.0)))
                             );
                         }
                     }

@@ -129,7 +129,7 @@ export async function verifyClientToolOutput(stream: WasmStream, credential: num
   const observed = fixture.observation;
   observationCursors(observed);
   const subscription = bytes(fixture.subscription, PreparedAgentCommand.maximumInvocationBytes());
-  const record = bytes(fixture.record, PreparedAgentCommand.maximumReplyBytes());
+  const record = bytes(fixture.record, undefined);
   const client = new AgentClient(stream, observed.agent, observed.conversation_from, observed.status_from, credential);
   let conversation = false, status = false, output = false;
   try {
@@ -178,8 +178,8 @@ export async function verifyClientToolOutput(stream: WasmStream, credential: num
 const cases = ["root", "prompt", "cancel", "prompt_after_cancel", "spawn", "children_page",
   "approvals_page", "approval_decision", "typed_refusal", "unknown_custody"] as const;
 type Outcome = {value: unknown} | {error: {name: string; source?: string; request?: Uint8Array; status?: number}};
-function bytes(value: readonly unknown[], maximum: number): Uint8Array {
-  if (!Array.isArray(value) || value.length > maximum || value.some(n =>
+function bytes(value: readonly unknown[], maximum?: number): Uint8Array {
+  if (!Array.isArray(value) || maximum !== undefined && value.length > maximum || value.some(n =>
     typeof n === "bigint" ? n < 0n || n > 255n : typeof n !== "number" || !Number.isInteger(n) || n < 0 || n > 255)) {
     throw new Error("CLIENT_CONFORMANCE control_fixture: invalid bounded bytes");
   }
@@ -221,9 +221,9 @@ export async function verifyClientControls(stream: WasmStream, credential: numbe
         throw new Error("CLIENT_CONFORMANCE control_fixture: invalid case/order");
       }
       seen.add(vector.case);
-      const commandBytes = bytes(vector.command, PreparedAgentCommand.maximumCommandBytes());
+      const commandBytes = bytes(vector.command, undefined);
       const invocation = bytes(vector.invocation, PreparedAgentCommand.maximumInvocationBytes());
-      const encoded = vector.expected.kind === "reply" ? bytes(vector.expected.bytes, PreparedAgentCommand.maximumReplyBytes()) : undefined;
+      const encoded = vector.expected.kind === "reply" ? bytes(vector.expected.bytes, undefined) : undefined;
       retained += commandBytes.length + invocation.length + (encoded?.length ?? 0);
       if (retained > 8 * 1024 * 1024) throw new Error("CLIENT_CONFORMANCE control_fixture: byte capacity exceeded");
       const command = new PreparedAgentCommand(commandBytes);

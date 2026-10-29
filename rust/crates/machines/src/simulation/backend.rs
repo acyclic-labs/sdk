@@ -106,11 +106,6 @@ impl MachinesProvider for SimulatedMachines {
                     "required image capabilities are unavailable".into(),
                 ));
             }
-            if state.machines.len() >= 1_024 {
-                return Err(ProviderError::Rejected(
-                    "simulation machine limit reached".into(),
-                ));
-            }
             let id = Self::machine(key, 0);
             let now = tick(state)?;
             let contract = Self::contract(&request, image, capabilities, platform);
@@ -149,16 +144,15 @@ impl MachinesProvider for SimulatedMachines {
         after: Option<MachineId>,
         limit: u32,
     ) -> Result<MachinePage, ProviderError> {
-        if limit == 0 || limit > MAX_PAGE_SIZE {
-            return Err(ProviderError::Invalid(
-                "machine page limit must be 1..=256".into(),
-            ));
-        }
+        let limit = page_limit(u64::from(limit), MAX_PAGE_SIZE)?;
         let state = self.state.lock().await;
         let mut values = state
             .machines
-            .values()
-            .filter(|value| after.is_none_or(|cursor| value.id > cursor))
+            .range((
+                after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                std::ops::Bound::Unbounded,
+            ))
+            .map(|(_, value)| value)
             .take(
                 usize::try_from(limit)
                     .map_err(|_| ProviderError::Invalid("invalid page limit".into()))?
@@ -237,9 +231,6 @@ impl MachinesProvider for SimulatedMachines {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         let count_value = count.get();
-        if count_value > MAX_FORK_CHILDREN {
-            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-        }
         self.apply(
             key,
             MemoryIntent::Fork(checkpoint, count_value),
@@ -256,11 +247,6 @@ impl MachinesProvider for SimulatedMachines {
                 }
                 let add = usize::try_from(count_value)
                     .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?;
-                if state.machines.len().saturating_add(add) > 1_024 {
-                    return Err(ProviderError::Rejected(
-                        "simulation machine limit reached".into(),
-                    ));
-                }
                 let mut children = Vec::with_capacity(add);
                 for index in 0..count_value {
                     let id = Self::machine(key, index);
@@ -295,9 +281,6 @@ impl MachinesProvider for SimulatedMachines {
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
         let count_value = count.get();
-        if count_value > MAX_FORK_CHILDREN {
-            return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-        }
         self.apply(
             key,
             MemoryIntent::ForkMachine(machine, count_value),
@@ -317,11 +300,6 @@ impl MachinesProvider for SimulatedMachines {
                 }
                 let add = usize::try_from(count_value)
                     .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?;
-                if state.machines.len().saturating_add(add) > 1_024 {
-                    return Err(ProviderError::Rejected(
-                        "simulation machine limit reached".into(),
-                    ));
-                }
                 let mut children = Vec::with_capacity(add);
                 for index in 0..count_value {
                     let id = Self::machine(key, index);
@@ -477,23 +455,18 @@ impl MachinesProvider for SimulatedMachines {
         after_sequence: Option<u64>,
         limit: u32,
     ) -> Result<EventPage, ProviderError> {
-        if limit == 0 || limit > MAX_EVENT_PAGE_SIZE {
-            return Err(ProviderError::Invalid(
-                "event page limit must be 1..=1024".into(),
-            ));
-        }
+        let limit = page_limit(u64::from(limit), MAX_EVENT_PAGE_SIZE)?;
         let state = self.state.lock().await;
         if !state.machines.contains_key(&machine) {
             return Err(ProviderError::NotFound(machine.to_string()));
         }
         let limit = usize::try_from(limit)
             .map_err(|_| ProviderError::Invalid("invalid event limit".into()))?;
-        let mut values = state
-            .events
-            .get(&machine)
-            .into_iter()
-            .flatten()
-            .filter(|value| after_sequence.is_none_or(|cursor| value.sequence > cursor))
+        let values = state.events.get(&machine).map_or(&[][..], Vec::as_slice);
+        let start = values
+            .partition_point(|value| after_sequence.is_some_and(|cursor| value.sequence <= cursor));
+        let mut values = values[start..]
+            .iter()
             .take(limit + 1)
             .cloned()
             .collect::<Vec<_>>();

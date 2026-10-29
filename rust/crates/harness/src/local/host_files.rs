@@ -33,9 +33,8 @@ mod tests;
 
 /// Reserved inside the host's existing writable workspace; never a state path.
 pub const DIRECTORY: &str = ".acyclic-sdk/host-files";
-const MAXIMUM_BYTES: u64 = 65_536;
-/// Bound of one agent's status file: the replies of its in-flight requests.
-const STATUS_BYTES: u64 = 16 * MAXIMUM_BYTES;
+/// Unread reply credit; an admitted reply may exceed it and always completes.
+const STATUS_BYTES: usize = 1 << 20;
 /// Status key of requests that name no agent yet.
 const WORKSPACE: &str = "workspace";
 
@@ -429,11 +428,6 @@ pub fn request(cwd: &Path, action: HostAction) -> Result<Value> {
         action,
     };
     let bytes = serde_json::to_vec(&request).map_err(storage)?;
-    if bytes.len() as u64 > MAXIMUM_BYTES {
-        return Err(Error::Invalid(
-            "native host request exceeds file bound".into(),
-        ));
-    }
     acyclic_fs::hold_root(&bridge.directory)
         .map_err(native_file_error)?
         .create_directories(&Path::new("status").join(&key))
@@ -507,7 +501,7 @@ fn latest_status(status: &Path) -> Result<Option<Status>> {
         let Some((_, path)) = latest(status)? else {
             return Ok(None);
         };
-        let bytes = match bounded_bytes(&path, STATUS_BYTES) {
+        let bytes = match regular_bytes(&path) {
             Ok(bytes) => bytes,
             // Superseded between listing and reading: its successor exists.
             Err(Error::NotFound(_)) => continue,
@@ -523,6 +517,8 @@ fn latest_status(status: &Path) -> Result<Option<Status>> {
 struct Status {
     /// Each encoded reply, held as its exact bytes so the status bound holds.
     replies: BTreeMap<OperationId, Box<serde_json::value::RawValue>>,
+    #[serde(skip)]
+    retained_bytes: usize,
 }
 
 fn discover(cwd: &Path) -> Result<(PathBuf, Endpoint)> {
@@ -697,8 +693,8 @@ enum Tracked {
 struct Served {
     known: BTreeMap<OperationId, (String, Tracked)>,
     statuses: BTreeMap<String, (u64, Status)>,
-    /// Status bytes held for each key's dispatched requests.
-    reserved: BTreeMap<String, u64>,
+    /// An admitted reply owns its key until its complete size is known.
+    reserved: BTreeSet<String>,
     deferred: BTreeMap<String, VecDeque<Request>>,
     /// Keys whose deferred requests may now fit.
     startable: BTreeSet<String>,
@@ -707,12 +703,6 @@ struct Served {
     /// Request-directory scans, all of them overflow or startup rescans.
     #[cfg(test)]
     rescans: u64,
-}
-
-/// The status space one reply can take: its key, separators and a reply at
-/// its bound, stored byte for byte.
-fn entry_bytes(operation: OperationId) -> Result<u64> {
-    Ok(serde_json::to_vec(&operation).map_err(storage)?.len() as u64 + 2 + MAXIMUM_BYTES)
 }
 
 impl Served {
@@ -829,7 +819,9 @@ impl Served {
             }
             Tracked::Answered => {
                 if let Some((_, status)) = self.statuses.get_mut(&key) {
-                    status.replies.remove(&operation);
+                    if let Some(reply) = status.replies.remove(&operation) {
+                        status.retained_bytes -= reply.get().len();
+                    }
                 }
                 self.changed.insert(key.clone());
                 self.startable.insert(key);
@@ -846,20 +838,13 @@ impl Served {
             let Some(deferred) = self.deferred.get_mut(&key) else {
                 continue;
             };
-            let mut used = match self.statuses.get(&key) {
-                Some((_, status)) => serde_json::to_vec(status).map_err(storage)?.len() as u64,
-                None => serde_json::to_vec(&Status::default())
-                    .map_err(storage)?
-                    .len() as u64,
-            } + self.reserved.get(&key).copied().unwrap_or_default();
-            while let Some(request) = deferred.front() {
-                let entry = entry_bytes(request.operation)?;
-                if used + entry > STATUS_BYTES {
-                    break;
-                }
-                used += entry;
-                *self.reserved.entry(key.clone()).or_default() += entry;
+            let used = self
+                .statuses
+                .get(&key)
+                .map_or(0, |(_, status)| status.retained_bytes);
+            if used < STATUS_BYTES && !self.reserved.contains(&key) {
                 if let Some(request) = deferred.pop_front() {
+                    self.reserved.insert(key.clone());
                     self.known.insert(
                         request.operation,
                         (key.clone(), Tracked::Running { withdrawn: false }),
@@ -879,27 +864,21 @@ impl Served {
         let Some((key, Tracked::Running { withdrawn })) = self.known.remove(&operation) else {
             return Ok(());
         };
-        let entry = entry_bytes(operation)?;
-        if let Some(reserved) = self.reserved.get_mut(&key) {
-            *reserved = reserved.saturating_sub(entry);
-            if *reserved == 0 {
-                self.reserved.remove(&key);
-            }
-        }
+        self.reserved.remove(&key);
         self.startable.insert(key.clone());
         if withdrawn {
             return Ok(());
         }
-        let bytes = crate::client::encode_command_result(0, &outcome, MAXIMUM_BYTES)?;
+        let bytes = crate::client::encode_command_result(0, &outcome)?;
         let reply = String::from_utf8(bytes)
             .map_err(storage)
             .and_then(|reply| serde_json::value::RawValue::from_string(reply).map_err(storage))?;
-        self.statuses
-            .entry(key.clone())
-            .or_default()
-            .1
-            .replies
-            .insert(operation, reply);
+        let status = &mut self.statuses.entry(key.clone()).or_default().1;
+        status.retained_bytes = status
+            .retained_bytes
+            .checked_add(reply.get().len())
+            .ok_or_else(|| Error::Invalid("native reply storage arithmetic overflow".into()))?;
+        status.replies.insert(operation, reply);
         self.known
             .insert(operation, (key.clone(), Tracked::Answered));
         self.changed.insert(key);
@@ -976,9 +955,6 @@ fn publish_status(directory: &Path, key: &str, sequence: u64, status: &Status) -
             .ok_or_else(|| Error::Invalid("native status sequence exhausted".into()))?;
     }
     let bytes = serde_json::to_vec(status).map_err(storage)?;
-    if bytes.len() as u64 > STATUS_BYTES {
-        return Err(Error::Invalid("native status exceeds its bound".into()));
-    }
     let leaf = format!("{sequence}.json");
     root.publish_immutable(Path::new(&leaf), &bytes)
         .map_err(native_file_error)?;
@@ -998,36 +974,27 @@ fn remove_projection(path: &Path) -> Result<()> {
 }
 
 fn regular_bytes(path: &Path) -> Result<Vec<u8>> {
-    bounded_bytes(path, MAXIMUM_BYTES)
-}
-
-fn bounded_bytes(path: &Path, maximum: u64) -> Result<Vec<u8>> {
     let (parent, leaf) = projection_parent(path)?;
     let file = parent.open_file(&leaf, false).map_err(native_file_error)?;
     let metadata = file.metadata().map_err(storage)?;
-    if !metadata.is_file() || metadata.len() > maximum {
+    if !metadata.is_file() {
         return Err(Error::Invalid(
-            "native file projection must be a bounded regular file".into(),
+            "native file projection must be a regular file".into(),
         ));
     }
     let mut bytes = Vec::new();
-    file.take(maximum + 1)
+    file.take(metadata.len().saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(storage)?;
-    if bytes.len() as u64 > maximum {
+    if bytes.len() as u64 != metadata.len() {
         return Err(Error::Invalid(
-            "native file projection grew beyond its bound".into(),
+            "native file projection changed while reading".into(),
         ));
     }
     Ok(bytes)
 }
 
 fn immutable(path: &Path, bytes: &[u8]) -> Result<()> {
-    if bytes.len() as u64 > MAXIMUM_BYTES {
-        return Err(Error::Invalid(
-            "native file projection exceeds its bound".into(),
-        ));
-    }
     let (parent, leaf) = projection_parent(path)?;
     parent
         .publish_immutable(&leaf, bytes)

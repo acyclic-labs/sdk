@@ -135,11 +135,11 @@ impl<P: crate::NativeStreamProvider> crate::ExplicitNativeStreamProvider for Cou
     fn native_prepare_commit(
         &self,
         request: CommitRequest,
-        maximum_record_bytes: usize,
+        capacity: crate::PreparedRecordCapacity,
         _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> NativeProviderFuture<'_, PreparedNativeCommit> {
         self.record(RequestClass::Data);
         self.inner()
-            .native_prepare_commit(request, maximum_record_bytes, _meter)
+            .native_prepare_commit(request, capacity, _meter)
     }
 }

@@ -33,14 +33,10 @@ async fn served(host: &str, body: fn(&str, &Path, &Path) -> Result) -> Result {
             .await?,
     );
     let server_local = Arc::clone(&local);
-    let server = tokio::spawn(async move { host_files::serve(server_local).await });
-    while !cwd.join(".acyclic-sdk/host-files/owner.json").is_file() {
-        assert!(
-            !server.is_finished(),
-            "fixture workspace server exited before admission"
-        );
-        tokio::task::yield_now().await;
-    }
+    let mut serving = Box::pin(async move { host_files::serve(server_local).await });
+    // Endpoint publication and watcher registration precede the first Pending.
+    assert!(futures::poll!(serving.as_mut()).is_pending());
+    let server = tokio::spawn(serving);
     let result = body(host, &cwd, state.path());
     server.abort();
     let _ = server.await;
@@ -103,7 +99,7 @@ fn claim(
         process: lease.funded_process()?,
         claim: serde_json::from_value(claimed["claim"].clone())?,
         failure: None,
-        events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
+        events: acyclic_native_runtime::lines::LineBuffer::new(None),
         answer: Outcome::Succeeded(String::new()),
         settlement: None,
         wake: std::task::Waker::noop().clone(),
@@ -191,30 +187,51 @@ fn exercise(host: &str, cwd: &Path, state: &Path) -> Result {
         ("", "17")
     };
     let mut command = std::process::Command::new("/bin/sh");
-    command.args(["-c", "echo $$ > \"$1/pid\"; while test ! -f \"$1/exit\"; do :; done; printf captured > partial.txt; printf '%s' \"$2\"; printf native-diagnostic >&2; exit \"$3\"", "fixture"])
-        .arg(state).arg(events).arg(exit).current_dir(&view).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    command.args(["-c", "printf '%s\\n' \"$$\"; IFS= read -r release; printf captured > partial.txt; printf '%s' \"$1\"; printf native-diagnostic >&2; exit \"$2\"", "fixture"])
+        .arg(events).arg(exit).current_dir(&view).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let claim = running.claim.operation;
     running.process.spawn(&mut command, claim)?;
+    let mut pid = Vec::new();
     let pid = loop {
-        if let Ok(pid) = fs::read_to_string(state.join("pid"))
-            && let Ok(pid) = pid.trim().parse::<u32>()
-        {
-            break pid;
+        // Arm before checking so publication cannot fall between inspection
+        // and registration. The shared hub parks this thread until an edge.
+        let ready = running.process.readiness()?;
+        let mut bytes = [0; 32];
+        match running.process.read_stdout(&mut bytes)? {
+            Some(0) => return Err("fixture stdout closed before its PID frame".into()),
+            Some(count) => {
+                pid.extend_from_slice(&bytes[..count]);
+                if pid.last() == Some(&b'\n') {
+                    break std::str::from_utf8(&pid)?.trim_end().parse::<u32>()?;
+                }
+                continue;
+            }
+            None => {}
         }
         assert!(
             running.process.try_wait()?.is_none(),
             "fixture exited before exporting its pipe"
         );
-        std::thread::yield_now();
+        futures::executor::block_on(ready);
     };
     // A real duplicate writer held by this test process, outside child custody.
     let writer = fs::OpenOptions::new()
         .write(true)
         .open(format!("/proc/{pid}/fd/2"))?;
-    fs::write(state.join("exit"), b"exit")?;
-    while running.process.try_wait()?.is_none() {
-        std::thread::yield_now();
+    running.process.queue_stdin(b"exit\n".to_vec())?;
+    loop {
+        let ready = running.process.readiness()?;
+        running.process.pump_stdin()?;
+        // Consume actual pipe readiness before waiting again. In particular,
+        // a diagnostic cannot repeatedly wake an exit wait while left unread.
+        running.process.read_stdout(&mut [0; 32])?;
+        running.process.drain_stderr()?;
+        if running.process.try_wait()?.is_some() {
+            break;
+        }
+        futures::executor::block_on(ready);
     }
+    running.process.require_stdin_complete()?;
     assert!(
         !running.process.drain_stderr()?,
         "negative input must withhold stderr EOF"

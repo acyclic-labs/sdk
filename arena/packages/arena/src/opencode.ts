@@ -1,4 +1,4 @@
-/** One headless OpenCode worker in a directory, on a model, with a time cap.
+/** One headless OpenCode worker in a directory, on a model, with an optional deadline.
  *  stdin is closed on purpose: OpenCode reads piped input when stdin is not a TTY and would wait forever. */
 import { spawn, spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -31,6 +31,7 @@ export interface WorkerResult {
 }
 
 export interface WorkerOptions {
+  /** Optional caller-selected deadline; omitted means no time limit. */
   timeoutMs?: number;
   binary?: string;
   onEvent?: (e: { type: string; part?: unknown }) => void;
@@ -39,7 +40,7 @@ export interface WorkerOptions {
 
 export function runWorker(dir: string, model: string, task: string, opts: WorkerOptions = {}): Promise<WorkerResult> {
   const binary = opts.binary ?? process.env.OPENCODE_BIN ?? "opencode";
-  const timeoutMs = opts.timeoutMs ?? 10 * 60_000;
+  const timeoutMs = opts.timeoutMs;
   const t0 = Date.now();
   const res: WorkerResult = { model, dir, ok: false, exitCode: null, timedOut: false, ms: 0, cost: 0,
     tokens: { input: 0, output: 0, reasoning: 0, cacheWrite: 0, cacheRead: 0 }, steps: 0, toolCalls: 0, text: "" };
@@ -49,7 +50,8 @@ export function runWorker(dir: string, model: string, task: string, opts: Worker
     const p = spawn(binary, ["run", "--format", "json", "-m", `openrouter/${model}`, "--dir", dir, task],
       { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, XDG_DATA_HOME: dataHome, ...opts.env } });
     let buf = "", err = "";
-    const timer = setTimeout(() => { res.timedOut = true; p.kill("SIGKILL"); }, timeoutMs);
+    const timer = timeoutMs === undefined ? undefined
+      : setTimeout(() => { res.timedOut = true; p.kill("SIGKILL"); }, timeoutMs);
     const handle = (line: string) => {
       if (!line.trim()) return;
       let e: { type?: string; part?: Record<string, unknown> };
@@ -65,7 +67,7 @@ export function runWorker(dir: string, model: string, task: string, opts: Worker
         res.tokens.cacheWrite += Number(cache.write ?? 0); res.tokens.cacheRead += Number(cache.read ?? 0);
       } else if (e.type === "tool_use") res.toolCalls += 1;
       else if (e.type === "text") res.text += String(part.text ?? "");
-      else if (e.type === "error") res.error = JSON.stringify(part).slice(0, 400);
+      else if (e.type === "error") res.error = JSON.stringify(part);
       opts.onEvent?.({ type: e.type ?? "?", part });
     };
     p.stdout.on("data", (d) => { buf += d.toString(); const lines = buf.split("\n"); buf = lines.pop() ?? ""; lines.forEach(handle); });
@@ -74,7 +76,7 @@ export function runWorker(dir: string, model: string, task: string, opts: Worker
       clearTimeout(timer); handle(buf);
       res.exitCode = code; res.ms = Date.now() - t0;
       res.ok = code === 0 && !res.timedOut && !res.error;
-      if (!res.ok && !res.error) res.error = res.timedOut ? `timed out after ${timeoutMs} ms` : err.trim().split("\n").slice(-3).join(" | ").slice(0, 400);
+      if (!res.ok && !res.error) res.error = res.timedOut ? `timed out after ${timeoutMs} ms` : err.trim();
       cleanup(); resolve(res);
     });
     p.on("error", (e) => { clearTimeout(timer); res.error = String(e); res.ms = Date.now() - t0; cleanup(); resolve(res); });
