@@ -30,9 +30,9 @@ pub enum ReportOutcome {
     /// The snapshot was taken and contains no live waits.
     Empty,
     /// The diagnostic sink failed; the operation's result remains unchanged.
-    SinkFailed,
+    WriteFailed,
     /// The selected owner exited before producing a snapshot.
-    OwnerExited,
+    Exited,
     /// The selected launch does not admit this request.
     Unsupported,
 }

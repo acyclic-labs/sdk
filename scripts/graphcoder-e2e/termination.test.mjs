@@ -25,7 +25,7 @@ async function ready(running) {
 test("selected report acknowledgement distinguishes live, empty, refusal and producer loss before physical drain", { skip: process.platform === "win32" }, async () => {
   for (const owned of [false, true]) for (const [mode, expected] of [
     ["live", "report"], ["1", "empty"], ["expired", "unsupported"],
-    ["crash", "owner-exited"], ["hold", "unacknowledged"],
+    ["crash", "exited"], ["hold", "unacknowledged"],
   ]) {
     const scope = new Processes();
     const running = launch(scope, owned, mode);
@@ -58,11 +58,33 @@ test("rejected control delivery remains a sink failure and still retires the sam
       await closed;
       await scope.close();
       const result = await running.closed;
-      assert.equal(result.termination.report_outcome, "sink-failed");
+      assert.equal(result.termination.report_outcome, "write-failed");
       assert.equal(result.termination.missing_wait_report, true);
       assert.equal(scope.children.size, 0);
     } finally { await scope.close(); }
   }
+});
+
+test("selected owner exit cannot discard its already written acknowledgement", { skip: process.platform === "win32" }, async () => {
+  const scope = new Processes();
+  const running = launch(scope, false, "1");
+  try {
+    await ready(running);
+    const channel = running.child.stdio[3];
+    channel.pause();
+    const acknowledged = running.requestReport(Date.now() + 500);
+    await running.exited;
+    // The real producer has exited after writing its reply. Delivering those
+    // bytes later must preserve the snapshot rather than fabricate its loss.
+    channel.resume();
+    await acknowledged;
+    const result = await running.closed;
+    assert.equal(result.code, 0);
+    assert.equal(result.termination.report_outcome, "empty");
+    assert.equal(result.termination.missing_wait_report, false);
+    await scope.close();
+    assert.equal(scope.children.size, 0);
+  } finally { await scope.close(); }
 });
 
 test("a dropped report request cannot acknowledge and concurrent close joins the same physical owner", { skip: process.platform === "win32" }, async () => {
