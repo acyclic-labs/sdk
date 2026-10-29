@@ -229,7 +229,7 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
             return Ok(());
         };
         self.fenced = true;
-        let effects = if pending.journal.is_empty() {
+        let mut effects = if pending.journal.is_empty() {
             Vec::new()
         } else {
             let path = self.journal_path()?;
@@ -244,6 +244,15 @@ impl<P: StreamProvider + ?Sized> ActorStateBinding<'_, P> {
                 },
             }]
         };
+        if pending.state.alarm != owned(&self.snapshot, self.epoch)?.alarm {
+            // The same durable activation feed drives the original runtime's
+            // ready index and sole timer. A new deadline (or clear) must wake
+            // an already idle actor, atomically with its committed alarm.
+            effects.push(
+                self.store
+                    .activation(&self.store.actor(self.snapshot.path())?),
+            );
+        }
         let prepared = self
             .store
             .prepare(&self.snapshot, &pending.state, effects, key)?;

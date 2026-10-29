@@ -783,6 +783,7 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
         let initial = store.load(&address).await?;
         let journal = StreamPath::new(format!("{}/journal", initial.path()))?;
         let initial_tail = initial.tail;
+        let wake_from = provider.tail(store.root().clone()).await?;
         let mut binding = store.bind_state(initial, 1)?;
         assert_eq!(binding.seed()?.journal_tail, "0");
         binding.apply(crate::guest::ActorStateCommit {
@@ -820,6 +821,19 @@ async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestR
         let confirmed = binding.finish()?;
         assert_eq!(confirmed.tail, initial_tail + 1);
         assert_eq!(confirmed.state().ok_or("missing state")?.journal_tail(), 2);
+        let mut wakes = provider
+            .read(ReadRequest {
+                path: store.root().clone(),
+                from: wake_from,
+                limit: 1,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await?;
+        let wake = wakes.try_next().await?.ok_or("alarm omitted its wake")?;
+        assert_eq!(wake.value.as_ref(), address.encode());
+        assert_eq!(Some(wake.commit_id), confirmed.anchor);
+        assert!(wakes.try_next().await?.is_none());
         let mut frames = provider
             .read(ReadRequest {
                 path: journal,
