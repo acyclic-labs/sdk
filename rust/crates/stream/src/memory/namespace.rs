@@ -120,11 +120,12 @@ struct NamespaceNode {
 impl Drop for NamespaceNode {
     fn drop(&mut self) {
         // Fork snapshots chain through earlier destinations without bound.
-        // Retire uniquely owned links iteratively; children stay bounded by
-        // path depth.
+        // into_inner keeps concurrent last-owner retirement iterative too:
+        // a losing claim never implicitly drops the node. Children stay
+        // bounded by path depth.
         let mut cursor = self.origin.take().map(|origin| origin.snapshot);
         while let Some(node) = cursor {
-            let Ok(mut node) = Arc::try_unwrap(node) else {
+            let Some(mut node) = Arc::into_inner(node) else {
                 break;
             };
             cursor = node.origin.take().map(|origin| origin.snapshot);
