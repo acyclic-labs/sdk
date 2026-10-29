@@ -976,7 +976,12 @@ async fn parent_and_child_writes_retain_their_own_project_volume() -> Result<()>
     else {
         return Err(Error::Invalid("spawn did not return its child".into()));
     };
-    if let Err(error) = settled(&agents, &child).await {
+    let runtime = &harness.agents.get().expect("hosted agent runtime").runtime;
+    let settlement = tokio::select! {
+        result = settled(&agents, &child) => result.map(|_| ()),
+        result = runtime.completion() => result,
+    };
+    if let Err(error) = settlement {
         return Err(Error::Conflict(format!(
             "child write did not settle: {error}; model_requests={}; child_state={:?}",
             provider.request_count(),
@@ -999,7 +1004,10 @@ async fn parent_and_child_writes_retain_their_own_project_volume() -> Result<()>
         .await?
         .send("parent-write", "write parent seed")
         .await?;
-    settled(&agents, &root).await?;
+    tokio::select! {
+        result = settled(&agents, &root) => result.map(|_| ())?,
+        result = runtime.completion() => result?,
+    }
     assert_eq!(provider.request_count(), 4);
     let parent_file = publication(3)?;
     assert_eq!(parent_file.volume(), &project);
