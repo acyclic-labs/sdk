@@ -19,8 +19,7 @@ impl std::fmt::Debug for CaptureProducer {
 
 /// One accepted physical source operation.
 pub struct CaptureProducer {
-    pub(super) gate: Arc<StdMutex<CaptureSourceGate>>,
-    pub(super) quiesced: Arc<std::sync::Condvar>,
+    pub(super) signal: Arc<CaptureSourceSignal>,
     pub(super) original: Option<crate::NativeMaterializationWork>,
     pub(super) _owner: Option<Arc<dyn Send + Sync>>,
     pub(super) _allocation: Option<crate::NativeAllocation>,
@@ -34,13 +33,17 @@ impl Drop for CaptureProducer {
         drop(self.original.take());
         drop(self._allocation.take());
         drop(self._owner.take());
-        let mut gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut gate = self
+            .signal
+            .gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         gate.producers = {
             assert!(gate.producers > 0, "accepted physical source operation");
             gate.producers - 1
         };
         if gate.producers == 0 {
-            self.quiesced.notify_all();
+            self.signal.quiesced.notify_all();
         }
     }
 }
@@ -48,7 +51,7 @@ impl Drop for CaptureProducer {
 impl<A, O> CheckoutMountSource<A, O> {
     pub(super) fn with_capture_observer_dispatch<T>(&self, dispatch: impl FnOnce() -> T) -> T {
         crate::native_mount::lazy::with_capture_observer_dispatch(
-            std::ptr::from_ref(self.capture_gate.as_ref()) as usize,
+            std::ptr::from_ref(&self.capture_signal.gate) as usize,
             dispatch,
         )
     }
@@ -58,7 +61,8 @@ impl<A, O> CheckoutMountSource<A, O> {
         owner: Arc<dyn Send + Sync>,
     ) -> Result<NativeSourceIoLease, MountSourceError> {
         if self
-            .capture_gate
+            .capture_signal
+            .gate
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .cancelled
@@ -87,7 +91,8 @@ impl<A, O> CheckoutMountSource<A, O> {
 
     pub(super) fn capture_producer(&self) -> Result<CaptureProducer, MountSourceError> {
         let mut gate = self
-            .capture_gate
+            .capture_signal
+            .gate
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
         if gate.cancelled {
@@ -111,8 +116,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         gate.producers = producers;
         gate.ever_used = true;
         Ok(CaptureProducer {
-            gate: Arc::clone(&self.capture_gate),
-            quiesced: Arc::clone(&self.capture_quiesced),
+            signal: Arc::clone(&self.capture_signal),
             original: None,
             _owner: None,
             _allocation: None,
@@ -120,7 +124,8 @@ impl<A, O> CheckoutMountSource<A, O> {
     }
 
     pub(in crate::native_mount) fn capture_retired(&self) -> bool {
-        self.capture_gate
+        self.capture_signal
+            .gate
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .retired
@@ -140,13 +145,14 @@ impl<A, O> CheckoutMountSource<A, O> {
             .cancellation
             .prepare_cancel_cleanup(wait)
             .map_err(MountSourceError::NativeWork)?;
-        self.capture_gate
+        self.capture_signal
+            .gate
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .cancelled = true;
         prepared.finish();
         if crate::native_mount::lazy::is_current_capture_observer_dispatch(std::ptr::from_ref(
-            self.capture_gate.as_ref(),
+            &self.capture_signal.gate,
         ) as usize)
         {
             return Err(MountSourceError::Stale);
@@ -157,7 +163,8 @@ impl<A, O> CheckoutMountSource<A, O> {
                 wait.check().map_err(|_| MountSourceError::Cancelled)?;
             }
             let mut gate = self
-                .capture_gate
+                .capture_signal
+                .gate
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             if gate.retired {
@@ -181,7 +188,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                         .map_err(MountSourceError::NativeWork)?;
                 }
                 gate.retired = true;
-                self.capture_quiesced.notify_all();
+                self.capture_signal.quiesced.notify_all();
                 return Ok(());
             }
             if registration.is_none()
@@ -193,23 +200,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                         .map_err(|cause| MountSourceError::NativeWork(cause.into_native()))?,
                     None => wait.cancelled(),
                 };
-                let allocation = self
-                    .native_original
-                    .as_ref()
-                    .map(|original| {
-                        let layout = std::alloc::Layout::new::<CleanupWake>();
-                        let bytes = crate::arc_layout::allocation_bytes(layout)
-                            .map_err(|_| MountSourceError::Work(crate::WorkError::Overflow))?;
-                        original
-                            .claim(bytes as u64, 1, crate::WorkCounters::UNCHARGED)
-                            .map_err(MountSourceError::NativeWork)
-                    })
-                    .transpose()?;
-                let wake = Waker::from(Arc::new(CleanupWake {
-                    gate: Arc::clone(&self.capture_gate),
-                    changed: Arc::clone(&self.capture_quiesced),
-                    _allocation: allocation,
-                }));
+                let wake = Waker::from(Arc::clone(&self.capture_signal));
                 if Pin::new(&mut cancelled)
                     .poll(&mut Context::from_waker(&wake))
                     .is_ready()
@@ -225,7 +216,8 @@ impl<A, O> CheckoutMountSource<A, O> {
             // Completion and cancellation take this same gate before notifying.
             // Condvar's atomic unlock-and-wait therefore cannot lose either event.
             gate = self
-                .capture_quiesced
+                .capture_signal
+                .quiesced
                 .wait_while(gate, |gate| {
                     gate.producers != 0
                         && !gate.retired
@@ -237,19 +229,13 @@ impl<A, O> CheckoutMountSource<A, O> {
     }
 }
 
-struct CleanupWake {
-    gate: Arc<StdMutex<CaptureSourceGate>>,
-    changed: Arc<std::sync::Condvar>,
-    _allocation: Option<crate::NativeAllocation>,
-}
-
-impl Wake for CleanupWake {
+impl Wake for CaptureSourceSignal {
     fn wake(self: Arc<Self>) {
         self.wake_by_ref();
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
         let _gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner);
-        self.changed.notify_all();
+        self.quiesced.notify_all();
     }
 }
