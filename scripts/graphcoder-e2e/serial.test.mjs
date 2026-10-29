@@ -1,8 +1,32 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { collect, runSuites, partition, collectPartitions } from "./serial.mjs";
+import { collect, runSuites, partition, collectPartitions,acceptanceBinding } from "./serial.mjs";
+import {mkdtemp,mkdir,writeFile,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
 import { schedule } from "./process.mjs";
+
+test('partition provenance includes plugin executables and host helper source',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'acceptance-binding-'));
+ try {
+  const directory=join(root,'scripts/graphcoder-e2e'),hosts=join(root,'plugin/tests/hosts');
+  for(const path of [directory,hosts,join(root,'scripts/graphcoder-pty')])await mkdir(path,{recursive:true});
+  const binary=join(root,'graphcoder'),mock=join(root,'mock'),plugin=join(root,'plugin-bin'),codex=join(root,'codex');
+  for(const path of [binary,mock,plugin,codex])await writeFile(path,'original');
+  const helper=join(hosts,'qualify-scripted.mjs');await writeFile(helper,'original helper');
+  const env={E2E_PLUGIN_BINARY:plugin,E2E_CODEX:codex};
+  const before=await acceptanceBinding(directory,binary,mock,[],env);
+  await writeFile(plugin,'different plugin');
+  const changedPlugin=await acceptanceBinding(directory,binary,mock,[],env);
+  assert.notDeepEqual(changedPlugin,before,'mixed plugin binaries must not share provenance');
+  await writeFile(codex,'different native host');
+  const changedHost=await acceptanceBinding(directory,binary,mock,[],env);
+  assert.notDeepEqual(changedHost,changedPlugin,'mixed native hosts must not share provenance');
+  await writeFile(helper,'different helper');
+  assert.notDeepEqual(await acceptanceBinding(directory,binary,mock,[],env),changedHost,'mixed host helpers must not share provenance');
+ }finally{await rm(root,{recursive:true,force:true});}
+});
 
 test("Windows starts the next case only after the previous case has exited", async () => {
   for (const platform of ["win32", "linux", "darwin"]) {

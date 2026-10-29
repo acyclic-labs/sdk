@@ -105,11 +105,23 @@ async function digest(path) {
   return hash.digest("hex");
 }
 
-async function acceptanceBinding(directory, binary, mock, cases) {
+export async function acceptanceBinding(directory, binary, mock, cases, env=process.env) {
   const source = {};
-  for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name)))
-    if (entry.isFile() && !entry.name.startsWith(".")) source[entry.name] = await digest(join(directory, entry.name));
-  return { binary: await digest(binary), mock: await digest(mock), source,
+  async function sources(root,prefix) {
+    for (const entry of (await readdir(root,{withFileTypes:true})).sort((a,b)=>a.name.localeCompare(b.name))) {
+      if (entry.name.startsWith('.') || entry.name==='node_modules' || entry.name==='__pycache__') continue;
+      const name=prefix+entry.name,path=join(root,entry.name);
+      if(entry.isDirectory())await sources(path,name+'/');
+      else if(entry.isFile())source[name]=await digest(path);
+    }
+  }
+  await sources(directory,'graphcoder-e2e/');
+  await sources(join(directory,'../../plugin/tests/hosts'),'plugin/tests/hosts/');
+  await sources(join(directory,'../graphcoder-pty'),'graphcoder-pty/');
+  const executables={};
+  for(const name of ['E2E_PLUGIN_BINARY','E2E_CODEX','E2E_PLUGIN_TEST_BINARY','E2E_PROVIDER_TEST_BINARY'])
+    if(env[name])executables[name]=await digest(env[name]);
+  return { binary: await digest(binary), mock: await digest(mock), source,executables,
     cases: createHash("sha256").update(JSON.stringify(cases)).digest("hex") };
 }
 

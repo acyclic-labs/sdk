@@ -3,6 +3,7 @@ import {existsSync,watch} from 'node:fs';
 import {join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {Processes} from '../../../scripts/graphcoder-e2e/process.mjs';
+import {withOwnedCase} from '../../../scripts/graphcoder-e2e/suite.mjs';
 
 // Subscribe before the snapshot. Both native model and command acceptance use
 // this one readiness barrier and the caller's existing process/tree custody.
@@ -26,9 +27,12 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
  try {
   const [binary,workspace,state,root,...extra]=process.argv.slice(2);
   assert.ok(binary&&workspace&&state&&root&&!extra.length,'expected GRAPHCODER WORKSPACE STATE ROOT');
-  await startWorkspaceOwner({scope,binary,workspace,state,root,env:process.env});
-  console.log(JSON.stringify({event:'workspace-owner-ready'}));
-  await new Promise((yes,no)=>{process.stdin.once('end',yes);process.stdin.once('error',no);process.stdin.resume();});
+  await withOwnedCase({processes:scope,run:async()=>{
+   const owner=await startWorkspaceOwner({scope,binary,workspace,state,root,env:process.env});
+   console.log(JSON.stringify({event:'workspace-owner-ready'}));
+   const input=new Promise((yes,no)=>{process.stdin.once('end',yes);process.stdin.once('error',no);process.stdin.resume();});
+   await Promise.race([input,owner.closed.then(()=>{throw new Error('workspace owner ended before input closure');})]);
+  }});
  }catch(error){
   console.error('step=workspace owner readiness: '+error.message+'; recovery='+JSON.stringify(process.argv));process.exitCode=1;
  }finally{await scope.close();}

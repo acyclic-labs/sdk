@@ -44,7 +44,7 @@ export async function nativeModel({host,binary,graphcoder,mock,native,output,pac
    if(host==='codex') {
     const listed=await run(native,['plugin','list','--json']);assert.equal(listed.code,0,listed.stderr);
     assert.ok(JSON.parse(listed.stdout).installed.some(row=>row.pluginId==='acyclic@acyclic'&&row.enabled));
-   } else assert.ok((await readFile(settings,'utf8')).includes(executable),'native extension does not bind admitted shipping binary');
+   } else assert.ok((await readFile(settings,'utf8')).includes(JSON.stringify(executable)),'native extension does not bind admitted shipping binary');
    step='start shipping workspace owner';
    await startWorkspaceOwner({scope,binary:graphcoder,workspace,state:join(root,'state'),env,root,
     capture:record=>captures.push({role:'owner',...record})});

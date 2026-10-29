@@ -149,7 +149,10 @@ def main():
         state.mkdir()
         (workspace / 'parent.txt').write_text('parent')
         # Whitelist environment: never inspect/copy the user's login or keys.
-        env = {'PATH': str(Path(args.native).parent) + ':' + os.environ['PATH'], 'LANG': 'C.UTF-8'}
+        env = {'PATH': str(Path(args.native).parent) + os.pathsep + os.environ['PATH'], 'LANG': 'C.UTF-8'}
+        for name in ['SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'E2E_PROCESS_HOST', 'E2E_SCRATCH_ROOT']:
+            if name in os.environ:
+                env[name] = os.environ[name]
         for name in ['HOME', 'USERPROFILE', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'XDG_STATE_HOME',
                      'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'PLUGIN_DATA', 'CLAUDE_PLUGIN_DATA', 'PI_CODING_AGENT_DIR']:
             path = root / name.lower()
