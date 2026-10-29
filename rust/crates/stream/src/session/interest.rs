@@ -40,9 +40,6 @@ impl<P: StreamProvider + ?Sized> Session<P> {
                 Some(_) => {}
             }
         }
-        if self.channels.len() - removed + added > self.limits.channels {
-            return Err(StreamError::Capacity);
-        }
         // Validate and stage the whole diff before changing the active set.
         // Provider opens run independently; refusal closes only that channel.
         let mut opened = Vec::new();

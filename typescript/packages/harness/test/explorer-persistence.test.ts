@@ -73,7 +73,6 @@ test("pending source admission preserves persisted bytes and disposal cancels it
     explorer = await AgentExplorer.open(stream, { persist: key, render() {} });
     await entered.promise;
     expect(explorer.health().credentials).toBe("pending");
-    expect(explorer.health().snapshotBytes).toBe(BigInt(snapshot.length));
     explorer.save();
     explorer.dispose(); explorer = undefined;
     await cancelled.promise;

@@ -99,10 +99,7 @@ pub(super) fn namespace_path_text(path: &NamespacePath) -> Result<String, Worksp
     Ok(format!("/{}", components.join("/")))
 }
 
-pub(super) fn kernel_conflict(
-    key: &ConflictKey,
-    maximum_component_bytes: u32,
-) -> Result<MergeConflict, DrivenJoinError> {
+pub(super) fn kernel_conflict(key: &ConflictKey) -> Result<MergeConflict, DrivenJoinError> {
     match key {
         ConflictKey::File(file_id)
         | ConflictKey::Metadata(file_id)
@@ -119,7 +116,7 @@ pub(super) fn kernel_conflict(
                 3 => crate::kernel::NameEncoding::WindowsUtf16Le,
                 _ => return Err(DrivenJoinError::StaleCandidate),
             };
-            let name = LogicalName::new(encoding, bytes.to_vec(), maximum_component_bytes)
+            let name = LogicalName::new(encoding, bytes.to_vec())
                 .map_err(|_| DrivenJoinError::StaleCandidate)?;
             Ok(MergeConflict::Binding {
                 directory_id: *directory_id,

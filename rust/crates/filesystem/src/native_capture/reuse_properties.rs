@@ -120,8 +120,8 @@ fn reuse_matches_full_recapture_for_metadata_links_and_empty_representations()
                     let options = CaptureOptions {
                         source_root: source.path().to_owned(),
                         expected_root_identity: capture_root_identity(source.path()).unwrap(),
-                        maximum_paths: 8,
-                        maximum_extent_spans: 8,
+                        maximum_paths: Some(8),
+                        maximum_extent_spans: Some(8),
                     };
                     // Initial capture has no baseline timestamp normalization.
                     let root =

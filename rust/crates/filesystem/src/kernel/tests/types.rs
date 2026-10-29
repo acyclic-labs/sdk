@@ -5,7 +5,7 @@ use crate::kernel::Child;
 fn windows_names_validate_utf16_without_lossy_normalization()
 -> Result<(), Box<dyn std::error::Error>> {
     let emoji: Vec<u8> = "😀.rs".encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let name = LogicalName::new(NameEncoding::WindowsUtf16Le, emoji.clone(), 255)?;
+    let name = LogicalName::new(NameEncoding::WindowsUtf16Le, emoji.clone())?;
     assert_eq!(name.as_bytes(), emoji);
     // Native Windows names are code units, not necessarily Unicode scalars.
     for opaque in [
@@ -13,7 +13,7 @@ fn windows_names_validate_utf16_without_lossy_normalization()
         vec![0x00, 0xdc],
         vec![0x00, 0xd8, b'x', 0],
     ] {
-        let name = LogicalName::new(NameEncoding::WindowsUtf16Le, opaque.clone(), 255)?;
+        let name = LogicalName::new(NameEncoding::WindowsUtf16Le, opaque.clone())?;
         assert_eq!(name.as_bytes(), opaque);
         assert!(
             name.unicode_text(
@@ -34,7 +34,7 @@ fn windows_names_validate_utf16_without_lossy_normalization()
         vec![b'.', 0, b'.', 0],
     ] {
         assert!(matches!(
-            LogicalName::new(NameEncoding::WindowsUtf16Le, invalid, 255),
+            LogicalName::new(NameEncoding::WindowsUtf16Le, invalid),
             Err(TreePageError::InvalidName)
         ));
     }
@@ -56,12 +56,8 @@ fn names_kinds_and_profiles_are_total() -> Result<(), Box<dyn std::error::Error>
         Err(TreePageError::UnknownNameEncoding(0))
     );
     assert_eq!(
-        LogicalName::new(NameEncoding::Utf8, Vec::new(), 8),
+        LogicalName::new(NameEncoding::Utf8, Vec::new()),
         Err(TreePageError::EmptyName)
-    );
-    assert_eq!(
-        LogicalName::new(NameEncoding::Utf8, b"abc".to_vec(), 2),
-        Err(TreePageError::NameTooLarge)
     );
     for (encoding, bytes) in [
         (NameEncoding::Utf8, vec![0xff]),
@@ -76,7 +72,7 @@ fn names_kinds_and_profiles_are_total() -> Result<(), Box<dyn std::error::Error>
         (NameEncoding::WindowsUtf16Le, vec![b'a']),
     ] {
         assert_eq!(
-            LogicalName::new(encoding, bytes, 8),
+            LogicalName::new(encoding, bytes),
             Err(TreePageError::InvalidName)
         );
     }
@@ -132,8 +128,8 @@ fn names_kinds_and_profiles_are_total() -> Result<(), Box<dyn std::error::Error>
 
 #[test]
 fn tree_page_validation_rejects_every_malformed_shape() -> Result<(), Box<dyn std::error::Error>> {
-    let a = LogicalName::new(NameEncoding::Utf8, b"a".to_vec(), 8)?;
-    let b = LogicalName::new(NameEncoding::Utf8, b"b".to_vec(), 8)?;
+    let a = LogicalName::new(NameEncoding::Utf8, b"a".to_vec())?;
+    let b = LogicalName::new(NameEncoding::Utf8, b"b".to_vec())?;
     let entry = |name| TreeEntry {
         name,
         file_id: FileId::from_bytes([1; 16]),
@@ -285,20 +281,19 @@ fn borrowed_unicode_name_validation_matches_owned_native_validation()
             } else {
                 value.as_bytes().to_vec()
             };
-            let expected = LogicalName::new(encoding, bytes.clone(), 12).map(|_| bytes.len());
-            assert_eq!(LogicalName::validate_unicode(encoding, value, 12), expected);
+            let expected = LogicalName::new(encoding, bytes.clone()).map(|_| bytes.len());
+            assert_eq!(LogicalName::validate_unicode(encoding, value), expected);
         }
     }
     let unicode = LogicalName::new(
         NameEncoding::WindowsUtf16Le,
         "é𝄞".encode_utf16().flat_map(u16::to_le_bytes).collect(),
-        12,
     )?;
     assert_eq!(unicode.unicode_utf8_bytes(), Some("é𝄞".len()));
     let mut output = String::new();
     unicode.append_unicode(&mut output)?;
     assert_eq!(output, "é𝄞");
-    let opaque = LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0, 0xd8], 12)?;
+    let opaque = LogicalName::new(NameEncoding::WindowsUtf16Le, vec![0, 0xd8])?;
     assert_eq!(opaque.unicode_utf8_bytes(), None);
     Ok(())
 }

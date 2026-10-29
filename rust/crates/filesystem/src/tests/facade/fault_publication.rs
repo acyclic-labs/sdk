@@ -256,7 +256,6 @@ async fn every_object_cut_preserves_authenticated_publication_retry()
         &AttributeName::new(
             crate::kernel::AttributeClass::PosixXattr,
             b"user.publication".to_vec(),
-            config().limits.maximum_component_bytes,
         )?,
         Some((
             &bytes::Bytes::from(vec![b'a'; 4_096]),

@@ -20,10 +20,186 @@ type SourceFile = std::fs::File;
 
 /// How long a read of a file under a root that is not local may take
 const REMOTE_READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
-/// Most reads of files under roots that are not local that may be
+/// Credits for remote filesystem reads whose OS calls may remain blocked.
 const MAXIMUM_BLOCKED_REMOTE_READS: usize = 16;
-static BLOCKED_REMOTE_READS: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static REMOTE_READ_CREDITS: RemoteReadCredits =
+    RemoteReadCredits::new(MAXIMUM_BLOCKED_REMOTE_READS, || {
+        REMOTE_READ_CREDITS.wake_cancelled()
+    });
+
+struct RemoteReadCredits {
+    active: std::sync::Mutex<usize>,
+    changed: std::sync::Condvar,
+    maximum: usize,
+    notify: fn(),
+}
+
+impl RemoteReadCredits {
+    const fn new(maximum: usize, notify: fn()) -> Self {
+        Self {
+            active: std::sync::Mutex::new(0),
+            changed: std::sync::Condvar::new(),
+            maximum,
+            notify,
+        }
+    }
+
+    fn wake_cancelled(&self) {
+        // Synchronize with the predicate check before Condvar::wait releases
+        // this mutex. Cancellation never needs the original ledger here.
+        let _active = self
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.changed.notify_all();
+    }
+
+    fn acquire(&'static self, context: &mut CallbackWork) -> Result<RemoteReadCredit, DemandError> {
+        context.check()?;
+        {
+            let mut active = self
+                .active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if *active < self.maximum {
+                *active += 1;
+                return Ok(RemoteReadCredit { pool: self });
+            }
+        }
+        let tokens = context.with_original_leaf(|work| work.cancellation_tokens());
+        let mut waiting = RemoteReadWait {
+            context,
+            waits: [None, None],
+            reserved: 0,
+        };
+        for (index, token) in tokens.iter().enumerate() {
+            if index != 0 && token.same_state(&tokens[0]) {
+                continue;
+            }
+            waiting.prepare(index, token, self.notify)?;
+        }
+        let result = loop {
+            waiting.context.check()?;
+            let mut active = self
+                .active
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if tokens.iter().any(CancellationToken::is_cancelled) {
+                break Err(DemandError::Cancelled);
+            }
+            if *active < self.maximum {
+                *active += 1;
+                break Ok(RemoteReadCredit { pool: self });
+            }
+            // No original-ledger loan spans this wait. Credit retirement and
+            // both original/authority and invocation cancellation signal it.
+            drop(
+                self.changed
+                    .wait(active)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            );
+        };
+        waiting.finish()?;
+        result
+    }
+}
+
+struct RemoteReadWait<'a> {
+    context: &'a mut CallbackWork,
+    waits: [Option<crate::cancellation::Cancelled<'static>>; 2],
+    reserved: u64,
+}
+
+impl RemoteReadWait<'_> {
+    fn prepare(
+        &mut self,
+        index: usize,
+        token: &CancellationToken,
+        notify: fn(),
+    ) -> Result<(), DemandError> {
+        let wait = match self.context {
+            CallbackWork::Original(work) => token.prepare_cancelled_with_native_work(work),
+            CallbackWork::Ordinary(work) => work.prepare_cancelled(token),
+        }
+        .map_err(remote_read_wait_error)?;
+        let cleanup = wait.cleanup_items();
+        self.waits[index] = Some(wait);
+        if let CallbackWork::Ordinary(work) = self.context {
+            let mut budget = work.budget;
+            budget.items_examined = budget
+                .items_examined
+                .checked_sub(cleanup)
+                .ok_or(crate::WorkError::Overflow)?;
+            work.work.verify(budget)?;
+            work.budget = budget;
+            self.reserved += cleanup;
+        }
+        self.waits[index]
+            .as_mut()
+            .expect("prepared cancellation")
+            .notify(notify);
+        Ok(())
+    }
+
+    fn finish(&mut self) -> Result<(), DemandError> {
+        let mut waits = std::mem::take(&mut self.waits);
+        for wait in waits.iter_mut().flatten() {
+            wait.retire_waker();
+        }
+        if let CallbackWork::Ordinary(work) = self.context {
+            work.budget.items_examined = work
+                .budget
+                .items_examined
+                .checked_add(std::mem::take(&mut self.reserved))
+                .ok_or(crate::WorkError::Overflow)?;
+            let mut result = Ok(());
+            for wait in waits.into_iter().flatten() {
+                result = result.and(work.finish_cancelled(wait).map_err(remote_read_wait_error));
+            }
+            result
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for RemoteReadWait<'_> {
+    fn drop(&mut self) {
+        let _ = self.finish();
+    }
+}
+
+fn remote_read_wait_error(error: crate::cancellation::CancellationWaitError) -> DemandError {
+    match error {
+        crate::cancellation::CancellationWaitError::Accounting(error) => error.into(),
+        crate::cancellation::CancellationWaitError::Work(error) => error.into(),
+        crate::cancellation::CancellationWaitError::Native(error) => {
+            crate::native_name::original_name_error(error)
+        }
+    }
+}
+
+struct RemoteReadCredit {
+    pool: &'static RemoteReadCredits,
+}
+
+impl RemoteReadCredit {
+    fn acquire(context: &mut CallbackWork) -> Result<Self, DemandError> {
+        REMOTE_READ_CREDITS.acquire(context)
+    }
+}
+
+impl Drop for RemoteReadCredit {
+    fn drop(&mut self) {
+        let mut active = self
+            .pool
+            .active
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *active -= 1;
+        self.pool.changed.notify_one();
+    }
+}
 
 impl NativeDemandFile {
     fn open(
@@ -296,21 +472,17 @@ impl DemandFile for NativeDemandFile {
             let result = self.read(offset, length, &mut context);
             return finish_context(result, context, accounting);
         }
-        if BLOCKED_REMOTE_READS.fetch_add(1, Ordering::AcqRel) >= MAXIMUM_BLOCKED_REMOTE_READS {
-            BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
-            return Err(DemandError::SourceUnavailable);
-        }
+        let credit = RemoteReadCredit::acquire(&mut context)?;
         let file = self.clone();
         let (answer, answered) = std::sync::mpsc::sync_channel(1);
         let spawned = std::thread::Builder::new()
             .name("acyclic-remote-read".to_owned())
             .spawn(move || {
                 let result = file.read(offset, length, &mut context);
-                BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
+                drop(credit);
                 let _ = answer.send((result, context));
             });
         if spawned.is_err() {
-            BLOCKED_REMOTE_READS.fetch_sub(1, Ordering::AcqRel);
             return Err(DemandError::SourceUnavailable);
         }
         let (result, context) = answered
