@@ -74,10 +74,6 @@ where
         Box::pin(self.follow_cancellation())
     }
 
-    fn canonical_authority(&self) -> Option<&crate::core::Authority> {
-        Some(self.verifier.audience())
-    }
-
     fn working_checkpoint_authority(&self) -> Option<&crate::core::AuthorityVerifier> {
         Some(&self.verifier)
     }

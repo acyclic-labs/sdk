@@ -103,11 +103,6 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         io: Option<&'a PreparationIo>,
     ) -> Result<ExecutionClaim<'a>>;
 
-    /// Authenticated canonical aggregate whose selections this journal publishes.
-    fn canonical_authority(&self) -> Option<&crate::core::Authority> {
-        None
-    }
-
     /// Follows an authorized cancellation while awaiting a model, approval or
     /// tool invocation whose executor guarantees cancellation on future drop.
     /// The default journal has no filesystem cancellation binding.
