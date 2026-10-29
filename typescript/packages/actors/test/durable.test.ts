@@ -226,6 +226,38 @@ test("queued admission belongs to its capture cut; host loss settles every curre
   }
 });
 
+test("capture registers constant completion work across admitted populations", async () => {
+  async function registrations(population: number): Promise<number> {
+    const activation = new ActorActivation(() => 1);
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    let admitted = 0;
+    const deliveries = Array.from({ length: population }, () => activation.deliver(async () => {
+      if (++admitted === population) entered.resolve();
+      await release.promise;
+    }));
+    await entered.promise;
+    const then = Promise.prototype.then;
+    let count = 0;
+    Promise.prototype.then = function (...args) { count++; return then.apply(this, args); };
+    try {
+      const capture = activation.quiesce(state => state);
+      // Execute the already queued capture preparation before delivering the
+      // original handlers' completion event. This is one handoff, not a probe.
+      await new Promise<void>(resolve => queueMicrotask(resolve));
+      release.resolve();
+      expect(await capture).toBe(1);
+      return count;
+    } finally {
+      Promise.prototype.then = then;
+      release.resolve();
+      await Promise.all(deliveries);
+    }
+  }
+  const one = await registrations(1);
+  expect(await registrations(128)).toBe(one);
+  expect(await registrations(4096)).toBe(one);
+});
+
 test("durable host receives the exact triple; validation rejects bounds before any host effect", async () => {
   const seen: string[] = [];
   const host = new Proxy({}, {get(_target, property) { return (address: Uint8Array) => {

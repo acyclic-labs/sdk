@@ -113,6 +113,7 @@ export class ActorActivation<State> {
   }
   #available(): void { if (this.#failure) throw this.#failure; }
   blockConcurrencyWhile<Result>(callback: (state: State) => Result | Promise<Result>): Promise<Result> {
+    if (this.#failure) return Promise.reject(this.#failure);
     const operation = this.#gate.then(async () => {
       this.#available();
       if (!this.#initialized) {
@@ -130,6 +131,7 @@ export class ActorActivation<State> {
     return this.#observe(operation);
   }
   deliver<Result>(handler: (state: State) => Result | Promise<Result>): Promise<Result> {
+    if (this.#failure) return Promise.reject(this.#failure);
     const batch = this.#batch, admission = this.#admission;
     // Registration precedes every await, including initialization and admission.
     batch.active++;
@@ -150,6 +152,7 @@ export class ActorActivation<State> {
    * Call outside a handler: a handler cannot wait for its own completion.
    */
   quiesce<Result>(capture: (state: State) => Result | Promise<Result>): Promise<Result> {
+    if (this.#failure) return Promise.reject(this.#failure);
     const batch = this.#batch;
     const drained = batch.active === 0 ? Promise.resolve() : new Promise<void>(resolve => { batch.drained = resolve; });
     // Close admission first. Already admitted handlers retain exclusive access
