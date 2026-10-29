@@ -694,7 +694,7 @@ async fn admit(
 /// [`Phase::WaitingChildren`] resumes once its last awaited child (with `any`,
 /// its first) has. Each child is awaited once, so this is one set removal.
 async fn settle_awaited(state: &mut AgentState, child: &AgentPath) -> Result<(), Error> {
-    if !state.awaiting.remove(child).await? {
+    if child.parent().as_ref() != Some(&state.path) || !state.awaiting.remove(child).await? {
         return Ok(());
     }
     if let Phase::WaitingChildren { any } = state.phase
@@ -808,7 +808,9 @@ async fn run<T: TurnDriver + ?Sized>(
             // a wait it satisfies continues at once and asks no child.
             let mut open = Vec::new();
             for child in &children {
-                if state.open_children.contains(child).await? {
+                if child.parent().as_ref() == Some(&state.path)
+                    && state.open_children.contains(child).await?
+                {
                     open.push(child.clone());
                 }
             }
