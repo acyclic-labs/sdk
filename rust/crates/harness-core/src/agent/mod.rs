@@ -7,6 +7,8 @@
 //! effect) as one Streams commit. There is no coordinator, polling or timer.
 
 mod checkpoint;
+mod children;
+pub use children::Children;
 mod commit;
 #[cfg(feature = "filesystem")]
 pub(crate) use commit::sender_text;
@@ -32,7 +34,6 @@ mod slots;
 mod volumes;
 pub use volumes::SpawnVolumes;
 
-pub use checkpoint::MAX_CHECKPOINT_BYTES;
 pub(crate) use checkpoint::checkpoint_state;
 pub use commit::{
     Spawn, Submitted, archive, create_root, inbox_tail, intent_key, send, spawn, submit,
@@ -44,19 +45,17 @@ pub use driver::{
 pub use handler::{AgentHandler, INBOX};
 pub use host::{AgentHost, Delivered, actor_store};
 pub use kernel::{CONTINUE_NOW, MAX_FANOUT};
-pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, MAX_DEPTH, NOT_INHERITED, STATUSES, VOLUMES};
+pub use layout::{ACTORS, AGENTS, AgentId, AgentPath, NOT_INHERITED, STATUSES, VOLUMES};
 pub use lower::{delivery_key, lower};
 pub use machine::{
-    AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_OPEN_CHILDREN, MAX_OUTCOME_BYTES, MAX_QUEUED,
-    MAX_QUEUED_BYTES, OVERSIZED_OUTCOME, OVERSIZED_STATE, Out, Progress, Queued, SpawnOutcome,
-    SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake, requested_child,
-    step,
+    AgentState, Alarm, INADMISSIBLE_EFFECT, MAX_QUEUED, MAX_QUEUED_BYTES, Out, Progress, Queued,
+    SpawnOutcome, SpawnRefusal, Step, TurnDriver, TurnFuture, TurnInput, TurnStep, Wait, Wake,
+    requested_child, step,
 };
 pub use records::{
     AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, Closed,
-    ContextAction, ContextRequest, Control, ForkAdopted, Hook, InboxRecord, IntentId,
-    MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase, Sender,
-    SpawnRequest, StatusRecord, VolumeBinding,
+    ContextAction, ContextRequest, Control, ForkAdopted, Hook, InboxRecord, IntentId, Message,
+    Phase, Sender, SpawnRequest, StatusRecord, VolumeBinding,
 };
 pub use reply::{Reply, reply};
 

@@ -17,6 +17,7 @@ use acyclic_stream::{
 use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
 use futures::stream::{FuturesUnordered, StreamExt};
 use std::collections::BTreeMap;
+use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -39,6 +40,7 @@ pub struct Driver<P: ?Sized> {
     /// Opens in flight, each cancelled once its stream or start is unwanted.
     pending: BTreeMap<StreamPath, (u64, AbortHandle)>,
     follows: BTreeMap<StreamPath, (u64, u64, RecordStream)>,
+    follow_after: Option<StreamPath>,
 }
 
 impl<P: StreamProvider + ?Sized> Driver<P> {
@@ -53,6 +55,7 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
             opening: FuturesUnordered::new(),
             pending: BTreeMap::new(),
             follows: BTreeMap::new(),
+            follow_after: None,
         }
     }
 
@@ -254,32 +257,45 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
         let mut ended = Vec::new();
         loop {
             let mut progressed = false;
-            for (path, (position, accepted, records)) in &mut self.follows {
-                if !reader.accepting() {
-                    break;
-                }
-                match records.poll_next_unpin(cx) {
-                    Poll::Ready(Some(Ok(record))) => {
-                        *position = record.sequence + 1;
-                        *accepted = (*accepted).max(record.sequence + 1);
-                        reader.deliver(path, fetched(&record), *accepted);
-                        progressed = true;
+            let after = self.follow_after.clone();
+            let passes = [
+                (after.as_ref().map_or(Unbounded, Excluded), Unbounded),
+                (Unbounded, after.as_ref().map_or(Unbounded, Included)),
+            ];
+            for bounds in passes.into_iter().take(1 + usize::from(after.is_some())) {
+                for (path, (position, accepted, records)) in
+                    self.follows.range_mut::<StreamPath, _>(bounds)
+                {
+                    if !reader.accepting() {
+                        break;
                     }
-                    Poll::Ready(Some(Err(error))) => {
-                        failed(reader, path, &error, now);
-                        ended.push(path.clone());
+                    self.follow_after = Some(path.clone());
+                    match records.poll_next_unpin(cx) {
+                        Poll::Ready(Some(Ok(record))) => {
+                            *position = record.sequence + 1;
+                            *accepted = (*accepted).max(record.sequence + 1);
+                            reader.deliver(path, fetched(&record), *accepted);
+                            progressed = true;
+                        }
+                        Poll::Ready(Some(Err(error))) => {
+                            failed(reader, path, &error, now);
+                            ended.push(path.clone());
+                        }
+                        Poll::Ready(None) => {
+                            failed(reader, path, &StreamError::Unavailable, now);
+                            ended.push(path.clone());
+                        }
+                        Poll::Pending => {}
                     }
-                    Poll::Ready(None) => {
-                        failed(reader, path, &StreamError::Unavailable, now);
-                        ended.push(path.clone());
-                    }
-                    Poll::Pending => {}
                 }
             }
             for path in ended.drain(..) {
                 self.follows.remove(&path);
             }
             if !progressed || !reader.accepting() {
+                if progressed {
+                    cx.waker().wake_by_ref();
+                }
                 break;
             }
         }
@@ -378,7 +394,8 @@ async fn read<P: StreamProvider + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
+    use crate::reader::ReaderPolicy;
+    use acyclic_stream::{AppendRequest, FollowRequest, ForkRequest, IdempotencyKey, MemoryStream};
 
     #[test]
     fn lost_live_follow_reports_failure_and_resumes_without_another_frame() {
@@ -905,6 +922,46 @@ mod tests {
                 matches!(ops.as_slice(), [Op::Read { stream, from: 0, .. }] if stream == &path),
                 "{ops:?}"
             );
+        });
+    }
+
+    #[test]
+    fn every_busy_follow_progresses_across_delivery_frames() {
+        futures::executor::block_on(async {
+            let provider = Arc::new(MemoryStream::default());
+            let mut driver = Driver::new(Arc::clone(&provider));
+            let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+            // More than two frames of streams; every early stream remains
+            // ready after its first delivery, reproducing starvation.
+            for index in 0..513 {
+                let path = StreamPath::new(format!("fair/{index:04}")).unwrap();
+                provider
+                    .append(AppendRequest {
+                        path: path.clone(),
+                        records: vec![b"record".as_slice().into(); 4],
+                        if_tail: Some(0),
+                        idempotency_key: IdempotencyKey::new(format!("fair/{index:04}")).unwrap(),
+                    })
+                    .await
+                    .unwrap();
+                let records = provider
+                    .follow(FollowRequest::new(path.clone(), 0))
+                    .await
+                    .unwrap();
+                reader.follows.insert(path.clone(), 0);
+                driver
+                    .follows
+                    .insert(path, (0, 0, acyclic_stream::records_only(records)));
+            }
+            let waker = futures::task::noop_waker();
+            let mut context = Context::from_waker(&waker);
+            for frame in 0..3 {
+                reader.begin_frame(frame);
+                driver.drain(&mut reader, frame, &mut context);
+                assert!(!reader.accepting());
+            }
+            assert_eq!(driver.open_follows(), 513);
+            assert!(reader.follows().all(|(_, position)| position >= 1));
         });
     }
 }

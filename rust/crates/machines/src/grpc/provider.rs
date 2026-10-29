@@ -108,9 +108,7 @@ machine_mutations! {
     ) -> Result<MachineOutput, ProviderError> {
         obs::finish(
             async {
-                if !(1..=MAX_OUTPUT_READ_BYTES).contains(&limit) {
-                    return Err(ProviderError::Invalid("invalid console read limit".into()));
-                }
+                let limit = page_limit(limit, MAX_OUTPUT_READ_BYTES)?;
                 let value = self.client().await?
                     .read_output(wire::ReadOutputRequest {
                         protocol: Some(protocol()),
@@ -226,11 +224,7 @@ machine_mutations! {
     ) -> Result<MachinePage, ProviderError> {
         obs::finish(
             async {
-                if limit == 0 || limit > MAX_PAGE_SIZE {
-                    return Err(ProviderError::Invalid(
-                        "machine page limit must be 1..=256".into(),
-                    ));
-                }
+                let limit = page_limit(limit, MAX_PAGE_SIZE)?;
                 let page = self.client().await?
                     .list_machines(wire::ListMachinesRequest {
                         protocol: Some(protocol()),
@@ -343,9 +337,6 @@ machine_mutations! {
     ) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                if count.get() > MAX_FORK_CHILDREN {
-                    return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-                }
                 let value = self.client().await?
                     .fork(wire::ForkCheckpointRequest {
                         protocol: Some(protocol()),
@@ -384,9 +375,6 @@ machine_mutations! {
     ) -> Result<MutationOutcome, ProviderError> {
         obs::finish(
             async {
-                if count.get() > MAX_FORK_CHILDREN {
-                    return Err(ProviderError::Invalid("fork count exceeds 1024".into()));
-                }
                 let value = self.client().await?
                     .fork_machine(wire::ForkMachineRequest {
                         protocol: Some(protocol()),
@@ -495,11 +483,7 @@ machine_mutations! {
     ) -> Result<EventPage, ProviderError> {
         obs::finish(
             async {
-                if limit == 0 || limit > MAX_EVENT_PAGE_SIZE {
-                    return Err(ProviderError::Invalid(
-                        "event page limit must be 1..=1024".into(),
-                    ));
-                }
+                let limit = page_limit(limit, MAX_EVENT_PAGE_SIZE)?;
                 let value = self.client().await?
                     .events(wire::EventsRequest {
                         protocol: Some(protocol()),

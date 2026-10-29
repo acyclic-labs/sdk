@@ -188,12 +188,13 @@ pub async fn connect(
 }
 
 /// Apply a source partition's exact lease under the operation's original
-/// monotonic deadline, including credential refresh, channel readiness and RPC.
+/// optional monotonic deadline, including credential refresh, channel readiness and RPC.
+/// None waits for outcome or cancellation without installing a deadline.
 /// Dropping this future cancels its interest. No retries or renewed timeout.
 pub async fn call<T, U, F, Fut>(
     channel: Channel,
     credential: &CredentialProvider,
-    deadline: tokio::time::Instant,
+    deadline: Option<tokio::time::Instant>,
     body: T,
     dispatch: F,
 ) -> Result<Response<U>, Status>
@@ -201,7 +202,7 @@ where
     F: FnOnce(CredentialChannel, Request<T>) -> Fut,
     Fut: Future<Output = Result<Response<U>, Status>>,
 {
-    tokio::time::timeout_at(deadline, async {
+    let operation = async {
         let lease = credential.resolve().await.map_err(credential_error)?;
         let request = request(body, &lease, deadline)?;
         let response = dispatch(guard(channel), request).await;
@@ -215,9 +216,13 @@ where
             lease.check().await.map_err(credential_error)?;
         }
         response
-    })
-    .await
-    .map_err(|_| Status::deadline_exceeded("operation deadline expired"))?
+    };
+    match deadline {
+        Some(deadline) => tokio::time::timeout_at(deadline, operation)
+            .await
+            .map_err(|_| Status::deadline_exceeded("operation deadline expired"))?,
+        None => operation.await,
+    }
 }
 
 /// Build metadata while retaining the exact lease in native request extensions.
@@ -225,18 +230,24 @@ where
 pub fn request<T>(
     body: T,
     lease: &ResolvedCredential,
-    deadline: tokio::time::Instant,
+    deadline: Option<tokio::time::Instant>,
 ) -> Result<Request<T>, Status> {
     let remaining = deadline
-        .checked_duration_since(tokio::time::Instant::now())
-        .filter(|duration| !duration.is_zero())
-        .ok_or_else(|| Status::deadline_exceeded("operation deadline expired"))?;
+        .map(|deadline| {
+            deadline
+                .checked_duration_since(tokio::time::Instant::now())
+                .filter(|duration| !duration.is_zero())
+                .ok_or_else(|| Status::deadline_exceeded("operation deadline expired"))
+        })
+        .transpose()?;
     let mut authorization =
         tonic::metadata::MetadataValue::try_from(crate::credential::bearer_bytes(lease.as_str()))
             .map_err(|_| credential_error(CredentialError::Invalid))?;
     authorization.set_sensitive(true);
     let mut request = Request::new(body);
-    request.set_timeout(remaining);
+    if let Some(remaining) = remaining {
+        request.set_timeout(remaining);
+    }
     request
         .metadata_mut()
         .insert("authorization", authorization);

@@ -28,8 +28,7 @@ fn budget() -> WorkBudget {
 #[tokio::test]
 async fn native_read_trace_denial_and_cancellation_precede_interceptor_and_backend() {
     let (memory, object) = seeded_object().await;
-    let simulation = Simulation::wrap(reference_backends().0, memory, SimulationOptions::default())
-        .expect("bounded simulation");
+    let simulation = Simulation::wrap(reference_backends().0, memory);
     let (_, store) = simulation.stores();
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(
@@ -71,8 +70,7 @@ async fn native_read_trace_denial_and_cancellation_precede_interceptor_and_backe
 #[tokio::test]
 async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias() {
     let (memory, object) = seeded_object().await;
-    let simulation = Simulation::wrap(reference_backends().0, memory, SimulationOptions::default())
-        .expect("bounded simulation");
+    let simulation = Simulation::wrap(reference_backends().0, memory);
     simulation
         .schedule_next(
             SimulationOperation::ObjectRead,
@@ -106,8 +104,7 @@ async fn native_read_partial_copy_keeps_original_capacity_until_last_byte_alias(
 #[tokio::test]
 async fn native_read_batch_preserves_one_real_memory_frontier_with_fault_custody() {
     let (memory, object) = seeded_object().await;
-    let simulation = Simulation::wrap(reference_backends().0, memory, SimulationOptions::default())
-        .expect("bounded simulation");
+    let simulation = Simulation::wrap(reference_backends().0, memory);
     simulation
         .schedule_next(
             SimulationOperation::ObjectReadMany,

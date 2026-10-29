@@ -41,10 +41,21 @@ test("installed browser entry hosts an agent turn", async () => {
     agents = await BrowserAgents.open(options, owner, registry, undefined);
     const agent = await agents.create("installed-agent", "hello");
     expect(await agents.create("installed-agent", "hello")).toBe(agent);
-    let entries: BrowserAgentRecord[] = [];
-    while (entries.length === 0) {
+    // Subscribe before the first observation so an early commit cannot be
+    // missed. Re-observe only after the same stream delivers an actual event.
+    const conversation = await agents.follow(agent, "conversation", 0n);
+    let entries: BrowserAgentRecord[];
+    try {
       entries = await agents.read(agent, "conversation", 0n, 4);
-      if (entries.length === 0) await new Promise(resolve => setTimeout(resolve, 10));
+      while (entries.length === 0) {
+        if (await conversation.next() === null) {
+          throw new Error("conversation ended before the installed agent turn");
+        }
+        entries = await agents.read(agent, "conversation", 0n, 4);
+      }
+    } finally {
+      conversation.close();
+      conversation.free();
     }
     const output = (entries[0].value as { output: unknown }).output;
     const text = JSON.parse(new TextDecoder().decode(await agents.readFile(agent, output as never))).text;

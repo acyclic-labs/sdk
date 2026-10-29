@@ -133,3 +133,21 @@ pub trait NativeReadMeter: Send + Sync {
         Err(io::ErrorKind::Unsupported.into())
     }
 }
+
+/// Keeps original-ledger admission failures separate from the native result.
+/// Liveness probes may classify OS failures as unknown, but must return an
+/// original request's budget/cancellation refusal unchanged.
+pub(crate) fn read_operation<T>(
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+    operation: impl FnOnce() -> io::Result<T>,
+) -> io::Result<io::Result<T>> {
+    if let Some(meter) = meter {
+        let mut admitted =
+            NativeOperationReservation::new(meter.clone(), NativeOperationKind::Read, 1)?;
+        let (result, recorded) = admitted.attempt(operation);
+        recorded?;
+        Ok(result)
+    } else {
+        Ok(operation())
+    }
+}

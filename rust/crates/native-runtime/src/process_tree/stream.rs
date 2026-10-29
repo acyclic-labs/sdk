@@ -132,7 +132,7 @@ impl ProcessTree {
     pub(super) async fn capture_driven<H: CaptureHandler>(
         self,
         schedule: CaptureSchedule,
-        max_bytes: usize,
+        max_bytes: Option<usize>,
         input: Option<OwnedCaptureInput>,
         handler: H,
         sender: Option<mpsc::Sender<ProcessChunk>>,

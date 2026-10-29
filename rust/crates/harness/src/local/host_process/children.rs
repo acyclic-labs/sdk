@@ -26,12 +26,8 @@ use std::task::{Context, Poll, Waker};
 mod tools;
 pub use tools::serve;
 
-/// Byte bound of one native event line and of a retained answer's source.
-const EVENT_LIMIT: usize = 65_536;
-/// The saved log's line where the bounded framer dropped one native event.
+/// The saved log's marker for a malformed native event.
 const EVENT_OMITTED: &[u8] = b"{\"type\":\"acyclic.event_omitted\"}";
-/// Byte bound of a retained answer.
-const ANSWER_LIMIT: usize = 4096;
 
 struct Running {
     process: HostSessionProcess,
@@ -369,7 +365,7 @@ impl NativeChildren {
             process,
             claim,
             failure: None,
-            events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
+            events: acyclic_native_runtime::lines::LineBuffer::new(None),
             answer: String::new(),
             settlement: None,
             wake,
@@ -649,27 +645,18 @@ fn answer(event: &Value) -> Option<String> {
         event.get("result")
     };
     if let Some(text) = text.and_then(Value::as_str) {
-        return Some(bounded(text));
+        return Some(text.to_owned());
     }
     let parts = (event.pointer("/message/role").and_then(Value::as_str) == Some("assistant")
         && event.get("type").and_then(Value::as_str) == Some("message_end"))
     .then(|| event.pointer("/message/content").and_then(Value::as_array))
     .flatten()?;
-    Some(bounded(
-        &parts
+    Some(
+        parts
             .iter()
             .filter_map(|part| part.get("text").and_then(Value::as_str))
-            .collect::<String>(),
-    ))
-}
-
-fn bounded(text: &str) -> String {
-    text.chars()
-        .scan(0, |bytes, ch| {
-            *bytes += ch.len_utf8();
-            (*bytes <= ANSWER_LIMIT).then_some(ch)
-        })
-        .collect()
+            .collect(),
+    )
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -708,49 +695,29 @@ mod framing {
     }
 
     #[test]
-    fn oversized_native_events_are_omitted_once_without_wedging_the_stream() {
-        let mut events = acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT);
-        let mut omitted = 0;
-        for _ in 0..16 {
-            for event in events.push(&[b'x'; 8192]) {
-                assert!(event.is_err());
-                omitted += 1;
+    fn native_event_answers_survive_chunk_boundaries_and_large_lines() {
+        let text = "🌍".repeat(33_000);
+        let native_events = [
+            serde_json::json!({"item": {"type": "agent_message", "text": text}}),
+            serde_json::json!({"result": text}),
+            serde_json::json!({"type": "message_end", "message": {
+                "role": "assistant", "content": [{"text": text}]
+            }}),
+        ];
+        let mut events = acyclic_native_runtime::lines::LineBuffer::new(None);
+        for native_event in native_events {
+            let mut bytes = serde_json::to_vec(&native_event).expect("event encoding");
+            bytes.push(b'\n');
+            let mut lines = Vec::new();
+            for chunk in bytes.chunks(8192) {
+                lines.extend(events.push(chunk));
             }
-            assert!(events.buffered_bytes() <= EVENT_LIMIT);
+            let [Ok(line)] = lines.as_slice() else {
+                panic!("complete native event: {lines:?}");
+            };
+            let event: Value = serde_json::from_str(line).expect("frame is JSON");
+            assert_eq!(answer(&event).as_deref(), Some(text.as_str()));
         }
-        assert_eq!(omitted, 1, "oversized output must be reported once");
-        let lines = events.push(b"\n{\"result\":\"probe\"}\n");
-        let [Ok(line)] = lines.as_slice() else {
-            panic!("valid frame after omitted event: {lines:?}");
-        };
-        let event: Value = serde_json::from_str(line).expect("frame is JSON");
-        assert_eq!(answer(&event).as_deref(), Some("probe"));
-    }
-
-    #[test]
-    fn native_answers_are_bounded_on_character_boundaries() {
-        assert!(bounded(&"😀".repeat(4096)).len() <= ANSWER_LIMIT);
-    }
-
-    /// The ready queue holds only children whose registration fired, and a
-    /// fired key wakes the server once; a quiet key is never queued.
-    #[test]
-    fn only_fired_registrations_reach_the_ready_queue() {
-        let ready = Arc::new(Ready::default());
-        let wakes = (0..1000)
-            .map(|index| {
-                Waker::from(Arc::new(ChildWake {
-                    key: format!("child-{index}"),
-                    ready: Arc::clone(&ready),
-                }))
-            })
-            .collect::<Vec<_>>();
-        let server = Waker::noop();
-        assert!(ready.poll(&Context::from_waker(server)).is_pending());
-        wakes[7].wake_by_ref();
-        wakes[7].wake_by_ref();
-        assert!(ready.poll(&Context::from_waker(server)).is_ready());
-        assert_eq!(ready.take(), BTreeSet::from(["child-7".to_owned()]));
-        assert!(ready.take().is_empty(), "999 quiet children were queued");
+        assert_eq!(events.buffered_bytes(), 0);
     }
 }

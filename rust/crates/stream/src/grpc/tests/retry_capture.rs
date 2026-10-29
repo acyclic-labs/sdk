@@ -65,15 +65,13 @@ fn isolated_registration(direct: bool) -> TestResult {
         // Register the real unary RPC callsite without a thread-local subscriber
         // while the capture dispatcher exists, before any captured attempt.
         let response = client
-            .unary(ATTEMPT_TIMEOUT, (), |_, _| {
-                Box::pin(async { Ok(Response::new(())) })
-            })
+            .unary((), |_, _| Box::pin(async { Ok(Response::new(())) }))
             .await?;
         decode_response(response, Ok)?;
         async {
             let mut first = true;
             let response = client
-                .unary(ATTEMPT_TIMEOUT, (), |_, _| {
+                .unary((), |_, _| {
                     let result = if std::mem::take(&mut first) {
                         Err(Status::unavailable("retry"))
                     } else {

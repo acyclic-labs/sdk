@@ -104,7 +104,7 @@ where
                 .require_access(&path, crate::access::Action::Read, work)
                 .await?;
             self.disclose(permissions.policy_view(), work, async {
-                let name = inputs.attribute_name(name, self.config.profile, self.config.limits)?;
+                let name = inputs.attribute_name(name, self.config.profile)?;
                 let observation = self
                     .checkout
                     .observe(
@@ -149,9 +149,7 @@ where
                 .await?;
             self.disclose(permissions.policy_view(), work, async {
                 let cursor = cursor
-                    .map(|bytes| {
-                        inputs.attribute_name(bytes, self.config.profile, self.config.limits)
-                    })
+                    .map(|bytes| inputs.attribute_name(bytes, self.config.profile))
                     .transpose()?;
                 let observation = self
                     .checkout

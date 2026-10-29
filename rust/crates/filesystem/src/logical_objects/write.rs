@@ -34,10 +34,12 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
         Ok(body)
     }
     fn limit(&self, length: u64) -> Result<(), crate::FsError> {
-        if length > self.maximum_object_bytes {
+        if let Some(maximum) = self.maximum_object_bytes
+            && length > maximum
+        {
             return Err(ObjectStoreError::TooLarge {
                 observed: length,
-                maximum: self.maximum_object_bytes,
+                maximum,
             }
             .into());
         }
@@ -69,9 +71,9 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                         packet((body, references), custody, original)?,
                         original.runtime_meter(),
                     )
-                    .map_err(native_error)?
+                    .map_err(|error| native_error(error, original))?
                     .await
-                    .map_err(native_error)?;
+                    .map_err(|error| native_error(error, original))?;
                 receipt.put().clone()
             }
             _ => {
@@ -129,14 +131,14 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                         packet(requests, custody, original)?,
                         original.runtime_meter(),
                     )
-                    .map_err(native_error)?
+                    .map_err(|error| native_error(error, original))?
                     .await
-                    .map_err(native_error)?;
+                    .map_err(|error| native_error(error, original))?;
                 finish_writes(
                     results.map(|value| {
                         value
                             .map(|receipt| receipt.put().clone())
-                            .map_err(native_error)
+                            .map_err(|error| native_error(error, original))
                     }),
                     writes,
                     work,
@@ -232,9 +234,9 @@ impl<P: Blobs + ?Sized, S: ObjectSealer> LogicalObjectStore<P, S> {
                         packet((root.clone(), references), custody, original)?,
                         original.runtime_meter(),
                     )
-                    .map_err(native_error)?
+                    .map_err(|error| native_error(error, original))?
                     .await
-                    .map_err(native_error)?;
+                    .map_err(|error| native_error(error, original))?;
             }
             _ => {
                 work.charge(WorkCounters {
