@@ -134,7 +134,7 @@ impl EnvironmentFacts {
             crate::executor::stock_string_push(
                 &mut text,
                 part,
-                raw,
+                Some(raw),
                 "environment section exceeds allowance",
                 io,
             )
