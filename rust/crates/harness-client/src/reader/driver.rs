@@ -242,10 +242,10 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                     path,
                     from,
                     observed,
-                    if access.check().await {
-                        opened
-                    } else {
+                    if opened.is_ok() && !access.check().await {
                         Err(StreamError::Unavailable)
+                    } else {
+                        opened
                     },
                 ))
             };
@@ -406,7 +406,7 @@ mod tests {
         struct Request {
             lease: ResolvedCredential,
             wait_at: usize,
-            calls: AtomicUsize,
+            calls: Arc<AtomicUsize>,
             receive: Mutex<Option<oneshot::Receiver<()>>>,
         }
         impl CredentialRequest for Request {
@@ -451,8 +451,8 @@ mod tests {
                 .await
                 .unwrap();
             // The first check admits the original request. Lose the producer
-            // at dispatch or after the real provider has returned its record.
-            for wait_at in [2, 3] {
+            // at each read or follow boundary on the actual provider.
+            for (follow, wait_at) in [(false, 2), (false, 3), (true, 2), (true, 3), (true, 4)] {
                 let provider: CredentialProvider = CredentialCache::new(
                     |_| async {
                         CredentialSnapshot::new(
@@ -468,10 +468,11 @@ mod tests {
                 )
                 .into();
                 let (send, receive) = oneshot::channel();
+                let calls = Arc::new(AtomicUsize::new(0));
                 let lease = ResolvedCredential::from_custodian(Request {
                     lease: provider.resolve().await.unwrap(),
                     wait_at,
-                    calls: AtomicUsize::new(0),
+                    calls: calls.clone(),
                     receive: Mutex::new(Some(receive)),
                 })
                 .await
@@ -480,24 +481,31 @@ mod tests {
                 let mut driver = Driver::new(stream.clone());
                 driver.attach(&mut reader, 0);
                 reader.cache.access = super::super::Access::Lease(lease);
-                reader.plan([(
-                    Want::Range {
-                        stream: path.clone(),
-                        from: 0,
-                        to: 1,
-                    },
-                    Priority::Visible,
-                )]);
+                if follow {
+                    reader.set_follows([path.clone()]);
+                } else {
+                    reader.plan([(
+                        Want::Range {
+                            stream: path.clone(),
+                            from: 0,
+                            to: 1,
+                        },
+                        Priority::Visible,
+                    )]);
+                }
                 let ready = Arc::new(WakeFlag(AtomicBool::new(false)));
                 let waker = Waker::from(ready.clone());
                 let mut cx = Context::from_waker(&waker);
                 driver.step(&mut reader, 0, &mut cx);
-                assert_eq!(reader.residency().requests, 1);
+                assert_eq!(reader.residency().requests, usize::from(!follow));
+                assert_eq!(driver.open_follows(), usize::from(follow));
                 ready.0.store(false, Ordering::SeqCst);
                 drop(send);
                 assert!(ready.0.load(Ordering::SeqCst));
                 driver.step(&mut reader, 0, &mut cx);
                 assert_eq!(reader.residency().requests, 0);
+                assert_eq!(driver.open_follows(), 0);
+                assert_eq!(calls.load(Ordering::SeqCst), wait_at);
                 assert!(driver.aborts.is_empty());
                 assert!(reader.cache().record(&path, 0).is_none());
                 assert!(reader.issues().next().is_none());
