@@ -125,7 +125,7 @@ pub fn actor_namespace(value: String) -> Result<String> {
     reason = "N-API receives typed byte buffers by value"
 )]
 pub fn code_sha256(value: Uint8Array) -> Result<Uint8Array> {
-    domain::CodeSha256::new(value.as_ref().to_vec())
+    domain::CodeSha256::new(value.as_ref())
         .map(|value| Uint8Array::from(value.as_bytes().to_vec()))
         .map_err(|error| napi_error(nominal_error(error)))
 }

@@ -166,8 +166,9 @@ impl From<ActorId> for String {
 
 impl CodeSha256 {
     /// Constructs a digest with the exact predicate used by `crate::validate_deployment`.
-    pub fn new(value: Vec<u8>) -> Result<Self, DomainError> {
-        if !valid_code_sha256(&value) {
+    pub fn new(value: impl AsRef<[u8]>) -> Result<Self, DomainError> {
+        let value = value.as_ref();
+        if !valid_code_sha256(value) {
             return Err(DomainError::InvalidCodeSha256);
         }
         let value: [u8; 32] = value
