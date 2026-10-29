@@ -75,7 +75,7 @@ export default function acyclic(pi: ExtensionAPI) {
       let dispatched = false;
       const cancel = () => {
         if (dispatched) bridge?.stdin.write(JSON.stringify({jsonrpc: "2.0", method: "notifications/cancelled", params: {requestId: id}}) + "\n");
-        pending.delete(id); no(new Error("Coordination request cancelled"));
+        pending.delete(id); no(new Error("step=dispatch Pi coordination: cancelled; recovery=pi"));
       };
       if (signal?.aborted) { cancel(); return; }
       signal?.addEventListener("abort", cancel, {once: true});
