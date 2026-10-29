@@ -398,6 +398,7 @@ impl PreparedCommit {
                     reserve: Some(&mut self.namespace),
                 },
             )?;
+            let mut persist = std::pin::pin!(persist);
             Decision::Accepted {
                 bytes,
                 install: |state: &mut State, _durable| {
@@ -412,7 +413,7 @@ impl PreparedCommit {
                     )
                 },
             }
-            .durable(&self.provider, state, persist)
+            .durable(&self.provider, state, persist.as_mut())
             .await
         }
         .await;

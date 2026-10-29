@@ -4,12 +4,19 @@ use crate::verification::{block_on, check, check_with_bound};
 use futures::TryFutureExt as _;
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
-// Keep executor scheduling outside the model, but execute the entire production
-// mutation and blocking journal write on its owning Loom actor. No state is mocked.
-pub(super) async fn spawn<F: Future>(
+// Use the same model executor as snapshot workers: production tasks own their
+// future independently of the caller, including after its join is dropped.
+pub(super) fn spawn<F: Future + Send + 'static>(
     future: F,
-) -> std::result::Result<F::Output, tokio::task::JoinError> {
-    Ok(future.await)
+) -> impl Future<Output = std::result::Result<F::Output, StreamError>>
+where
+    F::Output: Send + 'static,
+{
+    let (completed, received) = tokio::sync::oneshot::channel();
+    crate::snapshot::model::spawn(async move {
+        let _ = completed.send(future.await);
+    });
+    async move { received.await.map_err(|_| StreamError::Unavailable) }
 }
 
 pub(super) async fn spawn_blocking<T>(

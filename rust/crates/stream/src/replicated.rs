@@ -73,30 +73,32 @@ struct Attempt {
 }
 
 impl Attempt {
-    async fn persist(
+    fn persist(
         &mut self,
         journal: &mut impl CommandJournal,
         expected: u64,
         frame: JournalFrame<'_>,
-    ) -> Result<(), StreamError> {
-        self.started = true;
-        let stamp = frame.at_millis;
-        let result = journal.append_if(expected, &[frame]).await?;
-        let outcome = match &result {
-            AppendIf::Accepted {
-                sequence,
-                at_millis,
-            } => {
-                if *sequence <= expected || *at_millis != stamp {
-                    return Err(StreamError::InvalidResponse);
+    ) -> impl Future<Output = Result<(), StreamError>> {
+        async move {
+            self.started = true;
+            let stamp = frame.at_millis;
+            let result = journal.append_if(expected, &[frame]).await?;
+            let outcome = match &result {
+                AppendIf::Accepted {
+                    sequence,
+                    at_millis,
+                } => {
+                    if *sequence <= expected || *at_millis != stamp {
+                        return Err(StreamError::InvalidResponse);
+                    }
+                    Ok(())
                 }
-                Ok(())
-            }
-            AppendIf::Stale { .. } => Err(StreamError::Unavailable),
-            AppendIf::Refused(error) => Err(error.clone()),
-        };
-        self.appended = Some(result);
-        outcome
+                AppendIf::Stale { .. } => Err(StreamError::Unavailable),
+                AppendIf::Refused(error) => Err(error.clone()),
+            };
+            self.appended = Some(result);
+            outcome
+        }
     }
 }
 
@@ -124,6 +126,16 @@ pub(crate) trait ReplayObserver: ProviderPlatform {
         command: &'a WriteRequest,
         after: bool,
     ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a;
+}
+impl<T: ReplayObserver + ?Sized> ReplayObserver for &mut T {
+    fn observe<'a>(
+        &'a mut self,
+        provider: &'a MemoryStream,
+        command: &'a WriteRequest,
+        after: bool,
+    ) -> impl Future<Output = Result<(), StreamError>> + ProviderTask + 'a {
+        (**self).observe(provider, command, after)
+    }
 }
 struct NoopObserver;
 impl ReplayObserver for NoopObserver {
@@ -308,77 +320,77 @@ impl<J: CommandJournal> Replicated<J> {
         Ok(self.journal.changed(self.cursor))
     }
 
-    pub(crate) async fn execute(
+    pub(crate) fn execute(
         &mut self,
         command: WriteRequest,
         deadline: Option<u64>,
         page: usize,
-    ) -> Result<Execution, StreamError> {
-        self.execute_with(command, deadline, page, &mut NoopObserver)
-            .await
+    ) -> impl Future<Output = Result<Execution, StreamError>> {
+        self.execute_with(command, deadline, page, NoopObserver)
     }
 
-    pub(crate) async fn execute_with(
+    pub(crate) fn execute_with(
         &mut self,
         command: WriteRequest,
         deadline: Option<u64>,
         page: usize,
-        observe: &mut impl ReplayObserver,
-    ) -> Result<Execution, StreamError> {
-        let canonical = self.provider.canonicalize(command)?;
-        let command = &canonical.command;
-        let deadline = deadline
-            .into_iter()
-            .chain(match command {
-                WriteRequest::Commit(request) => request.deadline_unix_millis,
-                _ => None,
-            })
-            .min();
-        #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
-        let changes = match command {
-            WriteRequest::Append(request) => vec![(request.path.clone(), false)],
-            WriteRequest::Fork(request) => vec![(request.destination.clone(), true)],
-            WriteRequest::Commit(request) => request
-                .mutations
-                .iter()
-                .map(|mutation| {
-                    (
-                        crate::request::mutation_path(mutation).clone(),
-                        matches!(mutation, CommitMutation::Fork { .. }),
-                    )
+        mut observe: impl ReplayObserver,
+    ) -> impl Future<Output = Result<Execution, StreamError>> {
+        async move {
+            let canonical = self.provider.canonicalize(command)?;
+            let command = &canonical.command;
+            let deadline = deadline
+                .into_iter()
+                .chain(match command {
+                    WriteRequest::Commit(request) => request.deadline_unix_millis,
+                    _ => None,
                 })
-                .collect(),
-        };
-        loop {
-            self.refresh_with(page, observe).await?;
-            observe.observe(&self.provider, command, false).await?;
-            let expected = self.cursor;
-            let mut attempt = Attempt::default();
-            let frame = JournalFrame {
-                command,
-                at_millis: self.clock.now_unix_millis(),
-                deadline,
-                #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
-                changes: changes.clone(),
+                .min();
+            #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
+            let changes = match command {
+                WriteRequest::Append(request) => vec![(request.path.clone(), false)],
+                WriteRequest::Fork(request) => vec![(request.destination.clone(), true)],
+                WriteRequest::Commit(request) => request
+                    .mutations
+                    .iter()
+                    .map(|mutation| {
+                        (
+                            crate::request::mutation_path(mutation).clone(),
+                            matches!(mutation, CommitMutation::Fork { .. }),
+                        )
+                    })
+                    .collect(),
             };
-            let result = self
-                .provider
-                .apply_durable(
-                    &canonical,
+            loop {
+                self.refresh_with(page, &mut observe).await?;
+                observe.observe(&self.provider, command, false).await?;
+                let expected = self.cursor;
+                let mut attempt = Attempt::default();
+                let frame = JournalFrame {
+                    command,
+                    at_millis: self.clock.now_unix_millis(),
                     deadline,
-                    attempt.persist(&mut self.journal, expected, frame),
-                )
-                .await;
-            if !self.complete(attempt, &result) {
-                // This is the conditional journal's losing proposal. Its
-                // uninstalled plan was dropped; catch up and decide again
-                // under the same exact request identity and deadline.
-                continue;
+                    #[cfg(all(feature = "wasm-journal", target_arch = "wasm32"))]
+                    changes: changes.clone(),
+                };
+                let result = {
+                    let persist =
+                        std::pin::pin!(attempt.persist(&mut self.journal, expected, frame));
+                    self.provider
+                        .apply_durable(&canonical, deadline, persist)
+                        .await
+                };
+                if !self.complete(attempt, &result) {
+                    // This is the conditional journal's losing proposal. Its
+                    // uninstalled plan was dropped; catch up and decide again
+                    // under the same exact request identity and deadline.
+                    continue;
+                }
+                if self.cursor > expected {
+                    observe.observe(&self.provider, command, true).await?;
+                }
+                return result;
             }
-            if self.cursor > expected {
-                observe.observe(&self.provider, command, true).await?;
-            }
-            return result;
         }
     }
 }

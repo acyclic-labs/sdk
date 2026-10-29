@@ -14,8 +14,8 @@ impl LocalStream {
             outcome = Empty,
             error.kind = Empty
         ));
-        let (failed, changed, cursor) = span
-            .scope(async {
+        let (failed, changed, cursor) = {
+            let prepare = std::pin::pin!(async {
                 let failed = self.inner.failed.subscribe();
                 let prepared = self
                     .accepted(self.inner.provider.prepare_follow(
@@ -32,8 +32,9 @@ impl LocalStream {
                     obs::failed(&span, error.code());
                 })?;
                 Ok::<_, StreamError>((failed, changed, cursor))
-            })
-            .await?;
+            });
+            span.scope(prepare).await?
+        };
         let state = Box::new(FollowState {
             provider: self.clone(),
             path,
