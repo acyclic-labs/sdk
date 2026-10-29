@@ -62,7 +62,7 @@ impl ModelEventAdmission {
                 block.validate_limits(limits, work)?;
                 crate::executor::json::json_byte_length(
                     event,
-                    limits.render_bytes.min(limits.file_bytes),
+                    Some(limits.render_bytes.min(limits.file_bytes)),
                     work,
                 )
                 .map(|_| ())
