@@ -1,5 +1,5 @@
 import { copyVerifiedArchive } from "../../../../../scripts/archive-utils.mjs";
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,8 +17,8 @@ const markers = [`PASS C++ complete file descriptors, ${methodCount} RPC message
   `PASS C++ ${methodCount} generated client/server loopback calls, Rust file descriptors, populated payloads and actual method paths/stream types`];
 
 // Native command and pin injection is limited to offline runner controls.
-export async function qualify(args, { command = spawnSync, toolchain = pinned, onProgress = () => {} } = {}) {
-  if (command === spawnSync && (process.platform !== "win32" || process.arch !== "x64")) throw new Error("C++ installed qualification requires Windows x64");
+export async function qualify(args, { command = captureCommand, toolchain = pinned, onProgress = () => {} } = {}) {
+  if (command === captureCommand && (process.platform !== "win32" || process.arch !== "x64")) throw new Error("C++ installed qualification requires Windows x64");
   const inputs = Object.fromEntries(["package", "receipt", "authority", "runtime-root", "runtime-inventory", "host-inventory"].map(name => [name, realpathSync(args[name])]));
   const output = qualificationOutput(args.output, [...Object.values(inputs), realpathSync(join(directory, "../../.."))]);
   onProgress("Verify archive and producer evidence");
@@ -37,7 +37,7 @@ export async function qualify(args, { command = spawnSync, toolchain = pinned, o
     INCLUDE: present(host.environment.include).join(";"), LIB: present(host.environment.lib).join(";"), LIBPATH: present(host.environment.lib).join(";"),
     PATH: [...new Set([...Object.values(tools).map(dirname), join(toolchain.system_root, "System32"), toolchain.system_root])].join(delimiter),
     USERPROFILE: join(output, "home"), APPDATA: join(output, "home/AppData/Roaming"), LOCALAPPDATA: join(output, "home/AppData/Local"), TEMP: join(output, "tmp"), TMP: join(output, "tmp") });
-  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 20 * 60_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true });
+  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 20 * 60_000, windowsHide: true });
   mkdirSync(output);
   const put = (name, bytes) => { const target = join(output, name); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, bytes, { flag: "wx" }); return target; };
   for (const name of ["home", "home/AppData/Roaming", "home/AppData/Local", "tmp"]) mkdirSync(join(output, name), { recursive: true });
