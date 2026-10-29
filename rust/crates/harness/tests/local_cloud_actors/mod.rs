@@ -737,6 +737,7 @@ async fn migrate_namespace(
     .await?;
     let update = wire::UpdateNamespaceRequest {
         secrets: Vec::new(),
+        fetch: None,
         account_id: Vec::new(),
         namespace_id: NAMESPACE.into(),
         code_sha256: digest(CODE_V2),

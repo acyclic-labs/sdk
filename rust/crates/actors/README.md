@@ -26,6 +26,33 @@ caller-supplied private CA; that CA is then the whole trust.
 nine operations using canonical Protobuf JSON. Invocation carries request and
 response headers. HTTP mutations are not automatically retried.
 
+## Deployment Fetch selection
+
+The existing manifest `entry.fetch` selects one named HTTPS handle and a complete
+allow-list of exact `{host, port}` destinations. Both `lower_actor` and
+`lower_worker` preserve it in `DeploymentRequest.fetch` (field 13). Namespace
+updates replace the selection through `UpdateNamespaceRequest.fetch` (field 8).
+Omission removes outbound authority; there is no environment inheritance. Its
+name must not collide with a binding or selected secret.
+
+The canonical Actors validator rejects empty or duplicate destinations, invalid
+TLS ports, wildcards, noncanonical DNS names, numeric IP forms and local DNS
+suffixes. Host-side DNS resolution, public address admission, address pinning,
+TLS verification and deployment-generation fences remain mandatory. Selection
+does not authorize redirects to another destination.
+
+TypeScript guests use the exported `Fetch` contract: `fetch(Request)` returns a
+streaming `Response`. Hosts install only the committed selection during restore,
+retain the original invocation and request cancellation through header disclosure
+and every body pull, and cancel both directions when that custody ends. The
+contract does not buffer a response or mint another credential.
+
+These fields are additive; predecessor readers ignore them and predecessor
+messages decode with no Fetch selection. Deploy hosts supporting the selection
+before enabling nonempty writes. An unsupported host must refuse a selected
+deployment rather than silently acknowledge it without its required handle.
+This SDK change does not qualify any deployment host's installation or egress.
+
 ## Deployment secret selections
 
 Actor and Worker deployments carry an ordered `secrets` list of `{name,

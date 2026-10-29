@@ -33,5 +33,11 @@ pub use worker::*;
 mod secrets;
 pub use secrets::*;
 
+mod fetch;
+pub use fetch::*;
+
 #[cfg(test)]
 mod secret_tests;
+
+#[cfg(test)]
+mod fetch_tests;

@@ -3,6 +3,8 @@
     messages(
         BindingProto,
         SecretSelectionProto,
+        FetchBindingProto,
+        EgressRuleProto,
         ActorLimitsProto,
         WorkerLimitsProto,
         SubscriptionStartProto,

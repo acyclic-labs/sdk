@@ -12,6 +12,7 @@ pub use crate::contract::{
     DeploymentObservationProto as DeploymentObservation,
     DeploymentRequestProto as DeploymentRequest, DeploymentResponseProto as DeploymentResponse,
     ErrorCode, HeaderProto as Header, InspectActorRequestProto as InspectActorRequest,
+    FetchBindingProto as FetchBinding, EgressRuleProto as EgressRule,
     InspectActorResponseProto as InspectActorResponse, InvocationOrderProto as InvocationOrder,
     InvokeActorRequestProto as InvokeActorRequest, InvokeActorResponseProto as InvokeActorResponse,
     InvokeWorkerRequestProto as InvokeWorkerRequest,
