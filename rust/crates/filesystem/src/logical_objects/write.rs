@@ -160,6 +160,91 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
     }
 }
 
+impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
+    /// Retains `scope` under `root` within the caller's work, before the
+    /// publication's record is written.
+    ///
+    /// An enumerated closure is retained as listed; the root's earlier
+    /// batches already cover objects a reused proof omits. A closure that
+    /// cannot be enumerated retains every blob staged since this root's last
+    /// such retention, which covers everything this store admitted. Blobs
+    /// stay staged for the root until its retention succeeds, so an
+    /// overlapping publication retains them too rather than trusting one
+    /// that may still fail.
+    pub(super) async fn retain_scope(
+        &self,
+        root: acyclic_objects::RootId,
+        scope: crate::PublicationScope<'_>,
+        work: &mut KernelAccounting<'_>,
+    ) -> Result<(), crate::FsError> {
+        work.check()?;
+        let owed = |staged: &super::Staged| {
+            let from = staged.roots.get(&root).copied().unwrap_or(staged.base);
+            from.max(staged.base)
+        };
+        let (end, count) = match scope {
+            crate::PublicationScope::Closure { objects, .. } => (None, objects.len()),
+            crate::PublicationScope::Everything => {
+                let staged = self.staged();
+                let end = staged.end();
+                (Some(end), end.saturating_sub(owed(&staged)) as usize)
+            }
+        };
+        if count == 0 {
+            return Ok(());
+        }
+        let (mut references, custody) = vector::<acyclic_objects::Digest>(count, work)?;
+        let bytes = (references.capacity() * size_of::<acyclic_objects::Digest>()) as u64;
+        match (scope, end) {
+            (crate::PublicationScope::Everything, Some(end)) => {
+                // This root's own retention may have advanced it, and the
+                // log's base with it, past `end` meanwhile; what it passed
+                // is retained.
+                let staged = self.staged();
+                let from = owed(&staged);
+                if from < end {
+                    let range = (from - staged.base) as usize..(end - staged.base) as usize;
+                    references.extend(staged.digests.range(range).copied());
+                }
+            }
+            (crate::PublicationScope::Closure { objects, .. }, _) => {
+                references.extend(objects.iter().copied().map(blob));
+            }
+            _ => return Err(ObjectStoreError::Corrupt.into()),
+        }
+        if references.is_empty() {
+            return release(work, custody, bytes);
+        }
+        match work {
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { work: original, .. } => {
+                let original = *original;
+                self.provider
+                    .retain_native(
+                        packet((root.clone(), references), custody, original)?,
+                        original.runtime_meter(),
+                    )
+                    .map_err(native_error)?
+                    .await
+                    .map_err(native_error)?;
+            }
+            _ => {
+                work.charge(WorkCounters {
+                    backend_write_operations: 1,
+                    ..WorkCounters::UNCHARGED
+                })?;
+                let retained = self.provider.retain(&root, references).await;
+                release(work, custody, bytes)?;
+                retained.map_err(ObjectStoreError::LogicalObjects)?;
+            }
+        }
+        if let Some(end) = end {
+            self.staged().retained(&root, end);
+        }
+        work.check()
+    }
+}
+
 /// Accepts only a verified outcome for exactly these bytes.
 fn settle(id: ObjectId, length: u64, put: Put) -> Result<(), ObjectStoreError> {
     match put.verified() {

@@ -76,6 +76,12 @@ pub trait Medium: Send + Sync + 'static {
     fn allocate(&self, _bytes: u64) -> Result<(), MediumError> {
         Ok(())
     }
+    /// Withholds `operations` writes carrying at most `bytes` in all from the
+    /// caller's budget, so the writes after it are never refused for budget;
+    /// free unless the medium meters its caller.
+    fn reserve_writes(&self, _operations: u64, _bytes: u64) -> Result<(), MediumError> {
+        Ok(())
+    }
 }
 
 /// The deterministic in-process medium, optionally bounded to a caller's

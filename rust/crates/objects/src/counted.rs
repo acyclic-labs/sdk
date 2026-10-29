@@ -117,4 +117,13 @@ impl<P: Blobs> Blobs for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().put_batch_native(requests, meter)
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn retain_native(
+        &self,
+        request: ObjectsNativeRequest<(RootId, Vec<Digest>)>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, Retained>, NativeObjectsError> {
+        self.record(RequestClass::Data);
+        self.inner().retain_native(request, meter)
+    }
 }

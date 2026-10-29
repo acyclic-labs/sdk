@@ -18,8 +18,38 @@ pub struct LogicalObjectStore<P: ?Sized> {
     maximum_object_bytes: u64,
     decoded: Arc<crate::cache::CachedObjectStore<()>>,
     publication_root: Option<acyclic_objects::RootId>,
-    /// Stored blobs no publication retained yet, kept only under a root.
-    unretained: Arc<std::sync::Mutex<std::collections::HashSet<acyclic_objects::Digest>>>,
+    /// Stored blobs some publication root has not retained yet, shared by
+    /// every clone whatever its root.
+    staged: Arc<std::sync::Mutex<Staged>>,
+}
+
+/// Stored blobs in staging order, with each publication root's position:
+/// a root has retained every blob before its position. Positions only
+/// advance, each by its own root's retention, so one root's retention never
+/// covers another's. Blobs every root has passed are dropped.
+#[derive(Default)]
+struct Staged {
+    /// The position of the oldest kept blob.
+    base: u64,
+    digests: std::collections::VecDeque<acyclic_objects::Digest>,
+    roots: std::collections::HashMap<acyclic_objects::RootId, u64>,
+}
+
+impl Staged {
+    fn end(&self) -> u64 {
+        self.base + self.digests.len() as u64
+    }
+
+    /// Records that `root` retained every blob before `end`.
+    fn retained(&mut self, root: &acyclic_objects::RootId, end: u64) {
+        if let Some(position) = self.roots.get_mut(root) {
+            *position = (*position).max(end);
+        }
+        let oldest = self.roots.values().copied().min().unwrap_or(self.end());
+        while self.base < oldest && self.digests.pop_front().is_some() {
+            self.base += 1;
+        }
+    }
 }
 
 impl<P: ?Sized> LogicalObjectStore<P> {
@@ -30,14 +60,21 @@ impl<P: ?Sized> LogicalObjectStore<P> {
             maximum_object_bytes: 5 * 1024 * 1024 * 1024,
             decoded: Arc::new(crate::cache::CachedObjectStore::with_default_options(())),
             publication_root: None,
-            unretained: Arc::default(),
+            staged: Arc::default(),
         }
     }
 
     /// Retains every published closure under `root` before its record is
     /// written, so no number of collections removes a live generation.
+    ///
+    /// Clones share staged blobs, and each root retains them independently:
+    /// a root starts from the oldest blob some root still owes.
     #[must_use]
     pub fn with_publication_root(mut self, root: acyclic_objects::RootId) -> Self {
+        let mut staged = self.staged();
+        let base = staged.base;
+        staged.roots.entry(root.clone()).or_insert(base);
+        drop(staged);
         self.publication_root = Some(root);
         self
     }
@@ -57,19 +94,18 @@ impl<P: ?Sized> LogicalObjectStore<P> {
         Ok(self)
     }
 
-    fn unretained(
-        &self,
-    ) -> std::sync::MutexGuard<'_, std::collections::HashSet<acyclic_objects::Digest>> {
-        self.unretained
+    fn staged(&self) -> std::sync::MutexGuard<'_, Staged> {
+        self.staged
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Notes stored objects for the next publication that cannot enumerate
-    /// its closure.
+    /// Notes stored objects for each root's next publication that cannot
+    /// enumerate its closure.
     fn published(&self, ids: impl IntoIterator<Item = ObjectId>) {
-        if self.publication_root.is_some() {
-            self.unretained().extend(ids.into_iter().map(blob));
+        let mut staged = self.staged();
+        if !staged.roots.is_empty() {
+            staged.digests.extend(ids.into_iter().map(blob));
         }
     }
 
@@ -198,30 +234,12 @@ impl<P: Blobs + ?Sized> AsyncObjectStore for LogicalObjectStore<P> {
             flushed.map_err(ObjectStoreError::LogicalObjects)?;
             return Ok(crate::PublicationHold::none());
         };
-        // An enumerated closure is retained as listed; the root's earlier
-        // batches already cover objects a reused proof omits. A closure that
-        // cannot be enumerated retains every object stored since the last
-        // such retention, which covers everything this store admitted.
-        // Pending digests stay visible until their retention succeeds, so an
-        // overlapping publication retains them too rather than trusting one
-        // that may still fail.
-        let references: Vec<_> = match scope {
-            crate::PublicationScope::Closure { objects, .. } => {
-                objects.iter().copied().map(blob).collect()
-            }
-            crate::PublicationScope::Everything => self.unretained().iter().copied().collect(),
-        };
-        if references.is_empty() {
-            return Ok(crate::PublicationHold::none());
-        }
-        self.provider
-            .retain(root, references.clone())
-            .await
-            .map_err(ObjectStoreError::LogicalObjects)?;
-        let mut unretained = self.unretained();
-        for digest in &references {
-            unretained.remove(digest);
-        }
+        let root = root.clone();
+        operate!(
+            context,
+            work,
+            self.retain_scope(root, scope, &mut work).await
+        )?;
         Ok(crate::PublicationHold::none())
     }
     async fn read(

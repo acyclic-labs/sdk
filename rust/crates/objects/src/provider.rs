@@ -397,6 +397,18 @@ pub trait Blobs: Send + Sync {
     ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
         Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
     }
+
+    /// Retains a batch under `root` within the caller's original work: every
+    /// medium operation is admitted to, and every buffer charged on, its
+    /// meter, and the call observes its cancellation.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn retain_native(
+        &self,
+        _request: ObjectsNativeRequest<(RootId, Vec<Digest>)>,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, Retained>, NativeObjectsError> {
+        Err(NativeObjectsError::from(NativeObjectsCause::Unsupported))
+    }
 }
 
 #[async_trait::async_trait]
@@ -488,5 +500,13 @@ impl<T: Blobs + ?Sized> Blobs for std::sync::Arc<T> {
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
         (**self).put_batch_native(requests, meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn retain_native(
+        &self,
+        request: ObjectsNativeRequest<(RootId, Vec<Digest>)>,
+        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, Retained>, NativeObjectsError> {
+        (**self).retain_native(request, meter)
     }
 }
