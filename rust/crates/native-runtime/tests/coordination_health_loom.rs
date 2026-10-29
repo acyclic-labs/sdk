@@ -5,10 +5,17 @@ mod health;
 
 use health::ShardHealth;
 use loom::sync::{Arc, mpsc};
+use std::{
+    future::Future,
+    task::{Context, Waker},
+};
 
 fn retirement_before_completion(ordered: bool) {
     loom::model(move || {
         let health = Arc::new(ShardHealth::new());
+        let mut retired = Box::pin(health.retired());
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(retired.as_mut().poll(&mut context).is_pending());
         let owner = Arc::clone(&health);
         let (completed, terminal) = mpsc::channel();
         let thread = loom::thread::spawn(move || {
@@ -22,6 +29,10 @@ fn retirement_before_completion(ordered: bool) {
         });
         terminal.recv().unwrap();
         assert!(!health.is_available(), "completion preceded retirement");
+        assert!(
+            retired.as_mut().poll(&mut context).is_ready(),
+            "published retirement left its original waiter pending"
+        );
         thread.join().unwrap();
     });
 }
