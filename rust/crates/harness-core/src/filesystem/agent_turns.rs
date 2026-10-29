@@ -946,7 +946,6 @@ where
                 agent: agent.path.clone(),
                 volumes: agent.volumes.clone(),
                 maximum_bytes: self.limits.maximum_bytes,
-                stop: stop.clone(),
             }) as Arc<dyn crate::agent::TurnChildren>;
             let goal = match self.goals {
                 Some(policy) => FilesystemTurnGoal::bind(
@@ -963,9 +962,12 @@ where
             let (policy, resolved) = self.approvals(agent, &bindings.content).await?;
             let outputs = Arc::clone(&files);
             // Each call dispatches only once the effects of the turn's earlier
-            // calls committed, so it reaches what they created.
+            // calls committed, so it reaches what they created, and a `wait`
+            // only once its children settled.
             let approvals = Arc::new(
-                AgentApprovals::new(files, Arc::new(policy)).yielding(Arc::clone(&effects)),
+                AgentApprovals::new(files, Arc::new(policy))
+                    .yielding(Arc::clone(&effects))
+                    .awaiting(Arc::clone(&children)),
             );
             let journal = journal
                 .with_stop(stop)
@@ -1018,8 +1020,6 @@ struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
     agent: AgentPath,
     volumes: Vec<VolumeBinding>,
     maximum_bytes: u64,
-    /// The turn's stop: a cancelled or archived turn stops waiting.
-    stop: acyclic_actors::guest::CancellationToken,
 }
 
 impl<P, A, O> crate::agent::TurnChildren for FilesystemTurnChildren<P, A, O>
@@ -1028,28 +1028,32 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    fn settle<'a>(
+    fn agent(&self) -> &AgentPath {
+        &self.agent
+    }
+
+    fn settled<'a>(
         &'a self,
         child: &'a AgentPath,
-    ) -> BoxFuture<'a, Result<(crate::agent::Phase, Option<String>)>> {
+    ) -> BoxFuture<'a, Result<Option<crate::agent::Phase>>> {
         Box::pin(async move {
-            let settled = {
-                let settled = std::pin::pin!(crate::agent::settled(&*self.stream, child));
-                let stopped = std::pin::pin!(self.stop.cancelled());
-                match futures::future::select(stopped, settled).await {
-                    futures::future::Either::Left(((), _)) => return Err(Error::Cancelled),
-                    futures::future::Either::Right((settled, _)) => settled,
-                }
-            };
-            let settled = match settled {
-                Ok(settled) => settled,
+            match crate::agent::settled(&*self.stream, child).await {
+                Ok(settled) => Ok(settled),
                 Err(crate::agent::Error::NoSuchAgent) => {
-                    return Err(Error::NotFound(child.as_str().to_owned()));
+                    Err(Error::NotFound(child.as_str().to_owned()))
                 }
-                Err(error) => return Err(agent_error(error)),
-            };
-            let Some(entry) = settled.entry else {
-                return Ok((settled.phase, None));
+                Err(error) => Err(agent_error(error)),
+            }
+        })
+    }
+
+    fn answer<'a>(&'a self, child: &'a AgentPath) -> BoxFuture<'a, Result<Option<String>>> {
+        Box::pin(async move {
+            let Some(entry) = crate::agent::answer(&*self.stream, child)
+                .await
+                .map_err(agent_error)?
+            else {
+                return Ok(None);
             };
             let external = [entry.output];
             let authority = agent_authority(
@@ -1071,7 +1075,7 @@ where
                 .await?;
             let output: TurnOutput = serde_json::from_slice(&bytes)
                 .map_err(|_| Error::Invalid("staged turn output is malformed".into()))?;
-            Ok((settled.phase, Some(output.text)))
+            Ok(Some(output.text))
         })
     }
 }

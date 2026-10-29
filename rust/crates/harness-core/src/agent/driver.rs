@@ -587,6 +587,33 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         drops: None,
                     });
                 }
+                ExecutionProgress::Pending(_)
+                    if let Some((children, any)) = open
+                        .approvals
+                        .as_ref()
+                        .and_then(|approvals| approvals.awaited()) =>
+                {
+                    // A `wait` call dispatches once its children settle: the
+                    // turn commits that wait, holding no delivery, and their
+                    // settlement resumes it in this same segment.
+                    let reserved_children = match &open.effects {
+                        Some(effects) => {
+                            reserved(agent, effects.recorded().await.map_err(host_error)?)
+                        }
+                        None => 0,
+                    };
+                    return Ok(TurnStep {
+                        checkpoint: Some(encode(&Checkpoint {
+                            inbox,
+                            input,
+                            segment,
+                        })?),
+                        reserved_children,
+                        outs: Vec::new(),
+                        wait: Wait::Children { children, any },
+                        drops: None,
+                    });
+                }
                 ExecutionProgress::Pending(approval) => {
                     // The approval owner names the request the turn waits on;
                     // a host without one waits on the pending operation.

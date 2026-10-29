@@ -9,8 +9,8 @@ use super::checkpoint::{self, MAX_CHECKPOINT_BYTES, TAIL_SLACK};
 pub use super::input::{Progress, Queued, TurnInput};
 use super::input::{awaits, input};
 use super::{
-    AgentOutcome, AgentPath, ChildDone, Error, ForkAdopted, InboxRecord, IntentId, Phase,
-    StatusRecord, VolumeBinding,
+    AgentOutcome, AgentPath, ChildDone, ChildSettled, Error, ForkAdopted, InboxRecord, IntentId,
+    Phase, StatusRecord, VolumeBinding,
     kernel::{self, Admit, Control, Mode, Pick},
 };
 use crate::conversation::FileRef;
@@ -92,6 +92,14 @@ pub struct AgentState {
     pub phase: Phase,
     /// Children that have not reported `ChildDone`.
     pub open_children: BTreeSet<AgentPath>,
+    /// Open children the turn in progress waits for in
+    /// [`Phase::WaitingChildren`]; empty in every other phase.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub awaiting: BTreeSet<AgentPath>,
+    /// The parent's turn waits for this agent to settle: the next step that
+    /// publishes it idle or done answers with one `ChildSettled`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub awaited: bool,
     /// Open children that still have to receive `Archive`.
     pub archive_pending: BTreeSet<AgentPath>,
     /// Inputs waiting for the turn, in inbox order.
@@ -138,6 +146,8 @@ impl AgentState {
             status_tail: 1,
             phase: Phase::Idle,
             open_children: BTreeSet::new(),
+            awaiting: BTreeSet::new(),
+            awaited: false,
             archive_pending: BTreeSet::new(),
             queued: VecDeque::new(),
             overflow: None,
@@ -301,6 +311,16 @@ pub enum Wait {
     /// claiming or settling the turn's input. Like an approval response, the
     /// hook is taken ahead of the input queued behind the turn.
     Host(String),
+    /// Wait, holding no delivery, until these children settle: every one of
+    /// them, or with `any` the first. Each open child is asked once, in this
+    /// step's commit, and answers when it settles; a child already done
+    /// settled, so the turn continues at once.
+    Children {
+        /// The awaited children.
+        children: BTreeSet<AgentPath>,
+        /// Whether the first to settle resumes the turn.
+        any: bool,
+    },
     /// Wait until this Unix millisecond deadline.
     Until(u64),
     /// The turn finished; wait for more input.
@@ -491,6 +511,19 @@ pub async fn step<T: TurnDriver + ?Sized>(
     // record an idle agent consumes publishes its cursor too, so `Idle` at a
     // cursor proves every record before it settled (see [`super::settled`]).
     let phase = published(&state);
+    // An awaited child answers its parent once it settles, in the commit
+    // that publishes it so: the parent's wait wakes on exactly that record.
+    if state.awaited && matches!(phase, Phase::Idle | Phase::Done { .. }) {
+        state.awaited = false;
+        if let Some(parent) = &state.parent {
+            outs.push(Out::Send {
+                to: parent.clone(),
+                record: InboxRecord::ChildSettled(ChildSettled {
+                    child: state.path.clone(),
+                }),
+            });
+        }
+    }
     let mut sequence = state.conversation_tail;
     for out in &outs {
         match out {
@@ -530,7 +563,9 @@ fn control(state: &AgentState) -> Control {
         mode: match &state.phase {
             Phase::Idle => Mode::Idle,
             Phase::Running => Mode::Running,
-            Phase::WaitingApproval { .. } | Phase::WaitingHost { .. } => Mode::Approval,
+            Phase::WaitingApproval { .. }
+            | Phase::WaitingHost { .. }
+            | Phase::WaitingChildren { .. } => Mode::Approval,
             Phase::WaitingAlarm { deadline_unix_ms } => Mode::Alarm(*deadline_unix_ms),
             Phase::Done { .. } => Mode::Done,
         },
@@ -554,6 +589,7 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
     }
     if !admitted.control.turn {
         state.turn = None;
+        state.awaiting.clear();
     }
     if admitted.control.mode == Mode::Idle {
         state.phase = Phase::Idle;
@@ -570,6 +606,12 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
             state.reserved_children = super::slots::reserve_vacated(state.reserved_children);
         }
         state.archive_pending.remove(&done.child);
+    }
+    match &record {
+        InboxRecord::Awaited => state.awaited = true,
+        InboxRecord::ChildDone(ChildDone { child, .. })
+        | InboxRecord::ChildSettled(ChildSettled { child }) => settle_awaited(&mut state, child),
+        _ => {}
     }
     if let Some(input) = input(sequence, record).filter(|_| admitted.enqueue) {
         // The response the waiting turn needs is taken now, out of order;
@@ -588,6 +630,21 @@ fn admit(mut state: AgentState, sequence: u64, record: InboxRecord) -> Result<Ag
         }
     }
     Ok(state)
+}
+
+/// An awaited `child` settled: the turn waiting in
+/// [`Phase::WaitingChildren`] resumes once its last awaited child (with `any`,
+/// its first) has. Each child is awaited once, so this is one set removal.
+fn settle_awaited(state: &mut AgentState, child: &AgentPath) {
+    if !state.awaiting.remove(child) {
+        return;
+    }
+    if let Phase::WaitingChildren { any } = state.phase
+        && (any || state.awaiting.is_empty())
+    {
+        state.awaiting.clear();
+        state.phase = Phase::Running;
+    }
 }
 
 /// Whether a driver's effect fits the record that carries it.
@@ -679,6 +736,7 @@ async fn run<T: TurnDriver + ?Sized>(
         Wait::Done(outcome) => Wait::Done(bounded(outcome)),
         wait => wait,
     };
+    let mut awaiting = BTreeSet::new();
     let (wait, approval, outcome) = match wait {
         Wait::Continue => (kernel::Wait::Continue, None, None),
         Wait::Approval(id) => (
@@ -691,6 +749,29 @@ async fn run<T: TurnDriver + ?Sized>(
             Some(Phase::WaitingHost { host }),
             None,
         ),
+        Wait::Children { children, any } => {
+            // Only an open child can still settle; one already done has, so
+            // a wait it satisfies continues at once and asks no child.
+            let open: BTreeSet<AgentPath> = children
+                .intersection(&state.open_children)
+                .cloned()
+                .collect();
+            let waits = !open.is_empty() && (!any || open.len() == children.len());
+            if waits {
+                outs.extend(open.iter().map(|child| Out::Send {
+                    to: child.clone(),
+                    record: InboxRecord::Awaited,
+                }));
+                awaiting = open;
+                (
+                    kernel::Wait::Approval,
+                    Some(Phase::WaitingChildren { any }),
+                    None,
+                )
+            } else {
+                (kernel::Wait::Continue, None, None)
+            }
+        }
         Wait::Until(deadline) => (kernel::Wait::Until(deadline), None, None),
         Wait::Input => (kernel::Wait::Input, None, None),
         Wait::Done(outcome) => (kernel::Wait::Done, None, Some(outcome)),
@@ -705,6 +786,11 @@ async fn run<T: TurnDriver + ?Sized>(
         None => 0,
     };
     state.reported = next.reported;
+    state.awaiting = if next.mode == Mode::Approval {
+        awaiting
+    } else {
+        BTreeSet::new()
+    };
     state.phase = match (next.mode, approval, outcome) {
         (Mode::Running, ..) => Phase::Running,
         (Mode::Approval, Some(waiting), _) => waiting,

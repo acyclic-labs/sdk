@@ -57,6 +57,9 @@ pub fn send(to: &AgentPath, sender: &Sender, record: &InboxRecord) -> Result<Com
             return Err(Error::Record("ForkAdopted is written by spawn"));
         }
         InboxRecord::Archive(_) => return Err(Error::Record("archive has its own commit")),
+        InboxRecord::Awaited | InboxRecord::ChildSettled(_) => {
+            return Err(Error::Record("only an agent step awaits a child"));
+        }
         InboxRecord::Message(_) => "message",
         InboxRecord::ChildDone(_) => "child-done",
         InboxRecord::Approval(_) => "approval",
@@ -104,6 +107,8 @@ fn intent_of(record: &InboxRecord) -> String {
             format!("{}:{}", request.child, request.id.as_str())
         }
         InboxRecord::ChildDone(done) => done.child.as_str().to_owned(),
+        InboxRecord::ChildSettled(settled) => settled.child.as_str().to_owned(),
+        InboxRecord::Awaited => String::new(),
         InboxRecord::Hook(hook) => hook.id.as_str().to_owned(),
         InboxRecord::Spawn(spawn) => spawn.id.as_str().to_owned(),
         InboxRecord::Context(request) => request.id.as_str().to_owned(),

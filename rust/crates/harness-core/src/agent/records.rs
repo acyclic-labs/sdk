@@ -170,6 +170,17 @@ pub struct ChildDone {
     pub outcome: AgentOutcome,
 }
 
+/// A child awaited by its parent settled: it is idle having consumed every
+/// record before the one that asked, or done.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
+#[serde(deny_unknown_fields)]
+pub struct ChildSettled {
+    /// The child.
+    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
+    pub child: AgentPath,
+}
+
 /// A response file now exists for an approval request of this agent.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -267,6 +278,11 @@ pub enum InboxRecord {
     Message(Message),
     /// A child finished.
     ChildDone(ChildDone),
+    /// The parent's turn waits for this agent to settle: once it is idle or
+    /// done it answers with one [`ChildSettled`].
+    Awaited,
+    /// A child this agent's turn waits for settled.
+    ChildSettled(ChildSettled),
     /// An approval response exists.
     Approval(Approval),
     /// A child delegates an approval.
@@ -304,6 +320,13 @@ pub enum Phase {
     WaitingHost {
         /// Host name.
         host: String,
+    },
+    /// A turn's `wait` waits for its children to settle, holding no delivery:
+    /// each child's [`ChildSettled`] or [`ChildDone`] wakes it.
+    WaitingChildren {
+        /// Whether the first awaited child to settle resumes the turn, rather
+        /// than the last.
+        any: bool,
     },
     /// Waiting for a deadline.
     WaitingAlarm {
@@ -445,7 +468,10 @@ impl AgentRecord for InboxRecord {
                 }
                 check_sender(&spawn.by)
             }
-            Self::Approval(_) | Self::ApprovalRequested(_) => Ok(()),
+            Self::Approval(_)
+            | Self::ApprovalRequested(_)
+            | Self::Awaited
+            | Self::ChildSettled(_) => Ok(()),
         }
     }
 }
@@ -466,6 +492,7 @@ impl AgentRecord for StatusRecord {
             Phase::Idle
             | Phase::Running
             | Phase::WaitingApproval { .. }
+            | Phase::WaitingChildren { .. }
             | Phase::WaitingAlarm { .. } => Ok(()),
         }
     }

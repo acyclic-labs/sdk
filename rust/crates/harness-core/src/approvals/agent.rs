@@ -12,13 +12,16 @@ use super::{
 };
 use crate::{
     Error, InteractionId, Result,
-    agent::AgentId,
+    agent::{AgentId, AgentPath},
     conversation::Limits,
-    interaction::{ApprovalDecisionFile, Interaction, InteractionOutcome},
+    interaction::{ApprovalDecisionFile, ApprovalSubject, Interaction, InteractionOutcome},
 };
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    collections::BTreeSet,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 /// Requests are immutable, so every decision binds their first and only version.
@@ -99,6 +102,11 @@ pub struct AgentApprovals {
     effects: Option<Arc<dyn crate::agent::TurnEffects>>,
     /// Whether the call the turn last stopped at waits on those effects.
     yielded: AtomicBool,
+    /// The turn's children, which a `wait` call dispatches only once settled.
+    children: Option<Arc<dyn crate::agent::TurnChildren>>,
+    /// The children the call the turn last stopped at waits for, and whether
+    /// any one suffices.
+    awaiting: Mutex<Option<(BTreeSet<AgentPath>, bool)>>,
 }
 
 impl AgentApprovals {
@@ -111,7 +119,28 @@ impl AgentApprovals {
             pending: Mutex::new(None),
             effects: None,
             yielded: AtomicBool::new(false),
+            children: None,
+            awaiting: Mutex::new(None),
         }
+    }
+
+    /// Holds each `wait` call of the turn until the children it names settle
+    /// (see [`crate::tools::awaited`]); the turn commits that wait
+    /// instead of holding its delivery.
+    #[must_use]
+    pub fn awaiting(mut self, children: Arc<dyn crate::agent::TurnChildren>) -> Self {
+        self.children = Some(children);
+        self
+    }
+
+    /// The children the turn stopped waiting for, and whether any one
+    /// suffices: its driver commits [`crate::agent::Wait::Children`].
+    #[must_use]
+    pub fn awaited(&self) -> Option<(BTreeSet<AgentPath>, bool)> {
+        self.awaiting
+            .lock()
+            .ok()
+            .and_then(|awaiting| awaiting.clone())
     }
 
     /// Holds each call of the turn until `effects` recorded by its earlier
@@ -134,21 +163,42 @@ impl AgentApprovals {
     /// reaches every child, message and archive they make; else
     /// [`Self::outcome`].
     pub async fn dispatch(&self, id: InteractionId) -> Result<Option<InteractionOutcome>> {
+        if self.effects.is_none() && self.children.is_none() {
+            return self.outcome(id).await;
+        }
+        let bytes = self.policy.request(&*self.files, &request_id(id)).await?;
+        let Ok(Interaction::Approval {
+            operation_id,
+            subject,
+            ..
+        }) = serde_json::from_slice::<Interaction>(&bytes)
+        else {
+            return Err(Error::Conflict(
+                "approval request is not an approval".into(),
+            ));
+        };
         if let Some(effects) = &self.effects {
-            let bytes = self.policy.request(&*self.files, &request_id(id)).await?;
-            let Ok(Interaction::Approval { operation_id, .. }) =
-                serde_json::from_slice::<Interaction>(&bytes)
-            else {
-                return Err(Error::Conflict(
-                    "approval request is not an approval".into(),
-                ));
-            };
             let held = effects.holds(operation_id).await?;
             self.yielded.store(held, Ordering::Release);
             if held {
                 self.wait(None)?;
                 return Ok(None);
             }
+        }
+        if let (
+            Some(children),
+            ApprovalSubject::Tool {
+                tool, arguments, ..
+            },
+        ) = (&self.children, &subject)
+            && let Some(awaited) = crate::tools::awaited(&**children, tool, arguments).await?
+        {
+            self.wait(None)?;
+            *self
+                .awaiting
+                .lock()
+                .map_err(|_| Error::Storage("approvals lock".into()))? = Some(awaited);
+            return Ok(None);
         }
         self.outcome(id).await
     }

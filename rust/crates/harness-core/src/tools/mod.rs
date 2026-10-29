@@ -1,5 +1,6 @@
 //! Standard coding tools and shared host executors.
 mod agents;
+pub(crate) use agents::awaited;
 pub use agents::{
     AGENT_TOOLS, ArchiveAgentInput, REVISION as AGENT_TOOLS_REVISION, SendAgentInput,
     SpawnAgentInput, WaitAgentInput, WaitMode, bind_agent_tools,

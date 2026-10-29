@@ -143,7 +143,11 @@ pub(crate) fn input(sequence: u64, record: InboxRecord) -> Option<Queued> {
             id: request.id,
             action: request.action,
         }),
+        // Awaiting is control between a parent's turn and its child; neither
+        // record is turn input (see [`super::machine`]).
         InboxRecord::ForkAdopted(_)
+        | InboxRecord::Awaited
+        | InboxRecord::ChildSettled(_)
         | InboxRecord::Cancel(_)
         | InboxRecord::Archive(_)
         | InboxRecord::Spawn(_) => None,

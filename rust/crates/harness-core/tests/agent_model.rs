@@ -8,6 +8,8 @@ use acyclic_stream::{
 use futures::TryStreamExt;
 use std::{collections::VecDeque, sync::Mutex};
 
+#[path = "agent_model/awaiting.rs"]
+mod awaiting;
 #[path = "agent_model/driver.rs"]
 mod driver;
 #[cfg(all(feature = "filesystem", feature = "test-support"))]

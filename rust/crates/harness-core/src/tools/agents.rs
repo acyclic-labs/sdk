@@ -6,9 +6,11 @@
 //! that settles the turn, or earlier: before any later call of the same turn
 //! dispatches, the turn commits what its earlier calls recorded (see
 //! [`TurnEffects::holds`]), so a child spawned by one call runs, and is
-//! reachable by name, from the next call on. `wait` records nothing: it
-//! follows the named children's status until they settle (see
-//! [`crate::agent::settled`]) and returns each one's last answer.
+//! reachable by name, from the next call on. `wait` records nothing and holds
+//! nothing: until the named children settle, its call does not dispatch (see
+//! [`awaited`]) and the turn commits [`crate::agent::Wait::Children`], which
+//! each child's settlement wakes; dispatched, it reads each child's status
+//! once (see [`crate::agent::settled`]) and returns each one's last answer.
 
 use crate::{
     Error, Result,
@@ -264,87 +266,117 @@ impl AgentTool {
         if parent && let Some(to) = turn.parent.as_ref().filter(|path| path.as_str() == agent) {
             return Some(to.clone());
         }
-        self.child(agent)
-            .filter(|child| turn.children.contains(child))
+        named_child(&turn.agent, agent).filter(|child| turn.children.contains(child))
     }
 
-    /// The child `reference` names: a spawn name, or the agent path of one of
-    /// this agent's children, open or settled.
-    fn child(&self, reference: &str) -> Option<AgentPath> {
-        let turn = &*self.turn;
-        if let Ok(path) = AgentPath::try_from(reference.to_owned()) {
-            return (path.parent().as_ref() == Some(&turn.agent)).then_some(path);
-        }
-        spawned_child(&turn.agent, reference).ok()
-    }
-
-    /// Waits for the named children; see [`WaitAgentInput`].
+    /// Reads the named children once; see [`WaitAgentInput`]. Its call
+    /// dispatches only once they settled (see [`awaited`]), so a child still
+    /// running here started again since, and is reported running.
     async fn wait(&self, arguments: Value) -> Result<ToolResult> {
-        let input: WaitAgentInput = match decode(arguments) {
-            Ok(input) => input,
-            Err(rejected) => return Ok(rejected),
-        };
         let Some(observer) = &self.turn.observer else {
             return Ok(rejected("this host observes no children"));
         };
-        let mut children: Vec<(String, AgentPath)> = Vec::with_capacity(input.agents.len());
-        for reference in input.agents {
-            let Some(child) = self.child(&reference) else {
-                return Ok(rejected(format!(
-                    "{reference} names no child of this agent"
-                )));
-            };
-            if !children.iter().any(|(_, known)| *known == child) {
-                children.push((reference, child));
-            }
-        }
-        if children.is_empty() {
-            return Ok(rejected("wait names no child"));
-        }
-        let mut pending: Vec<_> = children
-            .iter()
-            .enumerate()
-            .map(|(index, (_, child))| {
-                let observer = Arc::clone(observer);
-                let child = child.clone();
-                Box::pin(async move { (index, observer.settle(&child).await) })
-            })
-            .collect();
+        let (children, _) = match waited(&self.turn.agent, arguments) {
+            Ok(waited) => waited,
+            Err(rejected) => return Ok(rejected),
+        };
         let mut settled = Vec::with_capacity(children.len());
-        let mut done = vec![false; children.len()];
-        while !pending.is_empty() {
-            let ((index, outcome), _, rest) = futures::future::select_all(pending).await;
-            pending = rest;
-            let (name, child) = &children[index];
-            let (phase, answer) = match outcome {
-                Ok(outcome) => outcome,
+        let mut running = Vec::new();
+        for (name, child) in &children {
+            let phase = match observer.settled(child).await {
+                Ok(Some(phase)) => phase,
+                Ok(None) => {
+                    running.push(name.as_str());
+                    continue;
+                }
                 Err(Error::NotFound(_)) => {
                     return Ok(rejected(format!("{name} names no child of this agent")));
                 }
                 Err(error) => return Err(error),
             };
-            done[index] = true;
             settled.push(json!({
                 "name": name,
                 "agent": child.as_str(),
                 "phase": serde_json::to_value(&phase)
                     .map_err(|error| Error::Invalid(error.to_string()))?,
-                "answer": answer,
+                "answer": observer.answer(child).await?,
             }));
-            if input.mode.unwrap_or_default() == WaitMode::Any {
-                break;
-            }
         }
-        let running: Vec<&str> = children
-            .iter()
-            .zip(&done)
-            .filter(|(_, done)| !**done)
-            .map(|((name, _), _)| name.as_str())
-            .collect();
         Ok(ToolResult {
             value: json!({"settled": settled, "running": running}),
         })
     }
+}
+
+/// The child of `agent` that `reference` names: a spawn name, or the agent
+/// path of one of its children, open or settled.
+fn named_child(agent: &AgentPath, reference: &str) -> Option<AgentPath> {
+    if let Ok(path) = AgentPath::try_from(reference.to_owned()) {
+        return (path.parent().as_ref() == Some(agent)).then_some(path);
+    }
+    spawned_child(agent, reference).ok()
+}
+
+/// The distinct children a `wait` of `agent` names, each with the reference
+/// naming it, and whether it waits for any rather than all; the model's
+/// error when the input names none or names a non-child.
+fn waited(
+    agent: &AgentPath,
+    arguments: Value,
+) -> std::result::Result<(Vec<(String, AgentPath)>, bool), ToolResult> {
+    let input: WaitAgentInput = decode(arguments)?;
+    let mut children: Vec<(String, AgentPath)> = Vec::with_capacity(input.agents.len());
+    for reference in input.agents {
+        let Some(child) = named_child(agent, &reference) else {
+            return Err(rejected(format!(
+                "{reference} names no child of this agent"
+            )));
+        };
+        if !children.iter().any(|(_, known)| *known == child) {
+            children.push((reference, child));
+        }
+    }
+    if children.is_empty() {
+        return Err(rejected("wait names no child"));
+    }
+    Ok((children, input.mode.unwrap_or_default() == WaitMode::Any))
+}
+
+/// What a call of `tool` with `arguments` waits for before it dispatches: for
+/// a `wait` whose children have not settled (every one, or with `any` the
+/// first), those still unsettled and whether any one suffices. Each child's
+/// status is read once; nothing waits here. The turn then commits
+/// [`crate::agent::Wait::Children`], holding no delivery, and its call
+/// dispatches when the children's settlement resumes it.
+///
+/// # Errors
+/// Stream failures reading a child's status.
+pub(crate) async fn awaited(
+    children: &dyn TurnChildren,
+    tool: &str,
+    arguments: &Value,
+) -> Result<Option<(BTreeSet<AgentPath>, bool)>> {
+    if tool != "wait" {
+        return Ok(None);
+    }
+    // A malformed wait dispatches to receive its error.
+    let Ok((named, any)) = waited(children.agent(), arguments.clone()) else {
+        return Ok(None);
+    };
+    let mut unsettled = BTreeSet::new();
+    for (_, child) in named {
+        match children.settled(&child).await {
+            Ok(Some(_)) if any => return Ok(None),
+            Ok(Some(_)) => {}
+            // A wait naming no child dispatches to receive its error.
+            Err(Error::NotFound(_)) => return Ok(None),
+            Ok(None) => {
+                unsettled.insert(child);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok((!unsettled.is_empty()).then_some((unsettled, any)))
 }
 
 fn agent(error: crate::agent::Error) -> Error {
@@ -427,7 +459,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
             "wait",
             definition::<WaitAgentInput>(
                 "wait",
-                "Wait until the named children settle: each has handled everything sent to it and is idle or done. Returns each settled child's phase and last answer; mode all (default) waits for every child, any for the first",
+                "Wait until the named children settle: each has handled everything sent to it and is idle or done. Your turn pauses without running until they do. Returns each settled child's phase and last answer; mode all (default) waits for every child, any for the first",
             )?,
         ),
     ] {
@@ -439,7 +471,7 @@ fn selected(names: &[String]) -> Result<Vec<(&'static str, ToolDefinition)>> {
 }
 
 /// Registers `agent`'s tools for one turn into `registry`, bound to the turn's
-/// `effects`, the `observer` its `wait` follows, and its private `writer`, and selects them for the model over any
+/// `effects`, the `observer` its `wait` reads, and its private `writer`, and selects them for the model over any
 /// other revision of the same names. Only the agent tools `names` selects are
 /// bound, so a host omits or swaps each one like any standard tool.
 /// `max_children`, capped at [`MAX_OPEN_CHILDREN`], bounds the agent's open

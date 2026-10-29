@@ -27,7 +27,7 @@ mod machine;
 mod records;
 mod reply;
 mod settled;
-pub use settled::{Settled, TurnChildren, settled};
+pub use settled::{TurnChildren, answer, settled};
 mod slots;
 mod volumes;
 pub use volumes::SpawnVolumes;
@@ -53,10 +53,10 @@ pub use machine::{
     step,
 };
 pub use records::{
-    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, Closed, ContextAction,
-    ContextRequest, Control, ForkAdopted, Hook, InboxRecord, IntentId, MAX_INTENT_BYTES,
-    MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase, Sender, SpawnRequest,
-    StatusRecord, VolumeBinding,
+    AgentOutcome, AgentRecord, Approval, ApprovalRequested, ChildDone, ChildSettled, Closed,
+    ContextAction, ContextRequest, Control, ForkAdopted, Hook, InboxRecord, IntentId,
+    MAX_INTENT_BYTES, MAX_MESSAGE_BYTES, MAX_RECORD_BYTES, MAX_VOLUMES, Message, Phase, Sender,
+    SpawnRequest, StatusRecord, VolumeBinding,
 };
 pub use reply::{Reply, reply};
 

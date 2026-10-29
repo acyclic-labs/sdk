@@ -1,30 +1,22 @@
-//! Waiting for an agent to settle its input, observed on its own streams.
+//! Whether an agent has settled its input, read once from its own streams.
 //!
 //! An agent has settled the input committed to it before some point once its
 //! status says so: it is done, or idle having consumed every one of those inbox
 //! records. An idle agent still holding input publishes `Running`, and every
 //! idle step publishes its cursor, so the one status record a step commits
-//! decides this alone, with no read of the agent's checkpoint and no polling:
-//! the wait follows the status stream.
+//! decides this alone, with no read of the agent's checkpoint. Nothing here
+//! waits: a turn waiting for a child commits [`super::Phase::WaitingChildren`]
+//! and the child's [`super::ChildSettled`] wakes it (see [`super::Wait::Children`]).
 
 use super::{
     AgentPath, AgentRecord as _, ConversationEntry, Error, Phase, StatusRecord, inbox_tail,
 };
-use acyclic_stream::{FollowRequest, ReadRequest, StreamError, StreamPath, StreamProvider};
-use futures::{StreamExt as _, TryStreamExt as _};
+use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProvider};
+use futures::TryStreamExt as _;
 
-/// How an agent stood once it settled.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Settled {
-    /// Its phase: [`Phase::Idle`] or [`Phase::Done`].
-    pub phase: Phase,
-    /// Its last own settled turn, if it has run one; inherited history is
-    /// never its answer.
-    pub entry: Option<ConversationEntry>,
-}
-
-/// Waits until `agent` settles every inbox record committed before this call,
-/// following its status stream from its committed tail.
+/// `agent`'s phase if it has settled every inbox record committed before this
+/// call ([`Phase::Idle`] or [`Phase::Done`]), else `None`: one read of its
+/// inbox tail and one of its last status, never a wait.
 ///
 /// # Errors
 /// [`Error::NoSuchAgent`] when `agent` was never created; stream failures and
@@ -32,56 +24,43 @@ pub struct Settled {
 pub async fn settled<P: StreamProvider + ?Sized>(
     provider: &P,
     agent: &AgentPath,
-) -> Result<Settled, Error> {
+) -> Result<Option<Phase>, Error> {
     let inbox = inbox_tail(provider, agent).await?;
     let status = agent.status()?;
+    let tail = match provider.tail(status.clone()).await {
+        Ok(0) | Err(StreamError::NotFound) => return Err(Error::NoSuchAgent),
+        Ok(tail) => tail,
+        Err(error) => return Err(Error::Stream(error)),
+    };
+    let last = record(provider, &status, tail - 1).await?;
+    Ok(match last.phase {
+        Phase::Done { .. } => Some(last.phase),
+        Phase::Idle if last.cursor >= inbox => Some(last.phase),
+        _ => None,
+    })
+}
+
+/// `agent`'s last own settled turn, if it has run one; inherited history is
+/// never its answer.
+///
+/// # Errors
+/// Stream failures and malformed records as themselves.
+pub async fn answer<P: StreamProvider + ?Sized>(
+    provider: &P,
+    agent: &AgentPath,
+) -> Result<Option<ConversationEntry>, Error> {
     // The first status is the adoption's: `Idle` at its `ForkAdopted` sequence,
     // the first inbox sequence of the agent's own turns.
-    let adopted = record(provider, &status, 0).await?.cursor;
-    let tail = match provider.tail(status.clone()).await {
-        Ok(tail) => tail,
-        Err(StreamError::NotFound) => return Err(Error::NoSuchAgent),
-        Err(error) => return Err(Error::Stream(error)),
-    };
-    let settles = |record: &StatusRecord| match record.phase {
-        Phase::Done { .. } => true,
-        Phase::Idle => record.cursor >= inbox,
-        _ => false,
-    };
-    let mut last = record(provider, &status, tail.saturating_sub(1)).await?;
-    if !settles(&last) {
-        // Follow from the tail read before the last record, so a step
-        // committing after that read is never missed.
-        let mut committed = acyclic_stream::records_only(
-            provider
-                .follow(FollowRequest::new(status, tail))
-                .await
-                .map_err(Error::Stream)?,
-        );
-        loop {
-            match committed.next().await {
-                Some(Ok(next)) => {
-                    last = StatusRecord::decode(&next.value)?;
-                    if settles(&last) {
-                        break;
-                    }
-                }
-                Some(Err(error)) => return Err(Error::Stream(error)),
-                None => return Err(Error::Stream(StreamError::Unavailable)),
-            }
-        }
-    }
+    let adopted = record(provider, &agent.status()?, 0).await?.cursor;
     let conversation = agent.conversation()?;
-    let entry = match provider.tail(conversation.clone()).await {
-        Ok(0) | Err(StreamError::NotFound) => None,
-        Ok(tail) => Some(super::reply::entry(provider, &conversation, tail - 1).await?)
-            .filter(|entry| entry.inbox >= adopted),
-        Err(error) => return Err(Error::Stream(error)),
-    };
-    Ok(Settled {
-        phase: last.phase,
-        entry,
-    })
+    match provider.tail(conversation.clone()).await {
+        Ok(0) | Err(StreamError::NotFound) => Ok(None),
+        Ok(tail) => Ok(
+            Some(super::reply::entry(provider, &conversation, tail - 1).await?)
+                .filter(|entry| entry.inbox >= adopted),
+        ),
+        Err(error) => Err(Error::Stream(error)),
+    }
 }
 
 async fn record<P: StreamProvider + ?Sized>(
@@ -104,13 +83,21 @@ async fn record<P: StreamProvider + ?Sized>(
     }
 }
 
-/// What one turn's `wait` observes of the agent's children.
+/// What one turn's `wait` observes of the agent's children, each read once.
 pub trait TurnChildren: acyclic_stream::ProviderPlatform {
-    /// Waits until `child` settles (see [`settled`]) and returns its phase
-    /// with the text its last own turn answered, read under the turn's
-    /// authority.
-    fn settle<'a>(
+    /// The agent whose turn observes its children.
+    fn agent(&self) -> &AgentPath;
+
+    /// `child`'s phase once it settled (see [`settled`]), else `None`.
+    fn settled<'a>(
         &'a self,
         child: &'a AgentPath,
-    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<(Phase, Option<String>)>>;
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Option<Phase>>>;
+
+    /// The text `child`'s last own turn answered (see [`answer`]), read under
+    /// the turn's authority.
+    fn answer<'a>(
+        &'a self,
+        child: &'a AgentPath,
+    ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Option<String>>>;
 }
