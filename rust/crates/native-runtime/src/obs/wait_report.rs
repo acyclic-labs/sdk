@@ -143,22 +143,21 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
         }
         let mut finished = Finished::default();
         values.record(&mut finished);
-        if let Some(stage) = finished.stage
-            && let Some(span) = context.span(id)
-            && let Some(SpanWait(node)) = span.extensions().get::<SpanWait>()
-        {
-            node.stage
-                .store(stage, std::sync::atomic::Ordering::Relaxed);
-        }
         if finished.finished {
             self.retire(id, context);
+            return;
         }
-        if let Some(predecessor) = finished.predecessor
-            && let Some(span) = context.span(id)
+        if let Some(span) = context.span(id)
             && let Some(SpanWait(node)) = span.extensions().get::<SpanWait>()
         {
-            node.predecessor
-                .store(predecessor, std::sync::atomic::Ordering::Relaxed);
+            if let Some(stage) = finished.stage {
+                node.stage
+                    .store(stage, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(predecessor) = finished.predecessor {
+                node.predecessor
+                    .store(predecessor, std::sync::atomic::Ordering::Relaxed);
+            }
         }
     }
 }
