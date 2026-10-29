@@ -32,10 +32,10 @@ fuzz_target!(|input: &[u8]| {
         return;
     }
     if let Ok(hooks) = serde_json::from_slice::<acyclic_harness::hooks::Hooks>(input)
-        && let Ok(encoded) = hooks.encode(limits.file_bytes)
+        && let Ok(encoded) = hooks.encode(Some(limits.file_bytes))
     {
         let decoded: acyclic_harness::hooks::Hooks = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(decoded.encode(limits.file_bytes).unwrap(), encoded);
+        assert_eq!(decoded.encode(Some(limits.file_bytes)).unwrap(), encoded);
         assert_eq!(hooks.is_empty(), decoded.is_empty());
     }
     if let Ok(command) = serde_json::from_slice::<ModelTaskCommand>(input)
