@@ -57,6 +57,10 @@ async function main() {
     ({ default: workerdPath } = toolchain("workerd"));
     persistence = await mkdtemp(join(tmpdir(), "acyclic-do-conformance-"));
     await start();
+    const alarm = await fetch("http://127.0.0.1:15420/alarm-recovery");
+    const alarmOutput = await alarm.text();
+    if (!alarm.ok) throw new Error(`alarm recovery HTTP ${alarm.status}: ${alarmOutput}`);
+    console.log(`workerd review: ${alarmOutput}`);
     const response = await fetch("http://127.0.0.1:15420/");
     const output = await response.text();
     if (!response.ok) throw new Error(`HTTP ${response.status}: ${output}`);

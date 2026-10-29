@@ -72,7 +72,7 @@ fn agent_error(error: crate::agent::Error) -> JsValue {
 }
 
 fn stream_error(error: StreamError) -> JsValue {
-    js_error(Error::Storage(error.to_string()))
+    acyclic_stream::wasm_error(error)
 }
 
 fn digest16(domain: &str, parts: &[&[u8]]) -> [u8; 16] {

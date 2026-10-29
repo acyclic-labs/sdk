@@ -14,7 +14,13 @@ policy. Additional workspace tools and task context are explicit host choices.
 Storage implementations stay below the shared filesystem and Actors engines.
 
 Keep the same root intent when reopening storage. An uncertain root publication
-retains and resubmits its original prepared commit. The endpoint owns its runtime:
+returns `ActorsError::Unknown` with its `PendingActors` composition. Retain that
+handle, then pass it as `ServerConfig::harness` after the provider's recovery
+event. Opening it submits only the original prepared commit, including its
+publication holds. Startup performs one submission per explicit open; it starts
+no retry timer or retry loop. Shutdown cancels both opening and credential
+publication. A runtime that ends during credential publication also ends startup
+without announcing an endpoint. The endpoint owns its runtime:
 dropping the endpoint aborts execution, and a failed runtime ends serving instead
 of accepting work without a producer. TLS is required away from loopback.
 
@@ -53,8 +59,11 @@ controlled model producer, then drops that producer while a reply is pending.
 It also drops the current authorization decision's producer at each public
 command wait: binding, root, children, approvals, foreign-tree refusal, initial
 prompt, exact retry, conflicting retry, settlement, reply and output read. The
-owning server is dropped during an in-flight root command. These waits must end with typed
+owning server is dropped during an in-flight root command and while the reply
+subscription is actually pending. These waits must end with typed
 `Unavailable`; a closed listener retains its original typed connection error.
+Disposing the server during root credential publication returns `Cancelled`
+without announcing an endpoint, while the credential publisher remains alive.
 It checks the GraphCoder
 prompt at model dispatch. This check does not qualify a live inference
 provider or a managed deployment; run the endpoint command above against those.
@@ -79,10 +88,27 @@ cursor. Return `null` on input EOF, cancel the pending platform read when `signa
 aborts, and call `cursor.close()` on disconnect. Call `EventAgentHost.close()`
 when its platform owner is disposed. Failed delivery closes the same owner
 lifetime, terminating active sessions and commands with typed `Unavailable`.
+Direct storage controls share that lifetime: closing the owner cancels their
+pending reads and refuses subsequent work before storage is accessed. Platform
+policy and admission callbacks receive the original operation's `AbortSignal`.
+Stream failures retain their canonical string `code` at the JavaScript boundary.
+An alarm update failure retains the healthy host and its previously admitted
+recovery alarm, so a later wake can resume without replaying a committed turn.
 The shared Rust session engine
 owns credentials, admission, flow control, calls and follows. There is no second
 agent protocol or background writer. Stream follows are available; filesystem
 resource follows require a platform resource provider.
+
+The public binding announces the same admitted private-volume resource on
+native and portable hosts. Constructing its resource name does not require a
+native filesystem watcher.
+
+Exercise disposal against the shipping WASM host with:
+
+```sh
+bun scripts/build-wasm.mjs harness
+bun test typescript/packages/harness/test/host-liveness.test.ts
+```
 
 This byte boundary alone is not a deployable Actor application. Public deployment
 bindings must supply storage, verified admission, model and Machines I/O, and the
@@ -95,8 +121,10 @@ that deployment or its live inference provider.
 | --- | --- | --- |
 | Portable model dispatch | One prepared Rust request and the selected provider's HTTP exchange | Serializing the request into a JavaScript model callback, then translating its events back into Rust |
 | Endpoint serving | One shared session engine and one runtime future for the admitted tree | A separate agent turn loop or command protocol |
+| Uncertain startup | One submission per explicit open; one retained pending handle only on uncertainty | Unbounded immediate root resubmissions and a second prepared request |
 | Waiting for an answer | One status subscription at an explicit committed cut, registered before the reply recheck | Periodic status requests |
 | Known host shutdown | One terminal control frame per active channel, independent of data credit | Reconnecting to an endpoint whose runtime has already stopped |
+| Inbox delivery | One atomic inbox/activation commit; notify the selected resident actor only after its receipt | Waiting for activation discovery when the local owner is already known |
 
 These are source-level operation counts. The integration check measures functional
 liveness; it does not establish throughput, memory or live model latency.

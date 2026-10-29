@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 mod actors;
 mod tls;
-pub use actors::{Actors, Execution, Runtime};
+pub use actors::{Actors, ActorsError, Execution, PendingActors, Runtime};
 
 /// This server's identity, announced in every [`Endpoint`]: a client or a
 /// test checks that an endpoint is served by this entry point.
@@ -73,12 +73,17 @@ pub trait Composition: Send + 'static {
     type Objects: AsyncObjectStore + 'static;
     /// Keeps the host's runtime and resources alive until serving ends.
     type Owner: Send + Sync + 'static;
+    /// Opening failures may retain an uncertain publication for exact recovery.
+    type Error: std::error::Error + Send + Sync + From<Error> + 'static;
     /// Opens the host through the canonical admitted hosting API, its tree's
     /// caller verified by `verifier`.
     fn open(
         self,
         verifier: &Arc<dyn Verifier>,
-    ) -> BoxProviderFuture<'static, Result<Hosted<Self::Stream, Self::Objects, Self::Owner>>>;
+    ) -> BoxProviderFuture<
+        'static,
+        std::result::Result<Hosted<Self::Stream, Self::Objects, Self::Owner>, Self::Error>,
+    >;
 }
 
 impl<C> ServerConfig<C> {
@@ -151,6 +156,7 @@ where
     type Stream = P;
     type Objects = O;
     type Owner = L;
+    type Error = Error;
     /// An already hosted tree's caller was admitted by its host; `verifier`
     /// verifies only its clients' credentials.
     fn open(self, _: &Arc<dyn Verifier>) -> BoxProviderFuture<'static, Result<Self>> {
@@ -182,16 +188,22 @@ pub async fn serve<C: Composition>(
     config: ServerConfig<C>,
     ready: impl FnOnce(&Endpoint),
     shutdown: impl Future<Output = ()> + Send + 'static,
-) -> Result<()> {
+) -> std::result::Result<(), C::Error> {
     let address = listener
         .local_addr()
         .map_err(|error| Error::Storage(error.to_string()))?;
     if config.tls.is_none() && !address.ip().is_loopback() {
         return Err(Error::Invalid(
             "plain HTTP serves only a loopback address; give a TLS identity".into(),
-        ));
+        )
+        .into());
     }
-    let mut host = config.harness.open(&config.verifier).await?;
+    let mut shutdown = std::pin::pin!(shutdown);
+    let mut host = tokio::select! {
+        biased;
+        _ = &mut shutdown => return Err(Error::Cancelled.into()),
+        host = config.harness.open(&config.verifier) => host?,
+    };
     let server = &host.server;
     let bound = server.bound();
     let authority = config.verifier.session(&Custody {
@@ -200,20 +212,13 @@ pub async fn serve<C: Composition>(
     })?;
     let (lifetime, ended) = tokio::sync::watch::channel(());
     let completion = host.completion.take();
-    let (completed, mut result) = tokio::sync::oneshot::channel();
-    let shutdown = async move {
-        let runtime = async move {
-            match completion {
-                Some(completion) => completion.await,
-                None => std::future::pending().await,
-            }
-        };
-        tokio::select! {
-            _ = shutdown => {},
-            outcome = runtime => { let _ = completed.send(outcome); },
+    let mut completion = std::pin::pin!(async move {
+        match completion {
+            Some(completion) => completion.await,
+            None => std::future::pending().await,
         }
-        drop(lifetime);
-    };
+    });
+    let (completed, mut result) = tokio::sync::oneshot::channel();
     let service = acyclic_stream::session::Service::new(
         bound.agents().provider().clone(),
         authority,
@@ -225,7 +230,7 @@ pub async fn serve<C: Composition>(
     let tls = match config.tls {
         Some(identity) => {
             if !identity.url.starts_with("https://") {
-                return Err(Error::Invalid("a TLS server's URL is an https URL".into()));
+                return Err(Error::Invalid("a TLS server's URL is an https URL".into()).into());
             }
             Some((tls::config(&identity)?, identity.url))
         }
@@ -235,16 +240,29 @@ pub async fn serve<C: Composition>(
         Some((_, url)) => url.clone(),
         None => format!("http://{address}"),
     };
-    let observation = config
-        .verifier
-        .observation(RootCredential(Box::pin(async {
-            let minted = bound
-                .client_credential(server.root(), server.resource(), host.clock.clone())
-                .await
-                .map_err(failed)?;
-            Ok((minted.credential, minted.principal))
-        })))
-        .await?;
+    let observation = config.verifier.observation(RootCredential(Box::pin(async {
+        let minted = bound
+            .client_credential(server.root(), server.resource(), host.clock.clone())
+            .await
+            .map_err(failed)?;
+        Ok((minted.credential, minted.principal))
+    })));
+    let observation = tokio::select! {
+        biased;
+        _ = &mut shutdown => return Err(Error::Cancelled.into()),
+        outcome = &mut completion => {
+            outcome?;
+            return Err(Error::Storage("host runtime completed before serving".into()).into());
+        },
+        observation = observation => observation?,
+    };
+    let completion_shutdown = async move {
+        tokio::select! {
+            _ = shutdown => {},
+            outcome = &mut completion => { let _ = completed.send(outcome); },
+        }
+        drop(lifetime);
+    };
     ready(&Endpoint {
         server: IDENTITY,
         endpoint,
@@ -257,14 +275,14 @@ pub async fn serve<C: Composition>(
         match tls {
             Some((tls, _)) => {
                 router
-                    .serve_with_incoming_shutdown(tls::incoming(listener, tls), shutdown)
+                    .serve_with_incoming_shutdown(tls::incoming(listener, tls), completion_shutdown)
                     .await
             }
             None => {
                 router
                     .serve_with_incoming_shutdown(
                         tonic::transport::server::TcpIncoming::from(listener),
-                        shutdown,
+                        completion_shutdown,
                     )
                     .await
             }
@@ -274,7 +292,7 @@ pub async fn serve<C: Composition>(
     let serving = serving.await;
     let result = result.try_recv().unwrap_or(serving);
     drop(host);
-    result
+    result.map_err(Into::into)
 }
 
 fn failed(error: impl std::fmt::Display) -> Error {

@@ -19,7 +19,7 @@ export interface EventHostAccess {
   admission: WasmHostingAdmission;
   authority: WasmSessionAuthority;
   credential: Uint8Array;
-  policy(principal: Uint8Array, command: AgentCommand): boolean | Promise<boolean>;
+  policy(principal: Uint8Array, command: AgentCommand, signal: AbortSignal): boolean | Promise<boolean>;
 }
 
 /** One canonical session cursor. Pulls carry credit in the shared Rust engine;
@@ -54,7 +54,7 @@ export class EventAgentHost {
       this.host = WasmAgentServer.open(providers, options, owner, registry, access.admission, access.authority, {
         manifest: guest.manifest(),
         onRecord: (delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => guest.onRecord(delivery, signal, interrupt),
-        policy: (principal: Uint8Array, command: AgentCommand) => access.policy(principal, command),
+        policy: (principal: Uint8Array, command: AgentCommand, signal: AbortSignal) => access.policy(principal, command, signal),
         admitted: () => recoverable(storage, events),
       });
     } finally { providers.free(); stream.free(); }
@@ -138,26 +138,26 @@ export class EventAgentHost {
   }
 
   private async drain(generation: number): Promise<void> {
+    let alarm: bigint | undefined;
     try {
       const identity = await this.command(async () => {
         const pending = this.identity();
         return pending ? this.resume(pending) : undefined;
       });
-      let alarm: bigint | undefined;
       if (identity) {
         alarm = await this.host.drain(identity.path);
       }
-      await this.command(async () => {
-        // A later admitted control already owns a durable recovery alarm. An
-        // earlier delivery must not erase it after observing an older input cut.
-        if (this.events.generation !== generation) return;
-        if (alarm === undefined) await this.storage.alarm(undefined);
-        else await this.storage.alarm(Number(alarm));
-      });
     } catch (error) {
       this.host.close();
       throw error;
     }
+    await this.command(async () => {
+      // A later admitted control already owns a durable recovery alarm. An
+      // earlier delivery must not erase it after observing an older input cut.
+      if (this.events.generation !== generation) return;
+      if (alarm === undefined) await this.storage.alarm(undefined);
+      else await this.storage.alarm(Number(alarm));
+    });
   }
 
   /** End pending sessions and commands when this platform owner is disposed. */

@@ -304,13 +304,17 @@ async fn wait_reply(
         if !matches!(reply, Reply::Pending) {
             return Ok(reply);
         }
-        waiting();
         loop {
-            let frame = follow
-                .next()
-                .await
-                .ok_or_else(|| stream_failure("reply_liveness", StreamError::Unavailable))?
-                .map_err(|error| stream_failure("reply_liveness", error))?;
+            let frame = futures::future::poll_fn(|context| {
+                let next = follow.poll_next_unpin(context);
+                if next.is_pending() {
+                    waiting();
+                }
+                next
+            })
+            .await
+            .ok_or_else(|| stream_failure("reply_liveness", StreamError::Unavailable))?
+            .map_err(|error| stream_failure("reply_liveness", error))?;
             match frame.body {
                 Some(wire::session_frame::Body::Data(_)) => break,
                 Some(wire::session_frame::Body::Closed(closed)) => {

@@ -23,6 +23,18 @@ use tokio::sync::oneshot;
 
 type Outcome<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+async fn listener() -> std::io::Result<tokio::net::TcpListener> {
+    let mut occupied = std::io::Error::from(std::io::ErrorKind::AddrInUse);
+    for port in 15400..=15499 {
+        match tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await {
+            Ok(listener) => return Ok(listener),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => occupied = error,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(occupied)
+}
+
 struct Abort(tokio::task::AbortHandle);
 impl Drop for Abort {
     fn drop(&mut self) {
@@ -79,6 +91,43 @@ impl acyclic_harness::hosting::Platform for Owner {
 struct ModelGate {
     entered: Mutex<Option<oneshot::Sender<()>>>,
     output: Mutex<Option<oneshot::Receiver<()>>>,
+}
+
+/// A real root credential is minted before its publication owner parks.
+struct CredentialGate {
+    entered: Mutex<Option<oneshot::Sender<()>>>,
+    published: Mutex<Option<oneshot::Receiver<()>>>,
+}
+
+impl server::Verifier for CredentialGate {
+    fn caller(
+        &self,
+        custody: &server::Custody<'_>,
+        owner: &acyclic_harness::core::Scope,
+    ) -> acyclic_harness::Result<VerifiedCaller> {
+        server::Verifier::caller(&server::KeyFileVerifier, custody, owner)
+    }
+
+    fn session(
+        &self,
+        custody: &server::Custody<'_>,
+    ) -> acyclic_harness::Result<Arc<acyclic_stream::session::Authority>> {
+        server::Verifier::session(&server::KeyFileVerifier, custody)
+    }
+
+    fn observation<'a>(
+        &'a self,
+        root: server::RootCredential<'a>,
+    ) -> BoxProviderFuture<'a, acyclic_harness::Result<Option<server::Observation>>> {
+        let entered = self.entered.lock().unwrap().take().unwrap();
+        let published = self.published.lock().unwrap().take().unwrap();
+        Box::pin(async move {
+            let observation = server::Verifier::observation(&server::KeyFileVerifier, root).await?;
+            let _ = entered.send(());
+            published.await.map_err(|_| Error::Storage("credential publication producer closed".into()))?;
+            Ok(observation)
+        })
+    }
 }
 impl ModelProvider for ModelGate {
     fn generate<'a>(
@@ -205,10 +254,69 @@ enum Producer {
         case: &'static str,
     },
     Host,
+    ReplyHost,
+}
+
+async fn startup_shutdown() -> Outcome {
+    let (entered, pending) = oneshot::channel();
+    let (publisher, published) = oneshot::channel();
+    let mut config = ServerConfig::new(composition(
+        Arc::new(ModelGate { entered: Mutex::new(None), output: Mutex::new(None) }),
+        Owner(None),
+    )?);
+    config.verifier = Arc::new(CredentialGate {
+        entered: Mutex::new(Some(entered)),
+        published: Mutex::new(Some(published)),
+    });
+    let listener = listener().await?;
+    let (stop, stopping) = oneshot::channel::<()>();
+    let serving = server::serve(listener, config, |_| panic!("unfinished credential was announced"), async {
+        let _ = stopping.await;
+    });
+    tokio::pin!(serving);
+    tokio::select! {
+        result = &mut serving => return Err(format!("startup completed before credential publication: {result:?}").into()),
+        pending = pending => pending?,
+    }
+    drop(stop);
+    assert!(matches!(serving.await, Err(server::ActorsError::Failed(Error::Cancelled))));
+    drop(publisher);
+    Ok(())
+}
+
+async fn startup_completion() -> Outcome {
+    use server::Composition as _;
+    let (entered, pending) = oneshot::channel();
+    let (publisher, published) = oneshot::channel();
+    let verifier: Arc<dyn server::Verifier> = Arc::new(CredentialGate {
+        entered: Mutex::new(Some(entered)),
+        published: Mutex::new(Some(published)),
+    });
+    let host = composition(
+        Arc::new(ModelGate { entered: Mutex::new(None), output: Mutex::new(None) }),
+        Owner(None),
+    )?.open(&verifier).await?;
+    let (owner, completion) = oneshot::channel::<()>();
+    let mut config = ServerConfig::new(host.with_completion(async {
+        completion.await.map_err(|_| Error::Storage("startup runtime producer closed".into()))
+    }));
+    config.verifier = verifier;
+    let listener = listener().await?;
+    let serving = server::serve(listener, config, |_| panic!("stopped runtime was announced"), std::future::pending());
+    tokio::pin!(serving);
+    tokio::select! {
+        result = &mut serving => return Err(format!("startup completed before credential publication: {result:?}").into()),
+        pending = pending => pending?,
+    }
+    drop(owner);
+    assert!(matches!(serving.await, Err(Error::Storage(reason)) if reason == "startup runtime producer closed"));
+    drop(publisher);
+    Ok(())
 }
 
 async fn run(producer: Producer) -> Outcome {
     let drop_model = matches!(producer, Producer::Model);
+    let drop_reply_host = matches!(producer, Producer::ReplyHost);
     let drop_command = matches!(producer, Producer::Command { .. } | Producer::Host);
     eprintln!(
         "STEP endpoint-vector start; closed-model={drop_model}; closed-command={drop_command}"
@@ -235,7 +343,7 @@ async fn run(producer: Producer) -> Outcome {
             decision,
         }))
     }));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:15439").await?;
+    let listener = listener().await?;
     let (ready, endpoint) = oneshot::channel();
     let (stop, stopping) = oneshot::channel();
     let mut stop = Some(stop);
@@ -288,10 +396,10 @@ async fn run(producer: Producer) -> Outcome {
         } => {
             pending?;
             eprintln!("STEP producer wait armed; closed-model={drop_model}; closed-command={drop_command}");
-            if matches!(producer, Producer::Host) { drop(stop.take()); }
+            if matches!(producer, Producer::Host | Producer::ReplyHost) { drop(stop.take()); }
             else if drop_command { drop(deciding); }
             if drop_model || drop_command { drop(output.take()); }
-            else if let Some(output) = output.take() { let _ = output.send(()); }
+            else if !drop_reply_host && let Some(output) = output.take() { let _ = output.send(()); }
             qualification.await
         }
     };
@@ -302,7 +410,7 @@ async fn run(producer: Producer) -> Outcome {
         let _ = stop.send(());
     }
     let serving = hosted.await?;
-    if drop_model || drop_command {
+    if drop_model || drop_command || drop_reply_host {
         let failure = result.expect_err("closed producer must fail the waiting client");
         assert!(matches!(
             failure.cause,
@@ -310,7 +418,10 @@ async fn run(producer: Producer) -> Outcome {
                 StreamError::Unavailable
             ))
         ));
-        if drop_command {
+        if drop_reply_host {
+            assert_eq!(failure.case, "reply_liveness");
+            serving?;
+        } else if drop_command {
             assert_eq!(
                 failure.case,
                 match producer {
@@ -332,6 +443,9 @@ async fn run(producer: Producer) -> Outcome {
 #[tokio::test]
 async fn graphcoder_on_actors_and_closed_producer_liveness() -> Outcome {
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let _occupied = listener().await?;
+        startup_shutdown().await?;
+        startup_completion().await?;
         run(Producer::Complete).await?;
         run(Producer::Model).await?;
         for (command, skip, case) in [
@@ -355,9 +469,10 @@ async fn graphcoder_on_actors_and_closed_producer_liveness() -> Outcome {
             .await?;
         }
         run(Producer::Host).await?;
+        run(Producer::ReplyHost).await?;
         // The connection producer is a real listening socket, not a scripted
         // HTTP response. Closing it must retain the original typed dial error.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:15439").await?;
+        let listener = listener().await?;
         let url = format!("http://{}", listener.local_addr()?);
         drop(listener);
         let options = acyclic_harness_client::resolve_connection_options(

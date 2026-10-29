@@ -58,6 +58,8 @@ export class Agent extends DurableObject {
   private readonly registry = new WasmAgentRegistry();
   private agent?: ReturnType<typeof openCloudflareAgent>;
   private executions = 0;
+  private failAlarmClear = false;
+  private retainedRecoveryAlarm = false;
   private grants = hostFixtureGrants();
   private readonly timeout = { started: false, aborted: false };
   constructor(ctx: DurableObjectState, env: Env) {
@@ -93,7 +95,21 @@ export class Agent extends DurableObject {
   private host(preset: Preset = options.preset): ReturnType<typeof openCloudflareAgent> {
     const audience = { kind: "task" as const, id: "00112233-4455-6677-8899-aabbccddeeff" };
     const name = this.ctx.id.name!;
-    return this.agent ??= openCloudflareAgent(this.ctx, this.env.LEDGER.getByName(name.startsWith("protocol-") ? name : "suite"), name,
+    const context = { storage: {
+      sql: this.ctx.storage.sql,
+      transactionSync: <T>(operation: () => T) => this.ctx.storage.transactionSync(operation),
+      sync: () => this.ctx.storage.sync(),
+      setAlarm: (time: number) => this.ctx.storage.setAlarm(time),
+      deleteAlarm: async () => {
+        if (this.failAlarmClear) {
+          this.failAlarmClear = false;
+          this.retainedRecoveryAlarm = await this.ctx.storage.getAlarm() !== null;
+          throw new Error("STEP injected alarm-clear failure; recovery: deliver the retained recovery alarm");
+        }
+        return this.ctx.storage.deleteAlarm();
+      },
+    } };
+    return this.agent ??= openCloudflareAgent(context, this.env.LEDGER.getByName(name.startsWith("protocol-") ? name : "suite"), name,
       { ...options, preset, handler_timeout_ms: name === "timeout" ? 1000n : options.handler_timeout_ms }, this.owner, this.registry,
       { admission: { audience, scope: this.owner.issueScope("host", this.grants, undefined),
         account: [...new TextEncoder().encode("browser")], namespace: "agents" },
@@ -106,6 +122,8 @@ export class Agent extends DurableObject {
     this.grants = grants;
   }
   configureProtocol(policy: Preset["approval_policy"]) { this.host({ ...options.preset, approval_policy: policy }); }
+  failNextAlarmClear() { this.failAlarmClear = true; }
+  alarmFailureRetainedRecovery() { return this.retainedRecoveryAlarm; }
   binding() { return this.host().binding(); }
   call(invocation: Uint8Array) { return this.host().call(invocation, hostFixtureCredential()); }
   effects() { return BigInt(this.executions); }
@@ -200,6 +218,28 @@ export class Suite extends DurableObject {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    if (new URL(request.url).pathname === "/alarm-recovery") {
+      const agent = env.AGENT.getByName("alarm-recovery");
+      await agent.create("alarm-root", "Reply once after committing this prompt");
+      await agent.failNextAlarmClear();
+      let failed = false;
+      try { await agent.wake(); }
+      catch (error) { failed = String(error).includes("injected alarm-clear failure"); }
+      const before = await agent.read("conversation");
+      if (!failed || before.length !== 1 || !await agent.alarmFailureRetainedRecovery()) {
+        throw new Error("STEP alarm-clear retention failed; recovery: bash scripts/qualify-cloudflare.sh");
+      }
+      await agent.wake();
+      await agent.create("alarm-root", "Reply once after committing this prompt");
+      if ((await agent.read("conversation")).length !== before.length) {
+        throw new Error("STEP alarm recovery replayed a committed turn; recovery: bash scripts/qualify-cloudflare.sh");
+      }
+      await agent.send("after-alarm-recovery", "Reply after the failed alarm write");
+      if ((await agent.read("conversation")).length !== before.length + 1) {
+        throw new Error("STEP alarm recovery closed its healthy host; recovery: bash scripts/qualify-cloudflare.sh");
+      }
+      return Response.json({ alarm: "failed clear retains recovery; the same host resumes without replay and accepts the next turn" });
+    }
     if (new URL(request.url).pathname === "/creation-interrupted") {
       const agent = env.AGENT.getByName("saved-creating");
       let interrupted = false;

@@ -35,15 +35,17 @@ impl hosting::Platform for Policy {
         command: &'a AgentCommand,
     ) -> BoxProviderFuture<'a, std::result::Result<PolicyDecision, StreamError>> {
         Box::pin(async move {
+            let cancel = host::Cancel::new().map_err(|_| StreamError::Unavailable)?;
             let principal =
                 acyclic_auth::contract::PrincipalProto::from(principal.clone()).encode_to_vec();
             let command = to_js(command).map_err(|_| StreamError::InvalidArgument)?;
             let result = self
                 .policy
-                .call2(
+                .call3(
                     &JsValue::UNDEFINED,
                     &js_sys::Uint8Array::from(principal.as_slice()),
                     &command,
+                    &cancel.signal,
                 )
                 .map_err(|_| StreamError::Unavailable)?;
             let result = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&result))
@@ -58,9 +60,10 @@ impl hosting::Platform for Policy {
     }
     fn admitted(&self) -> BoxProviderFuture<'_, std::result::Result<(), StreamError>> {
         Box::pin(async {
+            let cancel = host::Cancel::new().map_err(|_| StreamError::Unavailable)?;
             let result = self
                 .admitted
-                .call0(&JsValue::UNDEFINED)
+                .call1(&JsValue::UNDEFINED, &cancel.signal)
                 .map_err(|_| StreamError::Unavailable)?;
             wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&result))
                 .await
@@ -204,68 +207,77 @@ impl WasmAgentServer {
 
     #[wasm_bindgen(js_name = validateAdopt)]
     pub async fn validate_adopt(&self, agent: String) -> std::result::Result<(), JsValue> {
-        let path = AgentPath::try_from(agent.clone()).map_err(agent_error)?;
-        self.bound.admit_path(&path).map_err(agent_error)?;
-        let state = self
-            .bound
-            .agents()
-            .state(&path)
-            .await
-            .map_err(agent_error)?;
-        self.bound
-            .admit_agent(&path, &state.volumes)
-            .map_err(agent_error)
+        self.owned(async {
+            let path = AgentPath::try_from(agent.clone()).map_err(agent_error)?;
+            self.bound.admit_path(&path).map_err(agent_error)?;
+            let state = self
+                .bound
+                .agents()
+                .state(&path)
+                .await
+                .map_err(agent_error)?;
+            self.bound
+                .admit_agent(&path, &state.volumes)
+                .map_err(agent_error)
+        })
+        .await
     }
 
     /// Root volumes and adoption are the one shared atomic root submission.
     pub async fn create(&self, intent: String) -> std::result::Result<String, JsValue> {
-        let root =
-            AgentPath::try_from(self.validate_create(&intent, None)?).map_err(agent_error)?;
-        if let Some(server) = self.server.borrow().as_ref() {
-            if server.root() != &root {
-                return Err(JsValue::from_str("served root conflicts"));
+        self.owned(async {
+            let root =
+                AgentPath::try_from(self.validate_create(&intent, None)?).map_err(agent_error)?;
+            if let Some(server) = self.server.borrow().as_ref() {
+                if server.root() != &root {
+                    return Err(JsValue::from_str("served root conflicts"));
+                }
+                return Ok(root.to_string());
             }
-            return Ok(root.to_string());
-        }
-        let pending = self.pending.borrow_mut().take();
-        let serving = if let Some(pending) = pending {
-            if pending.prepared().child() != &root {
-                *self.pending.borrow_mut() = Some(pending);
-                return Err(JsValue::from_str("retry the original unsettled root"));
+            let pending = self.pending.borrow_mut().take();
+            let serving = if let Some(pending) = pending {
+                if pending.prepared().child() != &root {
+                    *self.pending.borrow_mut() = Some(pending);
+                    return Err(JsValue::from_str("retry the original unsettled root"));
+                }
+                pending.resubmit().await.map_err(agent_error)?
+            } else {
+                hosting::serve(
+                    self.bound.clone(),
+                    self.platform.clone(),
+                    &IntentId::try_from(intent).map_err(agent_error)?,
+                    self.root_request(root.id())?,
+                )
+                .await
+                .map_err(agent_error)?
+            };
+            match serving {
+                Serving::Served(server) => {
+                    *self.server.borrow_mut() = Some(server);
+                    Ok(root.to_string())
+                }
+                Serving::Unknown(pending) => {
+                    *self.pending.borrow_mut() = Some(pending);
+                    Err(JsValue::from_str(
+                        "root submission unknown; retry its original intent",
+                    ))
+                }
             }
-            pending.resubmit().await.map_err(agent_error)?
-        } else {
-            hosting::serve(
-                self.bound.clone(),
-                self.platform.clone(),
-                &IntentId::try_from(intent).map_err(agent_error)?,
-                self.root_request(root.id())?,
-            )
-            .await
-            .map_err(agent_error)?
-        };
-        match serving {
-            Serving::Served(server) => {
-                *self.server.borrow_mut() = Some(server);
-                Ok(root.to_string())
-            }
-            Serving::Unknown(pending) => {
-                *self.pending.borrow_mut() = Some(pending);
-                Err(JsValue::from_str(
-                    "root submission unknown; retry its original intent",
-                ))
-            }
-        }
+        })
+        .await
     }
 
     /// Explicit placement of a committed child; observing it never activates it.
     pub async fn adopt(&self, agent: String) -> std::result::Result<(), JsValue> {
-        let agent = AgentPath::try_from(agent).map_err(agent_error)?;
-        let server = hosting::reopen(self.bound.clone(), self.platform.clone(), agent)
-            .await
-            .map_err(agent_error)?;
-        *self.server.borrow_mut() = Some(server);
-        Ok(())
+        self.owned(async {
+            let agent = AgentPath::try_from(agent).map_err(agent_error)?;
+            let server = hosting::reopen(self.bound.clone(), self.platform.clone(), agent)
+                .await
+                .map_err(agent_error)?;
+            *self.server.borrow_mut() = Some(server);
+            Ok(())
+        })
+        .await
     }
 
     /// One canonical authenticated invocation through the shared session carrier.
@@ -307,10 +319,13 @@ impl WasmAgentServer {
     }
 
     pub async fn drain(&self, agent: String) -> std::result::Result<Option<u64>, JsValue> {
-        self.served()?
-            .drain(&AgentPath::try_from(agent).map_err(agent_error)?)
-            .await
-            .map_err(agent_error)
+        self.owned(async {
+            self.served()?
+                .drain(&AgentPath::try_from(agent).map_err(agent_error)?)
+                .await
+                .map_err(agent_error)
+        })
+        .await
     }
 
     /// Serves the same authenticated session as the native endpoint. Platform
@@ -351,7 +366,8 @@ impl WasmAgentServer {
         from: u64,
         limit: u32,
     ) -> std::result::Result<JsValue, JsValue> {
-        self.observation.read(agent, stream, from, limit).await
+        self.owned(self.observation.read(agent, stream, from, limit))
+            .await
     }
 
     #[wasm_bindgen(js_name = readFile)]
@@ -360,20 +376,23 @@ impl WasmAgentServer {
         agent: String,
         file: JsValue,
     ) -> std::result::Result<Vec<u8>, JsValue> {
-        self.bound
-            .read_file(
-                &AgentPath::try_from(agent).map_err(agent_error)?,
-                &from_js(file)?,
-                0,
-                self.observation.maximum_bytes,
-            )
-            .await
-            .map(|(bytes, _length)| bytes)
-            .map_err(agent_error)
+        self.owned(async {
+            self.bound
+                .read_file(
+                    &AgentPath::try_from(agent).map_err(agent_error)?,
+                    &from_js(file)?,
+                    0,
+                    self.observation.maximum_bytes,
+                )
+                .await
+                .map(|(bytes, _length)| bytes)
+                .map_err(agent_error)
+        })
+        .await
     }
 
     pub async fn pause(&self, agent: String, paused: bool) -> std::result::Result<(), JsValue> {
-        self.observation.pause(agent, paused).await
+        self.owned(self.observation.pause(agent, paused)).await
     }
 
     pub async fn archive(
@@ -381,7 +400,7 @@ impl WasmAgentServer {
         agent: String,
         intent: String,
     ) -> std::result::Result<JsValue, JsValue> {
-        self.observation.archive(agent, intent).await
+        self.owned(self.observation.archive(agent, intent)).await
     }
 }
 
@@ -390,6 +409,19 @@ fn boundary_error(error: impl std::fmt::Display) -> JsValue {
 }
 
 impl WasmAgentServer {
+    async fn owned<T>(
+        &self,
+        operation: impl std::future::Future<Output = std::result::Result<T, JsValue>>,
+    ) -> std::result::Result<T, JsValue> {
+        let mut lifetime = self.lifetime()?;
+        let closed = lifetime.changed();
+        futures::pin_mut!(closed, operation);
+        match futures::future::select(closed, operation).await {
+            futures::future::Either::Left(_) => Err(stream_error(StreamError::Unavailable)),
+            futures::future::Either::Right((result, _)) => result,
+        }
+    }
+
     async fn invoke(
         &self,
         invocation: Bytes,
@@ -474,7 +506,7 @@ const PLATFORM: &str = r#"
 export interface WasmHostingPlatform {
     manifest: Uint8Array;
     onRecord(delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal): Promise<Uint8Array>;
-    policy(principal: Uint8Array, command: AgentCommand): boolean | Promise<boolean>;
-    admitted(): Promise<void>;
+    policy(principal: Uint8Array, command: AgentCommand, signal: AbortSignal): boolean | Promise<boolean>;
+    admitted(signal: AbortSignal): Promise<void>;
 }
 "#;

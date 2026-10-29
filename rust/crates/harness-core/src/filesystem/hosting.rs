@@ -443,7 +443,6 @@ where
     ///
     /// # Errors
     /// When `agent` is absent or its private volume cannot be opened.
-    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
     pub async fn tool_resource(&self, agent: &AgentPath) -> Result<String, Error> {
         self.admit_path(agent)?;
         let state = self.agents.state(agent).await?;

@@ -27,7 +27,7 @@ export async function agentsFixture(id, reply, initialize = init) {
     preset: { model: null, prompt: null, tools: [], web_tools: false, max_steps: null, max_children: 8, approval_policy: { approvers: [{ kind: "rules", principal: "browser-user", rules: [], fallback: "allow" }] } },
   };
   const failures = [];
-  return { owner, registry, requests, failures,
+  return { owner, registry, requests, failures, options,
     open: () => WasmAgents.open(options, owner, registry, (actor, error) => failures.push({ actor, error })),
     // Host-injected storage, the guest artifact's entry over it, and a host
     // over the same storage whose turns run only through the guest.

@@ -1,7 +1,7 @@
 //! Stock agent turns over the public Actors runtime and an injected placement.
 use super::{Composition, Hosted, Verifier};
 use crate::{
-    Error, Result,
+    Error,
     agent::IntentId,
     context::CompactionPolicy,
     conversation::Limits,
@@ -90,6 +90,61 @@ impl Drop for Runtime {
     }
 }
 
+/// Startup failed, or retained the exact uncertain root for caller-owned recovery.
+#[derive(thiserror::Error)]
+pub enum ActorsError<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static> {
+    /// A definitive opening or serving failure.
+    #[error(transparent)]
+    Failed(#[from] Error),
+    /// No second request is prepared. Retain this composition and open it only
+    /// when the provider can make progress, or drop it on cancellation.
+    #[error("root publication unknown; retain and reopen the pending Actors composition")]
+    Unknown(Box<PendingActors<P, O>>),
+}
+
+impl<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static> std::fmt::Debug
+    for ActorsError<P, O>
+{
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Failed(error) => std::fmt::Debug::fmt(error, output),
+            Self::Unknown(pending) => output
+                .debug_tuple("Unknown")
+                .field(pending.prepared())
+                .finish(),
+        }
+    }
+}
+
+/// The original root publication, usable with the same [`super::serve`] entry.
+pub struct PendingActors<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static>(
+    hosting::Unsettled<P, O>,
+);
+
+impl<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static> PendingActors<P, O> {
+    /// The original immutable request and its publication custody.
+    #[must_use]
+    pub fn prepared(&self) -> &hosting::Prepared {
+        self.0.prepared()
+    }
+}
+
+impl<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static> Composition
+    for PendingActors<P, O>
+{
+    type Stream = P;
+    type Objects = O;
+    type Owner = Runtime;
+    type Error = ActorsError<P, O>;
+
+    fn open(
+        self,
+        _: &Arc<dyn Verifier>,
+    ) -> BoxProviderFuture<'static, std::result::Result<Hosted<P, O, Runtime>, Self::Error>> {
+        Box::pin(async move { started(self.0.resubmit().await.map_err(super::failed)?) })
+    }
+}
+
 impl<P, O> Composition for Actors<P, O>
 where
     P: AuthorityProvider + 'static,
@@ -98,11 +153,12 @@ where
     type Stream = P;
     type Objects = O;
     type Owner = Runtime;
+    type Error = ActorsError<P, O>;
 
     fn open(
         self,
         _: &Arc<dyn Verifier>,
-    ) -> BoxProviderFuture<'static, Result<Hosted<P, O, Runtime>>> {
+    ) -> BoxProviderFuture<'static, std::result::Result<Hosted<P, O, Runtime>, Self::Error>> {
         Box::pin(async move {
             let execution = self.execution;
             let tools = self.preset.tools(execution.workspace, execution.tools)?;
@@ -137,47 +193,49 @@ where
                 |turns| turns.with_prompt(self.preset.prompt.as_deref()),
             )
             .map_err(super::failed)?;
-            // Reopening repeats the identical root commit. An Unknown retains
-            // its prepared bytes and publication holds for exact resubmission.
-            let mut serving = hosting::serve(bound, self.platform, &self.root.0, self.root.1)
+            let serving = hosting::serve(bound, self.platform, &self.root.0, self.root.1)
                 .await
                 .map_err(super::failed)?;
-            let server = loop {
-                match serving {
-                    Serving::Served(server) => break server,
-                    Serving::Unknown(pending) => {
-                        serving = pending.resubmit().await.map_err(super::failed)?;
-                    }
-                }
-            };
-            let changes = server.bound().changes().map_err(super::failed)?;
-            let (completed, completion) = tokio::sync::oneshot::channel();
-            let running = server.clone();
-            let runtime = Runtime(tokio::spawn(async move {
-                let (failed, failure) = tokio::sync::oneshot::channel();
-                let failed = std::sync::Mutex::new(Some(failed));
-                let error = tokio::select! {
-                    error = running.run(|actor, error| {
-                        tracing::error!(?actor, %error, "actor delivery failed");
-                        if let Some(failed) = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
-                            let _ = failed.send(Error::Storage(error.to_string()));
-                        }
-                    }) => Error::Storage(error.to_string()),
-                    error = failure => error.unwrap_or_else(|_| Error::Storage("Actors delivery producer closed".into())),
-                };
-                let _ = completed.send(error);
-            }));
-            Ok(Hosted::new(
-                server,
-                Arc::new(acyclic_stream::SystemUnixMillisClock),
-                runtime,
-                Some(Arc::new(changes)),
-            )
-            .with_completion(async move {
-                Err(completion.await.unwrap_or_else(|_| {
-                    Error::Storage("Actors runtime completion producer closed".into())
-                }))
-            }))
+            started(serving)
         })
     }
+}
+
+fn started<P: AuthorityProvider + 'static, O: AsyncObjectStore + 'static>(
+    serving: Serving<P, O>,
+) -> std::result::Result<Hosted<P, O, Runtime>, ActorsError<P, O>> {
+    let server = match serving {
+        Serving::Served(server) => server,
+        Serving::Unknown(pending) => {
+            return Err(ActorsError::Unknown(Box::new(PendingActors(pending))));
+        }
+    };
+    let changes = server.bound().changes().map_err(super::failed)?;
+    let (completed, completion) = tokio::sync::oneshot::channel();
+    let running = server.clone();
+    let runtime = Runtime(tokio::spawn(async move {
+        let (failed, failure) = tokio::sync::oneshot::channel();
+        let failed = std::sync::Mutex::new(Some(failed));
+        let error = tokio::select! {
+            error = running.run(|actor, error| {
+                tracing::error!(?actor, %error, "actor delivery failed");
+                if let Some(failed) = failed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take() {
+                    let _ = failed.send(Error::Storage(error.to_string()));
+                }
+            }) => Error::Storage(error.to_string()),
+            error = failure => error.unwrap_or_else(|_| Error::Storage("Actors delivery producer closed".into())),
+        };
+        let _ = completed.send(error);
+    }));
+    Ok(Hosted::new(
+        server,
+        Arc::new(acyclic_stream::SystemUnixMillisClock),
+        runtime,
+        Some(Arc::new(changes)),
+    )
+    .with_completion(async move {
+        Err(completion
+            .await
+            .unwrap_or_else(|_| Error::Storage("Actors runtime completion producer closed".into())))
+    }))
 }
