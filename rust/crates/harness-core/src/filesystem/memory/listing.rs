@@ -199,7 +199,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
             .await?;
         _page_custody = custody;
         let wire = list_files_page_wire(&generation, &page)?;
-        let (value, custody) = crate::tool::value(&wire, maximum_bytes, Some(work))?;
+        let (value, custody) = crate::tool::value(&wire, Some(maximum_bytes), Some(work))?;
         let output = (
             ToolResult { value },
             custody.ok_or(Error::NativeBoundary {
@@ -387,7 +387,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
             self.maximum_bytes
                 .min(context.effective_scope().limits().render_bytes)
         });
-        let (value, _) = crate::tool::value(&wire, maximum_bytes, None)?;
+        let (value, _) = crate::tool::value(&wire, Some(maximum_bytes), None)?;
         Ok(ToolResult { value })
     }
 
@@ -632,7 +632,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolProjec
                     kind: "json",
                     value: &result.value,
                 },
-                acyclic_stream::MAX_RECORD_BYTES as u64,
+                Some(acyclic_stream::MAX_RECORD_BYTES as u64),
                 Some(work),
             );
         }
