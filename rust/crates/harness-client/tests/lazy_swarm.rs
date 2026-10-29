@@ -169,6 +169,7 @@ impl Swarm {
                     parent: Some(agent(root, None)),
                     forked_at: FORKED_AT,
                     conversation_tail: INHERITED,
+                    checkpoint: None,
                     volumes: Vec::new(),
                     brief: None,
                     policy: None,

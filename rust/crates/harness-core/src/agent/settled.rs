@@ -11,7 +11,7 @@
 use super::{
     AgentPath, AgentRecord as _, ConversationEntry, Error, Phase, StatusRecord, inbox_tail,
 };
-use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProvider};
+use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProviderExt as _};
 use futures::TryStreamExt as _;
 
 /// `agent`'s phase if it has settled every inbox record committed before this
@@ -21,7 +21,7 @@ use futures::TryStreamExt as _;
 /// # Errors
 /// [`Error::NoSuchAgent`] when `agent` was never created; stream failures and
 /// malformed records as themselves.
-pub async fn settled<P: StreamProvider + ?Sized>(
+pub async fn settled<P: crate::store::JournalProvider + ?Sized>(
     provider: &P,
     agent: &AgentPath,
 ) -> Result<Option<Phase>, Error> {
@@ -45,7 +45,7 @@ pub async fn settled<P: StreamProvider + ?Sized>(
 ///
 /// # Errors
 /// Stream failures and malformed records as themselves.
-pub async fn answer<P: StreamProvider + ?Sized>(
+pub async fn answer<P: crate::store::JournalProvider + ?Sized>(
     provider: &P,
     agent: &AgentPath,
 ) -> Result<Option<ConversationEntry>, Error> {
@@ -63,13 +63,14 @@ pub async fn answer<P: StreamProvider + ?Sized>(
     }
 }
 
-async fn record<P: StreamProvider + ?Sized>(
+async fn record<P: crate::store::JournalProvider + ?Sized>(
     provider: &P,
     status: &StreamPath,
     sequence: u64,
 ) -> Result<StatusRecord, Error> {
     let mut records = provider
         .read(ReadRequest {
+            key: None,
             path: status.clone(),
             from: sequence,
             limit: 1,

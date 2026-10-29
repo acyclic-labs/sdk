@@ -66,6 +66,7 @@ async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_paylo
                 StatusRecord {
                     phase: Phase::Running,
                     cursor,
+                    conversation: 1,
                 }
                 .append_record()
             })
@@ -102,6 +103,7 @@ async fn real_json_status_bootstraps_head_filters_keys_and_rejects_invalid_paylo
                 host: "codex".into(),
             },
             cursor: 64,
+            conversation: 1,
         };
         append(&memory, path.clone(), vec![attention.append_record()?]).await?;
         assert_eq!(status(&mut observer).await?, attention);

@@ -1024,7 +1024,7 @@ struct FilesystemTurnChildren<P: ?Sized, A: 'static, O: 'static> {
 
 impl<P, A, O> crate::agent::TurnChildren for FilesystemTurnChildren<P, A, O>
 where
-    P: StreamProvider + ?Sized + 'static,
+    P: crate::store::JournalProvider + ?Sized + 'static,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

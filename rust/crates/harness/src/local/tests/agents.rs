@@ -189,18 +189,13 @@ async fn a_shell_call_stages_its_output_on_the_private_volume() -> Result<()> {
     let harness = Arc::new(LocalHarness::open(config).await?);
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
-    let mut failures = harness
-        .agent_failures()
-        .ok_or_else(|| Error::NotFound("agent failures".into()))?;
     conversation(&harness)
         .await?
         .send("shell", "run one command")
         .await?;
-    let entries = tokio::select! {
-        result = settled(&agents, &root) => result,
-        failure = failures.recv() => Err(Error::Conflict(format!("shell turn failed before settlement: {failure:?}"))),
-    };
-    let entries = entries.inspect_err(|_| {
+    // A turn that fails for good commits its agent's failure, which
+    // settlement reports.
+    let entries = settled(&agents, &root).await.inspect_err(|_| {
         let _ = waits.report(&mut std::io::stderr());
     })?;
     let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
@@ -489,18 +484,18 @@ async fn a_reopened_turn_replays_its_recorded_hook_outcome() -> Result<()> {
         }),
     );
     let harness = open(pending.clone()).await?;
-    harness.agents().await?;
-    let mut failures = harness
-        .agent_failures()
-        .ok_or_else(|| Error::NotFound("agent failures".into()))?;
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
     conversation(&harness)
         .await?
         .send("hooked", "hello")
         .await?;
     tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        // A turn that fails for good commits its agent's failure, so the
+        // agent settling before dispatch is that failure.
         tokio::select! {
             request = requests.recv() => request.ok_or_else(|| Error::Storage("model dispatch producer closed".into())),
-            failure = failures.recv() => Err(Error::Conflict(format!("hooked turn failed before model dispatch: {failure:?}"))),
+            settled = settled(&agents, &root) => Err(Error::Conflict(format!("hooked turn ended before model dispatch: {:?}", settled.map(|entries| entries.len())))),
         }
     })
     .await
