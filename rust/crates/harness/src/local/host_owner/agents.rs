@@ -237,11 +237,11 @@ impl HostDriver {
         })
     }
 
-    /// Reads one file the agent names: on its own volumes, or a brief on
-    /// its parent's.
+    /// Reads one file on the agent's own volumes, or the exact brief its
+    /// adoption named.
     pub(super) async fn read(&self, agent: &AgentState, file: &FileRef) -> Result<Vec<u8>> {
         let content = self
-            .content(agent, MAXIMUM_BYTES, std::slice::from_ref(file))
+            .content(agent, MAXIMUM_BYTES, agent.brief_grant(file))
             .await?;
         Ok(content
             .reader

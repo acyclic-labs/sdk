@@ -267,11 +267,15 @@ pub enum AgentCommand {
         text: String,
     },
     /// The command whose encoding is the `parts` staged under `digest`, in
-    /// order, `bytes` long. The host runs it exactly as if sent in one frame.
+    /// order, `bytes` long. The host authorizes this head, which names
+    /// everything authorization needs, before it reads any part, then runs
+    /// the command exactly as if sent in one frame.
     Staged {
         /// The staged command's agent.
         #[cfg_attr(feature = "wasm", tsify(type = "string"))]
         agent: AgentPath,
+        /// The staged command's kind.
+        command: String,
         /// BLAKE3 of the whole encoding, lowercase hex.
         digest: String,
         /// Number of staged parts.
@@ -356,6 +360,29 @@ impl AgentCommand {
             | Self::Read { agent, .. }
             | Self::Stage { agent, .. }
             | Self::Staged { agent, .. } => Some(agent),
+        }
+    }
+
+    /// This command's kind, as its encoding tags it.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Bind {} => "bind",
+            Self::Root {} => "root",
+            Self::Prompt { .. } => "prompt",
+            Self::Cancel { .. } => "cancel",
+            Self::Compact { .. } => "compact",
+            Self::Rewind { .. } => "rewind",
+            Self::ClearAll { .. } => "clear_all",
+            Self::Spawn { .. } => "spawn",
+            Self::Children { .. } => "children",
+            Self::Approvals { .. } => "approvals",
+            Self::Decide { .. } => "decide",
+            Self::Reply { .. } => "reply",
+            Self::Settlement { .. } => "settlement",
+            Self::Read { .. } => "read",
+            Self::Stage { .. } => "stage",
+            Self::Staged { .. } => "staged",
         }
     }
 }
@@ -485,6 +512,7 @@ impl PreparedCommand {
             .collect::<Result<Vec<_>, _>>()?;
         let head = frame(&AgentCommand::Staged {
             agent: agent.clone(),
+            command: command.kind().to_owned(),
             digest: digest.clone(),
             parts: u32::try_from(parts.len()).map_err(|_| CommandError::Invalid)?,
             bytes: bytes.len() as u64,
@@ -607,6 +635,7 @@ mod tests {
         }
         assert_eq!(assembled.as_bytes(), prepared.command_bytes());
         let AgentCommand::Staged {
+            command: kind,
             digest,
             parts,
             bytes,
@@ -615,6 +644,7 @@ mod tests {
         else {
             return Err("expected a staged head".into());
         };
+        assert_eq!(kind, "prompt");
         assert_eq!(parts as usize, prepared.parts().len());
         assert_eq!(bytes as usize, assembled.len());
         assert_eq!(digest, blake3::hash(assembled.as_bytes()).to_hex().as_str());

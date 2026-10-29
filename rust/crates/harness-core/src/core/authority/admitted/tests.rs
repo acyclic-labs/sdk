@@ -991,7 +991,8 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
                 brief: None,
                 policy: None,
             },
-        );
+        )
+        .expect("adopts");
         let executors = Arc::new(Executed(AtomicUsize::new(0)));
         let input = crate::model::ModelContent::Text("turn".into());
         for held in [true, false] {

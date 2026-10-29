@@ -455,6 +455,7 @@ mod tests {
                     path: path.clone(),
                     volumes: adopted.volumes.clone(),
                     policy: adopted.policy.clone(),
+                    brief: Some([u8::MAX; 32]),
                     conversation_base: u64::MAX,
                     conversation_tail: u64::MAX,
                     checkpoint: Some(u64::MAX),

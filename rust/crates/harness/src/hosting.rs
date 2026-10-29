@@ -615,7 +615,10 @@ where
 
     /// The whole encoding of a staged command: its `parts`, staged by `by`
     /// under `digest` in `agent`'s private volume, in order, checked against
-    /// the digest and length its head names.
+    /// the digest and length its head names. It runs only for an authorized
+    /// head, and holds at most what that same caller already staged: each
+    /// part is hashed as it is read, and assembly stops at the first part
+    /// that is missing or overruns the head's length.
     async fn assemble(
         &self,
         agent: &AgentPath,
@@ -626,6 +629,7 @@ where
     ) -> Result<Vec<u8>, Error> {
         let agent = self.within_tree(agent)?;
         let mut whole = Vec::new();
+        let mut hasher = blake3::Hasher::new();
         for part in 0..parts {
             let intent = part_intent(digest, part)?;
             let file = self
@@ -640,9 +644,10 @@ where
             if text.len() as u64 != length || (whole.len() + text.len()) as u64 > bytes {
                 return Err(Error::Record("staged command parts exceed their length"));
             }
+            hasher.update(&text);
             whole.extend_from_slice(&text);
         }
-        if whole.len() as u64 != bytes || blake3::hash(&whole).to_hex().as_str() != digest {
+        if whole.len() as u64 != bytes || hasher.finalize().to_hex().as_str() != digest {
             return Err(Error::Record(
                 "staged command parts do not match their digest",
             ));
@@ -760,21 +765,35 @@ where
             let by = Sender::User {
                 principal: principal.id.clone(),
             };
-            // A staged command is authorized, run and answered as the whole
-            // command its parts assemble to.
+            let attributes = acyclic_auth::contract::RecordAttributes::try_new(Vec::new())
+                .map_err(|_| StreamError::InvalidArgument)?;
+            let authorize = async |command: &AgentCommand| {
+                let policy = server.platform.policy(&principal, command).await?;
+                authorization.authorize(&server.resource, &[], &attributes, policy)
+            };
+            // Every command, a staged head included, is authorized as it
+            // arrives: a head names its agent and kind, so a denied caller
+            // makes the host read no part.
+            authorize(call.command()).await?;
+            // A staged command is then run and answered as the whole command
+            // its parts assemble to, itself authorized like one frame.
             let call = match call.command() {
                 AgentCommand::Staged {
                     agent,
                     digest,
                     parts,
                     bytes,
+                    ..
                 } => {
                     let whole = server.assemble(agent, &by, digest, *parts, *bytes).await;
                     match whole.and_then(|whole| {
                         call.assembled(&whole)
                             .map_err(|_| Error::Record("a staged command does not decode"))
                     }) {
-                        Ok(whole) => whole,
+                        Ok(whole) => {
+                            authorize(whole.command()).await?;
+                            whole
+                        }
                         Err(error) => {
                             return call
                                 .reply(&Err(error))
@@ -784,10 +803,6 @@ where
                 }
                 _ => call,
             };
-            let policy = server.platform.policy(&principal, call.command()).await?;
-            let attributes = acyclic_auth::contract::RecordAttributes::try_new(Vec::new())
-                .map_err(|_| StreamError::InvalidArgument)?;
-            authorization.authorize(&server.resource, &[], &attributes, policy)?;
             server.platform.admitted().await?;
             let approver = server.platform.approver(&principal);
             let result = server.dispatch(call.command(), &by, &approver).await;

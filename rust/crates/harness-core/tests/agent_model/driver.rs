@@ -306,7 +306,7 @@ async fn provider_failures_commit_terminal_status_while_uncertain_errors_propaga
         let result = step(
             &driver,
             &path,
-            Some(AgentState::adopted(path.clone(), &adopted(id(1)))),
+            Some(AgentState::adopted(path.clone(), &adopted(id(1))).expect("adopts")),
             1,
             Wake::Inbox {
                 sequence: 1,
@@ -362,7 +362,7 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
                 id: intent("sent"),
                 body: body.clone(),
             });
-        let state = AgentState::adopted(path, &adopted(id(1)));
+        let state = AgentState::adopted(path, &adopted(id(1))).expect("adopts");
         let input = Queued {
             inbox: 0,
             input: request("input")?.1,
@@ -392,7 +392,7 @@ async fn settled_turns_keep_actions_recorded_before_a_later_provider_failure() -
 #[tokio::test]
 async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> Result {
     let path = AgentPath::root(&id(1));
-    let state = AgentState::adopted(path.clone(), &adopted(id(1)));
+    let state = AgentState::adopted(path.clone(), &adopted(id(1))).expect("adopts");
     let approval = OperationId::from_bytes([9; 16]);
     let (script, driver) = driver(vec![ExecutionProgress::Pending(approval)]);
     let first = step(
@@ -440,7 +440,7 @@ async fn an_approval_pause_keeps_the_operation_and_ignores_other_approvals() -> 
 #[tokio::test]
 async fn a_refused_approval_fails_the_agent() -> Result {
     let path = AgentPath::root(&id(1));
-    let state = AgentState::adopted(path.clone(), &adopted(id(1)));
+    let state = AgentState::adopted(path.clone(), &adopted(id(1))).expect("adopts");
     let (_, driver) = driver(vec![ExecutionProgress::Rejected(
         InteractionRejection::Declined,
     )]);
@@ -470,7 +470,7 @@ async fn a_refused_approval_fails_the_agent() -> Result {
 #[test]
 fn distinct_inputs_start_distinct_turns() -> Result {
     let path = AgentPath::root(&id(1));
-    let state = AgentState::adopted(path, &adopted(id(1)));
+    let state = AgentState::adopted(path, &adopted(id(1))).expect("adopts");
     let input = |id: &str| -> Result<TurnInput> { Ok(request(id)?.1) };
     assert_eq!(
         turn_id(&state, &input("a")?)?,
@@ -577,7 +577,7 @@ fn continuation(step: &Step, path: &AgentPath) -> Option<Message> {
 #[tokio::test]
 async fn an_active_goal_continues_through_the_own_inbox_until_its_allowance_blocks_it() -> Result {
     let path = AgentPath::root(&id(1));
-    let mut state = AgentState::adopted(path.clone(), &adopted(id(1)));
+    let mut state = AgentState::adopted(path.clone(), &adopted(id(1))).expect("adopts");
     let goal = Arc::new(Goal {
         status: Mutex::new(GoalStatus::Active),
         rewrites: Mutex::new(Vec::new()),

@@ -681,9 +681,19 @@ async fn checkout_with(
     Arc<LocalHarness>,
     Arc<ScriptedModelProvider>,
 )> {
+    checkout_scripted(files, text()).await
+}
+
+async fn checkout_scripted(
+    files: &[(String, Vec<u8>)],
+    provider: Arc<ScriptedModelProvider>,
+) -> Result<(
+    tempfile::TempDir,
+    Arc<LocalHarness>,
+    Arc<ScriptedModelProvider>,
+)> {
     let directory = tempfile::tempdir().map_err(agent)?;
     std::fs::create_dir(directory.path().join(".git")).map_err(agent)?;
-    let provider = text();
     let harness = Arc::new(
         LocalHarness::open(super::checkout_config(
             directory.path(),
@@ -876,6 +886,7 @@ async fn a_ten_mebibyte_prompt_is_accepted_and_reads_back_exactly() -> Result<()
     let digest = blake3::hash(b"{}").to_hex().to_string();
     let head = |digest: &str| AgentCommand::Staged {
         agent: root.clone(),
+        command: "prompt".into(),
         digest: digest.to_owned(),
         parts: 1,
         bytes: 2,
@@ -896,7 +907,9 @@ async fn a_ten_mebibyte_prompt_is_accepted_and_reads_back_exactly() -> Result<()
 #[tokio::test]
 async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Result<()> {
     use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
-    let (_directory, harness, _provider) = checkout_with(&[]).await?;
+    // The child's brief turn, then the parent's own.
+    let turns = ["child", "parent"].map(|text| super::ScriptedTurn::Text(text.into()));
+    let (_directory, harness, _provider) = checkout_scripted(&[], super::scripted(turns)).await?;
     let (agents, root) = harness.agents().await?;
     let (agents, root) = (Arc::clone(agents), root.clone());
     let connection = harness.connect().await?;
@@ -918,8 +931,31 @@ async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Res
             "the child's first input is not its brief".into(),
         ));
     };
-    let read = Conversation::read(&connection, &root, ReadTarget::File { file: *file }).await?;
+    let read = Conversation::read(&connection, &child, ReadTarget::File { file: *file }).await?;
     assert!(read == brief.as_bytes());
+    // Negative control: the child reads no other file of its parent's.
+    let client = conversation(&harness).await?;
+    client.send("other", "a parent's own prompt").await?;
+    let entries = settled(&agents, &root).await?;
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let TurnInput::Message { body, .. } = entry.input else {
+        return Err(Error::Invalid(
+            "the parent's input is not its prompt".into(),
+        ));
+    };
+    assert!(
+        Conversation::read(
+            &connection,
+            &child,
+            ReadTarget::File {
+                file: (*body).clone()
+            }
+        )
+        .await
+        .is_err()
+    );
+    // The parent reads it, so the refusal is the grant's.
+    Conversation::read(&connection, &root, ReadTarget::File { file: *body }).await?;
     // A retried spawn names the same child.
     assert!(matches!(
         connection.execute(&spawn).await?,

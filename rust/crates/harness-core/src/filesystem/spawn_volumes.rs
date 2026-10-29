@@ -266,7 +266,7 @@ where
                         Some(parent) => parent.child(&adopted.agent).map_err(guest)?,
                         None => AgentPath::root(&adopted.agent),
                     };
-                    AgentState::adopted(path, &adopted)
+                    AgentState::adopted(path, &adopted).map_err(guest)?
                 }
                 _ => return Err(guest("first agent input is not ForkAdopted")),
             },

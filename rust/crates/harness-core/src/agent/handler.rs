@@ -207,7 +207,7 @@ impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
             {
                 return Err(Error::Record("agent adoption cursor differs"));
             }
-            AgentState::adopted(agent.clone(), adopted)
+            AgentState::adopted(agent.clone(), adopted)?
         };
         if &observed.path != agent || observed.parent != agent.parent() {
             return Err(Error::Record("agent state binding differs"));
