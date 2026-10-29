@@ -359,7 +359,7 @@ async fn browser_form_uploads_are_explicitly_unsupported() -> S3Result {
 #[tokio::test]
 async fn adapter_uses_one_workspace_and_generation_stable_pagination() -> S3Result {
     let adapter = adapter(true).await?;
-    for (operation, key) in [("one", "a"), ("two", "b")] {
+    for (operation, key) in [("one".repeat(1024), "a"), ("two".repeat(1024), "b")] {
         let mut request = request(PutObjectInput {
             body: Some(body(Bytes::copy_from_slice(key.as_bytes()))),
             bucket: "bucket".to_owned(),
@@ -369,7 +369,7 @@ async fn adapter_uses_one_workspace_and_generation_stable_pagination() -> S3Resu
         });
         request.headers.insert(
             IDEMPOTENCY_HEADER,
-            HeaderValue::from_str(operation).map_err(|_| s3s::s3_error!(InternalError))?,
+            HeaderValue::from_str(&operation).map_err(|_| s3s::s3_error!(InternalError))?,
         );
         S3::put_object(&adapter, request).await?;
     }

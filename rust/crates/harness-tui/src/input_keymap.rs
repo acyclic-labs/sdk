@@ -90,16 +90,23 @@ impl InputKeymap {
     }
 
     pub(crate) fn has_prefix(&self, prefix: &str) -> bool {
+        let extends = |source: &str| {
+            source
+                .strip_prefix(prefix)
+                .is_some_and(|suffix| suffix.starts_with(' '))
+        };
         KEYMAP
             .iter()
             .map(|binding| binding.chord)
-            .chain(self.overrides.keys().map(String::as_str))
-            .any(|source| {
-                source
-                    .split_once(' ')
-                    .is_some_and(|(first, _)| first == prefix)
-                    && self.resolve(source).is_some()
-            })
+            .any(|source| extends(source) && self.resolve(source).is_some())
+            || self
+                .overrides
+                .range::<str, _>((
+                    std::ops::Bound::Excluded(prefix),
+                    std::ops::Bound::Unbounded,
+                ))
+                .take_while(|(source, _)| extends(source))
+                .any(|(_, action)| !action.is_empty())
     }
 
     /// Generate help for the effective map, including overrides and disabled keys.
@@ -118,59 +125,57 @@ impl InputKeymap {
 }
 
 pub(crate) fn canonical_chord(chord: &str) -> Option<String> {
-    let keys: Vec<_> = chord.split(' ').collect();
-    if keys.is_empty() || keys.len() > 2 {
-        return None;
-    }
-    keys.into_iter()
-        .map(|mut key| {
-            let mut modifiers = KeyModifiers::NONE;
-            for (prefix, modifier) in [
-                ("Ctrl+", KeyModifiers::CONTROL),
-                ("Alt+", KeyModifiers::ALT),
-                ("Shift+", KeyModifiers::SHIFT),
-                ("Super+", KeyModifiers::SUPER),
-            ] {
-                if let Some(rest) = key.strip_prefix(prefix) {
-                    key = rest;
-                    modifiers.insert(modifier);
-                }
+    let mut canonical = String::new();
+    for mut key in chord.split(' ') {
+        let mut modifiers = KeyModifiers::NONE;
+        for (prefix, modifier) in [
+            ("Ctrl+", KeyModifiers::CONTROL),
+            ("Alt+", KeyModifiers::ALT),
+            ("Shift+", KeyModifiers::SHIFT),
+            ("Super+", KeyModifiers::SUPER),
+        ] {
+            if let Some(rest) = key.strip_prefix(prefix) {
+                key = rest;
+                modifiers.insert(modifier);
             }
-            let code = match key {
-                "Left" => KeyCode::Left,
-                "Right" => KeyCode::Right,
-                "Up" => KeyCode::Up,
-                "Down" => KeyCode::Down,
-                "Home" => KeyCode::Home,
-                "End" => KeyCode::End,
-                "Backspace" => KeyCode::Backspace,
-                "Delete" => KeyCode::Delete,
-                "Insert" => KeyCode::Insert,
-                "Space" => KeyCode::Char(' '),
-                key if key.starts_with('F') => {
-                    let number = key.strip_prefix('F')?.parse::<u8>().ok()?;
-                    if !(1..=24).contains(&number) {
-                        return None;
-                    }
-                    KeyCode::F(number)
+        }
+        let code = match key {
+            "Left" => KeyCode::Left,
+            "Right" => KeyCode::Right,
+            "Up" => KeyCode::Up,
+            "Down" => KeyCode::Down,
+            "Home" => KeyCode::Home,
+            "End" => KeyCode::End,
+            "Backspace" => KeyCode::Backspace,
+            "Delete" => KeyCode::Delete,
+            "Insert" => KeyCode::Insert,
+            "Space" => KeyCode::Char(' '),
+            key if key.starts_with('F') => {
+                let number = key.strip_prefix('F')?.parse::<u8>().ok()?;
+                if number == 0 {
+                    return None;
                 }
-                "Enter" => KeyCode::Enter,
-                "Tab" => KeyCode::Tab,
-                "Esc" => KeyCode::Esc,
-                "PageUp" => KeyCode::PageUp,
-                "PageDown" => KeyCode::PageDown,
-                _ => {
-                    let mut chars = key.chars();
-                    let character = chars.next()?;
-                    if chars.next().is_some() || character.is_control() || character.is_uppercase()
-                    {
-                        return None;
-                    }
-                    KeyCode::Char(character)
+                KeyCode::F(number)
+            }
+            "Enter" => KeyCode::Enter,
+            "Tab" => KeyCode::Tab,
+            "Esc" => KeyCode::Esc,
+            "PageUp" => KeyCode::PageUp,
+            "PageDown" => KeyCode::PageDown,
+            _ => {
+                let mut chars = key.chars();
+                let character = chars.next()?;
+                if chars.next().is_some() || character.is_control() || character.is_uppercase() {
+                    return None;
                 }
-            };
-            crate::key_decode::key_chord(KeyEvent::new(code, modifiers))
-        })
-        .collect::<Option<Vec<_>>>()
-        .map(|keys| keys.join(" "))
+                KeyCode::Char(character)
+            }
+        };
+        let key = crate::key_decode::event_chord(KeyEvent::new(code, modifiers))?;
+        if !canonical.is_empty() {
+            canonical.push(' ');
+        }
+        canonical.push_str(&key);
+    }
+    Some(canonical)
 }
