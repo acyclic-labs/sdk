@@ -6,7 +6,9 @@ use std::ops::Range;
 
 /// `text` presented as markdown with tables sized to `width` columns: its
 /// visible text, lines joined by `\n`, and the style of each styled byte
-/// range of it, in order and disjoint.
+/// range of it, in order and disjoint. A link shows its destination after
+/// its label, `label (url)`, unless the label is the destination itself, so
+/// it stays readable and a terminal can open it.
 #[must_use]
 pub fn render(text: &str, width: usize) -> (String, Vec<(Range<usize>, Style)>) {
     let mut parser =
@@ -18,13 +20,38 @@ pub fn render(text: &str, width: usize) -> (String, Vec<(Range<usize>, Style)>) 
         if index > 0 {
             shown.push('\n');
         }
-        for span in &line.spans {
+        let mut label = String::new();
+        for (at, span) in line.spans.iter().enumerate() {
             let start = shown.len();
             shown.push_str(&span.text);
             let style = style(span.style);
             if style != Style::default() {
                 styles.push((start..shown.len(), style));
             }
+            let Some(link) = &span.link else {
+                continue;
+            };
+            label.push_str(&span.text);
+            // A link's label may span several styled spans: its destination
+            // follows the last of them.
+            let continues = line
+                .spans
+                .get(at + 1)
+                .is_some_and(|next| next.link.as_ref() == Some(link));
+            if continues {
+                continue;
+            }
+            if label.trim() != link.as_ref() {
+                shown.push_str(" (");
+                let start = shown.len();
+                shown.push_str(link);
+                styles.push((
+                    start..shown.len(),
+                    Style::default().add_modifier(Modifier::UNDERLINED),
+                ));
+                shown.push(')');
+            }
+            label.clear();
         }
     }
     (shown, styles)
@@ -60,5 +87,13 @@ mod tests {
         let (range, style) = &styles[0];
         assert_eq!(&shown[range.clone()], "test answer");
         assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn a_link_keeps_its_destination() {
+        let (shown, _) = render("see [the **docs**](https://example.com/a) now", 80);
+        assert_eq!(shown, "see the docs (https://example.com/a) now");
+        let (shown, _) = render("<https://example.com/b>", 80);
+        assert_eq!(shown, "https://example.com/b");
     }
 }
