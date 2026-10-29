@@ -31,7 +31,7 @@ export interface WasmNativeLimitsWire {
     readonly file_bytes: bigint;
     readonly path_bytes: bigint | null;
     readonly attachments: bigint | null;
-    readonly render_bytes: bigint;
+    readonly render_bytes: bigint | null;
     readonly model_steps: bigint | null;
     readonly model_events_per_step: bigint | null;
     readonly tool_calls_per_step: bigint | null;
@@ -143,7 +143,7 @@ export interface WasmModelLimitsInput {
     readonly file_bytes: number | bigint;
     readonly path_bytes: number | bigint | null;
     readonly attachments: number | bigint | null;
-    readonly render_bytes: number | bigint;
+    readonly render_bytes: number | bigint | null;
     readonly model_steps: number | bigint | null;
     readonly model_events_per_step: number | bigint | null;
     readonly tool_calls_per_step: number | bigint | null;
