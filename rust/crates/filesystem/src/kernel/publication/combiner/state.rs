@@ -221,10 +221,12 @@ impl<T, R: Copy> State<T, R> {
         let Some(index) = index else {
             return;
         };
+        // A pending seal must observe caller loss. A completed seal no longer
+        // reads this marker, so the owned durable append remains uncancellable.
+        if let Some(member) = self.members.get_mut(index) {
+            member.withdrawn = true;
+        }
         if matches!(self.phase, Phase::Collecting | Phase::Admitting) {
-            if let Some(member) = self.members.get_mut(index) {
-                member.withdrawn = true;
-            }
             // The collection-window owner cannot leave other admitted
             // proposals waiting for a host-turn future that no longer exists.
             if index == 0 {
@@ -246,6 +248,12 @@ impl<T, R: Copy> State<T, R> {
             .iter()
             .filter(|member| member.selected)
             .map(|member| &member.value)
+    }
+    pub(super) fn selected_at(&self, index: usize) -> Option<(&T, bool)> {
+        self.members
+            .get(index)
+            .filter(|member| member.selected)
+            .map(|member| (&member.value, member.withdrawn))
     }
     pub(super) fn tail(&self) -> Option<R> {
         self.members
