@@ -49,7 +49,7 @@ mod tests {
 
     #[tokio::test]
     async fn selected_compaction_publishes_only_the_signed_working_cut() -> Result<()> {
-        let (journal, _) = super::super::test_support::journal().await?;
+        let (journal, _issuer) = super::super::test_support::journal().await?;
         let selected = crate::projection::SelectedModelContext {
             selection: crate::conversation::ModelContextSelection {
                 conversation_revision: 3,
