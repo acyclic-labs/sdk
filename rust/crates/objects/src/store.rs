@@ -368,6 +368,17 @@ impl<M: Medium> Account<M> {
             .await
     }
 
+    /// Reads observe an already opened writer authority; they never claim a
+    /// run on the selected medium. A fresh reader has no local revision proof.
+    async fn read_revision(&self) -> Result<Option<Revision>, Error> {
+        self.scrubbed().await?;
+        Ok(self
+            .state
+            .revisions
+            .get()
+            .map(|issued| issued.applied.current()))
+    }
+
     /// Waits until the medium is as a clean close leaves it.
     async fn scrubbed(&self) -> Result<(), Error> {
         if self.medium.recovered() {
@@ -1241,7 +1252,7 @@ impl<M: Medium> Account<M> {
         maximum_bytes: u64,
     ) -> Result<Object, Error> {
         // Everything committed by `served` is visible to the read after it.
-        let served = self.issued().await?.applied.current();
+        let served = self.read_revision().await?;
         // Reading the payload proves the blob complete; an empty selection
         // reads none, so it checks the payload instead.
         let (_, envelope) = self
@@ -1281,10 +1292,7 @@ impl<M: Medium> Account<M> {
         if body.len() as u64 != selected.end - selected.start {
             return Err(corrupt());
         }
-        Ok(
-            Object::new(Self::head_of(digest, envelope), selected.start, body)
-                .served_at(Some(served)),
-        )
+        Ok(Object::new(Self::head_of(digest, envelope), selected.start, body).served_at(served))
     }
 
     pub(crate) async fn put_inner(
@@ -1365,7 +1373,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
     }
 
     async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error> {
-        self.scrubbed().await?;
+        self.issued().await?;
         self.flush_blobs(only, Vec::new()).await?;
         // A blob collected since its put is not durable however flushed.
         for digest in only.into_iter().flatten() {
@@ -1387,13 +1395,13 @@ impl<M: Medium> crate::Blobs for Account<M> {
     }
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
-        let served = self.issued().await?.applied.current();
+        let served = self.read_revision().await?;
         let envelope = self
             .blob(&digest)
             .await?
             .ok_or(Error::from(ErrorCode::NotFound))?;
         let mut head = Self::head_of(digest, envelope);
-        head.revision = Some(served);
+        head.revision = served;
         Ok(head)
     }
 
@@ -1416,7 +1424,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
         if limit == 0 {
             return Err(invalid());
         }
-        let served = self.issued().await?.applied.current();
+        let served = self.read_revision().await?;
         let after = after.map(|digest| self.envelope_key(&digest));
         let limit = usize::try_from(limit).map_err(|_| invalid())?;
         // Envelopes still awaiting their payload are not blobs: page past
@@ -1447,7 +1455,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
         Ok(Page {
             digests,
             next,
-            revision: Some(served),
+            revision: served,
         })
     }
 
@@ -1648,7 +1656,8 @@ impl<M: Medium> crate::Blobs for Account<M> {
     }
 
     async fn revisions(&self) -> Result<Option<&AppliedRevisions>, Error> {
-        Ok(Some(&self.issued().await?.applied))
+        self.scrubbed().await?;
+        Ok(self.state.revisions.get().map(|issued| &issued.applied))
     }
 
     /// Every run commits only after its write is visible on the medium, so a
@@ -1658,7 +1667,11 @@ impl<M: Medium> crate::Blobs for Account<M> {
         &self,
         mut minimum: acyclic_stream::RevisionCut,
     ) -> Result<acyclic_stream::RevisionCut, Error> {
-        let issued = self.issued().await?;
+        let Some(issued) = self.state.revisions.get() else {
+            // A stored run claim alone does not prove that this selected read
+            // has applied any index of it. Retain the caller's minimum.
+            return Ok(minimum);
+        };
         let incarnation = issued.applied.current().incarnation;
         let runs: Vec<_> = minimum
             .iter()

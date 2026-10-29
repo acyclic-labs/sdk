@@ -6,6 +6,9 @@ use acyclic_stream::OwnedBytes;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU8, Ordering};
 
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+mod read_admission;
+
 #[tokio::test]
 async fn memory_store_passes_the_shared_suite() -> Result<(), Box<dyn std::error::Error>> {
     let store = Store::new(MemoryMedium::default());
@@ -119,6 +122,7 @@ async fn stores_sharing_a_medium_serve_each_others_revisions()
     let medium = MemoryMedium::default();
     let first = Store::new(medium.clone()).account(b"shared")?;
     let second = Store::new(medium).account(b"shared")?;
+    first.flush(None).await?;
     let applied = first.revisions().await?.ok_or("stores issue revisions")?;
     let put = second.put(OwnedBytes::from(vec![4; 8]), Vec::new()).await?;
     let written = put
@@ -176,6 +180,7 @@ async fn a_reopened_store_serves_tokens_from_before_the_restart()
     drop(before);
 
     let reopened = open(root.path()).await?;
+    reopened.flush(None).await?;
     assert!(
         reopened
             .admitted(RevisionCut::of(written.clone()))
@@ -197,6 +202,7 @@ async fn a_reopened_store_serves_tokens_from_before_the_restart()
     std::fs::remove_dir_all(root.path())?;
     std::fs::create_dir(root.path())?;
     let wiped = open(root.path()).await?;
+    wiped.flush(None).await?;
     assert_eq!(
         wiped
             .admitted(RevisionCut::of(written))
@@ -309,7 +315,7 @@ async fn ambiguous_publication_is_unknown_and_retry_safe() -> Result<(), Box<dyn
     let blobs = store.account(b"account")?;
     let body = OwnedBytes::from(vec![1; 64]);
     // The fault lands on the publication, not on opening the revisions.
-    blobs.revisions().await?;
+    blobs.flush(None).await?;
     store.medium().faults.store(1, Ordering::SeqCst);
     assert_eq!(blobs.put(body.clone(), Vec::new()).await?, Put::Unknown);
     store.medium().faults.store(0, Ordering::SeqCst);
@@ -1196,8 +1202,8 @@ async fn equal_puts(
     let medium = Shared::default();
     let first = Store::new(medium.clone()).account(b"account")?;
     let second = Store::new(medium.clone()).account(b"account")?;
-    first.revisions().await?;
-    second.revisions().await?;
+    first.flush(None).await?;
+    second.flush(None).await?;
     let body = OwnedBytes::from(vec![9; 64]);
     let digest = Digest::of(&body);
     let (operation, fragment, skip) = stall;
@@ -2058,7 +2064,7 @@ async fn a_local_put_syncs_nothing_and_its_commit_syncs_its_closure_once()
     let root = tempfile::tempdir()?;
     let store = Store::new(crate::LocalMedium::open(root.path(), Default::default(), None).await?);
     let blobs = store.account(b"account")?;
-    blobs.revisions().await?;
+    blobs.flush(None).await?;
     let digest = |put: Put| {
         put.verified()
             .map(|verified| verified.digest)
