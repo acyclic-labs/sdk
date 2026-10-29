@@ -23,6 +23,7 @@ export async function registryFixture(t) {
     url: address.url,
     set: (body, status = 200) => exchange({ command: "set", body, status }),
     requests: async () => (await exchange({ command: "requests" })).requests,
+    observations: async () => (await exchange({ command: "requests" })).observations,
   };
 }
 
@@ -30,8 +31,10 @@ if (process.argv[2] === "serve") {
   let body = null;
   let status = 404;
   let requests = 0;
-  const server = createServer((_request, response) => {
+  let observations = [];
+  const server = createServer((request, response) => {
     requests += 1;
+    observations.push({ method: request.method, path: request.url });
     response.writeHead(status, { "Content-Type": "application/json" });
     response.end(JSON.stringify(body));
   });
@@ -42,8 +45,9 @@ if (process.argv[2] === "serve") {
       if (message.command === "set") {
         ({ body, status } = message);
         requests = 0;
+        observations = [];
       }
-      process.send({ requests });
+      process.send({ requests, observations });
     }
   });
   server.listen(0, "127.0.0.1", () => process.send({ url: `http://127.0.0.1:${server.address().port}` }));
