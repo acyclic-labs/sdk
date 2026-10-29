@@ -48,7 +48,7 @@ pub use process_tree::PreparedClosedProcess;
 #[cfg(not(target_arch = "wasm32"))]
 pub use process_tree::run_external_process_host;
 pub use process_tree::{
-    CaptureHandler, CaptureInput, CaptureOutcome, CaptureSchedule, OwnedCaptureInput,
+    CaptureHandler, CaptureInput, CaptureOutcome, CaptureSchedule, CaptureWakes, OwnedCaptureInput,
     ProcessCaptureFailure, ProcessCustody, ProcessCustodyLease, ProcessDrain, ProcessInput,
     ProcessOutput, ProcessReadiness, ProcessTree, ProcessTreeIo, ProcessTreeStorage,
     ProcessWaitOutcome, ProcessWake,
@@ -135,8 +135,8 @@ pub(crate) use blocking::{
     wait_measured_completion,
 };
 pub use task::{
-    AbortHandle, TaskHandle, TaskSpawner, coordination_runtime, spawn, spawn_blocking,
-    spawn_persistence,
+    AbortHandle, PersistenceRecursion, TaskHandle, TaskSpawner, coordination_runtime, spawn,
+    spawn_blocking, spawn_persistence,
 };
 mod completion;
 pub use completion::NativeCompletion;

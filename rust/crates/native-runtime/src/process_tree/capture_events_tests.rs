@@ -11,7 +11,9 @@ fn event_capture_child() -> io::Result<()> {
     let Some(mode) = std::env::var_os("ACYCLIC_TEST_EVENT_CAPTURE") else {
         return Ok(());
     };
-    if mode == "metered-write" {
+    if mode == "callback" {
+        println!("CALLBACK_DONE");
+    } else if mode == "metered-write" {
         // The parent deliberately leaves this full pipe undrained until its
         // stdin write is pending and the original caller has cancelled.
         std::io::stderr().write_all(&[b'x'; 128 * 1024])?;
@@ -59,7 +61,7 @@ fn event_capture_child() -> io::Result<()> {
     Ok(())
 }
 
-fn child(mode: &str) -> io::Result<ProcessTree> {
+pub(super) fn child(mode: &str) -> io::Result<ProcessTree> {
     let mut command = Command::new(std::env::current_exe()?);
     command
         .args([

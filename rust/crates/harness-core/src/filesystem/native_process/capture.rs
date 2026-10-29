@@ -59,8 +59,8 @@ where
         + 'static,
     C: Fn() -> std::io::Result<()> + Send + 'static,
 {
-    fn wakes(&self) -> &[acyclic_native_runtime::ProcessWake] {
-        self.wake.as_slice()
+    fn take_wakes(&mut self) -> std::io::Result<acyclic_native_runtime::CaptureWakes> {
+        Ok(self.wake.take().into())
     }
 
     fn check(&mut self) -> std::io::Result<()> {

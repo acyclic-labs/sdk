@@ -14,6 +14,8 @@ mod external_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub use external_host::run_external_process_host;
 #[cfg(test)]
+mod capture_callback_tests;
+#[cfg(test)]
 mod capture_events_tests;
 #[cfg(windows)]
 #[path = "capture_wait_windows.rs"]
@@ -30,7 +32,7 @@ mod job_members;
 mod pump;
 #[cfg(windows)]
 mod spawner;
-pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, OwnedCaptureInput};
+pub use pump::{CaptureHandler, CaptureOutcome, CaptureSchedule, CaptureWakes, OwnedCaptureInput};
 #[cfg(windows)]
 mod custodian_admission;
 mod custody;
@@ -874,29 +876,22 @@ impl ProcessTree {
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> io::Result<CaptureOutcome<H>> {
-        let (mut tree, mut pump, mut handler) = match self
-            .start_capture(schedule, max_bytes, input, handler)
-            .await?
-        {
-            Ok(started) => started,
+        let started = crate::run_blocking_io(
+            move || {
+                self.start_capture(schedule, max_bytes, input, handler)
+                    .map(pump::capture_turn)
+            },
+            None,
+        )?
+        .await?;
+        let (mut turned, (mut tree, mut pump, mut handler, mut wakes)) = match started {
+            Ok(turned) => turned,
             Err(outcome) => return Ok(outcome),
         };
         let result = loop {
-            let (turned, (returned_tree, returned_pump, returned_handler)) =
-                crate::run_blocking_io(
-                    move || {
-                        let turn = pump::handled_turn(&mut pump, &mut tree, &mut handler);
-                        (turn, (tree, pump, handler))
-                    },
-                    None,
-                )?
-                .await?;
-            tree = returned_tree;
-            pump = returned_pump;
-            handler = returned_handler;
             match turned {
                 pump::Turn::Done(result) => break result,
-                pump::Turn::Wait => match pump.arm_with_wake(&mut tree, Some(handler.wakes())) {
+                pump::Turn::Wait => match pump.arm_with_wake(&mut tree, Some(wakes.as_slice())) {
                     Ok(wait) => {
                         if let Err(error) = wait.await.into_result() {
                             break Err(error);
@@ -905,11 +900,23 @@ impl ProcessTree {
                     Err(error) => break Err(error),
                 },
             }
+            let (next_turn, (returned_tree, returned_pump, returned_handler, returned_wakes)) =
+                crate::run_blocking_io(
+                    move || pump::capture_turn((tree, pump, handler, wakes)),
+                    None,
+                )?
+                .await?;
+            turned = next_turn;
+            tree = returned_tree;
+            pump = returned_pump;
+            handler = returned_handler;
+            wakes = returned_wakes;
         };
         let (result, handler) = crate::run_blocking_io(
             move || {
                 let result = pump.finish(&mut tree, result, None);
                 drop(tree);
+                drop(wakes);
                 (result, handler)
             },
             None,
@@ -927,20 +934,18 @@ impl ProcessTree {
         input: Option<OwnedCaptureInput>,
         handler: H,
     ) -> io::Result<CaptureOutcome<H>> {
-        let (mut tree, mut pump, mut handler) = match self
-            .start_capture(schedule, max_bytes, input, handler)
-            .await?
-        {
-            Ok(started) => started,
-            Err(outcome) => return Ok(outcome),
-        };
         crate::run_blocking_io(
             move || {
+                let (mut tree, mut pump, mut handler, wakes) =
+                    match self.start_capture(schedule, max_bytes, input, handler) {
+                        Ok(started) => started,
+                        Err(outcome) => return outcome,
+                    };
                 let result = loop {
-                    match pump::handled_turn(&mut pump, &mut tree, &mut handler) {
+                    match pump::handled_turn(&mut pump, &mut tree, &mut handler, wakes.as_slice()) {
                         pump::Turn::Done(result) => break result,
                         pump::Turn::Wait => {
-                            match pump.arm_with_wake(&mut tree, Some(handler.wakes())) {
+                            match pump.arm_with_wake(&mut tree, Some(wakes.as_slice())) {
                                 Ok(wait) => {
                                     if let Err(error) = wait.block().into_result() {
                                         break Err(error);
@@ -961,13 +966,13 @@ impl ProcessTree {
     }
 
     /// Starts a capture's pump, or cleans up a tree whose capture cannot start.
-    async fn start_capture<H: CaptureHandler>(
+    fn start_capture<H: CaptureHandler>(
         mut self,
         schedule: CaptureSchedule,
         max_bytes: usize,
         input: Option<OwnedCaptureInput>,
-        handler: H,
-    ) -> io::Result<Result<StartedCapture<H>, CaptureOutcome<H>>> {
+        mut handler: H,
+    ) -> Result<StartedCapture<H>, CaptureOutcome<H>> {
         let start = (|| {
             if self.output_taken {
                 return Err(ProcessCaptureFailure::before_capture(io::Error::other(
@@ -988,15 +993,21 @@ impl ProcessTree {
             )
         })();
         match start {
-            Ok(pump) => Ok(Ok((self, pump, handler))),
+            Ok(pump) => match handler.take_wakes() {
+                Ok(wakes) => Ok((self, pump, handler, wakes)),
+                Err(error) => Err(CaptureOutcome {
+                    handler,
+                    result: pump.finish(&mut self, Err(error), None),
+                }),
+            },
             Err(failure) => {
                 // Cleanup of an unstarted capture may block; it runs on the
                 // pool like every other turn.
-                crate::run_blocking_io(move || drop(self), None)?.await?;
-                Ok(Err(CaptureOutcome {
+                drop(self);
+                Err(CaptureOutcome {
                     handler,
                     result: Err(failure),
-                }))
+                })
             }
         }
     }
@@ -1254,7 +1265,7 @@ impl ProcessTree {
 }
 
 /// A tree whose capture started, with its pump and handler.
-type StartedCapture<H> = (ProcessTree, pump::Pump<'static>, H);
+type StartedCapture<H> = (ProcessTree, pump::Pump<'static>, H, CaptureWakes);
 
 /// Reads one chunk; returns whether the pipe produced data or reached EOF, so the caller sleeps only when both pipes are idle.
 impl Drop for ProcessTree {

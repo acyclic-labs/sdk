@@ -10,6 +10,65 @@ pub use crate::testing::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 #[cfg(not(feature = "test-support"))]
 pub use native::{AbortHandle, TaskHandle, spawn, spawn_blocking};
 
+thread_local! {
+    static IN_PERSISTENCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+struct PersistenceScope(bool);
+
+impl PersistenceScope {
+    fn enter() -> Self {
+        Self(IN_PERSISTENCE.replace(true))
+    }
+}
+
+impl Drop for PersistenceScope {
+    fn drop(&mut self) {
+        IN_PERSISTENCE.set(self.0);
+    }
+}
+
+/// A persistence closure attempted to submit to or await its own fixed service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PersistenceRecursion;
+
+impl std::fmt::Display for PersistenceRecursion {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(
+            "recursive persistence submission: perform the storage operation in the current closure, or submit it from the coordination owner",
+        )
+    }
+}
+
+impl std::error::Error for PersistenceRecursion {}
+
+struct PersistenceTask<T>(Option<TaskHandle<std::io::Result<T>>>);
+
+impl<T> std::future::Future for PersistenceTask<T> {
+    type Output = std::io::Result<T>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.get_mut();
+        if !IN_PERSISTENCE.get()
+            && let Some(task) = this.0.as_mut()
+        {
+            return std::pin::Pin::new(task)
+                .poll(context)
+                .map(|result| result.and_then(std::convert::identity));
+        }
+        // Detach accepted work: refusal of the observer cannot release
+        // the job's physical storage or key-lock custody.
+        drop(this.0.take());
+        std::task::Poll::Ready(Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            PersistenceRecursion,
+        )))
+    }
+}
+
 /// Runtime for a single coordination owner. Durable storage uses its own shared,
 /// fixed service through [`spawn_persistence`]. Interactive blocking reads may
 /// occupy the incidental Tokio worker without starving storage producers.
@@ -25,7 +84,13 @@ pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
 /// Submission is eager: a replay reader may await records produced by the
 /// closure before it awaits this result. Once admitted, the service retains
 /// the closure through physical completion if the caller disappears. Closures
-/// must not wait for work submitted to this same service.
+/// cannot submit to this same service: the returned error has kind
+/// [`std::io::ErrorKind::WouldBlock`] and contains [`PersistenceRecursion`].
+/// Refusal drops the unsubmitted closure immediately, before allocating a job
+/// or requiring an asynchronous runtime. Polling an already accepted result
+/// from a persistence closure returns that same error and detaches its work,
+/// retaining physical completion custody. Combine dependent storage operations
+/// in the current closure, or await them from the coordination owner.
 pub fn spawn_persistence<F, T>(
     work: F,
 ) -> impl std::future::Future<Output = std::io::Result<T>> + Send
@@ -33,19 +98,35 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
+    let task = if IN_PERSISTENCE.get() {
+        drop(work);
+        None
+    } else {
+        Some(submit_persistence(work))
+    };
+    PersistenceTask(task)
+}
+
+fn submit_persistence<F, T>(work: F) -> TaskHandle<std::io::Result<T>>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
     let completion = crate::task_completion(
-        move || Ok(work()),
+        move || {
+            let _scope = PersistenceScope::enter();
+            Ok(work())
+        },
         None,
         None,
         None,
         &crate::workers::PERSISTENCE_WORKERS,
     );
-    let task = spawn(crate::obs::waiting(
+    spawn(crate::obs::waiting(
         "persistence-completion",
         "durable-storage",
         async move { completion?.await },
-    ));
-    async move { task.await? }
+    ))
 }
 
 /// The caller's task submission context, retained across a native worker turn.
@@ -284,3 +365,7 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
     }
 }
+
+#[cfg(all(test, not(loom)))]
+#[path = "task/persistence_tests.rs"]
+mod persistence_tests;

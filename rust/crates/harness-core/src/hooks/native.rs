@@ -147,8 +147,8 @@ struct HookHandler {
 }
 
 impl CaptureHandler for HookHandler {
-    fn wakes(&self) -> &[acyclic_native_runtime::ProcessWake] {
-        &self.wakes
+    fn take_wakes(&mut self) -> std::io::Result<acyclic_native_runtime::CaptureWakes> {
+        Ok(std::mem::take(&mut self.wakes).into())
     }
 
     fn check(&mut self) -> std::io::Result<()> {

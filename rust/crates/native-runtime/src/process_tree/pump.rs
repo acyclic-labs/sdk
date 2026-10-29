@@ -59,11 +59,47 @@ pub enum OwnedCaptureInput {
     Literal(Vec<u8>),
 }
 
+/// Owned fixed control signals for one capture.
+pub enum CaptureWakes {
+    /// Zero or one control signal, retained without a collection allocation.
+    One(Option<ProcessWake>),
+    /// An existing collection of control signals, moved without copying.
+    Many(Vec<ProcessWake>),
+}
+
+impl CaptureWakes {
+    /// Borrows the retained signals without allocation or traversal.
+    #[must_use]
+    pub fn as_slice(&self) -> &[ProcessWake] {
+        match self {
+            Self::One(wake) => wake.as_slice(),
+            Self::Many(wakes) => wakes,
+        }
+    }
+}
+
+impl From<Option<ProcessWake>> for CaptureWakes {
+    fn from(wake: Option<ProcessWake>) -> Self {
+        Self::One(wake)
+    }
+}
+
+impl From<Vec<ProcessWake>> for CaptureWakes {
+    fn from(wakes: Vec<ProcessWake>) -> Self {
+        Self::Many(wakes)
+    }
+}
+
 /// The owner callbacks of an async capture, run on the blocking pool.
 pub trait CaptureHandler: Send + 'static {
-    /// Retained owner signals that wake capture when control state changes.
+    /// Retained owner signals, captured once on the first blocking turn.
     fn wakes(&self) -> &[ProcessWake] {
         &[]
+    }
+    /// Transfers the fixed signal set into the capture owner. Override this to
+    /// move a single signal or an existing vector without allocating or cloning.
+    fn take_wakes(&mut self) -> io::Result<CaptureWakes> {
+        Ok(self.wakes().to_vec().into())
     }
     /// Confirms that capture may continue; an error stops and cleans it up.
     fn check(&mut self) -> io::Result<()>;
@@ -108,8 +144,9 @@ pub(super) fn handled_turn<H: CaptureHandler>(
     pump: &mut Pump<'_>,
     tree: &mut ProcessTree,
     handler: &mut H,
+    wakes: &[ProcessWake],
 ) -> Turn {
-    for wake in handler.wakes() {
+    for wake in wakes {
         if let Err(error) = wake.consume() {
             return Turn::Done(Err(error));
         }
@@ -121,6 +158,13 @@ pub(super) fn handled_turn<H: CaptureHandler>(
         &mut |chunk| shared.borrow_mut().observe(chunk),
         None,
     )
+}
+
+pub(super) fn capture_turn<H: CaptureHandler>(
+    (mut tree, mut pump, mut handler, wakes): super::StartedCapture<H>,
+) -> (Turn, super::StartedCapture<H>) {
+    let turn = handled_turn(&mut pump, &mut tree, &mut handler, wakes.as_slice());
+    (turn, (tree, pump, handler, wakes))
 }
 
 impl<'a> Pump<'a> {

@@ -80,6 +80,26 @@ Producer loss uses that same failure path. Fatal kernel waits are never retried;
 interrupted syscalls retain their interest and retry. Capture propagates a
 service failure into the tree's existing cleanup path.
 
+`spawn_persistence` eagerly submits owned durable-storage work to the shared
+fixed persistence service. Accepted work retains its inputs and key-lock
+custody through physical completion after its observer is dropped. Submitting
+from that service, or polling a persistence result on it, returns `WouldBlock`
+with a typed `PersistenceRecursion` cause. A refused submission drops its
+closure immediately without allocating a job or requiring a runtime. A refused
+observer detaches already accepted work. Combine dependent storage operations
+inside one closure, or await them from the coordination owner. The guard adds
+constant thread-local work, no syscall, allocation, durability barrier or queue
+round trip to an accepted operation; storage pays durability only where the
+closure commits it. The typed refusal allocates one error when polled.
+
+Capture setup and every handler callback run on the blocking service. The first
+turn takes ownership of the fixed control-signal set before invoking checks or
+output observers. Subsequent waits use those owned signals without invoking a
+handler on coordination. `take_wakes` moves a single inline signal or an existing
+vector with no allocation or signal clone; its compatibility default copies the signal owners
+once per capture. Setup shares the first turn's existing job, so this boundary
+adds no worker submission, pipe byte copy, flush or durability barrier.
+
 For S sources and W outstanding waits, successful arm/drop perform O(S) expected amortized
 hash work and one registry critical section. A deadline adds O(log W) tree
 work. Delivery visits only ready tokens and expired deadlines; settling and
