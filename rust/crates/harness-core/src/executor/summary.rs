@@ -33,8 +33,8 @@ impl StockExecution<'_> {
         crate::executor::with_history_io(self.io, |work| {
             instruction.validate_limits(self.stock.limits, work)
         })?;
-        stock_json_bound(&source, self.stock.limits.file_bytes, self.io)?;
-        stock_json_bound(&instruction, self.stock.limits.file_bytes, self.io)?;
+        stock_json_bound(&source, Some(self.stock.limits.file_bytes), self.io)?;
+        stock_json_bound(&instruction, Some(self.stock.limits.file_bytes), self.io)?;
         let summary_output = self.output_budget()?;
         let (source_bytes, source_digest, source_messages) =
             self.summary_source_identity(&source)?;
@@ -145,7 +145,7 @@ impl StockExecution<'_> {
                     stock_string_push(
                         &mut text,
                         &delta,
-                        self.stock.limits.render_bytes,
+                        Some(self.stock.limits.render_bytes),
                         "summary output exceeds caller render budget",
                         self.io,
                     )?;
@@ -155,7 +155,7 @@ impl StockExecution<'_> {
                     stock_string_push(
                         &mut text,
                         &completed,
-                        self.stock.limits.render_bytes,
+                        Some(self.stock.limits.render_bytes),
                         "summary output exceeds caller render budget",
                         self.io,
                     )?;
