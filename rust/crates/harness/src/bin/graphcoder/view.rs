@@ -11,7 +11,7 @@ use acyclic_harness::{
         CommandCatalog, CommandQuery, CommandRequest, CommandResolution, DEFAULT_COMMANDS_JSON,
     },
     tui::{
-        Action, AppAction, InputEffect, PromptInput, Screen, TranscriptRows, Viewport,
+        Action, AppAction, Editor, InputEffect, PromptInput, Screen, TranscriptRows, Viewport,
         key_event::InputEvent,
         ratatui::{
             layout::{Position, Rect, Size},
@@ -434,7 +434,7 @@ pub async fn run(
     let size = tty.size_reader();
     let (tty, output) = tty.split();
     let mut terminal = FrameTerminal::new(output, size()?)?;
-    let mut keys = terminal_events(tty);
+    let mut keys = terminal_events(tty)?;
     let settled = conversation.settled().await?;
     let mut events = conversation
         .observe(if resume { 0 } else { settled })
