@@ -482,13 +482,9 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
         assert!(root.finish_mount_removals(accounting!()).await.unwrap());
         record = identity.record;
         drop((checkout, root, fs));
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while !released.is_released() {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), released.wait_async())
+            .await
+            .unwrap();
     }
     let fs = Fs::local(crate::LocalOptions::new(&fs_path)).await.unwrap();
     let root = LazyWorkspace::open(

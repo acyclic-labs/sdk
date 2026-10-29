@@ -17,34 +17,34 @@
     },
     "harness": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:0e73abc719075124d79c64a09c47a765fae976aaaea1d66d763edca1144192be",
+      "schemaDigest": "sha256:dcf497ebd35741a5029ab90cf27baa2f48920666a2bdd4e44336020f120d9a29",
       "conformanceDigest": "sha256:3da8cc65b19c2b710c3922b621fc28afd75268a7b7c66959cbb3a24472e95340"
     },
     "filesystem": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:71f9a4f28a070d97172412af4c689994174f5a8bce1bc4258014bf4c4cdf0460",
-      "descriptorDigest": "sha256:32fe43d641f884cb39a3be01b2fdf3ada4468e0e6adccbe5d6a7c6df26a2b1d7",
+      "schemaDigest": "sha256:90c84c613ff416465d22473a276cdb22a2b59c6af57748524fce879acd1ef0b7",
+      "descriptorDigest": "sha256:9c1cba802421144f341dd85f4d3acb6de0f569f78530fbb1d1a1bbe13ad727b2",
       "conformanceDigest": "sha256:0587f37b90fb7080a54410e806dd01d4097025a24c3284fc742250546f745e8b"
     },
     "stream": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:6c6d06d0565f6b73a86a0a448c74d20f643d9e3644978c08e89c56d642a003e5",
-      "descriptorDigest": "sha256:d95153fb0d3e39b2498ccb72b623f38411265f76dc337246af240ff089affb8c",
+      "schemaDigest": "sha256:e234b7c19b8e765f7a9437180833f38cdee490b3b6637b5d6a0290520e22bd53",
+      "descriptorDigest": "sha256:5e617eb67876e035be5e5841db190bf80a1072cb7fb05f5d21bcab5071cbef30",
       "conformanceDigest": "sha256:7a7b324baa63b07631d814d46ac161b4ce684b842e3b53e25ed16482af06cab1"
     },
     "objects": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:598f5663edbf2d8f92246a70a219147e2325aff40a142656220bd7b7248f1198",
-      "descriptorDigest": "sha256:6e745fb6c4376d486b1c8e7926b2331730eb17afa72118b26ff4a2236f131f65",
+      "schemaDigest": "sha256:cfd0c3b0956033cae13f9e8db39ddb3b691a2a8d3a8756ea6fec57033130ce3e",
+      "descriptorDigest": "sha256:457f72584f2233dbe1025c012dfaf0c5ef4da74002570c286595cdb45b5ffd64",
       "conformanceDigest": "sha256:e408022b99d34fde59ef5cf5d2fdb85be98c3a8f7a094987259903b9a23ee549"
     },
     "machines": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:d71344a06cbfc66763c433edc06859edf4ada6790c8908725c4d11e8bd723050",
-      "descriptorDigest": "sha256:ecd22fb22de4920d384325d3e50dd9b78226f157cba8d3574aefa9309b192e28",
+      "schemaDigest": "sha256:ed90a6c02176ec6650f2f0674fa2c19530b4a17eb1382b8cd3cdbfa0705c5c70",
+      "descriptorDigest": "sha256:582720b4f4ae3ce49c70d200de0ba7aec556a001d5d6c9dfa30364967640e214",
       "conformanceDigest": "sha256:78ce0d6b9c5226aad67d96de4a4a4f9c9723a144ce58c5dcad63590b88d5d682"
     },
     "inference": {

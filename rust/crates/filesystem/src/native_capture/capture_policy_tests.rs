@@ -130,7 +130,7 @@ async fn fragmented_prior_capture_falls_back_with_a_smaller_host_span_bound()
     let source = tempfile::tempdir()?;
     std::fs::write(source.path().join("file"), [b'b'; 256])?;
     let mut options = options(source.path(), 16)?;
-    options.maximum_extent_spans = 1;
+    options.maximum_extent_spans = Some(1);
     let baseline = NativeViewBaseline::new(options.expected_root_identity, true);
     let root = NamespacePath::new(Vec::new(), checkout.volume_config().limits)?;
     let result = capture_subtrees_with_native_work(
@@ -344,8 +344,8 @@ fn options(root: &Path, maximum_paths: u32) -> Result<CaptureOptions, CaptureErr
     Ok(CaptureOptions {
         source_root: root.to_path_buf(),
         expected_root_identity: capture_root_identity(root)?,
-        maximum_paths,
-        maximum_extent_spans: 8,
+        maximum_paths: Some(maximum_paths),
+        maximum_extent_spans: Some(8),
     })
 }
 

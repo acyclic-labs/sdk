@@ -66,7 +66,8 @@ export interface HostedFsCapabilities extends EngineCapabilities {
   readonly profiles: readonly FsProfile[];
   readonly maximumRequestBytes: bigint;
   readonly maximumResponseBytes: bigint;
-  readonly maximumTransactionMutations: number;
+  /** Optional deployment-selected whole-transaction policy. */
+  readonly maximumTransactionMutations: number | undefined;
   readonly maximumPageItems: number;
   readonly nativeMountCredentials: boolean;
   readonly s3Credentials: boolean;
@@ -134,7 +135,7 @@ export interface FsWorkspace {
   forkAt(destination: string, generation: FsGeneration, options?: WorkspaceForkOptions): Promise<FsWorkspace>;
   beginTransaction(idempotencyKey?: Uint8Array): Promise<FsTransaction>;
   liveRebase(options: WorkspaceRebaseOptions, idempotencyKey?: Uint8Array): Promise<WorkspaceRebaseResult>;
-  diff(from: FsGeneration, to: FsGeneration, maximumChanges: number): Promise<FsChangeSet>;
+  diff(from: FsGeneration, to: FsGeneration, maximumChanges?: number): Promise<FsChangeSet>;
   joinInto(target: FsWorkspace, options: JoinOptions): Promise<FsJoinPlan>;
 }
 export type WorkspaceDeleteStatus =
@@ -157,7 +158,7 @@ export interface FsChangeSet {
   readonly from: FsGeneration;
   readonly to: FsGeneration;
   changes(): GenerationDiff;
-  compose(next: FsChangeSet, maximumChanges: number): Promise<FsChangeSet>;
+  compose(next: FsChangeSet, maximumChanges?: number): Promise<FsChangeSet>;
 }
 export type JoinHistory = "merge" | "rebase" | "squash" | "cherry-pick";
 export type WorkspaceForkOptions = ReadonlyDeep<WasmBinding.BrowserForkOptions>;
@@ -170,9 +171,9 @@ export interface JoinResult {
   readonly truncated: boolean;
 }
 export interface WorkspaceRebaseOptions {
-  readonly maximumGenerations: number;
-  readonly maximumChanges: number;
-  readonly maximumConflicts: number;
+  readonly maximumGenerations?: number;
+  readonly maximumChanges?: number;
+  readonly maximumConflicts?: number;
 }
 export type WorkspaceRebaseStatus = WasmBinding.BrowserWorkspaceRebaseResult["status"];
 export type ResidencyAdmissionStatus = WasmBinding.BrowserAdmissionResult["status"] | NativeBinding.NativeResidencyStatus;
@@ -210,7 +211,7 @@ export interface FsTransaction {
   zeroRange( path: string, offset: bigint, length: bigint, allocated: boolean, extend: boolean, ): Promise<void>;
   preallocate(path: string, offset: bigint, length: bigint, keepSize: boolean): Promise<void>;
   cloneRange( source: string, sourceOffset: bigint, destination: string, destinationOffset: bigint, length: bigint, ): Promise<void>;
-  rebase(maximumConflicts: number): Promise<TransactionRebaseResult>;
+  rebase(maximumConflicts?: number): Promise<TransactionRebaseResult>;
   commit(lease?: OperationWindowLease): Promise<WorkspaceCommit>;
   close(): Promise<void>;
 }
@@ -222,8 +223,6 @@ export type ResidencyReason =
   | "consumer-hint";
 export interface SpeculationOptions {
   readonly residency: {
-    readonly maximumActiveOperations: number;
-    readonly maximumActiveBytes: bigint;
     readonly outcomeWindow: number;
     readonly trafficWindow: number;
     readonly speculativeCostBasisPoints: number;
@@ -231,12 +230,6 @@ export interface SpeculationOptions {
     readonly minimumUsefulnessBasisPoints: number;
   };
   readonly promotion: {
-    readonly maximumActiveOperations: number;
-    readonly maximumActiveBytes: bigint;
-    readonly maximumActiveCostUnits: bigint;
-    readonly maximumResidencyFacts: number;
-    readonly maximumDestinations: number;
-    readonly maximumAcceptedTiers: number;
     readonly outcomeWindow: number;
     readonly minimumUsefulnessSamples: number;
     readonly minimumUsefulnessBasisPoints: number;
@@ -360,7 +353,7 @@ export type CheckpointResult = ReadonlyDeep<WasmBinding.BrowserCheckpointResult>
 export interface MaterializeOptions {
   readonly destination: string;
   readonly maximumDirectoryEntries: number;
-  readonly maximumExtentSpans: number;
+  readonly maximumExtentSpans?: number;
   readonly transferBytes: bigint;
 }
 export interface MaterializationResult {
@@ -417,8 +410,8 @@ export type NativeWatchBatch =
       readonly work: WorkCounters;
     };
 export interface NativeWatcher {
-  reconcile(maximumPaths: number, maximumExtentSpans: number): Promise<WatchReconcileResult>;
-  pollCapture( maximumChanges: number, maximumPaths: number, maximumExtentSpans: number, ): Promise<WatchCaptureResult>;
+  reconcile(maximumPaths?: number, maximumExtentSpans?: number): Promise<WatchReconcileResult>;
+  pollCapture( maximumChanges: number, maximumPaths?: number, maximumExtentSpans?: number, ): Promise<WatchCaptureResult>;
 }
 export type GenerationExportManifest = ReadonlyDeep<WasmBinding.BrowserExportManifestResult>;
 export type GenerationTransferBatch = ReadonlyDeep<WasmBinding.GenerationTransferBatchResult>;
@@ -485,7 +478,7 @@ export interface FsCheckout {
   refreshHead(): Promise<CheckpointResult>;
   refreshLive(): Promise<CheckpointResult>;
   exportManifest(): Promise<GenerationExportManifest>;
-  prepareMerge( theirs: Uint8Array, maximumChanges: number, maximumConflicts: number, ): Promise<MergePreparationResult>;
+  prepareMerge( theirs: Uint8Array, maximumChanges?: number, maximumConflicts?: number, ): Promise<MergePreparationResult>;
   lookupNoFollow(path: string): Promise<LookupResult>;
   lookupBatchNoFollow(paths: readonly string[]): Promise<BatchLookupResult>;
   statNoFollow(path: string): Promise<StatResult>;
@@ -531,15 +524,15 @@ export interface FsCheckout {
   cloneFileRange( source: string, sourceOffset: bigint, destination: string, destinationOffset: bigint, length: bigint, ): Promise<MutationResult>;
   cloneFileRangeById( sourceFileId: Uint8Array, sourceOffset: bigint, destinationFileId: Uint8Array, destinationOffset: bigint, length: bigint, ): Promise<MutationResult>;
   commit(operationId: Uint8Array, lease?: OperationWindowLease): Promise<CommitResult>;
-  mutateLive( operations: readonly TransactionOperation[], operationId: Uint8Array, maximumAttempts: number, maximumConflicts: number, ): Promise<LiveTransactionResult>;
-  resumeLive( operationId: Uint8Array, maximumAttempts: number, maximumConflicts: number, ): Promise<LiveMutationResult>;
-  rebaseHead(maximumConflicts: number): Promise<RebaseResult>;
+  mutateLive( operations: readonly TransactionOperation[], operationId: Uint8Array, maximumAttempts: number, maximumConflicts?: number, ): Promise<LiveTransactionResult>;
+  resumeLive( operationId: Uint8Array, maximumAttempts: number, maximumConflicts?: number, ): Promise<LiveMutationResult>;
+  rebaseHead(maximumConflicts?: number): Promise<RebaseResult>;
   discard(): Promise<MutationResult>;
   mount?(destination: string, writable: boolean): NativeMount;
   materialize?(options: MaterializeOptions): Promise<MaterializationResult>;
-  capture?( sourceRoot: string, paths: readonly string[], maximumPaths: number, maximumExtentSpans: number, ): Promise<CaptureResult>;
-  captureBaseline?( sourceRoot: string, maximumPaths: number, maximumExtentSpans: number, ): Promise<CaptureResult>;
-  watch?( sourceRoot: string, maximumQueuedChanges: number, recursive: boolean, ): NativeWatcher;
+  capture?( sourceRoot: string, paths: readonly string[], maximumPaths?: number, maximumExtentSpans?: number, ): Promise<CaptureResult>;
+  captureBaseline?( sourceRoot: string, maximumPaths?: number, maximumExtentSpans?: number, ): Promise<CaptureResult>;
+  watch?( sourceRoot: string, recursive: boolean, ): NativeWatcher;
   cancel?(): void;
 }
 export interface NativeMount {
@@ -553,7 +546,7 @@ export interface FsVolume {
   readonly id: Uint8Array;
   /** Exact bounded work used to create, restore, or open this volume handle. */
   readonly acquisitionWork: WorkCounters;
-  diffGenerations( before: Uint8Array, after: Uint8Array, maximumChanges: number, ): Promise<GenerationDiff>;
+  diffGenerations( before: Uint8Array, after: Uint8Array, maximumChanges?: number, ): Promise<GenerationDiff>;
   checkout(options: CheckoutOptions): Promise<FsCheckout>;
 }
 export interface BrowserFsOptions {
@@ -565,8 +558,8 @@ export interface BrowserFsOptions {
   readonly observer?: AcyclicObserver;
 }
 export interface MemoryFsOptions {
-  readonly maximumObjectBytes: number;
-  readonly maximumMemoryBytes: number;
+  readonly maximumObjectBytes?: number;
+  readonly maximumMemoryBytes?: number;
   readonly objectCache: ObjectCacheOptions;
   /** Reports each engine, volume, checkout, and workspace call with its work receipt. */
   readonly observer?: AcyclicObserver;
@@ -607,9 +600,8 @@ export interface NativeFsWorkspace extends FsWorkspace {
 }
 export interface NativeSourceOptions {
   readonly mode: "pinned" | "tracking";
-  readonly maximumPaths: number;
-  readonly maximumExtentSpans: number;
-  readonly maximumQueuedChanges: number;
+  readonly maximumPaths?: number;
+  readonly maximumExtentSpans?: number;
   /** Canonical absolute prefixes omitted from capture and deletion inference. */
   readonly excludedPaths?: readonly string[];
 }

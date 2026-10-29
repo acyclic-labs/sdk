@@ -268,17 +268,14 @@ impl HostedWorkspace {
     /// Observation-safe rebases this fork using bounded history/change/conflict work.
     pub async fn rebase(
         &self,
-        maximum_generations: u32,
-        maximum_changes: u32,
-        maximum_conflicts: u32,
+        maximum_generations: impl Into<Option<u32>>,
+        maximum_changes: impl Into<Option<u32>>,
+        maximum_conflicts: impl Into<Option<u32>>,
         idempotency_key: IdempotencyKey,
     ) -> Result<wire::RebaseResponse, HostedFsError> {
-        self.filesystem
-            .require_page_bound(maximum_generations, "rebase generations")?;
-        self.filesystem
-            .require_page_bound(maximum_changes, "rebase changes")?;
-        self.filesystem
-            .require_page_bound(maximum_conflicts, "rebase conflicts")?;
+        let maximum_changes = maximum_changes.into();
+        let maximum_conflicts = maximum_conflicts.into();
+
         let mut client = self.filesystem.client.clone();
         Ok(client
             .rebase(
@@ -287,7 +284,7 @@ impl HostedWorkspace {
                         workspace: Some(self.reference.clone()),
                         maximum_conflicts,
                         operation: Some(operation(idempotency_key)),
-                        maximum_generations,
+                        maximum_generations: maximum_generations.into(),
                         maximum_changes,
                     })
                     .await?,

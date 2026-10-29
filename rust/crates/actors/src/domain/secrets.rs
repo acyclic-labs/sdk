@@ -30,18 +30,16 @@ impl SecretSelection {
         &self.reference
     }
 
-    /// Canonical bounded reference grammar shared with manifest admission.
+    /// Canonical reference grammar shared with manifest admission.
     pub fn valid_reference(value: &str) -> bool {
-        value.len() <= 256
-            && value.strip_prefix("secrets:/").is_some_and(|path| {
-                path.split('/').all(|segment| {
-                    !segment.is_empty()
-                        && segment.len() <= 63
-                        && segment
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-                })
+        value.strip_prefix("secrets:/").is_some_and(|path| {
+            path.split('/').all(|segment| {
+                !segment.is_empty()
+                    && segment
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
             })
+        })
     }
 
     fn validate_from_proto(&self) -> Result<(), DomainError> {
@@ -54,11 +52,10 @@ impl SecretSelection {
 
 /// Canonical environment property grammar for bindings and secret selections.
 pub fn valid_environment_name(value: &str) -> bool {
-    value.len() <= 63
-        && value
-            .bytes()
-            .next()
-            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+    value
+        .bytes()
+        .next()
+        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
         && value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_')
