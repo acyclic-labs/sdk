@@ -151,7 +151,7 @@ impl StockExecution<'_> {
                     stock_string_push(
                         &mut text,
                         &delta,
-                        Some(self.stock.limits.render_bytes),
+                        self.stock.limits.render_bytes,
                         "summary output exceeds caller render budget",
                         self.io,
                     )?;
@@ -161,7 +161,7 @@ impl StockExecution<'_> {
                     stock_string_push(
                         &mut text,
                         &completed,
-                        Some(self.stock.limits.render_bytes),
+                        self.stock.limits.render_bytes,
                         "summary output exceeds caller render budget",
                         self.io,
                     )?;
