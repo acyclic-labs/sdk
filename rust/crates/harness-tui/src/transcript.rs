@@ -1,6 +1,9 @@
 //! Complete transcript storage with a disk-backed row index and viewport cache.
 
+mod index;
+
 use crate::Layout;
+use index::Index;
 use ratatui::{
     style::Modifier,
     text::{Line, Span},
@@ -14,7 +17,8 @@ use std::{
 
 // Search continues through successive windows; this never limits the source.
 const SEARCH_ROWS: usize = 256;
-const INDEX_BYTES: usize = 16;
+// Rebuild advances through successive pages, never a total-block allowance.
+const BLOCK_PAGE: usize = 256;
 
 struct Block {
     prompt: bool,
@@ -23,20 +27,43 @@ struct Block {
     rendered_end: u64,
 }
 
+impl Block {
+    fn record(&self) -> io::Result<[u64; 5]> {
+        Ok([
+            u64::from(self.prompt),
+            self.source.start,
+            self.source.end,
+            u64::try_from(self.row_end).map_err(invalid)?,
+            self.rendered_end,
+        ])
+    }
+
+    fn from_record(record: [u64; 5]) -> io::Result<Self> {
+        let [prompt, start, end, rows, rendered_end] = record;
+        if prompt > 1 || start > end {
+            return Err(invalid("invalid transcript block address"));
+        }
+        Ok(Self {
+            prompt: prompt != 0,
+            source: start..end,
+            row_end: usize::try_from(rows).map_err(invalid)?,
+            rendered_end,
+        })
+    }
+}
+
 struct Rendered {
     text: BufWriter<File>,
-    index: BufWriter<File>,
+    index: Index<2>,
     bytes: u64,
-    rows: usize,
 }
 
 impl Rendered {
     fn new() -> io::Result<Self> {
         Ok(Self {
             text: BufWriter::new(tempfile::tempfile()?),
-            index: BufWriter::new(tempfile::tempfile()?),
+            index: Index::new()?,
             bytes: 0,
-            rows: 0,
         })
     }
 
@@ -50,27 +77,18 @@ impl Rendered {
             .bytes
             .checked_add(text.len() as u64)
             .ok_or_else(overflow)?;
-        let rows = self.rows.checked_add(1).ok_or_else(overflow)?;
-        self.index.write_all(&self.bytes.to_le_bytes())?;
-        self.index.write_all(&(text.len() as u64).to_le_bytes())?;
+        self.index.push([self.bytes, text.len() as u64])?;
         self.text.write_all(&text)?;
         self.bytes = end;
-        self.rows = rows;
         Ok(())
     }
 
     fn truncate(&mut self, rows: usize, bytes: u64) -> io::Result<()> {
         self.text.flush()?;
-        self.index.flush()?;
+        self.index.truncate(rows)?;
         self.text.get_mut().set_len(bytes)?;
         self.text.seek(SeekFrom::Start(bytes))?;
-        let index_bytes = (rows as u64)
-            .checked_mul(INDEX_BYTES as u64)
-            .ok_or_else(overflow)?;
-        self.index.get_mut().set_len(index_bytes)?;
-        self.index.seek(SeekFrom::Start(index_bytes))?;
         self.bytes = bytes;
-        self.rows = rows;
         Ok(())
     }
 
@@ -134,16 +152,17 @@ impl Rendered {
 
 struct Spool {
     source: File,
+    blocks: Index<5>,
     rendered: Rendered,
 }
 
 /// Complete settled and pending text. Source and wrapped rows live in temporary
-/// files; only block addresses and the requested viewport are retained in memory.
+/// files. Block addresses are indexed on disk; only the last block address,
+/// a bounded index page and the requested viewport are retained in memory.
 /// Appending wraps the new block once; a width change rebuilds the disk index.
 /// The committed conversation remains the durable source of truth.
 pub struct TranscriptRows {
     spool: Option<Spool>,
-    blocks: Vec<Block>,
     settled: usize,
     rows: usize,
     width: usize,
@@ -155,7 +174,6 @@ impl Default for TranscriptRows {
     fn default() -> Self {
         Self {
             spool: None,
-            blocks: Vec::new(),
             settled: 0,
             rows: 0,
             width: 80,
@@ -173,7 +191,12 @@ impl TranscriptRows {
     pub fn push(&mut self, prompt: bool, text: &str) -> io::Result<()> {
         self.clear_pending()?;
         self.append(prompt, text)?;
-        self.settled = self.blocks.len();
+        self.settled = self
+            .spool
+            .as_ref()
+            .expect("append created storage")
+            .blocks
+            .len();
         Ok(())
     }
 
@@ -181,14 +204,15 @@ impl TranscriptRows {
         if self.spool.is_none() {
             self.spool = Some(Spool {
                 source: tempfile::tempfile()?,
+                blocks: Index::new()?,
                 rendered: Rendered::new()?,
             });
         }
         let spool = self.spool.as_mut().expect("created above");
-        let (source, rendered) = self
-            .blocks
-            .last()
-            .map_or((0, 0), |block| (block.source.end, block.rendered_end));
+        let (source, rendered) = spool.blocks.last().map_or(Ok((0, 0)), |record| {
+            let block = Block::from_record(record)?;
+            Ok::<_, io::Error>((block.source.end, block.rendered_end))
+        })?;
         let end = source.checked_add(text.len() as u64).ok_or_else(overflow)?;
         // An earlier failed append owns no visible block. Retire its partial
         // writes before retrying, rather than publishing a partial row index.
@@ -197,13 +221,17 @@ impl TranscriptRows {
         spool.rendered.truncate(self.rows, rendered)?;
         spool.source.write_all(text.as_bytes())?;
         spool.rendered.block(prompt, text, self.width)?;
-        self.rows = spool.rendered.rows;
-        self.blocks.push(Block {
-            prompt,
-            source: source..end,
-            row_end: self.rows,
-            rendered_end: spool.rendered.bytes,
-        });
+        let rows = spool.rendered.index.len();
+        spool.blocks.push(
+            Block {
+                prompt,
+                source: source..end,
+                row_end: rows,
+                rendered_end: spool.rendered.bytes,
+            }
+            .record()?,
+        )?;
+        self.rows = rows;
         Ok(())
     }
 
@@ -219,22 +247,28 @@ impl TranscriptRows {
         }
         if let Some(spool) = &mut self.spool {
             let mut rendered = Rendered::new()?;
-            let mut ends = Vec::with_capacity(self.blocks.len());
-            for block in &self.blocks {
-                spool.source.seek(SeekFrom::Start(block.source.start))?;
-                let bytes = read_bytes(&mut spool.source, block.source.end - block.source.start)?;
-                let text = std::str::from_utf8(&bytes).map_err(invalid)?;
-                rendered.block(block.prompt, text, width)?;
-                ends.push((rendered.rows, rendered.bytes));
+            let mut blocks = Index::new()?;
+            for start in (0..spool.blocks.len()).step_by(BLOCK_PAGE) {
+                let end = start.saturating_add(BLOCK_PAGE).min(spool.blocks.len());
+                for record in spool.blocks.page(start..end)? {
+                    let mut block = Block::from_record(record)?;
+                    spool.source.seek(SeekFrom::Start(block.source.start))?;
+                    let bytes =
+                        read_bytes(&mut spool.source, block.source.end - block.source.start)?;
+                    let text = std::str::from_utf8(&bytes).map_err(invalid)?;
+                    rendered.block(block.prompt, text, width)?;
+                    block.row_end = rendered.index.len();
+                    block.rendered_end = rendered.bytes;
+                    blocks.push(block.record()?)?;
+                }
             }
             rendered.text.flush()?;
             rendered.index.flush()?;
-            for (block, (row_end, rendered_end)) in self.blocks.iter_mut().zip(ends) {
-                block.row_end = row_end;
-                block.rendered_end = rendered_end;
-            }
-            self.rows = rendered.rows;
+            blocks.flush()?;
+            // Both replacement indexes are complete before either becomes visible.
+            self.rows = rendered.index.len();
             spool.rendered = rendered;
+            spool.blocks = blocks;
         }
         self.width = width;
         self.window = None;
@@ -258,17 +292,26 @@ impl TranscriptRows {
     }
 
     fn clear_pending(&mut self) -> io::Result<()> {
-        if self.settled == self.blocks.len() {
+        let Some(spool) = &mut self.spool else {
+            return Ok(());
+        };
+        if self.settled == spool.blocks.len() {
             return Ok(());
         }
-        let (source, rows, bytes) = self.settled.checked_sub(1).map_or((0, 0, 0), |index| {
-            let block = &self.blocks[index];
+        let (source, rows, bytes) = if self.settled == 0 {
+            (0, 0, 0)
+        } else {
+            let record = spool
+                .blocks
+                .page(self.settled - 1..self.settled)?
+                .pop()
+                .ok_or_else(overflow)?;
+            let block = Block::from_record(record)?;
             (block.source.end, block.row_end, block.rendered_end)
-        });
-        let spool = self.spool.as_mut().expect("pending blocks have storage");
+        };
         spool.source.set_len(source)?;
         spool.rendered.truncate(rows, bytes)?;
-        self.blocks.truncate(self.settled);
+        spool.blocks.truncate(self.settled)?;
         self.rows = rows;
         if self.window.as_ref().is_some_and(|window| window.end > rows) {
             self.window = None;
@@ -292,33 +335,23 @@ impl TranscriptRows {
         if !range.is_empty() {
             let spool = self.spool.as_mut().expect("rows have storage");
             let rendered = &mut spool.rendered;
-            rendered.index.flush()?;
             rendered.text.flush()?;
-            let start = (range.start as u64)
-                .checked_mul(INDEX_BYTES as u64)
-                .ok_or_else(overflow)?;
-            rendered.index.get_mut().seek(SeekFrom::Start(start))?;
-            let count = range.len().checked_mul(INDEX_BYTES).ok_or_else(overflow)?;
-            let index = read_bytes(rendered.index.get_mut(), count as u64)?;
-            let mut entries = Vec::with_capacity(range.len());
-            for entry in index.chunks_exact(INDEX_BYTES) {
-                let offset = u64::from_le_bytes(entry[..8].try_into().map_err(invalid)?);
-                let length = u64::from_le_bytes(entry[8..].try_into().map_err(invalid)?);
+            let entries = rendered.index.page(range.clone())?;
+            for &[offset, length] in &entries {
                 if offset
                     .checked_add(length)
                     .is_none_or(|end| end > rendered.bytes)
                 {
                     return Err(invalid("row index outside storage"));
                 }
-                entries.push((offset, length));
             }
-            let first = entries[0].0;
-            let (last, length) = entries[entries.len() - 1];
+            let first = entries[0][0];
+            let [last, length] = entries[entries.len() - 1];
             let end = last.checked_add(length).ok_or_else(overflow)?;
             let length = end.checked_sub(first).ok_or_else(overflow)?;
             rendered.text.get_mut().seek(SeekFrom::Start(first))?;
             let bytes = read_bytes(rendered.text.get_mut(), length)?;
-            for (offset, length) in entries {
+            for [offset, length] in entries {
                 let offset = usize::try_from(offset.checked_sub(first).ok_or_else(overflow)?)
                     .map_err(invalid)?;
                 let length = usize::try_from(length).map_err(invalid)?;
@@ -472,6 +505,68 @@ mod tests {
                 .iter()
                 .all(|line| line.width() <= 1)
         );
+    }
+
+    #[test]
+    fn block_addresses_stay_on_disk_and_every_page_survives_reflow() {
+        let mut retained = Vec::new();
+        for count in [257, 4_097] {
+            let mut transcript = TranscriptRows::default();
+            let allocations = acyclic_test_support::measure(|| {
+                for index in 0..count {
+                    transcript
+                        .push(true, &format!("prompt {index:08}"))
+                        .unwrap();
+                }
+            });
+            retained.push((allocations.bytes_current, allocations.count_current));
+            let reflow = acyclic_test_support::measure(|| transcript.set_width(20).unwrap());
+            let mut next = 0;
+            for start in (0..transcript.len()).step_by(SEARCH_ROWS) {
+                for line in transcript.window(start..start + SEARCH_ROWS).unwrap() {
+                    let text = line
+                        .spans
+                        .iter()
+                        .map(|span| span.content.as_ref())
+                        .collect::<String>();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    assert_eq!(text, format!("› prompt {next:08}"));
+                    next += 1;
+                }
+            }
+            assert_eq!(next, count);
+            // A page read must preserve the append position of both indexes.
+            transcript.push(true, "after page reads").unwrap();
+            assert!(
+                transcript
+                    .find("after page reads", transcript.len())
+                    .unwrap()
+                    .is_some()
+            );
+            // Cross a block-page boundary with transient entries, then retire
+            // them and reflow the settled addresses without retaining a vector.
+            transcript
+                .pending((0..257).map(|_| (true, "transient")))
+                .unwrap();
+            transcript.pending(std::iter::empty()).unwrap();
+            transcript.set_width(80).unwrap();
+            assert_eq!(
+                transcript.find("transient", transcript.len()).unwrap(),
+                None
+            );
+            assert!(
+                transcript
+                    .find("after page reads", transcript.len())
+                    .unwrap()
+                    .is_some()
+            );
+            eprintln!("blocks={count} retained={allocations:?} reflow={reflow:?}");
+        }
+        // The old resident Vec<Block> grows at these same counts. The oracle
+        // measures live physical allocations, rather than the serialized size.
+        assert_eq!(retained[0], retained[1]);
     }
 
     #[test]
