@@ -340,6 +340,22 @@ pub enum Phase {
     },
 }
 
+impl Phase {
+    /// Whether a turn is open: running, or waiting on an approval, its host,
+    /// its children or a deadline. Idle and done agents hold none.
+    #[must_use]
+    pub const fn in_turn(&self) -> bool {
+        match self {
+            Self::Idle | Self::Done { .. } => false,
+            Self::Running
+            | Self::WaitingApproval { .. }
+            | Self::WaitingHost { .. }
+            | Self::WaitingChildren { .. }
+            | Self::WaitingAlarm { .. } => true,
+        }
+    }
+}
+
 /// One status stream record.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]

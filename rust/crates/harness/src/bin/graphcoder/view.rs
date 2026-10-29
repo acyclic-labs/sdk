@@ -107,10 +107,13 @@ struct View {
 }
 
 impl View {
+    /// A turn is open by the committed phase, whoever sent it: a reopened
+    /// view's restored turn is as busy as one this view sent. This view's
+    /// own unsettled sends cover only the moment before their status commits.
     fn busy(&self) -> bool {
-        !self.pending.is_empty()
+        self.phase.as_ref().is_some_and(Phase::in_turn)
+            || !self.pending.is_empty()
             || !self.checkpoints.is_empty()
-            || matches!(self.phase, Some(Phase::Running))
     }
 
     fn approval(&self) -> Option<&IntentId> {
@@ -644,7 +647,7 @@ pub async fn run(
                                 view.prompt = None;
                             }
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape)
-                                if view.busy() || view.approval().is_some() =>
+                                if view.busy() =>
                             {
                                 view.cancelling = true;
                                 conversation.cancel().await?;
@@ -679,5 +682,46 @@ pub async fn run(
                 input.refresh_completions();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_reopened_view_is_busy_while_its_restored_turn_waits() -> Result<(), Failure> {
+        // A reopened view sent nothing: only the committed phase says a
+        // turn is open, so Esc and Ctrl+C reach it.
+        let mut view = View::default();
+        view.phase = Some(Phase::WaitingChildren { any: false });
+        assert!(view.busy());
+        assert_eq!(view.status(), "working · Esc or Ctrl+C interrupts");
+        for phase in [
+            Phase::Running,
+            Phase::WaitingApproval {
+                id: IntentId::try_from("approval")?,
+            },
+            Phase::WaitingHost {
+                host: "host".into(),
+            },
+            Phase::WaitingAlarm {
+                deadline_unix_ms: 1,
+            },
+        ] {
+            view.phase = Some(phase);
+            assert!(view.busy());
+        }
+        // Negative controls: an idle or ended agent holds no turn.
+        for phase in [
+            Phase::Idle,
+            Phase::Done {
+                outcome: AgentOutcome::Succeeded { result: None },
+            },
+        ] {
+            view.phase = Some(phase);
+            assert!(!view.busy());
+        }
+        Ok(())
     }
 }
