@@ -507,18 +507,48 @@ impl AllocationLedger {
             _ => self.with_state(|state| state.release(bytes)),
         }
     }
-    pub(crate) fn release_scratch(&mut self) -> Result<(), crate::FsError> {
-        self.ensure_active()?;
+    /// Temporary bytes, excluding independently retained value/control leases.
+    pub(crate) fn scratch_bytes(&self) -> u64 {
+        match &self.state {
+            LedgerState::Shared(state) | LedgerState::Suspended(state) => {
+                let state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state.allocations.live_bytes - state.retained_bytes
+            }
+            _ => self.snapshot().live_bytes,
+        }
+    }
+
+    /// Retires only scratch beyond a caller's checkpoint. Owned leases may be
+    /// created or retired inside that scope, including the ledger's promotion.
+    pub(crate) fn release_scratch_to(&mut self, keep: u64) -> Result<(), AllocationError> {
+        let release = |state: &mut AllocationBytes, retained: u64| {
+            let keep = retained
+                .checked_add(keep)
+                .ok_or(AllocationError::Overflow)?;
+            let retired = state
+                .live_bytes
+                .checked_sub(keep)
+                .ok_or(AllocationError::ReleaseInvariant)?;
+            state.release(retired)
+        };
         match &mut self.state {
-            LedgerState::Shared(state) => {
+            LedgerState::Shared(state) | LedgerState::Suspended(state) => {
                 let mut state = state
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                state.allocations.live_bytes = state.retained_bytes;
+                let retained = state.retained_bytes;
+                release(&mut state.allocations, retained)
             }
-            _ => self.with_state(|state| state.live_bytes = 0),
+            _ => self.with_state(|state| release(state, 0)),
         }
-        Ok(())
+    }
+
+    pub(crate) fn release_scratch(&mut self) -> Result<(), crate::FsError> {
+        self.ensure_active()?;
+        self.release_scratch_to(0)
+            .map_err(|error| error.into_work_or(crate::FsError::PendingMutationAllocationFailed))
     }
 
     /// Releases storage whose owner has retired it, including after cancellation.
