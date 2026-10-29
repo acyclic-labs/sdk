@@ -1,7 +1,10 @@
 //! Complete transcript storage with a disk-backed row index and viewport cache.
 
 use crate::Layout;
-use ratatui::{style::Modifier, text::Line};
+use ratatui::{
+    style::Modifier,
+    text::{Line, Span},
+};
 use ratatui_core::style::Style;
 use std::{
     fs::File,
