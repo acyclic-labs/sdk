@@ -4,7 +4,7 @@ use crate::local::{
     tests::{text, volume, volume_config},
 };
 use acyclic_stream::{
-    AppendRequest, IdempotencyKey, PersistenceCut, StreamError, StreamPath, StreamProvider,
+    AppendRequest, IdempotencyKey, PersistenceCut, StreamError, StreamPath, StreamProviderExt,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
