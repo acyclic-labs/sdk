@@ -2,7 +2,11 @@
 //! host retains workspace admission; no shell or output reader is inserted.
 use super::*;
 use acyclic_native_runtime::{CaptureHandler, ProcessCaptureStream};
-use std::task::{Context, Poll};
+use futures::Stream;
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
 
 mod process;
 pub use process::{LocalExecution, LocalMachine, LocalOptions};
