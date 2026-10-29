@@ -43,6 +43,17 @@ async fn execute(
     repository: acyclic_fs::WorkspaceId,
     args: &[&str],
 ) -> crate::Result<Output> {
+    execute_request(filesystem, store, view, repository, args, None).await
+}
+
+async fn execute_request(
+    filesystem: &LocalFs,
+    store: &LocalCoreStateStore,
+    view: View<'_>,
+    repository: acyclic_fs::WorkspaceId,
+    args: &[&str],
+    request: Option<acyclic_fs::GitRequest>,
+) -> crate::Result<Output> {
     run(
         Workspace {
             access: &crate::filesystem::local_owner_workspace_access("test")?,
@@ -56,7 +67,7 @@ async fn execute(
             reserved: &[],
             author: "test",
             authored_at_seconds: 1,
-            request: None,
+            request,
         },
         &args
             .iter()
@@ -64,6 +75,76 @@ async fn execute(
             .collect::<Vec<_>>(),
     )
     .await
+}
+
+#[tokio::test]
+async fn saved_command_replay_authenticates_its_original_repository_sources() -> TestResult {
+    use acyclic_fs::GitCompatStore;
+    let (_directory, filesystem, store, main) = fixture().await?;
+    let request = acyclic_fs::GitRequest {
+        operation: OperationId::new(),
+        unanswered: Arc::new(|_| true),
+    };
+    let first = execute_request(
+        &filesystem,
+        &store,
+        (&main).into(),
+        main.id(),
+        &["branch", "saved"],
+        Some(request.clone()),
+    )
+    .await?
+    .command
+    .ok_or("no original result")?;
+    let replay = execute_request(
+        &filesystem,
+        &store,
+        (&main).into(),
+        main.id(),
+        &["apply", "missing.patch"],
+        Some(request.clone()),
+    )
+    .await?
+    .command
+    .ok_or("no replay result")?;
+    assert_eq!(replay, first);
+    let foreign = filesystem
+        .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
+            "foreign-replay-source",
+            acyclic_fs::VolumeInitialization {
+                config: acyclic_fs::VolumeConfig::portable(acyclic_fs::Lifecycle::Ephemeral),
+                access_policy: Some(acyclic_fs::access::INITIAL_POLICY),
+            },
+            OperationId::new(),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            None,
+        )
+        .await?
+        .value
+        .workspace();
+    let mut state = GitCompatStore::load(&store, main.id())
+        .await?
+        .ok_or("missing repository")?;
+    let expected = state.revision;
+    state
+        .branches
+        .get_mut("saved")
+        .ok_or("missing saved branch")?
+        .workspace_id = foreign.id();
+    state.revision += 1;
+    assert!(GitCompatStore::compare_and_swap(&store, main.id(), expected, state).await?);
+    let denied = execute_request(
+        &filesystem,
+        &store,
+        (&main).into(),
+        main.id(),
+        &["apply", "missing.patch"],
+        Some(request),
+    )
+    .await;
+    assert!(matches!(denied, Err(Error::Unauthorized(_))));
+    Ok(())
 }
 
 #[tokio::test]

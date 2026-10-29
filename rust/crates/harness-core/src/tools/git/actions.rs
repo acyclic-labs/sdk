@@ -366,7 +366,7 @@ where
         Ok(GitFilesystemResult::Data {
             kind: "archive".to_owned(),
             value: json!({
-                "format": "acyclic-fs-manifest-v2",
+                "format": "acyclic-fs-manifest-v1",
                 "generation": hex::encode(generation.id().to_bytes().as_slice()),
                 "entries": entries
             }),

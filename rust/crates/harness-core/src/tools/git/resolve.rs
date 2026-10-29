@@ -104,27 +104,6 @@ where
         &self,
         workspace_id: acyclic_fs::WorkspaceId,
     ) -> Result<ManagedWorkspace<P, O>, Error> {
-        if workspace_id == self.current.id() {
-            self.access.require(&self.current).await?;
-            return Ok(self.current.clone());
-        }
-        let graph = WorkspaceGraph::new(self.store.clone());
-        graph
-            .authorize_descendant(workspace_id, self.repository_id)
-            .await
-            .map_err(|error| match error {
-                acyclic_fs::WorkspaceLineageError::UnauthorizedJoin => {
-                    Error::Unauthorized("Git workspace is outside its repository lineage".into())
-                }
-                error => S::lineage_error(error),
-            })?;
-        let workspace = acyclic_fs::WorkspaceResolver::resolve(
-            &((*self.fs).clone(), WorkspaceGraph::new(self.store.clone())),
-            workspace_id,
-        )
-        .await
-        .map_err(S::lineage_error)?;
-        self.access.require(&workspace).await?;
-        Ok(workspace)
+        self.repository_access().workspace(workspace_id).await
     }
 }
