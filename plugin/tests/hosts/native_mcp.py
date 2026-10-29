@@ -57,7 +57,11 @@ class McpClient:
         while identifier not in self.responses:
             if b"\n" not in self.pending:
                 remaining = deadline - time.monotonic()
-                if remaining <= 0 or not self.ready.select(remaining):
+                try:
+                    observed = remaining > 0 and self.ready.select(remaining)
+                except (OSError, ValueError) as error:
+                    raise McpFailure("observe MCP response", str(error), self.recovery) from error
+                if not observed:
                     raise McpFailure("read MCP response", "response deadline expired", self.recovery)
                 try:
                     chunk = os.read(self.process.stdout.fileno(), 65536)
@@ -74,20 +78,34 @@ class McpClient:
                     raise McpFailure("decode MCP response", str(error), self.recovery) from error
                 if not isinstance(message, dict):
                     raise McpFailure("decode MCP response", "expected an object", self.recovery)
+                if message.get("id") is None and "error" in message:
+                    raise McpFailure("complete MCP request", str(message["error"]), self.recovery)
                 if "id" in message:
-                    self.responses[message["id"]] = message
+                    try:
+                        self.responses[message["id"]] = message
+                    except TypeError as error:
+                        raise McpFailure("decode MCP response ID", str(error), self.recovery) from error
         message = self.responses.pop(identifier)
         if "error" in message:
             raise McpFailure("complete MCP request", str(message["error"]), self.recovery)
         if "result" not in message:
             raise McpFailure("complete MCP request", "response has no result", self.recovery)
-        return message["result"]
+        result = message["result"]
+        if not isinstance(result, dict):
+            raise McpFailure("decode MCP result", "expected an object", self.recovery)
+        return result
 
     def result(self, identifier):
         result = self.response(identifier)
         if result.get("isError"):
             raise McpFailure("complete MCP tool", str(result), self.recovery)
-        return json.loads(result["content"][0]["text"])
+        try:
+            decoded = json.loads(result["content"][0]["text"])
+            if not isinstance(decoded, dict):
+                raise ValueError("expected a coordination result object")
+            return decoded
+        except (KeyError, IndexError, TypeError, ValueError) as error:
+            raise McpFailure("decode MCP tool result", str(error), self.recovery) from error
 
     def call(self, name, reference, prompt=None):
         return self.result(self.submit(name, reference, prompt))
