@@ -1091,9 +1091,7 @@ impl Reader {
             // The driver may wake again before the renderer plans its next
             // frame. Completed work must not be dispatched a second time.
             self.demand.remove(&flight.key);
-            self.failures = 0;
-            self.since = None;
-            self.retry_at = 0;
+            self.recovered();
         } else {
             self.refuse(flight.key);
         }
@@ -1308,6 +1306,16 @@ impl Reader {
         }
     }
 
+    fn recovered(&mut self) -> bool {
+        if self.failures == 0 {
+            return false;
+        }
+        self.failures = 0;
+        self.since = None;
+        self.retry_at = 0;
+        true
+    }
+
     /// Replace the live tails to follow. Each starts at the cache's tail, so a
     /// reconnect is just a follow from the last cached position. A follow
     /// whose stream tail ran more than `lag` ahead jumps to the last records;
@@ -1358,6 +1366,7 @@ impl Reader {
         self.delivered += 1;
         self.generation += 1;
         self.follow_backoff = false;
+        self.recovered();
         self.cache.observe_tail(stream, accepted);
         if let Some(position) = self.follows.get_mut(stream) {
             *position = (*position).max(record.sequence + 1);
@@ -1441,7 +1450,7 @@ impl Reader {
         self.readable() && now >= self.retry_at
     }
 
-    /// A follow failed to open or ended with an error: back off like a read.
+    /// A live follow failed to open or ended: back off like a read.
     pub fn follow_failed(&mut self, failure: Failure, now: u64) {
         self.generation += 1;
         self.follow_backoff = true;
@@ -1452,6 +1461,9 @@ impl Reader {
     pub fn follow_opened(&mut self, stream: &StreamPath, from: u64) {
         self.cache.resumed(stream, from);
         self.follow_backoff = false;
+        if self.recovered() {
+            self.generation += 1;
+        }
     }
 
     /// Counts completed work (replies, failures, deliveries). A renderer that

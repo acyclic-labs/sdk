@@ -269,7 +269,10 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                         failed(reader, path, &error, now);
                         ended.push(path.clone());
                     }
-                    Poll::Ready(None) => ended.push(path.clone()),
+                    Poll::Ready(None) => {
+                        failed(reader, path, &StreamError::Unavailable, now);
+                        ended.push(path.clone());
+                    }
                     Poll::Pending => {}
                 }
             }
@@ -376,6 +379,115 @@ async fn read<P: StreamProvider + ?Sized>(
 mod tests {
     use super::*;
     use acyclic_stream::{AppendRequest, ForkRequest, IdempotencyKey, MemoryStream};
+
+    #[test]
+    fn lost_live_follow_reports_failure_and_resumes_without_another_frame() {
+        use super::super::{Connectivity, ReaderPolicy};
+        use futures::{FutureExt as _, channel::oneshot};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::task::{Wake, Waker};
+
+        struct Woken(AtomicBool);
+        impl Wake for Woken {
+            fn wake(self: Arc<Self>) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        futures::executor::block_on(async {
+            for append_before_reconnect in [false, true] {
+                let provider = Arc::new(MemoryStream::default());
+                let path = StreamPath::new("reader/follow-loss").unwrap();
+                provider
+                    .append(AppendRequest {
+                        path: path.clone(),
+                        records: vec![b"retained".as_slice().into()],
+                        if_tail: None,
+                        idempotency_key: IdempotencyKey::new(b"retained".to_vec()).unwrap(),
+                    })
+                    .await
+                    .unwrap();
+                let head = provider.head(path.clone()).await.unwrap();
+                let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
+                let mut driver = Driver::new(Arc::clone(&provider));
+                let woken = Arc::new(Woken(AtomicBool::new(false)));
+                let waker = Waker::from(Arc::clone(&woken));
+                let mut cx = Context::from_waker(&waker);
+                driver.attach(&mut reader, 0);
+                reader.observed_head(&path, head, None);
+                reader.set_follows([path.clone()]);
+                driver.step(&mut reader, 0, &mut cx);
+                assert_eq!(driver.open_follows(), 1);
+                let retained = reader.cache().record(&path, 0).unwrap().clone();
+
+                // Keep the actual provider subscription, with a channel modeling
+                // its connection owner. Losing that producer ends this live link.
+                let (connection, disconnected) = oneshot::channel::<()>();
+                let (position, accepted, records) = driver.follows.remove(&path).unwrap();
+                driver.follows.insert(
+                    path.clone(),
+                    (
+                        position,
+                        accepted,
+                        Box::pin(records.take_until(disconnected.map(|_| ()))),
+                    ),
+                );
+                driver.step(&mut reader, 1, &mut cx);
+                assert_eq!(reader.next_deadline(), None);
+                woken.0.store(false, Ordering::SeqCst);
+                drop(connection);
+                assert!(woken.0.load(Ordering::SeqCst));
+                driver.step(&mut reader, 2, &mut cx);
+                assert_eq!(driver.open_follows(), 0);
+                let Connectivity::Degraded { retry_at } = reader.connectivity() else {
+                    panic!("lost live producer must report transport failure");
+                };
+                assert_eq!(reader.next_deadline(), Some(retry_at));
+                assert!(retry_at > 2);
+                assert!(reader.issues().next().is_none());
+                assert_eq!(reader.cache().record(&path, 0), Some(&retained));
+
+                let append = || {
+                    provider.append(AppendRequest {
+                        path: path.clone(),
+                        records: vec![b"resumed".as_slice().into()],
+                        if_tail: None,
+                        idempotency_key: IdempotencyKey::new(b"resumed".to_vec()).unwrap(),
+                    })
+                };
+                if append_before_reconnect {
+                    append().await.unwrap();
+                }
+                driver.step(&mut reader, retry_at - 1, &mut cx);
+                assert_eq!(driver.open_follows(), 0);
+                // The original retry deadline resumes the retained cursor; no new
+                // viewport plan, history read or provider record fixture is needed.
+                driver.step(&mut reader, retry_at, &mut cx);
+                assert_eq!(driver.open_follows(), 1);
+                assert_eq!(reader.issued(), 0);
+                assert!(matches!(reader.connectivity(), Connectivity::Online));
+                assert_eq!(reader.next_deadline(), None);
+                if !append_before_reconnect {
+                    assert_eq!(driver.follows.get(&path).unwrap().0, 1);
+                    woken.0.store(false, Ordering::SeqCst);
+                    append().await.unwrap();
+                    assert!(woken.0.load(Ordering::SeqCst));
+                    driver.step(&mut reader, retry_at, &mut cx);
+                }
+                assert_eq!(reader.cache().record(&path, 0), Some(&retained));
+                assert_eq!(
+                    reader.cache().record(&path, 1).unwrap().as_ref(),
+                    b"resumed"
+                );
+                assert!(matches!(reader.connectivity(), Connectivity::Online));
+                reader.set_follows([]);
+                driver.step(&mut reader, retry_at, &mut cx);
+                assert_eq!(driver.open_follows(), 0);
+                assert_eq!(reader.next_deadline(), None);
+                assert!(matches!(reader.connectivity(), Connectivity::Online));
+            }
+        });
+    }
 
     #[test]
     fn lost_check_producer_retires_the_request_without_waiting_for_timeout() {
