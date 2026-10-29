@@ -10,7 +10,11 @@ fn record(number: u8) -> FileRecord {
         kind: FileKind::Regular,
         link_count: 1,
         metadata: crate::ObjectId {
-            storage: None,
+            storage: (number % 2 == 0).then_some(crate::ObjectStorage {
+                locator: crate::Digest::from_bytes([number + 10; 32]),
+                root_file_id: crate::FileId::from_bytes([number + 20; 16]),
+                origin_generation: crate::Digest::from_bytes([number + 30; 32]),
+            }),
             kind: crate::ObjectKind::Metadata,
             digest: crate::Digest::from_bytes([number; 32]),
         },
@@ -129,8 +133,23 @@ fn every_entry_decodes_to_its_exact_path_and_only_untruncated_unicode_keys_carry
             let mut metadata = Vec::new();
             encode(&change, config, &mut metadata);
             assert_eq!(metadata.len(), encoded_len(&change, config));
-            let records = RECORD_BYTES
-                * (usize::from(change.before.is_some()) + usize::from(change.after.is_some()));
+            let expected = [change.before.as_ref(), change.after.as_ref()];
+            let records = expected
+                .into_iter()
+                .flatten()
+                .map(record_len)
+                .sum::<usize>();
+            let mut references = &metadata[metadata.len() - records..];
+            for record in expected.into_iter().flatten() {
+                assert_eq!(&references[..16], &record.file_id.into_bytes());
+                assert_eq!(references[16], record.kind.tag());
+                references = &references[17..];
+                let length = prost::encoding::decode_varint(&mut references).unwrap() as usize;
+                let (encoded, remaining) = references.split_at(length);
+                assert_eq!(crate::ObjectId::try_from(encoded).unwrap(), record.metadata);
+                references = remaining;
+            }
+            assert!(references.is_empty());
             if carries {
                 elided += 1;
                 assert_eq!(
@@ -168,12 +187,8 @@ fn every_entry_decodes_to_its_exact_path_and_only_untruncated_unicode_keys_carry
 #[test]
 fn a_key_that_cannot_be_the_whole_path_never_stands_for_one() {
     let [portable, _, folded] = configs();
-    let created = [0, 1]
-        .into_iter()
-        .chain([7; 16])
-        .chain([1])
-        .chain([8; 32])
-        .collect::<Vec<u8>>();
+    let mut created = vec![0, 1];
+    write_record(&record(1), &mut created);
     let carried = |config, key: &[u8]| super::path(key, "create", &created, config);
     // The negative control: an untruncated key in a case-preserving volume.
     assert!(carried(portable, b"a/b").is_ok());
@@ -207,4 +222,40 @@ fn a_key_that_cannot_be_the_whole_path_never_stands_for_one() {
         super::path(b"a", "create", &nonminimal, portable),
         Err(Malformed)
     );
+    // A real sealed association survives the entry; a truncated, digest-only,
+    // wrongly typed or noncanonical reference must not authorize a path.
+    for number in [1, 2] {
+        let mut encoded = vec![0, 1];
+        write_record(&record(number), &mut encoded);
+        assert!(super::path(b"a", "create", &encoded, portable).is_ok());
+        for end in 19..encoded.len() {
+            assert_eq!(
+                super::path(b"a", "create", &encoded[..end], portable),
+                Err(Malformed)
+            );
+        }
+        let mut malformed = encoded.clone();
+        malformed[20] = crate::ObjectKind::GenerationRoot.canonical_tag() | (malformed[20] & 128);
+        assert_eq!(
+            super::path(b"a", "create", &malformed, portable),
+            Err(Malformed)
+        );
+        malformed[20] = 127 | (malformed[20] & 128);
+        assert_eq!(
+            super::path(b"a", "create", &malformed, portable),
+            Err(Malformed)
+        );
+        let nonminimal = [&encoded[..19], &[encoded[19] | 128, 0], &encoded[20..]].concat();
+        assert_eq!(
+            super::path(b"a", "create", &nonminimal, portable),
+            Err(Malformed)
+        );
+        let mut digest_only = encoded[..19].to_vec();
+        digest_only.push(32);
+        digest_only.extend_from_slice(record(number).metadata.digest.as_bytes());
+        assert_eq!(
+            super::path(b"a", "create", &digest_only, portable),
+            Err(Malformed)
+        );
+    }
 }
