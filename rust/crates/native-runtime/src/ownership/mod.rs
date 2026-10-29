@@ -151,7 +151,9 @@ impl OwnershipReleaseBarrier {
                     .wait(guard)
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
                 Some(deadline) => {
-                    let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                    let Some(remaining) =
+                        deadline.checked_duration_since(std::time::Instant::now())
+                    else {
                         return false;
                     };
                     released
