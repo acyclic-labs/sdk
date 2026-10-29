@@ -60,7 +60,7 @@ pub fn frame_instructions(
 ) -> std::result::Result<String, JsValue> {
     let (file, source) = instruction_source(file, source)?;
     let source = crate::model::InstructionSource::with_identity(&file, &source);
-    let mut remaining = maximum;
+    let mut remaining = Some(maximum);
     source.reserve(&mut remaining, None).map_err(js_error)?;
     let (bytes, ()) = acyclic_stream::javascript_bytes::snapshot(bytes, |length| {
         if length != file.descriptor().byte_length() {
