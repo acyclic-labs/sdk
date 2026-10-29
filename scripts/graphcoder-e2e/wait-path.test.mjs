@@ -30,7 +30,7 @@ test('observes an atomic publication through newly created ancestors', async () 
     const path = join(root, 'new', 'nested', 'ready');
     const ready = waitForFile(path, { timeoutMs: 2000 });
     const child = spawn(process.execPath, [fileURLToPath(new URL('./wait-path.mjs', import.meta.url)), path], {
-      windowsHide: true, stdio: 'ignore',
+      windowsHide: true, stdio: 'ignore', timeout: 2000,
     });
     const terminal = new Promise((resolve, reject) => {
       child.once('error', reject);
