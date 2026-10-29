@@ -107,13 +107,15 @@ pub async fn select_model_context_wasm(
     reader: js_sys::Function,
     maximum_messages: Option<u32>,
     maximum_attachments: Option<u32>,
-    maximum_render_bytes: f64,
+    maximum_render_bytes: Option<f64>,
     maximum_projected_attachments: u32,
 ) -> Result<JsValue, JsValue> {
     let conversation: ConversationState = from_js(conversation)?;
     let selection: ModelContextSelection = from_js(selection)?;
     let resolver = BrowserContentReader(reader);
-    let maximum_render_bytes = exact_nonnegative_u64(maximum_render_bytes, "maximum render bytes")?;
+    let maximum_render_bytes = maximum_render_bytes
+        .map(|maximum| exact_nonnegative_u64(maximum, "maximum render bytes"))
+        .transpose()?;
     let positive = |value: Option<u32>| {
         value
             .map(|value| {

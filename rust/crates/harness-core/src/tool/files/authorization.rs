@@ -86,7 +86,12 @@ impl FileTool {
         let (file, custody) = match *self {
             Self::Read => {
                 let input = decode::<ReadFileInput>(&invocation.arguments, work)?;
-                let maximum = scope.limits().render_bytes.min(scope.limits().file_bytes);
+                let maximum = scope
+                    .limits()
+                    .render_bytes
+                    .into_iter()
+                    .chain(Some(scope.limits().file_bytes))
+                    .min();
                 let length = match input.0.range {
                     Some(range) if range.end <= input.0.file.descriptor().byte_length() => {
                         range.end.checked_sub(range.start)
@@ -94,9 +99,8 @@ impl FileTool {
                     Some(_) => None,
                     None => Some(input.0.file.descriptor().byte_length()),
                 };
-                if maximum == 0
-                    || maximum == u64::MAX
-                    || length.is_none_or(|length| length > maximum)
+                if maximum.is_some_and(|maximum| maximum == 0 || maximum == u64::MAX)
+                    || length.is_none_or(|length| maximum.is_some_and(|maximum| length > maximum))
                 {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
