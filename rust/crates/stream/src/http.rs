@@ -332,44 +332,8 @@ impl StreamProvider for HttpStream {
             revision,
         }))
     }
-    async fn heads(&self, mut request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
-        request.validate()?;
-        request.at_least = self.revisions()?.floor(&request.at_least);
-        let value = self
-            .request(
-                "heads",
-                wire_codec::heads_request_to_wire(request.clone()).encode_to_vec(),
-            )
-            .await?;
-        let heads = field(&value, "heads")?
-            .as_array()
-            .ok_or(StreamError::InvalidResponse)?
-            .iter()
-            .map(|head| {
-                if head.is_null() {
-                    Ok(None)
-                } else {
-                    parse_head_projection(head, request.projection).map(Some)
-                }
-            })
-            .collect::<Result<crate::HeadSet<_>, _>>()?;
-
-        let view = crate::Heads {
-            projection: request.projection,
-            snapshot: parse_revision(field(&value, "snapshot")?)?,
-            heads,
-            children: value
-                .get("children")
-                .filter(|value| !value.is_null())
-                .map(parse_children_page)
-                .transpose()?,
-        };
-        view.validate_for(&request)?;
-        if parse_head_projection_name(field(&value, "projection")?)? != request.projection {
-            return Err(StreamError::InvalidResponse);
-        }
-        self.revisions()?.observe(&view.snapshot);
-        Ok(view)
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        self.session_client()?.heads(request).await
     }
 
     fn write(
@@ -627,82 +591,3 @@ mod tests {
 mod http_follow_tests;
 #[cfg(test)]
 mod session_tests;
-
-fn parse_head_projection_name(value: &Value) -> Result<crate::HeadProjection, StreamError> {
-    match value.as_str() {
-        Some("history") => Ok(crate::HeadProjection::History),
-        Some("watermarks") => Ok(crate::HeadProjection::Watermarks),
-        Some("tail") => Ok(crate::HeadProjection::Tail),
-        _ => Err(StreamError::InvalidResponse),
-    }
-}
-
-fn parse_head_projection(
-    value: &Value,
-    projection: crate::HeadProjection,
-) -> Result<crate::PathHead, StreamError> {
-    let head = crate::PathHead {
-        retained_through: value
-            .get("retainedThrough")
-            .filter(|value| !value.is_null())
-            .map(parse_u64)
-            .transpose()?,
-        tail: parse_u64(field(&value, "tail")?)?,
-        last: value
-            .get("last")
-            .filter(|last| !last.is_null())
-            .map(parse_record)
-            .transpose()?,
-        durable: parse_u64(field(&value, "durable")?)?,
-        origin: value
-            .get("origin")
-            .filter(|origin| !origin.is_null())
-            .map(|origin| -> Result<crate::ForkOrigin, StreamError> {
-                Ok(crate::ForkOrigin {
-                    source: parse_path(field(origin, "source")?)?,
-                    forked_at: parse_u64(field(origin, "forkedAt")?)?,
-                    commit_id: parse_id(field(origin, "commitId")?)?,
-                })
-            })
-            .transpose()?,
-    };
-    head.validate_projection(projection)?;
-    Ok(head)
-}
-
-fn parse_children_page(value: &Value) -> Result<ChildrenPage, StreamError> {
-    Ok(ChildrenPage {
-        hierarchy_version: parse_id(field(value, "hierarchyVersion")?)?,
-        next_after: value
-            .get("nextAfter")
-            .filter(|value| !value.is_null())
-            .map(parse_path)
-            .transpose()?,
-        children: field(value, "children")?
-            .as_array()
-            .ok_or(StreamError::InvalidResponse)?
-            .iter()
-            .map(|child| {
-                Ok(Child {
-                    path: parse_path(field(child, "path")?)?,
-                    tail_record: child
-                        .get("tailRecord")
-                        .filter(|value| !value.is_null())
-                        .map(parse_record)
-                        .transpose()?,
-                    origin: child
-                        .get("origin")
-                        .filter(|value| !value.is_null())
-                        .map(|origin| {
-                            Ok(ForkOrigin {
-                                source: parse_path(field(origin, "source")?)?,
-                                forked_at: parse_u64(field(origin, "forkedAt")?)?,
-                                commit_id: parse_id(field(origin, "commitId")?)?,
-                            })
-                        })
-                        .transpose()?,
-                })
-            })
-            .collect::<Result<_, StreamError>>()?,
-    })
-}
