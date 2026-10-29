@@ -205,11 +205,11 @@ pub struct WasmAgentInvocation {
 #[wasm_bindgen]
 impl WasmAgentInvocation {
     /// Original canonical Actors request, including the original command
-    /// intent. A command staged in parts has no one request; only
-    /// [`Self::execute`] sends it.
-    pub fn bytes(&self) -> Result<Vec<u8>, JsValue> {
+    /// intent, copied once into a new JS array. A command staged in parts has
+    /// no one request; only [`Self::execute`] sends it.
+    pub fn bytes(&self) -> Result<Uint8Array, JsValue> {
         match self.invocation.invocations() {
-            [invocation] => Ok(invocation.to_vec()),
+            [invocation] => Ok(Uint8Array::from(&invocation[..])),
             _ => Err(command_error(CommandError::Capacity)),
         }
     }
@@ -258,10 +258,10 @@ impl WasmAgentCommand {
         Ok(Self { command })
     }
 
-    /// An owned copy of the whole command's encoding; callers cannot mutate
-    /// the request retained in WASM.
-    pub fn bytes(&self) -> Vec<u8> {
-        self.command.command().to_vec()
+    /// The whole command's encoding, copied once into a new JS array; callers
+    /// cannot mutate the request retained in WASM.
+    pub fn bytes(&self) -> Uint8Array {
+        Uint8Array::from(self.command.command())
     }
 
     /// Decode through the canonical Rust schema with exact integer values.
