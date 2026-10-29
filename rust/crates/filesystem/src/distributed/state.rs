@@ -84,23 +84,56 @@ pub struct ObservedRecord {
 }
 
 impl<P: AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
-    /// Reads current state using existing Streams operations. Until G01 lands,
-    /// present paths require tail plus one exact record read; no cache is a proof
-    /// of absence and no coherent multi-path snapshot is claimed.
+    /// Reads state and its exact publication fence on the caller's work owner.
+    /// Portable dispatch uses one coherent head; native dispatch retains its
+    /// original-funded tail/read until its provider supports funded heads.
+    /// This does not establish a coherent multi-path snapshot.
     pub async fn observe_record(
         &self,
         path: StreamPath,
         work: &mut AuthorityWork<'_>,
     ) -> Result<ObservedRecord, AuthorityStoreError> {
-        let tail = self.tail(path.clone(), work).await;
-        let (record, condition, allocation) = match tail {
+        work.check()?;
+        let observed = async {
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.is_native() {
+                let tail = self.tail(path.clone(), work).await?;
+                if tail == 0 {
+                    return Err(authority_corrupt("filesystem state stream is empty", work));
+                }
+                let (record, allocation) = self.record(path.clone(), tail - 1, work).await?;
+                return Ok((tail, record, allocation));
+            }
+            work.admit(WorkCounters {
+                backend_read_operations: 1,
+                authority_records_read: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            work.record(WorkCounters {
+                backend_read_operations: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            let head = self.provider.head(path.clone()).await;
+            work.check()?;
+            let head = head.map_err(map_stream_error)?;
+            let record = head
+                .last
+                .ok_or_else(|| authority_corrupt("filesystem state stream is empty", work))?;
+            work.charge(WorkCounters {
+                authority_records_read: 1,
+                authority_bytes_read: record.value.len() as u64,
+                ..WorkCounters::UNCHARGED
+            })?;
+            work.hold_opaque(record.value.len() as u64)?;
+            Ok((head.tail, record, None))
+        }
+        .await;
+        let (record, condition, allocation) = match observed {
             Err(error) if authority_missing(&error) => {
                 (None, CommitCondition::Absent { path }, None)
             }
             Err(error) => return Err(error),
-            Ok(0) => return Err(authority_corrupt("filesystem state stream is empty", work)),
-            Ok(tail) => {
-                let (record, allocation) = self.record(path.clone(), tail - 1, work).await?;
+            Ok((tail, record, allocation)) => {
                 let condition = CommitCondition::Head {
                     path,
                     expected: tail,

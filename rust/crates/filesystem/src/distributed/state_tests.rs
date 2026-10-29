@@ -54,6 +54,129 @@ async fn publish(
 }
 
 #[tokio::test]
+async fn authorized_record_head_uses_one_observation_and_retains_exact_refusals() -> TestResult {
+    use acyclic_stream::testing::{Counted, RequestClass};
+    let provider = Arc::new(Counted::new(MemoryStream::default()));
+    let store = StreamAuthorityStore::new(provider.clone());
+    let cancellation = CancellationToken::new();
+    let budget = WorkBudget {
+        backend_read_operations: 1,
+        ..crate::performance::BOUNDARY_BUDGET
+    };
+    let path = StreamPath::new("state/root")?;
+    let before = provider.requests();
+    let mut missing_work = AuthorityWork::new(budget, &cancellation);
+    let missing = store
+        .observe_record(path.clone(), &mut missing_work)
+        .await?;
+    assert!(missing.record.is_none());
+    assert_eq!(
+        missing.observation.condition(),
+        &CommitCondition::Absent { path: path.clone() }
+    );
+    let calls = provider.requests().since(before);
+    assert_eq!(calls.class(RequestClass::Head), 1);
+    assert_eq!(calls.data(), 0);
+
+    let mut write_work = AuthorityWork::new(crate::performance::BOUNDARY_BUDGET, &cancellation);
+    let mut publication = commit(b"coherent-head")?;
+    store.contribute_record(
+        &mut publication,
+        &missing.observation,
+        &state(b"root-and-context"),
+        crate::PublicationHold::none(),
+        &mut write_work,
+    )?;
+    store.seal_observed(&mut publication, &[], None, &mut write_work)?;
+    let receipt = match store.submit(publication, &mut write_work).await? {
+        FilesystemCommitOutcome::Committed(receipt) => receipt,
+        _ => return Err("initial publication did not commit".into()),
+    };
+    let before = provider.requests();
+    let mut read_work = AuthorityWork::new(budget, &cancellation);
+    let observed = store.observe_record(path.clone(), &mut read_work).await?;
+    let record = observed.record.as_ref().ok_or("missing published state")?;
+    assert_eq!(
+        StateRecord::decode(record.value.clone())?.state,
+        state(b"root-and-context")
+    );
+    assert_eq!(
+        observed.observation.condition(),
+        &CommitCondition::Head {
+            path: path.clone(),
+            expected: 1,
+            commit_id: receipt.commit_id,
+        }
+    );
+    assert_eq!(record.commit_id, receipt.commit_id);
+    assert_eq!(read_work.spent().backend_read_operations, 1);
+    assert_eq!(read_work.spent().authority_records_read, 1);
+    let calls = provider.requests().since(before);
+    assert_eq!(calls.class(RequestClass::Head), 1);
+    assert_eq!(calls.data(), 0);
+
+    provider
+        .inner()
+        .append(acyclic_stream::AppendRequest {
+            path: StreamPath::new("state/empty/child")?,
+            records: vec![OwnedBytes::from_static(b"child").into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::new(OwnedBytes::from_static(b"implicit-empty"))?,
+        })
+        .await?;
+    let mut empty_work = AuthorityWork::new(budget, &cancellation);
+    assert!(matches!(
+        store
+            .observe_record(StreamPath::new("state/empty")?, &mut empty_work)
+            .await,
+        Err(AuthorityStoreError::Corrupt(_))
+    ));
+    for cancelled in [false, true] {
+        let token = CancellationToken::new();
+        if cancelled {
+            token.cancel();
+        }
+        let mut denied = AuthorityWork::new(
+            WorkBudget {
+                backend_read_operations: u64::from(cancelled),
+                ..budget
+            },
+            &token,
+        );
+        let before = provider.requests();
+        assert!(
+            store
+                .observe_record(path.clone(), &mut denied)
+                .await
+                .is_err()
+        );
+        assert_eq!(provider.requests().since(before).control(), 0);
+        assert_eq!(provider.requests().since(before).data(), 0);
+        assert_eq!(denied.spent(), WorkCounters::UNCHARGED);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let original = crate::NativeMaterializationWork::new(
+            crate::performance::BOUNDARY_BUDGET,
+            &cancellation,
+        )
+        .map_err(|(error, _)| error)?;
+        let mut native = AuthorityWork::native(&original, &cancellation);
+        let before = provider.requests();
+        let observed = store.observe_record(path, &mut native).await?;
+        assert_eq!(
+            observed.record.ok_or("missing native state")?.commit_id,
+            receipt.commit_id
+        );
+        assert!(observed.allocation.is_some());
+        let calls = provider.requests().since(before);
+        assert_eq!(calls.class(RequestClass::Head), 1);
+        assert_eq!(calls.data(), 1);
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn portable_root_and_companion_share_one_record_and_exact_receipt() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     let store = StreamAuthorityStore::new(provider.clone());
