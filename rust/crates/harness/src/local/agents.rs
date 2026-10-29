@@ -315,10 +315,14 @@ impl LocalHarness {
         };
         // A checkout's spawned children fork its retained lazy cut, so each
         // child's project is a related fork the parent can diff and merge.
+        // Only native execution has checkouts; a configured volume has none.
+        #[cfg(any(test, feature = "native-execution"))]
         let cuts = self.workspace().map(|workspace| {
             Arc::new(crate::local::workspace::LazyForkCuts(Arc::clone(workspace)))
                 as Arc<dyn crate::filesystem::ForkCuts>
         });
+        #[cfg(not(any(test, feature = "native-execution")))]
+        let cuts: Option<Arc<dyn crate::filesystem::ForkCuts>> = None;
         let bound = if let Some(verifier) = &self.served {
             let caller = verifier.caller(
                 &super::Custody {
