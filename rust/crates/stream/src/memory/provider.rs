@@ -285,7 +285,7 @@ impl StreamProvider for MemoryStream {
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        let limit = page_limit(request.limit)?;
+        validate_limit(request.limit)?;
         self.revisions.wait(&request.at_least).await?;
         let state = self.state.read().await;
         let path = state
