@@ -11,7 +11,7 @@ pub(super) struct PgJournal<'a> {
     pub(super) storage: Storage<'a>,
     pub(super) publish: &'a Statement,
     pub(super) read_fenced: &'a Statement,
-    pub(super) namespace: &'a str,
+    pub(super) namespace: &'a [u8; 32],
     pub(super) wakes: &'a mut watch::Receiver<()>,
     pub(super) at_millis: u64,
     pub(super) head: &'a mut u64,
@@ -49,7 +49,7 @@ impl CommandJournal for PgJournal<'_> {
                 let rows = transaction
                     .as_ref()
                     .ok_or(StreamError::Unavailable)?
-                    .query(self.read_fenced, &[&self.namespace, &from, &page])
+                    .query(self.read_fenced, &[&self.namespace.as_slice(), &from, &page])
                     .await
                     .map_err(unavailable)?;
                 let mut captured = None;
@@ -76,7 +76,7 @@ impl CommandJournal for PgJournal<'_> {
                      FROM acyclic_stream_journal WHERE namespace=$1) h \
                      LEFT JOIN LATERAL (SELECT revision,at_millis,command FROM acyclic_stream_journal \
                      WHERE namespace=$1 AND revision>$2 ORDER BY revision LIMIT $3) j ON true \
-                     ORDER BY j.revision", &[&self.namespace, &from, &page],
+                     ORDER BY j.revision", &[&self.namespace.as_slice(), &from, &page],
                 ).await.map_err(unavailable)?;
                 let first = rows.first().ok_or(StreamError::InvalidResponse)?;
                 let captured = (

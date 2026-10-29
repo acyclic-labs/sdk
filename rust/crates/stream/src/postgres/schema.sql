@@ -3,19 +3,22 @@ BEGIN ISOLATION LEVEL READ COMMITTED;
 SELECT pg_advisory_xact_lock(hashtextextended('acyclic-stream-schema', 1937006962));
 CREATE TABLE IF NOT EXISTS acyclic_stream_journal (
     revision bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    namespace text NOT NULL,
+    namespace bytea NOT NULL CHECK (octet_length(namespace) = 32),
     at_millis bigint NOT NULL CHECK (at_millis >= 0),
     -- Public command ceiling (1056768), plus oneof tag and length delimiter.
     command bytea NOT NULL CHECK (octet_length(command) <= 1056772)
 );
 CREATE INDEX IF NOT EXISTS acyclic_stream_journal_namespace_revision
     ON acyclic_stream_journal(namespace, revision);
+-- Fixed keys keep journal indexes and NOTIFY independent of namespace length.
+-- Exact original spelling is checked atomically when opening a generation.
 -- One revision incarnation per namespace journal, shared by every replica.
 -- Deleting the row (or recreating the database) issues a new incarnation, so
 -- tokens from an earlier journal refuse instead of matching reused indexes.
 -- A restore from backup must delete it too.
 CREATE TABLE IF NOT EXISTS acyclic_stream_generation (
-    namespace text PRIMARY KEY,
+    namespace bytea PRIMARY KEY CHECK (octet_length(namespace) = 32),
+    original_name text COLLATE "C" NOT NULL,
     generation bytea NOT NULL CHECK (octet_length(generation) = 16)
 );
 
@@ -23,18 +26,20 @@ CREATE TABLE IF NOT EXISTS acyclic_stream_generation (
 -- bounded page, then return one head/clock row (NULL command). The
 -- caller keeps this transaction open for canonical planning and publication.
 CREATE OR REPLACE FUNCTION acyclic_stream_read_fenced(
-    stream_namespace text,
+    stream_namespace bytea,
     after_revision bigint,
     page_size bigint
 ) RETURNS TABLE (revision bigint, at_millis bigint, command bytea)
 LANGUAGE plpgsql VOLATILE AS $$
+DECLARE
+    namespace_token text := encode(stream_namespace, 'hex');
 BEGIN
     IF current_setting('transaction_isolation') <> 'read committed' THEN
         RAISE EXCEPTION USING ERRCODE = 'PST02',
             MESSAGE = 'STEP stream-fenced-read failed: READ COMMITTED required',
             HINT = 'Recovery: reopen PostgresStream::connect with the same database and namespace';
     END IF;
-    PERFORM pg_advisory_xact_lock(hashtextextended(stream_namespace, 1937006962));
+    PERFORM pg_advisory_xact_lock(hashtextextended(namespace_token, 1937006962));
     -- VOLATILE obtains this snapshot after lock acquisition, including when a
     -- competing publisher committed while this statement waited for the lock.
     RETURN QUERY SELECT j.revision, j.at_millis, j.command
@@ -53,7 +58,7 @@ $$;
 -- The core plans at the caller-read transaction clock; the row records exactly
 -- that time so replay reproduces the same decision.
 CREATE OR REPLACE FUNCTION acyclic_stream_publish(
-    stream_namespace text,
+    stream_namespace bytea,
     expected_revision bigint,
     command_bytes bytea[],
     planned_millis bigint[],
@@ -61,6 +66,7 @@ CREATE OR REPLACE FUNCTION acyclic_stream_publish(
 ) RETURNS TABLE (revision bigint, at_millis bigint, accepted boolean)
 LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
+    namespace_token text := encode(stream_namespace, 'hex');
     current_revision bigint;
     accepted_millis bigint;
     published_revision bigint;
@@ -79,7 +85,7 @@ BEGIN
             MESSAGE = 'STEP stream-publication refused: empty or mismatched frame arrays',
             HINT = 'Recovery: submit the original nonempty ordered journal frame batch';
     END IF;
-    PERFORM pg_advisory_xact_lock(hashtextextended(stream_namespace, 1937006962));
+    PERFORM pg_advisory_xact_lock(hashtextextended(namespace_token, 1937006962));
     SELECT COALESCE(max(j.revision), 0) INTO current_revision
         FROM acyclic_stream_journal AS j WHERE j.namespace = stream_namespace;
     IF current_revision <> expected_revision THEN
@@ -102,7 +108,7 @@ BEGIN
             RETURNING acyclic_stream_journal.revision INTO published_revision;
         earliest_deadline := LEAST(earliest_deadline, frame.deadline);
     END LOOP;
-    PERFORM pg_notify('acyclic_stream_commits', stream_namespace);
+    PERFORM pg_notify('acyclic_stream_commits', namespace_token);
     -- A refusal aborts the statement and its insertion/notification together.
     -- The durable acknowledgement may arrive later than this acceptance cut.
     IF earliest_deadline IS NOT NULL AND
