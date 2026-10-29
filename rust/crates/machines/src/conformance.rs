@@ -102,7 +102,7 @@ async fn workload(
     let created = provider
         .create(CreateMachine::new(
             key("0001")?,
-            backend.image().clone(),
+            Some(backend.image().clone()),
             backend.network_policy(),
         ))
         .await
@@ -208,7 +208,7 @@ async fn verify_provider(
     for (capability, create_suffix, destroy_suffix) in capability_cases {
         let required = std::collections::BTreeSet::from([capability]);
         let mut capability_request =
-            CreateMachine::new(key(create_suffix)?, image.clone(), network_policy);
+            CreateMachine::new(key(create_suffix)?, Some(image.clone()), network_policy);
         capability_request.compatibility = CompatibilityPolicy::Require(required.clone());
         let admission = provider.create(capability_request).await;
         if qualification.capabilities.contains(&capability) {
@@ -234,7 +234,7 @@ async fn verify_provider(
         }
     }
     let create_key = key(1)?;
-    let request = CreateMachine::new(create_key, image, network_policy);
+    let request = CreateMachine::new(create_key, Some(image), network_policy);
     let created = provider
         .create(request.clone())
         .await

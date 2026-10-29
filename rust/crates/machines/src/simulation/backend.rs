@@ -57,6 +57,9 @@ impl MachinesProvider for SimulatedMachines {
         let intent = MemoryIntent::Create(request.clone());
         let capabilities = self.capabilities.clone();
         self.apply(key, intent, move |state| {
+            let image = request.image.clone().ok_or_else(|| ProviderError::Unsupported(
+                "the simulator has no installed default image; recovery: supply an explicit immutable image".into(),
+            ))?;
             if let CompatibilityPolicy::Require(required) = &request.compatibility
                 && (required.is_empty() || !required.is_subset(&capabilities))
             {
@@ -71,7 +74,7 @@ impl MachinesProvider for SimulatedMachines {
             }
             let id = Self::machine(key, 0);
             let now = tick(state)?;
-            let contract = Self::contract(&request, capabilities);
+            let contract = Self::contract(&request, image, capabilities);
             let observation = MachineObservation {
                 id,
                 state: MachineState::Running,

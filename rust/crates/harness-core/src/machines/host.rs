@@ -30,12 +30,12 @@ impl MachinesHost {
             .map_err(|error| map_error(error, None))
     }
 
-    /// Creates one durable sandbox from an immutable artifact.
+    /// Creates one durable sandbox from the hosting preset's artifact, or the provider default.
     pub async fn create(
         &self,
         operation_id: OperationId,
         idempotency_key: &IdempotencyKey,
-        artifact: &ArtifactRef,
+        artifact: Option<&ArtifactRef>,
         network_policy_digest: [u8; 32],
         configure: impl FnOnce(&mut CreateMachine),
     ) -> Result<SandboxRef> {
@@ -46,7 +46,7 @@ impl MachinesHost {
         }
         let mut request = CreateMachine::new(
             machines_key(idempotency_key)?,
-            self.image(artifact)?,
+            artifact.map(|artifact| self.image(artifact)).transpose()?,
             network_policy_digest,
         );
         configure(&mut request);

@@ -454,7 +454,7 @@ fn budgets_out(value: Budgets) -> BudgetsOut {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateIn {
     idempotency_key: String,
-    image: ImageIn,
+    image: Option<ImageIn>,
     compatibility: CompatibilityIn,
     suspension: SuspensionIn,
     expiration: ExpirationIn,
@@ -464,7 +464,7 @@ pub struct CreateIn {
 fn create_in(value: CreateIn) -> Result<CreateMachine, JsValue> {
     Ok(CreateMachine {
         idempotency_key: key(value.idempotency_key)?,
-        image: image_in(value.image)?,
+        image: value.image.map(image_in).transpose()?,
         compatibility: compatibility_in(value.compatibility)?,
         suspension: suspension_in(value.suspension)?,
         expiration: expiration_in(value.expiration)?,

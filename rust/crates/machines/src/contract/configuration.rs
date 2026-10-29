@@ -75,8 +75,9 @@ pub struct Budgets {
 pub struct CreateMachine {
     /// Caller-retained mutation identity.
     pub idempotency_key: IdempotencyKey,
-    /// Immutable image.
-    pub image: Image,
+    /// Immutable image, or `None` to select the provider's installed default.
+    /// The settled machine contract always retains the resolved immutable image.
+    pub image: Option<Image>,
     /// Capability policy.
     pub compatibility: CompatibilityPolicy,
     /// Suspension policy.
@@ -93,7 +94,7 @@ impl CreateMachine {
     /// Creates a best-effort request with 15-second idle suspension and no expiry.
     pub fn new(
         idempotency_key: IdempotencyKey,
-        image: Image,
+        image: Option<Image>,
         network_policy_digest: [u8; 32],
     ) -> Self {
         Self {

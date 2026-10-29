@@ -81,9 +81,13 @@ impl SimulatedMachines {
     fn checkpoint_id(key: IdempotencyKey) -> CheckpointId {
         CheckpointId::from_digest(derived_digest(b"checkpoint", key, 0))
     }
-    fn contract(request: &CreateMachine, capabilities: BTreeSet<Capability>) -> MachineContract {
+    fn contract(
+        request: &CreateMachine,
+        image: Image,
+        capabilities: BTreeSet<Capability>,
+    ) -> MachineContract {
         MachineContract {
-            image: request.image.clone(),
+            image,
             capabilities,
             compatibility: request.compatibility.clone(),
             compatibility_revision: Self::revision(),

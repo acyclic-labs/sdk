@@ -8,7 +8,7 @@ use acyclic_machines::{
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let request = CreateMachine::new(
         IdempotencyKey::parse("11111111-1111-4111-8111-111111111111")?,
-        Image::managed([0x11; 32])?,
+        Some(Image::managed([0x11; 32])?),
         [0x22; 32],
     );
     let provider = SimulatedMachines::default();

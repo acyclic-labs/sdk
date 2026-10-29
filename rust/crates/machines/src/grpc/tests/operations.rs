@@ -1,6 +1,64 @@
 use super::*;
 
 #[tokio::test]
+async fn create_omits_the_default_image_and_binds_explicit_images_without_redispatch()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (mut service, script, machine) = scripted_operation_service(Vec::new(), Vec::new());
+    let key = service.expected_key;
+    let operation = service.expected_operation;
+    let terminal = WatchReply::Items(vec![WatchItem::State(operation_state(
+        operation,
+        wire::OperationStatus::Succeeded,
+    ))]);
+    script
+        .lock()
+        .expect("script")
+        .watches
+        .extend([terminal.clone(), terminal]);
+    service.recovered.result = Some(wire::recovered_admission::Result::Create(
+        wire::MachineAdmission {
+            machine: Some(encode_machine(machine)),
+            operation: Some(wire::OperationId {
+                value: operation.as_bytes().to_vec(),
+            }),
+            contract: Some(codecs::wire_contract(&[])),
+        },
+    ));
+    let (provider, shutdown, server) = serve_operation_service(service).await?;
+    let default = CreateMachine::new(key, None, [8; 32]);
+    let MutationOutcome::Created(created) = provider.create(default).await? else {
+        panic!("create did not settle");
+    };
+    assert_eq!(created.id, machine);
+    assert_eq!(created.contract.image, Image::custom([7; 32])?);
+    let exact = CreateMachine::new(key, Some(created.contract.image.clone()), [8; 32]);
+    assert_eq!(
+        provider.create(exact).await?,
+        MutationOutcome::Created(created)
+    );
+    let substituted = CreateMachine::new(key, Some(Image::custom([9; 32])?), [8; 32]);
+    assert_eq!(
+        provider.create(substituted).await,
+        Err(ProviderError::Indeterminate(key))
+    );
+    assert_eq!(
+        script.lock().expect("script").calls,
+        [
+            "create_default",
+            "watch",
+            "inspect_machine",
+            "create_explicit",
+            "watch",
+            "inspect_machine",
+            "create_explicit",
+        ]
+    );
+    let _ = shutdown.send(());
+    server.await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn operation_for_rejects_a_substituted_nested_admission_operation()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")?;

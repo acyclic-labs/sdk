@@ -54,7 +54,6 @@ macro_rules! operation_service {
 
 operation_service! {
     (qualify_image, QualifyImageRequest, ImageQualification),
-    (create, CreateMachineRequest, MachineAdmission),
     (checkpoint, CheckpointMachineRequest, CheckpointAdmission),
     (fork, ForkCheckpointRequest, ForkAdmission),
     (fork_machine, ForkMachineRequest, ForkMachineAdmission),
@@ -62,11 +61,47 @@ operation_service! {
     (set_suspension_policy, SetSuspensionPolicyRequest, PolicyAdmission),
     (destroy_machine, MachineMutationRequest, MutationAdmission),
     (destroy_checkpoint, CheckpointMutationRequest, MutationAdmission),
-    (inspect_machine, InspectMachineRequest, MachineState),
     (inspect_checkpoint, InspectCheckpointRequest, CheckpointState),
     (list_machines, ListMachinesRequest, MachinePage),
     (events, EventsRequest, EventPage),
     (usage, UsageRequest, UsageReceipt);
+    async fn create(&self, request: Request<wire::CreateMachineRequest>)
+        -> Result<Response<wire::MachineAdmission>, Status> {
+        let request = request.into_inner();
+        if request.idempotency_key != Some(encode_key(self.expected_key)) {
+            return Err(Status::invalid_argument("create key was substituted"));
+        }
+        let Some(wire::recovered_admission::Result::Create(admission)) = &self.recovered.result else {
+            return Err(Status::unimplemented("create"));
+        };
+        if let WatchReply::Script(script) = &self.watch {
+            script.lock().expect("observation script").calls.push(
+                if request.image.is_none() { "create_default" } else { "create_explicit" }
+            );
+        }
+        Ok(Response::new(admission.clone()))
+    }
+    async fn inspect_machine(&self, request: Request<wire::InspectMachineRequest>)
+        -> Result<Response<wire::MachineState>, Status> {
+        let Some(wire::recovered_admission::Result::Create(admission)) = &self.recovered.result else {
+            return Err(Status::unimplemented("inspect_machine"));
+        };
+        if request.into_inner().machine != admission.machine {
+            return Err(Status::invalid_argument("machine was substituted"));
+        }
+        if let WatchReply::Script(script) = &self.watch {
+            script.lock().expect("observation script").calls.push("inspect_machine");
+        }
+        Ok(Response::new(wire::MachineState {
+            machine: admission.machine.clone(),
+            status: wire::MachineStatus::Running as i32,
+            contract: admission.contract.clone(),
+            endpoints: Vec::new(),
+            last_checkpoint: None,
+            created_at_unix_ms: 1,
+            changed_at_unix_ms: 1,
+        }))
+    }
     async fn suspend(
         &self,
         request: Request<wire::MachineMutationRequest>,

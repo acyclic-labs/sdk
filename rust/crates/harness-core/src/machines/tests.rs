@@ -86,7 +86,7 @@ async fn opaque_refs_round_trip_through_a_replaceable_provider() -> Result<()> {
         .create(
             OperationId::from_bytes([1; 16]),
             &IdempotencyKey::new("create-sandbox")?,
-            &artifact,
+            Some(&artifact),
             [2; 32],
             |_| {},
         )
@@ -233,6 +233,19 @@ async fn create_requires_explicit_network_policy_and_provider_ownership() -> Res
         host.qualify(&foreign).await,
         Err(Error::Invalid(_))
     ));
+    assert!(matches!(
+        host.create(
+            OperationId::from_bytes([3; 16]),
+            &IdempotencyKey::new("provider-default")?,
+            None,
+            [2; 32],
+            |_| {},
+        )
+        .await,
+        Err(Error::Machines(
+            acyclic_machines::ProviderError::Unsupported(_)
+        ))
+    ));
 
     let artifact = ArtifactRef::new(
         ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?,
@@ -243,7 +256,7 @@ async fn create_requires_explicit_network_policy_and_provider_ownership() -> Res
         host.create(
             OperationId::from_bytes([2; 16]),
             &IdempotencyKey::new("zero-policy")?,
-            &artifact,
+            Some(&artifact),
             [0; 32],
             |_| {},
         )

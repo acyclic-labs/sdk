@@ -14,6 +14,17 @@ async fn simulation_is_exactly_idempotent_and_rejects_key_rebinding() {
         provider.create(changed).await,
         Err(ProviderError::Conflict(_))
     ));
+    let mut default = request(key);
+    default.image = None;
+    assert!(matches!(
+        provider.create(default.clone()).await,
+        Err(ProviderError::Conflict(_))
+    ));
+    default.idempotency_key = IdempotencyKey::new();
+    assert!(matches!(
+        provider.create(default).await,
+        Err(ProviderError::Unsupported(_))
+    ));
 }
 
 #[tokio::test]

@@ -2,7 +2,7 @@
 
 Enable `acyclic-harness`'s `machines` feature and compose the public
 `acyclic_machines::GrpcProvider` with `machines::MachinesHost`. Supply an explicit
-provider identity, immutable image and network policy commitment. Keep the
+provider identity, hosting preset's optional immutable image and network policy commitment. Keep the
 account credential in the client callback; it never enters guest argv, stdin,
 files or environment.
 
@@ -18,9 +18,12 @@ The Node/Bun `@acyclic-labs/machines/grpc` entry point uses this same client cor
 and owns its HTTP/2 connection; the portable entry point imports no Node APIs.
 
 `GrpcProvider::qualify_default_image()` obtains the service's installed immutable
-image identity. Use the returned image in `CreateMachine`; explicit qualification
-continues to reject substituted identities. No upstream distribution digest is
-assumed to identify a provider's guest image.
+image identity when discovery is needed. `CreateMachine::new(key, None, network_policy)`
+sends no image: the server selects its installed default and returns its immutable
+identity in the machine contract. An explicit image must match that returned identity.
+`MachinesHost::create` accepts the preset's optional artifact directly. No image or
+distribution is hardcoded in the SDK. The simulator has no installed default and
+refuses omitted-image creation before changing its state.
 
 `MachinesHost` creates and inspects machines, dispatches streamed exec, reads and
 writes guest files, suspends and deletes machines. Native `ReadFile`/`WriteFile`

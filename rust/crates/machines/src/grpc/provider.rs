@@ -147,7 +147,7 @@ machine_mutations! {
                     .create(wire::CreateMachineRequest {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
-                        image: Some(encode_image(&request.image)?),
+                        image: request.image.as_ref().map(encode_image).transpose()?,
                         compatibility: Some(encode_compatibility(&request.compatibility)?),
                         suspension: Some(encode_suspension(request.suspension)?),
                         expiration: Some(encode_expiration(request.expiration)?),
@@ -160,13 +160,23 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                let operation = decode_operation(response.operation.as_ref())?;
-                let machine = decode_machine(response.machine.as_ref())?;
-                let _contract = decode_contract(response.contract.as_ref())?;
+                let operation = decode_operation(response.operation.as_ref())
+                    .map_err(|_| ProviderError::Indeterminate(key))?;
+                let machine = decode_machine(response.machine.as_ref())
+                    .map_err(|_| ProviderError::Indeterminate(key))?;
+                let contract = decode_contract(response.contract.as_ref())
+                    .map_err(|_| ProviderError::Indeterminate(key))?;
+                if request.image.as_ref().is_some_and(|image| image != &contract.image) {
+                    return Err(ProviderError::Indeterminate(key));
+                }
                 wait(self, key, operation).await?;
-                self.inspect_machine(machine)
+                let observation = self.inspect_machine(machine)
                     .await
-                    .map(MutationOutcome::Created)
+                    .map_err(|_| ProviderError::Indeterminate(key))?;
+                if observation.contract != contract {
+                    return Err(ProviderError::Indeterminate(key));
+                }
+                Ok(MutationOutcome::Created(observation))
             }
             .await,
         )

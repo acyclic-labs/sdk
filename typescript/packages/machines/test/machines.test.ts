@@ -58,6 +58,7 @@ describe("Machines simulation", () => {
       budgets: { spendMicros: 0n, concurrency: 0 },
     };
     try {
+      await reject(() => wasm.create({ ...base, image: undefined }), "no installed default image");
       await reject(() => wasm.create({ ...base, performance: "dedicated" } as never), "unknown field");
       await reject(() => wasm.fork({ checkpointId: "old-mode", count: 1, idempotencyKey: "old-mode", performance: "elastic" } as never), "unknown field");
       await reject(() => wasm.listMachines({ after: null, limit: 1.5 as never }));

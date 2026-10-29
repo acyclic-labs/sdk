@@ -106,7 +106,7 @@ fn mutation_errors_preserve_unsupported_capabilities() {
     );
 }
 
-fn wire_contract(capabilities: &[wire::Capability]) -> wire::MachineContract {
+pub(super) fn wire_contract(capabilities: &[wire::Capability]) -> wire::MachineContract {
     wire::MachineContract {
         image: Some(wire::Image {
             kind: wire::ImageKind::Custom as i32,
