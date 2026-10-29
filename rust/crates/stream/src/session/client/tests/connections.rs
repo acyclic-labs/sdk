@@ -104,7 +104,7 @@ async fn failed_home_dial_resets_pending_admissions_only_for_connection_errors()
         (StreamError::AccessDenied, true),
     ] {
         let (mut pool, _healthy) = pool::fixture::fixture(&channel);
-        pool.admissions.insert(5, Arc::new(Progress::new(0)))?;
+        pool.admissions.insert(5)?;
         if link_failure {
             pool.fail_link("good", &error);
         } else {
@@ -125,7 +125,7 @@ async fn idle_close_resets_home_and_pending_admissions() -> TestResult {
     let (mut pool, _healthy) = pool::fixture::fixture(&channel);
     pool.close_idle();
     assert!(pool.home.is_empty());
-    pool.admissions.insert(5, Arc::new(Progress::new(0)))?;
+    pool.admissions.insert(5)?;
     assert!(pool.admissions.interested(""));
     assert!(!pool.admissions.interested("good"));
     assert!(pool.links.is_empty());
@@ -166,7 +166,7 @@ async fn successful_home_recovery_rebinds_discovery_but_moved_nodes_do_not() -> 
     for home_endpoint in [true, false] {
         let (mut pool, _healthy) = pool::fixture::fixture(&channel);
         pool.reset_home();
-        pool.admissions.insert(5, Arc::new(Progress::new(0)))?;
+        pool.admissions.insert(5)?;
         let (records, _pending) = mpsc::channel(2);
         let route = pool.routes.get_mut(&1).unwrap();
         route.node.clear();
@@ -207,7 +207,7 @@ async fn reconnect_rediscovers_only_the_authenticated_home_endpoint() -> TestRes
             pool.home = "bad".into();
             pool.admissions.bind_home("bad")?;
         }
-        pool.admissions.insert(5, Arc::new(Progress::new(0)))?;
+        pool.admissions.insert(5)?;
         pool.reconnect("good")?;
         let destination = if home_endpoint { "" } else { "good" };
         let home = if home_endpoint { "" } else { "bad" };
