@@ -86,8 +86,7 @@ impl EnvironmentFacts {
         let used = crate::executor::with_history_io(io, |work| {
             crate::executor::json::json_byte_length(context, None, work)
         })?;
-        let mut bodies = u64::MAX;
-        crate::model::reserve_instruction_bodies(&context.messages, &mut bodies, io)?;
+        let bodies = crate::model::reserve_instruction_bodies(&context.messages, &mut None, io)?;
         let wrapper = ModelMessage {
             role: ModelRole::System,
             content: ModelContent::Text(String::new()),
@@ -100,7 +99,7 @@ impl EnvironmentFacts {
         let available = limits
             .render_bytes
             .saturating_sub(used)
-            .saturating_sub(u64::MAX - bodies)
+            .saturating_sub(bodies)
             .saturating_sub(wrapper + 2);
         let mut encoded = 0_u64;
         let mut raw = 0_u64;
