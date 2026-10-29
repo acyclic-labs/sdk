@@ -43,6 +43,7 @@ pub(in super::super) fn decode_contract(
         .ok_or_else(|| ProviderError::Rejected("budgets are missing".into()))?;
     Ok(MachineContract {
         image: decode_image(value.image.as_ref())?,
+        selected_volume_ref: value.selected_volume_ref.clone(),
         compatibility: decode_compatibility(value.compatibility.as_ref(), &capabilities)?,
         capabilities,
         compatibility_revision: digest(&value.compatibility_revision, "compatibility revision")?,

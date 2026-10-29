@@ -149,6 +149,7 @@ machine_mutations! {
                         protocol: Some(protocol()),
                         idempotency_key: Some(encode_key(key)),
                         image: request.image.as_ref().map(encode_image).transpose()?,
+                        selected_volume_ref: request.selected_volume_ref.clone(),
                         compatibility: Some(encode_compatibility(&request.compatibility)?),
                         suspension: Some(encode_suspension(request.suspension)?),
                         expiration: Some(encode_expiration(request.expiration)?),
@@ -161,26 +162,31 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                let operation = decode_operation(response.operation.as_ref())
-                    .map_err(|_| ProviderError::Indeterminate(key))?;
-                let machine = decode_machine(response.machine.as_ref())
-                    .map_err(|_| ProviderError::Indeterminate(key))?;
-                let contract = decode_contract(response.contract.as_ref())
-                    .map_err(|_| ProviderError::Indeterminate(key))?;
-                if request.image.as_ref().is_some_and(|image| image != &contract.image) {
-                    return Err(ProviderError::Indeterminate(key));
-                }
-                wait(self, key, operation).await?;
-                let observation = self.inspect_machine(machine)
-                    .await
-                    .map_err(|_| ProviderError::Indeterminate(key))?;
-                if observation.contract != contract {
-                    return Err(ProviderError::Indeterminate(key));
-                }
-                Ok(MutationOutcome::Created(observation))
+                settle_machine(self, key, response, |_, contract|
+                    request.image.as_ref().is_none_or(|image| image == &contract.image)
+                    && request.selected_volume_ref == contract.selected_volume_ref
+                ).await.map(MutationOutcome::Created)
             }
             .await,
         )
+    }
+
+    async fn attach_volume(
+        &self,
+        machine: MachineId,
+        volume: wire::selection::VolumeRef,
+        key: IdempotencyKey,
+    ) -> Result<MutationOutcome, ProviderError> {
+        let response = self.client().await?
+            .attach_volume(wire::AttachVolumeRequest {
+                protocol: Some(protocol()),
+                idempotency_key: Some(encode_key(key)),
+                machine: Some(encode_machine(machine)),
+                selected_volume_ref: Some(volume.clone()),
+            }).await.map_err(|error| mutation_error(key, &error))?.into_inner();
+        settle_machine(self, key, response, |actual, contract|
+            actual == machine && contract.selected_volume_ref.as_ref() == Some(&volume)
+        ).await.map(MutationOutcome::VolumeAttached)
     }
 
     #[tracing::instrument(
@@ -588,7 +594,7 @@ machine_mutations! {
             async {
                 let (operation, value) = recovered_admission(self, key).await?;
                 wait(self, key, operation).await?;
-                decode_recovered(self, value).await
+                decode_recovered(self, value).await.map_err(|_| ProviderError::Indeterminate(key))
             }
             .await,
         )

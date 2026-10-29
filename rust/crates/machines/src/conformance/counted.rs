@@ -53,6 +53,15 @@ impl<P: MachinesProvider> MachinesProvider for Counted<P> {
         self.record(RequestClass::Metadata);
         self.inner().create(request).await
     }
+    async fn attach_volume(
+        &self,
+        machine: MachineId,
+        volume: wire::selection::VolumeRef,
+        key: IdempotencyKey,
+    ) -> Result<MutationOutcome, ProviderError> {
+        self.record(RequestClass::Metadata);
+        self.inner().attach_volume(machine, volume, key).await
+    }
     async fn inspect_machine(
         &self,
         machine: MachineId,

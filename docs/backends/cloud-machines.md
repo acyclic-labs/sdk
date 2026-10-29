@@ -25,6 +25,21 @@ identity in the machine contract. An explicit image must match that returned ide
 distribution is hardcoded in the SDK. The simulator has no installed default and
 refuses omitted-image creation before changing its state.
 
+Protocol 1.3 carries the existing canonical `acyclic.harness.v2.VolumeRef` in
+`Create.selected_volume_ref` and `AttachVolume.selected_volume_ref`. The admitted
+and settled `MachineContract` must retain that exact selection. `MachinesHost::create`
+takes the canonical domain volume directly; `attach_volume` enrolls it on an
+existing Machine through one keyed mutation and its original operation watch.
+The simulator refuses both forms before mutation because it has no guest filesystem.
+
+The service must pass the same verified caller and selected volume to
+`Bound::guest_session`, retaining the original physical incarnation capability.
+That admission selects the Bound host's canonical workspace view. A volume
+reference carries no authority, POSIX identity, cache policy or physical fence.
+Retirement requires the original filesystem callbacks and private guest memory
+to be joined; closing the transport alone does not establish it. Hosted
+filesystem composition and physical revocation require service validation.
+
 `MachinesHost` creates and inspects machines, dispatches streamed exec, reads and
 writes guest files, suspends and deletes machines. Native `ReadFile`/`WriteFile`
 carry exact binary chunks, an absolute guest path and offset, and one absolute

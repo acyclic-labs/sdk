@@ -32,9 +32,9 @@ const client = createMachinesGrpcClient({ endpoint, token });
 try {
   const admission = await client.machines.create(request);
   for await (const state of client.machines.watchOperation({
-    protocol: { major: 1, minor: 2 }, operation: admission.operation,
+    protocol: { major: 1, minor: 3 }, operation: admission.operation,
   }, { timeoutMs: 0 })) console.log(state);
-  const protocol = { major: 1, minor: 2 };
+  const protocol = { major: 1, minor: 3 };
   for await (const frame of client.machines.exec({
     protocol, machine: admission.machine, argv: ["/bin/echo", "hello"], timeoutMs: 1000,
   })) console.log(frame.output);

@@ -114,6 +114,8 @@ pub enum ProviderAssurance {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum MutationOutcome {
     Created(MachineObservation),
+    /// Settled original Machine contract with its exact selected volume.
+    VolumeAttached(MachineObservation),
     Checkpointed(CheckpointObservation),
     Forked(Vec<MachineObservation>),
     /// Outcome of [`MachinesProvider::fork_machine`]: the running source, the fidelity the children were forked at, and the children in index order.
@@ -166,9 +168,7 @@ impl ExecCommand {
     pub fn new(argv: Vec<String>, timeout_ms: u32) -> Result<Self, ProviderError> {
         if argv.is_empty()
             || argv.first().is_none_or(String::is_empty)
-            || argv
-                .iter()
-                .any(|value| value.contains('\0'))
+            || argv.iter().any(|value| value.contains('\0'))
             || timeout_ms == 0
         {
             return Err(ProviderError::Invalid("invalid guest command".into()));

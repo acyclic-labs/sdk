@@ -6,7 +6,6 @@ use acyclic_machines::{
     MachinesProvider, OperationId, OperationObservation, OperationPhase, ProviderError,
 };
 use acyclic_stream::pull::PullCursor;
-use futures::StreamExt;
 use wasm_bindgen::prelude::*;
 
 use crate::public;
@@ -29,10 +28,7 @@ pub(crate) async fn open(
         .await
         .map_err(public::provider_error)?;
     Ok(WasmOperationWatch {
-        cursor: PullCursor::new(
-            stream.boxed_local(),
-            ProviderError::OperationIndeterminate(operation),
-        ),
+        cursor: PullCursor::new(stream, ProviderError::OperationIndeterminate(operation)),
         operation,
         closed: Cell::new(false),
     })

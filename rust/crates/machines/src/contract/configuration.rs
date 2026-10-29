@@ -78,6 +78,9 @@ pub struct CreateMachine {
     /// Immutable image, or `None` to select the provider's installed default.
     /// The settled machine contract always retains the resolved immutable image.
     pub image: Option<Image>,
+    /// Exact canonical volume reference, admitted by the service under the original scope.
+    /// The reference carries no authority or physical guest mapping capability.
+    pub selected_volume_ref: Option<wire::selection::VolumeRef>,
     /// Capability policy.
     pub compatibility: CompatibilityPolicy,
     /// Suspension policy.
@@ -100,6 +103,7 @@ impl CreateMachine {
         Self {
             idempotency_key,
             image,
+            selected_volume_ref: None,
             compatibility: CompatibilityPolicy::BestEffort,
             suspension: SuspensionPolicy::AfterIdle(DEFAULT_IDLE_SUSPEND),
             expiration: ExpirationPolicy::Never,
@@ -114,6 +118,8 @@ impl CreateMachine {
 pub struct MachineContract {
     /// Immutable source image.
     pub image: Image,
+    /// Exact selected workspace retained by the original hosted guest admission.
+    pub selected_volume_ref: Option<wire::selection::VolumeRef>,
     /// Exact enabled capabilities.
     pub capabilities: BTreeSet<Capability>,
     /// Original capability policy.

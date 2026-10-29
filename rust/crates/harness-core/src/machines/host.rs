@@ -36,6 +36,7 @@ impl MachinesHost {
         operation_id: OperationId,
         idempotency_key: &IdempotencyKey,
         artifact: Option<&ArtifactRef>,
+        selected_volume: Option<&crate::conversation::VolumeRef>,
         network_policy_digest: [u8; 32],
         configure: impl FnOnce(&mut CreateMachine),
     ) -> Result<SandboxRef> {
@@ -50,6 +51,7 @@ impl MachinesHost {
             network_policy_digest,
         );
         configure(&mut request);
+        request.selected_volume_ref = selected_volume.map(Into::into);
         match self
             .provider
             .create(request)
@@ -64,6 +66,23 @@ impl MachinesHost {
             _ => Err(Error::Storage(
                 "Machines returned the wrong create outcome".into(),
             )),
+        }
+    }
+
+    /// Enrolls the exact selected volume through the original Machine's hosted admission.
+    pub async fn attach_volume(
+        &self,
+        operation_id: OperationId,
+        idempotency_key: &IdempotencyKey,
+        sandbox: &SandboxRef,
+        volume: &crate::conversation::VolumeRef,
+    ) -> Result<MachineObservation> {
+        let machine = self.machine_id(sandbox)?;
+        match self.provider.attach_volume(machine, volume.into(), machines_key(idempotency_key)?)
+            .await.map_err(|error| map_error(error, Some(operation_id)))?
+        {
+            MutationOutcome::VolumeAttached(observation) if observation.id == machine => Ok(observation),
+            _ => Err(Error::Storage("Machines substituted the volume attachment result; recovery: recover the original operation".into())),
         }
     }
 

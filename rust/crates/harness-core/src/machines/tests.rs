@@ -87,6 +87,7 @@ async fn opaque_refs_round_trip_through_a_replaceable_provider() -> Result<()> {
             OperationId::from_bytes([1; 16]),
             &IdempotencyKey::new("create-sandbox")?,
             Some(&artifact),
+            None,
             [2; 32],
             |_| {},
         )
@@ -238,6 +239,7 @@ async fn create_requires_explicit_network_policy_and_provider_ownership() -> Res
             OperationId::from_bytes([3; 16]),
             &IdempotencyKey::new("provider-default")?,
             None,
+            None,
             [2; 32],
             |_| {},
         )
@@ -257,6 +259,7 @@ async fn create_requires_explicit_network_policy_and_provider_ownership() -> Res
             OperationId::from_bytes([2; 16]),
             &IdempotencyKey::new("zero-policy")?,
             Some(&artifact),
+            None,
             [0; 32],
             |_| {},
         )

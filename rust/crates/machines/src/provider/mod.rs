@@ -36,6 +36,14 @@ pub trait MachinesProvider: Send + Sync {
 
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError>;
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError>;
+    /// Admits the canonical selected volume under the original caller's scope
+    /// and held physical incarnation. Settlement retains the original key.
+    async fn attach_volume(
+        &self,
+        machine: MachineId,
+        volume: wire::selection::VolumeRef,
+        key: IdempotencyKey,
+    ) -> Result<MutationOutcome, ProviderError>;
     async fn inspect_machine(
         &self,
         machine: MachineId,

@@ -88,6 +88,7 @@ impl SimulatedMachines {
     ) -> MachineContract {
         MachineContract {
             image,
+            selected_volume_ref: None,
             capabilities,
             compatibility: request.compatibility.clone(),
             compatibility_revision: Self::revision(),

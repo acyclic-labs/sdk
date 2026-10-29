@@ -109,6 +109,7 @@ wasm-bindgen = { workspace = true, optional = true }
 wasm-bindgen-futures = { workspace = true, optional = true }
 
 [build-dependencies]
+acyclic-proto-build = { version = "=0.2.0", path = "../../../compatibility" }
 acyclic-host-platform = { version = "=0.2.0", path = "../host-platform" }
 dirs.workspace = true
 blake3.workspace = true

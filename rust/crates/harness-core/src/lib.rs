@@ -133,6 +133,10 @@ use build_metadata::generated;
 pub mod wire {
     pub use super::generated::acyclic::harness::v2::*;
     pub use super::generated::acyclic::protocol::v1::*;
+    #[cfg(feature = "machines")]
+    pub use acyclic_machines::wire::selection::{
+        ProviderRef, VolumeClass, VolumeOwner, VolumeRef, volume_owner,
+    };
 }
 
 /// Canonical harness descriptor set used for transport compatibility.

@@ -55,6 +55,17 @@ impl Machine {
     pub async fn exec(&self, command: ExecCommand) -> Result<ExecStream, ProviderError> {
         self.machines.provider.exec(self.id, command).await
     }
+    /// Enrolls a selected volume and settles its original operation watch.
+    pub async fn attach_volume(
+        &self,
+        volume: wire::selection::VolumeRef,
+        key: IdempotencyKey,
+    ) -> Result<MutationOutcome, ProviderError> {
+        self.machines
+            .provider
+            .attach_volume(self.id, volume, key)
+            .await
+    }
     /// Reads one native guest-file chunk under its original deadline.
     pub async fn read_file(
         &self,

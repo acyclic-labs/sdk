@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 description = "Shared build-time protobuf configuration for Acyclic SDK crates"
-include = ["Cargo.toml", "src/**", "descriptors/*.bin"]
+include = ["Cargo.toml", "src/**", "proto/**", "descriptors/*.bin"]
 
 [dependencies]
 prost.workspace = true

@@ -1,5 +1,6 @@
 version: v2
 modules:
+  - path: compatibility/proto
   - path: rust/crates/auth/proto
   - path: rust/crates/objects/proto
     excludes:

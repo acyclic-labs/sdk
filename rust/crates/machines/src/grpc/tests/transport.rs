@@ -30,6 +30,7 @@ async fn bearer_crosses_every_generated_rpc_and_client_clone()
     }
     observe!(qualify_image, QualifyImageRequest);
     observe!(create, CreateMachineRequest);
+    observe!(attach_volume, AttachVolumeRequest);
     observe!(checkpoint, CheckpointMachineRequest);
     observe!(fork, ForkCheckpointRequest);
     observe!(fork_machine, ForkMachineRequest);

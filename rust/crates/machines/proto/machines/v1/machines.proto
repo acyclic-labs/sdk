@@ -2,6 +2,7 @@ syntax = "proto3";
 package acyclic.machines.v1;
 
 import "validation/v1/options.proto";
+import "harness/v2/resources.proto";
 
 option go_package = "github.com/acyclic-labs/sdk/go/gen/machines/v1;machinesv1";
 
@@ -99,6 +100,8 @@ message MachineContract {
   ExpirationPolicy expiration = 7;
   bytes network_policy_digest = 8;
   Budgets budgets = 9;
+  // Exact selected volume admitted under the original caller's hosted scope.
+  acyclic.harness.v2.VolumeRef selected_volume_ref = 10;
 }
 message QualifyImageRequest {
   ProtocolVersion protocol = 1;
@@ -115,11 +118,23 @@ message CreateMachineRequest {
   ExpirationPolicy expiration = 7;
   bytes network_policy_digest = 8;
   Budgets budgets = 9;
+  // Selects the authenticated host's canonical workspace view. This is a
+  // reference, never a capability, filesystem locator or guest mapping fence.
+  acyclic.harness.v2.VolumeRef selected_volume_ref = 10;
 }
 message MachineMutationRequest {
   ProtocolVersion protocol = 1;
   IdempotencyKey idempotency_key = 2;
   MachineId machine = 3;
+}
+// Enrolls the selected workspace on the original Machine incarnation. The
+// server retains its existing physical custodian through hosted admission;
+// neither the volume reference nor a transport close proves retirement.
+message AttachVolumeRequest {
+  ProtocolVersion protocol = 1;
+  IdempotencyKey idempotency_key = 2;
+  MachineId machine = 3;
+  acyclic.harness.v2.VolumeRef selected_volume_ref = 4;
 }
 message CheckpointMachineRequest {
   ProtocolVersion protocol = 1;
@@ -282,6 +297,7 @@ message RecoveredAdmission {
     PolicyAdmission set_suspension_policy = 8;
     MutationAdmission destroy_checkpoint = 9;
     ForkMachineAdmission fork_machine = 10;
+    MachineAdmission attach_volume = 11;
   }
 }
 
@@ -310,6 +326,7 @@ message MutationOutcome {
     MachineId machine_destroyed = 7;
     CheckpointId checkpoint_destroyed = 8;
     ForkedLiveMachines machine_forked = 9;
+    MachineState volume_attached = 10;
   }
 }
 message OperationPage {
@@ -521,6 +538,7 @@ service MachinesService {
   rpc ReadOutput(ReadOutputRequest) returns (MachineOutput) { option (acyclic.validation.v1.auth) = { action: "machines/read-output" extractor: "machines.read-output" }; }
   rpc QualifyImage(QualifyImageRequest) returns (ImageQualification) { option (acyclic.validation.v1.auth) = { action: "machines/qualify" extractor: "machines.qualify-image" }; }
   rpc Create(CreateMachineRequest) returns (MachineAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/create" extractor: "machines.create" }; }
+  rpc AttachVolume(AttachVolumeRequest) returns (MachineAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/update" extractor: "machines.update" }; }
   rpc Checkpoint(CheckpointMachineRequest) returns (CheckpointAdmission) { option (acyclic.validation.v1.auth) = { action: "machines/checkpoint" extractor: "machines.checkpoint" }; }
   rpc Fork(ForkCheckpointRequest) returns (ForkAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.fork-checkpoint" }; }
   rpc ForkMachine(ForkMachineRequest) returns (ForkMachineAdmission) { option (acyclic.validation.v1.auth) = { extractor: "machines.fork-machine" }; }

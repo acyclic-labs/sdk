@@ -19,6 +19,7 @@ struct ObservationScript {
     watches: std::collections::VecDeque<WatchReply>,
     inspections: std::collections::VecDeque<Result<wire::OperationState, Code>>,
     calls: Vec<&'static str>,
+    selected_volumes: Vec<Option<wire::selection::VolumeRef>>,
     started: Arc<tokio::sync::Notify>,
 }
 
@@ -75,7 +76,9 @@ operation_service! {
             return Err(Status::unimplemented("create"));
         };
         if let WatchReply::Script(script) = &self.watch {
-            script.lock().expect("observation script").calls.push(
+            let mut script = script.lock().expect("observation script");
+            script.selected_volumes.push(request.selected_volume_ref);
+            script.calls.push(
                 if request.image.is_none() { "create_default" } else { "create_explicit" }
             );
         }
@@ -83,7 +86,8 @@ operation_service! {
     }
     async fn inspect_machine(&self, request: Request<wire::InspectMachineRequest>)
         -> Result<Response<wire::MachineState>, Status> {
-        let Some(wire::recovered_admission::Result::Create(admission)) = &self.recovered.result else {
+        let Some(wire::recovered_admission::Result::Create(admission)
+            | wire::recovered_admission::Result::AttachVolume(admission)) = &self.recovered.result else {
             return Err(Status::unimplemented("inspect_machine"));
         };
         if request.into_inner().machine != admission.machine {
@@ -101,6 +105,22 @@ operation_service! {
             created_at_unix_ms: 1,
             changed_at_unix_ms: 1,
         }))
+    }
+    async fn attach_volume(&self, request: Request<wire::AttachVolumeRequest>)
+        -> Result<Response<wire::MachineAdmission>, Status> {
+        let request = request.into_inner();
+        if request.idempotency_key != Some(encode_key(self.expected_key)) {
+            return Err(Status::invalid_argument("attach key was substituted"));
+        }
+        let Some(wire::recovered_admission::Result::AttachVolume(admission)) = &self.recovered.result else {
+            return Err(Status::unimplemented("attach_volume"));
+        };
+        if let WatchReply::Script(script) = &self.watch {
+            let mut script = script.lock().expect("observation script");
+            script.selected_volumes.push(request.selected_volume_ref);
+            script.calls.push("attach_volume");
+        }
+        Ok(Response::new(admission.clone()))
     }
     async fn suspend(
         &self,
@@ -286,6 +306,7 @@ fn scripted_operation_service(
         watches: watches.into(),
         inspections: inspections.into(),
         calls: Vec::new(),
+        selected_volumes: Vec::new(),
         started: Arc::new(tokio::sync::Notify::new()),
     }));
     (

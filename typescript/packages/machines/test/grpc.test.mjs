@@ -12,7 +12,7 @@ import { ownFixtureServer } from "../../../../scripts/fixture-server.mjs";
 
 const caCertificate = readFileSync(new URL("./fixtures/server.pem", import.meta.url), "utf8");
 const key = readFileSync(new URL("./fixtures/server-key.pem", import.meta.url), "utf8");
-const protocol = { major: 1, minor: 2 };
+const protocol = { major: 1, minor: 3 };
 const identity = value => ({ value: new Uint8Array(16).fill(value) });
 const machine = identity(1);
 const operation = identity(2);

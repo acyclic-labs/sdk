@@ -456,6 +456,8 @@ pub struct CreateIn {
     idempotency_key: String,
     #[tsify(optional)]
     image: Option<ImageIn>,
+    #[tsify(optional)]
+    selected_volume_ref: Option<acyclic_machines::wire::selection::VolumeRef>,
     compatibility: CompatibilityIn,
     suspension: SuspensionIn,
     expiration: ExpirationIn,
@@ -466,6 +468,7 @@ fn create_in(value: CreateIn) -> Result<CreateMachine, JsValue> {
     Ok(CreateMachine {
         idempotency_key: key(value.idempotency_key)?,
         image: value.image.map(image_in).transpose()?,
+        selected_volume_ref: value.selected_volume_ref,
         compatibility: compatibility_in(value.compatibility)?,
         suspension: suspension_in(value.suspension)?,
         expiration: expiration_in(value.expiration)?,
@@ -478,6 +481,7 @@ fn create_in(value: CreateIn) -> Result<CreateMachine, JsValue> {
 #[serde(rename_all = "camelCase")]
 pub struct ContractOut {
     image: ImageOut,
+    selected_volume_ref: Option<acyclic_machines::wire::selection::VolumeRef>,
     #[tsify(type = "readonly CapabilityIn[]")]
     capabilities: Vec<CapabilityIn>,
     compatibility: CompatibilityOut,
@@ -490,6 +494,7 @@ pub struct ContractOut {
 fn contract_out(value: &MachineContract) -> ContractOut {
     ContractOut {
         image: image_out(&value.image),
+        selected_volume_ref: value.selected_volume_ref.clone(),
         capabilities: value.capabilities.iter().map(capability_out).collect(),
         compatibility: compatibility_out(&value.compatibility),
         compatibility_revision_hex: encode(value.compatibility_revision),
@@ -735,6 +740,9 @@ pub enum MutationOut {
     Created {
         machine: ObservationOut,
     },
+    VolumeAttached {
+        machine: ObservationOut,
+    },
     Checkpointed {
         checkpoint: CheckpointOut,
     },
@@ -776,6 +784,9 @@ pub enum MutationOut {
 fn mutation_out(value: MutationOutcome) -> MutationOut {
     match value {
         MutationOutcome::Created(v) => MutationOut::Created {
+            machine: observation_out(v),
+        },
+        MutationOutcome::VolumeAttached(v) => MutationOut::VolumeAttached {
             machine: observation_out(v),
         },
         MutationOutcome::Checkpointed(v) => MutationOut::Checkpointed {

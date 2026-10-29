@@ -108,6 +108,7 @@ fn mutation_errors_preserve_unsupported_capabilities() {
 
 pub(super) fn wire_contract(capabilities: &[wire::Capability]) -> wire::MachineContract {
     wire::MachineContract {
+        selected_volume_ref: None,
         image: Some(wire::Image {
             kind: wire::ImageKind::Custom as i32,
             immutable_reference: Some(wire::image::ImmutableReference::CustomDigest(vec![7; 32])),

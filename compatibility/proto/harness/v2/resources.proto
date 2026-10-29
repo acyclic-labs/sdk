@@ -1,0 +1,33 @@
+syntax = "proto3";
+package acyclic.harness.v2;
+
+option go_package = "github.com/acyclic-labs/sdk/go/gen/harness/v2;harnessv2";
+
+// Canonical ref-only conversation values. File bodies are never protocol events.
+message ProviderRef {
+  string namespace = 1;
+  string family = 2;
+  string version = 3;
+}
+
+enum VolumeClass {
+  VOLUME_CLASS_UNSPECIFIED = 0;
+  VOLUME_CLASS_PROJECT = 1;
+  VOLUME_CLASS_AGENT_PRIVATE = 2;
+  VOLUME_CLASS_SESSION_SHARED = 3;
+}
+
+message VolumeOwner {
+  oneof owner {
+    string project = 1;
+    string agent_id = 2;
+    string session = 3;
+  }
+}
+
+message VolumeRef {
+  ProviderRef provider = 1;
+  string id = 2;
+  VolumeClass volume_class = 3;
+  VolumeOwner owner = 4;
+}

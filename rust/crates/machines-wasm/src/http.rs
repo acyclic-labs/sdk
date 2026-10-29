@@ -262,7 +262,7 @@ fn checkpoint(value: &Value) -> Result<(), JsValue> {
 }
 fn mutation(value: &Value) -> Result<(), JsValue> {
     match text(field(value, "kind")?, "mutation.kind")?.as_str() {
-        "created" => machine(field(value, "machine")?),
+        "created" | "volume-attached" => machine(field(value, "machine")?),
         "checkpointed" => checkpoint(field(value, "checkpoint")?),
         "forked" => {
             for value in array(field(value, "machines")?, "machines")? {
@@ -398,6 +398,15 @@ fn same_count(values: &Value, values_field: &str, expected: &Value) -> Result<()
 fn bind_created_machine(value: &Value, expected: &Value) -> Result<(), JsValue> {
     let machine = field(value, "machine")?;
     let contract = field(machine, "contract")?;
+    if contract
+        .get("selectedVolumeRef")
+        .filter(|value| !value.is_null())
+        != expected
+            .get("selectedVolumeRef")
+            .filter(|value| !value.is_null())
+    {
+        return Err(error("selected volume was substituted"));
+    }
     if expected.get("image").is_some_and(|image| !image.is_null()) {
         same_value(contract, "image", expected, "image", "image")?;
     }

@@ -52,7 +52,22 @@ impl MachinesProvider for SimulatedMachines {
             compatibility_revision: Self::revision(),
         })
     }
+    async fn attach_volume(
+        &self,
+        _machine: MachineId,
+        _volume: wire::selection::VolumeRef,
+        _key: IdempotencyKey,
+    ) -> Result<MutationOutcome, ProviderError> {
+        Err(ProviderError::Unsupported(
+            "the simulator has no hosted guest admission; recovery: use a physical Machines provider".into(),
+        ))
+    }
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {
+        if request.selected_volume_ref.is_some() {
+            return Err(ProviderError::Unsupported(
+                "the simulator has no hosted guest admission; recovery: use a physical Machines provider".into(),
+            ));
+        }
         let key = request.idempotency_key;
         let intent = MemoryIntent::Create(request.clone());
         let capabilities = self.capabilities.clone();

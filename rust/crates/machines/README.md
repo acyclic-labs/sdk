@@ -1,12 +1,19 @@
 # acyclic-machines
 
-Machines protocol 1.2 is shape-free. Customers choose an immutable image and
+Machines protocol 1.3 is shape-free. Customers choose an immutable image and
 policies; the platform manages CPU, memory, and disk capacity. Create and
 checkpoint fork no longer accept an Elastic/Dedicated performance selection.
 The removed protobuf field numbers and names are reserved. Servers must reject
 the predecessor protocol revision rather than reinterpret its requests.
 
 Typed Machines contract for immutable image qualification, machine lifecycle, checkpoints, forks, operation recovery, events, and usage receipts.
+
+Create and AttachVolume select the existing canonical `acyclic.harness.v2.VolumeRef`.
+The service admits it through the original verified caller's hosted guest session
+and physical incarnation owner, then retains the exact selection in the MachineContract.
+The reference carries no capability or guest mapping fence. Settlement and recovery
+check that original contract; a substituted selection remains indeterminate under
+the original mutation key. The process-local simulator refuses hosted selection.
 
 `Machine::exec(ExecCommand::new(argv, timeout_ms)?)` dispatches one bounded guest
 command and returns a disposable stream of separate stdout (`Data`) and stderr

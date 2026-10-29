@@ -1,5 +1,40 @@
 use super::*;
 
+pub(super) async fn settle_machine(
+    provider: &GrpcProvider,
+    key: IdempotencyKey,
+    admission: wire::MachineAdmission,
+    accepts: impl FnOnce(MachineId, &MachineContract) -> bool + Send,
+) -> Result<MachineObservation, ProviderError> {
+    let operation = decode_operation(admission.operation.as_ref())
+        .map_err(|_| ProviderError::Indeterminate(key))?;
+    let machine = decode_machine(admission.machine.as_ref())
+        .map_err(|_| ProviderError::Indeterminate(key))?;
+    let contract = decode_contract(admission.contract.as_ref())
+        .map_err(|_| ProviderError::Indeterminate(key))?;
+    if !accepts(machine, &contract) {
+        return Err(ProviderError::Indeterminate(key));
+    }
+    wait(provider, key, operation).await?;
+    inspect_contract(provider, machine, contract)
+        .await
+        .map_err(|_| ProviderError::Indeterminate(key))
+}
+
+async fn inspect_contract(
+    provider: &GrpcProvider,
+    machine: MachineId,
+    contract: MachineContract,
+) -> Result<MachineObservation, ProviderError> {
+    let observation = provider.inspect_machine(machine).await?;
+    if observation.contract != contract {
+        return Err(ProviderError::Rejected(
+            "settled machine contract was substituted".into(),
+        ));
+    }
+    Ok(observation)
+}
+
 pub(super) async fn recovered_admission(
     provider: &GrpcProvider,
     key: IdempotencyKey,
@@ -64,11 +99,20 @@ pub(super) async fn decode_recovered(
         .result
         .ok_or_else(|| ProviderError::Rejected("recovery result is missing".into()))?
     {
-        ResultKind::Create(value) => {
-            MachinesProvider::inspect_machine(provider, decode_machine(value.machine.as_ref())?)
-                .await
-                .map(MutationOutcome::Created)
-        }
+        ResultKind::Create(value) => inspect_contract(
+            provider,
+            decode_machine(value.machine.as_ref())?,
+            decode_contract(value.contract.as_ref())?,
+        )
+        .await
+        .map(MutationOutcome::Created),
+        ResultKind::AttachVolume(value) => inspect_contract(
+            provider,
+            decode_machine(value.machine.as_ref())?,
+            decode_contract(value.contract.as_ref())?,
+        )
+        .await
+        .map(MutationOutcome::VolumeAttached),
         ResultKind::Checkpoint(value) => MachinesProvider::inspect_checkpoint(
             provider,
             decode_checkpoint(value.checkpoint.as_ref())?,
@@ -183,7 +227,7 @@ pub(super) fn validate_recovered_admission(
         .as_ref()
         .ok_or_else(|| ProviderError::Rejected("recovery result is missing".into()))?
     {
-        ResultKind::Create(value) => value.operation.as_ref(),
+        ResultKind::Create(value) | ResultKind::AttachVolume(value) => value.operation.as_ref(),
         ResultKind::Checkpoint(value) => value.operation.as_ref(),
         ResultKind::Fork(value) => value.operation.as_ref(),
         ResultKind::ForkMachine(value) => value.operation.as_ref(),

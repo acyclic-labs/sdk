@@ -17,7 +17,7 @@
     },
     "harness": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:0d6a7baca2c7f526c9c3c2c0cfe2745a9a56d418a44625b26c1bb6e22531a949",
+      "schemaDigest": "sha256:c6f3aeae1705a73202b1e46dcd51a754cec4e245dae2f144f1341783f890ea52",
       "conformanceDigest": "sha256:3da8cc65b19c2b710c3922b621fc28afd75268a7b7c66959cbb3a24472e95340"
     },
     "filesystem": {
@@ -43,8 +43,8 @@
     },
     "machines": {
       "version": "0.2.0",
-      "schemaDigest": "sha256:d24efae78a5d143bf829b864d43b605ed903c942f2a9525fcc2c5a114ccc852d",
-      "descriptorDigest": "sha256:e736a451b33098858b0a9ee41992ebfd79dd1b13102792fe65e4ded34abc7b05",
+      "schemaDigest": "sha256:82eb9dd13cfb7dde8d6ad2d7d76bde896f41d7171b4c8e1882cff12ae4bebdcc",
+      "descriptorDigest": "sha256:1cc299fa0b73c226d5fee6beb6d77d71db469def1cabdc88f5cd7be8afe8e9ee",
       "conformanceDigest": "sha256:78ce0d6b9c5226aad67d96de4a4a4f9c9723a144ce58c5dcad63590b88d5d682"
     },
     "inference": {

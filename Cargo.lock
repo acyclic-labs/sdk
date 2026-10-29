@@ -539,6 +539,7 @@ dependencies = [
  "acyclic-machines",
  "acyclic-native-runtime",
  "acyclic-objects",
+ "acyclic-proto-build",
  "acyclic-stream",
  "acyclic-test-support",
  "arrayvec",
@@ -796,7 +797,9 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "tsify",
  "uuid",
+ "wasm-bindgen",
 ]
 
 [[package]]

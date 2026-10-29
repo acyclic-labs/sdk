@@ -58,6 +58,11 @@ describe("Machines simulation", () => {
       budgets: { spendMicros: 0n, concurrency: 0 },
     };
     try {
+      await reject(() => wasm.create({ ...base, selectedVolumeRef: {
+        provider: { namespace: "example", family: "filesystem", version: "1" },
+        id: "selected-workspace", volumeClass: 1, owner: { owner: { project: "project" } },
+      } }), "no hosted guest admission");
+      expect((await wasm.listMachines({ after: null, limit: 1 })).machines).toEqual([]);
       await reject(() => wasm.create({ ...base, image: undefined }), "no installed default image");
       await reject(() => wasm.create({ ...base, performance: "dedicated" } as never), "unknown field");
       await reject(() => wasm.fork({ checkpointId: "old-mode", count: 1, idempotencyKey: "old-mode", performance: "elastic" } as never), "unknown field");
