@@ -7,7 +7,8 @@ import * as wire from "../generated/proto/machines/v1/machines_pb.js";
 export const MAX_OUTPUT_READ_BYTES = 65_536;
 const MAX_OFFSET = (1n << 64n) - 1n;
 
-export type MachinesExecRequest = MessageInitShape<typeof wire.ExecStartSchema> & {
+export type MachinesExecRequest = Omit<MessageInitShape<typeof wire.ExecStartSchema>, "timeoutMs"> & {
+  readonly timeoutMs?: number;
   readonly argv: readonly string[];
   readonly stdin?: Uint8Array;
 };
@@ -45,15 +46,15 @@ export function createMachinesClient(transport: Transport) {
       },
       exec(request: MachinesExecRequest, callOptions?: CallOptions) {
         const { argv, stdin = new Uint8Array(), ...admission } = request;
-        const query = create(wire.ExecStartSchema, admission);
+        if (admission.timeoutMs !== undefined && (!Number.isSafeInteger(admission.timeoutMs) || admission.timeoutMs < 1)) throw new RangeError("timeoutMs must be a positive safe integer");
+        const query = create(wire.ExecStartSchema, { ...admission, timeoutMs: admission.timeoutMs === undefined ? undefined : BigInt(admission.timeoutMs) });
         if (!argv.length || !argv[0] || argv.some(value => value.includes("\0"))) throw new RangeError("invalid exec argv");
-        if (!Number.isInteger(query.timeoutMs) || query.timeoutMs < 1 || query.timeoutMs > 0xffffffff) throw new RangeError("timeoutMs must be a positive uint32");
         if (query.cwd !== undefined && (!query.cwd || query.cwd.includes("\0"))) throw new RangeError("cwd must be nonempty and NUL-free");
         return ownedStream(async function* (signal) {
-          let remaining = BigInt(query.timeoutMs) + 1000n;
+          let remaining = query.timeoutMs === undefined ? undefined : query.timeoutMs + 1000n;
           if (query.expiryUnixMs !== undefined) {
             const expiry = query.expiryUnixMs - BigInt(Date.now());
-            if (expiry < remaining) remaining = expiry;
+            if (remaining === undefined || expiry < remaining) remaining = expiry;
           }
           for await (const frame of machines.exec(execInput(query, argv, stdin), { ...deadlineOptions(remaining, callOptions), signal })) {
             checkIdentity(query.machine, frame.machine, "machine");
@@ -139,7 +140,8 @@ function fileOptions(access: wire.FileAccess, options?: CallOptions): CallOption
   return deadlineOptions(access.deadlineUnixMs - BigInt(Date.now()), options);
 }
 
-function deadlineOptions(remaining: bigint, options?: CallOptions): CallOptions {
+function deadlineOptions(remaining: bigint | undefined, options?: CallOptions): CallOptions {
+  if (remaining === undefined) return { ...options, timeoutMs: options?.timeoutMs ?? 0 };
   if (remaining <= 0n || remaining > BigInt(Number.MAX_SAFE_INTEGER)) throw new RangeError("guest deadline expired or not representable by this transport");
   const caller = options?.timeoutMs;
   return { ...options, timeoutMs: Math.min(Number(remaining), caller === undefined || caller === 0 ? Infinity : caller) };

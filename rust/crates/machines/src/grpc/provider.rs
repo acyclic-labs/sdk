@@ -58,14 +58,16 @@ machine_mutations! {
     ) -> Result<ExecStream, ProviderError> {
         obs::finish(
             async {
-                let timeout =
-                    Duration::from_millis(u64::from(command.timeout_ms)) + Duration::from_secs(1);
+                let timeout = command.timeout_ms.map(|timeout| {
+                    Duration::from_millis(timeout).checked_add(Duration::from_secs(1))
+                        .ok_or_else(|| ProviderError::Invalid("exec observation deadline overflow".into()))
+                }).transpose()?;
                 let deadline = GuestDeadline::new(timeout, command.expiry_unix_ms)?;
                 let mut client = deadline.run(self.client()).await
                     .ok_or_else(|| ProviderError::Rejected("exec deadline expired during credential admission; recovery: obtain fresh authority before dispatch".into()))??;
                 let (input, input_guard) = duplex::input(stream::iter(input::encode(machine, command)));
                 let mut request = Request::new(input);
-                request.set_timeout(deadline.remaining());
+                if let Some(remaining) = deadline.remaining() { request.set_timeout(remaining); }
                 let output = deadline.run(client.exec(request)).await
                     .ok_or(ProviderError::CommandIndeterminate(machine))?
                     .map_err(|error| command_error(machine, &error))?
