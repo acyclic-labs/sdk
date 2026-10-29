@@ -65,7 +65,6 @@ impl DemandWork {
     pub(crate) fn cancellation(&self) -> &CancellationToken {
         &self.cancellation
     }
-    #[cfg(feature = "native-watch")]
     pub(crate) fn cancellation_tokens(&self) -> [CancellationToken; 2] {
         match self.native_invocation.as_ref().and_then(Weak::upgrade) {
             Some(view) => view
