@@ -178,7 +178,7 @@ async fn structured_observation_derives_credentials_only_for_complete_tool_outpu
             &mut None,
         )?;
         let authority = AgentAuthority {
-            issuer: issuer.clone(),
+            issuer: issuer.clone().into(),
             verifier: issuer.verifier(&mut None)?,
             scope,
             grants,
