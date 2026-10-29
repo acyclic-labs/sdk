@@ -207,6 +207,13 @@ impl Shared {
             reads: Some(reads),
         })
     }
+    /// Publishes actual native retirement independently from packet arrival.
+    fn complete_stop(&self) {
+        let arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
+        self.stop_completed.store(true, Ordering::Release);
+        drop(arrivals);
+        self.arrived.notify_all();
+    }
     /// The hub collected a packet for this watch.
     fn collected(&self) {
         drop(self.arrivals.lock().unwrap_or_else(PoisonError::into_inner));
