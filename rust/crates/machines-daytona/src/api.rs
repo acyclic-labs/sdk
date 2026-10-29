@@ -737,16 +737,15 @@ fn transport_error(error: &reqwest::Error) -> ProviderError {
 
 /// Maps an HTTP status to the closest provider-boundary failure.
 fn status_error(status: StatusCode, body: &str) -> ProviderError {
-    let detail = body.chars().take(512).collect::<String>();
     match status {
-        StatusCode::NOT_FOUND => ProviderError::NotFound(detail),
-        StatusCode::CONFLICT => ProviderError::Conflict(detail),
+        StatusCode::NOT_FOUND => ProviderError::NotFound(body.to_owned()),
+        StatusCode::CONFLICT => ProviderError::Conflict(body.to_owned()),
         StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
-            ProviderError::Invalid(detail)
+            ProviderError::Invalid(body.to_owned())
         }
         StatusCode::TOO_MANY_REQUESTS => ProviderError::Unavailable,
         _ if status.is_server_error() => ProviderError::Unavailable,
-        _ => ProviderError::Rejected(format!("{status}: {detail}")),
+        _ => ProviderError::Rejected(format!("{status}: {body}")),
     }
 }
 
@@ -862,25 +861,26 @@ mod tests {
 
     #[test]
     fn status_mapping_is_stable() {
+        let body = format!("{}complete tail", "λ".repeat(1024));
         assert!(matches!(
-            status_error(StatusCode::NOT_FOUND, ""),
-            ProviderError::NotFound(_)
+            status_error(StatusCode::NOT_FOUND, &body),
+            ProviderError::NotFound(detail) if detail == body
         ));
         assert!(matches!(
-            status_error(StatusCode::CONFLICT, ""),
-            ProviderError::Conflict(_)
+            status_error(StatusCode::CONFLICT, &body),
+            ProviderError::Conflict(detail) if detail == body
         ));
         assert!(matches!(
-            status_error(StatusCode::BAD_REQUEST, ""),
-            ProviderError::Invalid(_)
+            status_error(StatusCode::BAD_REQUEST, &body),
+            ProviderError::Invalid(detail) if detail == body
         ));
         assert!(matches!(
-            status_error(StatusCode::BAD_GATEWAY, ""),
+            status_error(StatusCode::BAD_GATEWAY, &body),
             ProviderError::Unavailable
         ));
         assert!(matches!(
-            status_error(StatusCode::UNAUTHORIZED, ""),
-            ProviderError::Rejected(_)
+            status_error(StatusCode::UNAUTHORIZED, &body),
+            ProviderError::Rejected(detail) if detail == format!("{}: {body}", StatusCode::UNAUTHORIZED)
         ));
     }
 }
