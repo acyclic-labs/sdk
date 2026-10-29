@@ -641,7 +641,7 @@ pub async fn run(
                                     }
                                     continue;
                                 }
-                                match catalog.resolve(&text, u64::MAX) {
+                                match catalog.resolve(&text, None) {
                                     Ok(None) => {}
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit })) => {
                                         return Ok(view.outcome.code());
