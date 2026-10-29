@@ -8,7 +8,9 @@ use crate::{
     agent::{AgentPath, AgentRecord, ConversationEntry, StatusRecord, TurnInput},
     local::agent_conversation::Conversation,
 };
-use acyclic_stream::{ReadRequest, StreamError, StreamPath, StreamProvider};
+use acyclic_stream::{
+    ReadRequest, StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
+};
 use futures::TryStreamExt;
 use std::sync::Arc;
 
@@ -22,24 +24,41 @@ fn agent(error: impl std::fmt::Display) -> Error {
 }
 
 async fn records(stream: &impl StreamProvider, path: StreamPath) -> Result<Vec<Vec<u8>>> {
-    match stream
-        .read(ReadRequest {
-            key: None,
-            path,
-            from: 0,
-            limit: 16,
-            at_least: Default::default(),
-        })
-        .await
-    {
-        Ok(records) => Ok(records
-            .map_ok(|record| record.value.to_vec())
-            .try_collect()
+    let tail = match stream.tail(path.clone()).await {
+        Ok(tail) => tail,
+        Err(StreamError::NotFound) => return Ok(Vec::new()),
+        Err(error) => return Err(agent(error)),
+    };
+    let mut from = 0;
+    let mut values = Vec::new();
+    while from < tail {
+        let mut page = stream
+            .read(ReadRequest {
+                key: None,
+                path: path.clone(),
+                from,
+                limit: (tail - from).min(16) as u32,
+                at_least: Default::default(),
+            })
             .await
-            .map_err(agent)?),
-        Err(StreamError::NotFound) => Ok(Vec::new()),
-        Err(error) => Err(agent(error)),
+            .map_err(agent)?;
+        let start = from;
+        while let Some(record) = page.try_next().await.map_err(agent)? {
+            if record.sequence != from || from >= tail {
+                return Err(Error::Conflict(
+                    "conversation read was not contiguous".into(),
+                ));
+            }
+            from += 1;
+            values.push(record.value.to_vec());
+        }
+        if from == start {
+            return Err(Error::Conflict(
+                "conversation ended before its captured tail".into(),
+            ));
+        }
     }
+    Ok(values)
 }
 
 /// The root's conversation once its first turn has settled.
@@ -1020,20 +1039,20 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
     );
     // The next turn replays that message, attachments expanded, under the
     // same bound.
-    client.send("next", "next").await?;
-    let conversation = root.conversation().map_err(agent)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
-    while records(&**agents.provider(), conversation.clone())
-        .await?
-        .len()
-        < 2
-    {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the second turn did not settle"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
+    let mut following = agents.follow_conversation(&root, 1).await.map_err(agent)?;
+    let inbox = client.send("next", "next").await?;
+    let record = tokio::time::timeout(std::time::Duration::from_secs(8), following.try_next())
+        .await
+        .map_err(agent)?
+        .map_err(agent)?
+        .ok_or_else(|| Error::Storage("conversation follow ended before the second turn".into()))?;
+    assert_eq!(record.sequence, 1);
+    assert_eq!(
+        ConversationEntry::decode(&record.value)
+            .map_err(agent)?
+            .inbox,
+        inbox
+    );
     let request = provider.last_request().expect("a second model request");
     let replayed = request
         .messages
