@@ -1,5 +1,4 @@
 use super::*;
-mod unindexed;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     #[cfg(test)]
@@ -112,7 +111,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
             original
         } else {
-            unindexed::authenticate(selected, reference, &path, io).await?;
+            super::authentication::authenticate(selected, reference, &path, io).await?;
             selected.clone()
         };
         let chunk = io.sdk(
