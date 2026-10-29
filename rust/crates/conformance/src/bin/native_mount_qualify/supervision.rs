@@ -20,7 +20,7 @@ pub(super) fn qualification_case_worker(case: &str) -> Result<(), Failure> {
                 .ok_or("backend kind absent")?;
             tokio::runtime::Runtime::new()?.block_on(mutation_matrix(kind))
         }
-        "crash-detach-recovery" => crash_recovery(),
+        "crash-detach-recovery" => tokio::runtime::Runtime::new()?.block_on(crash_recovery()),
         "rename-before-hydration" => {
             tokio::runtime::Runtime::new()?.block_on(rename_hydration_case())
         }
@@ -38,13 +38,9 @@ pub(super) fn run_supervised_case(case: &str, timeout: Duration) -> Result<(), F
     if output.status.success() {
         Ok(())
     } else {
-        Err(format!(
-            "qualification worker {case} failed ({}): {}{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into())
+        let status = output.status;
+        output.write_diagnostics(&format!("qualification worker {case}"))?;
+        Err(format!("qualification worker {case} failed ({status})").into())
     }
 }
 
@@ -68,89 +64,183 @@ pub(super) fn spawn_captured_child(command: &mut Command) -> Result<CapturedChil
     })
 }
 
+impl CapturedChild {
+    pub(super) fn write_diagnostics(&mut self, label: &str) -> Result<(), Failure> {
+        write_child_diagnostics(label, &mut self.stdout, &mut self.stderr)
+    }
+}
+
+/// Waits for the actual child's atomically published ready record. File hints
+/// only schedule another observation; they never certify readiness themselves.
+pub(super) async fn captured_child_ready(
+    child: &mut CapturedChild,
+    marker: &Path,
+    deadline: Instant,
+) -> Result<(), Failure> {
+    use acyclic_fs::{NativeMaterializationWork, NativeWatch, NativeWatchOptions, WatchBatch};
+
+    let original = NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(error, _)| error)?;
+    let mut watch = NativeWatch::open_with_profile_with_native_work(
+        marker.parent().ok_or("ready marker has no parent")?,
+        if cfg!(windows) {
+            acyclic_fs::model::FilesystemProfile::Windows
+        } else {
+            acyclic_fs::model::FilesystemProfile::Posix
+        },
+        NativeWatchOptions {
+            limits: acyclic_fs::model::VolumeLimits::default(),
+            recursive: false,
+        },
+        &original,
+    )?;
+    if let WatchBatch::RescanRequired { reason, .. } =
+        watch.accept_lazy_baseline_with_native_work(&original)?
+    {
+        return Err(format!("ready marker watch cannot establish continuity: {reason:?}").into());
+    }
+    let observation = async {
+        loop {
+            // Both subscriptions precede the marker and process observations.
+            let changed = watch.changed_with_native_work(&original);
+            let exited = child.process.readiness()?;
+            if observe_ready_marker(marker)? {
+                return Ok(());
+            }
+            if let Some(status) = child.process.try_wait(None)? {
+                return Err(format!("child exited before readiness ({status})").into());
+            }
+            tokio::select! {
+                result = changed => {
+                    result?;
+                    // A page is work already delivered by the native producer.
+                    // Unconsumed pages keep readiness set; there is no total cap.
+                    let batch = watch.poll_with_native_work_guarded(256, &original, |_| Ok(()))?;
+                    if let WatchBatch::RescanRequired { reason, .. } = &batch.0 {
+                        return Err(format!("ready marker watch lost continuity: {reason:?}").into());
+                    }
+                }
+                () = exited => {}
+            }
+        }
+    };
+    tokio::time::timeout_at(deadline.into(), observation)
+        .await
+        .map_err(|_| -> Failure { "child did not publish readiness before its deadline".into() })?
+}
+
+/// The fixture record is the literal `ready`, rather than arbitrary payload.
+/// Check the complete fixed schema with stack storage, including trailing data.
+fn observe_ready_marker(marker: &Path) -> Result<bool, Failure> {
+    let mut file = match File::open(marker) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let mut record = [0; 6];
+    let mut end = 0;
+    loop {
+        if end == record.len() {
+            return Err("child published a malformed ready marker".into());
+        }
+        match file.read(&mut record[end..]) {
+            Ok(0) if &record[..end] == b"ready" => return Ok(true),
+            Ok(0) => return Err("child published a malformed ready marker".into()),
+            Ok(count) => end += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+pub(super) struct CapturedOutput {
+    pub(super) status: std::process::ExitStatus,
+    stdout: File,
+    stderr: File,
+}
+
+impl CapturedOutput {
+    /// Streams complete diagnostics from the spool without retaining the output.
+    pub(super) fn write_diagnostics(mut self, label: &str) -> Result<(), Failure> {
+        write_child_diagnostics(
+            &format!("{label} ({})", self.status),
+            &mut self.stdout,
+            &mut self.stderr,
+        )
+    }
+}
+
+fn write_child_diagnostics(
+    label: &str,
+    stdout: &mut File,
+    stderr: &mut File,
+) -> Result<(), Failure> {
+    let mut destination = std::io::stderr().lock();
+    writeln!(destination, "{label}:")?;
+    stdout.seek(SeekFrom::Start(0))?;
+    std::io::copy(stdout, &mut destination)?;
+    stderr.seek(SeekFrom::Start(0))?;
+    std::io::copy(stderr, &mut destination)?;
+    Ok(())
+}
+
 pub(super) fn capture_child(
     command: &mut Command,
     timeout: Duration,
-) -> Result<std::process::Output, Failure> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    ProcessTree::spawn(command)?
-        .wait_with_output(
-            timeout,
-            usize::try_from(MAX_CHILD_OUTPUT_BYTES)?,
-            None,
-            || Ok(()),
-            |_| Ok(acyclic_native_runtime::ProcessInput::default()),
-            None,
-            None,
-            None,
-        )
-        .map_err(|failure| {
-            format!(
-                "child capture failed: {}; cleanup_completed={}; stdout={} stderr={}",
-                failure.error,
-                failure.cleanup_completed,
-                String::from_utf8_lossy(&failure.stdout),
-                String::from_utf8_lossy(&failure.stderr)
+) -> Result<CapturedOutput, Failure> {
+    let mut child = spawn_captured_child(command)?;
+    match child.process.wait(timeout) {
+        Ok(status) => captured_child_output(status, child),
+        Err(error) => {
+            let cleanup = child.process.terminate(None);
+            let diagnostics = if cleanup.is_ok() {
+                write_child_diagnostics(
+                    "child capture failed",
+                    &mut child.stdout,
+                    &mut child.stderr,
+                )
+            } else {
+                Ok(())
+            };
+            Err(format!(
+                "child capture failed: {error}; cleanup={cleanup:?}; diagnostics={diagnostics:?}"
             )
-            .into()
-        })
+            .into())
+        }
+    }
 }
 
 pub(super) fn captured_child_output(
     status: std::process::ExitStatus,
-    stdout: &mut File,
-    stderr: &mut File,
-) -> Result<std::process::Output, Failure> {
-    if stdout
-        .metadata()?
-        .len()
-        .saturating_add(stderr.metadata()?.len())
-        > MAX_CHILD_OUTPUT_BYTES
-    {
-        return Err(format!("child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into());
-    }
-    fn read(file: &mut File) -> Result<Vec<u8>, Failure> {
-        file.seek(SeekFrom::Start(0))?;
-        let mut bytes = Vec::new();
-        file.take(MAX_CHILD_OUTPUT_BYTES + 1)
-            .read_to_end(&mut bytes)?;
-        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_CHILD_OUTPUT_BYTES {
-            return Err(format!("child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into());
-        }
-        Ok(bytes)
-    }
-    Ok(std::process::Output {
+    mut child: CapturedChild,
+) -> Result<CapturedOutput, Failure> {
+    // Reap all descendants before reading the spool, including descendants that
+    // outlived a successful direct child. Retain containment until cleanup ends.
+    child.process.terminate(None)?;
+    Ok(CapturedOutput {
         status,
-        stdout: read(stdout)?,
-        stderr: read(stderr)?,
+        stdout: child.stdout,
+        stderr: child.stderr,
     })
-}
-
-pub(super) fn captured_child_output_exceeds_limit(child: &CapturedChild) -> Result<bool, Failure> {
-    Ok(child
-        .stdout
-        .metadata()?
-        .len()
-        .saturating_add(child.stderr.metadata()?.len())
-        > MAX_CHILD_OUTPUT_BYTES)
 }
 
 fn append_child_failure(
     failures: &mut Vec<String>,
     label: &str,
-    result: Result<std::process::Output, Failure>,
+    result: Result<CapturedOutput, Failure>,
 ) {
     match result {
         Ok(output) if output.status.success() => {}
-        Ok(output) => failures.push(format!(
-            "{label} failed ({}): {}{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )),
+        Ok(output) => {
+            let status = output.status;
+            if let Err(error) = output.write_diagnostics(label) {
+                failures.push(format!("{label} diagnostics failed: {error}"));
+            }
+            failures.push(format!("{label} failed ({status})"));
+        }
         Err(error) => failures.push(format!("{label} failed: {error}")),
     }
 }
@@ -164,7 +254,7 @@ fn verify_empty_mount_directory(mount: &Path) -> Result<(), Failure> {
 
 pub(super) fn finish_mounted_child(
     label: &str,
-    child: Result<std::process::Output, Failure>,
+    child: Result<CapturedOutput, Failure>,
     observed: Result<(), Failure>,
     synced: Result<(), Failure>,
     detached: Result<(), Failure>,

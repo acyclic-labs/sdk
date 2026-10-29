@@ -25,9 +25,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             resource: "tenant-db".into(),
         }],
         limits: Some(wire::ActorLimits {
-            handler_timeout_millis: 1_000,
-            memory_bytes: 1024,
-            checkpoint_bytes: 1024,
+            handler_timeout_millis: Some(1_000),
+            memory_bytes: Some(1024),
+            checkpoint_bytes: Some(1024),
         }),
         subscriptions: vec![wire::SubscriptionSpec {
             subscription_id: "events".into(),
