@@ -107,8 +107,11 @@ fn emit(output: &mut impl Write, line: &Value) -> std::io::Result<()> {
 /// `{"approve": request, "approved": bool}` or `{"cancel": true}`. A prompt is
 /// message `operation:id`, so rerunning the operation replays it. Each settled
 /// prompt prints `{"id", "inbox", "text"}` (or `"error"`), each approval
-/// request `{"approval": request}`. Exits, successfully, once stdin closes
-/// and every prompt settled, whether answered or failed.
+/// request `{"approval": request}`. An ended agent is terminal: it admits
+/// no further input, so every prompt outstanding when it ends, and every
+/// later one, is answered with its reason and never sent. Exits,
+/// successfully, once stdin closes and every prompt settled, whether
+/// answered or failed.
 pub async fn jsonl(
     conversation: &Arc<Conversation>,
     operation: &str,
@@ -121,6 +124,8 @@ pub async fn jsonl(
     // Outstanding prompts by inbox sequence: message id and display id.
     let mut pending = BTreeMap::<u64, (String, String)>::new();
     let mut announced = None;
+    // The reason the agent ended, once a status said so.
+    let mut finished: Option<String> = None;
     loop {
         if !open && pending.is_empty() {
             return Ok(0);
@@ -142,8 +147,20 @@ pub async fn jsonl(
                         .get("id")
                         .and_then(Value::as_str)
                         .map_or_else(|| format!("jsonl-{sent}"), str::to_owned);
+                    if let Some(reason) = &finished {
+                        emit(output, &json!({"id": id, "error": reason}))?;
+                        continue;
+                    }
                     let message = format!("{operation}:{id}");
-                    let inbox = conversation.send(&message, prompt).await?;
+                    // A refused prompt, such as an unknown `/name`, is its own
+                    // record; the stream goes on.
+                    let inbox = match conversation.send(&message, prompt).await {
+                        Ok(inbox) => inbox,
+                        Err(error) => {
+                            emit(output, &json!({"id": id, "error": error.to_string()}))?;
+                            continue;
+                        }
+                    };
                     // An exact replay of a settled prompt is answered at once.
                     let reply = conversation.reply(&message, inbox).await?;
                     match settled(conversation, &id, inbox, reply).await? {
@@ -185,13 +202,14 @@ pub async fn jsonl(
                             }
                         }
                     }
-                    // An ended turn answers every outstanding prompt with its
-                    // reason; each is a record, so the stream goes on and a
-                    // later prompt starts the agent's next turn.
+                    // An ended agent answers every outstanding prompt with
+                    // its reason; each is a record, so the stream goes on
+                    // until stdin closes.
                     if let Some(reason) = ended {
                         for (inbox, (_, id)) in std::mem::take(&mut pending) {
                             emit(output, &json!({"id": id, "inbox": inbox, "error": reason}))?;
                         }
+                        finished = Some(reason);
                     }
                     if let Phase::WaitingApproval { id } = &status.phase
                         && announced.as_ref() != Some(id)
