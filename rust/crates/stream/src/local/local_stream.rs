@@ -109,11 +109,23 @@ impl LocalStream {
                     continue;
                 }
                 _ if replay_error.is_some() => continue,
-                Recovered::State { encoded } => provider
-                    .install_state(&encoded)
-                    .await
-                    .map_err(|_| LocalStreamError::Corrupt),
-                Recovered::Command {
+                Recovered::State { encoded } => {
+                    provider
+                        .restore_state(&encoded)
+                        .await
+                        .map_err(|error| match error {
+                            crate::memory::RestoreError::PreRevision => {
+                                LocalStreamError::UnsupportedPreRevisionStore
+                            }
+                            crate::memory::RestoreError::State(StreamError::InvalidArgument) => {
+                                LocalStreamError::Corrupt
+                            }
+                            crate::memory::RestoreError::State(error) => {
+                                LocalStreamError::Replay(error)
+                            }
+                        })
+                }
+                Recovered::WriteRequest {
                     committed_at_millis,
                     command,
                 } => {
@@ -145,6 +157,7 @@ impl LocalStream {
                 provider,
                 durability: limits.durability,
                 commit_clock,
+                replica_clock: Arc::new(crate::replicated::ReplicaClock::default()),
                 journal: Arc::new(Mutex::new(journal)),
                 visibility: RwLock::new(()),
                 publication: RwLock::new(()),
@@ -181,8 +194,55 @@ impl LocalStream {
         }
     }
 
+    async fn execute(
+        &self,
+        command: WriteRequest,
+        deadline: Option<u64>,
+    ) -> Result<crate::replicated::Execution, StreamError> {
+        let cursor = self
+            .inner
+            .journal
+            .lock()
+            .map_err(|_| self.inner.poison())?
+            .bytes;
+        let clock = Arc::clone(&self.inner.replica_clock);
+        let mut provider = self
+            .inner
+            .provider
+            .with_commit_clock(Arc::clone(&clock) as _);
+        if let Some(work) = &self.work {
+            provider = provider.with_context(Arc::clone(work));
+        }
+        let mut replica = crate::replicated::Replicated::new(
+            port::LocalPort::new(self.clone()),
+            provider,
+            clock,
+            cursor,
+        );
+        let result = replica
+            .execute(command, deadline, REPLAY_PIPELINE_COMMANDS)
+            .await;
+        if replica.cursor == cursor
+            && matches!(
+                result.as_ref().map(|execution| &execution.outcome),
+                Ok(crate::WriteOutcome::Append(AppendOutcome::Committed(_))
+                    | crate::WriteOutcome::Commit(CommitOutcome::Committed(_))
+                    | crate::WriteOutcome::Fork(_))
+            )
+        {
+            // A retained success joins the original durability cut even when
+            // the canonical decision correctly elides another journal frame.
+            self.require_accepted::<true>()?;
+        }
+        if replica.is_failed() {
+            self.inner.poison();
+        }
+        result
+    }
+
     /// Encodes the command and pins its recorded commit timestamp.
-    fn prepare(&self, command: &Command) -> Result<PreparedFrame, StreamError> {
+    #[cfg(any(test, loom))]
+    fn prepare(&self, command: &WriteRequest) -> Result<PreparedFrame, StreamError> {
         let committed_at_millis = self.inner.commit_clock.source.now_unix_millis();
         let frame = PreparedFrame::encode(command, committed_at_millis, self.work.clone())
             .map_err(|error| match error {
@@ -261,37 +321,65 @@ impl LocalStream {
         Ok(())
     }
 
-    /// Writes `frame`, in the order its mutation applied, without waiting for
-    async fn persist(&self, mut frame: PreparedFrame) -> Result<(), StreamError> {
+    /// Writes one frame through the same ordered owner as a journal batch.
+    #[cfg(any(test, loom))]
+    async fn persist(&self, frame: PreparedFrame) -> Result<(), StreamError> {
+        self.persist_frames(std::iter::once(frame)).await
+    }
+
+    /// The caller retains publication for the entire ordered proposal. The
+    /// worker owns every original frame and its reservations until terminal I/O.
+    async fn persist_frames(
+        &self,
+        frames: impl Iterator<Item = PreparedFrame> + Send + 'static,
+    ) -> Result<(), StreamError> {
         #[cfg(feature = "test-support")]
         let cut = self.inner.persistence_cut.get().cloned();
         #[cfg(feature = "test-support")]
-        if let Some(cut) = &cut
-            && !cut.admit()
-        {
-            return Err(self.cut_crash(cut.as_ref()).await);
-        }
+        let fail_cut_truncation = FAIL_CUT_TRUNCATION.with(std::cell::Cell::get);
         let required = !deferred(self);
-        let journal = self.inner.journal.clone();
-        let persist = spawn_blocking(move || {
-            journal
-                .lock()
-                .map_err(|_| LocalStreamError::Corrupt)?
-                .append(&mut frame, required)
-        });
-        let result = persist
-            .await
-            .map_err(|_| LocalStreamError::Executor)
-            .and_then(|result| result);
-        if result.is_err() {
-            return Err(self.inner.poison());
-        }
-        #[cfg(feature = "test-support")]
-        if let Some(cut) = cut {
-            return self.cut_after_write(cut).await;
-        }
-        self.inner.published();
-        Ok(())
+        let stream = self.worker();
+        spawn_blocking(move || {
+            let mut written = false;
+            for mut frame in frames {
+                #[cfg(feature = "test-support")]
+                if let Some(cut) = &cut
+                    && !cut.admit()
+                {
+                    return Err(stream.cut_crash(cut.as_ref(), fail_cut_truncation));
+                }
+                {
+                    let mut journal = stream
+                        .inner
+                        .journal
+                        .lock()
+                        .map_err(|_| stream.inner.poison())?;
+                    if frame.deadline.is_some_and(|deadline| {
+                        stream.inner.commit_clock.source.now_unix_millis() >= deadline
+                    }) {
+                        return Err(if written {
+                            // Earlier frames may already be durable. Only reopen
+                            // and replay can resolve this partially published proposal.
+                            stream.inner.poison()
+                        } else {
+                            StreamError::DeadlineElapsed
+                        });
+                    }
+                    journal
+                        .append(&mut frame, required)
+                        .map_err(|_| stream.inner.poison())?;
+                    written = true;
+                }
+                #[cfg(feature = "test-support")]
+                if let Some(cut) = &cut {
+                    stream.cut_after_write(cut.as_ref(), fail_cut_truncation)?;
+                }
+                stream.inner.published();
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| self.inner.poison())?
     }
 
     // Native builds reduce this to drop. The modeled old variant returns the
@@ -367,13 +455,21 @@ impl LocalStream {
     // Called under visibility before releasing an ordinary replay. A deferred
     // original must become required, without appending a duplicate frame.
     fn require_accepted<const REQUIRE: bool>(&self) -> Result<(), StreamError> {
+        self.require_accepted_with_reservation::<REQUIRE>(false)
+    }
+
+    fn require_accepted_with_reservation<const REQUIRE: bool>(
+        &self,
+        reserved: bool,
+    ) -> Result<(), StreamError> {
         if REQUIRE && !deferred(self) {
             let mut journal = self
                 .inner
                 .journal
                 .lock()
                 .map_err(|_| StreamError::Unavailable)?;
-            if journal.synced < journal.appended
+            if !reserved
+                && journal.synced < journal.appended
                 && let Some(work) = &self.work
             {
                 work.reserve_durability(1)?;
@@ -541,28 +637,5 @@ impl LocalStream {
         let _visibility = self.inner.publication.read().await;
         self.check_available()?;
         Ok(read.await)
-    }
-
-    /// Runs one read under shared visibility, then joins its durable watermark.
-    async fn visible<T>(&self, read: impl Future<Output = T>) -> Result<T, StreamError> {
-        let read = async {
-            self.check_available()?;
-            let (result, required) = {
-                let _visibility = self.inner.visibility.read().await;
-                self.check_available()?;
-                let required = self.inner.required()?;
-                (read.await, required)
-            };
-            self.await_publication(required).await?;
-            Ok(result)
-        };
-        #[cfg(feature = "test-support")]
-        return acyclic_native_runtime::testing::observe_read(read).await;
-        #[cfg(not(feature = "test-support"))]
-        read.await
-    }
-
-    async fn read_visible(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        self.accepted(self.inner.provider.read(request)).await?
     }
 }

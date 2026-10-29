@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, CommittedMutation, ForkReceipt,
     ForkRequest, IdempotencyKey, IdempotencyObservation, IdempotencyOutcome, MemoryStream,
@@ -726,8 +727,8 @@ impl ReleaseSpy {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl StreamProvider for ReleaseSpy {
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        self.inner.operation_claims()
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
     }
 
     async fn inspect_idempotency(
@@ -766,19 +767,16 @@ impl StreamProvider for ReleaseSpy {
         }
         Ok(result)
     }
-    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         self.reads.store(true, SeqCst);
         if self.deny_probes_after_commit && self.writes.load(SeqCst) {
             return Err(StreamError::InvalidArgument);
         }
-        self.inner.head(path).await
-    }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.reads.store(true, SeqCst);
-        if self.deny_probes_after_commit && self.writes.load(SeqCst) {
-            return Err(StreamError::InvalidArgument);
-        }
-        self.inner.tail(path).await
+        self.inner.heads(request).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.reads.store(true, SeqCst);
@@ -815,18 +813,37 @@ impl StreamProvider for ReleaseSpy {
         }
         Ok(records)
     }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.interleave().await?;
-        let result = self.inner.commit(request).await?;
-        self.finish_commit(result).await
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Commit(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        self.interleave().await?;
+                        let result = self.inner.commit(request).await?;
+                        self.finish_commit(result).await
+                    },
+                    acyclic_stream::WriteOutcome::Commit,
+                ))
+            }
+            acyclic_stream::WriteRequest::Append(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move { self.inner.append(request).await },
+                    acyclic_stream::WriteOutcome::Append,
+                ))
+            }
+            acyclic_stream::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { self.inner.fork(request).await },
+                acyclic_stream::WriteOutcome::Fork,
+            )),
+        }
     }
 
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.inner.append(request).await
-    }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.inner.fork(request).await
-    }
     async fn follow(
         &self,
         request: acyclic_stream::FollowRequest,
@@ -837,6 +854,9 @@ impl StreamProvider for ReleaseSpy {
         self.inner.read_commit(id).await
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for ReleaseSpy {}
 
 fn competing_requests(
     authority: AuthorityId,

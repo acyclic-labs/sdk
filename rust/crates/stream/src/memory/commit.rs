@@ -8,6 +8,15 @@ struct CommitPlan {
     _scratch: Allocation,
 }
 
+struct CommitPublication {
+    envelope: CommittedEnvelope,
+    result: CommitOutcome,
+    namespace: Namespace,
+    resident: Allocation,
+    output_claim: Allocation,
+    _scratch: Allocation,
+}
+
 impl CommitPlan {
     fn bind(
         &mut self,
@@ -28,16 +37,33 @@ impl CommitPlan {
         bind_histories(&mut self.histories, commit_id, time)
     }
 
+    fn stage(
+        self,
+        state: &State,
+        build: &mut NamespaceBuilder<'_>,
+    ) -> Result<CommitPublication, StreamError> {
+        let namespace = stage_namespace(state, self.paths, self.histories, &self.envelope, build)?;
+        Ok(CommitPublication {
+            envelope: self.envelope,
+            result: self.result,
+            namespace,
+            resident: self.resident,
+            output_claim: self.output_claim,
+            _scratch: self._scratch,
+        })
+    }
+}
+
+impl CommitPublication {
     fn publish(
         self,
         state: &mut State,
-        build: &mut NamespaceBuilder<'_>,
         probe: &mut impl FnMut(),
         key: IdempotencyKey,
         digest: [u8; 32],
         time: u64,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        publish(state, self.paths, self.histories, &self.envelope, build)?;
+        install_namespace(state, self.namespace, &self.envelope)?;
         state.decision += 1;
         state.last_committed_at_micros = time;
         retain(
@@ -184,6 +210,9 @@ impl MemoryStream {
                     .clone();
                 let jump = self.history_jump(source.as_ref(), fork.forked_at)?;
                 Some(Arc::new(History::Prefix {
+                    keys: source
+                        .as_ref()
+                        .map_or_else(KeyTree::default, |source| source.keys().cap(fork.forked_at)),
                     source,
                     jump,
                     tail: fork.forked_at,
@@ -227,7 +256,12 @@ impl MemoryStream {
                 .ok_or(StreamError::Unavailable)?
                 .sequence,
         )?;
+        let keys = parent
+            .as_ref()
+            .map_or_else(KeyTree::default, |parent| parent.keys().clone())
+            .append(&records, self)?;
         Ok(Arc::new(History::Batch {
+            keys,
             parent,
             jump,
             records,
@@ -276,7 +310,7 @@ impl MemoryStream {
         Ok((paths, allocation))
     }
 
-    fn reserve_retained(&self, state: &mut State) -> Result<(), StreamError> {
+    fn reserve_retained(&self, state: &State) -> Result<Option<RetainedReservation>, StreamError> {
         let needed = state
             .retained
             .len()
@@ -284,22 +318,81 @@ impl MemoryStream {
             .and_then(|len| len.checked_add(1))
             .ok_or(StreamError::Capacity)?;
         if needed > state.retained.capacity() {
-            let (mut buffer, claim) = self.vector(needed.next_power_of_two())?;
+            let capacity = needed
+                .checked_next_power_of_two()
+                .ok_or(StreamError::Capacity)?;
+            let pending = state
+                .retained_growth
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .upgrade();
+            let growth = match pending {
+                Some(pending)
+                    if pending
+                        .buffer
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_ref()
+                        .is_some_and(|(buffer, _)| buffer.capacity() >= capacity) =>
+                {
+                    pending
+                }
+                _ => {
+                    let (buffer, allocation) = self.vector(capacity)?;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    let header = self.allocate(acyclic_native_runtime::arc_allocation_bytes::<
+                        RetainedGrowth,
+                    >())?;
+                    #[cfg(target_arch = "wasm32")]
+                    let header = None;
+                    let growth = Arc::new(RetainedGrowth {
+                        buffer: crate::query_sync::SyncMutex::new(Some((buffer, allocation))),
+                        pool: Arc::downgrade(&state.retained_growth),
+                        _allocation: header,
+                    });
+                    *state
+                        .retained_growth
+                        .0
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Arc::downgrade(&growth);
+                    growth
+                }
+            };
             #[cfg(not(target_arch = "wasm32"))]
-            let copied = (state.retained.len() * std::mem::size_of::<Retained>()) as u64;
+            let copied = growth
+                .buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+                .ok_or(StreamError::Capacity)?
+                .0
+                .capacity()
+                .checked_sub(1)
+                .and_then(|count| count.checked_mul(std::mem::size_of::<Retained>()))
+                .ok_or(StreamError::Capacity)? as u64;
             #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = &self.work {
-                work.record(work.meter.admit_codec(0, copied, 0))?;
-            }
-            buffer.append(&mut state.retained);
-            state.retained = buffer;
-            state.retained_allocation = claim;
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(work) = &self.work {
-                work.record(work.meter.record_codec(0, copied, 0))?;
-            }
+            let codec = self
+                .work
+                .as_ref()
+                .map(|work| {
+                    work.record(acyclic_native_runtime::NativeCodecReservation::new(
+                        Arc::clone(&work.meter),
+                        acyclic_native_runtime::NativeCodecWork {
+                            copied,
+                            ..Default::default()
+                        },
+                    ))
+                })
+                .transpose()?;
+            return Ok(Some(RetainedReservation {
+                growth,
+                #[cfg(not(target_arch = "wasm32"))]
+                codec,
+            }));
         }
-        Ok(())
+        Ok(None)
     }
 
     fn plan_commit(
@@ -341,14 +434,14 @@ impl MemoryStream {
         digest: [u8; 32],
         deadline: Option<u64>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        self.plan_commit_locked(state, request, digest, deadline)?
+        self.plan_commit_locked(state, &request, digest, deadline)?
             .install(self, state)
     }
 
     fn plan_commit_locked<'a>(
         &'a self,
         state: &mut State,
-        request: CommitRequest,
+        request: &'a CommitRequest,
         digest: [u8; 32],
         deadline: Option<u64>,
     ) -> Result<
@@ -400,7 +493,7 @@ impl MemoryStream {
                     state,
                     &mut || self.record_replay_probe(&mut probes),
                     None,
-                    Some(request.idempotency_key),
+                    Some(request.idempotency_key.clone()),
                     digest,
                     // Spending a refused key is the injected defect. Its invalid
                     // retained family cannot be emitted by successful commits.
@@ -427,24 +520,29 @@ impl MemoryStream {
         if let Some(work) = &self.work {
             work.record(work.meter.record_codec(0, 0, identity_bytes()))?;
         }
-        self.reserve_retained(state)?;
-        let mut plan = self.plan_commit(state, &request, commit_id, 0)?;
+        let retained = self.reserve_retained(state)?;
+        let time = crate::preparation::committed_time(
+            state.last_committed_at_micros,
+            self.commit_clock.now_unix_millis(),
+        );
+        let mut plan = self.plan_commit(state, &request, commit_id, time)?;
+        plan.bind(commit_id, time, &self.revisions.at(decision))?;
+        let bytes = envelope_payload_bytes(&plan.envelope);
+        let publication = plan.stage(
+            state,
+            &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
+        )?;
         Ok(Decision::Accepted {
-            bytes: envelope_payload_bytes(&plan.envelope),
+            bytes,
             install: move |state: &mut State, durable: bool| {
                 if !durable {
                     check_deadline()?;
                 }
-                let time = crate::preparation::committed_time(
-                    state.last_committed_at_micros,
-                    self.commit_clock.now_unix_millis(),
-                );
-                plan.bind(commit_id, time, &self.revisions.at(decision))?;
-                plan.publish(
+                self.install_retained(state, retained)?;
+                publication.publish(
                     state,
-                    &mut NamespaceBuilder::new(&|bytes| self.allocate(bytes)),
                     &mut || self.record_replay_probe(&mut probes),
-                    request.idempotency_key,
+                    request.idempotency_key.clone(),
                     digest,
                     time,
                 )
@@ -544,13 +642,13 @@ fn bind_envelope(envelope: &mut CommittedEnvelope, commit_id: CommitId, time: u6
     }
 }
 
-fn publish(
-    state: &mut State,
+fn stage_namespace(
+    state: &State,
     paths: Vec<(StreamPath, PathState)>,
     histories: Vec<Arc<History>>,
     envelope: &CommittedEnvelope,
     build: &mut NamespaceBuilder<'_>,
-) -> Result<(), StreamError> {
+) -> Result<Namespace, StreamError> {
     let mut next = state.paths.clone();
     for (path, data) in paths {
         next.put_data(&path, data, None, build)?;
@@ -599,11 +697,68 @@ fn publish(
         let data = fact_data(&state.paths, fact, history, tail)?;
         next.put_data(path, data, origin, build)?;
     }
+    Ok(next)
+}
+
+fn install_namespace(
+    state: &mut State,
+    next: Namespace,
+    envelope: &CommittedEnvelope,
+) -> Result<(), StreamError> {
     if next.len() != state.paths.len() {
         state.hierarchy_version = envelope.commit_id;
     }
     state.path_bytes = next.bytes();
-    state.paths = next;
+    let previous = std::mem::replace(&mut state.paths, next);
+    // Only missing subscriptions beneath a published destination can be
+    // created. Range over subscribers, never over the inherited subtree.
+    for fact in &envelope.mutations {
+        let path = match fact {
+            CommittedMutation::Append(append) => &append.path,
+            CommittedMutation::Fork(fork) => &fork.destination,
+        };
+        if previous.get(path).is_some() {
+            continue;
+        }
+        let mut ancestor = Some(path.clone());
+        while let Some(path) = ancestor {
+            if previous.get(&path).is_some() {
+                break;
+            }
+            ancestor = path.parent();
+            if let Some(signals) = state.signals.get(&path)? {
+                let tail = state.paths.get(&path).map_or(0, |path| path.tail);
+                signals.changed.send_replace(tail);
+                signals
+                    .follows
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .created(tail);
+            }
+        }
+        if matches!(fact, CommittedMutation::Fork(_)) {
+            let prefix = format!("{}/", path.as_str());
+            let upper = format!("{}0", path.as_str());
+            let created = state.signals.keys_in::<str, _>((
+                std::ops::Bound::Included(prefix.as_str()),
+                std::ops::Bound::Excluded(upper.as_str()),
+            ))?;
+            for path in created {
+                let Some(stream) = state.paths.get(&path) else {
+                    continue;
+                };
+                if let Some(signals) = state.signals.get(&path)? {
+                    let tail = stream.tail;
+                    signals.changed.send_replace(tail);
+                    signals
+                        .follows
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .created(tail);
+                }
+            }
+        }
+    }
     for fact in &envelope.mutations {
         let (path, tail) = match fact {
             CommittedMutation::Append(append) => (&append.path, append.tail),
@@ -613,7 +768,7 @@ fn publish(
         let notify = !crate::verification::fault_is(crate::verification::Fault::OmitAppendWake);
         #[cfg(not(all(loom, feature = "local")))]
         let notify = true;
-        if notify && let Some(signals) = state.signals.get(path) {
+        if notify && let Some(signals) = state.signals.get(path)? {
             signals.changed.send_replace(tail);
             signals
                 .follows

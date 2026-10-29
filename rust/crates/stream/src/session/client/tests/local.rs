@@ -1,6 +1,5 @@
 //! In-process I/O uses the public pool, including checked admission and credit.
 use super::*;
-use futures::TryFutureExt as _;
 
 #[tokio::test]
 async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult {
@@ -23,6 +22,7 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
         assert!(matches!(
             client
                 .follow(crate::FollowRequest {
+                    when_absent: Default::default(),
                     path: path.clone(),
                     from: 1,
                     preceding: Some(crate::CommitId::from_bytes([42; 32])),
@@ -36,6 +36,7 @@ async fn in_process_follow_preserves_history_anchors_and_credit() -> TestResult 
         ));
         let mut checked = client
             .follow(crate::FollowRequest {
+                when_absent: Default::default(),
                 path: path,
                 from: 1,
                 preceding: Some(first.commit_id),

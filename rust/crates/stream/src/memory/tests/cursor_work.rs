@@ -42,7 +42,9 @@ fn read(old: bool, baseline: &mut BaselineCursor, candidate: &mut HistoryCursor)
     if old {
         baseline.next_record()
     } else {
-        candidate.next_record()
+        futures::FutureExt::now_or_never(candidate.next_record())
+            .expect("memory pages are immediately ready")
+            .unwrap()
     }
 }
 
@@ -109,8 +111,14 @@ async fn seed(
     Vec<Result<AppendOutcome, StreamError>>,
     Vec<Result<ForkReceipt, StreamError>>,
 ) {
-    let provider =
+    let mut provider =
         MemoryStream::new_with_clock(MemoryLimits::default(), Arc::new(AtomicU64::new(7)));
+    // Both implementations observe one logical authority and trusted clock.
+    provider.revisions = Arc::new(crate::AppliedRevisions::new(
+        crate::RevisionScope::new(Bytes::from_static(b"cursor-oracle")),
+        1,
+        0,
+    ));
     let source = StreamPath::new("history/source").unwrap();
     let mut appends = Vec::new();
     for i in 0..batches {
@@ -182,17 +190,18 @@ proptest! {
                 if old { baseline(&mut old_cursor, stream.history.as_ref(), stream.tail); }
                 else { cursor.sync(stream.history.as_ref(), stream.tail); }
                 let rest: Vec<_> = std::iter::from_fn(|| read(old, &mut old_cursor, &mut cursor)).map(record_bytes).collect();
-                (appends, forks, appended, first, rest, if old { old_cursor.next } else { cursor.next })
+                (appends, forks, appended, first, rest, if old { old_cursor.next } else { cursor.position() })
         });
         let _ = acyclic_test_support::differential(|| run(true), || run(false));
     }
 }
 
 #[test]
-fn initial_cursor_visits_each_batch_once_and_rescan_control_fails() {
-    for batches in [4, 32] {
+fn pinned_cursor_open_is_constant_space_and_eager_control_grows() {
+    for batches in [4, 32, 1024] {
         let mut counts = Vec::new();
         let mut allocations = Vec::new();
+        let mut first_output = Vec::new();
         let mut observations = Vec::new();
         for old in [true, false] {
             let (provider, path, _, _) = futures::executor::block_on(seed(batches, false));
@@ -209,13 +218,19 @@ fn initial_cursor_visits_each_batch_once_and_rescan_control_fails() {
                 }
             }));
             counts.push(HISTORY_VISITS.with(std::cell::Cell::get));
+            let first = read(old, &mut old_cursor, &mut cursor).map(record_bytes);
+            first_output.push(HISTORY_VISITS.with(std::cell::Cell::get));
             observations.push(
-                std::iter::from_fn(|| read(old, &mut old_cursor, &mut cursor))
-                    .map(record_bytes)
+                first
+                    .into_iter()
+                    .chain(
+                        std::iter::from_fn(|| read(old, &mut old_cursor, &mut cursor))
+                            .map(record_bytes),
+                    )
                     .collect::<Vec<_>>(),
             );
         }
-        let ([old_records, new_records], [old_count, _], [old_heap, new_heap]) = (
+        let ([old_records, new_records], [old_count, new_count], [old_heap, new_heap]) = (
             observations.as_slice(),
             counts.as_slice(),
             allocations.as_slice(),
@@ -223,19 +238,31 @@ fn initial_cursor_visits_each_batch_once_and_rescan_control_fails() {
             panic!("each cursor runs once");
         };
         assert_eq!(old_records, new_records);
-        assert_eq!(counts, [2 * batches, batches]);
-        assert_ne!(
-            *old_count, batches,
-            "rescan control escaped the exact bound"
+        assert_eq!(*new_count, 0, "opening walked the pinned backlog");
+        assert_eq!(new_heap.count_total, 0, "opening allocated backlog windows");
+        assert!(*old_count >= batches, "eager control hid its history walk");
+        assert!(old_heap.count_total > 0 && old_heap.bytes_total > new_heap.bytes_total);
+        let [eager_first, lazy_first] = first_output.as_slice() else {
+            panic!("two controls");
+        };
+        assert!(
+            *lazy_first <= 64,
+            "first output visited {lazy_first} history nodes"
         );
-        assert_eq!(old_heap.count_total, new_heap.count_total);
-        assert_eq!(new_heap.count_total, if batches == 4 { 1 } else { 4 });
-        println!("cursor batches={batches} visits={counts:?} allocations={allocations:?}");
+        if batches == 1024 {
+            assert!(
+                eager_first > lazy_first,
+                "eager control hid its first-output slope"
+            );
+        }
+        println!(
+            "cursor batches={batches} open_visits={counts:?} first_output={first_output:?} allocations={allocations:?}"
+        );
     }
 }
 
 #[test]
-fn appended_follow_reuses_the_cursor_queue_without_scratch_allocations() {
+fn appended_follow_updates_its_pin_without_history_work_or_allocations() {
     let mut observations = Vec::new();
     let mut measured = Vec::new();
     for old in [true, false] {
@@ -290,7 +317,7 @@ fn appended_follow_reuses_the_cursor_queue_without_scratch_allocations() {
         *before,
         (2, 1, (4 * std::mem::size_of::<HistoryWindow>()) as u64)
     );
-    assert_eq!(*after, (1, 0, 0));
+    assert_eq!(*after, (0, 0, 0));
     assert_ne!(
         before, after,
         "old scratch allocation escaped exact work assertions"
@@ -345,4 +372,45 @@ fn singleton_reads_retain_the_window_inline_without_allocating() {
         "old singleton heap queue escaped the exact allocation bound"
     );
     println!("singleton cursor before={before:?} after={after:?}");
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+    #[test]
+    fn pinned_page_budgets_preserve_fork_cuts(batches in 1usize..25, fork in any::<bool>(), from in 0usize..25, budget in 1u32..9, width in 1usize..10) {
+        futures::executor::block_on(async {
+            let (provider, mut path, _, _) = seed(batches, false).await;
+            provider.append(AppendRequest {
+                path: path.clone(), records: vec![Bytes::from_static(b"batch").into(); width],
+                if_tail: None, idempotency_key: IdempotencyKey::unique(),
+            }).await.unwrap();
+            if fork {
+                let destination = StreamPath::new("pages/fork").unwrap();
+                provider.fork(ForkRequest {
+                    source: path, destination: destination.clone(), at_tail: Some((batches + width / 2) as u64),
+                    exclude: Vec::new(), idempotency_key: IdempotencyKey::unique(),
+                }).await.unwrap();
+                path = destination;
+            }
+            let snapshot = provider.state.read().await.paths.get(&path).cloned().unwrap();
+            let start = (from as u64).min(snapshot.tail);
+            let mut baseline_cursor = BaselineCursor::at(start);
+            baseline(&mut baseline_cursor, snapshot.history.as_ref(), snapshot.tail);
+            let expected: Vec<_> = std::iter::from_fn(|| baseline_cursor.next_record()).map(record_bytes).collect();
+            let pinned = PinnedHistory { root: snapshot.history, tail: snapshot.tail };
+            let mut after = start;
+            let mut actual = Vec::new();
+            while let Some(window) = crate::pages::PageSource::next_page(&pinned, after, budget).await.unwrap() {
+                prop_assert!(window.end - window.start <= budget as usize);
+                for record in &window.records.records[window.start..window.end] {
+                    prop_assert_eq!(record.sequence, after);
+                    after += 1;
+                    actual.push(record_bytes(record.clone()));
+                }
+            }
+            prop_assert_eq!(actual, expected);
+            prop_assert_eq!(after, pinned.tail);
+            Ok(())
+        })?;
+    }
 }

@@ -1,4 +1,5 @@
 struct PreparedFrame {
+    deadline: Option<u64>,
     encoded: Vec<u8>,
     work: Option<Arc<crate::native::Work>>,
     operation: Option<
@@ -72,6 +73,7 @@ impl PreparedFrame {
             })
             .transpose()?;
         Ok(Self {
+            deadline: None,
             encoded,
             work,
             operation,
@@ -82,7 +84,7 @@ impl PreparedFrame {
     }
 
     fn encode(
-        command: &Command,
+        command: &WriteRequest,
         time: u64,
         work: Option<Arc<crate::native::Work>>,
     ) -> Result<Self, LocalStreamError> {
@@ -100,7 +102,7 @@ impl PreparedFrame {
         Ok(frame)
     }
 
-    fn fill(&mut self, command: &Command, time: u64) -> Result<(), LocalStreamError> {
+    fn fill(&mut self, command: &WriteRequest, time: u64) -> Result<(), LocalStreamError> {
         let size = command.encoded_len();
         if size > MAX_COMMAND_BYTES
             || 4 + FRAME_TIME_BYTES + size + FRAME_CHECKSUM_BYTES > self.encoded.capacity()
@@ -136,7 +138,7 @@ impl PreparedFrame {
         Ok(())
     }
 
-    fn write(&mut self, writer: &mut impl Write) -> Result<(), LocalStreamError> {
+    fn write(&mut self, writer: &mut impl Write) -> std::result::Result<(), LocalStreamError> {
         let Some(work) = &self.work else {
             acyclic_native_runtime::write_file_all(writer, &self.encoded)?;
             return Ok(());

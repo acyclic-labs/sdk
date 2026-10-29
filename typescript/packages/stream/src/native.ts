@@ -1,3 +1,5 @@
+import { checkedReadSequence } from "./record.js";
+import { wireWhenAbsent } from "./contract.js";
 import { Buffer } from "node:buffer";
 import { credentialProvider, validateCredential, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { createRequire } from "node:module";
@@ -145,6 +147,12 @@ export class NativeStreamProvider implements StreamProvider {
     return this.project("inspect_idempotency", value) as IdempotencyObservation | undefined;
   }
 
+  async heads(options: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> {
+    const request = { kind: "heads" as const, ...structuredClone(options) };
+    await validateWireRequest(request);
+    const value = await this.operation("heads", this.request(client => client.headsResult(Buffer.from(wireRequest(request)))));
+    return this.project("heads", value) as import("./types.js").Heads;
+  }
   async head(path: string): Promise<import("./types.js").PathHead> {
     const request = { kind: "head" as const, path };
     await validateWireRequest(request);
@@ -175,7 +183,7 @@ export class NativeStreamProvider implements StreamProvider {
   }
 
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
-    const request = { kind: "read" as const, path, from: options.from, limit: options.limit };
+    const request = { kind: "read" as const, path, ...structuredClone(options) };
     await validateWireRequest(request);
     let cursor: GeneratedNative.NativeStreamFollow | undefined;
     let release: (() => void) | undefined;
@@ -196,7 +204,7 @@ export class NativeStreamProvider implements StreamProvider {
         catch (error) { throw invalidResponse("read", error); }
         for (const decoded of readResponseRecords(response)) {
           if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
-          const record = checkedRecord(decoded, next);
+          const record = checkedRecord(decoded, checkedReadSequence(decoded, next, request.key));
           next = record.sequence + 1n;
           yield record;
         }
@@ -212,7 +220,7 @@ export class NativeStreamProvider implements StreamProvider {
 
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
     const request = { kind: "follow" as const, path, from: options.from };
-    const encoded = toBinary(wire.FollowRequestSchema, create(wire.FollowRequestSchema, {
+    const encoded = toBinary(wire.FollowRequestSchema, create(wire.FollowRequestSchema, { whenAbsent: wireWhenAbsent(options.whenAbsent),
       path, from: options.from, ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }),
     }));
     await validateWireRequest(request);

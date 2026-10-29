@@ -1,6 +1,7 @@
 //! Durable timer data shared by guest scheduling and the harness. This module
 //! owns no scheduler, clock, waiting loop or second copy of retained timer state.
 
+use acyclic_stream::StreamProviderExt as _;
 use serde::{Deserialize, Serialize};
 use ts_rs::{Config, TS};
 

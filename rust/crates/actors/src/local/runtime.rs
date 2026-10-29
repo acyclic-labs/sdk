@@ -8,6 +8,7 @@
 //! one follow wakes it. A delivery reads its inputs with bounded finite reads.
 use super::ready::{ReadySet, Registration, Work};
 use super::{Error, PreparedPublish, Snapshot, State, Store};
+use acyclic_stream::StreamProviderExt as _;
 mod dispatcher;
 mod interrupt;
 mod limits;
@@ -399,7 +400,8 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 .await?,
         );
         let mut dispatcher = Some(dispatcher);
-        let mut dispatching: Option<BoxProviderFuture<'_, Result<Snapshot, Error>>> = None;
+        let mut dispatching: Option<BoxProviderFuture<'_, std::result::Result<Snapshot, Error>>> =
+            None;
         // The activation log is also every producer's wake entry: the cursor
         // only bounds restart replay, so consecutive entries coalesce into one
         // checkpoint in flight at the latest seen end.
@@ -852,6 +854,7 @@ impl<P: StreamProvider + ?Sized> Runtime<P> {
                 .store
                 .provider()
                 .read(acyclic_stream::ReadRequest {
+                    key: None,
                     path: subscription.path.clone(),
                     from: subscription.cursor,
                     limit: 1,

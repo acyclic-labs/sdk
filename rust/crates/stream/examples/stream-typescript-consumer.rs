@@ -3,7 +3,7 @@
 use acyclic_stream::OwnedBytes as Bytes;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath,
-    StreamProvider,
+    StreamProvider, StreamProviderExt as _,
 };
 use futures::TryStreamExt as _;
 use serde_json::json;
@@ -36,6 +36,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tail = provider.tail(path.clone()).await?;
     let records = provider
         .read(ReadRequest {
+            key: None,
             path: path.clone(),
             from: 0,
             limit: u32::try_from(values.len())?,

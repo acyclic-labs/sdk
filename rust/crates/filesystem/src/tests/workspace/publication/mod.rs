@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 
 mod collection;
 mod local_recovery;
@@ -57,8 +58,8 @@ impl CutStream {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl acyclic_stream::StreamProvider for CutStream {
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        self.inner.operation_claims()
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
     }
 
     async fn inspect_idempotency(
@@ -71,43 +72,61 @@ impl acyclic_stream::StreamProvider for CutStream {
         self.inner.inspect_idempotency(key).await
     }
 
-    async fn head(
+    async fn heads(
         &self,
-        path: acyclic_stream::StreamPath,
-    ) -> Result<acyclic_stream::PathHead, acyclic_stream::StreamError> {
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         if self.fails_now() {
             return Err(acyclic_stream::StreamError::Unavailable);
         }
-        self.inner.head(path).await
-    }
-    async fn tail(
-        &self,
-        path: acyclic_stream::StreamPath,
-    ) -> Result<u64, acyclic_stream::StreamError> {
-        if self.fails_now() {
-            return Err(acyclic_stream::StreamError::Unavailable);
-        }
-        self.inner.tail(path).await
+        self.inner.heads(request).await
     }
 
-    async fn append(
+    fn write(
         &self,
-        request: acyclic_stream::AppendRequest,
-    ) -> Result<acyclic_stream::AppendOutcome, acyclic_stream::StreamError> {
-        if self.fails_now() {
-            return Err(acyclic_stream::StreamError::Unavailable);
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Append(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        if self.fails_now() {
+                            return Err(acyclic_stream::StreamError::Unavailable);
+                        }
+                        self.inner.append(request).await
+                    },
+                    acyclic_stream::WriteOutcome::Append,
+                ))
+            }
+            acyclic_stream::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    if self.fails_now() {
+                        return Err(acyclic_stream::StreamError::Unavailable);
+                    }
+                    self.inner.fork(request).await
+                },
+                acyclic_stream::WriteOutcome::Fork,
+            )),
+            acyclic_stream::WriteRequest::Commit(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        let fails = self.fails_now();
+                        if fails && matches!(self.cut(), ForkCut::Before) {
+                            return Err(acyclic_stream::StreamError::Unavailable);
+                        }
+                        let outcome = self.inner.commit(request).await?;
+                        if fails {
+                            return Err(acyclic_stream::StreamError::Unavailable);
+                        }
+                        Ok(outcome)
+                    },
+                    acyclic_stream::WriteOutcome::Commit,
+                ))
+            }
         }
-        self.inner.append(request).await
-    }
-
-    async fn fork(
-        &self,
-        request: acyclic_stream::ForkRequest,
-    ) -> Result<acyclic_stream::ForkReceipt, acyclic_stream::StreamError> {
-        if self.fails_now() {
-            return Err(acyclic_stream::StreamError::Unavailable);
-        }
-        self.inner.fork(request).await
     }
 
     async fn read(
@@ -130,21 +149,6 @@ impl acyclic_stream::StreamProvider for CutStream {
         self.inner.follow(request).await
     }
 
-    async fn commit(
-        &self,
-        request: acyclic_stream::CommitRequest,
-    ) -> Result<acyclic_stream::CommitOutcome, acyclic_stream::StreamError> {
-        let fails = self.fails_now();
-        if fails && matches!(self.cut(), ForkCut::Before) {
-            return Err(acyclic_stream::StreamError::Unavailable);
-        }
-        let outcome = self.inner.commit(request).await?;
-        if fails {
-            return Err(acyclic_stream::StreamError::Unavailable);
-        }
-        Ok(outcome)
-    }
-
     async fn read_commit(
         &self,
         commit_id: acyclic_stream::CommitId,
@@ -155,6 +159,9 @@ impl acyclic_stream::StreamProvider for CutStream {
         self.inner.read_commit(commit_id).await
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for CutStream {}
 
 type CutFs = Fs<
     crate::distributed::StreamAuthorityStore<CutStream>,

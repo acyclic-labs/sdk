@@ -70,8 +70,8 @@ pub(super) struct EndingFollow {
 
 #[async_trait]
 impl StreamProvider for EndingFollow {
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        self.inner.operation_claims()
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(self.inner.context().operation_claims())
     }
 
     async fn inspect_idempotency(
@@ -80,18 +80,18 @@ impl StreamProvider for EndingFollow {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         self.inner.inspect_idempotency(key).await
     }
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        self.inner.head(path).await
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        self.inner.heads(request).await
     }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.inner.tail(path).await
+
+    fn write(
+        &self,
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        self.inner.write(request)
     }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.inner.append(request).await
-    }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.inner.fork(request).await
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.inner.read(request).await
     }
@@ -104,6 +104,7 @@ impl StreamProvider for EndingFollow {
             return if attempt == 0 {
                 self.inner
                     .read(ReadRequest {
+                        key: None,
                         path: request.path,
                         from: request.from,
                         limit: u32::try_from(crate::MAX_ITEMS)
@@ -129,9 +130,6 @@ impl StreamProvider for EndingFollow {
         self.inner.follow(request).await
     }
 
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.inner.commit(request).await
-    }
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.inner.read_commit(commit_id).await
     }
@@ -155,6 +153,7 @@ async fn grpc_transport_passes_the_public_suite() -> TestResult {
         .await?;
     let records = transport
         .read(ReadRequest {
+            key: None,
             path,
             from: 2,
             limit: 17,

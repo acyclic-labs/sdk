@@ -8,8 +8,8 @@ enum Recovered {
     /// The snapshot's state, first.
     State { encoded: Vec<u8> },
     /// Each command in the journal after it.
-    Command {
+    WriteRequest {
         committed_at_millis: u64,
-        command: Command,
+        command: WriteRequest,
     },
 }

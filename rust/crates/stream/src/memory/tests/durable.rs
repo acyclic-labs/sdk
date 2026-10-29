@@ -1,8 +1,20 @@
 use super::super::*;
 use super::TestClock;
-use crate::journal::{Command, Outcome};
+use crate::{WriteOutcome, WriteRequest};
 use futures::TryFutureExt as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
+
+async fn apply(
+    core: &MemoryStream,
+    command: WriteRequest,
+    deadline: Option<u64>,
+    persist: impl Future<Output = Result<(), StreamError>>,
+) -> Result<WriteOutcome, StreamError> {
+    let canonical = core.canonicalize(command)?;
+    core.apply_durable(&canonical, deadline, persist)
+        .await
+        .map(|execution| execution.outcome)
+}
 
 fn request(tail: u64) -> Result<AppendRequest, StreamError> {
     Ok(AppendRequest {
@@ -23,9 +35,8 @@ async fn refusals_and_retries_never_enter_the_durable_boundary() -> Result<(), S
     };
     let bad = request(1)?;
     assert!(matches!(
-        core.apply_durable(Command::Append(bad.clone()), None, persist())
-            .await?,
-        Outcome::Append(AppendOutcome::TailConflict { actual_tail: 0 })
+        apply(&core, WriteRequest::Append(bad.clone()), None, persist()).await?,
+        WriteOutcome::Append(AppendOutcome::TailConflict { actual_tail: 0 })
     ));
     assert_eq!(publications.load(Ordering::SeqCst), 0);
     assert!(
@@ -34,15 +45,13 @@ async fn refusals_and_retries_never_enter_the_durable_boundary() -> Result<(), S
             .is_none()
     );
     let good = request(0)?;
-    let Outcome::Append(receipt) = core
-        .apply_durable(Command::Append(good.clone()), None, persist())
-        .await?
+    let WriteOutcome::Append(receipt) =
+        apply(&core, WriteRequest::Append(good.clone()), None, persist()).await?
     else {
         return Err(StreamError::InvalidResponse);
     };
-    let Outcome::Append(replayed) = core
-        .apply_durable(Command::Append(good), None, persist())
-        .await?
+    let WriteOutcome::Append(replayed) =
+        apply(&core, WriteRequest::Append(good), None, persist()).await?
     else {
         return Err(StreamError::InvalidResponse);
     };
@@ -56,8 +65,7 @@ async fn refusals_and_retries_never_enter_the_durable_boundary() -> Result<(), S
         idempotency_key: crate::IdempotencyKey::unique(),
     };
     assert!(matches!(
-        core.apply_durable(Command::Fork(fork), None, persist())
-            .await,
+        apply(&core, WriteRequest::Fork(fork), None, persist()).await,
         Err(StreamError::NotFound)
     ));
     let commit = CommitRequest {
@@ -73,9 +81,8 @@ async fn refusals_and_retries_never_enter_the_durable_boundary() -> Result<(), S
         idempotency_key: IdempotencyKey::new(b"conflict-identity".to_vec())?,
     };
     assert!(matches!(
-        core.apply_durable(Command::Commit(commit.clone()), None, persist())
-            .await?,
-        Outcome::Commit(CommitOutcome::Conflict(_))
+        apply(&core, WriteRequest::Commit(commit.clone()), None, persist()).await?,
+        WriteOutcome::Commit(CommitOutcome::Conflict(_))
     ));
     assert!(
         core.inspect_idempotency(commit.idempotency_key)
@@ -97,20 +104,16 @@ async fn failed_or_cancelled_durability_never_installs_or_notifies() -> Result<(
         .follow(crate::FollowRequest::new(append.path.clone(), 1))
         .map_ok(crate::records_only)
         .await?;
-    let refused = core
-        .apply_durable(Command::Append(append.clone()), None, async {
-            Err(StreamError::Unavailable)
-        })
-        .await;
+    let refused = apply(&core, WriteRequest::Append(append.clone()), None, async {
+        Err(StreamError::Unavailable)
+    })
+    .await;
     assert!(matches!(refused, Err(StreamError::Unavailable)));
     assert_eq!(core.tail(append.path.clone()).await?, 1);
     assert!(futures::poll!(follow.next()).is_pending());
     {
-        let prepared = core.apply_durable(
-            Command::Append(append.clone()),
-            None,
-            std::future::pending(),
-        );
+        let command = WriteRequest::Append(append.clone());
+        let prepared = apply(&core, command, None, std::future::pending());
         let mut prepared = std::pin::pin!(prepared);
         assert!(futures::poll!(prepared.as_mut()).is_pending());
         let read = core.tail(append.path.clone());
@@ -123,12 +126,10 @@ async fn failed_or_cancelled_durability_never_installs_or_notifies() -> Result<(
             .is_none()
     );
     assert_eq!(core.tail(append.path.clone()).await?, 1);
-    let outcome = core
-        .apply_durable(Command::Append(append), None, async { Ok(()) })
-        .await?;
+    let outcome = apply(&core, WriteRequest::Append(append), None, async { Ok(()) }).await?;
     assert!(matches!(
         outcome,
-        Outcome::Append(AppendOutcome::Committed(_))
+        WriteOutcome::Append(AppendOutcome::Committed(_))
     ));
     assert_eq!(
         follow
@@ -142,7 +143,7 @@ async fn failed_or_cancelled_durability_never_installs_or_notifies() -> Result<(
 }
 
 #[tokio::test]
-async fn accepted_time_binds_after_durability_without_a_second_deadline_refusal()
+async fn durability_completion_cannot_change_the_stamp_or_refuse_an_accepted_deadline()
 -> Result<(), StreamError> {
     let wall = Arc::new(TestClock::default());
     let accepted = Arc::new(TestClock::default());
@@ -151,9 +152,10 @@ async fn accepted_time_binds_after_durability_without_a_second_deadline_refusal(
         wall.clone(),
         accepted.clone(),
     );
-    let Outcome::Append(AppendOutcome::Committed(receipt)) = core
-        .apply_durable(Command::Append(request(0)?), None, async {
-            accepted.0.store(3, Ordering::SeqCst);
+    accepted.0.store(3, Ordering::SeqCst);
+    let WriteOutcome::Append(AppendOutcome::Committed(receipt)) =
+        apply(&core, WriteRequest::Append(request(0)?), None, async {
+            accepted.0.store(4, Ordering::SeqCst);
             Ok(())
         })
         .await?
@@ -177,11 +179,12 @@ async fn accepted_time_binds_after_durability_without_a_second_deadline_refusal(
         }],
         idempotency_key: IdempotencyKey::new(b"accepted-before-deadline".to_vec())?,
     };
-    // The transport admitted at 5 ms, then durability completed after 10 ms.
+    // The journal prepared its stamp at 5 ms, then durability completed after 10 ms.
     // Its success must install the accepted decision, not refuse it afterward.
-    let Outcome::Commit(CommitOutcome::Committed(envelope)) = core
-        .apply_durable(Command::Commit(request), None, async {
-            accepted.0.store(5, Ordering::SeqCst);
+    accepted.0.store(5, Ordering::SeqCst);
+    let WriteOutcome::Commit(CommitOutcome::Committed(envelope)) =
+        apply(&core, WriteRequest::Commit(request), None, async {
+            accepted.0.store(9, Ordering::SeqCst);
             wall.0.store(20, Ordering::SeqCst);
             Ok(())
         })
@@ -197,5 +200,52 @@ async fn accepted_time_binds_after_durability_without_a_second_deadline_refusal(
     };
     assert_eq!(append.records[0].committed_at_micros, 5_000);
     assert_eq!(core.tail(append.path.clone()).await?, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn funded_publications_need_no_allocation_admission_after_durability()
+-> Result<(), Box<dyn std::error::Error>> {
+    for family in 0..3 {
+        let meter = Arc::new(crate::test_meter::Meter::default());
+        let work = Work::new(meter.original())?;
+        work.reserve_write(8)?;
+        let core = MemoryStream::default();
+        let source = request(0)?;
+        core.append(source.clone()).await?;
+        let destination = StreamPath::new("new/parents/destination")?;
+        let command = match family {
+            0 => WriteRequest::Append(AppendRequest {
+                path: destination.clone(),
+                idempotency_key: IdempotencyKey::unique(),
+                ..request(0)?
+            }),
+            1 => WriteRequest::Fork(ForkRequest {
+                source: source.path,
+                destination: destination.clone(),
+                at_tail: Some(1),
+                exclude: Vec::new(),
+                idempotency_key: IdempotencyKey::unique(),
+            }),
+            _ => WriteRequest::Commit(CommitRequest {
+                deadline_unix_millis: None,
+                conditions: Vec::new(),
+                mutations: vec![CommitMutation::Append {
+                    path: destination.clone(),
+                    records: vec![Bytes::from_static(b"accepted").into()],
+                }],
+                idempotency_key: IdempotencyKey::unique(),
+            }),
+        };
+        let core = core.with_context(work);
+        apply(&core, command, None, async {
+            // A completed durable action owns its completion. New allocation
+            // admission must not determine whether its state can be installed.
+            meter.deny_allocation.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .await?;
+        assert_eq!(core.tail(destination).await?, 1);
+    }
     Ok(())
 }

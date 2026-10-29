@@ -1,5 +1,4 @@
 use super::*;
-use futures::TryFutureExt as _;
 
 struct ReplacedNode {
     provider: Arc<MemoryStream>,
@@ -242,6 +241,7 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
         .await?;
     let mut expected = provider
         .read(crate::ReadRequest {
+            key: None,
             path: StreamPath::new("events")?,
             from: 0,
             limit: 6,
@@ -291,6 +291,7 @@ async fn active_home_replacement_rediscovers_and_resumes_over_tls() -> TestResul
     append(&provider, "events", 1).await?;
     let mut tail = provider
         .read(crate::ReadRequest {
+            key: None,
             path: StreamPath::new("events")?,
             from: 6,
             limit: 1,

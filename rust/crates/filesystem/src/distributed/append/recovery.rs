@@ -169,6 +169,7 @@ impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> 
             let mut suffix = self
                 .authority_read(
                     acyclic_stream::ReadRequest {
+                        key: None,
                         path: records.clone(),
                         from,
                         limit: count,

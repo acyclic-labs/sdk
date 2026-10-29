@@ -4,7 +4,6 @@ use crate::{
     CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
     IdempotencyObservation, ReadRequest,
 };
-use futures::TryFutureExt as _;
 use futures::{
     stream::{FuturesUnordered, SelectAll},
     task::{ArcWake, AtomicWaker, waker_ref},
@@ -20,8 +19,8 @@ struct Owners {
 }
 #[async_trait::async_trait]
 impl StreamProvider for Owners {
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        self.memory.operation_claims()
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(self.memory.context().operation_claims())
     }
 
     async fn inspect_idempotency(
@@ -30,25 +29,22 @@ impl StreamProvider for Owners {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         self.memory.inspect_idempotency(key).await
     }
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        self.memory.head(path).await
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        self.memory.heads(request).await
     }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.memory.tail(path).await
+
+    fn write(
+        &self,
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        self.memory.write(request)
     }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.memory.append(request).await
-    }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.memory.fork(request).await
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.memory.read(request).await
     }
 
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.memory.commit(request).await
-    }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.memory.read_commit(id).await
     }

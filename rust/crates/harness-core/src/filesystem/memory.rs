@@ -129,7 +129,7 @@ impl MemoryHarnessStorage {
     }
 }
 
-impl<P: StreamProvider> MemoryHarnessStorage<P> {
+impl<P: crate::store::JournalProvider> MemoryHarnessStorage<P> {
     /// Binds the journal and conversation to `stream`; files stay in process.
     pub async fn with_stream(
         agent: AgentId,
@@ -140,8 +140,11 @@ impl<P: StreamProvider> MemoryHarnessStorage<P> {
     }
 }
 
-impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
-    MemoryHarnessStorage<P, A, O>
+impl<
+    P: crate::store::JournalProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+> MemoryHarnessStorage<P, A, O>
 {
     /// Builds an optional directory listing tool for explicit custom registration.
     pub fn list_files_tool(&self, limits: Limits) -> Result<Tool> {

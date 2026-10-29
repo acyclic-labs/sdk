@@ -18,6 +18,7 @@ use acyclic_harness_core::{
     test_support::{ScriptedModelProvider, ScriptedTurn},
     tool::ToolRegistry,
 };
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, BoxProviderFuture, CommitCondition, CommitId, CommitMutation,
     CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
@@ -688,15 +689,15 @@ impl Refusing {
 
 #[async_trait::async_trait]
 impl StreamProvider for Refusing {
-    async fn head(
+    async fn heads(
         &self,
-        _: StreamPath,
-    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
+        _request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         self.refuse()
     }
 
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        &self.claims
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(&self.claims)
     }
     async fn inspect_idempotency(
         &self,
@@ -704,15 +705,29 @@ impl StreamProvider for Refusing {
     ) -> std::result::Result<Option<IdempotencyObservation>, StreamError> {
         self.refuse()
     }
-    async fn tail(&self, _: StreamPath) -> std::result::Result<u64, StreamError> {
-        self.refuse()
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Append(_) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { self.refuse() },
+                acyclic_stream::WriteOutcome::Append,
+            )),
+            acyclic_stream::WriteRequest::Fork(_) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { self.refuse() },
+                acyclic_stream::WriteOutcome::Fork,
+            )),
+            acyclic_stream::WriteRequest::Commit(_) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { self.refuse() },
+                acyclic_stream::WriteOutcome::Commit,
+            )),
+        }
     }
-    async fn append(&self, _: AppendRequest) -> std::result::Result<AppendOutcome, StreamError> {
-        self.refuse()
-    }
-    async fn fork(&self, _: ForkRequest) -> std::result::Result<ForkReceipt, StreamError> {
-        self.refuse()
-    }
+
     async fn read(&self, _: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
         self.refuse()
     }
@@ -722,9 +737,7 @@ impl StreamProvider for Refusing {
     ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
         self.refuse()
     }
-    async fn commit(&self, _: CommitRequest) -> std::result::Result<CommitOutcome, StreamError> {
-        self.refuse()
-    }
+
     async fn read_commit(
         &self,
         _: CommitId,
@@ -732,6 +745,9 @@ impl StreamProvider for Refusing {
         self.refuse()
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for Refusing {}
 
 /// An admission's private-volume grant: exact volume labels, or one
 /// structured `filesystem:` grant over the whole volume.

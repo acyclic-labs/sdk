@@ -3,10 +3,19 @@ use acyclic_stream::{postgres::PostgresStream, *};
 use futures::StreamExt;
 use futures::TryFutureExt as _;
 use std::time::{Duration, Instant};
+#[path = "publication.rs"]
+mod publication;
 #[path = "refusals.rs"]
 mod refusals;
 
 pub async fn verify(database: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let _diagnostics = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::ERROR)
+            .with_writer(std::io::stderr)
+            .finish(),
+    );
+    publication::verify(database).await?;
     let namespace = uuid::Uuid::new_v4().to_string();
     let start = Instant::now();
     let (provider, peer) = tokio::try_join!(
@@ -125,6 +134,7 @@ async fn subscription_lifetime(database: &str) -> Result<(), Box<dyn std::error:
         };
         let mut subscription = provider
             .follow(acyclic_stream::FollowRequest {
+                when_absent: Default::default(),
                 path: path.clone(),
                 from: 1,
                 preceding: anchored.then_some(receipt.commit_id),
@@ -178,6 +188,7 @@ async fn listener_failure(database: &str) -> Result<(), Box<dyn std::error::Erro
         .await?;
     let mut updates = provider
         .follow(acyclic_stream::FollowRequest {
+            when_absent: Default::default(),
             path: path,
             from: 1,
             preceding: None,

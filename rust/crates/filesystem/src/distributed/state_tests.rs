@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     IdempotencyKey, MemoryLimits, MemoryStream, OwnedBytes, StreamError, StreamProvider,
 };

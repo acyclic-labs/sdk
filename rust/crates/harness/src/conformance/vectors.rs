@@ -60,6 +60,7 @@ pub(crate) async fn values(
 ) -> Result<Vec<Vec<u8>>> {
     match provider
         .read(ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: 128,

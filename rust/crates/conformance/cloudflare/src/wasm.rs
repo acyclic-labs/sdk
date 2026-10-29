@@ -1,5 +1,6 @@
 use acyclic_actors::guest::Handler;
 use acyclic_agent_host_conformance::{Backend, Result, Storage};
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{BoxProviderFuture, JournalStream, JournalStreamLimits, StreamProvider};
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;

@@ -100,6 +100,38 @@ message HeadRequest {
   string path = 1;
 }
 
+// All observations, including absence, belong to one authority snapshot.
+enum HeadProjection {
+  HEAD_PROJECTION_HISTORY = 0;
+  // Read accepted/durable offsets without fetching a record or fork descriptor.
+  HEAD_PROJECTION_WATERMARKS = 1;
+  // Read the accepted offset without consulting durability metadata.
+  HEAD_PROJECTION_TAIL = 2;
+}
+
+message HeadsRequest {
+  repeated string paths = 1;
+  ChildrenPageRequest children = 2;
+  uint32 limit = 3;
+  repeated Revision at_least = 4;
+  HeadProjection projection = 5;
+  // Confirm this irreversible prefix at the captured view; distinct from crash durability.
+  optional uint64 durable_through = 6;
+}
+
+message HeadObservation {
+  // Absent means this path did not exist at the snapshot, never authorization denial.
+  PathHead head = 1;
+}
+
+message HeadsResponse {
+  Revision snapshot = 1;
+  // In exact request order, including explicit absent observations.
+  repeated HeadObservation heads = 2;
+  ChildrenPageResponse children = 3;
+  HeadProjection projection = 4;
+}
+
 message ForkOrigin {
   string source = 1;
   uint64 forked_at = 2;
@@ -111,6 +143,8 @@ message PathHead {
   Record last = 2;
   uint64 durable = 3;
   ForkOrigin origin = 4;
+  // Explicit proof requested by HeadsRequest, bounded by this accepted tail.
+  optional uint64 retained_through = 5;
 }
 
 message TailRequest {
@@ -160,6 +194,19 @@ message ReadRequest {
   uint32 limit = 3;
   // Minimum cut, as in TailRequest.
   repeated Revision at_least = 4;
+  // Exact indexed key, with a pinned exclusive search bound. limit counts
+  // matching records; without this clause it counts consecutive positions.
+  ReadKeySeek key = 5;
+}
+
+message ReadKeySeek {
+  bytes key = 1;
+  uint64 before = 2;
+}
+
+enum WhenAbsent {
+  WHEN_ABSENT_NOT_FOUND = 0;
+  WHEN_ABSENT_WAIT = 1;
 }
 
 message FollowRequest {
@@ -169,6 +216,8 @@ message FollowRequest {
   bool progress = 4;
   // Minimum cut, kept as the floor across every reconnect.
   repeated Revision at_least = 5;
+  // Initial absence only. A missing history anchor never waits.
+  WhenAbsent when_absent = 6;
 }
 
 // Ranges are OR; named attribute clauses are AND. Empty end is unbounded.
@@ -450,6 +499,9 @@ service StreamService {
       action: "streams/read"
       resource: "streams:/{path}"
     };
+  }
+  rpc Heads(HeadsRequest) returns (HeadsResponse) {
+    option (acyclic.validation.v1.auth) = {extractor: "streams.coherent-view"};
   }
   rpc Tail(TailRequest) returns (TailResponse) {
     option (acyclic.validation.v1.auth) = {

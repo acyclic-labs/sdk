@@ -2,7 +2,7 @@
 #![cfg(not(loom))]
 use acyclic_stream::{
     IdempotencyKey, LocalStream, LocalStreamLimits, StreamError, StreamPath, StreamProvider,
-    conformance,
+    StreamProviderExt as _, conformance,
 };
 #[tokio::test]
 async fn subtree_and_success_keys_survive_journal_and_snapshot_recovery()

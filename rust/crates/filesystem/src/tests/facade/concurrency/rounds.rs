@@ -1,5 +1,6 @@
 use super::*;
 use acyclic_stream::StreamProvider;
+use acyclic_stream::StreamProviderExt as _;
 use futures::TryStreamExt;
 use std::future::Future;
 
@@ -157,6 +158,7 @@ async fn disjoint_proposals_with_different_bases_share_one_append_and_original_r
         .authority
         .provider()
         .read(acyclic_stream::ReadRequest {
+            key: None,
             path: acyclic_stream::StreamPath::new(format!(
                 "fs/authorities/{}/records",
                 hex::encode(volume_authority_id(volume.id).into_bytes())
@@ -261,6 +263,7 @@ async fn proposals_beyond_one_provider_transaction_remain_in_batches_without_cal
         .authority
         .provider()
         .read(acyclic_stream::ReadRequest {
+            key: None,
             path: acyclic_stream::StreamPath::new(format!(
                 "fs/authorities/{}/records",
                 hex::encode(volume_authority_id(volume.id).into_bytes())
@@ -330,6 +333,7 @@ async fn evidence_capacity_splits_disjoint_proposals_before_stream_admission() -
         .authority
         .provider()
         .read(acyclic_stream::ReadRequest {
+            key: None,
             path: acyclic_stream::StreamPath::new(format!(
                 "fs/authorities/{}/records",
                 hex::encode(volume_authority_id(volume.id).into_bytes())

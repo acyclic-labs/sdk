@@ -326,9 +326,53 @@ pub fn validate(route: &str, value: &Value) -> Result {
                 Err("expected empty acknowledgement response")
             }
         }
+        Some("heads") => {
+            let item = object(value)?;
+            validate_revision(field(item, "snapshot")?)?;
+            let projection = string(field(item, "projection")?)?;
+            if !matches!(projection, "history" | "watermarks" | "tail") {
+                return Err("invalid head projection");
+            }
+            for head in array(field(item, "heads")?)? {
+                if !head.is_null() {
+                    let item = object(head)?;
+                    if let Some(through) =
+                        item.get("retainedThrough").filter(|value| !value.is_null())
+                    {
+                        if projection == "tail"
+                            || u64_string(through)? > u64_string(field(item, "tail")?)?
+                        {
+                            return Err("invalid retained prefix proof");
+                        }
+                    }
+                    if projection == "history" {
+                        validate("head", head)?;
+                    } else {
+                        let head = object(head)?;
+                        if (projection == "tail" && u64_string(field(head, "durable")?)? != 0)
+                            || u64_string(field(head, "durable")?)?
+                                > u64_string(field(head, "tail")?)?
+                            || !field(head, "last")?.is_null()
+                            || !field(head, "origin")?.is_null()
+                        {
+                            return Err("invalid watermark projection");
+                        }
+                    }
+                }
+            }
+            if let Some(page) = item.get("children").filter(|value| !value.is_null()) {
+                validate_children_page(page)?;
+            }
+            Ok(())
+        }
         Some("head") => {
             let item = object(value)?;
             let tail = u64_string(field(item, "tail")?)?;
+            if let Some(through) = item.get("retainedThrough").filter(|value| !value.is_null()) {
+                if u64_string(through)? > tail {
+                    return Err("retained prefix exceeds head");
+                }
+            }
             if u64_string(field(item, "durable")?)? > tail {
                 return Err("durable prefix exceeds accepted head");
             }

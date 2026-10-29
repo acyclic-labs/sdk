@@ -50,7 +50,7 @@ export class EventStreamLedger implements StreamLedger {
 
   dispatch(actor: string, operation: string, input: Uint8Array): Promise<ProviderReply<Uint8Array>> {
     // A wait parks until later writes apply, so it never holds the write order.
-    if (operation === "wait_applied") return this.wait(input);
+    if (operation === "wait_applied" || operation === "heads") return this.observe(operation, input);
     return this.exclusive(async () => {
       try {
         const mutation = operation === "append" || operation === "fork" || operation === "commit";
@@ -65,8 +65,8 @@ export class EventStreamLedger implements StreamLedger {
     });
   }
 
-  private async wait(input: Uint8Array): Promise<ProviderReply<Uint8Array>> {
-    try { return { value: await (await this.stream).dispatch("wait_applied", input) }; }
+  private async observe(operation: string, input: Uint8Array): Promise<ProviderReply<Uint8Array>> {
+    try { return { value: await (await this.stream).dispatch(operation, input) }; }
     catch (error) { return failure(error); }
   }
 

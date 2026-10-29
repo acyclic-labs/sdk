@@ -26,6 +26,26 @@ pub(super) async fn inspect_idempotency(
     )
 }
 
+pub(super) async fn heads(
+    client: &Arc<grpc::Client>,
+    request: Buffer,
+    cancellation: Option<&NativeStreamCancellation>,
+) -> std::result::Result<Buffer, NativeStreamErrorMetadata> {
+    let request = wire_codec::heads_from_wire(decode::<wire::HeadsRequest>(&request, "heads")?)
+        .map_err(|error| stream_error(&error))?;
+    let view = run_with_cancellation(
+        async {
+            client
+                .heads(request)
+                .await
+                .map_err(|error| stream_error(&error))
+        },
+        cancellation_state(cancellation),
+    )
+    .await?;
+    encode(&wire_codec::heads_to_wire(view), "heads")
+}
+
 pub(super) async fn head(
     client: &Arc<grpc::Client>,
     request: Buffer,
@@ -139,16 +159,17 @@ pub(super) async fn open_follow(
     request: Buffer,
     cancellation: Option<&NativeStreamCancellation>,
 ) -> std::result::Result<NativeStreamFollow, NativeStreamErrorMetadata> {
-    let request = decode::<wire::FollowRequest>(&request, "follow")?;
-    let filter = acyclic_stream::FollowFilter::new(request.filter.unwrap_or_default())
+    let request = wire_codec::follow_from_wire(decode::<wire::FollowRequest>(&request, "follow")?)
         .map_err(|error| stream_error(&error))?;
-    let stream = acyclic_stream::Stream::new(std::sync::Arc::clone(client), request.path)
-        .map_err(|error| stream_error(&error))?;
+    if request.progress {
+        return Err(stream_error(&StreamError::InvalidArgument));
+    }
     let records = run_with_cancellation(
         async move {
-            stream
-                .follow(request.from, filter)
+            client
+                .follow(request)
                 .await
+                .map(acyclic_stream::records_only)
                 .map_err(|error| stream_error(&error))
         },
         cancellation_state(cancellation),
@@ -242,3 +263,4 @@ pub(super) async fn read_commit(
     .await?;
     encode(&wire_codec::envelope_to_wire(value), "read_commit")
 }
+use acyclic_stream::StreamProviderExt as _;

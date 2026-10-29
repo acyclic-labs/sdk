@@ -16,6 +16,7 @@ pub(crate) async fn qualify_progress(provider: &impl StreamProvider) -> TestResu
     let first = append(provider, record("z", "alice")?).await?;
     let mut updates = provider
         .follow(crate::FollowRequest {
+            when_absent: Default::default(),
             path: path.clone(),
             from: 1,
             preceding: Some(first),
@@ -68,6 +69,7 @@ async fn qualify_resume(
     // A checked resume at a skipped cut must lead to exactly the same match.
     let mut resumed = provider
         .follow(crate::FollowRequest {
+            when_absent: Default::default(),
             path: path.clone(),
             from: next,
             preceding: Some(preceding),
@@ -85,6 +87,7 @@ async fn qualify_resume(
     assert!(matches!(
         provider
             .follow(crate::FollowRequest {
+                when_absent: Default::default(),
                 path: path.clone(),
                 from: next,
                 preceding: Some(CommitId::from_bytes([0x55; 32])),
@@ -167,6 +170,7 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
     let first = append(provider, record("z", "alice")?).await?;
     let mut follow = provider
         .follow(crate::FollowRequest {
+            when_absent: Default::default(),
             path: path.clone(),
             from: 1,
             preceding: Some(first),
@@ -208,6 +212,7 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
     assert_eq!(matched.headers, selected.headers);
     let mut resumed = provider
         .follow(crate::FollowRequest {
+            when_absent: Default::default(),
             path: path.clone(),
             from: 3,
             preceding: Some(preceding),
@@ -220,6 +225,7 @@ async fn qualify(provider: &impl StreamProvider, omit: bool) -> TestResult {
     assert_eq!(resumed.next().await.ok_or("resume ended")??, matched);
     let mut read = provider
         .read(ReadRequest {
+            key: None,
             path,
             from: 3,
             limit: 1,

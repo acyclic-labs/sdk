@@ -48,6 +48,9 @@ pub enum Deny {
 /// Typed operation facts; resource grants never authorize socket destinations.
 #[derive(Clone, Copy, Debug)]
 pub enum Target<'a> {
+    /// Credential context only. Admits no resource, record or socket access;
+    /// checks trust, time, audience, holder and usage without a resource grant.
+    Context,
     /// Declared semantic action against an owner-canonicalized resource.
     Resource {
         /// Product action from the descriptor catalog.
@@ -173,6 +176,9 @@ pub fn resource_matches(pattern: &ResourcePattern, name: &str) -> bool {
     }
 }
 fn grants_allow(set: &GrantSet, r: &Request<'_>, record_facts: bool) -> bool {
+    if matches!(r.target, Target::Context) {
+        return true;
+    }
     set.grants.iter().any(|g| {
         let Target::Resource { action, resource } = r.target else {
             return matches!((&g.kind, r.target), (GrantKind::WebsocketConnect(grant), Target::Websocket(destination)) if crate::socket::allows(grant, destination));
@@ -314,7 +320,11 @@ pub fn permits(
     if policy == PolicyDecision::Deny {
         return Err(Deny::OwnerPolicy);
     }
-    if permits_canonical(blocks, r, scope == Scope::Exact) {
+    if permits_canonical(
+        blocks,
+        r,
+        scope == Scope::Exact && !matches!(r.target, Target::Context),
+    ) {
         Ok(())
     } else {
         Err(Deny::Capability)

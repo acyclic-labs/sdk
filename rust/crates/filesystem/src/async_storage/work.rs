@@ -4,7 +4,9 @@ use crate::{
     WorkError,
 };
 #[cfg(not(target_arch = "wasm32"))]
-use acyclic_stream::{CommitOutcome, CommitRequest, NativeStreamResult, StreamProvider};
+use acyclic_stream::{
+    CommitOutcome, CommitRequest, NativeStreamResult, StreamProvider, StreamProviderExt as _,
+};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod commit_tests;
@@ -420,7 +422,7 @@ pub trait AuthorityGuard: ProviderTask {
 
     /// Seals the provider's actual native commit attempt.
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit<P: StreamProvider>(
+    fn native_commit<P: acyclic_stream::NativeStreamProvider>(
         &mut self,
         provider: &P,
         request: CommitRequest,
@@ -491,7 +493,7 @@ where
         (self.0)(original).await.map_err(AuthorityError::Owner)
     }
 
-    async fn native_commit<P: StreamProvider>(
+    async fn native_commit<P: acyclic_stream::NativeStreamProvider>(
         &mut self,
         provider: &P,
         request: CommitRequest,

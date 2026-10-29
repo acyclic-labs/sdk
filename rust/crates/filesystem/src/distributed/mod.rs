@@ -1,5 +1,8 @@
 //! Filesystem storage bindings over the canonical public service providers.
 
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_stream::NativeStreamProvider as _;
+
 use crate::async_storage::authority_error;
 use crate::cancellation::CancellationToken;
 #[cfg(test)]
@@ -19,6 +22,7 @@ use crate::{
     AsyncAuthorityStore, AuthorityAllocation, AuthorityError, AuthorityGuard, AuthorityWork,
     WorkspaceForkCommit, WorkspaceForkOutcome,
 };
+use acyclic_stream::StreamProviderExt as _;
 use bytes::Bytes;
 use futures::StreamExt;
 use std::sync::Arc;
@@ -40,14 +44,14 @@ const PUBLICATION_GATE_ACTIVE: &[u8] = b"acyclic-fs-publication-gate-v1\0active\
 /// must support concrete generic dispatch. Browser publication has no native
 /// guard and can retain an event-loop-owned provider behind a trait object.
 #[cfg(not(target_arch = "wasm32"))]
-pub trait AuthorityProvider: acyclic_stream::StreamProvider {
+pub trait AuthorityProvider: acyclic_stream::NativeStreamProvider {
     /// Concrete dispatch required by the original native publication guard.
-    type NativeProvider: acyclic_stream::StreamProvider;
+    type NativeProvider: acyclic_stream::NativeStreamProvider;
     /// Borrows this same provider without erasing the native guard's type.
     fn native_provider(&self) -> &Self::NativeProvider;
 }
 #[cfg(not(target_arch = "wasm32"))]
-impl<P: acyclic_stream::StreamProvider> AuthorityProvider for P {
+impl<P: acyclic_stream::NativeStreamProvider> AuthorityProvider for P {
     type NativeProvider = P;
     fn native_provider(&self) -> &P {
         self

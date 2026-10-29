@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 
 #[tokio::test]
 async fn durable_reopen_retry_pages_and_pins() -> Result<()> {

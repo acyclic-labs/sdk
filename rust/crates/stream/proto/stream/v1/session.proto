@@ -72,6 +72,8 @@ message SessionSubscription {
     // absent. A pure read: a client may retry it before any reply fragment
     // arrives, but never splices fragments of two attempts.
     ChildrenPageRequest children_page = 15;
+    // One coherent snapshot, under the same finite-fragment rules.
+    HeadsRequest heads = 16;
   }
 }
 enum SessionDelivery {
@@ -99,6 +101,18 @@ message SessionFollow {
   uint64 until = 4;
   // Minimum cut, one entry per authority; every resume carries the same floor.
   repeated Revision at_least = 5;
+  // Initial absence only; preserved across resumes and placement changes.
+  // Bounded reads require NOT_FOUND. Missing checked anchors never wait.
+  WhenAbsent when_absent = 6;
+  // LATEST only: on an initial cursor (next=0), bootstrap the last record from
+  // one Head snapshot, then follow its checked prefix. Resumes replay normally
+  // so attention records after an acknowledged cut cannot be skipped.
+  bool bootstrap_head = 7;
+  // Bounded indexed read. Requires ALL, no preceding anchor or bootstrap,
+  // NOT_FOUND, a Streams resource, until == key.before and a positive limit.
+  // Data retains its original sequence, so gaps are valid and never conflate.
+  ReadKeySeek key = 8;
+  uint32 read_limit = 9;
 }
 message SessionCursor {
   uint64 next = 1; // exclusive, next record / actor frame offset
@@ -133,6 +147,7 @@ message SessionData {
     // fragment rules (after.next counts chunks from 1; after.opaque is the
     // 8-byte little-endian total length).
     bytes children_page = 16;
+    bytes heads = 17;
   }
 }
 message SessionAck {
@@ -176,6 +191,9 @@ message SessionWatermark {
   bytes preceding_commit_id = 4; // commit at after.next - 1
 }
 message SessionLatestValue {
+  // Projected from the opaque record's sole indexed key. The record's
+  // "attention" attribute is ASCII "true" or "false" (absent means false).
+  // The value is the original application bytes, never a nested protobuf.
   bytes key = 1;
   bytes value = 2;
   bool attention = 3;

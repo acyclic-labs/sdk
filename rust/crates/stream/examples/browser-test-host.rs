@@ -1,5 +1,5 @@
 //! Local platform host for browser qualification, using the real service and session.
-use acyclic_stream::{StreamError, StreamProvider, grpc, session, wire, wire_codec};
+use acyclic_stream::{StreamError, StreamProviderExt as _, grpc, session, wire, wire_codec};
 #[path = "browser-test-host/provider.rs"]
 mod provider;
 use axum::{

@@ -20,6 +20,7 @@ use acyclic_harness_core::{
     model::ModelContent,
     resources::ProviderRef,
 };
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{BoxProviderFuture, MemoryStream, StreamError, StreamProvider};
 use std::sync::{Arc, atomic::Ordering};
 
@@ -284,8 +285,8 @@ impl AttestedProvider for Evidence {
 
 #[async_trait::async_trait]
 impl StreamProvider for Evidence {
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        self.inner.operation_claims()
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
     }
     async fn inspect_idempotency(
         &self,
@@ -293,32 +294,52 @@ impl StreamProvider for Evidence {
     ) -> std::result::Result<Option<acyclic_stream::IdempotencyObservation>, StreamError> {
         self.inner.inspect_idempotency(key).await
     }
-    async fn head(
+
+    async fn heads(
         &self,
-        path: acyclic_stream::StreamPath,
-    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
-        self.inner.head(path).await
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        self.inner.heads(request).await
     }
-    async fn tail(
+    fn write(
         &self,
-        path: acyclic_stream::StreamPath,
-    ) -> std::result::Result<u64, StreamError> {
-        self.inner.tail(path).await
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Append(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        self.published.fetch_add(1, Ordering::SeqCst);
+                        self.inner.append(request).await
+                    },
+                    acyclic_stream::WriteOutcome::Append,
+                ))
+            }
+            acyclic_stream::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    self.published.fetch_add(1, Ordering::SeqCst);
+                    self.inner.fork(request).await
+                },
+                acyclic_stream::WriteOutcome::Fork,
+            )),
+            acyclic_stream::WriteRequest::Commit(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        if self.unknown_first.swap(false, Ordering::SeqCst) {
+                            return Err(StreamError::Unavailable);
+                        }
+                        self.published.fetch_add(1, Ordering::SeqCst);
+                        self.inner.commit(request).await
+                    },
+                    acyclic_stream::WriteOutcome::Commit,
+                ))
+            }
+        }
     }
-    async fn append(
-        &self,
-        request: acyclic_stream::AppendRequest,
-    ) -> std::result::Result<acyclic_stream::AppendOutcome, StreamError> {
-        self.published.fetch_add(1, Ordering::SeqCst);
-        self.inner.append(request).await
-    }
-    async fn fork(
-        &self,
-        request: acyclic_stream::ForkRequest,
-    ) -> std::result::Result<acyclic_stream::ForkReceipt, StreamError> {
-        self.published.fetch_add(1, Ordering::SeqCst);
-        self.inner.fork(request).await
-    }
+
     async fn read(
         &self,
         request: acyclic_stream::ReadRequest,
@@ -331,16 +352,7 @@ impl StreamProvider for Evidence {
     ) -> std::result::Result<acyclic_stream::FollowStream, StreamError> {
         self.inner.follow(request).await
     }
-    async fn commit(
-        &self,
-        request: acyclic_stream::CommitRequest,
-    ) -> std::result::Result<acyclic_stream::CommitOutcome, StreamError> {
-        if self.unknown_first.swap(false, Ordering::SeqCst) {
-            return Err(StreamError::Unavailable);
-        }
-        self.published.fetch_add(1, Ordering::SeqCst);
-        self.inner.commit(request).await
-    }
+
     async fn read_commit(
         &self,
         id: acyclic_stream::CommitId,
@@ -348,6 +360,9 @@ impl StreamProvider for Evidence {
         self.inner.read_commit(id).await
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for Evidence {}
 
 /// Attests each digest with itself, recording every request for evidence.
 #[derive(Default)]

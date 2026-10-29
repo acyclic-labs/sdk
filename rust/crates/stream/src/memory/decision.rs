@@ -17,10 +17,6 @@ impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
         }
     }
 
-    #[cfg(any(
-        feature = "postgres",
-        all(feature = "wasm-journal", target_arch = "wasm32")
-    ))]
     async fn durable(
         self,
         core: &MemoryStream,
@@ -42,35 +38,63 @@ impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
 }
 
 #[cfg(any(
+    feature = "local",
     feature = "postgres",
-    all(feature = "wasm-journal", target_arch = "wasm32")
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
 ))]
 impl MemoryStream {
+    pub(crate) fn canonicalize(
+        &self,
+        command: crate::WriteRequest,
+    ) -> Result<crate::journal::CanonicalCommand, StreamError> {
+        use crate::WriteRequest;
+        use crate::journal::CanonicalCommand;
+        let mut command = command.validated()?;
+        let digest = match &mut command {
+            WriteRequest::Commit(request) => Some(self.commit_request_digest(request)?),
+            _ => None,
+        };
+        Ok(CanonicalCommand { command, digest })
+    }
+
     pub(crate) async fn apply_durable(
         &self,
-        command: crate::journal::Command,
+        canonical: &crate::journal::CanonicalCommand,
         deadline: Option<u64>,
         persist: impl Future<Output = Result<(), StreamError>>,
-    ) -> Result<crate::journal::Outcome, StreamError> {
-        use crate::journal::{Command, Outcome};
+    ) -> Result<crate::replicated::Execution, StreamError> {
+        use crate::replicated::Execution;
+        use crate::{WriteOutcome, WriteRequest};
         let mut state = self.state.write().await;
-        match command {
-            Command::Append(request) => self
+        match &canonical.command {
+            WriteRequest::Append(request) => self
                 .plan_append_locked(&mut state, request)?
                 .durable(self, &mut state, persist)
                 .await
-                .map(|(result, _)| Outcome::Append(result)),
-            Command::Fork(request) => self
+                .map(|(result, allocation)| Execution {
+                    outcome: WriteOutcome::Append(result),
+                    allocation,
+                }),
+            WriteRequest::Fork(request) => self
                 .plan_fork_locked(&mut state, request)?
                 .durable(self, &mut state, persist)
                 .await
-                .map(Outcome::Fork),
-            Command::Commit(mut request) => {
-                let digest = commit_digest(&mut request)?;
+                .map(|result| Execution {
+                    outcome: WriteOutcome::Fork(result),
+                    allocation: None,
+                }),
+            WriteRequest::Commit(request) => {
+                let digest = canonical.digest.ok_or(StreamError::InvalidResponse)?;
                 self.plan_commit_locked(&mut state, request, digest, deadline)?
                     .durable(self, &mut state, persist)
                     .await
-                    .map(|(result, _)| Outcome::Commit(result))
+                    .map(|(result, allocation)| Execution {
+                        outcome: WriteOutcome::Commit(result),
+                        allocation,
+                    })
             }
         }
     }

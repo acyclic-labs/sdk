@@ -1,5 +1,10 @@
 //! Bounded crash-recoverable local Stream provider.
 
+#[cfg(all(any(test, loom), not(target_arch = "wasm32")))]
+use crate::NativeStreamProvider as _;
+
+#[cfg(any(test, loom))]
+use crate::StreamProviderExt as _;
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -33,13 +38,14 @@ mod snapshot_ready;
 use tracing::Instrument as _;
 use tracing::field::Empty;
 
-use crate::journal::{Command, decode_command, replay};
+use crate::WriteRequest;
+use crate::journal::{decode_command, replay};
 use crate::obs;
 use crate::{
-    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitOutcome, CommitRequest,
-    CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation,
-    MAX_COMMAND_BYTES, MemoryLimits, MemoryStream, ReadRequest, RecordStream, StreamError,
-    StreamPath, StreamProvider, SystemUnixMillisClock, UnixMillisClock,
+    AppendOutcome, AppendRequest, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
+    ForkRequest, IdempotencyKey, IdempotencyObservation, MAX_COMMAND_BYTES, MemoryLimits,
+    MemoryStream, ReadRequest, RecordStream, StreamError, StreamPath, StreamProvider,
+    SystemUnixMillisClock, UnixMillisClock,
 };
 
 const HEADER_MAGIC: &[u8; 24] = b"ACYCLIC-STREAM-LOCAL-V1\0";
@@ -110,6 +116,8 @@ include!("recovered.rs");
 include!("local_stream.rs");
 
 include!("persistence_cut.rs");
+
+mod port;
 
 include!("provider.rs");
 

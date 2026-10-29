@@ -75,6 +75,7 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
     );
     let mut rows = provider
         .read(ReadRequest {
+            key: None,
             path: path("completion/target")?,
             from: 1,
             limit: 1,
@@ -104,5 +105,126 @@ async fn public_guarded_commit_binds_current_clock_and_keeps_exact_cached_replay
         provider.state.read().await.last_committed_at_micros,
         125_000
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_publication_projection_keeps_exact_frame_funding() -> MemoryResult<()> {
+    fn capture<F>(build: impl FnOnce() -> F) -> (F, acyclic_test_support::AllocationInfo) {
+        let mut future = None;
+        let allocation = acyclic_test_support::measure(|| future = Some(build()));
+        (future.unwrap(), allocation)
+    }
+    let provider = MemoryStream::default();
+    let request = AppendRequest {
+        path: path("native/projection")?,
+        records: vec![OwnedBytes::from_static(b"opaque").into()],
+        if_tail: Some(0),
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    let accepted = provider.append(request.clone()).await?;
+    let mut measurements = Vec::new();
+    for projected in [false, true] {
+        let meter = Arc::new(Meter::default());
+        let request = request.clone();
+        let allocation = if projected {
+            let (future, allocation) =
+                capture(|| provider.native_append(request, meter.original()));
+            assert_eq!(
+                meter.allocations.load(Ordering::SeqCst),
+                2,
+                "projection deferred frame admission"
+            );
+            let output = future.await??;
+            assert_eq!(output.value(), &accepted);
+            drop(output);
+            allocation
+        } else {
+            let (future, allocation) = capture(|| {
+                provider.native_write(crate::WriteRequest::Append(request), meter.original())
+            });
+            assert_eq!(meter.allocations.load(Ordering::SeqCst), 2);
+            let output = future.await??;
+            assert!(
+                matches!(output.value(), crate::WriteOutcome::Append(outcome) if outcome == &accepted)
+            );
+            drop(output);
+            allocation
+        };
+        assert_eq!(allocation.count_total, 2);
+        assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+        measurements.push((allocation.count_total, allocation.bytes_total));
+    }
+    assert_eq!(measurements[0], measurements[1]);
+    // Reintroducing a boxed projection has identical records and native totals,
+    // but adds a real frame outside the original admission ledger.
+    let meter = Arc::new(Meter::default());
+    let (future, allocation) =
+        capture(|| Box::pin(provider.native_append(request, meter.original())));
+    let admitted = meter.allocations.load(Ordering::SeqCst);
+    assert_eq!(admitted, 2);
+    assert_eq!(allocation.count_total, admitted + 1);
+    assert_eq!(future.await??.value(), &accepted);
+    assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+    meter.assert_refunded();
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_commit_projection_keeps_earliest_deadline_and_exact_retry() -> MemoryResult<()> {
+    let clock = Arc::new(AtomicU64::new(150));
+    let provider = MemoryStream::new_with_clock(MemoryLimits::default(), clock.clone());
+    let target = path("native-deadline")?;
+    let mut request = CommitRequest {
+        deadline_unix_millis: Some(100),
+        conditions: vec![CommitCondition::Absent {
+            path: target.clone(),
+        }],
+        mutations: vec![CommitMutation::Append {
+            path: target.clone(),
+            records: vec!["value".into()],
+        }],
+        idempotency_key: crate::IdempotencyKey::unique(),
+    };
+    for (retained, supplied) in [(Some(100), Some(200)), (Some(200), Some(100))] {
+        request.deadline_unix_millis = retained;
+        let meter = Arc::new(Meter::default());
+        assert!(matches!(
+            provider
+                .native_commit(request.clone(), supplied, meter.original())
+                .await?,
+            Err(StreamError::DeadlineElapsed)
+        ));
+        meter.assert_refunded();
+        assert_eq!(
+            provider.tail(target.clone()).await,
+            Err(StreamError::NotFound)
+        );
+        assert!(
+            provider
+                .inspect_idempotency(request.idempotency_key.clone())
+                .await?
+                .is_none()
+        );
+    }
+    request.deadline_unix_millis = None;
+    let meter = Arc::new(Meter::default());
+    let accepted = provider
+        .native_commit(request.clone(), Some(200), meter.original())
+        .await??;
+    let outcome = accepted.value().clone();
+    drop(accepted);
+    meter.assert_refunded();
+    clock.store(500, Ordering::SeqCst);
+    request.deadline_unix_millis = Some(100);
+    let meter = Arc::new(Meter::default());
+    let replayed = provider
+        .native_commit(request, Some(0), meter.original())
+        .await??;
+    assert_eq!(replayed.value(), &outcome);
+    drop(replayed);
+    meter.assert_refunded();
+    assert_eq!(provider.tail(target).await?, 1);
     Ok(())
 }

@@ -4,6 +4,7 @@ use crate::{
     guest::{Effect, Trigger},
     invocation::Invocation,
 };
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     CommitCondition, CommitId, CommitMutation, CommitOutcome, CommittedMutation, FollowRequest,
     IdempotencyKey, ReadRequest, Record, Revision, RevisionCut, StreamError, StreamPath,
@@ -249,6 +250,7 @@ impl<P: StreamProvider + ?Sized> Store<P> {
         let state = self
             .provider
             .read(ReadRequest {
+                key: None,
                 path: ticket.state.clone(),
                 from: wire.revision - 1,
                 limit: 1,

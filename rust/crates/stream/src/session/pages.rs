@@ -30,7 +30,7 @@ impl Visibility {
             Err(_) => Err(StreamError::AccessDenied),
         }
     }
-    fn page(
+    pub(super) fn page(
         &self,
         mut page: crate::ChildrenPage,
         tail_stream: Option<&crate::RelativePath>,
@@ -72,6 +72,47 @@ pub(super) fn source<P: StreamProvider + ?Sized>(
             Ok(Bytes::from(
                 wire_codec::children_page_to_wire(page).encode_to_vec(),
             ))
+        }),
+    )
+}
+
+/// Projects an already coherent provider view; authorization never causes a
+/// second observation. A filtered-out named head refuses the whole view.
+pub(super) fn heads<P: StreamProvider + ?Sized>(
+    provider: Arc<P>,
+    request: crate::HeadsRequest,
+    authorization: ResourceAuthorization,
+    visibility: Option<Visibility>,
+    identity: wire::SessionChannel,
+) -> Source {
+    calls::reply(
+        identity,
+        Item::Heads,
+        Box::pin(async move {
+            let mut view = provider.heads(request.clone()).await?;
+            view.validate_for(&request)?;
+            let filter = authorization
+                .current()?
+                .follow_filter(wire::SessionFilter::default())?;
+            for head in view.heads.iter().flatten() {
+                if let Some(record) = &head.last {
+                    if filter.project(record.clone())? != Some(record.clone()) {
+                        return Err(StreamError::AccessDenied);
+                    }
+                }
+            }
+            if let (Some(page), Some(visibility)) = (view.children.take(), visibility) {
+                view.children = Some(
+                    visibility.page(
+                        page,
+                        request
+                            .children
+                            .as_ref()
+                            .and_then(|page| page.tail_stream.as_ref()),
+                    )?,
+                );
+            }
+            Ok(Bytes::from(wire_codec::heads_to_wire(view).encode_to_vec()))
         }),
     )
 }

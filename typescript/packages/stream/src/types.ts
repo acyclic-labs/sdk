@@ -78,13 +78,18 @@ export type Record<Value = Uint8Array> = PublicWire<WireRecord, { readonly value
 export type EncodedRecord = Record<Uint8Array>;
 export type ForkOrigin = PublicWire<WireForkOrigin, { readonly commitId: CommitId }>;
 export type PathHead = PublicWire<WirePathHead, { readonly last?: EncodedRecord; readonly origin?: ForkOrigin }>;
+/** Named paths and an optional children page at one authority snapshot. */
+export type HeadProjection = "history" | "watermarks" | "tail";
+export interface HeadsRequest { readonly durableThrough?: bigint; readonly paths: readonly string[]; readonly children?: ChildrenPageRequest; readonly limit: number; readonly atLeast?: readonly Revision[]; readonly projection?: HeadProjection }
+export interface Heads { readonly snapshot: Revision; readonly heads: readonly (PathHead | undefined)[]; readonly children?: ChildrenPage; readonly projection: HeadProjection }
 export type AppendResult =
   | (PublicWire<WireAppendReceipt, { readonly commitId: CommitId }> & { readonly ok: true })
   | (PublicWire<WireTailConflict> & { readonly ok: false; readonly code: "tail_conflict" });
 export type AppendOptions = PublicWire<WireAppendRequest, { readonly idempotencyKey?: IdempotencyKey }, "path" | "records">;
 export type ForkOptions = PublicWire<WireForkRequest, { readonly idempotencyKey?: IdempotencyKey; readonly exclude?: readonly string[] }, "source" | "destination">;
-export type ReadOptions = Readonly<Pick<WireReadRequest, "from" | "limit">>;
-export interface FollowOptions { readonly from: Sequence; readonly signal?: AbortSignal; readonly filter?: NonNullable<import("../generated/proto/stream/v1/session_pb.js").SessionSubscription["filter"]> }
+export interface ReadKeySeek { readonly key: Uint8Array; readonly before: Sequence }
+export type ReadOptions = Readonly<Pick<WireReadRequest, "from" | "limit">> & { readonly key?: ReadKeySeek };
+export interface FollowOptions { readonly whenAbsent?: "not_found" | "wait"; readonly from: Sequence; readonly signal?: AbortSignal; readonly filter?: NonNullable<import("../generated/proto/stream/v1/session_pb.js").SessionSubscription["filter"]> }
 export interface StreamChild { readonly path: string; readonly tailRecord?: EncodedRecord; readonly origin?: ForkOrigin }
 export type ChildrenPageRequest = Readonly<{ parent?: string; tailStream?: string; limit: number }> & (
   | Readonly<{ after?: undefined; hierarchyVersion?: CommitId }>
@@ -143,6 +148,7 @@ export interface StreamProvider {
   registerCredential?(slot: number, credential: Uint8Array): Promise<void>;
   inspectIdempotency(idempotencyKey: IdempotencyKey): Promise<IdempotencyObservation | undefined>;
   head(path: string): Promise<PathHead>;
+  heads(request: HeadsRequest): Promise<Heads>;
   tail(path: string): Promise<Sequence>;
   append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult>;
   fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt>;

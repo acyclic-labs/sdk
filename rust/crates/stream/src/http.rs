@@ -282,8 +282,8 @@ impl HttpStream {
 
 #[async_trait]
 impl StreamProvider for HttpStream {
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        &self.operation_claims
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(&self.operation_claims)
     }
 
     async fn inspect_idempotency(
@@ -332,98 +332,67 @@ impl StreamProvider for HttpStream {
             revision,
         }))
     }
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        let value = self
-            .request(
-                "head",
-                wire::HeadRequest {
-                    path: path.to_string(),
-                }
-                .encode_to_vec(),
-            )
-            .await?;
-        let head = crate::PathHead {
-            tail: parse_u64(field(&value, "tail")?)?,
-            last: value
-                .get("last")
-                .filter(|last| !last.is_null())
-                .map(parse_record)
-                .transpose()?,
-            durable: parse_u64(field(&value, "durable")?)?,
-            origin: value
-                .get("origin")
-                .filter(|origin| !origin.is_null())
-                .map(|origin| -> Result<crate::ForkOrigin, StreamError> {
-                    Ok(crate::ForkOrigin {
-                        source: parse_path(field(origin, "source")?)?,
-                        forked_at: parse_u64(field(origin, "forkedAt")?)?,
-                        commit_id: parse_id(field(origin, "commitId")?)?,
-                    })
-                })
-                .transpose()?,
-        };
-        head.validate()?;
-        Ok(head)
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        self.session_client()?.heads(request).await
     }
 
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        let revisions = self.revisions()?;
-        let minimum = revisions.floor(&crate::RevisionCut::default());
-        let body = wire::TailRequest {
-            path: path.to_string(),
-            at_least: wire_codec::cut_to_wire(&minimum),
-            ..Default::default()
-        };
-        let value = self
-            .request("tail", body.encode_to_vec())
-            .await
-            .inspect_err(|error| revisions.refused(error))?;
-        let applied = value
-            .get("applied")
-            .filter(|value| !value.is_null())
-            .map(parse_revision)
-            .transpose()?;
-        revisions.served(&minimum, applied.as_ref())?;
-        parse_u64(field(&value, "tail")?)
-    }
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        self.session_client()?.watermarks(path).await
-    }
-    async fn durable_receipt(
+    fn write(
         &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
-        self.session_client()?.durable_receipt(path, through).await
-    }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        let outcome = parse_append(
-            &self
-                .request_json("append", move || http_codec::encode_append(&request))
-                .await?,
-        )?;
-        if let AppendOutcome::Committed(receipt) = &outcome {
-            self.revisions()?.observe(&receipt.revision);
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        match request {
+            crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let outcome = parse_append(
+                        &self
+                            .request_json("append", move || http_codec::encode_append(&request))
+                            .await?,
+                    )?;
+                    if let AppendOutcome::Committed(receipt) = &outcome {
+                        self.revisions()?.observe(&receipt.revision);
+                    }
+                    Ok(outcome)
+                },
+                crate::WriteOutcome::Append,
+            )),
+            crate::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let source = request.source.clone();
+                    let destination = request.destination.clone();
+                    let wire = wire::ForkRequest {
+                        exclude: request.exclude.iter().map(ToString::to_string).collect(),
+                        source: source.to_string(),
+                        destination: destination.to_string(),
+                        at_tail: request.at_tail,
+                        idempotency_key: bytes::Bytes::copy_from_slice(
+                            request.idempotency_key.as_bytes(),
+                        ),
+                    };
+                    let result = parse_fork(&self.request("fork", wire.encode_to_vec()).await?)?;
+                    if result.source != source || result.destination != destination {
+                        return Err(StreamError::Unavailable);
+                    }
+                    self.revisions()?.observe(&result.revision);
+                    Ok(result)
+                },
+                crate::WriteOutcome::Fork,
+            )),
+            crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let wire = wire_codec::commit_to_wire(&request);
+                    let response = self.request("commit", wire.encode_to_vec()).await?;
+                    let outcome = Self::commit_response(&response)?;
+                    if let CommitOutcome::Committed(receipt) = &outcome {
+                        self.revisions()?.observe(&receipt.revision);
+                    }
+                    Ok(outcome)
+                },
+                crate::WriteOutcome::Commit,
+            )),
         }
-        Ok(outcome)
     }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        let source = request.source.clone();
-        let destination = request.destination.clone();
-        let wire = wire::ForkRequest {
-            exclude: request.exclude.iter().map(ToString::to_string).collect(),
-            source: source.to_string(),
-            destination: destination.to_string(),
-            at_tail: request.at_tail,
-            idempotency_key: bytes::Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
-        };
-        let result = parse_fork(&self.request("fork", wire.encode_to_vec()).await?)?;
-        if result.source != source || result.destination != destination {
-            return Err(StreamError::Unavailable);
-        }
-        self.revisions()?.observe(&result.revision);
-        Ok(result)
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         // Reads and pages share the follow session; no JSON round trips. The
         // session forwards and raises this client's revision floor.
@@ -436,21 +405,6 @@ impl StreamProvider for HttpStream {
         self.session_client()?.follow(request).await
     }
 
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.session_client()?.children_page(request).await
-    }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let wire = wire_codec::commit_to_wire(&request);
-        let response = self.request("commit", wire.encode_to_vec()).await?;
-        let outcome = Self::commit_response(&response)?;
-        if let CommitOutcome::Committed(receipt) = &outcome {
-            self.revisions()?.observe(&receipt.revision);
-        }
-        Ok(outcome)
-    }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let value = self
             .request(
@@ -468,6 +422,10 @@ impl StreamProvider for HttpStream {
         Ok(envelope)
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::NativeStreamProvider for HttpStream {}
+
 fn credential_header(token: &str) -> Result<HeaderValue, ConnectError> {
     if !acyclic_auth::credential::valid_credential(token) {
         return Err(ConnectError);
@@ -568,7 +526,7 @@ mod tests {
     #[tokio::test]
     async fn filtered_http_failure_does_not_record_on_its_parent()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::{StreamError, StreamPath, StreamProvider};
+        use crate::{StreamError, StreamPath, StreamProviderExt as _};
         use tracing::{Instrument, instrument::WithSubscriber};
         use tracing_subscriber::{Layer, layer::Context, prelude::*};
 

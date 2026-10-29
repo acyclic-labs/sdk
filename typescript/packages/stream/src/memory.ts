@@ -1,3 +1,5 @@
+import { checkedReadSequence } from "./record.js";
+import { wireWhenAbsent } from "./contract.js";
 import { streamError } from "./wasm-error.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import { projectMemoryResponse, WasmStream } from "../generated/wasm/acyclic_stream_wasm.js";
@@ -57,6 +59,11 @@ class RustStreamProvider implements StreamProvider {
     return this.#project<IdempotencyObservation | undefined>("inspect_idempotency", request);
   }
 
+  async heads(options: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> {
+    const request = { kind: "heads" as const, ...structuredClone(options) };
+    await validateWireRequest(request);
+    return this.#project("heads", wireRequest(request));
+  }
   async head(path: string): Promise<import("./types.js").PathHead> {
     const request = { kind: "head" as const, path };
     await validateWireRequest(request);
@@ -83,10 +90,11 @@ class RustStreamProvider implements StreamProvider {
   }
 
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
-    const { from, limit } = options;
-    await validateWireRequest({ kind: "read", path, from, limit });
-    const request = wireRequest({ kind: "read", path, from, limit });
-    for (const value of await this.#read(request)) yield value;
+    const { from, limit, key } = structuredClone(options);
+    await validateWireRequest({ kind: "read", path, from, limit, ...(key === undefined ? {} : { key }) });
+    const request = wireRequest({ kind: "read", path, from, limit, ...(key === undefined ? {} : { key }) });
+    let next = from;
+    for (const value of await this.#read(request)) { next = checkedReadSequence(value, next, key) + 1n; yield value; }
   }
 
   async *follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord> {
@@ -94,7 +102,7 @@ class RustStreamProvider implements StreamProvider {
     const filter = options.filter === undefined ? undefined : structuredClone(options.filter);
     await validateWireRequest({ kind: "follow", path, from });
     if (signal?.aborted) return;
-    const request = toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from,
+    const request = toBinary(FollowRequestSchema, create(FollowRequestSchema, { path, from, whenAbsent: wireWhenAbsent(options.whenAbsent),
       ...(filter === undefined ? {} : { filter }),
     }));
     let handle: Awaited<ReturnType<WasmStream["open_follow"]>>;

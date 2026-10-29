@@ -95,8 +95,8 @@ mod replay_tests {
     #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
     #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
     impl StreamProvider for Gapped {
-        fn operation_claims(&self) -> &crate::OperationClaims {
-            self.inner.operation_claims()
+        fn context(&self) -> crate::ProviderContext<'_> {
+            crate::ProviderContext::new(self.inner.context().operation_claims())
         }
 
         async fn inspect_idempotency(
@@ -105,18 +105,20 @@ mod replay_tests {
         ) -> Result<Option<IdempotencyObservation>, StreamError> {
             self.inner.inspect_idempotency(key).await
         }
-        async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-            self.inner.head(path).await
+        async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+            self.inner.heads(request).await
         }
-        async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-            self.inner.tail(path).await
+
+        fn write(
+            &self,
+            request: crate::WriteRequest,
+        ) -> crate::BoxProviderFuture<
+            '_,
+            std::result::Result<crate::WriteOutcome, crate::StreamError>,
+        > {
+            self.inner.write(request)
         }
-        async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-            self.inner.append(request).await
-        }
-        async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-            self.inner.fork(request).await
-        }
+
         async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
             let missing = self.missing;
             let records = self.inner.read(request).await?;
@@ -128,12 +130,51 @@ mod replay_tests {
             self.inner.follow(request).await
         }
 
-        async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-            self.inner.commit(request).await
-        }
         async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
             self.inner.read_commit(commit_id).await
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl crate::NativeStreamProvider for Gapped {}
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn portable_success_cannot_substitute_for_native_admission()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use std::sync::atomic::Ordering;
+        let provider = Gapped {
+            inner: MemoryStream::default(),
+            missing: u64::MAX,
+        };
+        let path = StreamPath::new("native-refusal")?;
+        let request = AppendRequest {
+            path: path.clone(),
+            records: vec!["opaque".into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        let meter = Arc::new(crate::test_meter::Meter::default());
+        assert!(matches!(
+            provider
+                .native_append(request.clone(), meter.original())
+                .await?,
+            Err(StreamError::Unsupported)
+        ));
+        assert_eq!(
+            provider.tail(path.clone()).await,
+            Err(StreamError::NotFound)
+        );
+        assert_eq!(meter.allocations.load(Ordering::SeqCst), 0);
+        assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+        // A fallback to the ordinary path would succeed and mutate the stream.
+        assert!(matches!(
+            provider.append(request).await?,
+            AppendOutcome::Committed(_)
+        ));
+        assert_eq!(provider.tail(path).await?, 1);
+        Ok(())
     }
 
     async fn filled<P: StreamProvider>(provider: P, records: u64) -> Stream<P> {
@@ -257,5 +298,79 @@ mod replay_tests {
             let mut replay = stream.replay(0);
             assert_eq!(drain(&mut replay).await, Err(StreamError::Unavailable));
         }
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod write_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn canonical_write_preserves_genuine_families_and_atomic_fork_tail()
+    -> Result<(), StreamError> {
+        let provider = MemoryStream::default();
+        let source = StreamPath::new("write/source")?;
+        let destination = StreamPath::new("write/fork")?;
+        let append = AppendRequest {
+            path: source.clone(),
+            records: vec![b"first".to_vec().into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        let append_request = WriteRequest::Append(append.clone());
+        let appended = provider.write(append_request.clone()).await?;
+        let WriteOutcome::Append(AppendOutcome::Committed(receipt)) = &appended else {
+            return Err(StreamError::InvalidResponse);
+        };
+        assert_eq!(
+            provider.append(append.clone()).await?,
+            AppendOutcome::Committed(receipt.clone())
+        );
+        let fork_request = WriteRequest::Fork(ForkRequest {
+            source: source.clone(),
+            destination: destination.clone(),
+            at_tail: None,
+            exclude: Vec::new(),
+            idempotency_key: IdempotencyKey::unique(),
+        });
+        let forked = provider.write(fork_request.clone()).await?;
+        let WriteOutcome::Fork(forked_receipt) = &forked else {
+            return Err(StreamError::InvalidResponse);
+        };
+        assert_eq!(forked_receipt.forked_at, 1);
+        let mut commit = CommitRequest {
+            deadline_unix_millis: None,
+            conditions: vec![CommitCondition::Tail {
+                path: source.clone(),
+                expected: 1,
+            }],
+            mutations: vec![CommitMutation::Append {
+                path: source.clone(),
+                records: vec![b"second".to_vec().into()],
+            }],
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        let commit_request = WriteRequest::Commit(commit.clone());
+        let committed = provider.write(commit_request.clone()).await?;
+        assert!(matches!(
+            &committed,
+            WriteOutcome::Commit(CommitOutcome::Committed(_))
+        ));
+        assert_eq!(provider.tail(source).await?, 2);
+        assert_eq!(provider.tail(destination).await?, 1);
+        for (request, expected) in [
+            (append_request, appended),
+            (fork_request, forked),
+            (commit_request, committed),
+        ] {
+            assert_eq!(provider.write(request).await?, expected);
+        }
+        // Reusing a key for another family must not recover or re-encode the append.
+        commit.idempotency_key = append.idempotency_key;
+        assert_eq!(
+            provider.write(WriteRequest::Commit(commit)).await,
+            Err(StreamError::IdempotencyMismatch)
+        );
+        Ok(())
     }
 }

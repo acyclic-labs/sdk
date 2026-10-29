@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 #[cfg(feature = "filesystem")]
 use futures::Stream as _;
 use futures::TryStreamExt as _;
@@ -134,7 +135,7 @@ impl ObservedRecords {
     }
 }
 
-pub(crate) async fn read_records<P: StreamProvider + ?Sized>(
+pub(crate) async fn read_records<P: crate::store::JournalProvider + ?Sized>(
     client: &Arc<P>,
     path: &StreamPath,
     from: u64,
@@ -142,6 +143,7 @@ pub(crate) async fn read_records<P: StreamProvider + ?Sized>(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<std::result::Result<ObservedRecords, StreamError>> {
     let request = ReadRequest {
+        key: None,
         path: path.clone(),
         from,
         limit: count,
@@ -164,7 +166,7 @@ pub(crate) async fn read_records<P: StreamProvider + ?Sized>(
 }
 
 /// Preserves the provider's `NotFound` result for the canonical CAS selector.
-async fn tail_result_with_work<P: StreamProvider + ?Sized>(
+async fn tail_result_with_work<P: crate::store::JournalProvider + ?Sized>(
     client: &Arc<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -186,7 +188,7 @@ async fn tail_result_with_work<P: StreamProvider + ?Sized>(
     Ok(client.tail(path.clone()).await)
 }
 
-pub(crate) async fn tail_optional_with_work<P: StreamProvider + ?Sized>(
+pub(crate) async fn tail_optional_with_work<P: crate::store::JournalProvider + ?Sized>(
     client: &Arc<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -200,7 +202,7 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider + ?Sized>(
 }
 
 /// Reads one exact record and rejects a producer exceeding the bound.
-pub(crate) async fn one_record<P: StreamProvider + ?Sized>(
+pub(crate) async fn one_record<P: crate::store::JournalProvider + ?Sized>(
     client: &Arc<P>,
     path: &StreamPath,
     from: u64,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::StreamProviderExt as _;
 use crate::{FollowFilter, MemoryStream, StreamPath, StreamProvider};
 use futures::StreamExt;
 use futures::TryFutureExt as _;
@@ -224,7 +225,7 @@ fn canonical_change_validation_rejects_wire_malleability() {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-async fn prepared_ingress(provider: &impl StreamProvider) {
+async fn prepared_ingress(provider: &impl crate::NativeStreamProvider) {
     use crate::{CommitCondition, CommitMutation, CommitRequest, IdempotencyKey};
     let owner = StreamPath::new("changes-owner").unwrap();
     let target = StreamPath::new("changes-target").unwrap();
@@ -331,6 +332,7 @@ async fn qualify(provider: &impl StreamProvider) {
         .unwrap();
     let mut history = provider
         .follow(crate::FollowRequest {
+            when_absent: Default::default(),
             path: path.clone(),
             from: 0,
             preceding: None,
@@ -348,6 +350,7 @@ async fn qualify(provider: &impl StreamProvider) {
     );
     let mut live = provider
         .follow(crate::FollowRequest {
+            when_absent: Default::default(),
             path: path.clone(),
             from: 1,
             preceding: Some(first.commit_id),
@@ -379,6 +382,7 @@ async fn qualify(provider: &impl StreamProvider) {
     assert_eq!(second.sequence, 1);
     let mut resumed = provider
         .follow(crate::FollowRequest {
+            when_absent: Default::default(),
             path: path,
             from: 1,
             preceding: Some(first.commit_id),

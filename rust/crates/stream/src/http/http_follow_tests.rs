@@ -161,6 +161,19 @@ fn record(sequence: u64) -> Value {
 #[tokio::test]
 async fn head_refuses_incoherent_cuts_without_another_provider_request()
 -> Result<(), Box<dyn std::error::Error>> {
+    let snapshot = MemoryStream::default()
+        .heads(HeadsRequest {
+            durable_through: None,
+            projection: Default::default(),
+            paths: Default::default(),
+            children: None,
+            limit: 1,
+            at_least: RevisionCut::default(),
+        })
+        .await?
+        .snapshot;
+    let snapshot =
+        crate::http_response::revision_json(Some(&crate::wire_codec::revision_to_wire(&snapshot)));
     for (tail, durable, sequence, inherited, valid) in [
         (0, 0, None, None, true),
         (0, 0, None, Some(0), true),
@@ -179,12 +192,17 @@ async fn head_refuses_incoherent_cuts_without_another_provider_request()
             })
         });
         let server = Server::new(vec![Reply::ok(json!({
-            "tail":tail.to_string(), "durable":durable.to_string(),
-            "last":sequence.map(record), "origin":origin,
+            "snapshot":snapshot,
+            "projection":"history",
+            "heads":[{
+                "tail":tail.to_string(), "durable":durable.to_string(),
+                "last":sequence.map(record), "origin":origin,
+            }],
         }))])
         .await;
         let actual = server.client.head(StreamPath::new("head/child")?).await;
         let wire = crate::wire::PathHead {
+            retained_through: None,
             tail,
             durable,
             last: sequence
@@ -204,7 +222,7 @@ async fn head_refuses_incoherent_cuts_without_another_provider_request()
         }
         let requests = server.requests();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].0, "/v1/stream/head");
+        assert_eq!(requests[0].0, "/v1/stream/heads");
     }
     Ok(())
 }

@@ -1,6 +1,7 @@
+import { wireRequest, validateWireRequest, wireWhenAbsent } from "./contract.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v1/session_pb.js";
-import { WasmSession, type WasmFollow } from "../generated/wasm/acyclic_stream_wasm.js";
+import { projectMemoryResponse, WasmSession, type WasmFollow, type WasmApplicationDelivery } from "../generated/wasm/acyclic_stream_wasm.js";
 import { ensureStreamWasm, validateSequenceValue, streamResource } from "./contract.js";
 import { streamError } from "./wasm-error.js";
 import { RevisionSchema } from "../generated/proto/stream/v1/stream_pb.js";
@@ -66,6 +67,14 @@ export class StreamSessions {
     if (error instanceof StreamError && error.code === "revision_foreign") this.#inner.revisionRefused();
   }
 
+  async heads(options: import("./types.js").HeadsRequest, credential = 0): Promise<import("./types.js").Heads> {
+    validateCredentialSlot(credential);
+    const request = { kind: "heads" as const, ...structuredClone(options) };
+    await validateWireRequest(request);
+    try { return projectMemoryResponse("heads", await this.#inner.heads(wireRequest(request), credential)) as import("./types.js").Heads; }
+    catch (error) { throw streamError(error, "heads"); }
+  }
+
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
     validateCredentialSlot(slot);
     try { this.#inner.registerCredential(slot, credential); }
@@ -73,7 +82,7 @@ export class StreamSessions {
   }
 
   async *follow(path: string, options: FollowOptions & SessionOptions): AsyncGenerator<EncodedRecord> {
-    for await (const data of this.followData(create(wire.SessionFollowSchema, { resource: streamResource(path), delivery: wire.SessionDelivery.ALL }), options)) {
+    for await (const data of this.followData(create(wire.SessionFollowSchema, { resource: streamResource(path), delivery: wire.SessionDelivery.ALL, whenAbsent: wireWhenAbsent(options.whenAbsent) }), options)) {
       if (data.item.case !== "record") throw new Error("Rust ALL cursor returned a non-record item");
       const record = data.item.value;
       yield { sequence: record.sequence, value: record.value, keys: record.keys, attributes: record.attributes, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros };
@@ -110,6 +119,35 @@ export class StreamSessions {
       bytes => fromBinary(wire.SessionFrameSchema, bytes));
   }
 
+  /** Explicit application completion; an abandoned delivery never commits its checkpoint. */
+  async *deliveries(subscription: wire.SessionSubscription, signal?: AbortSignal): AsyncGenerator<SessionDelivery> {
+    validateCredentialSlot(subscription.credential);
+    const input = toBinary(wire.SessionSubscriptionSchema, structuredClone(subscription));
+    if (signal?.aborted) return;
+    await ensureStreamWasm();
+    const cursor = this.#inner.deliveries(input);
+    const abort = (): void => cursor.close();
+    let delivery: SessionDelivery | undefined;
+    try {
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) return;
+      for (;;) {
+        const owned = await cursor.next();
+        if (owned === undefined) return;
+        delivery = new SessionDelivery(owned);
+        if (signal?.aborted) return;
+        yield delivery;
+      }
+    } catch (error) {
+      if (!signal?.aborted) throw streamError(error, "session");
+    } finally {
+      signal?.removeEventListener("abort", abort);
+      delivery?.close();
+      cursor.close();
+      cursor.free();
+    }
+  }
+
   async *#cursor<T>(open: () => WasmFollow, signal: AbortSignal | undefined,
     project: (bytes: Uint8Array) => T): AsyncGenerator<T> {
     if (signal?.aborted) return;
@@ -133,5 +171,32 @@ export class StreamSessions {
       cursor?.close();
       cursor?.free();
     }
+  }
+}
+
+/** One consumer decision on a Rust-owned delivery, independent of transport credit. */
+export class SessionDelivery {
+  readonly frame: wire.SessionFrame;
+  readonly before: wire.SessionFrame | undefined;
+  /** Persist with the consumer's effects or discard decision before completion. */
+  readonly checkpoint: wire.SessionSubscription;
+  #inner: WasmApplicationDelivery | undefined;
+  constructor(inner: WasmApplicationDelivery) {
+    this.#inner = inner;
+    this.frame = fromBinary(wire.SessionFrameSchema, inner.frame());
+    const before = inner.before();
+    this.before = before === undefined ? undefined : fromBinary(wire.SessionFrameSchema, before);
+    this.checkpoint = fromBinary(wire.SessionSubscriptionSchema, inner.checkpoint());
+  }
+  /** False means a reconnect fenced this decision and the item must replay. */
+  commit(): boolean { return this.#complete(false); }
+  discard(): boolean { return this.#complete(true); }
+  close(): void { const inner = this.#inner; this.#inner = undefined; inner?.close(); }
+  #complete(discard: boolean): boolean {
+    const inner = this.#inner;
+    if (inner === undefined) throw new StreamError("invalid_argument", "delivery was already decided or abandoned");
+    this.#inner = undefined;
+    try { return discard ? inner.discard() : inner.commit(); }
+    catch (error) { throw streamError(error, "session"); }
   }
 }

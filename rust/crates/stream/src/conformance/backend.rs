@@ -1,4 +1,5 @@
 use super::{histories, verify_contract, wave1};
+use crate::StreamProviderExt as _;
 use crate::{
     AppendOutcome, AppendRequest, IdempotencyKey, OwnedBytes, ProviderPlatform, ReadRequest,
     StreamError, StreamPath, StreamProvider, UnixMillisClock as _,
@@ -204,6 +205,7 @@ async fn workload(
         let before = ledger.requests();
         let read: Vec<_> = provider
             .read(ReadRequest {
+                key: None,
                 path: path.clone(),
                 from: sequence,
                 limit: 1,

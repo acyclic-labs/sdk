@@ -1,10 +1,11 @@
+import { HeadProjection, WhenAbsent } from "../generated/proto/stream/v1/stream_pb.js";
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import initStreamWasm, { decodeReadResponse, encodeHttpRequest as encodeHttpRequestWire, initSync as initStreamWasmSync, normalizeCommitRequest, validateAppendRequest, validatePath, validateRequest, validateSequence } from "../generated/wasm/acyclic_stream_wasm.js";
 import {
   AppendRecordSchema, AbsentConditionSchema, PresentConditionSchema, HeadConditionSchema, AppendMutationSchema, AppendRequestSchema, CommitConditionSchema,
   CommitMutationSchema, CommitRequestSchema,
   ForkMutationSchema, ForkRequestSchema, TailConditionSchema, TailRequestSchema,
-  ReadRequestSchema, FollowRequestSchema, HeadRequestSchema,
+  ReadRequestSchema, FollowRequestSchema, HeadRequestSchema, HeadsRequestSchema,
   ChildrenPageRequestSchema, InspectIdempotencyRequestSchema, ReadCommitRequestSchema,
   CreateTokenRequestSchema, RecordBatchSchema,
 } from "../generated/proto/stream/v1/stream_pb.js";
@@ -91,10 +92,11 @@ function validationError(error: unknown, operation: "append" | "commit" | "reque
 }
 
 type WireRequest =
+  | ({ readonly kind: "heads" } & import("./types.js").HeadsRequest)
   | { readonly kind: "head"; readonly path: string }
   | { readonly kind: "tail"; readonly path: string; readonly atLeast?: readonly Revision[] }
   | { readonly kind: "fork"; readonly source: string; readonly destination: string; readonly options?: ForkOptions }
-  | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number; readonly atLeast?: readonly Revision[] }
+  | { readonly kind: "read"; readonly path: string; readonly from: bigint; readonly limit: number; readonly key?: import("./types.js").ReadKeySeek; readonly atLeast?: readonly Revision[] }
   | { readonly kind: "follow"; readonly path: string; readonly from: bigint }
   | { readonly kind: "children_page"; readonly tailStream?: string; readonly parent?: string; readonly after?: string; readonly hierarchyVersion?: Uint8Array; readonly limit: number };
 
@@ -125,6 +127,23 @@ export function wireCreateTokenRequest(request: CreateTokenRequest): Uint8Array 
 
 export function wireRequest(request: WireRequest): Uint8Array {
   switch (request.kind) {
+      case "heads": {
+        if (request.projection !== undefined && request.projection !== "history" && request.projection !== "watermarks" && request.projection !== "tail") throw new StreamError("invalid_argument", "invalid head projection");
+        if (!Array.isArray(request.paths) || !Number.isInteger(request.limit) || request.limit < 1 || request.limit > 0xffff_ffff) throw new StreamError("invalid_argument", "heads requires paths and a positive uint32 budget");
+        request.paths.forEach(requirePathType);
+        if (request.durableThrough !== undefined) requireSequenceType(request.durableThrough);
+        return toBinary(HeadsRequestSchema, create(HeadsRequestSchema, {
+          projection: request.projection === "tail" ? HeadProjection.TAIL : request.projection === "watermarks" ? HeadProjection.WATERMARKS : HeadProjection.HISTORY,
+          ...(request.durableThrough === undefined ? {} : { durableThrough: request.durableThrough }),
+          paths: [...request.paths], limit: request.limit, atLeast: [...(request.atLeast ?? [])],
+          ...(request.children === undefined ? {} : { children: fromBinary(ChildrenPageRequestSchema, wireRequest({ kind: "children_page", limit: request.children.limit,
+            ...(request.children.parent === undefined ? {} : { parent: request.children.parent }),
+            ...(request.children.tailStream === undefined ? {} : { tailStream: request.children.tailStream }),
+            ...(request.children.after === undefined ? {} : { after: request.children.after }),
+            ...(request.children.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.children.hierarchyVersion }),
+          })) }),
+        }));
+      }
       case "head":
         requirePathType(request.path);
         return toBinary(HeadRequestSchema, create(HeadRequestSchema, { path: request.path }));
@@ -145,7 +164,8 @@ export function wireRequest(request: WireRequest): Uint8Array {
         requirePathType(request.path);
         requireSequenceType(request.from);
         requireLimitType(request.limit);
-        return toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: request.path, from: request.from, limit: request.limit, atLeast: [...(request.atLeast ?? [])] }));
+        if (request.key !== undefined) { requireBytesType(request.key.key); requireSequenceType(request.key.before); }
+        return toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: request.path, from: request.from, limit: request.limit, ...(request.key === undefined ? {} : { key: request.key }), atLeast: [...(request.atLeast ?? [])] }));
       case "follow":
         requirePathType(request.path);
         requireSequenceType(request.from);
@@ -309,3 +329,10 @@ export async function normalizeWireCommit(request: ProviderCommitRequest, option
 
 // Resource spelling stays in the same Rust codec as node admission.
 export { streamResource, streamResourcePath } from "../generated/wasm/acyclic_stream_wasm.js";
+
+/** Preserve initial absence policy at every provider boundary. */
+export function wireWhenAbsent(value: "not_found" | "wait" | undefined): WhenAbsent {
+  if (value === undefined || value === "not_found") return WhenAbsent.NOT_FOUND;
+  if (value === "wait") return WhenAbsent.WAIT;
+  throw new StreamError("invalid_argument", "invalid absence policy");
+}

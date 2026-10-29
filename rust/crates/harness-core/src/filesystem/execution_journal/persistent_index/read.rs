@@ -37,7 +37,7 @@ impl ReadNode<'_> {
     }
 }
 
-impl<'a, P: StreamProvider + ?Sized> Reader<'a, P> {
+impl<'a, P: crate::store::JournalProvider + ?Sized> Reader<'a, P> {
     pub(in crate::filesystem::execution_journal) async fn read(
         &self,
         reference: NodeRef,

@@ -1,196 +1,144 @@
 #[async_trait]
 impl StreamProvider for LocalStream {
-    fn has_exclusive_process_owner(&self) -> bool {
-        true
-    }
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        self.inner.provider.operation_claims()
-    }
-
-    fn supports_deferred_durability(&self) -> bool {
-        true
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(self.inner.provider.context().operation_claims())
+            .with_process_exclusion()
+            .with_deferred_durability()
     }
 
     async fn durability_barrier(&self) -> Result<(), StreamError> {
         self.seal_accepted().await
     }
 
-    fn native_durability_barrier(
-        &self,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, ()> {
-        let stream = self.clone();
-        crate::native::Work::start(meter, |work| async move {
-            let stream = Self {
-                work: Some(Arc::clone(&work)),
-                ..stream
-            };
-            let result = async {
-                stream.seal_accepted().await?;
-                Ok(((), None))
-            }
-            .await;
-            work.finish(result)
-        })
-    }
-
-    fn prepare_native_durability_barrier(
-        &self,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> std::io::Result<crate::NativeProviderFuture<'_, ()>> {
-        let work = crate::native::Work::new(Arc::clone(&meter))?;
-        // This ticket survives original cancellation and excludes competing
-        // work from consuming the phase's final durability allowance.
-        work.prepare_durability(1)?;
-        let stream = Self {
-            work: Some(Arc::clone(&work)),
-            ..self.clone()
-        };
-        crate::NativeProviderFuture::try_new(&meter, async move {
-            let result = stream.seal_accepted_with_reservation(true).await;
-            work.finish(result.map(|()| ((), None)))
-        })
-    }
-
     async fn inspect_idempotency(
         &self,
         idempotency_key: IdempotencyKey,
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        self.visible(self.inner.provider.inspect_idempotency(idempotency_key))
+        self.accepted(self.inner.provider.inspect_idempotency(idempotency_key))
             .await?
     }
 
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        self.accepted(async {
-            let mut head = self.inner.provider.head(path.clone()).await?;
-            head.durable = self.durable_tail_for_accepted(path, head.tail)?;
-            Ok(head)
-        })
-        .await?
-    }
-
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.visible(self.inner.provider.tail(path)).await?
-    }
-
-    async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
-        self.accepted(async {
-            let accepted = self.inner.provider.tail(path.clone()).await?;
-            Ok(crate::StreamWatermarks {
-                accepted,
-                durable: self.durable_tail_for_accepted(path, accepted)?,
-            })
-        })
-        .await?
-    }
-
-    /// The explicit durability barrier: frames written under
-    /// `deferring_durability` are flushed here before any receipt covers them.
-    async fn durable_receipt(
-        &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
-        let observed = self.watermarks(path.clone()).await?;
-        if let Some(receipt) = crate::DurableReceipt::covering(path.clone(), &observed, through) {
-            return Ok(Some(receipt));
-        }
-        // Every frame behind this path's accepted tail is at or before the
-        // published revision observed under the same publication guard.
-        let (accepted, revision) = self
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        request.validate()?;
+        self.inner
+            .provider
+            .revisions
+            .wait(&request.at_least)
+            .await?;
+        let projection = request.projection;
+        let through = request.durable_through;
+        let (mut view, revision) = self
             .accepted(async {
-                let accepted = self.inner.provider.tail(path.clone()).await?;
-                Ok::<_, StreamError>((accepted, *self.inner.revision.borrow()))
+                let mut view = self.inner.provider.capture_heads(&request).await?;
+                let revision = *self.inner.revision.borrow();
+                if projection == crate::HeadProjection::Tail || request.paths.is_empty() {
+                    return Ok::<_, StreamError>((view, revision));
+                }
+                let synced = self
+                    .inner
+                    .synced
+                    .borrow()
+                    .flushed
+                    .is_some_and(|cut| cut >= revision);
+                let mut tails = self
+                    .inner
+                    .durable_tails
+                    .lock()
+                    .map_err(|_| StreamError::Unavailable)?;
+                for (path, head) in request.paths.iter().zip(&mut view.heads) {
+                    if let Some(head) = head {
+                        let mut durable = tails.get(path).copied().unwrap_or(0);
+                        if synced && head.tail > durable {
+                            durable = head.tail;
+                            tails.insert(path.clone(), durable);
+                        }
+                        head.durable = durable.min(head.tail);
+                        head.retained_through = through.filter(|through| *through <= head.durable);
+                    }
+                }
+                Ok((view, revision))
             })
             .await??;
-        let flushed = self.await_flushed(revision).await?;
-        self.receipt_for_flushed_snapshot(path, accepted, through, flushed)
-    }
-
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        #[cfg(feature = "test-support")]
-        acyclic_native_runtime::testing::describe(|| {
-            format!("append {} {:?}", request.path, request.idempotency_key)
-        });
-        let span = obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.stream.append",
-            items = request.records.len(),
-            bytes = request
-                .records
+        if through.is_some_and(|through| {
+            view.heads
                 .iter()
-                .map(crate::AppendRecord::payload_bytes)
-                .sum::<usize>(),
-            rev = Empty,
-            outcome = Empty,
-            error.kind = Empty
-        ));
-        span.scope(async {
-            let operation = span.clone();
-            self.exclusive(&span, move |stream| async move {
-                let replay = stream
-                    .inner
-                    .provider
-                    .has_replay(&request.idempotency_key)
-                    .await?;
-                let frame = if replay {
-                    None
-                } else {
-                    Some(stream.prepare(&Command::Append(request.clone()))?)
-                };
-                let outcome = stream.inner.provider.append(request).await?;
-                if let Some(frame) = frame
-                    && matches!(outcome, AppendOutcome::Committed(_))
-                {
-                    stream.persist(frame).await?;
-                } else if replay {
-                    stream.require_accepted::<true>()?;
+                .flatten()
+                .any(|head| through <= head.tail && head.retained_through.is_none())
+        }) {
+            // Flush exactly the captured publication cut, outside its read lock.
+            // Concurrent appends cannot change the view or enlarge its proof.
+            let flushed = self.await_flushed(revision).await?;
+            let mut tails = self
+                .inner
+                .durable_tails
+                .lock()
+                .map_err(|_| StreamError::Unavailable)?;
+            for (path, head) in request.paths.into_iter().zip(&mut view.heads) {
+                if let Some(head) = head {
+                    let durable = tails.entry(path).or_default();
+                    let marks = flushed_watermarks(durable, head.tail, flushed);
+                    head.durable = marks.durable;
+                    head.retained_through = through.filter(|through| *through <= marks.durable);
                 }
-                if let AppendOutcome::Committed(receipt) = &outcome {
-                    operation.record("rev", receipt.tail);
-                }
-                Ok(outcome)
-            })
-            .await
-        })
-        .await
+            }
+        }
+        view.check_size()?;
+        Ok(view)
     }
 
-    async fn wait_applied(
+    fn write(
         &self,
-        at_least: &crate::RevisionCut,
-    ) -> Result<crate::Revision, StreamError> {
-        self.inner.provider.revisions.wait(at_least).await
-    }
-
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        let span = obs::OperationSpan::new(tracing::info_span!(
-            "acyclic.stream.fork",
-            outcome = Empty,
-            error.kind = Empty
-        ));
-        span.scope(async {
-            self.exclusive(&span, |stream| async move {
-                let replay = stream
-                    .inner
-                    .provider
-                    .has_replay(&request.idempotency_key)
-                    .await?;
-                let frame = if replay {
-                    None
-                } else {
-                    Some(stream.prepare(&Command::Fork(request.clone()))?)
-                };
-                let outcome = stream.inner.provider.fork(request).await?;
-                if let Some(frame) = frame {
-                    stream.persist(frame).await?;
-                } else {
-                    stream.require_accepted::<true>()?;
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        Box::pin(async move {
+            #[cfg(feature = "test-support")]
+            match &request {
+                crate::WriteRequest::Append(request) => {
+                    acyclic_native_runtime::testing::describe(|| {
+                        format!("append {} {:?}", request.path, request.idempotency_key)
+                    })
                 }
-                Ok(outcome)
+                crate::WriteRequest::Commit(request) => describe_commit(request),
+                crate::WriteRequest::Fork(_) => {}
+            }
+            let span = obs::OperationSpan::new(match &request {
+                crate::WriteRequest::Append(request) => tracing::info_span!(
+                    "acyclic.stream.append",
+                    items = request.records.len(),
+                    bytes = request
+                        .records
+                        .iter()
+                        .map(crate::AppendRecord::payload_bytes)
+                        .sum::<usize>(),
+                    rev = Empty,
+                    outcome = Empty,
+                    error.kind = Empty,
+                ),
+                crate::WriteRequest::Fork(_) => {
+                    tracing::info_span!("acyclic.stream.fork", outcome = Empty, error.kind = Empty,)
+                }
+                crate::WriteRequest::Commit(request) => tracing::info_span!(
+                    "acyclic.stream.commit",
+                    items = request.mutations.len(),
+                    outcome = Empty,
+                    error.kind = Empty,
+                ),
+            });
+            span.scope(async {
+                let operation = span.clone();
+                self.exclusive(&span, move |stream| async move {
+                    let outcome = stream.execute(request, None).await?.outcome;
+                    if let crate::WriteOutcome::Append(AppendOutcome::Committed(receipt)) = &outcome
+                    {
+                        operation.record("rev", receipt.tail);
+                    }
+                    Ok(outcome)
+                })
+                .await
             })
             .await
         })
-        .await
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
@@ -214,7 +162,7 @@ impl StreamProvider for LocalStream {
                     .revisions
                     .wait(&request.at_least)
                     .await?;
-                self.read_visible(request).await
+                self.accepted(self.inner.provider.read(request)).await?
             })
             .await;
         observation.finished = true;
@@ -231,35 +179,65 @@ impl StreamProvider for LocalStream {
             preceding,
             filter,
             progress,
+            when_absent,
             at_least,
         } = request;
         // Parks before any visibility guard, so no writer waits on a parked read.
         self.inner.provider.revisions.wait(&at_least).await?;
         if progress {
-            self.progress_from(path, from, preceding, filter).await
+            self.progress_from(path, from, preceding, when_absent, filter)
+                .await
         } else {
-            self.follow_from(path, from, preceding, filter).await
+            self.follow_from(path, from, preceding, when_absent, filter)
+                .await
         }
-    }
-
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.visible(self.inner.provider.children_page(request))
-            .await?
-    }
-
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        commit::<true>(self, request, None).await
     }
 
     async fn read_commit(
         &self,
         commit_id: crate::CommitId,
     ) -> Result<CommittedEnvelope, StreamError> {
-        self.visible(self.inner.provider.read_commit(commit_id))
+        self.accepted(self.inner.provider.read_commit(commit_id))
             .await?
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::NativeStreamProvider for LocalStream {
+    fn native_durability_barrier(
+        &self,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'_, ()> {
+        let stream = self.clone();
+        crate::native::Work::start(meter, |work| async move {
+            let stream = Self {
+                work: Some(Arc::clone(&work)),
+                ..stream
+            };
+            let result = async {
+                stream.seal_accepted().await?;
+                Ok(((), None))
+            }
+            .await;
+            work.finish(result)
+        })
+    }
+    fn prepare_native_durability_barrier(
+        &self,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<crate::NativeProviderFuture<'_, ()>> {
+        let work = crate::native::Work::new(Arc::clone(&meter))?;
+        // This ticket survives original cancellation and excludes competing
+        // work from consuming the phase's final durability allowance.
+        work.prepare_durability(1)?;
+        let stream = Self {
+            work: Some(Arc::clone(&work)),
+            ..self.clone()
+        };
+        crate::NativeProviderFuture::try_new(&meter, async move {
+            let result = stream.seal_accepted_with_reservation(true).await;
+            work.finish(result.map(|()| ((), None)))
+        })
     }
     fn native_tail(
         &self,
@@ -268,7 +246,7 @@ impl StreamProvider for LocalStream {
     ) -> crate::NativeProviderFuture<'_, u64> {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::new(&original, async move {
-            self.visible(self.inner.provider.native_tail(path, meter))
+            self.accepted(self.inner.provider.native_tail(path, meter))
                 .await
                 .unwrap_or_else(|error| Ok(Err(error)))
         })
@@ -283,7 +261,7 @@ impl StreamProvider for LocalStream {
             if let Err(error) = self.inner.provider.revisions.wait(&request.at_least).await {
                 return Ok(Err(error));
             }
-            self.visible(self.inner.provider.native_read(request, meter))
+            self.accepted(self.inner.provider.native_read(request, meter))
                 .await
                 .unwrap_or_else(|error| Ok(Err(error)))
         })
@@ -295,29 +273,32 @@ impl StreamProvider for LocalStream {
     ) -> crate::NativeProviderFuture<'_, Option<IdempotencyObservation>> {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::new(&original, async move {
-            self.visible(self.inner.provider.native_inspect_idempotency(key, meter))
+            self.accepted(self.inner.provider.native_inspect_idempotency(key, meter))
                 .await
                 .unwrap_or_else(|error| Ok(Err(error)))
         })
     }
-    fn native_append(
+    fn native_write(
         &self,
-        request: AppendRequest,
+        request: crate::WriteRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, AppendOutcome> {
-        LocalStream::native_append(self, request, meter)
+    ) -> crate::NativeProviderFuture<'_, crate::WriteOutcome> {
+        match request {
+            crate::WriteRequest::Append(request) => {
+                self.append_funded(request, meter, crate::WriteOutcome::Append)
+            }
+            crate::WriteRequest::Commit(request) => self.guarded_commit(
+                request,
+                None,
+                meter,
+                || futures::future::ready(Ok(())),
+                crate::WriteOutcome::Commit,
+            ),
+            crate::WriteRequest::Fork(_) => {
+                crate::NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+            }
+        }
     }
-    fn native_commit(
-        &self,
-        request: CommitRequest,
-        deadline: Option<u64>,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, CommitOutcome> {
-        LocalStream::guarded_commit(self, request, deadline, meter, || {
-            futures::future::ready(Ok(()))
-        })
-    }
-
     fn native_commit_guarded<E, F, Fut>(
         &self,
         request: CommitRequest,
@@ -330,7 +311,14 @@ impl StreamProvider for LocalStream {
         F: FnMut() -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
-        LocalStream::guarded_commit(self, request, deadline, meter, before)
+        LocalStream::guarded_commit(
+            self,
+            request,
+            deadline,
+            meter,
+            before,
+            std::convert::identity,
+        )
     }
     fn native_prepare_commit(
         &self,
@@ -340,55 +328,6 @@ impl StreamProvider for LocalStream {
     ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
         self.prepare_commit(request, maximum, meter)
     }
-}
-
-async fn commit<const ELIDE_REPLAY: bool>(
-    stream: &LocalStream,
-    request: CommitRequest,
-    deadline: Option<u64>,
-) -> Result<CommitOutcome, StreamError> {
-    #[cfg(feature = "test-support")]
-    describe_commit(&request);
-    let span = obs::OperationSpan::new(tracing::info_span!(
-        "acyclic.stream.commit",
-        items = request.mutations.len(),
-        outcome = Empty,
-        error.kind = Empty,
-    ));
-    span.scope(async {
-        stream
-            .exclusive(&span, move |stream| async move {
-                // The visibility guard covers this lookup and settlement. A
-                // replay still passes through commit_inner for fingerprint and
-                // deadline semantics, then exclusive awaits the original WAL.
-                let replay = ELIDE_REPLAY
-                    && stream
-                        .inner
-                        .provider
-                        .has_replay(&request.idempotency_key)
-                        .await?;
-                let frame = if replay {
-                    None
-                } else {
-                    Some(stream.prepare(&Command::Commit(request.clone()))?)
-                };
-                let (outcome, _claim) = stream
-                    .inner
-                    .provider
-                    .commit_inner(request, deadline)
-                    .await?;
-                if let Some(frame) = frame
-                    && matches!(outcome, CommitOutcome::Committed(_))
-                {
-                    stream.persist(frame).await?;
-                } else {
-                    stream.require_accepted::<true>()?;
-                }
-                Ok(outcome)
-            })
-            .await
-    })
-    .await
 }
 
 #[cfg(feature = "test-support")]
@@ -409,33 +348,8 @@ fn describe_commit(request: &CommitRequest) {
     });
 }
 
+#[cfg(loom)]
 impl LocalStream {
-    // Called under accepted's publication guard after observing this path's tail.
-    fn durable_tail_for_accepted(
-        &self,
-        path: StreamPath,
-        accepted: u64,
-    ) -> Result<u64, StreamError> {
-        // Both frame counters are published before publication is released.
-        // Do not borrow the journal: compaction may hold it during device I/O.
-        let synced = self
-            .inner
-            .synced
-            .borrow()
-            .flushed
-            .is_some_and(|cut| cut >= *self.inner.revision.borrow());
-        let mut tails = self
-            .inner
-            .durable_tails
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?;
-        let durable = tails.entry(path).or_default();
-        if synced {
-            *durable = (*durable).max(accepted);
-        }
-        Ok(*durable)
-    }
-
     fn receipt_for_flushed_snapshot(
         &self,
         path: StreamPath,
@@ -451,21 +365,28 @@ impl LocalStream {
             .lock()
             .map_err(|_| StreamError::Unavailable)?;
         let durable = tails.entry(path.clone()).or_default();
-        *durable = (*durable).max(accepted);
-        // This call flushed this exact snapshot. Later callers may have advanced
-        // durable_tails beyond it; never pair that newer prefix with this cut.
-        let covered = accepted;
-        #[cfg(loom)]
-        let covered = if crate::verification::fault_is(crate::verification::Fault::MixedReceiptCut)
-        {
-            *durable
-        } else {
-            covered
-        };
-        let marks = crate::StreamWatermarks {
-            accepted,
-            durable: covered,
-        };
+        let marks = flushed_watermarks(durable, accepted, _flushed);
         Ok(crate::DurableReceipt::covering(path, &marks, through))
+    }
+}
+
+// Pair a completed device flush with its captured accepted cut, never a newer
+// cached watermark. The cache can advance independently after this observation.
+fn flushed_watermarks(
+    durable: &mut u64,
+    accepted: u64,
+    _flushed: DeviceFlushed,
+) -> crate::StreamWatermarks {
+    *durable = (*durable).max(accepted);
+    let covered = accepted;
+    #[cfg(loom)]
+    let covered = if crate::verification::fault_is(crate::verification::Fault::MixedReceiptCut) {
+        *durable
+    } else {
+        covered
+    };
+    crate::StreamWatermarks {
+        accepted,
+        durable: covered,
     }
 }

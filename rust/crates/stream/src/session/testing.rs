@@ -29,6 +29,21 @@ pub fn authority() -> Arc<Authority> {
 
 /// Signed workload credential for the deterministic qualification account.
 pub fn credential() -> Bytes {
+    credential_with_grants(vec![ResourceGrant {
+        resource: ResourcePattern {
+            name: "streams:/".into(),
+            prefix: true,
+        },
+        actions: vec![
+            "streams/follow".into(),
+            "streams/list".into(),
+            "streams/read".into(),
+        ],
+    }])
+}
+
+/// Signs only the supplied grants for admission and projection qualification.
+pub fn credential_with_grants(grants: Vec<ResourceGrant>) -> Bytes {
     signed::root(|block| {
         let Some(key) = block
             .certificates
@@ -38,15 +53,13 @@ pub fn credential() -> Bytes {
             return;
         };
         key.key.grants = GrantSet {
-            grants: vec![Grant {
-                kind: GrantKind::Resource(ResourceGrant {
-                    resource: ResourcePattern {
-                        name: "streams:/".into(),
-                        prefix: true,
-                    },
-                    actions: vec!["streams/follow".into(), "streams/list".into()],
-                }),
-            }],
+            grants: grants
+                .iter()
+                .cloned()
+                .map(|grant| Grant {
+                    kind: GrantKind::Resource(grant),
+                })
+                .collect(),
         };
     })
     .into()

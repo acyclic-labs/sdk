@@ -2,7 +2,7 @@ use super::*;
 
 impl<P, A, O> ToolApprovalVerifier for FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider + ?Sized,
+    P: crate::store::JournalProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
@@ -33,7 +33,7 @@ where
 
 impl<P, A, O> ExecutionJournal for FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider + ?Sized,
+    P: crate::store::JournalProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

@@ -31,10 +31,13 @@ pub mod grpc;
 #[cfg(not(target_arch = "wasm32"))]
 mod head_tests;
 pub mod http_response;
+pub mod pages;
+mod pending;
 pub mod persistence;
 #[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
 pub mod postgres;
 pub mod preparation;
+pub use pending::Pending;
 pub mod request;
 pub mod runtime;
 #[cfg(any(
@@ -68,7 +71,6 @@ mod change;
 ))]
 mod http_codec;
 mod http_validation;
-#[cfg(any(all(feature = "wasm", target_arch = "wasm32"), loom))]
 mod interest;
 #[cfg(any(
     feature = "local",
@@ -83,6 +85,15 @@ mod journal;
 mod local;
 mod memory;
 mod operation_claim;
+#[cfg(any(
+    feature = "local",
+    feature = "postgres",
+    all(
+        any(feature = "wasm", feature = "wasm-journal"),
+        target_arch = "wasm32"
+    )
+))]
+mod replicated;
 pub use operation_claim::{OperationClaim, OperationClaims};
 mod follow_filter;
 mod follow_index;
@@ -165,6 +176,7 @@ pub const MAX_PATH_BYTES: usize = wire::StreamLimit::MaxPathBytes as usize;
 /// Route-to-response families for the hosted HTTP projection.
 pub const HTTP_RESPONSE_CONTRACT: &[(&str, &str)] = &[
     ("head", "head"),
+    ("heads", "heads"),
     ("idempotency/inspect", "observation"),
     ("tail", "tail"),
     ("append", "append"),
@@ -189,6 +201,7 @@ pub mod revision;
 pub use revision::{AppliedRevisions, Revision, RevisionCut, RevisionScope, RevisionTracker};
 
 include!("lib/domain.rs");
+include!("lib/write.rs");
 include!("lib/head.rs");
 include!("lib/receipt.rs");
 
@@ -203,7 +216,10 @@ pub use record_headers::{
     RecordAttributeIter, RecordAttributes, RecordHeaders,
 };
 
+include!("lib/provider_context.rs");
 include!("lib/provider.rs");
+include!("lib/native_provider.rs");
+include!("lib/provider_ext.rs");
 
 include!("lib/stream.rs");
 

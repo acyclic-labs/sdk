@@ -200,7 +200,7 @@ impl Journal {
             }
             blocking_send(
                 recovered,
-                Recovered::Command {
+                Recovered::WriteRequest {
                     committed_at_millis: u64::from_le_bytes(*committed_at_millis),
                     command,
                 },

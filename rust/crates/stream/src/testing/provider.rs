@@ -8,19 +8,56 @@ use std::{future::Future, sync::Arc};
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        self.inner().operation_claims()
-    }
-    fn has_exclusive_process_owner(&self) -> bool {
-        self.inner().has_exclusive_process_owner()
-    }
-    fn supports_deferred_durability(&self) -> bool {
-        self.inner().supports_deferred_durability()
+    fn context(&self) -> crate::ProviderContext<'_> {
+        self.inner().context()
     }
     async fn durability_barrier(&self) -> Result<(), StreamError> {
         self.record(RequestClass::Data);
         self.inner().durability_barrier().await
     }
+
+    async fn inspect_idempotency(
+        &self,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<Option<IdempotencyObservation>, StreamError> {
+        self.record(RequestClass::Metadata);
+        self.inner().inspect_idempotency(idempotency_key).await
+    }
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        self.record(if request.paths.is_empty() && request.children.is_some() {
+            RequestClass::List
+        } else {
+            RequestClass::Head
+        });
+        self.inner().heads(request).await
+    }
+
+    fn write(
+        &self,
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        self.record(RequestClass::Data);
+        self.inner().write(request)
+    }
+
+    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+        self.record(RequestClass::Data);
+        self.inner().read(request).await
+    }
+    async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError> {
+        self.record(RequestClass::Data);
+        self.inner().follow(request).await
+    }
+
+    async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
+        self.record(RequestClass::Data);
+        self.inner().read_commit(commit_id).await
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<P: crate::NativeStreamProvider> crate::ExplicitNativeStreamProvider for Counted<P> {
     #[cfg(not(target_arch = "wasm32"))]
     fn native_durability_barrier(
         &self,
@@ -37,71 +74,6 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().prepare_native_durability_barrier(_meter)
     }
-    async fn inspect_idempotency(
-        &self,
-        idempotency_key: IdempotencyKey,
-    ) -> Result<Option<IdempotencyObservation>, StreamError> {
-        self.record(RequestClass::Metadata);
-        self.inner().inspect_idempotency(idempotency_key).await
-    }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.record(RequestClass::Head);
-        self.inner().tail(path).await
-    }
-    async fn head(&self, path: StreamPath) -> Result<PathHead, StreamError> {
-        self.record(RequestClass::Head);
-        self.inner().head(path).await
-    }
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        self.record(RequestClass::Head);
-        self.inner().watermarks(path).await
-    }
-    async fn durable_receipt(
-        &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<DurableReceipt>, StreamError> {
-        self.record(RequestClass::Head);
-        self.inner().durable_receipt(path, through).await
-    }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.record(RequestClass::Data);
-        self.inner().append(request).await
-    }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.record(RequestClass::Data);
-        self.inner().fork(request).await
-    }
-    async fn wait_applied(
-        &self,
-        at_least: &crate::RevisionCut,
-    ) -> Result<crate::Revision, StreamError> {
-        self.record(RequestClass::Head);
-        self.inner().wait_applied(at_least).await
-    }
-    async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
-        self.record(RequestClass::Data);
-        self.inner().read(request).await
-    }
-    async fn follow(&self, request: FollowRequest) -> Result<FollowStream, StreamError> {
-        self.record(RequestClass::Data);
-        self.inner().follow(request).await
-    }
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.record(RequestClass::List);
-        self.inner().children_page(request).await
-    }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.record(RequestClass::Data);
-        self.inner().commit(request).await
-    }
-    async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
-        self.record(RequestClass::Data);
-        self.inner().read_commit(commit_id).await
-    }
     #[cfg(not(target_arch = "wasm32"))]
     fn native_inspect_idempotency(
         &self,
@@ -110,15 +82,6 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
     ) -> NativeProviderFuture<'_, Option<IdempotencyObservation>> {
         self.record(RequestClass::Metadata);
         self.inner().native_inspect_idempotency(key, _meter)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_append(
-        &self,
-        request: AppendRequest,
-        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, AppendOutcome> {
-        self.record(RequestClass::Data);
-        self.inner().native_append(request, _meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn native_tail(
@@ -139,14 +102,13 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.inner().native_read(request, _meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit(
+    fn native_write(
         &self,
-        request: CommitRequest,
-        deadline: Option<u64>,
-        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, CommitOutcome> {
+        request: crate::WriteRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, crate::WriteOutcome> {
         self.record(RequestClass::Data);
-        self.inner().native_commit(request, deadline, _meter)
+        self.inner().native_write(request, meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn native_commit_guarded<E, F, Fut>(

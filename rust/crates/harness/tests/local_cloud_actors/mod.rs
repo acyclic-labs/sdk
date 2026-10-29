@@ -1,7 +1,9 @@
 //! SDK Actors operations against the real local-cloud service.
 use acyclic_actors::{grpc, wire};
 use acyclic_objects::{Blobs as _, grpc::GrpcObjects};
-use acyclic_stream::{AppendOutcome, AppendRequest, StreamPath, StreamProvider as _};
+use acyclic_stream::{
+    AppendOutcome, AppendRequest, StreamPath, StreamProvider as _, StreamProviderExt as _,
+};
 use futures::StreamExt as _;
 use prost::Message as _;
 use serde::Deserialize;

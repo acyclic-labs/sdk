@@ -36,15 +36,33 @@ replays reuse their retained outcome. The historical runtime receipts below
 qualify their exact source, rather than every subsequent change to this path.
 SQL synchronous commit must remain enabled for durable acknowledgements.
 
-`acyclic_stream_publish(namespace, expected_revision, command_bytes, planned_millis, deadline)`
-is the physical publication primitive. Its prepared call checks the journal
-cursor under the namespace fence, records the core's planned database-clock time, inserts the exact
-command and queues NOTIFY in one server-side statement. A final database-clock
-deadline refusal aborts both insertion and notification. READ COMMITTED is
+`acyclic_stream_publish(namespace, expected_revision, command_bytes[], planned_millis[], deadlines[])`
+is the physical publication primitive for one frame or an ordered batch. Its
+prepared call checks the journal cursor once under the namespace fence, records
+each command's planned database-clock time, inserts the exact commands in array
+order and queues one NOTIFY in one server-side statement. The returned identity
+is an opaque storage cursor; gaps never imply missing Stream records. A final
+database-clock check against the earliest deadline aborts every insertion and
+notification on refusal, including a previously inserted batch prefix. READ COMMITTED is
 required, and the head snapshot is obtained after waiting for the lock. A stale
 cursor writes nothing. SQL does not interpret Stream conditions or retry keys.
 Installation needs PL/pgSQL and permission to create/replace and execute this
 function as well as the table permissions above.
+
+Publication obligations and controls:
+
+| Obligation | Argument and negative control |
+| --- | --- |
+| Safety | The existing transaction fence covers head comparison, ordered inserts and COMMIT. SQL evaluates no Stream condition. A stale cursor adds no rows; an expired later frame rolls back an already inserted prefix. Planning-clock and actual-clock deadline refusals are checked separately. |
+| Progress | The awaited query and COMMIT are completed by the owned PostgreSQL protocol driver. Dropping that driver ends the request with an error; dropping the notification driver ends follows with `Unavailable`. No polling or per-stream producer is added. Transport errors retain the existing fail-closed reconciliation path. |
+| Cost | One publication query and one COMMIT serve a supplied batch, independent of its width; encoding and insertion cost O(input bytes + frames). Tests use widths 1/16/256; compare against a scalar-call loop as the measurement negative control. The indexed namespace-head lookup is still an index seek, not a proved O(1) storage operation. Full history replay and independent-command batch planning remain separate costs. |
+
+The real SQL controls run with the existing Postgres provider checks. They verify
+order and replay stamps, consumed identity gaps, malformed-array refusal, atomic
+deadline rollback and driver loss. These controls do not establish throughput,
+lock fairness, survival of an indefinitely stalled network or constant total
+recovery cost. Measure messages, advisory-lock hold and p99 with the scalar-call
+negative control before making a performance claim.
 
 `acyclic_stream_read_fenced(namespace, after_revision, page_size)` acquires the
 transaction's namespace lock before obtaining a READ COMMITTED journal page and

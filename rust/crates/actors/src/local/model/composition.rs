@@ -352,6 +352,7 @@ async fn uncertain_invocation_admission_reopens_with_the_original_input_after_co
                 provider
                     .inner
                     .read(ReadRequest {
+                        key: None,
                         path: input.clone(),
                         from: 0,
                         limit: 1,

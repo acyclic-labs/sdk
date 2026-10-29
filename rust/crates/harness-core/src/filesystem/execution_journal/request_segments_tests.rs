@@ -106,7 +106,7 @@ async fn check_unattested_and_forged<P, A, O>(
     digest: [u8; 32],
 ) -> Result<()>
 where
-    P: StreamProvider,
+    P: crate::store::JournalProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

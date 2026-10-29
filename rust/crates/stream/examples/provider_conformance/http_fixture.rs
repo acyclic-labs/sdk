@@ -1,5 +1,7 @@
 //! Credential and bounded-response checks for the local HTTPS fixture only.
-use acyclic_stream::{StreamError, StreamPath, StreamProvider, http::HttpStream};
+use acyclic_stream::{
+    StreamError, StreamPath, StreamProvider, StreamProviderExt as _, http::HttpStream,
+};
 
 pub async fn verify(endpoint: &str) -> Result<(), Box<dyn std::error::Error>> {
     verify_commit_only(endpoint).await?;

@@ -1,3 +1,64 @@
+impl MemoryStream {
+    /// Captures an already validated request whose minimum cut was awaited
+    /// outside any adapter publication lock. There is no boxed inner dispatch.
+    pub(crate) async fn capture_heads(
+        &self,
+        request: &crate::HeadsRequest,
+    ) -> Result<crate::Heads, StreamError> {
+        let state = self.state.read().await;
+        let heads = request
+            .paths
+            .iter()
+            .map(|path| head_at(&state, path, request.projection, request.durable_through))
+            .collect::<Result<_, _>>()?;
+        let mut children = request.children.clone();
+        if let Some(children) = &mut children {
+            children.limit = children
+                .limit
+                .min(request.limit - request.paths.len() as u32);
+        }
+        let view = crate::Heads {
+            projection: request.projection,
+            snapshot: self.revisions.at(state.decision),
+            heads,
+            children: children
+                .map(|request| children_at(&state, request))
+                .transpose()?,
+        };
+        if !request.at_least.proven_by(Some(&view.snapshot)) {
+            return Err(StreamError::InvalidResponse);
+        }
+        Ok(view)
+    }
+}
+
+fn head_at(
+    state: &State,
+    path: &StreamPath,
+    projection: crate::HeadProjection,
+    through: Option<u64>,
+) -> Result<Option<crate::PathHead>, StreamError> {
+    state
+        .paths
+        .get(path)
+        .map(|stream| {
+            Ok(crate::PathHead {
+                retained_through: through.filter(|through| *through <= stream.tail),
+                tail: stream.tail,
+                last: (projection == crate::HeadProjection::History)
+                    .then(|| last_record(stream))
+                    .flatten(),
+                durable: 0,
+                origin: if projection == crate::HeadProjection::History {
+                    state.paths.origin(path)?
+                } else {
+                    None
+                },
+            })
+        })
+        .transpose()
+}
+
 fn namespace_page(
     index: &Index,
     lower: Option<&str>,
@@ -61,25 +122,102 @@ fn last_record(stream: &PathState) -> Option<Record> {
     })
 }
 
+fn children_at(state: &State, request: ChildrenPageRequest) -> Result<ChildrenPage, StreamError> {
+    validate_limit(request.limit)?;
+    if request.after.is_some() && request.hierarchy_version.is_none() {
+        return Err(StreamError::InvalidArgument);
+    }
+    if request.after.as_ref().is_some_and(|after| {
+        !request.parent.as_ref().map_or_else(
+            || !after.as_str().contains('/'),
+            |parent| after.parent().as_ref() == Some(parent),
+        )
+    }) {
+        return Err(StreamError::InvalidArgument);
+    }
+    if request
+        .hierarchy_version
+        .is_some_and(|version| version != state.hierarchy_version)
+    {
+        return Err(StreamError::HierarchyChanged);
+    }
+    let children = request
+        .parent
+        .as_ref()
+        .map_or(Some(&state.paths.roots), |parent| {
+            state.paths.node(parent).map(|node| &node.children)
+        });
+    let lower = request
+        .after
+        .as_ref()
+        .map(|path| path.as_str().rsplit('/').next().unwrap_or_default());
+    let mut paths = Vec::new();
+    if let Some(children) = children {
+        namespace_page(
+            children,
+            lower,
+            request.parent.as_ref(),
+            request.limit as usize + 1,
+            &mut paths,
+        )?;
+    }
+    let has_more = paths.len() > request.limit as usize;
+    paths.truncate(request.limit as usize);
+    let next_after = if has_more {
+        paths.last().cloned()
+    } else {
+        None
+    };
+    let mut page_bytes =
+        64usize.saturating_add(next_after.as_ref().map_or(0, |path| path.as_str().len()));
+    let children = paths
+        .into_iter()
+        .map(|path| {
+            let tail_record = projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
+            let origin = state.paths.origin(&path)?;
+            let child = Child {
+                path,
+                tail_record,
+                origin,
+            };
+            #[cfg(all(loom, feature = "local"))]
+            let size =
+                if crate::verification::fault_is(crate::verification::Fault::IgnorePageRecordBytes)
+                {
+                    child.path.as_str().len()
+                } else {
+                    crate::wire_codec::requests::child_len(&child)
+                };
+            #[cfg(not(all(loom, feature = "local")))]
+            let size = crate::wire_codec::requests::child_len(&child);
+            page_bytes = page_bytes.saturating_add(size).saturating_add(10);
+            if page_bytes > crate::MAX_COMMAND_BYTES {
+                return Err(StreamError::LimitExceeded);
+            }
+            Ok(child)
+        })
+        .collect::<Result<Vec<_>, StreamError>>()?;
+    let result = ChildrenPage {
+        hierarchy_version: state.hierarchy_version,
+        children,
+        next_after,
+    };
+    Ok(result)
+}
+
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait)]
 impl StreamProvider for MemoryStream {
-    fn has_exclusive_process_owner(&self) -> bool {
-        true
-    }
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        &self.operation_claims
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(&self.operation_claims).with_process_exclusion()
     }
 
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        let state = self.state.read().await;
-        let stream = state.paths.get(&path).ok_or(StreamError::NotFound)?;
-        Ok(crate::PathHead {
-            tail: stream.tail,
-            last: last_record(stream),
-            durable: 0,
-            origin: state.paths.origin(&path)?,
-        })
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        request.validate()?;
+        self.revisions.wait(&request.at_least).await?;
+        let view = self.capture_heads(&request).await?;
+        view.check_size()?;
+        Ok(view)
     }
 
     async fn inspect_idempotency(
@@ -97,43 +235,36 @@ impl StreamProvider for MemoryStream {
             }))
     }
 
-    /// Memory never rolls back part of a path: its retained tail is its
-    /// irreversible prefix, although it makes no crash-persistence claim.
-    async fn durable_receipt(
+    fn write(
         &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
-        let tail = self.tail(path.clone()).await?;
-        Ok(crate::DurableReceipt::retained(path, tail, through))
-    }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        let state = self.state.read().await;
-        state
-            .paths
-            .get(&path)
-            .map(|stream| stream.tail)
-            .ok_or(StreamError::NotFound)
-    }
-
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.append_inner(request).await.map(|(value, _)| value)
-    }
-
-    async fn wait_applied(
-        &self,
-        at_least: &crate::RevisionCut,
-    ) -> Result<crate::Revision, StreamError> {
-        self.revisions.wait(at_least).await
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        match request {
+            crate::WriteRequest::Append(request) => Box::pin(async move {
+                self.append_inner(request)
+                    .await
+                    .map(|(outcome, _)| crate::WriteOutcome::Append(outcome))
+            }),
+            crate::WriteRequest::Fork(request) => Box::pin(async move {
+                let mut state = self.state.write().await;
+                self.plan_fork_locked(&mut state, &request)?
+                    .install(self, &mut state)
+                    .map(crate::WriteOutcome::Fork)
+            }),
+            crate::WriteRequest::Commit(request) => Box::pin(async move {
+                self.commit_inner(request, None)
+                    .await
+                    .map(|(outcome, _)| crate::WriteOutcome::Commit(outcome))
+            }),
+        }
     }
 
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        let mut state = self.state.write().await;
-        self.plan_fork_locked(&mut state, request)?
-            .install(self, &mut state)
-    }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         validate_limit(request.limit)?;
+        if let Some(key) = &request.key {
+            key.validate()?;
+        }
         self.revisions.wait(&request.at_least).await?;
         let state = self.state.read().await;
         let path = state
@@ -143,15 +274,17 @@ impl StreamProvider for MemoryStream {
         if request.from > path.tail {
             return Err(StreamError::OutOfRange);
         }
-        let end = path
-            .tail
-            .min(request.from.saturating_add(u64::from(request.limit)));
-        let mut cursor = HistoryCursor::new(path, end, request.from);
-        Ok(stream::iter(
-            std::iter::from_fn(move || cursor.next_record())
-                .take(usize::try_from(end - request.from).unwrap_or(usize::MAX))
-                .map(Ok),
-        )
+        let cursor = FiniteRead::new(path, request);
+        drop(state);
+        Ok(stream::try_unfold(cursor, |mut cursor| async move {
+            if cursor
+                .peek(|| Ok::<_, StreamError>(()), || StreamError::Unavailable)?
+                .is_none()
+            {
+                return Ok(None);
+            }
+            Ok(cursor.take().map(|record| (record, cursor)))
+        })
         .boxed())
     }
 
@@ -165,119 +298,17 @@ impl StreamProvider for MemoryStream {
             preceding,
             filter,
             progress,
+            when_absent,
             at_least,
         } = request;
         self.revisions.wait(&at_least).await?;
         if progress {
-            self.progress_from(path, from, preceding, filter).await
+            self.progress_from(path, from, preceding, when_absent, filter)
+                .await
         } else {
-            self.follow_from(path, from, preceding, filter).await
+            self.follow_from(path, from, preceding, when_absent, filter)
+                .await
         }
-    }
-
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        validate_limit(request.limit)?;
-        if request.after.is_some() && request.hierarchy_version.is_none() {
-            return Err(StreamError::InvalidArgument);
-        }
-        if request.after.as_ref().is_some_and(|after| {
-            !request.parent.as_ref().map_or_else(
-                || !after.as_str().contains('/'),
-                |parent| after.parent().as_ref() == Some(parent),
-            )
-        }) {
-            return Err(StreamError::InvalidArgument);
-        }
-        let state = self.state.read().await;
-        if request
-            .hierarchy_version
-            .is_some_and(|version| version != state.hierarchy_version)
-        {
-            return Err(StreamError::HierarchyChanged);
-        }
-        let children = request
-            .parent
-            .as_ref()
-            .map_or(Some(&state.paths.roots), |parent| {
-                state.paths.node(parent).map(|node| &node.children)
-            });
-        let lower = request
-            .after
-            .as_ref()
-            .map(|path| path.as_str().rsplit('/').next().unwrap_or_default());
-        let mut paths = Vec::new();
-        if let Some(children) = children {
-            namespace_page(
-                children,
-                lower,
-                request.parent.as_ref(),
-                request.limit as usize + 1,
-                &mut paths,
-            )?;
-        }
-        let has_more = paths.len() > request.limit as usize;
-        paths.truncate(request.limit as usize);
-        let next_after = if has_more {
-            paths.last().cloned()
-        } else {
-            None
-        };
-        let mut page_bytes =
-            64usize.saturating_add(next_after.as_ref().map_or(0, |path| path.as_str().len()));
-        let children = paths
-            .into_iter()
-            .map(|path| {
-                let tail_record =
-                    projected_tail(&state.paths, &path, request.tail_stream.as_ref())?;
-                let origin = state.paths.origin(&path)?;
-                let child = Child {
-                    path,
-                    tail_record,
-                    origin,
-                };
-                let encoded = crate::wire::Child {
-                    origin: child
-                        .origin
-                        .clone()
-                        .map(crate::wire_codec::fork_origin_to_wire),
-                    path: child.path.to_string(),
-                    tail_record: child
-                        .tail_record
-                        .clone()
-                        .map(crate::wire_codec::record_wire),
-                };
-                #[cfg(all(loom, feature = "local"))]
-                let size = if crate::verification::fault_is(
-                    crate::verification::Fault::IgnorePageRecordBytes,
-                ) {
-                    encoded.path.len()
-                } else {
-                    prost::Message::encoded_len(&encoded)
-                };
-                #[cfg(not(all(loom, feature = "local")))]
-                let size = prost::Message::encoded_len(&encoded);
-                page_bytes = page_bytes.saturating_add(size).saturating_add(10);
-                if page_bytes > crate::MAX_COMMAND_BYTES {
-                    return Err(StreamError::LimitExceeded);
-                }
-                Ok(child)
-            })
-            .collect::<Result<Vec<_>, StreamError>>()?;
-        let result = ChildrenPage {
-            hierarchy_version: state.hierarchy_version,
-            children,
-            next_after,
-        };
-        Ok(result)
-    }
-
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.commit_inner(request, None)
-            .await
-            .map(|(value, _)| value)
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
@@ -294,6 +325,10 @@ impl StreamProvider for MemoryStream {
             .cloned()
             .ok_or(StreamError::NotFound)
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::NativeStreamProvider for MemoryStream {
     #[cfg(not(target_arch = "wasm32"))]
     fn native_read(
         &self,
@@ -303,6 +338,11 @@ impl StreamProvider for MemoryStream {
         let original = Arc::clone(&meter);
         crate::NativeProviderFuture::new(&original, async move {
             if let Err(error) = validate_limit(request.limit) {
+                return Ok(Err(error));
+            }
+            if let Some(key) = &request.key
+                && let Err(error) = key.validate()
+            {
                 return Ok(Err(error));
             }
             if let Err(error) = self.revisions.wait(&request.at_least).await {
@@ -316,32 +356,25 @@ impl StreamProvider for MemoryStream {
             if request.from > path.tail {
                 return Ok(Err(StreamError::OutOfRange));
             }
-            let count = usize::try_from((path.tail - request.from).min(u64::from(request.limit)))
-                .map_err(|_| std::io::ErrorKind::InvalidInput)?;
+            // Only the immutable pin and one inline page survive opening.
+            // History traversal and key selection belong to cursor pulls.
+            meter.admit_examination(1, 0)?;
+            let cursor = FiniteRead::new(path, request);
+            meter.record_examination(1, 0)?;
+            drop(state);
             let mut allocation = acyclic_native_runtime::ReadAllocation::empty(&meter);
-            let mut windows = crate::native::vector(count, &meter, &mut allocation)?;
-            let end = path
-                .tail
-                .min(request.from.saturating_add(u64::from(request.limit)));
-            admit_windows(path, request.from, end, &*meter, &mut windows)?;
-            windows.reverse();
             let cursor_meter = Arc::clone(&meter);
-            // A bounded native read never refreshes a history root. Keep only
-            // its already-admitted windows, rather than a live follow cursor.
-            let cursor: VecDeque<HistoryWindow> = windows.into();
             let cursor = stream::try_unfold(cursor, move |mut cursor| {
                 let meter = Arc::clone(&cursor_meter);
                 async move {
-                    let Some(window) = cursor.front() else {
+                    let Some(record) = cursor.peek(
+                        || meter.examine(1, 0),
+                        || std::io::ErrorKind::InvalidData.into(),
+                    )?
+                    else {
                         return Ok(None);
                     };
-                    let length = window
-                        .records
-                        .records
-                        .get(window.start)
-                        .ok_or(std::io::ErrorKind::InvalidData)?
-                        .value
-                        .len();
+                    let length = record.value.len();
                     meter.check()?;
                     let mut bytes = acyclic_native_runtime::NativeByteReservation::new(
                         Arc::clone(&meter),
@@ -350,21 +383,7 @@ impl StreamProvider for MemoryStream {
                     )?;
                     let copied = std::mem::size_of::<Record>() as u64;
                     meter.admit_examination(1, copied)?;
-                    let window = cursor.front_mut().ok_or(std::io::ErrorKind::InvalidData)?;
-                    let record = window
-                        .records
-                        .records
-                        .get(window.start)
-                        .cloned()
-                        .ok_or(std::io::ErrorKind::InvalidData)?;
-                    window.start += 1;
-                    record
-                        .sequence
-                        .checked_add(1)
-                        .ok_or(std::io::ErrorKind::InvalidData)?;
-                    if window.start == window.end {
-                        cursor.pop_front();
-                    }
+                    let record = cursor.take().ok_or(std::io::ErrorKind::InvalidData)?;
                     #[cfg(test)]
                     let read = crate::test_meter::trace::recordings_reordered()
                         .then(|| bytes.record(length));
@@ -390,7 +409,6 @@ impl StreamProvider for MemoryStream {
             )?;
             allocation.absorb(&mut frame)?;
             let cursor: crate::NativeRecordStream = Box::pin(cursor);
-            drop(state);
             Ok(Ok(crate::NativeStreamOutput::new(cursor, allocation)))
         })
     }
@@ -408,7 +426,6 @@ impl StreamProvider for MemoryStream {
                 .map(|value| crate::NativeStreamOutput::new(value, ReadAllocation::empty(&meter))))
         })
     }
-
     #[cfg(not(target_arch = "wasm32"))]
     fn native_inspect_idempotency(
         &self,
@@ -438,25 +455,113 @@ impl StreamProvider for MemoryStream {
         })
     }
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit(
+    fn native_commit_guarded<E, F, Fut>(
         &self,
         request: CommitRequest,
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, CommitOutcome> {
-        self.native_commit_guarded(request, deadline, meter, || futures::future::ready(Ok(())))
+        before: F,
+    ) -> crate::NativeProviderFuture<'_, CommitOutcome, E>
+    where
+        Self: Sized,
+        E: From<StreamError> + Send + 'static,
+        F: FnMut() -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = Result<(), E>> + Send + 'static,
+    {
+        self.guarded_commit(request, deadline, meter, before, std::convert::identity)
     }
-
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit_guarded<E, F, Fut>(
+    fn native_prepare_commit(
+        &self,
+        request: CommitRequest,
+        maximum_record_bytes: usize,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
+        Work::start(meter, |work| async move {
+            let provider = self.with_context(Arc::clone(&work));
+            let result = async {
+                let (plan, recovery) = provider.prepare(request, maximum_record_bytes).await?;
+                work.reserve_write(maximum_record_bytes)?;
+                let slot = work.record(crate::native::NativeCommitRecordSlot::new(&work.meter))?;
+                let ingress = Arc::clone(&slot);
+                let writer_work = Arc::clone(&work);
+                let future = work.record(crate::NativeProviderFuture::try_new(
+                    &work.meter,
+                    async move {
+                        let result = match ingress.receive().await {
+                            Ok(body) => plan.settle(body).await,
+                            Err(error) => Err(error),
+                        };
+                        writer_work.finish(result)
+                    },
+                ))?;
+                Ok((
+                    crate::PreparedNativeCommit::new(future, recovery, slot, maximum_record_bytes),
+                    None,
+                ))
+            }
+            .await;
+            work.finish(result)
+        })
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_write(
+        &self,
+        request: crate::WriteRequest,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'_, crate::WriteOutcome> {
+        match request {
+            crate::WriteRequest::Append(request) => {
+                Work::start(meter, |work| async move {
+                    let provider = self.with_context(Arc::clone(&work));
+                    let existing = provider.has_replay(&request.idempotency_key).await;
+                    let existing = match existing {
+                        Ok(existing) => existing,
+                        Err(error) => return work.finish(Err(error)),
+                    };
+                    if !existing
+                        && let Err(error) = work.reserve_write(
+                            request
+                                .records
+                                .iter()
+                                .map(AppendRecord::payload_bytes)
+                                .sum(),
+                        )
+                    {
+                        return work.finish(Err(error));
+                    }
+                    work.finish(provider.append_inner(request).await.map(
+                        |(outcome, allocation)| (crate::WriteOutcome::Append(outcome), allocation),
+                    ))
+                })
+            }
+            crate::WriteRequest::Commit(request) => self.guarded_commit(
+                request,
+                None,
+                meter,
+                || futures::future::ready(Ok(())),
+                crate::WriteOutcome::Commit,
+            ),
+            crate::WriteRequest::Fork(_) => {
+                crate::NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl MemoryStream {
+    fn guarded_commit<T, C, E, F, Fut>(
         &self,
         mut request: CommitRequest,
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         mut before: F,
-    ) -> crate::NativeProviderFuture<'_, CommitOutcome, E>
+        convert: C,
+    ) -> crate::NativeProviderFuture<'_, T, E>
     where
-        Self: Sized,
+        T: Send + 'static,
+        C: FnOnce(CommitOutcome) -> T + Send + 'static,
         E: From<StreamError> + Send + 'static,
         F: FnMut() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<(), E>> + Send + 'static,
@@ -514,96 +619,7 @@ impl StreamProvider for MemoryStream {
                 }
             }
             .await;
-            work.finish(result)
+            work.finish(result.map(|(outcome, allocation)| (convert(outcome), allocation)))
         })
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_prepare_commit(
-        &self,
-        request: CommitRequest,
-        maximum_record_bytes: usize,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, crate::PreparedNativeCommit> {
-        Work::start(meter, |work| async move {
-            let provider = self.with_context(Arc::clone(&work));
-            let result = async {
-                let (plan, recovery) = provider.prepare(request, maximum_record_bytes).await?;
-                work.reserve_write(maximum_record_bytes)?;
-                let slot = work.record(crate::native::NativeCommitRecordSlot::new(&work.meter))?;
-                let ingress = Arc::clone(&slot);
-                let writer_work = Arc::clone(&work);
-                let future = work.record(crate::NativeProviderFuture::try_new(
-                    &work.meter,
-                    async move {
-                        let result = match ingress.receive().await {
-                            Ok(body) => plan.settle(body).await,
-                            Err(error) => Err(error),
-                        };
-                        writer_work.finish(result)
-                    },
-                ))?;
-                Ok((
-                    crate::PreparedNativeCommit::new(future, recovery, slot, maximum_record_bytes),
-                    None,
-                ))
-            }
-            .await;
-            work.finish(result)
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_append(
-        &self,
-        request: AppendRequest,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, AppendOutcome> {
-        Work::start(meter, |work| async move {
-            let provider = self.with_context(Arc::clone(&work));
-            let existing = provider.has_replay(&request.idempotency_key).await;
-            let existing = match existing {
-                Ok(existing) => existing,
-                Err(error) => return work.finish(Err(error)),
-            };
-            if !existing
-                && let Err(error) = work.reserve_write(
-                    request
-                        .records
-                        .iter()
-                        .map(AppendRecord::payload_bytes)
-                        .sum(),
-                )
-            {
-                return work.finish(Err(error));
-            }
-            work.finish(provider.append_inner(request).await)
-        })
-    }
-}
-
-/// Admit the history windows that cover `from..end`, newest first.
-#[cfg(not(target_arch = "wasm32"))]
-fn admit_windows(
-    path: &PathState,
-    from: u64,
-    end: u64,
-    meter: &dyn NativeReadMeter,
-    windows: &mut Vec<HistoryWindow>,
-) -> std::io::Result<()> {
-    if let Some(window) = path.prefix_window(from, end) {
-        meter.admit_examination(1, 0)?;
-        windows.push(window);
-        return meter.record_examination(1, 0);
-    }
-    let mut history = HistoryWalk::new(path.history.as_ref(), end, from);
-    while history.next.is_some() && history.ceiling > from {
-        meter.admit_examination(1, 0)?;
-        if let Some((History::Batch { records, .. }, ceiling)) = history.next()
-            && let Some(window) = history_window(Arc::clone(records), ceiling, from)
-        {
-            windows.push(window);
-        }
-        meter.record_examination(1, 0)?;
-    }
-    Ok(())
 }

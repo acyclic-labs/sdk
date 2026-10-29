@@ -81,7 +81,10 @@ async fn compact_receipts_replay_with_full_facts_and_empty_fork_time_after_reope
         fork_observed.outcome,
         IdempotencyOutcome::Commit(fork_facts.clone())
     );
-    let reopened = MemoryStream::default();
+    // Recovery binds the externally owned issuer before installing retained
+    // facts. Snapshot bytes never choose the authority of a fresh provider.
+    let issuer = provider.revisions.current();
+    let reopened = MemoryStream::default().with_authority(issuer.scope, issuer.incarnation);
     reopened
         .install_state(&provider.encode_state().await)
         .await?;

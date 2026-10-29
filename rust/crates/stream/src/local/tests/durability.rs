@@ -66,7 +66,7 @@ async fn phase_barrier_preserves_live_delivery_and_reopens_the_accepted_prefix()
         let directory = tempfile::tempdir()?;
         let limits = LocalStreamLimits::default();
         let provider = LocalStream::open(directory.path(), limits).await?;
-        assert!(provider.supports_deferred_durability());
+        assert!(provider.context().deferred_durability());
         let path = StreamPath::new("phase")?;
         for ordinal in 0..16 {
             let request = keyed_append("phase", ordinal)?;

@@ -19,6 +19,7 @@ use acyclic_fs::{
 use acyclic_fs::{LogicalObjectStore, StreamAuthorityStore};
 use acyclic_objects::MemoryObjects;
 use acyclic_stream::OwnedBytes;
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     AppendRequest, MemoryStream, ReadRequest, StreamError, StreamPath, StreamProvider,
 };
@@ -37,8 +38,8 @@ struct PausingStream {
 
 #[async_trait::async_trait]
 impl StreamProvider for PausingStream {
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        self.inner.operation_claims()
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
     }
 
     async fn inspect_idempotency(
@@ -48,25 +49,50 @@ impl StreamProvider for PausingStream {
         self.inner.inspect_idempotency(key).await
     }
 
-    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
-        self.inner.head(path).await
-    }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.inner.tail(path).await
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        self.inner.heads(request).await
     }
 
-    async fn append(
+    fn write(
         &self,
-        request: AppendRequest,
-    ) -> Result<acyclic_stream::AppendOutcome, StreamError> {
-        self.inner.append(request).await
-    }
-
-    async fn fork(
-        &self,
-        request: acyclic_stream::ForkRequest,
-    ) -> Result<acyclic_stream::ForkReceipt, StreamError> {
-        self.inner.fork(request).await
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Append(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move { self.inner.append(request).await },
+                    acyclic_stream::WriteOutcome::Append,
+                ))
+            }
+            acyclic_stream::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { self.inner.fork(request).await },
+                acyclic_stream::WriteOutcome::Fork,
+            )),
+            acyclic_stream::WriteRequest::Commit(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        if request.mutations.iter().any(|mutation| {
+            matches!(
+                mutation,
+                acyclic_stream::CommitMutation::Append { path, .. } if path == &self.record_path
+            )
+        }) && self.pause_record_commit.swap(false, Ordering::SeqCst)
+        {
+            self.entered.notify_one();
+            self.resume.notified().await;
+        }
+                        self.inner.commit(request).await
+                    },
+                    acyclic_stream::WriteOutcome::Commit,
+                ))
+            }
+        }
     }
 
     async fn read(
@@ -83,30 +109,6 @@ impl StreamProvider for PausingStream {
         self.inner.follow(request).await
     }
 
-    async fn children_page(
-        &self,
-        request: acyclic_stream::ChildrenPageRequest,
-    ) -> Result<acyclic_stream::ChildrenPage, StreamError> {
-        self.inner.children_page(request).await
-    }
-
-    async fn commit(
-        &self,
-        request: acyclic_stream::CommitRequest,
-    ) -> Result<acyclic_stream::CommitOutcome, StreamError> {
-        if request.mutations.iter().any(|mutation| {
-            matches!(
-                mutation,
-                acyclic_stream::CommitMutation::Append { path, .. } if path == &self.record_path
-            )
-        }) && self.pause_record_commit.swap(false, Ordering::SeqCst)
-        {
-            self.entered.notify_one();
-            self.resume.notified().await;
-        }
-        self.inner.commit(request).await
-    }
-
     async fn read_commit(
         &self,
         commit_id: acyclic_stream::CommitId,
@@ -114,6 +116,9 @@ impl StreamProvider for PausingStream {
         self.inner.read_commit(commit_id).await
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for PausingStream {}
 
 #[tokio::test]
 #[allow(
@@ -376,6 +381,7 @@ async fn deleting_workspace_preserves_committed_stream_history()
     );
     let retained = streams
         .read(ReadRequest {
+            key: None,
             path: records,
             from: 0,
             limit: u32::try_from(after)?,
@@ -545,6 +551,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
     let inherited = streams.tail(source_lineage.clone()).await?;
     let mut source_records = streams
         .read(ReadRequest {
+            key: None,
             path: source_lineage,
             from: 0,
             limit: u32::try_from(inherited)?,
@@ -553,6 +560,7 @@ async fn workspace_fork_uses_one_native_stream_prefix_and_independent_suffixes()
         .await?;
     let mut child_records = streams
         .read(ReadRequest {
+            key: None,
             path: child_lineage,
             from: 0,
             limit: u32::try_from(inherited)?,

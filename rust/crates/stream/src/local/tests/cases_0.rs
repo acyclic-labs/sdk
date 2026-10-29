@@ -176,9 +176,9 @@ fn cancelled_persist_retains_ownership_until_the_journal_task_stops()
 /// Serializes the tests that install [`JOURNAL_PERSIST_BLOCKER`], which is
 static PERSIST_BLOCKER_TESTS: Mutex<()> = Mutex::new(());
 
-/// A cancelled mutation stays invisible until its frame is durable: a
+/// Cancellation retains accepted visibility while durability has its own receipt.
 #[test]
-fn a_cancelled_mutation_is_invisible_until_its_frame_is_durable()
+fn cancellation_keeps_accepted_visibility_and_durable_receipts_distinct()
 -> Result<(), Box<dyn std::error::Error>> {
     let _serial = PERSIST_BLOCKER_TESTS
         .lock()
@@ -198,15 +198,16 @@ fn a_cancelled_mutation_is_invisible_until_its_frame_is_durable()
             .map_err(|_| "journal-persist test hook was poisoned")? =
             Some((journal_identity, started_tx, release_rx));
         let path = StreamPath::new("cancelled-visibility")?;
+        let key = crate::IdempotencyKey::unique();
         let appending = tokio::spawn({
-            let (provider, path) = (provider.clone(), path.clone());
+            let (provider, path, key) = (provider.clone(), path.clone(), key.clone());
             async move {
                 provider
                     .append(AppendRequest {
                         path,
                         records: vec![(Bytes::from_static(b"record")).into()],
                         if_tail: Some(0),
-                        idempotency_key: crate::IdempotencyKey::unique(),
+                        idempotency_key: key,
                     })
                     .await
             }
@@ -215,14 +216,67 @@ fn a_cancelled_mutation_is_invisible_until_its_frame_is_durable()
         appending.abort();
         assert!(appending.await.is_err_and(|error| error.is_cancelled()));
 
-        let reading = tokio::spawn({
-            let (provider, path) = (provider.clone(), path.clone());
-            async move { provider.tail(path).await }
-        });
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        assert!(!reading.is_finished(), "the unsynced record is not visible");
+        assert_eq!(provider.tail(path.clone()).await?, 1);
+        let observed = provider
+            .inspect_idempotency(key.clone())
+            .await?
+            .ok_or("missing accepted outcome")?;
+        let crate::IdempotencyOutcome::Append(AppendOutcome::Committed(accepted)) =
+            observed.outcome
+        else {
+            return Err("unexpected accepted family".into());
+        };
+        let envelope = provider.read_commit(accepted.commit_id).await?;
+        assert_eq!(envelope.commit_id, accepted.commit_id);
+        let meter = Arc::new(crate::test_meter::Meter::default());
+        {
+            let tail = provider
+                .native_tail(path.clone(), meter.original())
+                .await??;
+            assert_eq!(*tail.value(), 1);
+            let observation = provider
+                .native_inspect_idempotency(key, meter.original())
+                .await??;
+            assert!(observation.value().is_some());
+            let mut records = provider
+                .native_read(
+                    ReadRequest {
+                        key: None,
+                        path: path.clone(),
+                        from: 0,
+                        limit: 1,
+                        at_least: Default::default(),
+                    },
+                    meter.original(),
+                )
+                .await??;
+            let record = records
+                .value_mut()
+                .next()
+                .await
+                .ok_or("missing accepted record")???;
+            assert_eq!(record.value().value.as_ref(), b"record");
+        }
+        meter.assert_refunded();
+        assert_eq!(
+            meter
+                .durability_operations
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+
+        assert!(provider.durable_receipt(path.clone(), 2).await?.is_none());
+        let receipt = provider.durable_receipt(path, 1);
+        futures::pin_mut!(receipt);
+        assert!(
+            futures::poll!(receipt.as_mut()).is_pending(),
+            "an accepted record has no durable receipt before the flush"
+        );
         release_tx.send(())?;
-        assert_eq!(reading.await??, 1, "the persisted record is visible");
+        assert_eq!(
+            receipt.await?.ok_or("missing durable receipt")?.through(),
+            1
+        );
         Ok::<_, Box<dyn std::error::Error>>(())
     })
 }
@@ -403,6 +457,7 @@ async fn concurrent_commits_on_distinct_paths_replay_after_reopen()
         assert_eq!(reopened.tail(StreamPath::new(&path)?).await?, COMMITS);
         let records = reopened
             .read(ReadRequest {
+                key: None,
                 path: StreamPath::new(&path)?,
                 from: 0,
                 limit: 100,
@@ -444,7 +499,7 @@ async fn every_partial_current_frame_recovers_only_the_accepted_prefix()
     let directory = tempfile::tempdir()?;
     let limits = LocalStreamLimits::default();
     let path = directory.path().join(JOURNAL_FILE);
-    let command = Command::Append(AppendRequest {
+    let command = WriteRequest::Append(AppendRequest {
         path: StreamPath::new("partial")?,
         records: vec![(Bytes::from_static(b"record")).into()],
         if_tail: Some(0),
@@ -594,7 +649,7 @@ async fn recovery_rejects_receipt_overcapacity_without_rewriting_the_prefix()
     };
     let path = directory.path().join(JOURNAL_FILE);
     let before = std::fs::read(&path)?;
-    let frame = PreparedFrame::encode(&Command::Append(second), 1, None)?;
+    let frame = PreparedFrame::encode(&WriteRequest::Append(second), 1, None)?;
     let mut damaged = before.clone();
     damaged.extend_from_slice(&frame.encoded);
     damaged.extend_from_slice(&[9, 8, 7]);
@@ -682,6 +737,7 @@ async fn journal_replay_preserves_monotonic_commit_times() -> Result<(), Box<dyn
         .await?;
     let records = reopened
         .read(ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: 3,
@@ -819,6 +875,7 @@ async fn filtered_local_operations_preserve_caller() -> Result<(), Box<dyn std::
         assert!(
             provider
                 .read(ReadRequest {
+                    key: None,
                     path: StreamPath::new("missing")?,
                     from: 0,
                     limit: 1,

@@ -95,6 +95,85 @@ fn bind(
         1,
     )
 }
+
+#[tokio::test]
+async fn revision_only_bindings_recheck_credential_context_without_resource_access() {
+    let state = State::new();
+    let auth = Arc::new(authority(state.clone()));
+    let mut slots = Slots::default();
+    let bytes = token("allowed", |block| {
+        block.caveats.push(Caveat {
+            kind: CaveatKind::Limits(acyclic_auth::contract::Limits {
+                rps: None,
+                burst: None,
+                bytes_per_s: None,
+                channels: Some(1),
+                concurrency: None,
+                bytes: None,
+                spend_micros: None,
+                tokens: None,
+            }),
+        });
+        block.caveats.push(Caveat {
+            kind: CaveatKind::Audience(ResourcePattern {
+                name: "workers:/test".into(),
+                prefix: false,
+            }),
+        });
+        block.caveats.push(Caveat {
+            kind: CaveatKind::Holder(Holder {
+                account: Some("account".into()),
+            }),
+        });
+    });
+    auth.register(&mut slots, 0, &bytes, 2).await.unwrap();
+    let request = crate::HeadsRequest {
+        durable_through: None,
+        projection: Default::default(),
+        paths: Default::default(),
+        children: None,
+        limit: 1,
+        at_least: Default::default(),
+    };
+    let (mut binding, _, _) = auth.bind_heads(&slots, 0, &request, 1).unwrap();
+    // A context observation conveys neither root access nor record access.
+    let named = crate::HeadsRequest {
+        paths: [StreamPath::new("allowed").unwrap()].into(),
+        ..request.clone()
+    };
+    assert!(auth.bind_heads(&slots, 0, &named, 1).is_err());
+    assert!(auth.bind_heads(&slots, 0, &request, 2).is_err());
+    let other_holder = Arc::new(
+        Authority::new(state.clone(), "workers:/test".into(), Some("other".into())).unwrap(),
+    );
+    assert!(other_holder.bind_heads(&slots, 0, &request, 1).is_err());
+    let other_audience = Arc::new(
+        Authority::new(
+            state.clone(),
+            "workers:/other".into(),
+            Some("account".into()),
+        )
+        .unwrap(),
+    );
+    assert!(other_audience.bind_heads(&slots, 0, &request, 1).is_err());
+    let verified = verify::verify(&bytes, &signed::Snapshot::default(), signed::NOW).unwrap();
+    state.publish(
+        signed::Snapshot {
+            revoked_blocks: vec![*verified.block_ids().first().unwrap()],
+            ..Default::default()
+        },
+        signed::NOW,
+    );
+    assert_eq!(
+        auth.validate(&slots, &mut binding, 1),
+        Err(Rejection::Revoked)
+    );
+    state.publish(signed::Snapshot::default(), 1000);
+    assert_eq!(
+        auth.validate(&slots, &mut binding, 1),
+        Err(Rejection::Expired)
+    );
+}
 #[test]
 fn slots_reject_forgery_expiry_wrong_audience_holder_and_widening() {
     let state = State::new();

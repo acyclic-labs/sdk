@@ -2,9 +2,9 @@
 //! and generation resolution. These exercise the complete hosted RPC boundary.
 use super::*;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
-    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyObservation,
-    MemoryStream, ReadRequest, RecordStream, StreamError, StreamPath, StreamProvider,
+    AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
+    ForkReceipt, ForkRequest, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream,
+    StreamError, StreamPath, StreamProvider,
 };
 use std::sync::Mutex;
 use tonic::Code;
@@ -40,29 +40,34 @@ impl FaultStream {
 
 #[async_trait::async_trait]
 impl StreamProvider for FaultStream {
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        self.inner.operation_claims()
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
     }
 
-    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
-        if let Some(error) = self.take_failure(&path) {
-            return Err(error);
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        for path in &request.paths {
+            if let Some(error) = self.take_failure(path) {
+                return Err(error);
+            }
         }
-        self.inner.head(path).await
-    }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        if let Some(error) = self.take_failure(&path) {
-            return Err(error);
-        }
-        self.inner.tail(path).await
+        self.inner.heads(request).await
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.inner.read(request).await
     }
 
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.inner.commit(request).await
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        self.inner.write(request)
     }
 
     async fn inspect_idempotency(
@@ -72,14 +77,6 @@ impl StreamProvider for FaultStream {
         self.inner.inspect_idempotency(key).await
     }
 
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.inner.append(request).await
-    }
-
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.inner.fork(request).await
-    }
-
     async fn follow(
         &self,
         request: acyclic_stream::FollowRequest,
@@ -87,17 +84,13 @@ impl StreamProvider for FaultStream {
         self.inner.follow(request).await
     }
 
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.inner.children_page(request).await
-    }
-
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.inner.read_commit(id).await
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for FaultStream {}
 
 fn service() -> Result<(Service, Arc<FaultStream>), Status> {
     let stream = Arc::new(FaultStream::default());

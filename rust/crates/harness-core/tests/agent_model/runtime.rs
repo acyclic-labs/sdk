@@ -53,7 +53,7 @@ fn store(provider: &Arc<MemoryStream>) -> Result<Store<MemoryStream>> {
 #[tokio::test]
 async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
     use acyclic_actors::guest::{CancellationToken, Delivery, Handler, SubscriptionCuts, Trigger};
-    use acyclic_stream::{ReadRequest, StreamProvider};
+    use acyclic_stream::{ReadRequest, StreamProvider, StreamProviderExt};
     use futures::TryStreamExt as _;
 
     struct Observed(Arc<AtomicUsize>, Spawner);
@@ -102,6 +102,7 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
         .read(ReadRequest {
             path: root.inbox()?,
             from: inbox,
+            key: None,
             limit: 1,
             at_least: Default::default(),
         })

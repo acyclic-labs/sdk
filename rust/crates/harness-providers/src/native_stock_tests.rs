@@ -276,6 +276,7 @@ pub(crate) async fn run_stock_turn<O: acyclic_fs::AsyncObjectStore + 'static>(
 async fn records(stream: &MemoryStream, path: StreamPath) -> Result<Vec<Vec<u8>>> {
     let records = match stream
         .read(ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: 64,

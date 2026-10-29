@@ -1,5 +1,6 @@
 //! Atomic window and exact-expiry gate transactions on Streams.
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 use futures::StreamExt as _;
 
 /// Operation-window state stored beside generation authority in one Stream
@@ -67,6 +68,7 @@ impl<P: acyclic_stream::StreamProvider + ?Sized> OperationWindowStore
         let mut records = self
             .provider
             .read(acyclic_stream::ReadRequest {
+                key: None,
                 path,
                 from: tail - 1,
                 limit: 1,

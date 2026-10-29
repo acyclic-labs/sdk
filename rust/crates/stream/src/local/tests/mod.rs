@@ -12,6 +12,9 @@ mod wakeups;
 mod compaction;
 mod durability;
 mod durability_retries;
+mod journal_batch;
 mod receipts;
 mod revisions;
 mod watermarks;
+
+mod replicated;

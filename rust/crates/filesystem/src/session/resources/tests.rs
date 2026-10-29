@@ -2,6 +2,7 @@ use super::*;
 use crate::distributed::StreamAuthorityStore;
 use crate::{EmbeddedCapabilities, MemoryObjectStore, Workspace};
 use acyclic_auth::{contract::*, testing as signed};
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{FollowFilter, MemoryStream};
 
 type Engine = Fs<StreamAuthorityStore<MemoryStream>, MemoryObjectStore>;

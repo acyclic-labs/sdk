@@ -37,7 +37,7 @@ struct Root {
 
 impl Discovery {
     pub(super) async fn stage<
-        P: acyclic_stream::StreamProvider,
+        P: acyclic_harness::store::JournalProvider,
         A: acyclic_fs::AsyncAuthorityStore + 'static,
         O: acyclic_fs::AsyncObjectStore + 'static,
     >(

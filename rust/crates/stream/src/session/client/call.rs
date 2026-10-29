@@ -30,7 +30,7 @@ impl Client {
     }
 
     /// Reads one page of direct children on the shared session, with the
-    /// semantics of [`crate::StreamProvider::children_page`]. The host must
+    /// semantics of [`crate::StreamProviderExt::children_page`]. The host must
     /// authorize `streams/list` on the parent; each child is returned only
     /// when the credential may list it, and its tail record only when it may
     /// follow that stream. A page is a pure read: a lost connection reissues
@@ -50,6 +50,31 @@ impl Client {
         wire_codec::children_page_from_response(
             wire::ChildrenPageResponse::decode(reply).map_err(|_| StreamError::InvalidResponse)?,
         )
+    }
+
+    /// Observes named heads and children at one cut, on the shared credited session.
+    /// A revision-only request checks credential context without a resource
+    /// grant; named heads and children retain their resource authorization.
+    pub async fn heads(
+        &self,
+        mut request: crate::HeadsRequest,
+        credential: u32,
+    ) -> Result<crate::Heads, StreamError> {
+        request.validate()?;
+        request.at_least = self.revisions.floor(&request.at_least);
+        let reply = self
+            .reply(
+                Kind::Heads(wire_codec::heads_request_to_wire(request.clone())),
+                credential,
+                wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
+            )
+            .await?;
+        let view = wire_codec::heads_from_response(
+            wire::HeadsResponse::decode(reply).map_err(|_| StreamError::InvalidResponse)?,
+        )?;
+        view.validate_for(&request)?;
+        self.revisions.observe(&view.snapshot);
+        Ok(view)
     }
 
     async fn reply(

@@ -28,6 +28,18 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         &self.path
     }
 
+    /// Submits one canonical commit across this provider's paths. The returned
+    /// owned handle outlives this Stream and any waiter; cancellation cannot
+    /// withdraw a submitted publication. Its exact identity is recoverable.
+    #[cfg(any(not(target_arch = "wasm32"), feature = "wasm"))]
+    pub fn submit(&self, request: CommitRequest) -> crate::Pending {
+        crate::Pending::submit(
+            Arc::clone(&self.provider),
+            request,
+            &crate::runtime::PlatformExecutor,
+        )
+    }
+
     /// One atomic observation of history, durability and inherited origin.
     pub async fn head(&self) -> Result<PathHead, StreamError> {
         self.provider.head(self.path.clone()).await
@@ -99,6 +111,25 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
     pub async fn read(&self, from: u64, limit: u32) -> Result<RecordStream, StreamError> {
         self.provider
             .read(ReadRequest {
+                key: None,
+                path: self.path.clone(),
+                from,
+                limit,
+                at_least: Default::default(),
+            })
+            .await
+    }
+
+    /// Reads matching opaque header keys in a bounded historical interval.
+    pub async fn seek(
+        &self,
+        key: ReadKeySeek,
+        from: u64,
+        limit: u32,
+    ) -> Result<RecordStream, StreamError> {
+        self.provider
+            .read(ReadRequest {
+                key: Some(key),
                 path: self.path.clone(),
                 from,
                 limit,
@@ -129,6 +160,7 @@ impl<P: StreamProvider + ?Sized> Stream<P> {
         Ok(records_only(
             self.provider
                 .follow(FollowRequest {
+                    when_absent: Default::default(),
                     path: self.path.clone(),
                     from,
                     preceding: None,

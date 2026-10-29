@@ -1,6 +1,7 @@
 use super::*;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use crate::{EmbeddedCapabilities, Fs, MemoryObjectStore};
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{FollowFilter, MemoryStream, ReadRequest, StreamProvider};
 use std::error::Error;
 
@@ -191,6 +192,7 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
     assert_eq!(streams.tail(path.clone()).await?, 1);
     let initial = streams
         .read(ReadRequest {
+            key: None,
             path: path.clone(),
             from: 0,
             limit: 64,
@@ -220,6 +222,7 @@ async fn published_changes_share_the_authority_commit_and_filter_before_follow()
     let mut follow = acyclic_stream::records_only(
         streams
             .follow(acyclic_stream::FollowRequest {
+                when_absent: Default::default(),
                 path: path.clone(),
                 from: 1,
                 preceding: None,
@@ -537,6 +540,7 @@ async fn local_change_records_survive_reopen_with_their_authority_commit() -> Te
     let tail = streams.tail(path.clone()).await?;
     let before: Vec<_> = streams
         .read(ReadRequest {
+            key: None,
             path: path.clone(),
             from: 0,
             limit: 64,
@@ -562,6 +566,7 @@ async fn local_change_records_survive_reopen_with_their_authority_commit() -> Te
     let streams = reopened.authority().provider();
     let after: Vec<_> = streams
         .read(ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: 64,

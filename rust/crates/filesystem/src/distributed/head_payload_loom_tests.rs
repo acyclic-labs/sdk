@@ -1,5 +1,6 @@
 use super::*;
 use crate::sync::atomic::{AtomicBool, Ordering};
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitId, CommittedEnvelope, ForkReceipt, ForkRequest,
     IdempotencyKey, IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamError,
@@ -89,15 +90,15 @@ fn ready<F: Future>(future: F) -> F::Output {
 
 #[async_trait::async_trait]
 impl StreamProvider for ModelStream {
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        self.inner.operation_claims()
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
     }
 
-    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
-        self.call(self.inner.head(path)).await
-    }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.call(self.inner.tail(path)).await
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        self.call(self.inner.heads(request)).await
     }
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         if request.path.as_str().ends_with("/records") {
@@ -112,14 +113,37 @@ impl StreamProvider for ModelStream {
         }
         self.call(self.inner.read(request)).await
     }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let result = self.inner.commit(request).await;
-        if matches!(self.change, Change::Fence | Change::Retire)
-            && matches!(result, Ok(CommitOutcome::Committed(_)))
-        {
-            self.completed.store(true, Ordering::SeqCst);
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Commit(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        let result = self.inner.commit(request).await;
+                        if matches!(self.change, Change::Fence | Change::Retire)
+                            && matches!(result, Ok(CommitOutcome::Committed(_)))
+                        {
+                            self.completed.store(true, Ordering::SeqCst);
+                        }
+                        result
+                    },
+                    acyclic_stream::WriteOutcome::Commit,
+                ))
+            }
+            acyclic_stream::WriteRequest::Append(_) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { Err(StreamError::Unsupported) },
+                acyclic_stream::WriteOutcome::Append,
+            )),
+            acyclic_stream::WriteRequest::Fork(_) => Box::pin(futures::TryFutureExt::map_ok(
+                async move { Err(StreamError::Unsupported) },
+                acyclic_stream::WriteOutcome::Fork,
+            )),
         }
-        result
     }
     async fn inspect_idempotency(
         &self,
@@ -127,12 +151,7 @@ impl StreamProvider for ModelStream {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         Err(StreamError::Unsupported)
     }
-    async fn append(&self, _: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        Err(StreamError::Unsupported)
-    }
-    async fn fork(&self, _: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        Err(StreamError::Unsupported)
-    }
+
     async fn follow(
         &self,
         _request: acyclic_stream::FollowRequest,
@@ -143,6 +162,9 @@ impl StreamProvider for ModelStream {
         Err(StreamError::Unsupported)
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for ModelStream {}
 
 #[derive(Clone, Copy)]
 enum Change {

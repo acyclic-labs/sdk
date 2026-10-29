@@ -1,5 +1,5 @@
 use super::*;
-use acyclic_stream::StreamProvider as _;
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_test_support::{AllocationInfo, differential};
 use std::cell::Cell;
 

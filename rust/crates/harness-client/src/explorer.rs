@@ -14,7 +14,7 @@
 use crate::reader::RecordBytes;
 use crate::reader::{Priority, Reader, ReaderPolicy, Want};
 use acyclic_harness_core::agent::{AGENTS, AgentPath, AgentRecord, StatusRecord};
-use acyclic_stream::{StreamError, StreamPath};
+use acyclic_stream::{StreamError, StreamPath, StreamProviderExt as _};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 /// Rows of lookahead in the scroll direction, at most.

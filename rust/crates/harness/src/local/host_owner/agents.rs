@@ -300,6 +300,7 @@ impl HostDriver {
         let mut records = match self
             .stream
             .read(ReadRequest {
+                key: None,
                 path: agent.path.conversation().map_err(storage)?,
                 from: agent.conversation_tail - 1,
                 limit: 1,

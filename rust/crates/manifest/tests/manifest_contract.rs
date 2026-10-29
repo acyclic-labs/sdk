@@ -1,5 +1,6 @@
 //! Downstream admission, authorization, bounded-work and generated contract properties.
 use acyclic_manifest::*;
+use acyclic_stream::StreamProviderExt as _;
 use proptest::prelude::*;
 use serde_json::{Value, json};
 #[path = "support/admission.rs"]

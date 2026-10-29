@@ -7,7 +7,7 @@ async fn prepared_memory_and_local_commits_fund_settlement_and_recovery_codec_wo
 -> Result<(), Box<dyn std::error::Error>> {
     for local in [false, true] {
         let directory = tempfile::tempdir()?;
-        let provider: Arc<dyn StreamProvider> = if local {
+        let provider: Arc<dyn crate::NativeStreamProvider> = if local {
             Arc::new(LocalStream::open(directory.path(), LocalStreamLimits::default()).await?)
         } else {
             Arc::new(MemoryStream::new(MemoryLimits::default()))
@@ -90,6 +90,7 @@ async fn native_denial_precedes_read_capture() -> Result<(), Box<dyn std::error:
     let error = provider
         .native_read(
             ReadRequest {
+                key: None,
                 path: StreamPath::new("uncaptured")?,
                 from: 0,
                 limit: 1,
@@ -382,8 +383,11 @@ fn prepared_partial_write_stops_at_exact_accepted_boundary()
     }
     let meter = Arc::new(Meter::local());
     let work = crate::native::Work::new(meter.original())?;
-    let mut plan =
-        PreparedFrame::encode(&Command::Commit(keyed_commit("partial", 0)?), 0, Some(work))?;
+    let mut plan = PreparedFrame::encode(
+        &WriteRequest::Commit(keyed_commit("partial", 0)?),
+        0,
+        Some(work),
+    )?;
     let mut writer = Partial { bytes: Vec::new() };
     let physical = plan.write(&mut writer);
     assert!(matches!(physical, Err(LocalStreamError::IncompleteFrame)));

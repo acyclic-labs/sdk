@@ -246,6 +246,7 @@ pub(super) async fn large_context_payload_preserves_instruction_and_typed_tool_e
     assert!(record.content.descriptor().byte_length() > MAX_RECORD_BYTES as u64);
     let mut records = stream
         .read(ReadRequest {
+            key: None,
             path: path.clone(),
             from: 0,
             limit: 1,

@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{MemoryStream, StreamProvider as _};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;

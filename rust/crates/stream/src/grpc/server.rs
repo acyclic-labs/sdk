@@ -65,6 +65,24 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
         .await
     }
 
+    async fn heads(
+        &self,
+        request: Request<wire::HeadsRequest>,
+    ) -> Result<Response<wire::HeadsResponse>, Status> {
+        unary(serve_span!("heads"), async {
+            check_command_size(&request)?;
+            let request = wire_codec::heads_from_wire(request.into_inner())
+                .map_err(|error| error_status(&error))?;
+            let view = self
+                .provider
+                .heads(request)
+                .await
+                .map_err(|error| error_status(&error))?;
+            Ok(wire_codec::heads_to_wire(view))
+        })
+        .await
+    }
+
     async fn head(
         &self,
         request: Request<wire::HeadRequest>,

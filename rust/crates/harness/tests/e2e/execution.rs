@@ -36,8 +36,11 @@ pub(super) struct Outcome<P, A: 'static = MemoryAuthorityBackend, O: 'static = M
     operation: OperationId,
 }
 
-impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
-    Outcome<P, A, O>
+impl<
+    P: acyclic_harness::store::JournalProvider,
+    A: AsyncAuthorityStore + 'static,
+    O: AsyncObjectStore + 'static,
+> Outcome<P, A, O>
 {
     /// Event kinds and loaded model events: identical scenario data must
     /// replay the same observations on every Stream provider.
@@ -55,7 +58,7 @@ impl<P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 
 }
 
 /// Runs one executor scenario with its journal on `stream`.
-pub(super) async fn run_on<P: StreamProvider>(
+pub(super) async fn run_on<P: acyclic_harness::store::JournalProvider>(
     case: Scenario,
     stream: Arc<P>,
 ) -> TestResult<Outcome<P>> {
@@ -63,7 +66,7 @@ pub(super) async fn run_on<P: StreamProvider>(
 }
 
 pub(super) async fn run_with_filesystem<
-    P: StreamProvider,
+    P: acyclic_harness::store::JournalProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 >(
@@ -125,7 +128,7 @@ pub(super) async fn workspace(
     workspace_on(seed, Arc::new(MemoryStream::default())).await
 }
 
-async fn workspace_on<P: StreamProvider>(
+async fn workspace_on<P: acyclic_harness::store::JournalProvider>(
     seed: &std::collections::BTreeMap<String, String>,
     stream: Arc<P>,
 ) -> TestResult<MemoryHarnessStorage<P>> {
@@ -135,7 +138,7 @@ async fn workspace_on<P: StreamProvider>(
 }
 
 pub(super) async fn publish<
-    P: StreamProvider,
+    P: acyclic_harness::store::JournalProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 >(
@@ -483,7 +486,7 @@ async fn scenario_observations_normalize_inline_and_file_events() -> TestResult 
 }
 
 pub(super) async fn check_files<
-    P: StreamProvider,
+    P: acyclic_harness::store::JournalProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 >(

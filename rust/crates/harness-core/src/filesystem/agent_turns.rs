@@ -368,7 +368,7 @@ struct Bindings {
 
 impl<P, A, O> FilesystemTurnHost<P, A, O>
 where
-    P: StreamProvider + ?Sized + 'static,
+    P: crate::store::JournalProvider + ?Sized + 'static,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
@@ -658,6 +658,7 @@ where
         let records = match self
             .stream
             .read(ReadRequest {
+                key: None,
                 path,
                 from,
                 limit: u32::try_from(tail - from).unwrap_or(u32::MAX),
@@ -817,7 +818,7 @@ impl<'a> TurnContext<'a> {
 
 impl<P, A, O> TurnHost for FilesystemTurnHost<P, A, O>
 where
-    P: StreamProvider + ?Sized + 'static,
+    P: crate::store::JournalProvider + ?Sized + 'static,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

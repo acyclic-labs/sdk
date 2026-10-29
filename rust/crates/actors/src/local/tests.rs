@@ -252,6 +252,7 @@ async fn wait_applied_retains_its_cut_across_pause_and_never_consumes_input() ->
         .await?;
     let original = provider
         .read(ReadRequest {
+            key: None,
             path: path.clone(),
             from: 0,
             limit: 1,
@@ -488,6 +489,7 @@ async fn atomic_history<P: StreamProvider + ?Sized>(
     );
     let mut records = provider
         .read(ReadRequest {
+            key: None,
             path: output,
             from: 0,
             limit: 2,

@@ -1,11 +1,13 @@
 //! One owner-fenced commit publishes the journal cut and its authenticated root.
 use super::*;
-use acyclic_stream::{CommitCondition, CommitMutation, CommitOutcome, OwnedBytes, StreamPath};
+use acyclic_stream::{
+    CommitCondition, CommitMutation, CommitOutcome, OwnedBytes, StreamPath, StreamProviderExt as _,
+};
 use checkpoint::{IndexState, Recovery};
 
 mod pages;
 
-async fn condition<P: StreamProvider + ?Sized>(
+async fn condition<P: crate::store::JournalProvider + ?Sized>(
     provider: &Arc<P>,
     path: &StreamPath,
     expected: u64,
@@ -65,7 +67,7 @@ fn confirms(
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider + ?Sized,
+    P: crate::store::JournalProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

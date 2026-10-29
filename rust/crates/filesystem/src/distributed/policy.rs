@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 
 impl<P: crate::distributed::AuthorityProvider + ?Sized> StreamAuthorityStore<P> {
     pub(super) async fn publish_with_policy<G: AuthorityGuard>(

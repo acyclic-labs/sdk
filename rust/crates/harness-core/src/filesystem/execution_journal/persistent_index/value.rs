@@ -1,5 +1,6 @@
 //! Large summary cells span authenticated pages without changing record limits.
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 use read::ReadNode;
 
 const LINK_BYTES: usize = 41;
@@ -86,7 +87,7 @@ fn read_link(bytes: &[u8], io: Option<&PreparationIo>) -> Result<Option<NodeRef>
     }
 }
 
-impl<P: StreamProvider + ?Sized> Writer<'_, P> {
+impl<P: crate::store::JournalProvider + ?Sized> Writer<'_, P> {
     pub(in crate::filesystem::execution_journal) async fn set_value(
         &mut self,
         root: Option<NodeRef>,
@@ -135,7 +136,7 @@ impl<P: StreamProvider + ?Sized> Writer<'_, P> {
     }
 }
 
-impl<'a, P: StreamProvider + ?Sized> Reader<'a, P> {
+impl<'a, P: crate::store::JournalProvider + ?Sized> Reader<'a, P> {
     pub(in crate::filesystem::execution_journal) async fn value(
         &self,
         read: ReadNode<'a>,

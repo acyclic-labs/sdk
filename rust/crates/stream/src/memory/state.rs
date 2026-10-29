@@ -1,7 +1,7 @@
 #[derive(Default)]
 struct State {
     paths: Namespace,
-    signals: BTreeMap<StreamPath, Signals>,
+    signals: crate::interest::Interests<StreamPath, Signals>,
     replay_root: Option<usize>,
     commit_root: Option<CommitLink>,
     replay_count: usize,
@@ -13,6 +13,7 @@ struct State {
     last_committed_at_micros: u64,
     hierarchy_version: CommitId,
     retained_allocation: Allocation,
+    retained_growth: Arc<RetainedPool>,
     #[cfg(not(target_arch = "wasm32"))]
     // Lock order: provider state -> reserved counters; counter release takes no other lock.
     reserved: Arc<crate::query_sync::SyncMutex<(usize, usize)>>,

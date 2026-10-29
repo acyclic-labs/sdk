@@ -1,5 +1,4 @@
 use super::*;
-use futures::TryFutureExt as _;
 
 fn waiting_client() -> (Client, mpsc::Receiver<Command>) {
     let (commands, receiver) = mpsc::channel(1);
@@ -26,6 +25,7 @@ async fn registration_deadline_removes_only_the_stalled_interest() -> TestResult
     let mut stalled = Box::pin(
         client
             .follow(crate::FollowRequest {
+                when_absent: Default::default(),
                 path: StreamPath::new("stalled")?,
                 from: 1,
                 preceding: Some(crate::CommitId::from_bytes([7; 32])),
@@ -82,6 +82,7 @@ async fn registration_deadline_also_withdraws_blocked_queue_admission() -> TestR
     let mut blocked = Box::pin(
         client
             .follow(crate::FollowRequest {
+                when_absent: Default::default(),
                 path: StreamPath::new("blocked")?,
                 from: 1,
                 preceding: Some(crate::CommitId::from_bytes([7; 32])),
@@ -166,6 +167,7 @@ fn traces_cover_registration_stall_reconnect_terminal_error_and_caller_drop() ->
             let mut stalled = Box::pin(
                 client
                     .follow(crate::FollowRequest {
+                        when_absent: Default::default(),
                         path: StreamPath::new("private/stalled")?,
                         from: 1,
                         preceding: Some(crate::CommitId::from_bytes([7; 32])),

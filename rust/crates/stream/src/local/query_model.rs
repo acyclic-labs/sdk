@@ -61,6 +61,7 @@ pub(super) fn fixture(omit_follow_wake: bool) -> Result<LocalStream> {
     Ok(LocalStream {
         handle: None,
         inner: Arc::new(LocalInner {
+            replica_clock: Arc::new(crate::replicated::ReplicaClock::default()),
             durability: limits.durability,
             provider: MemoryStream::new_with_commit_clock(
                 limits.memory,
@@ -125,6 +126,7 @@ pub(crate) fn accepted_queries_and_publication_have_no_lost_wakeup_or_durability
         block_on(async {
             let mut follow = stream
                 .follow(crate::FollowRequest {
+                    when_absent: Default::default(),
                     path: path.clone(),
                     from: 1,
                     preceding: Some(seed.commit_id),
@@ -182,6 +184,7 @@ pub(crate) fn poison_wakes_checked_followers(omit_publication: bool) {
         block_on(async {
             match stream
                 .follow(crate::FollowRequest {
+                    when_absent: Default::default(),
                     path: path,
                     from: 1,
                     preceding: Some(seed.commit_id),
@@ -227,6 +230,7 @@ pub(crate) fn persist_wakes_parked_followers(omit_wake: bool) {
         let mut follow = block_on(
             stream
                 .follow(crate::FollowRequest {
+                    when_absent: Default::default(),
                     path: path.clone(),
                     from: 1,
                     preceding: Some(seed.commit_id),

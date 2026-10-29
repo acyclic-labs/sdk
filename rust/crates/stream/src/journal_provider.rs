@@ -5,7 +5,7 @@
 //! become visible only after the journal's durability promise resolves.
 
 use crate::{
-    journal::{Command, Outcome, decode_command},
+    replicated::{ReplicaClock, Replicated},
     *,
 };
 use async_trait::async_trait;
@@ -14,13 +14,14 @@ use js_sys::Uint8Array;
 use std::{
     cell::{Cell, RefCell},
     rc::{Rc, Weak},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::JsFuture;
 
 #[wasm_bindgen]
 extern "C" {
+    #[derive(Clone)]
     type HostJournal;
     #[wasm_bindgen(method, catch)]
     fn configure(
@@ -31,7 +32,13 @@ extern "C" {
     #[wasm_bindgen(method, catch)]
     fn flush(this: &HostJournal) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(method, catch)]
-    fn read(this: &HostJournal, index: u32) -> Result<JsValue, JsValue>;
+    fn read(this: &HostJournal, index: u32, page: u32) -> Result<JsValue, JsValue>;
+    #[wasm_bindgen(method, catch)]
+    fn changed(
+        this: &HostJournal,
+        after: u32,
+        callback: &js_sys::Function,
+    ) -> Result<js_sys::Function, JsValue>;
     #[wasm_bindgen(method, catch)]
     fn append(
         this: &HostJournal,
@@ -80,37 +87,14 @@ impl JournalStreamLimits {
     }
 }
 
-#[derive(Default)]
-struct PinnedClock(Mutex<u64>);
-impl UnixMillisClock for PinnedClock {
-    fn now_unix_millis(&self) -> u64 {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-impl PinnedClock {
-    fn set(&self, value: u64) {
-        *self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = value;
-    }
-}
+mod port;
+use port::HostPort;
+const PAGE: usize = 64;
 
-struct Cache {
-    configured: bool,
-    failed: bool,
-    provider: MemoryStream,
-    cursor: u32,
-    bytes: u64,
-}
 struct Inner {
     journal: HostJournal,
     limits: JournalStreamLimits,
-    clock: Arc<PinnedClock>,
-    cache: crate::query_sync::Mutex<Cache>,
+    cache: crate::query_sync::Mutex<Replicated<HostPort>>,
     claims: OperationClaims,
 }
 
@@ -152,20 +136,23 @@ impl JournalStream {
             return Ok(stream);
         }
         let journal: HostJournal = journal.unchecked_into();
-        let clock = Arc::new(PinnedClock::default());
+        let clock = Arc::new(ReplicaClock::default());
         let provider =
             MemoryStream::new_with_commit_clock(limits.memory, clock.clone(), clock.clone());
         let inner = Rc::new(Inner {
+            cache: crate::query_sync::Mutex::new(Replicated::new(
+                HostPort {
+                    journal: journal.clone(),
+                    limits,
+                    configured: false,
+                    bytes: 0,
+                },
+                provider,
+                clock,
+                0,
+            )),
             journal,
             limits,
-            clock,
-            cache: crate::query_sync::Mutex::new(Cache {
-                configured: false,
-                failed: false,
-                provider,
-                cursor: 0,
-                bytes: 0,
-            }),
             claims: OperationClaims::default(),
         });
         OPEN.with(|open| open.borrow_mut().push(Rc::downgrade(&inner)));
@@ -174,203 +161,27 @@ impl JournalStream {
         Ok(stream)
     }
 
-    async fn refresh(&self, cache: &mut Cache) -> Result<(), StreamError> {
-        if cache.failed {
-            return Err(StreamError::Unavailable);
-        }
-        if !cache.configured {
-            let maximum = u32::try_from(MAX_COMMAND_BYTES + 17).map_err(unavailable)?;
-            JsFuture::from(
-                self.0
-                    .journal
-                    .configure(&self.0.limits.configuration(), maximum)
-                    .map_err(unavailable)?,
-            )
-            .await
-            .map_err(unavailable)?;
-            cache.configured = true;
-        }
-        JsFuture::from(self.0.journal.flush().map_err(unavailable)?)
-            .await
-            .map_err(unavailable)?;
-        loop {
-            let value = self.0.journal.read(cache.cursor).map_err(unavailable)?;
-            if value.is_null() {
-                return Ok(());
-            }
-            let frame = value.dyn_into::<Uint8Array>().map_err(unavailable)?;
-            let length = usize::try_from(frame.length()).map_err(unavailable)?;
-            if !(18..=MAX_COMMAND_BYTES + 17).contains(&length)
-                || cache.cursor >= self.0.limits.commands
-            {
-                return Err(StreamError::Unavailable);
-            }
-            let frame = frame.to_vec();
-            let time = u64::from_le_bytes(
-                frame
-                    .get(..8)
-                    .ok_or(StreamError::Unavailable)?
-                    .try_into()
-                    .map_err(unavailable)?,
-            );
-            let deadline = u64::from_le_bytes(
-                frame
-                    .get(9..17)
-                    .ok_or(StreamError::Unavailable)?
-                    .try_into()
-                    .map_err(unavailable)?,
-            );
-            let deadline = match frame.get(8) {
-                Some(0) if deadline == 0 => None,
-                Some(1) => Some(deadline),
-                _ => return Err(StreamError::Unavailable),
-            };
-            let encoded = frame.get(17..).ok_or(StreamError::Unavailable)?;
-            let command = decode_command(encoded)?;
-            let bytes = cache
-                .bytes
-                .checked_add(u64::try_from(length).map_err(unavailable)?)
-                .filter(|bytes| *bytes <= self.0.limits.journal_bytes)
-                .ok_or(StreamError::Capacity)?;
-            self.0.clock.set(time);
-            // Recovery uses the canonical evaluator. New publication only
-            // journals accepted mutations, never conditional refusals.
-            let result = apply(&cache.provider, command, deadline).await;
-            replayable(&result)?;
-            cache.cursor = cache.cursor.checked_add(1).ok_or(StreamError::Capacity)?;
-            cache.bytes = bytes;
-        }
-    }
-
     async fn query<T>(
         &self,
         operation: impl AsyncFnOnce(&MemoryStream) -> Result<T, StreamError>,
     ) -> Result<T, StreamError> {
         let mut cache = self.0.cache.lock().await;
-        self.refresh(&mut cache).await?;
+        cache.refresh(PAGE).await?;
         operation(&cache.provider).await
     }
 
     async fn execute(
         &self,
-        command: Command,
+        command: WriteRequest,
         deadline: Option<u64>,
-    ) -> Result<Outcome, StreamError> {
-        let command = command.validated()?;
-        let encoded = command.encode_to_vec();
-        let mut cache = self.0.cache.lock().await;
-        self.refresh(&mut cache).await?;
-        if command.has_replay(&cache.provider).await? {
-            return apply(&cache.provider, command, deadline).await;
-        }
-        let length = encoded.len() + 17;
-        let base_bytes = cache.bytes;
-        let cursor = cache.cursor;
-        // Journal capacity is checked only after the canonical core accepts a
-        // new mutation; a conditional refusal does not need a durable slot.
-        let bytes = base_bytes
-            .checked_add(u64::try_from(length).map_err(unavailable)?)
-            .filter(|bytes| *bytes <= self.0.limits.journal_bytes);
-        // The host owns durable wake routing, but never decodes command semantics.
-        // Only accepted commands reach it. Forks affect a destination subtree;
-        // ordinary appends affect exactly their path.
-        let changes = js_sys::Array::new();
-        let changed = |path: &StreamPath, subtree: bool| {
-            let change = js_sys::Array::new();
-            change.push(&JsValue::from_str(path.as_str()));
-            change.push(&JsValue::from_bool(subtree));
-            changes.push(&change);
-        };
-        match &command {
-            Command::Append(request) => changed(&request.path, false),
-            Command::Fork(request) => changed(&request.destination, true),
-            Command::Commit(request) => {
-                for mutation in &request.mutations {
-                    changed(
-                        crate::request::mutation_path(mutation),
-                        matches!(mutation, CommitMutation::Fork { .. }),
-                    );
-                }
-            }
-        }
-        // The journal calls this once, inside its acceptance transaction after
-        // any waiting and before publishing bytes. Sampling here pins deadline
-        // refusal and commit time to acceptance, rather than enqueue time. The
-        // storage adapter never interprets a deadline or a Stream command.
-        let accepted = Rc::new(Cell::new(None));
-        let sampled = accepted.clone();
-        let clock = self.0.clock.clone();
-        let frame = Closure::<dyn FnMut() -> Result<Uint8Array, JsValue>>::new(move || {
-            if sampled.get().is_some() {
-                return Err(JsValue::from_str(
-                    "STEP journal-accept failed: repeated frame admission; recovery: reopen and replay the original Stream request",
-                ));
-            }
-            let time = SystemUnixMillisClock.now_unix_millis();
-            sampled.set(Some(time));
-            if deadline.is_some_and(|deadline| time >= deadline) {
-                return Err(JsValue::from_str(
-                    "STEP journal-accept failed: deadline elapsed; recovery: inspect the original request identity before submitting another operation",
-                ));
-            }
-            clock.set(time);
-            let mut frame = time.to_le_bytes().to_vec();
-            frame.push(u8::from(deadline.is_some()));
-            frame.extend_from_slice(&deadline.unwrap_or(0).to_le_bytes());
-            frame.extend_from_slice(&encoded);
-            Ok(Uint8Array::from(frame.as_slice()))
-        }).into_js_value();
-        // The host's promise owns this JavaScript function across caller
-        // cancellation. Dropping this Rust future must not invalidate a frame
-        // callback that the host may still call in its acceptance transaction.
-        // Cancellation after acceptance leaves the cursor unchanged. The next
-        // query replays that accepted row before exposing any new state.
-        self.0.clock.set(SystemUnixMillisClock.now_unix_millis());
-        let mut published = false;
-        let result = cache
-            .provider
-            .apply_durable(command, deadline, async {
-                if cursor >= self.0.limits.commands {
-                    return Err(StreamError::Capacity);
-                }
-                bytes.ok_or(StreamError::Capacity)?;
-                let appended = JsFuture::from(
-                    self.0
-                        .journal
-                        .append(cursor, frame.unchecked_ref(), &changes)
-                        .map_err(unavailable)?,
-                )
-                .await
-                .map_err(unavailable);
-                if appended.is_err()
-                    && accepted
-                        .get()
-                        .is_some_and(|at| deadline.is_some_and(|deadline| at >= deadline))
-                {
-                    return Err(StreamError::DeadlineElapsed);
-                }
-                appended?;
-                accepted.get().ok_or(StreamError::Unavailable)?;
-                published = true;
-                Ok(())
-            })
-            .await;
-        cache.failed = (published && result.is_err())
-            || matches!(
-                &result,
-                Err(StreamError::Unavailable
-                    | StreamError::InvalidResponse
-                    | StreamError::Unsupported)
-            );
-        if cache.failed {
-            // No write can advance a failed cache: parked reads end as unavailable.
-            cache.provider.revisions.close();
-        }
-        if published {
-            cache.cursor += 1;
-            cache.bytes = bytes.ok_or(StreamError::Capacity)?;
-        }
-        result
+    ) -> Result<WriteOutcome, StreamError> {
+        self.0
+            .cache
+            .lock()
+            .await
+            .execute(command, deadline, PAGE)
+            .await
+            .map(|execution| execution.outcome)
     }
 
     fn retain<T: 'static>(
@@ -387,36 +198,10 @@ impl JournalStream {
     }
 }
 
-async fn apply(
-    provider: &MemoryStream,
-    command: Command,
-    deadline: Option<u64>,
-) -> Result<Outcome, StreamError> {
-    match command {
-        Command::Append(request) => provider.append(request).await.map(Outcome::Append),
-        Command::Fork(request) => provider.fork(request).await.map(Outcome::Fork),
-        Command::Commit(mut request) => {
-            request.deadline_unix_millis = deadline
-                .into_iter()
-                .chain(request.deadline_unix_millis)
-                .min();
-            provider.commit(request).await.map(Outcome::Commit)
-        }
-    }
-}
-fn replayable(result: &Result<Outcome, StreamError>) -> Result<(), StreamError> {
-    match result {
-        Err(StreamError::Unavailable | StreamError::InvalidResponse | StreamError::Unsupported) => {
-            Err(StreamError::Unavailable)
-        }
-        _ => Ok(()),
-    }
-}
-
 #[async_trait(?Send)]
 impl StreamProvider for JournalStream {
-    fn operation_claims(&self) -> &OperationClaims {
-        &self.0.claims
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(&self.0.claims)
     }
     async fn inspect_idempotency(
         &self,
@@ -425,75 +210,48 @@ impl StreamProvider for JournalStream {
         self.query(async move |p| p.inspect_idempotency(key).await)
             .await
     }
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        request.validate()?;
+        if !request.at_least.is_empty() {
+            self.wait_revision(&request.at_least).await?;
+        }
         self.query(async move |provider| {
-            let mut head = provider.head(path).await?;
-            head.durable = head.tail;
-            Ok(head)
+            let projection = request.projection;
+            let mut view = provider.capture_heads(&request).await?;
+            for head in view.heads.iter_mut().flatten() {
+                head.durable = if projection == crate::HeadProjection::Tail {
+                    0
+                } else {
+                    head.tail
+                };
+            }
+            view.check_size()?;
+            Ok(view)
         })
         .await
     }
 
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.query(async move |p| p.tail(path).await).await
-    }
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        let tail = self.tail(path).await?;
-        Ok(StreamWatermarks {
-            accepted: tail,
-            durable: tail,
+    fn write(
+        &self,
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        Box::pin(async move {
+            let deadline = match &request {
+                crate::WriteRequest::Commit(request) => request.deadline_unix_millis,
+                _ => None,
+            };
+            self.execute(request, deadline).await
         })
     }
-    async fn durable_receipt(
-        &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<DurableReceipt>, StreamError> {
-        self.query(async move |p| p.durable_receipt(path, through).await)
-            .await
-    }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        match self.execute(Command::Append(request), None).await? {
-            Outcome::Append(value) => Ok(value),
-            _ => Err(StreamError::Unavailable),
-        }
-    }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        match self.execute(Command::Fork(request), None).await? {
-            Outcome::Fork(value) => Ok(value),
-            _ => Err(StreamError::Unavailable),
-        }
-    }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let deadline = request.deadline_unix_millis;
-        match self.execute(Command::Commit(request), deadline).await? {
-            Outcome::Commit(value) => Ok(value),
-            _ => Err(StreamError::Unavailable),
-        }
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         if !request.at_least.is_empty() {
-            self.wait_applied(&request.at_least).await?;
+            self.wait_revision(&request.at_least).await?;
         }
         self.query(async move |p| p.read(request).await).await
     }
-    async fn wait_applied(
-        &self,
-        at_least: &crate::RevisionCut,
-    ) -> Result<crate::Revision, StreamError> {
-        // Park outside the cache lock so writes and refreshes can advance it.
-        let revisions = self
-            .query(async |p| Ok(std::sync::Arc::clone(&p.revisions)))
-            .await?;
-        revisions.wait(at_least).await
-    }
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.query(async move |p| p.children_page(request).await)
-            .await
-    }
+
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.query(async move |p| p.read_commit(id).await).await
     }
@@ -502,8 +260,21 @@ impl StreamProvider for JournalStream {
         request: crate::FollowRequest,
     ) -> Result<crate::FollowStream, StreamError> {
         if !request.at_least.is_empty() {
-            self.wait_applied(&request.at_least).await?;
+            self.wait_revision(&request.at_least).await?;
         }
         Ok(self.retain(self.query(async move |p| p.follow(request).await).await?))
+    }
+}
+
+impl JournalStream {
+    async fn wait_revision(
+        &self,
+        at_least: &crate::RevisionCut,
+    ) -> Result<crate::Revision, StreamError> {
+        // Park outside the cache lock so writes and refreshes can advance it.
+        let revisions = self
+            .query(async |p| Ok(std::sync::Arc::clone(&p.revisions)))
+            .await?;
+        revisions.wait(at_least).await
     }
 }

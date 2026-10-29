@@ -1,6 +1,8 @@
 use super::*;
 use crate::NativeMaterializationWork;
 use crate::kernel::allocation::{KernelAccounting, retained::AuthorityLifetime};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_stream::NativeStreamProvider as _;
 use acyclic_stream::{
     CommitCondition, CommitMutation, IdempotencyKey, MemoryStream, OwnedBytes, StreamPath,
 };

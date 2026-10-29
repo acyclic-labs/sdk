@@ -3,6 +3,7 @@
     dead_code,
     reason = "shared fault fixtures expose controls used by different test modules"
 )]
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{AppendOutcome, MemoryStream, OwnedBytes, StreamError, StreamProvider};
 mod controls;
 mod hints;
@@ -23,18 +24,10 @@ use native::NativeFaultRecordCursor;
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        self.inner.operation_claims()
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
     }
 
-    async fn durable_receipt(
-        &self,
-        path: acyclic_stream::StreamPath,
-        through: u64,
-    ) -> std::result::Result<Option<acyclic_stream::DurableReceipt>, acyclic_stream::StreamError>
-    {
-        self.inner.durable_receipt(path, through).await
-    }
     async fn inspect_idempotency(
         &self,
         key: acyclic_stream::IdempotencyKey,
@@ -60,120 +53,131 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         }
         Ok(observation)
     }
-    async fn head(
+
+    async fn heads(
         &self,
-        path: acyclic_stream::StreamPath,
-    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         assert!(
             !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
             "ordinary head on native-only fixture"
         );
-        self.observation_tails
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let mut head = self.inner.head(path.clone()).await?;
-        if path
-            .as_str()
-            .starts_with("harness/v3/projection-checkpoints/")
-        {
-            let stale = self
-                .stale_projection_head_tail
-                .swap(0, std::sync::atomic::Ordering::SeqCst);
-            if stale != 0 {
-                head.tail = stale - 1;
-                head.durable = head.durable.min(head.tail);
-                head.last = if head.tail == 0 {
-                    None
-                } else {
-                    futures::TryStreamExt::try_next(
-                        &mut self
-                            .inner
-                            .read(acyclic_stream::ReadRequest {
-                                path,
-                                from: head.tail - 1,
-                                limit: 1,
-                                at_least: Default::default(),
-                            })
-                            .await?,
-                    )
-                    .await?
-                };
-            }
-        }
-        #[cfg(feature = "filesystem")]
-        if let Some(cancellation) = self
-            .history_cancel_after_tail
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?
-            .take()
-        {
-            cancellation.cancel();
-        }
-        Ok(head)
-    }
-    async fn tail(
-        &self,
-        path: acyclic_stream::StreamPath,
-    ) -> std::result::Result<u64, StreamError> {
-        assert!(
-            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
-            "ordinary tail on native-only fixture"
-        );
-        self.observation_tails
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if path
-            .as_str()
-            .starts_with("harness/v3/projection-checkpoints/")
-        {
-            let stale = self
-                .stale_projection_head_tail
-                .swap(0, std::sync::atomic::Ordering::SeqCst);
-            if stale != 0 {
-                return Ok(stale - 1);
-            }
-        }
-        let result = self.inner.tail(path).await;
-        #[cfg(feature = "filesystem")]
-        if let Some(cancellation) = self
-            .history_cancel_after_tail
-            .lock()
-            .map_err(|_| StreamError::Unavailable)?
-            .take()
-        {
-            cancellation.cancel();
-        }
-        result
-    }
-    async fn append(
-        &self,
-        request: acyclic_stream::AppendRequest,
-    ) -> std::result::Result<AppendOutcome, StreamError> {
-        assert!(
-            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
-            "ordinary append on native-only fixture"
-        );
-        let fault = self.before_append(&request)?;
-        let mut outcome = self.inner.append(request).await?;
-        self.after_append(&mut outcome, fault)?;
-        Ok(outcome)
-    }
-    async fn fork(
-        &self,
-        request: acyclic_stream::ForkRequest,
-    ) -> std::result::Result<acyclic_stream::ForkReceipt, StreamError> {
-        assert!(
-            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
-            "ordinary fork on native-only fixture"
-        );
-        self.io
-            .other_calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if self.forbid_writes.load(std::sync::atomic::Ordering::SeqCst) {
-            self.observation_writes
+        if request.children.is_some() {
+            self.io
+                .other_calls
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            return Err(StreamError::Unavailable);
         }
-        self.inner.fork(request).await
+        if !request.paths.is_empty() {
+            self.observation_tails
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        let projection = request.projection;
+        let paths = request.paths.clone();
+        let mut view = self.inner.heads(request).await?;
+        for (path, head) in paths.into_iter().zip(&mut view.heads) {
+            let Some(head) = head else { continue };
+            if path
+                .as_str()
+                .starts_with("harness/v3/projection-checkpoints/")
+            {
+                let stale = self
+                    .stale_projection_head_tail
+                    .swap(0, std::sync::atomic::Ordering::SeqCst);
+                if stale != 0 {
+                    head.tail = stale - 1;
+                    head.durable = head.durable.min(head.tail);
+                    head.last = if head.tail == 0
+                        || projection != acyclic_stream::HeadProjection::History
+                    {
+                        None
+                    } else {
+                        futures::TryStreamExt::try_next(
+                            &mut self
+                                .inner
+                                .read(acyclic_stream::ReadRequest {
+                                    key: None,
+                                    path,
+                                    from: head.tail - 1,
+                                    limit: 1,
+                                    at_least: Default::default(),
+                                })
+                                .await?,
+                        )
+                        .await?
+                    };
+                }
+            }
+        }
+        #[cfg(feature = "filesystem")]
+        if let Some(cancellation) = self
+            .history_cancel_after_tail
+            .lock()
+            .map_err(|_| StreamError::Unavailable)?
+            .take()
+        {
+            cancellation.cancel();
+        }
+        Ok(view)
     }
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Append(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        assert!(
+                            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+                            "ordinary append on native-only fixture"
+                        );
+                        let fault = self.before_append(&request)?;
+                        let mut outcome = self.inner.append(request).await?;
+                        self.after_append(&mut outcome, fault)?;
+                        Ok(outcome)
+                    },
+                    acyclic_stream::WriteOutcome::Append,
+                ))
+            }
+            acyclic_stream::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    assert!(
+                        !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+                        "ordinary fork on native-only fixture"
+                    );
+                    self.io
+                        .other_calls
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if self.forbid_writes.load(std::sync::atomic::Ordering::SeqCst) {
+                        self.observation_writes
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        return Err(StreamError::Unavailable);
+                    }
+                    self.inner.fork(request).await
+                },
+                acyclic_stream::WriteOutcome::Fork,
+            )),
+            acyclic_stream::WriteRequest::Commit(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        assert!(
+                            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
+                            "ordinary commit on native-only fixture"
+                        );
+                        let (fault, aggregate_fault) = self.before_commit(&request).await?;
+                        let mut outcome = self.inner.commit(request).await?;
+                        self.after_commit(&mut outcome, fault, aggregate_fault)?;
+                        Ok(outcome)
+                    },
+                    acyclic_stream::WriteOutcome::Commit,
+                ))
+            }
+        }
+    }
+
     async fn read(
         &self,
         request: acyclic_stream::ReadRequest,
@@ -306,32 +310,7 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         );
         self.inner.follow(request).await
     }
-    async fn children_page(
-        &self,
-        request: acyclic_stream::ChildrenPageRequest,
-    ) -> std::result::Result<acyclic_stream::ChildrenPage, StreamError> {
-        assert!(
-            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
-            "ordinary children page on native-only fixture"
-        );
-        self.io
-            .other_calls
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.inner.children_page(request).await
-    }
-    async fn commit(
-        &self,
-        request: acyclic_stream::CommitRequest,
-    ) -> std::result::Result<acyclic_stream::CommitOutcome, StreamError> {
-        assert!(
-            !self.native_only.load(std::sync::atomic::Ordering::SeqCst),
-            "ordinary commit on native-only fixture"
-        );
-        let (fault, aggregate_fault) = self.before_commit(&request).await?;
-        let mut outcome = self.inner.commit(request).await?;
-        self.after_commit(&mut outcome, fault, aggregate_fault)?;
-        Ok(outcome)
-    }
+
     async fn read_commit(
         &self,
         id: acyclic_stream::CommitId,
@@ -347,6 +326,12 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         self.measure_received(&envelope);
         Ok(envelope)
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvider
+    for LostSessionAck<P>
+{
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_inspect_idempotency(
         &self,
@@ -375,7 +360,6 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             Ok(result)
         })
     }
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_tail(
         &self,
@@ -412,7 +396,6 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             result
         })
     }
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_read(
         &self,
@@ -491,56 +474,64 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             )))
         })
     }
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn native_append(
+    fn native_write(
         &self,
-        request: acyclic_stream::AppendRequest,
+        request: acyclic_stream::WriteRequest,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> acyclic_stream::NativeProviderFuture<'_, AppendOutcome> {
+    ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::WriteOutcome> {
         let original = meter.clone();
-        acyclic_stream::NativeProviderFuture::new(&meter, async move {
-            let fault = match self.before_append(&request) {
-                Ok(fault) => fault,
-                Err(error) => return Ok(Err(error)),
-            };
-            let mut output = match self.inner.native_append(request, original).await? {
-                Ok(output) => output,
-                Err(error) => return Ok(Err(error)),
-            };
-            if let Err(error) = self.after_append(output.value_mut(), fault) {
-                return Ok(Err(error));
+        match request {
+            acyclic_stream::WriteRequest::Append(request) => {
+                acyclic_stream::NativeProviderFuture::new(&meter, async move {
+                    let fault = match self.before_append(&request) {
+                        Ok(fault) => fault,
+                        Err(error) => return Ok(Err(error)),
+                    };
+                    let mut output = match self
+                        .inner
+                        .native_write(acyclic_stream::WriteRequest::Append(request), original)
+                        .await?
+                    {
+                        Ok(output) => output,
+                        Err(error) => return Ok(Err(error)),
+                    };
+                    let acyclic_stream::WriteOutcome::Append(outcome) = output.value_mut() else {
+                        return Ok(Err(StreamError::InvalidResponse));
+                    };
+                    if let Err(error) = self.after_append(outcome, fault) {
+                        return Ok(Err(error));
+                    }
+                    Ok(Ok(output))
+                })
             }
-            Ok(Ok(output))
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn native_commit(
-        &self,
-        request: acyclic_stream::CommitRequest,
-        deadline: Option<u64>,
-        meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> acyclic_stream::NativeProviderFuture<'_, acyclic_stream::CommitOutcome> {
-        let original = meter.clone();
-        acyclic_stream::NativeProviderFuture::new(&meter, async move {
-            let (fault, aggregate_fault) = match self.before_commit(&request).await {
-                Ok(faults) => faults,
-                Err(error) => return Ok(Err(error)),
-            };
-            let result = self
-                .inner
-                .native_commit(request, deadline, original.clone())
-                .await?;
-            let mut output = match result {
-                Ok(output) => output,
-                Err(error) => return Ok(Err(error)),
-            };
-            if let Err(error) = self.after_commit(output.value_mut(), fault, aggregate_fault) {
-                return Ok(Err(error));
+            acyclic_stream::WriteRequest::Commit(request) => {
+                acyclic_stream::NativeProviderFuture::new(&meter, async move {
+                    let (fault, aggregate_fault) = match self.before_commit(&request).await {
+                        Ok(faults) => faults,
+                        Err(error) => return Ok(Err(error)),
+                    };
+                    let mut output = match self
+                        .inner
+                        .native_write(acyclic_stream::WriteRequest::Commit(request), original)
+                        .await?
+                    {
+                        Ok(output) => output,
+                        Err(error) => return Ok(Err(error)),
+                    };
+                    let acyclic_stream::WriteOutcome::Commit(outcome) = output.value_mut() else {
+                        return Ok(Err(StreamError::InvalidResponse));
+                    };
+                    if let Err(error) = self.after_commit(outcome, fault, aggregate_fault) {
+                        return Ok(Err(error));
+                    }
+                    Ok(Ok(output))
+                })
             }
-            Ok(Ok(output))
-        })
+            acyclic_stream::WriteRequest::Fork(_) => {
+                acyclic_stream::NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)))
+            }
+        }
     }
 }
 

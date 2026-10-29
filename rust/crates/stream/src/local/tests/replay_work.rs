@@ -23,17 +23,21 @@ async fn replay<const ELIDE: bool>(count: usize, bytes: Vec<u8>) -> (u64, u64) {
         .await
         .unwrap();
     let request = request(bytes);
-    let first = commit::<ELIDE>(&stream, request.clone(), None)
-        .await
-        .unwrap();
+    let first = stream.commit(request.clone()).await.unwrap();
     let before = stream.inner.required().unwrap();
     for _ in 0..count {
-        assert_eq!(
-            commit::<ELIDE>(&stream, request.clone(), None)
-                .await
-                .unwrap(),
-            first
-        );
+        assert_eq!(stream.commit(request.clone()).await.unwrap(), first);
+    }
+    if !ELIDE {
+        let command = WriteRequest::Commit(request.clone());
+        let span = obs::OperationSpan::new(tracing::info_span!("duplicate_replay_control"));
+        stream
+            .exclusive(&span, move |stream| async move {
+                let frame = stream.prepare(&command)?;
+                stream.persist(frame).await
+            })
+            .await
+            .unwrap();
     }
     let after = stream.inner.required().unwrap();
     let mut mismatched = request.clone();

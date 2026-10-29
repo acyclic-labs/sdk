@@ -19,6 +19,19 @@ pub fn encode(route: &str, input: &[u8], maximum_bytes: usize) -> Result<Vec<u8>
 }
 pub(crate) fn value(route: &str, input: &[u8]) -> Result<Option<Value>> {
     let value = match route {
+        "heads" => {
+            let view = crate::wire_codec::heads_from_response(
+                wire::HeadsResponse::decode(input).map_err(|_| "invalid_response")?,
+            )
+            .map_err(|_| "invalid_response")?;
+            let view = crate::wire_codec::heads_to_wire(view);
+            let heads: Vec<_> = view
+                .heads
+                .into_iter()
+                .map(|observation| observation.head.as_ref().map(head_json))
+                .collect();
+            json!({ "snapshot": revision_json(view.snapshot.as_ref()), "heads": heads, "children": view.children.map(children_page_value).transpose()?, "projection": match wire::HeadProjection::try_from(view.projection).map_err(|_| "invalid_response")? { wire::HeadProjection::History => "history", wire::HeadProjection::Watermarks => "watermarks", wire::HeadProjection::Tail => "tail" } })
+        }
         "head" => {
             let head = crate::wire_codec::head_to_wire(
                 crate::wire_codec::head_from_wire(
@@ -26,12 +39,7 @@ pub(crate) fn value(route: &str, input: &[u8]) -> Result<Option<Value>> {
                 )
                 .map_err(|_| "invalid_response")?,
             );
-            json!({
-                "tail": head.tail.to_string(),
-                "last": head.last.as_ref().map(record_json),
-                "durable": head.durable.to_string(),
-                "origin": head.origin.as_ref().map(origin_json),
-            })
+            head_json(&head)
         }
         "append" => {
             append_value(wire::AppendResponse::decode(input).map_err(|_| "invalid_response")?)?
@@ -262,4 +270,14 @@ fn observation_value(value: wire::InspectIdempotencyResponse) -> Result<Option<V
         "outcome": outcome,
         "revision": revision_json(value.revision.as_ref()),
     })))
+}
+
+fn head_json(head: &wire::PathHead) -> Value {
+    json!({
+        "retainedThrough": head.retained_through.map(|through| through.to_string()),
+        "tail": head.tail.to_string(),
+        "last": head.last.as_ref().map(record_json),
+        "durable": head.durable.to_string(),
+        "origin": head.origin.as_ref().map(origin_json),
+    })
 }

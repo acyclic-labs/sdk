@@ -1,12 +1,15 @@
 impl LocalStream {
-    fn guarded_commit<E, F, Fut>(
+    fn guarded_commit<T, C, E, F, Fut>(
         &self,
         request: CommitRequest,
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
         mut before: F,
-    ) -> crate::NativeProviderFuture<'_, CommitOutcome, E>
+        convert: C,
+    ) -> crate::NativeProviderFuture<'_, T, E>
     where
+        T: Send + 'static,
+        C: FnOnce(CommitOutcome) -> T + Send + 'static,
         E: From<StreamError> + Send + 'static,
         F: FnMut() -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
@@ -58,25 +61,13 @@ impl LocalStream {
                     let publication = stream.inner.publication.write().await;
                     let mut result = async {
                         stream.check_available()?;
-                        let command = Command::Commit(request);
-                        let frame = if replay {
-                            None
-                        } else {
-                            work.reserve_durability(4)?;
-                            Some(stream.prepare(&command)?)
+                        let execution = stream
+                            .execute(WriteRequest::Commit(request), deadline)
+                            .await?;
+                        let crate::WriteOutcome::Commit(outcome) = execution.outcome else {
+                            return Err(StreamError::InvalidResponse);
                         };
-                        let Command::Commit(request) = command else {
-                            unreachable!()
-                        };
-                        let result = provider.commit_inner(request, deadline).await?;
-                        if let Some(frame) = frame
-                            && matches!(result.0, CommitOutcome::Committed(_))
-                        {
-                            stream.persist(frame).await?;
-                        } else {
-                            stream.require_accepted::<true>()?;
-                        }
-                        Ok(result)
+                        Ok((outcome, execution.allocation))
                     }
                     .await;
                     stream.inner.commit_clock.unpin();
@@ -96,7 +87,8 @@ impl LocalStream {
                 };
                 // Keep the callback's captured lease through the physical terminal.
                 drop(before);
-                work.finish(result).map(|result| result.map_err(E::from))
+                work.finish(result.map(|(outcome, allocation)| (convert(outcome), allocation)))
+                    .map(|result| result.map_err(E::from))
             });
             let allocation = acyclic_native_runtime::ReadAllocation::new(
                 &original,
@@ -111,11 +103,16 @@ impl LocalStream {
         })
     }
 
-    fn native_append(
+    fn append_funded<T, C>(
         &self,
         request: AppendRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, AppendOutcome> {
+        convert: C,
+    ) -> crate::NativeProviderFuture<'_, T>
+    where
+        T: Send + 'static,
+        C: FnOnce(AppendOutcome) -> T + Send + 'static,
+    {
         #[cfg(feature = "test-support")]
         acyclic_native_runtime::testing::describe(|| {
             format!(
@@ -129,7 +126,6 @@ impl LocalStream {
                 work: Some(Arc::clone(&work)),
                 ..stream
             };
-            let provider = stream.inner.provider.with_context(Arc::clone(&work));
             let input = work.record(acyclic_native_runtime::ReadAllocation::adopt(
                 &work.meter,
                 request.records.capacity() * std::mem::size_of::<crate::OwnedBytes>(),
@@ -146,33 +142,14 @@ impl LocalStream {
             let result = stream
                 .exclusive(&span, move |stream| async move {
                     let _input = input;
-                    let replay = provider.has_replay(&request.idempotency_key).await?;
-                    let command = Command::Append(request);
-                    let frame = if replay {
-                        None
-                    } else {
-                        stream
-                            .work
-                            .as_ref()
-                            .ok_or(StreamError::Unavailable)?
-                            .reserve_durability(4)?;
-                        Some(stream.prepare(&command)?)
+                    let execution = stream.execute(WriteRequest::Append(request), None).await?;
+                    let crate::WriteOutcome::Append(outcome) = execution.outcome else {
+                        return Err(StreamError::InvalidResponse);
                     };
-                    let Command::Append(request) = command else {
-                        unreachable!()
-                    };
-                    let result = provider.append_inner(request).await?;
-                    if let Some(frame) = frame
-                        && matches!(result.0, AppendOutcome::Committed(_))
-                    {
-                        stream.persist(frame).await?;
-                    } else if replay {
-                        stream.require_accepted::<true>()?;
-                    }
-                    Ok(result)
+                    Ok((outcome, execution.allocation))
                 })
                 .await;
-            work.finish(result)
+            work.finish(result.map(|(outcome, allocation)| (convert(outcome), allocation)))
         })
     }
 }

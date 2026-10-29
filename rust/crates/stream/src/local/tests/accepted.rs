@@ -190,6 +190,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
                 std::time::Duration::from_secs(1),
                 provider
                     .follow(crate::FollowRequest {
+                        when_absent: Default::default(),
                         path: path.clone(),
                         from: n + 1,
                         preceding: Some(record.commit_id),
@@ -203,6 +204,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
             drop(checked);
             let lost = provider
                 .follow(crate::FollowRequest {
+                    when_absent: Default::default(),
                     path: path.clone(),
                     from: n + 2,
                     preceding: Some(record.commit_id),
@@ -222,6 +224,7 @@ fn follow_and_heads_observe_acceptance_before_the_durability_barrier()
             );
             let mut head = provider
                 .read(ReadRequest {
+                    key: None,
                     path: path.clone(),
                     from: n,
                     limit: 1,

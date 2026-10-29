@@ -190,7 +190,7 @@ fn prompt<'a>(
 
 /// Every record of the root agent's conversation and status streams, in order.
 fn agent_records(harness: &Arc<LocalHarness>) -> EntryFuture<'_, Result<Vec<Vec<u8>>>> {
-    use acyclic_stream::{ReadRequest, StreamProvider as _};
+    use acyclic_stream::{ReadRequest, StreamProvider as _, StreamProviderExt as _};
     use futures::TryStreamExt as _;
     entry(async move {
         let (agents, root) = entry(harness.agents()).await?;
@@ -205,6 +205,7 @@ fn agent_records(harness: &Arc<LocalHarness>) -> EntryFuture<'_, Result<Vec<Vec<
             let read = agents
                 .provider()
                 .read(ReadRequest {
+                    key: None,
                     path,
                     from: 0,
                     limit: u32::try_from(tail.max(1)).map_err(storage)?,

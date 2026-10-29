@@ -1,5 +1,4 @@
 use super::*;
-use futures::TryFutureExt as _;
 
 #[tokio::test]
 async fn malformed_discovery_closes_only_its_node_and_keeps_later_opens_live() -> TestResult {

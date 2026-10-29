@@ -13,6 +13,7 @@ async fn cancelled_local_read_records_error_and_closes_origin_parent()
             parent.scope(async {
                 provider
                     .read(ReadRequest {
+                        key: None,
                         path: StreamPath::new("pending")?,
                         from: 0,
                         limit: 1,
@@ -250,7 +251,7 @@ async fn replay_failure_drains_the_bounded_pipeline_and_releases_the_root()
 
     let path = StreamPath::new("failed-replay")?;
     let invalid = PreparedFrame::encode(
-        &Command::Fork(ForkRequest {
+        &WriteRequest::Fork(ForkRequest {
             exclude: Vec::new(),
             source: StreamPath::new("missing-source")?,
             destination: path.clone(),
@@ -261,7 +262,7 @@ async fn replay_failure_drains_the_bounded_pipeline_and_releases_the_root()
         None,
     )?;
     let valid = PreparedFrame::encode(
-        &Command::Append(AppendRequest {
+        &WriteRequest::Append(AppendRequest {
             path,
             records: vec![(Bytes::from_static(b"later")).into()],
             if_tail: Some(0),
@@ -461,6 +462,7 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
     assert_eq!(reopened.tail(StreamPath::new("compacted")?).await?, 21);
     let history = reopened
         .read(ReadRequest {
+            key: None,
             path: StreamPath::new("compacted")?,
             from: 0,
             limit: 21,
@@ -487,6 +489,7 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dy
         .await?;
     let fork_history = reopened
         .read(ReadRequest {
+            key: None,
             path: StreamPath::new("compacted-fork")?,
             from: 0,
             limit: 21,

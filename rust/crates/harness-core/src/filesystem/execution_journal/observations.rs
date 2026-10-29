@@ -11,7 +11,7 @@ struct BorrowedObservation<'a> {
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider + ?Sized,
+    P: crate::store::JournalProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

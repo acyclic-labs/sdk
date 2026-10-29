@@ -4,6 +4,7 @@ use crate::{
     AuthorityPlacement, CreateSpec, FilesystemCommit, FilesystemCommitOutcome, ForkSpec,
     StreamAuthorityStore, WorkspaceName,
 };
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     AppendRecord, CommitCondition, CommitMutation, CommitRequest, MemoryStream, StreamPath,
     StreamProvider,

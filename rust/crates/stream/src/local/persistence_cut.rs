@@ -83,11 +83,14 @@ impl LocalStream {
 
     /// Power loss: discard every journal byte of this epoch not yet flushed,
     /// report whether that succeeded, then poison.
-    async fn cut_crash(&self, cut: &dyn PersistenceCut) -> StreamError {
-        let fail = FAIL_CUT_TRUNCATION.with(std::cell::Cell::get);
-        let journal = self.inner.journal.clone();
-        let simulated = spawn_blocking(move || {
-            let journal = journal.lock().map_err(|_| CutSimulationError::Lock)?;
+    // Runs on the persistence worker, outside its journal write section.
+    fn cut_crash(&self, cut: &dyn PersistenceCut, fail: bool) -> StreamError {
+        let simulated = (|| {
+            let journal = self
+                .inner
+                .journal
+                .lock()
+                .map_err(|_| CutSimulationError::Lock)?;
             if fail {
                 return Err(CutSimulationError::Truncate(std::io::Error::other(
                     "injected truncation failure",
@@ -99,28 +102,21 @@ impl LocalStream {
                 .lease()
                 .and_then(|file| file.write(|file| file.set_len(flushed)))
                 .map_err(CutSimulationError::Truncate)
-        })
-        .await
-        .map_err(|_| CutSimulationError::Task)
-        .and_then(|simulated| simulated);
+        })();
         cut.crashed(simulated);
         self.inner.poison()
     }
 
     /// Finishes one frame written while a cut is installed: flush, then
     /// acknowledge.
-    async fn cut_after_write(&self, cut: Arc<dyn PersistenceCut>) -> Result<(), StreamError> {
+    fn cut_after_write(&self, cut: &dyn PersistenceCut, fail: bool) -> Result<(), StreamError> {
         if !cut.written() {
-            return Err(self.cut_crash(cut.as_ref()).await);
+            return Err(self.cut_crash(cut, fail));
         }
-        let stream = self.worker();
-        spawn_blocking(move || stream.flush_all(&tracing::Span::none()))
-            .await
-            .map_err(|_| self.inner.poison())??;
+        self.flush_all(&tracing::Span::none())?;
         if !cut.acknowledge() {
-            return Err(self.cut_crash(cut.as_ref()).await);
+            return Err(self.cut_crash(cut, fail));
         }
-        self.inner.published();
         Ok(())
     }
 }

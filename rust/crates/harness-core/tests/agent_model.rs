@@ -3,7 +3,7 @@
 use acyclic_harness_core::agent::*;
 use acyclic_stream::{
     CommitCondition, CommitMutation, CommitOutcome, CommitRequest, MemoryStream, ReadRequest,
-    StreamError, StreamPath, StreamProvider,
+    StreamError, StreamPath, StreamProvider, StreamProviderExt as _,
 };
 use futures::TryStreamExt;
 use std::{collections::VecDeque, sync::Mutex};
@@ -69,6 +69,7 @@ async fn values(provider: &MemoryStream, path: StreamPath) -> Result<Vec<Vec<u8>
     }
     let records: Vec<_> = provider
         .read(ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: u32::try_from(tail)?,

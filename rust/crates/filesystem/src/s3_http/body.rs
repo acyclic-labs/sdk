@@ -209,6 +209,7 @@ async fn read_multipart_snapshot<P: acyclic_stream::StreamProvider>(
             .map_err(|_| s3s::s3_error!(InternalError))?;
         let mut page = provider
             .read(acyclic_stream::ReadRequest {
+                key: None,
                 path: path.clone(),
                 from,
                 limit,

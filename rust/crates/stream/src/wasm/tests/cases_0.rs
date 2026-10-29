@@ -116,6 +116,7 @@ fn commit_normalization_is_canonical_and_shape_checked() -> Result<(), StreamErr
 #[test]
 fn request_validation_uses_wire_decoding_and_domain_limits() {
     let valid = wire::ReadRequest {
+        key: None,
         path: "events".to_owned(),
         from: 0,
         limit: 10,

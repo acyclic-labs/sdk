@@ -1,6 +1,7 @@
 //! G40: drive the actual discovery loop twice, preserving only backend storage.
 use super::{Backend, Result, fixtures, observe::Observed, vectors};
 use acyclic_harness_core::agent::{ACTORS, AgentHost, AgentPath};
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{
     StreamPath, StreamProvider,
     runtime::{Executor as _, PlatformExecutor},

@@ -365,7 +365,8 @@ async fn prepared_replays_share_reserved_inventory_through_interleaved_growth() 
         drop(issued.take_recovery_future());
         pending.push((key, issued, guard));
     }
-    for index in 0..64 {
+    // Together with the two seed entries this reaches an exact growth boundary.
+    for index in 0..62 {
         provider
             .native_append(
                 AppendRequest {
@@ -530,7 +531,15 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
         .freeze(9)
         .map_err(|_| StreamError::InvalidArgument)?;
     let last_empty_alias = body.slice(..0);
-    let output = issued.finish((body).into()).await??;
+    let output = issued
+        .finish(crate::AppendRecord {
+            value: body,
+            headers: crate::RecordHeaders::new(
+                vec![OwnedBytes::from_static(b"late-header")],
+                Vec::new(),
+            )?,
+        })
+        .await??;
     let CommitOutcome::Committed(envelope) = output.value() else {
         panic!("canonical Commit result")
     };
@@ -550,6 +559,23 @@ async fn public_prepared_future_keeps_original_payload_through_the_last_empty_al
             b"root-body"
         );
     }
+    let indexed = provider
+        .read(ReadRequest {
+            key: Some(crate::ReadKeySeek {
+                key: OwnedBytes::from_static(b"late-header"),
+                before: u64::MAX,
+            }),
+            path: path("completion/target")?,
+            from: 0,
+            limit: 1,
+            at_least: Default::default(),
+        })
+        .await?
+        .next()
+        .await
+        .ok_or(StreamError::Unavailable)??;
+    assert_eq!(indexed.value.as_ref(), b"root-body");
+    drop(indexed);
     assert_eq!(meter.allocations.load(Ordering::SeqCst), allocations);
     assert_eq!(meter.pending_write.load(Ordering::SeqCst), 0);
     assert_eq!(meter.pending_write_operations.load(Ordering::SeqCst), 0);
@@ -812,7 +838,8 @@ async fn stock_mutations_cannot_consume_promised_capacity_and_drop_releases_it()
         commits: 3,
         records: 3,
         payload_bytes: 72,
-        idempotency_results: 1,
+        // Two retained seed receipts and exactly one promised completion.
+        idempotency_results: 3,
         ..MemoryLimits::default()
     };
     for abandon in [false, true] {

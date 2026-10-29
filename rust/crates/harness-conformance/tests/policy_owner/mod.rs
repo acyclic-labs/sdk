@@ -16,8 +16,8 @@ fn object_store() -> acyclic_fs::MemoryObjectBackend {
 
 #[async_trait::async_trait]
 impl StreamProvider for Session {
-    fn operation_claims(&self) -> &OperationClaims {
-        &self.1
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(&self.1)
     }
     async fn inspect_idempotency(
         &self,
@@ -25,18 +25,23 @@ impl StreamProvider for Session {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         self.0.inspect_idempotency(key).await
     }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.0.tail(path).await
+
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        self.0.heads(request).await
     }
-    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
-        self.0.head(path).await
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        self.0.write(request)
     }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.0.append(request).await
-    }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.0.fork(request).await
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.0.read(request).await
     }
@@ -46,13 +51,14 @@ impl StreamProvider for Session {
     ) -> Result<acyclic_stream::FollowStream, StreamError> {
         self.0.follow(request).await
     }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.0.commit(request).await
-    }
+
     async fn read_commit(&self, commit: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.0.read_commit(commit).await
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for Session {}
 
 struct Streams;
 impl Substrate for Streams {

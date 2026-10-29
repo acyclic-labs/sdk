@@ -1,9 +1,8 @@
 use super::*;
 mod reconnect;
 use acyclic_stream::{
-    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
-    CommitRequest, CommittedEnvelope, ForkRequest, IdempotencyKey, IdempotencyObservation,
-    ReadRequest, RecordStream, StreamProvider,
+    AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
+    ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, RecordStream, StreamProvider,
 };
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -223,8 +222,8 @@ impl Drop for TcpDropped {
 
 #[async_trait]
 impl StreamProvider for TcpDropProbe {
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        &self.operation_claims
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(&self.operation_claims)
     }
 
     async fn inspect_idempotency(
@@ -234,29 +233,40 @@ impl StreamProvider for TcpDropProbe {
         Err(StreamError::Unsupported)
     }
 
-    async fn tail(&self, _path: StreamPath) -> std::result::Result<u64, StreamError> {
+    async fn heads(
+        &self,
+        _request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
         Err(StreamError::Unsupported)
     }
 
-    async fn head(
+    fn write(
         &self,
-        _path: StreamPath,
-    ) -> std::result::Result<acyclic_stream::PathHead, StreamError> {
-        Err(StreamError::Unsupported)
-    }
-
-    async fn append(
-        &self,
-        _request: AppendRequest,
-    ) -> std::result::Result<AppendOutcome, StreamError> {
-        Err(StreamError::Unsupported)
-    }
-
-    async fn fork(
-        &self,
-        _request: ForkRequest,
-    ) -> std::result::Result<acyclic_stream::ForkReceipt, StreamError> {
-        Err(StreamError::Unsupported)
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Append(_request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move { Err(StreamError::Unsupported) },
+                    acyclic_stream::WriteOutcome::Append,
+                ))
+            }
+            acyclic_stream::WriteRequest::Fork(_request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move { Err(StreamError::Unsupported) },
+                    acyclic_stream::WriteOutcome::Fork,
+                ))
+            }
+            acyclic_stream::WriteRequest::Commit(_request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move { Err(StreamError::Unsupported) },
+                    acyclic_stream::WriteOutcome::Commit,
+                ))
+            }
+        }
     }
 
     async fn read(&self, _request: ReadRequest) -> std::result::Result<RecordStream, StreamError> {
@@ -275,20 +285,6 @@ impl StreamProvider for TcpDropProbe {
             Poll::Pending
         })
         .boxed())
-    }
-
-    async fn children_page(
-        &self,
-        _request: ChildrenPageRequest,
-    ) -> std::result::Result<ChildrenPage, StreamError> {
-        Err(StreamError::Unsupported)
-    }
-
-    async fn commit(
-        &self,
-        _request: CommitRequest,
-    ) -> std::result::Result<CommitOutcome, StreamError> {
-        Err(StreamError::Unsupported)
     }
 
     async fn read_commit(
@@ -384,6 +380,7 @@ async fn real_tcp_follow_close_releases_the_server_stream() {
             Buffer::from(acyclic_stream::session::testing::credential().to_vec()),
         )?;
         let request = wire::FollowRequest {
+            when_absent: Default::default(),
             filter: None,
             path: "accounts/events".to_owned(),
             from: 0,

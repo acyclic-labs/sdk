@@ -151,6 +151,7 @@ pub(super) async fn read_one<P: crate::distributed::AuthorityProvider + ?Sized>(
 ) -> Result<acyclic_stream::Record, AuthorityStoreError> {
     let mut records = provider
         .read(acyclic_stream::ReadRequest {
+            key: None,
             path,
             from,
             limit: 1,

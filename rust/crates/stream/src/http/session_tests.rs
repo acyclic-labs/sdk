@@ -55,7 +55,11 @@ async fn latest_overview(
     provider
         .append(AppendRequest {
             path: StreamPath::new("status")?,
-            records: vec![latest_value.encode_to_vec().into()],
+            records: vec![crate::AppendRecord::latest(
+                latest_value.value.clone(),
+                "agent",
+                latest_value.attention,
+            )?],
             if_tail: None,
             idempotency_key: crate::IdempotencyKey::unique(),
         })
@@ -172,6 +176,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         .await?;
         let anchor = provider
             .read(ReadRequest {
+                key: None,
                 path: path.clone(),
                 from: 0,
                 limit: 1,
@@ -185,6 +190,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         assert!(matches!(
             client
                 .follow(crate::FollowRequest {
+                    when_absent: Default::default(),
                     path: path.clone(),
                     from: 1,
                     preceding: Some(CommitId::from_bytes([42; 32])),
@@ -198,6 +204,7 @@ async fn http_follows_and_live_children_share_one_native_session() -> TestResult
         ));
         let mut checked = client
             .follow(crate::FollowRequest {
+                when_absent: Default::default(),
                 path: path.clone(),
                 from: 1,
                 preceding: Some(anchor),

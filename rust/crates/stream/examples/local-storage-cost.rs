@@ -5,7 +5,7 @@
 mod benchmark {
     use acyclic_stream::{
         AppendOutcome, AppendRequest, LocalStream, LocalStreamLimits, OwnedBytes, StreamPath,
-        StreamProvider,
+        StreamProvider, StreamProviderExt as _,
     };
     use std::{error::Error, path::Path, time::Instant};
 

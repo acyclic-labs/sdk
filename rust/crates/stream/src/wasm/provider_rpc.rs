@@ -116,56 +116,78 @@ impl InjectedStream {
         }
         let cursor = OwnedCursor(cursor.unchecked_into());
         let read = operation == "read";
+        let seek = if read {
+            wire_codec::read_from_wire(
+                wire::ReadRequest::decode(input.as_slice())
+                    .map_err(|_| StreamError::InvalidArgument)?,
+            )?
+            .key
+        } else {
+            None
+        };
         Ok(
-            futures::stream::try_unfold((cursor, from), move |(cursor, next)| async move {
-                let value = reply(cursor.0.next()).await?;
-                if value.is_null() {
-                    return Ok(None);
-                }
-                let bytes = snapshot(value)?;
-                let frame = wire::SessionFrame::decode(bytes.as_slice())
-                    .map_err(|_| StreamError::InvalidResponse)?;
-                if frame.channel_id != 1 || frame.generation != 1 {
-                    return Err(StreamError::InvalidResponse);
-                }
-                let (update, after) = match frame.body {
-                    Some(wire::session_frame::Body::Data(data)) => {
-                        let Some(wire::session_data::Item::Record(record)) = data.item else {
-                            return Err(StreamError::InvalidResponse);
-                        };
-                        let record = wire_codec::record(record)?;
-                        if record.sequence < next || (read && record.sequence != next) {
-                            return Err(StreamError::InvalidResponse);
-                        }
-                        let after = record
-                            .sequence
-                            .checked_add(1)
-                            .ok_or(StreamError::OutOfRange)?;
-                        if data
-                            .after
-                            .as_ref()
-                            .is_none_or(|cursor| cursor.next != after || !cursor.opaque.is_empty())
-                        {
-                            return Err(StreamError::InvalidResponse);
-                        }
-                        (FollowUpdate::Record(record), after)
+            futures::stream::try_unfold((cursor, from), move |(cursor, next)| {
+                let seek = seek.clone();
+                async move {
+                    let value = reply(cursor.0.next()).await?;
+                    if value.is_null() {
+                        return Ok(None);
                     }
-                    Some(wire::session_frame::Body::Watermark(progress)) if !read => {
-                        let after = progress.after.ok_or(StreamError::InvalidResponse)?;
-                        if after.next <= next || !after.opaque.is_empty() {
-                            return Err(StreamError::InvalidResponse);
-                        }
-                        (
-                            FollowUpdate::Progress {
-                                next: after.next,
-                                preceding: wire_codec::commit_id(&progress.preceding_commit_id)?,
-                            },
-                            after.next,
-                        )
+                    let bytes = snapshot(value)?;
+                    let frame = wire::SessionFrame::decode(bytes.as_slice())
+                        .map_err(|_| StreamError::InvalidResponse)?;
+                    if frame.channel_id != 1 || frame.generation != 1 {
+                        return Err(StreamError::InvalidResponse);
                     }
-                    _ => return Err(StreamError::InvalidResponse),
-                };
-                Ok(Some((update, (cursor, after))))
+                    let (update, after) = match frame.body {
+                        Some(wire::session_frame::Body::Data(data)) => {
+                            let Some(wire::session_data::Item::Record(record)) = data.item else {
+                                return Err(StreamError::InvalidResponse);
+                            };
+                            let record = wire_codec::record(record)?;
+                            if record.sequence < next
+                                || (read && seek.is_none() && record.sequence != next)
+                                || seek.as_ref().is_some_and(|key| {
+                                    record.sequence >= key.before
+                                        || !record
+                                            .headers
+                                            .keys()
+                                            .iter()
+                                            .any(|value| value == &key.key)
+                                })
+                            {
+                                return Err(StreamError::InvalidResponse);
+                            }
+                            let after = record
+                                .sequence
+                                .checked_add(1)
+                                .ok_or(StreamError::OutOfRange)?;
+                            if data.after.as_ref().is_none_or(|cursor| {
+                                cursor.next != after || !cursor.opaque.is_empty()
+                            }) {
+                                return Err(StreamError::InvalidResponse);
+                            }
+                            (FollowUpdate::Record(record), after)
+                        }
+                        Some(wire::session_frame::Body::Watermark(progress)) if !read => {
+                            let after = progress.after.ok_or(StreamError::InvalidResponse)?;
+                            if after.next <= next || !after.opaque.is_empty() {
+                                return Err(StreamError::InvalidResponse);
+                            }
+                            (
+                                FollowUpdate::Progress {
+                                    next: after.next,
+                                    preceding: wire_codec::commit_id(
+                                        &progress.preceding_commit_id,
+                                    )?,
+                                },
+                                after.next,
+                            )
+                        }
+                        _ => return Err(StreamError::InvalidResponse),
+                    };
+                    Ok(Some((update, (cursor, after))))
+                }
             })
             .boxed_local(),
         )
@@ -173,8 +195,8 @@ impl InjectedStream {
 }
 #[async_trait::async_trait(?Send)]
 impl StreamProvider for InjectedStream {
-    fn operation_claims(&self) -> &OperationClaims {
-        &self.claims
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(&self.claims)
     }
     async fn inspect_idempotency(
         &self,
@@ -197,105 +219,69 @@ impl StreamProvider for InjectedStream {
         }
         Ok(observed)
     }
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        wire_codec::head_from_wire(
-            self.call(
-                "head",
-                wire::HeadRequest {
-                    path: path.to_string(),
-                },
-            )
-            .await?,
-        )
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        let view = wire_codec::heads_from_response(
+            self.call("heads", wire_codec::heads_request_to_wire(request.clone()))
+                .await?,
+        )?;
+        view.validate_for(&request)?;
+        Ok(view)
     }
 
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        Ok(self.watermarks(path).await?.accepted)
-    }
-    async fn wait_applied(
+    fn write(
         &self,
-        at_least: &crate::RevisionCut,
-    ) -> Result<crate::Revision, StreamError> {
-        let applied: wire::Revision = self
-            .call(
-                "wait_applied",
-                wire::WaitAppliedRequest {
-                    at_least: wire_codec::cut_to_wire(at_least),
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        match request {
+            crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let request = crate::WriteRequest::Append(request).validated()?;
+                    let crate::WriteRequest::Append(request) = request else {
+                        return Err(StreamError::InvalidArgument);
+                    };
+                    let input = wire::AppendRequest {
+                        path: request.path.to_string(),
+                        records: request
+                            .records
+                            .into_iter()
+                            .map(wire_codec::append_record_wire)
+                            .collect(),
+                        if_tail: request.if_tail,
+                        idempotency_key: bytes::Bytes::copy_from_slice(
+                            request.idempotency_key.as_bytes(),
+                        ),
+                    };
+                    wire_codec::append_outcome_from_wire(self.call("append", input).await?)
                 },
-            )
-            .await?;
-        let applied = wire_codec::revision_from_wire(applied)?;
-        // The host's applied revision must prove the cut it waited for.
-        if !at_least.proven_by(Some(&applied)) {
-            return Err(StreamError::InvalidResponse);
+                crate::WriteOutcome::Append,
+            )),
+            crate::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let input = wire::ForkRequest {
+                        source: request.source.to_string(),
+                        destination: request.destination.to_string(),
+                        at_tail: request.at_tail,
+                        idempotency_key: bytes::Bytes::copy_from_slice(
+                            request.idempotency_key.as_bytes(),
+                        ),
+                        exclude: request.exclude.into_iter().map(|p| p.to_string()).collect(),
+                    };
+                    let result: wire::ForkReceipt = self.call("fork", input).await?;
+                    wire_codec::fork_receipt_from_wire(result)
+                },
+                crate::WriteOutcome::Fork,
+            )),
+            crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let input = wire_codec::commit_to_wire(&request);
+                    wire_codec::commit_outcome_from_wire(self.call("commit", input).await?)
+                },
+                crate::WriteOutcome::Commit,
+            )),
         }
-        Ok(applied)
     }
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        wire_codec::watermarks_from_wire(
-            self.call(
-                "tail",
-                wire::TailRequest {
-                    path: path.to_string(),
-                    accepted: true,
-                    durable_through: None,
-                    at_least: Default::default(),
-                },
-            )
-            .await?,
-        )
-    }
-    async fn durable_receipt(
-        &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<DurableReceipt>, StreamError> {
-        let marks = wire_codec::watermarks_from_wire(
-            self.call(
-                "tail",
-                wire::TailRequest {
-                    path: path.to_string(),
-                    accepted: true,
-                    durable_through: Some(through),
-                    at_least: Default::default(),
-                },
-            )
-            .await?,
-        )?;
-        Ok(DurableReceipt::covering(path, &marks, through))
-    }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        let request = crate::journal::Command::Append(request).validated()?;
-        let crate::journal::Command::Append(request) = request else {
-            return Err(StreamError::InvalidArgument);
-        };
-        let input = wire::AppendRequest {
-            path: request.path.to_string(),
-            records: request
-                .records
-                .into_iter()
-                .map(wire_codec::append_record_wire)
-                .collect(),
-            if_tail: request.if_tail,
-            idempotency_key: bytes::Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
-        };
-        wire_codec::append_outcome_from_wire(self.call("append", input).await?)
-    }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        let input = wire::ForkRequest {
-            source: request.source.to_string(),
-            destination: request.destination.to_string(),
-            at_tail: request.at_tail,
-            idempotency_key: bytes::Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
-            exclude: request.exclude.into_iter().map(|p| p.to_string()).collect(),
-        };
-        let result: wire::ForkReceipt = self.call("fork", input).await?;
-        wire_codec::fork_receipt_from_wire(result)
-    }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let input = wire_codec::commit_to_wire(&request);
-        wire_codec::commit_outcome_from_wire(self.call("commit", input).await?)
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         crate::memory::validate_limit(request.limit)?;
         let from = request.from;
@@ -303,6 +289,7 @@ impl StreamProvider for InjectedStream {
             self.cursor(
                 "read",
                 wire::ReadRequest {
+                    key: wire_codec::read_key_to_wire(&request.key),
                     path: request.path.to_string(),
                     from,
                     limit: request.limit,
@@ -314,39 +301,6 @@ impl StreamProvider for InjectedStream {
             )
             .await?,
         ))
-    }
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        let input = wire::ChildrenPageRequest {
-            parent: request.parent.map(|p| p.to_string()),
-            after: request.after.map(|p| p.to_string()),
-            hierarchy_version: request
-                .hierarchy_version
-                .map(|id| bytes::Bytes::copy_from_slice(id.as_bytes())),
-            tail_stream: request.tail_stream.map(|p| p.to_string()),
-            limit: request.limit,
-        };
-        let result: wire::ChildrenPageResponse = self.call("children_page", input).await?;
-        Ok(ChildrenPage {
-            hierarchy_version: wire_codec::commit_id(&result.hierarchy_version)?,
-            children: result
-                .children
-                .into_iter()
-                .map(|child| {
-                    Ok(Child {
-                        origin: child
-                            .origin
-                            .map(wire_codec::fork_origin_from_wire)
-                            .transpose()?,
-                        path: wire_codec::path(child.path)?,
-                        tail_record: child.tail_record.map(wire_codec::record).transpose()?,
-                    })
-                })
-                .collect::<Result<_, StreamError>>()?,
-            next_after: result.next_after.map(wire_codec::path).transpose()?,
-        })
     }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         wire_codec::envelope_from_wire(
@@ -366,6 +320,7 @@ impl StreamProvider for InjectedStream {
         self.cursor(
             "follow",
             wire::FollowRequest {
+                when_absent: request.when_absent.to_wire(),
                 path: request.path.to_string(),
                 from: request.from,
                 filter: Some(request.filter.transport_filter()?),
@@ -402,28 +357,16 @@ impl super::WasmStream {
                     .boxed_local()
             }
             "follow" => {
-                let mut input = super::decode::<wire::FollowRequest>(input)?;
-                let progress = input.progress;
-                let at_least = wire_codec::cut_from_wire(std::mem::take(&mut input.at_least))
-                    .map_err(super::js_error)?;
-                let (path, from, filter) =
-                    wire_codec::follow_from_wire(input).map_err(super::js_error)?;
+                let mut request =
+                    wire_codec::follow_from_wire(super::decode::<wire::FollowRequest>(input)?)
+                        .map_err(super::js_error)?;
                 let anchor = if preceding.is_empty() {
                     None
                 } else {
                     Some(wire_codec::commit_id(preceding).map_err(super::js_error)?)
                 };
-                provider
-                    .follow(crate::FollowRequest {
-                        path,
-                        from,
-                        preceding: anchor,
-                        filter,
-                        progress,
-                        at_least,
-                    })
-                    .await
-                    .map_err(super::js_error)?
+                request.preceding = anchor;
+                provider.follow(request).await.map_err(super::js_error)?
             }
             _ => return Err(super::js_error(StreamError::InvalidArgument)),
         };

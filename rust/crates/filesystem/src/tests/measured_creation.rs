@@ -1,4 +1,5 @@
 //! Public named-creation work bounds and failure receipts.
+use acyclic_stream::StreamProviderExt as _;
 #[macro_use]
 #[path = "../../tests/support/unbounded.rs"]
 mod unbounded;
@@ -300,8 +301,8 @@ mod source_bound_lost_ack {
 
     #[async_trait::async_trait]
     impl StreamProvider for LostCreationAck {
-        fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-            self.inner.operation_claims()
+        fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+            acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
         }
 
         async fn inspect_idempotency(
@@ -311,25 +312,49 @@ mod source_bound_lost_ack {
             self.inner.inspect_idempotency(key).await
         }
 
-        async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
-            self.inner.head(path).await
-        }
-        async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-            self.inner.tail(path).await
+        async fn heads(
+            &self,
+            request: acyclic_stream::HeadsRequest,
+        ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+            self.inner.heads(request).await
         }
 
-        async fn append(
+        fn write(
             &self,
-            request: AppendRequest,
-        ) -> Result<acyclic_stream::AppendOutcome, StreamError> {
-            self.inner.append(request).await
-        }
-
-        async fn fork(
-            &self,
-            request: acyclic_stream::ForkRequest,
-        ) -> Result<acyclic_stream::ForkReceipt, StreamError> {
-            self.inner.fork(request).await
+            request: acyclic_stream::WriteRequest,
+        ) -> acyclic_stream::BoxProviderFuture<
+            '_,
+            std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+        > {
+            match request {
+                acyclic_stream::WriteRequest::Append(request) => {
+                    Box::pin(futures::TryFutureExt::map_ok(
+                        async move { self.inner.append(request).await },
+                        acyclic_stream::WriteOutcome::Append,
+                    ))
+                }
+                acyclic_stream::WriteRequest::Fork(request) => {
+                    Box::pin(futures::TryFutureExt::map_ok(
+                        async move { self.inner.fork(request).await },
+                        acyclic_stream::WriteOutcome::Fork,
+                    ))
+                }
+                acyclic_stream::WriteRequest::Commit(request) => {
+                    Box::pin(futures::TryFutureExt::map_ok(
+                        async move {
+                            let result = self.inner.commit(request).await?;
+                            if matches!(&result, acyclic_stream::CommitOutcome::Committed(_)) {
+                                self.committed.fetch_add(1, Ordering::SeqCst);
+                                if self.armed.swap(false, Ordering::SeqCst) {
+                                    return Err(StreamError::Unavailable);
+                                }
+                            }
+                            Ok(result)
+                        },
+                        acyclic_stream::WriteOutcome::Commit,
+                    ))
+                }
+            }
         }
 
         async fn read(
@@ -346,27 +371,6 @@ mod source_bound_lost_ack {
             self.inner.follow(request).await
         }
 
-        async fn children_page(
-            &self,
-            request: acyclic_stream::ChildrenPageRequest,
-        ) -> Result<acyclic_stream::ChildrenPage, StreamError> {
-            self.inner.children_page(request).await
-        }
-
-        async fn commit(
-            &self,
-            request: CommitRequest,
-        ) -> Result<acyclic_stream::CommitOutcome, StreamError> {
-            let result = self.inner.commit(request).await?;
-            if matches!(&result, acyclic_stream::CommitOutcome::Committed(_)) {
-                self.committed.fetch_add(1, Ordering::SeqCst);
-                if self.armed.swap(false, Ordering::SeqCst) {
-                    return Err(StreamError::Unavailable);
-                }
-            }
-            Ok(result)
-        }
-
         async fn read_commit(
             &self,
             id: acyclic_stream::CommitId,
@@ -374,6 +378,9 @@ mod source_bound_lost_ack {
             self.inner.read_commit(id).await
         }
     }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl acyclic_stream::NativeStreamProvider for LostCreationAck {}
 
     #[tokio::test]
     async fn lost_stream_creation_ack_reopens_same_source_bound_allocation()

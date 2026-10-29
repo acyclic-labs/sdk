@@ -40,3 +40,15 @@ pub(crate) fn guarded_boundary(
         _ => Error::Storage(reason.into()),
     }
 }
+
+/// Provider required by an execution journal on this platform.
+/// Native filesystem work must retain its original owner through publication.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub trait JournalProvider: acyclic_stream::NativeStreamProvider {}
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl<P: acyclic_stream::NativeStreamProvider + ?Sized> JournalProvider for P {}
+/// Portable execution journals require no native funding capability.
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+pub trait JournalProvider: acyclic_stream::StreamProvider {}
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+impl<P: acyclic_stream::StreamProvider + ?Sized> JournalProvider for P {}

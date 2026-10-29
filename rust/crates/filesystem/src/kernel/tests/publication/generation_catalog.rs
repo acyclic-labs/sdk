@@ -2,7 +2,7 @@
 use super::*;
 use crate::{AuthorityWork, PublicationChanges, StreamAuthorityStore};
 use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, StreamProvider,
+    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, StreamProviderExt,
 };
 use std::sync::Arc;
 
@@ -81,8 +81,8 @@ mod probe {
 
     #[async_trait::async_trait]
     impl StreamProvider for Provider {
-        fn operation_claims(&self) -> &OperationClaims {
-            &self.claims
+        fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+            acyclic_stream::ProviderContext::new(&self.claims)
         }
         async fn inspect_idempotency(
             &self,
@@ -91,22 +91,53 @@ mod probe {
             self.read_request();
             self.inner.inspect_idempotency(key).await
         }
-        async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
+
+        async fn heads(
+            &self,
+            request: acyclic_stream::HeadsRequest,
+        ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
             self.read_request();
-            self.inner.head(path).await
+            self.inner.heads(request).await
         }
-        async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-            self.read_request();
-            self.inner.tail(path).await
+        fn write(
+            &self,
+            request: acyclic_stream::WriteRequest,
+        ) -> acyclic_stream::BoxProviderFuture<
+            '_,
+            std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+        > {
+            match request {
+                acyclic_stream::WriteRequest::Append(request) => {
+                    Box::pin(futures::TryFutureExt::map_ok(
+                        async move {
+                            self.append_request();
+                            self.inner.append(request).await
+                        },
+                        acyclic_stream::WriteOutcome::Append,
+                    ))
+                }
+                acyclic_stream::WriteRequest::Fork(request) => {
+                    Box::pin(futures::TryFutureExt::map_ok(
+                        async move {
+                            self.append_request();
+                            self.inner.fork(request).await
+                        },
+                        acyclic_stream::WriteOutcome::Fork,
+                    ))
+                }
+                acyclic_stream::WriteRequest::Commit(request) => {
+                    Box::pin(futures::TryFutureExt::map_ok(
+                        async move {
+                            self.append_request();
+                            self.await_commit_gate().await;
+                            self.inner.commit(request).await
+                        },
+                        acyclic_stream::WriteOutcome::Commit,
+                    ))
+                }
+            }
         }
-        async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-            self.append_request();
-            self.inner.append(request).await
-        }
-        async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-            self.append_request();
-            self.inner.fork(request).await
-        }
+
         async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
             self.read_request();
             self.inner.read(request).await
@@ -118,22 +149,15 @@ mod probe {
             self.read_request();
             self.inner.follow(request).await
         }
-        async fn children_page(
-            &self,
-            request: acyclic_stream::ChildrenPageRequest,
-        ) -> Result<acyclic_stream::ChildrenPage, StreamError> {
-            self.read_request();
-            self.inner.children_page(request).await
-        }
-        async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-            self.append_request();
-            self.await_commit_gate().await;
-            self.inner.commit(request).await
-        }
+
         async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
             self.read_request();
             self.inner.read_commit(id).await
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl acyclic_stream::NativeStreamProvider for Provider {
         fn native_inspect_idempotency(
             &self,
             key: IdempotencyKey,
@@ -158,17 +182,19 @@ mod probe {
             self.read_request();
             self.inner.native_read(request, meter)
         }
-        fn native_commit(
+        fn native_write(
             &self,
-            request: CommitRequest,
-            deadline: Option<u64>,
+            request: acyclic_stream::WriteRequest,
             meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-        ) -> NativeProviderFuture<'_, CommitOutcome> {
+        ) -> NativeProviderFuture<'_, acyclic_stream::WriteOutcome> {
+            let acyclic_stream::WriteRequest::Commit(_) = &request else {
+                return NativeProviderFuture::ready(Ok(Err(StreamError::Unsupported)));
+            };
             self.append_request();
             let funding = Arc::clone(&meter);
             NativeProviderFuture::new(&funding, async move {
                 self.await_commit_gate().await;
-                self.inner.native_commit(request, deadline, meter).await
+                self.inner.native_write(request, meter).await
             })
         }
     }

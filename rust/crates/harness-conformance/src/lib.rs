@@ -43,7 +43,7 @@ pub fn collect_on<P, A, O>(
     stream: std::sync::Arc<P>,
 ) -> acyclic_stream::BoxProviderFuture<'static, TestResult<CaseObservation>>
 where
-    P: acyclic_stream::StreamProvider,
+    P: acyclic_harness::store::JournalProvider,
     A: acyclic_fs::AsyncAuthorityStore + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
 {

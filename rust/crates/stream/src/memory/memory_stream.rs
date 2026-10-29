@@ -37,6 +37,14 @@ impl MemoryStream {
         Self::new_with_commit_clock(limits, Arc::clone(&clock), clock)
     }
 
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+    pub(crate) fn with_commit_clock(&self, clock: Arc<dyn UnixMillisClock>) -> Self {
+        Self {
+            commit_clock: clock,
+            ..self.clone()
+        }
+    }
+
     pub(crate) fn new_with_commit_clock(
         limits: MemoryLimits,
         clock: Arc<dyn UnixMillisClock>,
@@ -59,6 +67,7 @@ impl MemoryStream {
     /// journal in one order, or a store whose incarnation outlives a process,
     /// issue and honour the same tokens.
     #[cfg(any(
+        test,
         feature = "local",
         all(feature = "postgres", not(target_arch = "wasm32"))
     ))]
@@ -72,20 +81,23 @@ impl MemoryStream {
     fn applied(&self, state: &State) {
         self.revisions.advance(state.decision);
     }
+    fn commit_request_digest(&self, request: &mut CommitRequest) -> Result<[u8; 32], StreamError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        return if self.work.is_some() {
+            self.digest(request)
+        } else {
+            commit_digest(request)
+        };
+        #[cfg(target_arch = "wasm32")]
+        commit_digest(request)
+    }
 
     pub(crate) async fn commit_inner(
         &self,
         mut request: CommitRequest,
         deadline: Option<u64>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        let digest = if self.work.is_some() {
-            self.digest(&mut request)?
-        } else {
-            commit_digest(&mut request)?
-        };
-        #[cfg(target_arch = "wasm32")]
-        let digest = commit_digest(&mut request)?;
+        let digest = self.commit_request_digest(&mut request)?;
         self.commit_locked(&mut *self.state.write().await, request, digest, deadline)
     }
 }

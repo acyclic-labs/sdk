@@ -37,7 +37,7 @@ impl Builder {
         self.conditions.entry(path).or_insert(condition);
     }
 
-    fn append(&mut self, path: StreamPath, record: Vec<u8>) {
+    fn append(&mut self, path: StreamPath, record: impl Into<AppendRecord>) {
         self.appends.entry(path).or_default().push(record.into());
     }
 
@@ -143,7 +143,7 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
             path: path.clone(),
             expected: state.status_tail - 1,
         });
-        builder.append(path, status.encode()?);
+        builder.append(path, status.append_record()?);
     }
     let mut mutations = builder.forks;
     mutations.extend(

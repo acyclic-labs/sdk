@@ -131,6 +131,7 @@ async fn observe(
         ..Meter::default()
     });
     let request = ReadRequest {
+        key: None,
         path,
         from,
         limit,
@@ -181,125 +182,111 @@ async fn observe(
     (trace, work, opened_bytes, meter_trace::finish())
 }
 
+// Payload copying and byte custody keep their original protocol. History
+// examinations and frame storage deliberately move from opening to page pulls.
+fn payload_events(events: Vec<meter_trace::Event>) -> Vec<meter_trace::Event> {
+    events
+        .into_iter()
+        .filter(|event| match event.0 {
+            "admit_examination" | "record_examination" => event.2 != 0,
+            "reserve_bytes" | "record_reserved_bytes" | "cancel_reserved_bytes" => true,
+            _ => false,
+        })
+        .collect()
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
     #[test]
-    fn bounded_native_read_keeps_full_bytes_errors_and_work_trace(batches in 1usize..9, from in 0u64..10, limit in 0u32..10, read_limit in 0u64..28) {
-        // Initialize two independent backends, and the test executor, outside
-        // measurement. The executor's first ThreadNotify allocation is not read work.
-        let baseline_provider = futures::executor::block_on(seed(batches));
-        let candidate_provider = futures::executor::block_on(seed(batches));
-        let before_bytes = std::cell::Cell::new(0);
-        let after_bytes = std::cell::Cell::new(0);
-        let (_, [before, after]) = acyclic_test_support::differential(
-            || { let (trace, work, held, events) = futures::executor::block_on(observe(&baseline_provider, true, from, limit, read_limit, false)); before_bytes.set(held); (trace, work, normalize_baseline_events(events, held)) },
-            || { let (trace, work, held, events) = futures::executor::block_on(observe(&candidate_provider, false, from, limit, read_limit, false)); after_bytes.set(held); (trace, work, events) },
-        );
-        funding_bound(before_bytes.get(), after_bytes.get(), before, after)?;
+    fn lazy_native_read_keeps_records_refusals_and_payload_admission(batches in 1usize..9, from in 0u64..10, limit in 0u32..10, read_limit in 0u64..28) {
+        let provider = futures::executor::block_on(seed(batches));
+        let before = futures::executor::block_on(observe(&provider, true, from, limit, read_limit, false));
+        let after = futures::executor::block_on(observe(&provider, false, from, limit, read_limit, false));
+        prop_assert_eq!(before.0, after.0);
+        for index in [0, 1, 3, 4, 5] {
+            prop_assert_eq!(before.1[index], after.1[index]);
+        }
+        prop_assert_eq!(payload_events(before.3), payload_events(after.3));
     }
 }
 
-fn funding_bound(
-    before_held: u64,
-    after_held: u64,
-    before: acyclic_test_support::AllocationInfo,
-    after: acyclic_test_support::AllocationInfo,
-) -> proptest::test_runner::TestCaseResult {
-    // TryUnfold stores both its cursor state and the in-flight step future.
-    let saved = if before_held == 0 {
-        0
-    } else {
-        2 * (std::mem::size_of::<BaselineCursor>() - std::mem::size_of::<VecDeque<HistoryWindow>>())
-    } as u64;
-    prop_assert_eq!(before.count_total, after.count_total);
-    prop_assert_eq!(before_held, after_held + saved);
-    prop_assert_eq!(before.bytes_total, after.bytes_total + saved);
-    Ok(())
-}
-
 #[test]
-fn restoring_unused_native_cursor_fields_fails_the_same_funding_bound() {
-    for old_candidate in [false, true] {
-        let baseline_provider = futures::executor::block_on(seed(1));
-        let candidate_provider = futures::executor::block_on(seed(1));
-        let before_held = std::cell::Cell::new(0);
-        let after_held = std::cell::Cell::new(0);
-        let (_, [before, after]) = acyclic_test_support::differential(
-            || {
-                let (trace, work, held, events) =
-                    futures::executor::block_on(observe(&baseline_provider, true, 0, 1, 3, false));
-                before_held.set(held);
-                (trace, work, normalize_baseline_events(events, held))
-            },
-            || {
-                let (trace, work, held, events) = futures::executor::block_on(observe(
-                    &candidate_provider,
-                    old_candidate,
-                    0,
-                    1,
-                    3,
-                    false,
-                ));
-                after_held.set(held);
-                // This control changes only frame size, not the observer protocol.
-                let events = if old_candidate {
-                    normalize_baseline_events(events, held)
+fn native_read_open_has_constant_funding_and_eager_control_exposes_backlog() {
+    let mut lazy = Vec::new();
+    let mut eager = Vec::new();
+    for batches in [8, 128, 1024] {
+        let provider = futures::executor::block_on(seed(batches));
+        for old in [true, false] {
+            let meter = Arc::new(Meter::default());
+            let request = ReadRequest {
+                path: StreamPath::new("native/differential").unwrap(),
+                from: 0,
+                limit: batches as u32,
+                key: None,
+                at_least: Default::default(),
+            };
+            let mut output = futures::executor::block_on(async {
+                if old {
+                    baseline_native_read(&provider, request, meter.original()).await
                 } else {
-                    events
-                };
-                (trace, work, events)
-            },
-        );
-        assert_eq!(
-            funding_bound(before_held.get(), after_held.get(), before, after).is_ok(),
-            !old_candidate
-        );
-    }
-}
-
-// The sole intentional observer difference is the smaller native cursor frame.
-// Retain every event and argument, adjusting exactly its allocation and the
-// final aggregate refund. The funding property independently checks this delta.
-fn normalize_baseline_events(
-    mut events: Vec<meter_trace::Event>,
-    held: u64,
-) -> Vec<meter_trace::Event> {
-    if held != 0 {
-        let saved = 2
-            * (std::mem::size_of::<BaselineCursor>()
-                - std::mem::size_of::<VecDeque<HistoryWindow>>()) as u64;
-        let allocation = events
-            .iter_mut()
-            .rfind(|event| event.0 == "allocate")
+                    provider.native_read(request, meter.original()).await
+                }
+            })
+            .unwrap()
             .unwrap();
-        allocation.1 = allocation.1.checked_sub(saved).unwrap();
-        let refund = events
-            .iter_mut()
-            .rfind(|event| event.0 == "release")
-            .unwrap();
-        assert_eq!(refund.1, held);
-        refund.1 -= saved;
+            let opened = (
+                meter.held.load(Ordering::SeqCst),
+                meter.examined.load(Ordering::SeqCst),
+                meter.allocations.load(Ordering::SeqCst),
+            );
+            let first = futures::executor::block_on(output.value_mut().next())
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(first.value().sequence, 0);
+            assert_eq!(first.value().value.as_ref(), &[0, 0, 255]);
+            let first_work = meter.examined.load(Ordering::SeqCst);
+            drop(first);
+            drop(output);
+            assert_eq!(meter.held.load(Ordering::SeqCst), 0);
+            meter.assert_refunded();
+            if old {
+                eager.push((opened, first_work));
+            } else {
+                lazy.push((opened, first_work));
+            }
+            println!(
+                "native read batches={batches} eager={old} open={opened:?} first_examinations={first_work}"
+            );
+        }
     }
-    events
+    assert!(lazy.windows(2).all(|pair| pair[0].0 == pair[1].0));
+    assert_eq!(lazy[0].0.1, 2, "opening traversed pinned history");
+    assert_eq!(lazy[0].0.2, 2, "only the future and cursor frames allocate");
+    assert!(
+        eager
+            .windows(2)
+            .all(|pair| pair[0].0.0 < pair[1].0.0 && pair[0].0.1 < pair[1].0.1)
+    );
+    assert!(
+        eager[2].1 > lazy[2].1,
+        "eager control hid its first-output work"
+    );
 }
 
 #[test]
-fn reordered_recording_fails_observer_equality_with_unchanged_bytes_and_totals() {
-    let baseline = futures::executor::block_on(seed(2));
-    let broken = futures::executor::block_on(seed(2));
-    let before = futures::executor::block_on(observe(&baseline, true, 0, 2, 6, false));
-    let after = futures::executor::block_on(observe(&broken, false, 0, 2, 6, true));
+fn reordered_recording_fails_payload_protocol_with_unchanged_bytes_and_totals() {
+    let provider = futures::executor::block_on(seed(2));
+    let before = futures::executor::block_on(observe(&provider, false, 0, 2, 6, false));
+    let after = futures::executor::block_on(observe(&provider, false, 0, 2, 6, true));
     assert_eq!(before.0, after.0);
     assert_eq!(before.1, after.1);
-    let expected_events = normalize_baseline_events(before.3, before.2);
-    assert_eq!(expected_events.len(), after.3.len());
-    assert!(std::panic::catch_unwind(|| assert_eq!(expected_events, after.3)).is_err());
-    let expected = expected_events
+    let expected = payload_events(before.3);
+    let changed = payload_events(after.3);
+    assert_ne!(expected, changed);
+    let recorded = expected
         .iter()
-        .position(|event| event.0 == "record_examination" && event.2 != 0)
+        .position(|event| event.0 == "record_examination")
         .unwrap();
-    assert_eq!(
-        after.3.get(expected).map(|event| event.0),
-        Some("record_reserved_bytes")
-    );
+    assert_eq!(changed[recorded].0, "record_reserved_bytes");
 }

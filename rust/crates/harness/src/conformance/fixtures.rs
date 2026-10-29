@@ -8,13 +8,12 @@
 use crate::conformance::Result;
 use acyclic_actors::{addressing::ActorReference, domain::ActorLimits, local::SystemClock};
 use acyclic_harness_core::agent::*;
-use acyclic_stream::StreamProvider;
 use std::sync::Arc;
 
 /// Save a real spawn without activating its child. Endpoint hosts can then
 /// adopt that child through their public placement API, including after reopen.
-pub async fn spawned(
-    provider: Arc<dyn StreamProvider>,
+pub async fn spawned<P: acyclic_harness_core::store::JournalProvider + ?Sized>(
+    provider: Arc<P>,
     within: ActorReference,
 ) -> Result<AgentPath> {
     let handler = Arc::new(AgentHandler::new(

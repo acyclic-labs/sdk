@@ -1,9 +1,13 @@
 //! Single-lock deterministic reference state machine; no durability or availability claim.
 
-use std::{
-    collections::{BTreeMap, VecDeque},
-    sync::Arc,
-};
+#[cfg(all(any(test, loom), not(target_arch = "wasm32")))]
+use crate::NativeStreamProvider as _;
+
+#[cfg(any(test, loom))]
+use crate::StreamProviderExt as _;
+#[cfg(test)]
+use std::collections::VecDeque;
+use std::sync::Arc;
 
 #[cfg(any(test, not(target_arch = "wasm32")))]
 use crate::MAX_RECORD_BYTES;
@@ -30,6 +34,8 @@ pub(crate) mod parking_model;
 // Recovery tests exercise snapshots even without the local storage backend.
 #[cfg(any(test, feature = "local"))]
 mod snapshot;
+#[cfg(feature = "local")]
+pub(crate) use snapshot::RestoreError;
 
 use crate::{
     AppendOutcome, AppendReceipt, AppendRecord, AppendRequest, Child, ChildrenPage,
@@ -71,6 +77,7 @@ include!("commit_index.rs");
 include!("path_state.rs");
 
 include!("history.rs");
+include!("key_index.rs");
 
 include!("capacity.rs");
 

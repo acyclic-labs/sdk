@@ -3,6 +3,39 @@ use futures::TryFutureExt as _;
 use std::task::{Context, Waker};
 
 #[tokio::test]
+async fn cancelled_missing_follows_release_path_registrations() {
+    let provider = MemoryStream::default();
+    for progress in [false, true] {
+        let path = StreamPath::new("not-created").unwrap();
+        let mut request = crate::FollowRequest::new(path.clone(), 0);
+        request.when_absent = crate::WhenAbsent::Wait;
+        request.progress = progress;
+        let follow = provider.follow(request).await.unwrap();
+        assert!(
+            provider
+                .state
+                .read()
+                .await
+                .signals
+                .get(&path)
+                .unwrap()
+                .is_some()
+        );
+        drop(follow);
+        assert!(
+            provider
+                .state
+                .read()
+                .await
+                .signals
+                .get(&path)
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test]
 async fn unpolled_streams_do_not_block_appends() {
     for checked in [false, true] {
         let provider = MemoryStream::default();
@@ -23,6 +56,7 @@ async fn unpolled_streams_do_not_block_appends() {
             let follow = if checked {
                 provider
                     .follow(crate::FollowRequest {
+                        when_absent: Default::default(),
                         path: path.clone(),
                         from: 1,
                         preceding: Some(seed.commit_id),

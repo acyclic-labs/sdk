@@ -3,56 +3,34 @@
 #[cfg(not(target_arch = "wasm32"))]
 use crate::OwnedBytes as Bytes;
 use crate::wire_codec;
-use crate::{AppendRequest, CommitRequest, ForkRequest, MemoryStream, StreamError, StreamProvider};
+use crate::{MemoryStream, StreamError, StreamProvider, WriteOutcome, WriteRequest};
 use prost::Message;
-#[derive(Clone)]
-pub(crate) enum Command {
-    Append(AppendRequest),
-    Fork(ForkRequest),
-    Commit(CommitRequest),
+
+pub(crate) struct CanonicalCommand {
+    pub(crate) command: WriteRequest,
+    pub(crate) digest: Option<[u8; 32]>,
 }
 
-#[cfg(any(
-    feature = "postgres",
-    all(feature = "wasm-journal", target_arch = "wasm32")
-))]
-pub(crate) enum Outcome {
-    Append(crate::AppendOutcome),
-    Fork(crate::ForkReceipt),
-    Commit(crate::CommitOutcome),
-}
-
-pub(crate) async fn replay(provider: &MemoryStream, command: Command) -> Result<(), StreamError> {
-    match command {
-        Command::Append(request) => provider.append(request).await.map(|_| ()),
-        Command::Fork(request) => provider.fork(request).await.map(|_| ()),
-        Command::Commit(mut request) => {
-            // This command already passed its publication deadline. Recovery
-            // installs that accepted decision rather than admitting a new one.
-            request.deadline_unix_millis = None;
-            provider.commit(request).await.map(|_| ())
+pub(crate) async fn replay(
+    provider: &MemoryStream,
+    mut command: WriteRequest,
+) -> Result<(), StreamError> {
+    if let WriteRequest::Commit(request) = &mut command {
+        // Recovery installs an accepted decision rather than admitting a new deadline.
+        request.deadline_unix_millis = None;
+    }
+    match provider.write(command).await? {
+        WriteOutcome::Append(crate::AppendOutcome::Committed(_))
+        | WriteOutcome::Fork(_)
+        | WriteOutcome::Commit(crate::CommitOutcome::Committed(_)) => Ok(()),
+        WriteOutcome::Append(crate::AppendOutcome::TailConflict { .. })
+        | WriteOutcome::Commit(crate::CommitOutcome::Conflict(_)) => {
+            Err(StreamError::InvalidResponse)
         }
     }
 }
 
-impl Command {
-    #[cfg(any(
-        all(feature = "postgres", not(target_arch = "wasm32")),
-        all(
-            any(feature = "wasm", feature = "wasm-journal"),
-            target_arch = "wasm32"
-        )
-    ))]
-    pub(crate) async fn has_replay(&self, provider: &MemoryStream) -> Result<bool, StreamError> {
-        let key = match self {
-            Self::Append(request) => &request.idempotency_key,
-            Self::Fork(request) => &request.idempotency_key,
-            Self::Commit(request) => &request.idempotency_key,
-        };
-        provider.has_replay(key).await
-    }
-
-    #[cfg(target_arch = "wasm32")]
+impl WriteRequest {
     pub(crate) fn validated(mut self) -> Result<Self, StreamError> {
         match &mut self {
             Self::Append(request) => {
@@ -103,17 +81,17 @@ impl Command {
     }
 }
 
-pub(crate) fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
+pub(crate) fn decode_command(encoded: &[u8]) -> Result<WriteRequest, StreamError> {
     let journal = JournalCommand::decode(encoded).map_err(|_| StreamError::InvalidArgument)?;
     let command = match journal.operation.ok_or(StreamError::InvalidArgument)? {
         journal_command::Operation::Append(request) => {
-            wire_codec::append_from_wire(request).map(Command::Append)
+            wire_codec::append_from_wire(request).map(WriteRequest::Append)
         }
         journal_command::Operation::Fork(request) => {
-            wire_codec::fork_from_wire(request).map(Command::Fork)
+            wire_codec::fork_from_wire(request).map(WriteRequest::Fork)
         }
         journal_command::Operation::Commit(request) => {
-            wire_codec::commit_from_wire(request).map(Command::Commit)
+            wire_codec::commit_from_wire(request).map(WriteRequest::Commit)
         }
     }?;
     // Persist only canonical bytes emitted by the current first-party writer.
@@ -149,23 +127,24 @@ mod journal_command {
 )]
 mod tests {
     use super::*;
+    use crate::{AppendRequest, CommitRequest, ForkRequest, StreamProviderExt};
 
     #[test]
     fn current_writer_roundtrips_and_rejects_noncanonical_payloads() -> Result<(), StreamError> {
-        let append = Command::Append(AppendRequest {
+        let append = WriteRequest::Append(AppendRequest {
             path: crate::StreamPath::new("codec/events")?,
             records: vec![(Bytes::from_static(b"one")).into(), (Bytes::new()).into()],
             if_tail: Some(0),
             idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(b"key"))?,
         });
-        let fork = Command::Fork(ForkRequest {
+        let fork = WriteRequest::Fork(ForkRequest {
             exclude: Vec::new(),
             source: crate::StreamPath::new("codec/events")?,
             destination: crate::StreamPath::new("codec/fork")?,
             at_tail: Some(0),
             idempotency_key: crate::IdempotencyKey::unique(),
         });
-        let commit = Command::Commit(CommitRequest {
+        let commit = WriteRequest::Commit(CommitRequest {
             deadline_unix_millis: None,
             conditions: vec![crate::CommitCondition::Tail {
                 path: crate::StreamPath::new("codec/events")?,
@@ -203,7 +182,7 @@ mod tests {
             if_tail: None,
             idempotency_key: crate::IdempotencyKey::new(Bytes::from_static(b"first"))?,
         };
-        let encoded = Command::Append(request.clone()).encode_to_vec();
+        let encoded = WriteRequest::Append(request.clone()).encode_to_vec();
         replay(&provider, decode_command(&encoded)?).await?;
         let crate::AppendOutcome::Committed(receipt) = provider.append(request).await? else {
             return Err(StreamError::Unavailable);

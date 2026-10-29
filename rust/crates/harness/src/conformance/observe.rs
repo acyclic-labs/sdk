@@ -128,8 +128,8 @@ impl Observed {
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl StreamProvider for Observed {
-    fn operation_claims(&self) -> &OperationClaims {
-        self.inner.operation_claims()
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(self.inner.context().operation_claims())
     }
     async fn inspect_idempotency(
         &self,
@@ -138,26 +138,59 @@ impl StreamProvider for Observed {
         self.requests.record(RequestClass::Metadata);
         self.io(self.inner.inspect_idempotency(key)).await
     }
-    async fn head(&self, path: StreamPath) -> Result<acyclic_stream::PathHead, StreamError> {
-        self.requests.record(RequestClass::Head);
-        self.io(self.inner.head(path)).await
+
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        self.requests
+            .record(if request.paths.is_empty() && request.children.is_some() {
+                RequestClass::List
+            } else {
+                RequestClass::Head
+            });
+        self.io(self.inner.heads(request)).await
     }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.requests.record(RequestClass::Head);
-        self.io(self.inner.tail(path)).await
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        match request {
+            acyclic_stream::WriteRequest::Append(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        self.appends
+                            .lock()
+                            .unwrap_or_else(|error| error.into_inner())
+                            .push(request.clone());
+                        self.requests.record(RequestClass::Data);
+                        self.io(self.inner.append(request)).await
+                    },
+                    acyclic_stream::WriteOutcome::Append,
+                ))
+            }
+            acyclic_stream::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    self.requests.record(RequestClass::Data);
+                    self.io(self.inner.fork(request)).await
+                },
+                acyclic_stream::WriteOutcome::Fork,
+            )),
+            acyclic_stream::WriteRequest::Commit(request) => {
+                Box::pin(futures::TryFutureExt::map_ok(
+                    async move {
+                        self.requests.record(RequestClass::Data);
+                        self.io(self.commit_inner(request)).await
+                    },
+                    acyclic_stream::WriteOutcome::Commit,
+                ))
+            }
+        }
     }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.appends
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .push(request.clone());
-        self.requests.record(RequestClass::Data);
-        self.io(self.inner.append(request)).await
-    }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.requests.record(RequestClass::Data);
-        self.io(self.inner.fork(request)).await
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.requests.record(RequestClass::Data);
         self.history_reads.fetch_add(1, Ordering::SeqCst);
@@ -172,22 +205,15 @@ impl StreamProvider for Observed {
         self.history_reads.fetch_add(1, Ordering::SeqCst);
         self.io(self.inner.follow(request)).await
     }
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.requests.record(RequestClass::List);
-        self.io(self.inner.children_page(request)).await
-    }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.requests.record(RequestClass::Data);
-        self.io(self.commit_inner(request)).await
-    }
+
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.requests.record(RequestClass::Data);
         self.history_reads.fetch_add(1, Ordering::SeqCst);
         self.io(self.inner.read_commit(id)).await
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for Observed {}
 
 impl acyclic_harness_core::filesystem::attestation::AttestedProvider for Observed {}

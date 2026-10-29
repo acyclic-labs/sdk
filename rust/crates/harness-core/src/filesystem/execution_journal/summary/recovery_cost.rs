@@ -124,7 +124,7 @@ async fn check_full_fold<P, A, O>(
     io: &PreparationIo,
 ) -> Result<()>
 where
-    P: StreamProvider + ?Sized,
+    P: crate::store::JournalProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

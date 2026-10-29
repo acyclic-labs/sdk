@@ -100,6 +100,10 @@ fn add_route(state: &mut State, index: usize, kind: u8) {
     let mut route = fixture::route(
         "good",
         Kind::Follow(wire::SessionFollow {
+            key: None,
+            read_limit: 0,
+            bootstrap_head: false,
+            when_absent: Default::default(),
             delivery: wire::SessionDelivery::All as i32,
             resource: crate::wire_codec::session::stream_resource(&format!("route/{id}")),
             preceding_commit_id: if checked {

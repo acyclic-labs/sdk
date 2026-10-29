@@ -1,5 +1,6 @@
 //! Black-box fork histories. Concurrency, GC and authorization need separate proofs.
 use super::{Failure, History, Invariant};
+use crate::StreamProviderExt as _;
 use crate::{
     AppendOutcome, AppendRequest, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
     ForkRequest, IdempotencyKey, IdempotencyOutcome, OwnedBytes, ReadRequest, StreamError,
@@ -93,6 +94,7 @@ pub(super) async fn values<P: StreamProvider + ?Sized>(
     let reader = match history
         .provider
         .read(ReadRequest {
+            key: None,
             path: target.clone(),
             from: 0,
             limit: 8,

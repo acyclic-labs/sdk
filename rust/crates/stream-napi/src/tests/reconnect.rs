@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 use parking_lot::Mutex as SyncMutex;
 use std::sync::atomic::AtomicUsize;
 use tonic::{Response, Streaming};
@@ -292,6 +293,7 @@ impl Fixture {
             &self.client,
             Buffer::from(
                 wire::FollowRequest {
+                    when_absent: Default::default(),
                     filter: None,
                     path: path.into(),
                     from: 0,

@@ -3,6 +3,7 @@ struct LocalInner {
     // Immutable publication policy; reading it never takes the journal lock.
     durability: LocalDurability,
     commit_clock: Arc<PinnedCommitClock>,
+    replica_clock: Arc<crate::replicated::ReplicaClock>,
     // Lock order: visibility -> publication -> journal -> synced watch; never acquire provider state while holding journal.
     journal: Arc<Mutex<Journal>>,
     // Serializes mutations and their snapshot/journal cut, including compaction.

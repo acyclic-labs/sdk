@@ -1,6 +1,7 @@
 //! Instrument Stream's actual append/recovery locks with `RUSTFLAGS=--cfg loom`.
 #![cfg(loom)]
 use acyclic_actors::timers::{TimerRecord, fire};
+use acyclic_stream::StreamProviderExt as _;
 use acyclic_stream::{AppendRequest, MemoryStream, StreamPath, StreamProvider};
 use futures::StreamExt as _;
 use loom::sync::atomic::{AtomicBool, Ordering};
@@ -107,7 +108,9 @@ macro_rules! delegate {
     ($($name:ident($arg:ident: $input:ty) -> $output:ty;)*) => {
         #[async_trait::async_trait]
         impl StreamProvider for UnkeyedRetry {
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims { self.0.operation_claims() }
+            fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+                acyclic_stream::ProviderContext::new(self.0.context().operation_claims())
+            }
 
             $(async fn $name(&self, $arg: $input) -> std::result::Result<$output, acyclic_stream::StreamError> {
                 self.0.$name($arg).await
@@ -117,24 +120,24 @@ macro_rules! delegate {
             {
                 self.0.follow(request).await
             }
-            async fn append(&self, mut request: AppendRequest)
-                -> std::result::Result<acyclic_stream::AppendOutcome, acyclic_stream::StreamError>
-            {
+            fn write(&self, mut request: acyclic_stream::WriteRequest)
+                -> acyclic_stream::BoxProviderFuture<'_, std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>> {
                 // Deliberately replace the production fire's stable retry key.
-                request.idempotency_key = acyclic_stream::IdempotencyKey::unique();
-                self.0.append(request).await
+                if let acyclic_stream::WriteRequest::Append(request) = &mut request {
+                    request.idempotency_key = acyclic_stream::IdempotencyKey::unique();
+                }
+                self.0.write(request)
             }
         }
+
+
     };
 }
 
 delegate! {
-    head(path: StreamPath) -> acyclic_stream::PathHead;
+    heads(request: acyclic_stream::HeadsRequest) -> acyclic_stream::Heads;
     inspect_idempotency(key: acyclic_stream::IdempotencyKey) -> Option<acyclic_stream::IdempotencyObservation>;
-    tail(path: StreamPath) -> u64;
-    fork(request: acyclic_stream::ForkRequest) -> acyclic_stream::ForkReceipt;
     read(request: acyclic_stream::ReadRequest) -> acyclic_stream::RecordStream;
-    commit(request: acyclic_stream::CommitRequest) -> acyclic_stream::CommitOutcome;
     read_commit(id: acyclic_stream::CommitId) -> acyclic_stream::CommittedEnvelope;
 }
 

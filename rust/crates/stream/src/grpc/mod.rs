@@ -15,6 +15,7 @@ use tonic::{
 };
 use tracing::field::Empty;
 
+use crate::StreamProviderExt as _;
 use crate::obs;
 use crate::wire_codec::{
     append_from_wire, append_outcome_from_wire, append_outcome_to_wire, commit_from_wire,
@@ -23,10 +24,9 @@ use crate::wire_codec::{
     observation_wire, path, read_response_wire, record_wire,
 };
 use crate::{
-    AppendOutcome, AppendRequest, ChildrenPage, ChildrenPageRequest, CommitId, CommitOutcome,
-    CommitRequest, CommittedEnvelope, ForkReceipt, ForkRequest, IdempotencyKey,
-    IdempotencyObservation, ReadRequest, Record, RecordStream, StreamError, StreamPath,
-    StreamProvider, wire,
+    AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
+    ForkReceipt, ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, Record,
+    RecordStream, StreamError, StreamProvider, wire,
 };
 pub use crate::{MAX_BEARER_TOKEN_BYTES, MAX_CA_CERTIFICATE_BYTES};
 
@@ -35,6 +35,8 @@ mod client;
 mod credential_tests;
 #[cfg(test)]
 mod latency_tests;
+#[cfg(test)]
+use crate::StreamPath;
 #[cfg(test)]
 mod receipt_tests;
 mod server;

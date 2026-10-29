@@ -1,4 +1,5 @@
 //! Provider-independent assertions formerly confined to the HTTP fixture runner.
+use crate::StreamProviderExt as _;
 use crate::{StreamError, StreamPath, StreamProvider};
 
 pub(super) async fn verify(provider: &dyn StreamProvider) -> Result<(), StreamError> {

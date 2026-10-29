@@ -7,7 +7,7 @@ use acyclic_objects::MemoryObjects;
 
 async fn row<P, A, O>(name: &str, files: Fs<A, O>, stream: Arc<P>) -> TestResult
 where
-    P: StreamProvider,
+    P: acyclic_harness::store::JournalProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
@@ -41,7 +41,10 @@ where
     Ok(())
 }
 
-async fn files<P: StreamProvider>(name: &str, stream: Arc<P>) -> TestResult {
+async fn files<P: acyclic_harness::store::JournalProvider>(
+    name: &str,
+    stream: Arc<P>,
+) -> TestResult {
     row(&format!("memory/{name}"), Fs::memory(), stream.clone()).await?;
     let directory = tempfile::tempdir()?;
     let local = Fs::local(acyclic_fs::LocalOptions::new(directory.path())).await?;

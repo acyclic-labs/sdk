@@ -12,12 +12,102 @@ fn local(provider: &Arc<MemoryStream>) -> Result<Client, StreamError> {
 }
 fn read(path: &str, from: u64, limit: u32) -> Result<crate::ReadRequest, StreamError> {
     Ok(crate::ReadRequest {
+        key: None,
         path: StreamPath::new(path)?,
         from,
         limit,
         at_least: Default::default(),
     })
 }
+
+#[tokio::test]
+async fn scoped_revision_waits_and_forwarded_reads_need_no_root_read_grant() -> TestResult {
+    use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "allowed/events", 1).await?;
+    let cut = crate::RevisionCut::of(provider.wait_applied(&Default::default()).await?);
+    let credential = crate::session::testing::credential_with_grants(vec![ResourceGrant {
+        resource: ResourcePattern {
+            name: "streams:/allowed".into(),
+            prefix: true,
+        },
+        actions: vec!["streams/read".into(), "streams/follow".into()],
+    }]);
+    let owner = Fixture::open(provider, "owner").await?;
+    let scoped = |fixture: &Fixture| -> Result<grpc::Client, StreamError> {
+        let client = grpc::Client::from_channel(
+            fixture._channel.clone(),
+            "Bearer fixture"
+                .parse()
+                .map_err(|_| StreamError::InvalidArgument)?,
+        );
+        client
+            .session_client()?
+            .register_credential(0, credential.clone())?;
+        Ok(client)
+    };
+    let relay = Fixture::open(Arc::new(scoped(&owner)?), "relay").await?;
+    for fixture in [&owner, &relay] {
+        let client = scoped(fixture)?;
+        assert!(cut.proven_by(Some(&client.wait_applied(&cut).await?)));
+        let mut request = read("allowed/events", 0, 1)?;
+        request.at_least = cut.clone();
+        assert_eq!(sequences(client.read(request).await?).await?, vec![0]);
+        assert_eq!(
+            client.head(StreamPath::new("outside")?).await.err(),
+            Some(StreamError::AccessDenied),
+        );
+    }
+    Ok(())
+}
+#[tokio::test]
+async fn indexed_reads_share_session_credit_and_preserve_sparse_keys() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    let client = local(&provider)?;
+    crate::conformance::key_seek::verify_with(&*provider, async |request| {
+        client.read(request).await
+    })
+    .await?;
+    let follow = wire::SessionFollow {
+        key: Some(wire::ReadKeySeek {
+            key: Bytes::from_static(b"a"),
+            before: 4,
+        }),
+        read_limit: 1,
+        until: 4,
+        delivery: wire::SessionDelivery::All as i32,
+        resource: wire_codec::session::stream_resource(crate::conformance::key_seek::SOURCE),
+        ..Default::default()
+    };
+    let record = wire_codec::record_wire(
+        provider
+            .read(read(crate::conformance::key_seek::SOURCE, 0, 1)?)
+            .await?
+            .next()
+            .await
+            .ok_or(StreamError::Unavailable)??,
+    );
+    let mut data = wire::SessionData {
+        after: Some(wire::SessionCursor {
+            next: 1,
+            opaque: Bytes::new(),
+        }),
+        accepted: 4,
+        item: Some(Item::Record(record)),
+        ..Default::default()
+    };
+    wire_codec::session::follow_data_sequence(&follow, 0, &data)?;
+    let Some(Item::Record(record)) = &mut data.item else {
+        unreachable!()
+    };
+    record.keys = vec![Bytes::from_static(b"a\0")];
+    assert_eq!(
+        wire_codec::session::follow_data_sequence(&follow, 0, &data),
+        Err(StreamError::InvalidResponse)
+    );
+    Ok(())
+}
+
 async fn sequences(
     mut records: RecordStream,
 ) -> Result<Vec<u64>, Box<dyn std::error::Error + Send + Sync>> {
@@ -29,6 +119,10 @@ async fn sequences(
 }
 fn bounded(path: &str, until: u64) -> wire::SessionFollow {
     wire::SessionFollow {
+        key: None,
+        read_limit: 0,
+        bootstrap_head: false,
+        when_absent: Default::default(),
         resource: wire_codec::session::stream_resource(path),
         delivery: wire::SessionDelivery::All as i32,
         preceding_commit_id: Bytes::new(),
@@ -158,6 +252,74 @@ async fn session_children_page_equals_the_provider_page() -> TestResult {
 }
 
 #[tokio::test]
+async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    tree(&provider).await?;
+    let client = local(&provider)?;
+    let request = crate::HeadsRequest {
+        durable_through: None,
+        projection: Default::default(),
+        paths: [
+            StreamPath::new("tree/a/status")?,
+            StreamPath::new("tree/absent")?,
+        ]
+        .into_iter()
+        .collect(),
+        children: Some(page("tree", 10)?),
+        limit: 4,
+        at_least: Default::default(),
+    };
+    let expected = provider.heads(request.clone()).await?;
+    let actual = client.heads(request.clone(), 0).await?;
+    assert_eq!(actual, expected);
+    assert!(actual.heads[1].is_none());
+    let mut offsets = request.clone();
+    offsets.projection = crate::HeadProjection::Watermarks;
+    assert_eq!(
+        client.heads(offsets.clone(), 0).await?,
+        provider.heads(offsets).await?
+    );
+    assert_eq!(
+        actual
+            .children
+            .as_ref()
+            .ok_or("missing page")?
+            .children
+            .len(),
+        2
+    );
+    // Even one named denial refuses the whole view; absence cannot hide it.
+    use acyclic_auth::contract::{ResourceGrant, ResourcePattern};
+    client.register_credential(
+        1,
+        crate::session::testing::credential_with_grants(vec![
+            ResourceGrant {
+                resource: ResourcePattern {
+                    name: "streams:/tree".into(),
+                    prefix: true,
+                },
+                actions: vec!["streams/list".into(), "streams/follow".into()],
+            },
+            ResourceGrant {
+                resource: ResourcePattern {
+                    name: "streams:/tree/a/status".into(),
+                    prefix: false,
+                },
+                actions: vec!["streams/read".into()],
+            },
+        ]),
+    )?;
+    let mut allowed = request.clone();
+    allowed.paths.pop();
+    assert!(client.heads(allowed, 1).await?.heads[0].is_some());
+    assert_eq!(
+        client.heads(request, 1).await,
+        Err(StreamError::AccessDenied)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn remote_provider_reads_and_pages_never_use_unary_rpcs() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "events", 4).await?;
@@ -169,8 +331,20 @@ async fn remote_provider_reads_and_pages_never_use_unary_rpcs() -> TestResult {
         vec![1, 2]
     );
     assert_eq!(
-        StreamProvider::children_page(&client, page("tree", 10)?).await?,
+        crate::StreamProviderExt::children_page(&client, page("tree", 10)?).await?,
         provider.children_page(page("tree", 10)?).await?
+    );
+    let view = crate::HeadsRequest {
+        durable_through: None,
+        projection: Default::default(),
+        paths: [StreamPath::new("tree/a/status")?].into(),
+        children: Some(page("tree", 10)?),
+        limit: 3,
+        at_least: Default::default(),
+    };
+    assert_eq!(
+        StreamProvider::heads(&client, view.clone()).await?,
+        provider.heads(view).await?
     );
     assert_eq!(fixture.counts.unary.load(Ordering::Relaxed), 0);
     assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 1);

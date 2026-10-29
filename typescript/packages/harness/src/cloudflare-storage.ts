@@ -74,6 +74,7 @@ function equal(a: Uint8Array, b: Uint8Array): boolean {
  */
 export class SqliteJournal {
   private maximumFrameBytes = 0;
+  private readonly subscribers = new Set<{ after: number; ready: () => void }>();
   constructor(private readonly storage: SqliteStorage, private readonly domain: string, private readonly appended?: (changes: readonly StreamChange[]) => void) {
     if (domain.length === 0 || domain.length > 256) {
       throw new Error("STEP sqlite-open failed: invalid domain; recovery: choose a nonempty domain of at most 256 characters");
@@ -99,11 +100,25 @@ export class SqliteJournal {
     return this.storage.sync();
   }
 
-  read(index: number): Uint8Array | null {
+  read(from: number, page: number): Uint8Array[] {
+    const [metadata] = this.storage.sql.exec("SELECT count, bytes FROM acyclic_stream_domains WHERE domain = ?", this.domain);
+    if (!metadata || !Number.isSafeInteger(from) || !Number.isSafeInteger(page) || from < 0 || page <= 0) {
+      throw new Error("STEP sqlite-read failed: invalid page; recovery: reopen this domain and request a positive page budget");
+    }
+    const head = count(metadata.count);
+    if (from > head) throw new Error("STEP sqlite-read failed: cursor exceeds journal head; recovery: reopen this domain and replay from its retained cursor");
+    const captured = new Uint8Array(16);
+    const view = new DataView(captured.buffer);
+    view.setBigUint64(0, BigInt(head), true);
+    view.setBigUint64(8, BigInt(count(metadata.bytes)), true);
+    const frames: Uint8Array[] = [captured];
+    for (let index = from; index < Math.min(head, from + page); index += 1) frames.push(this.readFrame(index));
+    return frames;
+  }
+
+  private readFrame(index: number): Uint8Array {
     const [row] = this.storage.sql.exec("SELECT length FROM acyclic_stream_commands WHERE domain = ? AND ordinal = ?", this.domain, index);
     if (!row) {
-      const [metadata] = this.storage.sql.exec("SELECT count FROM acyclic_stream_domains WHERE domain = ?", this.domain);
-      if (metadata && count(metadata.count) === index) return null;
       throw new Error("STEP sqlite-replay failed: journal gap; recovery: restore this Durable Object from a verified SQLite backup");
     }
     const length = count(row.length);
@@ -128,24 +143,48 @@ export class SqliteJournal {
     return output;
   }
 
-  async append(index: number, admit: () => Uint8Array, changes: readonly StreamChange[]): Promise<void> {
-    this.storage.transactionSync(() => {
-      const [metadata] = this.storage.sql.exec("SELECT count, bytes FROM acyclic_stream_domains WHERE domain = ?", this.domain);
-      if (!metadata || count(metadata.count) !== index) {
-        throw new Error("STEP sqlite-append failed: stale owner or invalid frame; recovery: reopen this domain and retry the exact original Stream request");
-      }
-      const frame = admit();
-      if (frame.length < 18 || frame.length > this.maximumFrameBytes) throw new Error("STEP sqlite-append failed: invalid frame; recovery: reopen this domain and retry the exact original Stream request");
-      this.storage.sql.exec("INSERT INTO acyclic_stream_commands (domain, ordinal, length) VALUES (?, ?, ?)", this.domain, index, frame.length);
-      for (let offset = 0, chunk = 0; offset < frame.length; offset += CHUNK_BYTES, chunk += 1) {
-        const data = frame.slice(offset, offset + CHUNK_BYTES);
-        this.storage.sql.exec("INSERT INTO acyclic_stream_chunks (domain, ordinal, chunk, data) VALUES (?, ?, ?, ?)", this.domain, index, chunk, data.buffer);
-      }
-      this.storage.sql.exec("UPDATE acyclic_stream_domains SET count = ?, bytes = ? WHERE domain = ?", index + 1, count(metadata.bytes) + frame.length, this.domain);
-      this.appended?.(changes);
-    });
-    await this.storage.sync();
+  changed(after: number, ready: () => void): () => void {
+    const [metadata] = this.storage.sql.exec("SELECT count FROM acyclic_stream_domains WHERE domain = ?", this.domain);
+    if (!metadata) throw new Error("STEP sqlite-changed failed: missing domain; recovery: reopen the original domain");
+    if (count(metadata.count) > after) { ready(); return () => {}; }
+    const subscriber = { after, ready };
+    this.subscribers.add(subscriber);
+    return () => { this.subscribers.delete(subscriber); };
   }
+
+  async append(index: number, admit: () => Uint8Array[], changes: readonly StreamChange[]): Promise<number> {
+    const accepted = this.storage.transactionSync(() => {
+      const [metadata] = this.storage.sql.exec("SELECT count, bytes FROM acyclic_stream_domains WHERE domain = ?", this.domain);
+      if (!metadata) throw new Error("STEP sqlite-append failed: missing domain; recovery: reopen the original domain");
+      const head = count(metadata.count);
+      if (head !== index) return { head, accepted: false };
+      const frames = admit();
+      if (frames.length === 0) throw new Error("STEP sqlite-append failed: empty batch; recovery: submit the original nonempty command batch");
+      let total = count(metadata.bytes);
+      let ordinal = index;
+      for (const frame of frames) {
+        if (frame.length < 18 || frame.length > this.maximumFrameBytes) throw new Error("STEP sqlite-append failed: invalid frame; recovery: reopen this domain and retry the exact original Stream request");
+        this.storage.sql.exec("INSERT INTO acyclic_stream_commands (domain, ordinal, length) VALUES (?, ?, ?)", this.domain, ordinal, frame.length);
+        for (let offset = 0, chunk = 0; offset < frame.length; offset += CHUNK_BYTES, chunk += 1) {
+          const data = frame.slice(offset, offset + CHUNK_BYTES);
+          this.storage.sql.exec("INSERT INTO acyclic_stream_chunks (domain, ordinal, chunk, data) VALUES (?, ?, ?, ?)", this.domain, ordinal, chunk, data.buffer);
+        }
+        ordinal += 1;
+        total += frame.length;
+      }
+      this.storage.sql.exec("UPDATE acyclic_stream_domains SET count = ?, bytes = ? WHERE domain = ?", ordinal, total, this.domain);
+      this.appended?.(changes);
+      return { head: ordinal, accepted: true };
+    });
+    if (accepted.accepted) {
+      await this.storage.sync();
+      for (const subscriber of this.subscribers) {
+        if (accepted.head > subscriber.after) { this.subscribers.delete(subscriber); subscriber.ready(); }
+      }
+    }
+    return accepted.head;
+  }
+
 }
 
 function objectKey(value: Uint8Array): string {

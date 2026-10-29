@@ -41,7 +41,7 @@ pub enum Reply {
 /// # Errors
 /// [`Error::Conflict`] when the entry at `inbox` settled another request;
 /// stream failures and malformed entries as themselves.
-pub async fn reply<P: StreamProvider + ?Sized>(
+pub async fn reply<P: crate::store::JournalProvider + ?Sized>(
     provider: &P,
     state: &AgentState,
     cursor: u64,
@@ -89,13 +89,14 @@ pub async fn reply<P: StreamProvider + ?Sized>(
 }
 
 /// Committed conversation entry `sequence`.
-async fn entry<P: StreamProvider + ?Sized>(
+async fn entry<P: crate::store::JournalProvider + ?Sized>(
     provider: &P,
     conversation: &StreamPath,
     sequence: u64,
 ) -> Result<ConversationEntry, Error> {
     let mut records = provider
         .read(ReadRequest {
+            key: None,
             path: conversation.clone(),
             from: sequence,
             limit: 1,

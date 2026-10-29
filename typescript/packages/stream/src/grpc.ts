@@ -1,3 +1,4 @@
+import { checkedReadSequence } from "./record.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
@@ -40,12 +41,13 @@ export function createStreamGrpcClient(options: StreamGrpcOptions) {
   const { client, sessions } = streamGrpc(options);
   const follow: Follow = async function* (request, callOptions) {
     const { signal, timeoutMs } = callOptions ?? {};
-    const { path, from, filter } = create(wire.FollowRequestSchema, structuredClone(request));
+    const { path, from, filter, whenAbsent } = create(wire.FollowRequestSchema, structuredClone(request));
     await validateWireRequest({ kind: "follow", path, from });
     const deadline = createDeadlineSignal(timeoutMs === undefined || timeoutMs <= 0 ? undefined : timeoutMs);
     const controller = createLinkedAbortController(deadline.signal, signal);
     try {
-      for await (const record of sessions.follow(path, { from, signal: controller.signal,
+      if (whenAbsent !== wire.WhenAbsent.NOT_FOUND && whenAbsent !== wire.WhenAbsent.WAIT) throw new StreamError("invalid_argument", "invalid absence policy");
+      for await (const record of sessions.follow(path, { from, signal: controller.signal, whenAbsent: whenAbsent === wire.WhenAbsent.WAIT ? "wait" : "not_found",
         ...(filter === undefined ? {} : { filter }) })) {
         const data = toBinary(wire.RecordBatchSchema, create(wire.RecordBatchSchema, { records: [record] }));
         yield create(wire.ReadResponseSchema, { codec: wire.Codec.NONE, data, decodedLength: BigInt(data.length) });
@@ -144,6 +146,10 @@ export class GrpcStreamProvider implements StreamProvider {
     this.#sessions.observe(observation?.revision);
     return observation;
   }
+  async heads(options: import("./types.js").HeadsRequest): Promise<import("./types.js").Heads> {
+    return this.#sessions.heads(options);
+  }
+
   async head(path: string): Promise<import("./types.js").PathHead> {
     const request = { kind: "head" as const, path };
     await validateWireRequest(request);
@@ -177,13 +183,13 @@ export class GrpcStreamProvider implements StreamProvider {
     return receipt;
   }
   async *read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord> {
-    const request = { kind: "read" as const, path, from: options.from, limit: options.limit };
+    const request = { kind: "read" as const, path, ...structuredClone(options) };
     await validateWireRequest(request);
     const controller = new AbortController();
     try {
       const atLeast = this.#sessions.revisionFloor();
       const input = wireRequest({ ...request, atLeast });
-      yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, input), { signal: controller.signal }), request.from, request.limit, undefined, atLeast);
+      yield* this.#frames("read", this.#client.read(fromBinary(wire.ReadRequestSchema, input), { signal: controller.signal }), request.from, request.limit, undefined, atLeast, request.key);
     } finally { controller.abort(); }
   }
   async registerCredential(slot: number, credential: Uint8Array): Promise<void> {
@@ -199,7 +205,7 @@ export class GrpcStreamProvider implements StreamProvider {
     yield* this.#sessions.follow(path, authored);
   }
   async *#frames(operation: string, frames: AsyncIterable<wire.ReadResponse>, next: bigint,
-    remaining?: number, signal?: AbortSignal, atLeast?: readonly Revision[]): AsyncIterable<EncodedRecord> {
+    remaining?: number, signal?: AbortSignal, atLeast?: readonly Revision[], key?: import("./types.js").ReadKeySeek): AsyncIterable<EncodedRecord> {
     // The first frame carries the read's applied revision; it must prove the minimum sent.
     let minimum = atLeast;
     try {
@@ -209,8 +215,11 @@ export class GrpcStreamProvider implements StreamProvider {
         else this.#sessions.observe(response.applied);
         const values = readResponseRecords(response);
         if (remaining !== undefined && values.length > remaining) throw new StreamError("invalid_response", "read exceeds requested limit");
-        const records = values.map((value, index) => checkedRecord(value, next + BigInt(index)));
-        next += BigInt(records.length);
+        const records = values.map(value => {
+          const record = checkedRecord(value, checkedReadSequence(value, next, key));
+          next = record.sequence + 1n;
+          return record;
+        });
         if (remaining !== undefined) remaining -= records.length;
         for (const record of records) {
           if (signal?.aborted) return;

@@ -1415,6 +1415,7 @@ mod reader_tests {
 
     fn head(tail: u64, commit: CommitId, value: &[u8], origin: Option<ForkOrigin>) -> PathHead {
         PathHead {
+            retained_through: None,
             tail,
             durable: 0,
             origin,
@@ -1676,6 +1677,7 @@ mod reader_tests {
                 reader.complete(
                     id,
                     Outcome::Head(PathHead {
+                        retained_through: None,
                         tail: 0,
                         last: None,
                         durable: 0,
@@ -1707,6 +1709,7 @@ mod reader_tests {
             reader.observed_head(
                 &stream,
                 PathHead {
+                    retained_through: None,
                     tail: 2,
                     durable: 0,
                     origin: None,

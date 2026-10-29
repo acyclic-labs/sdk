@@ -33,7 +33,7 @@ fn guest(error: impl std::fmt::Display) -> GuestError {
 }
 
 /// One handler package for every agent, over one turn driver.
-pub struct AgentHandler<P: StreamProvider + ?Sized, D> {
+pub struct AgentHandler<P: crate::store::JournalProvider + ?Sized, D> {
     agents: Agents<P>,
     driver: D,
     manifest: Manifest,
@@ -42,11 +42,11 @@ pub struct AgentHandler<P: StreamProvider + ?Sized, D> {
 
 /// The agents' actor state under one store root: creation and observation,
 /// shared by a handler and by a host whose turns run elsewhere.
-pub(super) struct Agents<P: StreamProvider + ?Sized> {
+pub(super) struct Agents<P: crate::store::JournalProvider + ?Sized> {
     store: Store<P>,
 }
 
-impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
+impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
     /// Handler whose actors live under `store`'s root.
     pub fn new(store: Store<P>, driver: D, limits: ActorLimits) -> Result<Self, GuestError> {
         let digest = blake3::hash(include_str!("handler.rs").as_bytes());
@@ -100,7 +100,7 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
     }
 }
 
-impl<P: StreamProvider + ?Sized + 'static> Agents<P> {
+impl<P: crate::store::JournalProvider + ?Sized + 'static> Agents<P> {
     /// Over `store`'s root.
     pub(super) const fn new(store: Store<P>) -> Self {
         Self { store }
@@ -224,6 +224,7 @@ impl<P: StreamProvider + ?Sized + 'static> Agents<P> {
         end: u64,
     ) -> Result<Vec<(u64, InboxRecord)>, Error> {
         let request = ReadRequest {
+            key: None,
             path: agent.inbox()?,
             from,
             limit,
@@ -246,7 +247,7 @@ impl<P: StreamProvider + ?Sized + 'static> Agents<P> {
     }
 }
 
-impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
+impl<P: crate::store::JournalProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
     async fn transition(
         &self,
         delivery: Delivery,
@@ -404,7 +405,7 @@ fn effects(request: CommitRequest) -> Vec<Effect> {
 
 impl<P, D> Handler for AgentHandler<P, D>
 where
-    P: StreamProvider + ?Sized + 'static,
+    P: crate::store::JournalProvider + ?Sized + 'static,
     D: TurnDriver + 'static,
 {
     fn manifest(&self) -> &Manifest {

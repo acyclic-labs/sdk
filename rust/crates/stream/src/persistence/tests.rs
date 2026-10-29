@@ -1,5 +1,6 @@
 use super::*;
 use crate::OwnedBytes as Bytes;
+use crate::StreamProviderExt as _;
 use crate::{
     AppendRequest, CommitCondition, CommitMutation, CommitRequest, ForkRequest, IdempotencyKey,
     MemoryStream, StreamProvider,

@@ -486,6 +486,7 @@ impl<'a> IntoIterator for &'a Namespace {
     }
 }
 // Exact absolute-path subscriptions are never shared with a forked node.
+#[derive(Clone)]
 struct Signals {
     changed: watch::Sender<u64>,
     follows: Arc<crate::query_sync::SyncMutex<crate::follow_index::FollowIndex>>,

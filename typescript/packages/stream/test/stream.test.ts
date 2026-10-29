@@ -710,6 +710,32 @@ describe("website Stream contract", () => {
     expect(seenFollowOptions).toEqual({ from: 0n, signal });
   });
 
+  test("default selection captures opaque key seek and missing-path policy", async () => {
+    const provider = new DefaultStreamProvider({ endpoint: "https://example.test" });
+    const internal = provider as unknown as {
+      select: (registerCancel: (cancel: () => void) => void) => Promise<StreamProvider>;
+    };
+    let release!: (value: StreamProvider) => void;
+    let seenRead: unknown;
+    let seenFollow: unknown;
+    const selected = {
+      read: (_path: string, options: unknown) => { seenRead = options; return (async function* () {})(); },
+      follow: (_path: string, options: unknown) => { seenFollow = options; return (async function* () {})(); },
+    } as unknown as StreamProvider;
+    internal.select = async () => new Promise<StreamProvider>(resolve => { release = resolve; });
+    const readOptions = { from: 2n, limit: 3, key: { key: new Uint8Array([0, 255]), before: 8n } };
+    const followOptions: Parameters<StreamProvider["follow"]>[1] = { from: 2n, whenAbsent: "wait" };
+    const read = provider.read("events", readOptions)[Symbol.asyncIterator]().next();
+    const follow = provider.follow("events", followOptions)[Symbol.asyncIterator]().next();
+    readOptions.key.key[0] = 99;
+    readOptions.key.before = 99n;
+    (followOptions as { whenAbsent: string }).whenAbsent = "not_found";
+    release(selected);
+    await Promise.all([read, follow]);
+    expect(seenRead).toEqual({ from: 2n, limit: 3, key: { key: new Uint8Array([0, 255]), before: 8n } });
+    expect(seenFollow).toEqual({ from: 2n, whenAbsent: "wait" });
+  });
+
   test("default selection keeps concurrent follow waiters independent", async () => {
     const provider = new DefaultStreamProvider({ endpoint: "https://example.test", token: "x" });
     const internal = provider as unknown as {

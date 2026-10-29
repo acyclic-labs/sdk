@@ -4,11 +4,78 @@ use acyclic_native_runtime::{
 };
 
 #[cfg(not(target_arch = "wasm32"))]
-type Allocation = Option<ReadAllocation>;
+pub(crate) type Allocation = Option<ReadAllocation>;
 #[cfg(target_arch = "wasm32")]
-type Allocation = Option<()>;
+pub(crate) type Allocation = Option<()>;
+
+struct RetainedReservation {
+    growth: Arc<RetainedGrowth>,
+    #[cfg(not(target_arch = "wasm32"))]
+    codec: Option<acyclic_native_runtime::NativeCodecReservation<Arc<dyn NativeReadMeter>>>,
+}
+
+#[derive(Default)]
+struct RetainedPool(crate::query_sync::SyncMutex<std::sync::Weak<RetainedGrowth>>);
+
+struct RetainedGrowth {
+    buffer: crate::query_sync::SyncMutex<Option<(Vec<Retained>, Allocation)>>,
+    pool: std::sync::Weak<RetainedPool>,
+    _allocation: Allocation,
+}
+
+impl Drop for RetainedGrowth {
+    fn drop(&mut self) {
+        if let Some(pool) = self.pool.upgrade() {
+            let mut pending = pool
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if std::ptr::eq(pending.as_ptr(), self) {
+                *pending = std::sync::Weak::new();
+            }
+        }
+    }
+}
 
 impl MemoryStream {
+    fn install_retained(
+        &self,
+        state: &mut State,
+        reservation: Option<RetainedReservation>,
+    ) -> Result<(), StreamError> {
+        if let Some(reservation) = reservation {
+            #[cfg(not(target_arch = "wasm32"))]
+            let mut codec = reservation.codec;
+            let mut pending = reservation
+                .growth
+                .buffer
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if pending
+                .as_ref()
+                .is_some_and(|(buffer, _)| buffer.capacity() > state.retained.capacity())
+            {
+                let (mut buffer, allocation) = pending.take().ok_or(StreamError::Capacity)?;
+                #[cfg(not(target_arch = "wasm32"))]
+                let copied = (state.retained.len() * std::mem::size_of::<Retained>()) as u64;
+                buffer.append(&mut state.retained);
+                state.retained = buffer;
+                state.retained_allocation = allocation;
+                #[cfg(not(target_arch = "wasm32"))]
+                if let (Some(work), Some(codec)) = (&self.work, &mut codec) {
+                    let _ = work.record(codec.record(acyclic_native_runtime::NativeCodecWork {
+                        copied,
+                        ..Default::default()
+                    }));
+                }
+            }
+        }
+        if state.retained.len() >= state.retained.capacity() {
+            return Err(StreamError::Capacity);
+        }
+        Ok(())
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn with_context(&self, work: Arc<Work>) -> Self {
         Self {
@@ -17,6 +84,7 @@ impl MemoryStream {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn has_replay(&self, key: &IdempotencyKey) -> Result<bool, StreamError> {
         self.replay(&*self.state.read().await, key.as_bytes())
             .map(|entry| entry.is_some())

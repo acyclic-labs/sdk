@@ -15,13 +15,13 @@ pub(crate) trait Snapshot: Send + 'static {
     #[cfg(all(feature = "test-support", not(target_arch = "wasm32")))]
     const OBSERVE: bool = false;
     type Output: Send + 'static;
-    fn read(&mut self) -> impl Future<Output = Self::Output> + Send;
+    fn read(&mut self) -> impl Future<Output = Self::Output> + crate::ProviderTask;
 }
 
 pub(crate) fn read<S: Snapshot>(
     state: S,
     #[cfg(loom)] retain_pending: bool,
-) -> impl Future<Output = (S, S::Output)> + Send {
+) -> impl Future<Output = (S, S::Output)> + crate::ProviderTask {
     let read = read_owned(
         state,
         #[cfg(loom)]

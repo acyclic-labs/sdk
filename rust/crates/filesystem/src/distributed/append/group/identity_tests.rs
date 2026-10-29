@@ -1,6 +1,7 @@
 //! Record identity is independent of both the authority digest and its tail.
 use super::*;
 use acyclic_stream::StreamProvider;
+use acyclic_stream::StreamProviderExt as _;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const CHANGED: acyclic_stream::CommitId = acyclic_stream::CommitId::from_bytes([0xa7; 32]);
 

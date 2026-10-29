@@ -21,8 +21,8 @@ impl Provider {
 }
 #[async_trait::async_trait]
 impl StreamProvider for Provider {
-    fn operation_claims(&self) -> &acyclic_stream::OperationClaims {
-        self.memory.operation_claims()
+    fn context(&self) -> acyclic_stream::ProviderContext<'_> {
+        acyclic_stream::ProviderContext::new(self.memory.context().operation_claims())
     }
 
     async fn inspect_idempotency(
@@ -31,27 +31,35 @@ impl StreamProvider for Provider {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         self.memory.inspect_idempotency(key).await
     }
-    async fn head(&self, path: StreamPath) -> Result<PathHead, StreamError> {
-        let mut head = self.memory.head(path.clone()).await?;
-        head.durable = self.durable(&path, head.tail);
-        Ok(head)
+
+    async fn heads(
+        &self,
+        request: acyclic_stream::HeadsRequest,
+    ) -> std::result::Result<acyclic_stream::Heads, acyclic_stream::StreamError> {
+        let projection = request.projection;
+        let paths = request.paths.clone();
+        let mut view = self.memory.heads(request).await?;
+        for (path, head) in paths.iter().zip(&mut view.heads) {
+            if let Some(head) = head {
+                head.durable = if projection == HeadProjection::Tail {
+                    0
+                } else {
+                    self.durable(path, head.tail)
+                };
+            }
+        }
+        Ok(view)
     }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.memory.tail(path).await
+    fn write(
+        &self,
+        request: acyclic_stream::WriteRequest,
+    ) -> acyclic_stream::BoxProviderFuture<
+        '_,
+        std::result::Result<acyclic_stream::WriteOutcome, acyclic_stream::StreamError>,
+    > {
+        self.memory.write(request)
     }
-    async fn watermarks(&self, path: StreamPath) -> Result<StreamWatermarks, StreamError> {
-        let accepted = self.memory.tail(path.clone()).await?;
-        Ok(StreamWatermarks {
-            accepted,
-            durable: self.durable(&path, accepted),
-        })
-    }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.memory.append(request).await
-    }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.memory.fork(request).await
-    }
+
     async fn read(&self, mut request: ReadRequest) -> Result<RecordStream, StreamError> {
         if request.path.as_str() == "browser/overlap" && request.from > 0 {
             request.from -= 1;
@@ -63,15 +71,6 @@ impl StreamProvider for Provider {
         self.memory.follow(request).await
     }
 
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.memory.children_page(request).await
-    }
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.memory.commit(request).await
-    }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.memory.read_commit(id).await
     }

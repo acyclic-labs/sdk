@@ -192,6 +192,7 @@ async fn head_conditions_and_conflicts_survive_local_recovery_and_wire_encoding(
     assert_eq!(provider.commit(correct).await?, accepted);
     let mut records = provider
         .read(ReadRequest {
+            key: None,
             path,
             from: 0,
             limit: 2,
@@ -215,6 +216,58 @@ async fn head_conditions_and_conflicts_survive_local_recovery_and_wire_encoding(
             .value
             .as_slice(),
         b"next"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn wire_tail_uses_one_head_view_for_offsets_receipt_and_revision() -> Result<(), StreamError>
+{
+    let provider = testing::Counted::new(MemoryStream::default());
+    let path = StreamPath::new("coherent-tail")?;
+    seed(&provider, &path).await?;
+    let reply = crate::assert_requests!(
+        provider,
+        wire_codec::tail_response(
+            &provider,
+            wire::TailRequest {
+                path: path.to_string(),
+                accepted: true,
+                durable_through: Some(1),
+                at_least: Vec::new(),
+            }
+        )
+        .await,
+        control = 1,
+        data = 0
+    )?;
+    assert_eq!((reply.tail, reply.durable), (1, Some(1)));
+    assert_eq!(reply.applied.ok_or(StreamError::InvalidResponse)?.index, 1);
+    // Retention is an explicit proof, never a crash-persistence watermark.
+    assert_eq!(provider.watermarks(path.clone()).await?.durable, 0);
+    let request = HeadsRequest {
+        durable_through: Some(1),
+        projection: HeadProjection::Watermarks,
+        paths: [path].into(),
+        children: None,
+        limit: 1,
+        at_least: Default::default(),
+    };
+    let mut view = StreamProvider::heads(&provider, request.clone()).await?;
+    view.validate_for(&request)?;
+    let mut unsolicited = request.clone();
+    unsolicited.durable_through = None;
+    assert_eq!(
+        view.validate_for(&unsolicited),
+        Err(StreamError::InvalidResponse)
+    );
+    view.heads[0]
+        .as_mut()
+        .ok_or(StreamError::InvalidResponse)?
+        .retained_through = Some(2);
+    assert_eq!(
+        wire_codec::heads_from_response(wire_codec::heads_to_wire(view)),
+        Err(StreamError::InvalidResponse)
     );
     Ok(())
 }

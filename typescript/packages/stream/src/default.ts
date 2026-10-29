@@ -107,6 +107,10 @@ export class DefaultStreamProvider implements StreamProvider {
     if (provider.registerCredential === undefined) throw new StreamError("unsupported", "provider does not support session credentials");
     await provider.registerCredential(slot, authored);
   }
+  heads(request: Parameters<StreamProvider["heads"]>[0]) {
+    const authored = structuredClone(request);
+    return this.provider().then(provider => provider.heads(authored));
+  }
   head(path: string) { return this.provider().then(provider => provider.head(path)); }
   tail(path: string) { return this.provider().then(provider => provider.tail(path)); }
   append(path: string, values: Parameters<StreamProvider["append"]>[1], options?: Parameters<StreamProvider["append"]>[2]) {
@@ -119,7 +123,7 @@ export class DefaultStreamProvider implements StreamProvider {
     return this.provider().then(provider => provider.fork(source, destination, authored));
   }
   read(path: string, options: Parameters<StreamProvider["read"]>[1]) {
-    const authored = { from: options.from, limit: options.limit };
+    const authored = structuredClone(options);
     return this.readAfterSelection(path, authored);
   }
   private async *readAfterSelection(path: string, options: Parameters<StreamProvider["read"]>[1]) {
@@ -128,6 +132,7 @@ export class DefaultStreamProvider implements StreamProvider {
   follow(path: string, options: Parameters<StreamProvider["follow"]>[1]) {
     const authored = {
       from: options.from,
+      ...(options.whenAbsent === undefined ? {} : { whenAbsent: options.whenAbsent }),
       ...(options.filter === undefined ? {} : { filter: structuredClone(options.filter) }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
     };

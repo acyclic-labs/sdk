@@ -3,7 +3,6 @@ use crate::{
     AppendOutcome, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
     ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest,
 };
-use futures::TryFutureExt as _;
 
 fn subscription(path: &str, latest: bool) -> wire::SessionFollow {
     wire::SessionFollow {
@@ -24,10 +23,22 @@ fn value(sequence: u64, attention: bool) -> wire::SessionLatestValue {
     }
 }
 async fn status(memory: &MemoryStream, sequence: u64, attention: bool) -> Result<(), StreamError> {
+    keyed_status(memory, sequence, attention, "agent").await
+}
+async fn keyed_status(
+    memory: &MemoryStream,
+    sequence: u64,
+    attention: bool,
+    key: &str,
+) -> Result<(), StreamError> {
     memory
         .append(AppendRequest {
             path: StreamPath::new("status")?,
-            records: vec![value(sequence, attention).encode_to_vec().into()],
+            records: vec![crate::AppendRecord::latest(
+                value(sequence, attention).value,
+                key,
+                attention,
+            )?],
             if_tail: None,
             idempotency_key: crate::IdempotencyKey::unique(),
         })
@@ -55,8 +66,8 @@ struct Counted {
 }
 #[async_trait::async_trait]
 impl StreamProvider for Arc<Counted> {
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        self.memory.operation_claims()
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(self.memory.context().operation_claims())
     }
 
     async fn inspect_idempotency(
@@ -65,25 +76,22 @@ impl StreamProvider for Arc<Counted> {
     ) -> Result<Option<IdempotencyObservation>, StreamError> {
         self.memory.inspect_idempotency(key).await
     }
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        self.memory.head(path).await
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        self.memory.heads(request).await
     }
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.memory.tail(path).await
+
+    fn write(
+        &self,
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        self.memory.write(request)
     }
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        self.memory.append(request).await
-    }
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        self.memory.fork(request).await
-    }
+
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
         self.memory.read(request).await
     }
 
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        self.memory.commit(request).await
-    }
     async fn read_commit(&self, id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.memory.read_commit(id).await
     }
@@ -137,7 +145,13 @@ async fn saturated_latest_conflates_only_ordinary_values_and_shares_healthy_all(
             .await;
     }
     for sequence in 3..=9 {
-        status(&memory, sequence, sequence == 8).await?;
+        keyed_status(
+            &memory,
+            sequence,
+            sequence == 9,
+            if sequence % 2 == 0 { "alpha" } else { "beta" },
+        )
+        .await?;
     }
     loop {
         let changed = counted.changed.notified();
@@ -159,8 +173,17 @@ async fn saturated_latest_conflates_only_ordinary_values_and_shares_healthy_all(
     assert_eq!(traffic.positions, [2, 3]);
     append(&memory, "events", 1).await?;
     assert_eq!(next(&mut full).await?.sequence, 1);
-    for sequence in [1, 2, 8, 9] {
-        assert_status(&delivery(&mut overview).await?, sequence, sequence == 8);
+    for sequence in [1, 2, 7, 8, 9] {
+        let data = delivery(&mut overview).await?;
+        let key: &[u8] = match sequence {
+            8 => b"alpha",
+            7 | 9 => b"beta",
+            _ => b"agent",
+        };
+        let mut expected = value(sequence, sequence == 9);
+        expected.key = Bytes::copy_from_slice(key);
+        assert_eq!(data.item, Some(Item::LatestValue(expected)));
+        assert_eq!(data.after, Some(cursor(sequence + 1)));
     }
     assert!(super::tenk::quiescent(std::slice::from_mut(&mut overview)).await);
     assert_eq!(counted.pulled.load(Ordering::Relaxed), 9);
@@ -212,6 +235,19 @@ async fn invalid_follow_modes_and_checked_latest_are_rejected_before_session_rpc
         wire::SessionFollow {
             delivery: 99,
             ..subscription("status", true)
+        },
+        wire::SessionFollow {
+            when_absent: 99,
+            ..subscription("status", true)
+        },
+        wire::SessionFollow {
+            bootstrap_head: true,
+            ..subscription("status", false)
+        },
+        wire::SessionFollow {
+            when_absent: wire::WhenAbsent::Wait as i32,
+            until: 2,
+            ..subscription("status", false)
         },
         wire::SessionFollow {
             resource: crate::wire_codec::session::stream_resource("../bad"),

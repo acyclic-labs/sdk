@@ -291,6 +291,22 @@ pub struct StatusRecord {
     pub cursor: u64,
 }
 
+impl StatusRecord {
+    /// JSON status plus Streams' opaque LATEST metadata. Attention transitions
+    /// survive conflation; every publisher uses this same record constructor.
+    pub fn append_record(&self) -> Result<acyclic_stream::AppendRecord, Error> {
+        acyclic_stream::AppendRecord::latest(
+            self.encode()?,
+            "status",
+            matches!(
+                self.phase,
+                Phase::WaitingApproval { .. } | Phase::WaitingHost { .. } | Phase::Done { .. }
+            ),
+        )
+        .map_err(Error::Stream)
+    }
+}
+
 /// The single record of the close marker stream.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

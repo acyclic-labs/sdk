@@ -56,8 +56,8 @@ impl Client {
 
 #[async_trait]
 impl StreamProvider for Client {
-    fn operation_claims(&self) -> &crate::OperationClaims {
-        &self.operation_claims
+    fn context(&self) -> crate::ProviderContext<'_> {
+        crate::ProviderContext::new(&self.operation_claims)
     }
 
     async fn inspect_idempotency(
@@ -92,123 +92,83 @@ impl StreamProvider for Client {
         })
     }
 
-    async fn head(&self, path: StreamPath) -> Result<crate::PathHead, StreamError> {
-        let body = wire::HeadRequest {
-            path: path.to_string(),
-        };
-        let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.head(request).await })
-            })
-            .await?;
-        decode_response(response, crate::wire_codec::head_from_wire)
+    async fn heads(&self, request: crate::HeadsRequest) -> Result<crate::Heads, StreamError> {
+        self.session()?.heads(request, 0).await
     }
 
-    async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        let session = self.session()?;
-        let revisions = session.revisions();
-        let minimum = revisions.floor(&crate::RevisionCut::default());
-        let body = wire::TailRequest {
-            path: path.to_string(),
-            at_least: crate::wire_codec::cut_to_wire(&minimum),
-            ..Default::default()
-        };
-        let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.tail(request).await })
-            })
-            .await
-            .inspect_err(|error| revisions.refused(error))?;
-        decode_response(response, |response| {
-            let applied = response
-                .applied
-                .map(|applied| crate::wire_codec::issued_from_wire(Some(applied)))
-                .transpose()?;
-            revisions.served(&minimum, applied.as_ref())?;
-            Ok(response.tail)
-        })
-    }
-
-    async fn watermarks(&self, path: StreamPath) -> Result<crate::StreamWatermarks, StreamError> {
-        let response = self
-            .unary(
-                ATTEMPT_TIMEOUT,
-                wire::TailRequest {
-                    path: path.to_string(),
-                    accepted: true,
-                    durable_through: None,
-                    at_least: Default::default(),
-                },
-                |mut service, request| Box::pin(async move { service.tail(request).await }),
-            )
-            .await?;
-        decode_response(response, crate::wire_codec::watermarks_from_wire)
-    }
-
-    async fn durable_receipt(
+    fn write(
         &self,
-        path: StreamPath,
-        through: u64,
-    ) -> Result<Option<crate::DurableReceipt>, StreamError> {
-        let response = self
-            .unary(
-                ATTEMPT_TIMEOUT,
-                wire::TailRequest {
-                    path: path.to_string(),
-                    accepted: true,
-                    durable_through: Some(through),
-                    at_least: Default::default(),
+        request: crate::WriteRequest,
+    ) -> crate::BoxProviderFuture<'_, std::result::Result<crate::WriteOutcome, crate::StreamError>>
+    {
+        match request {
+            crate::WriteRequest::Append(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let body = wire::AppendRequest {
+                        path: request.path.to_string(),
+                        records: request
+                            .records
+                            .into_iter()
+                            .map(crate::wire_codec::append_record_wire)
+                            .collect(),
+                        if_tail: request.if_tail,
+                        idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
+                    };
+                    let response = self
+                        .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                            Box::pin(async move { service.append(request).await })
+                        })
+                        .await?;
+                    let outcome = decode_response(response, append_outcome_from_wire)?;
+                    if let AppendOutcome::Committed(receipt) = &outcome {
+                        self.revisions.observe(&receipt.revision);
+                    }
+                    Ok(outcome)
                 },
-                |mut service, request| Box::pin(async move { service.tail(request).await }),
-            )
-            .await?;
-        let marks = decode_response(response, crate::wire_codec::watermarks_from_wire)?;
-        Ok(crate::DurableReceipt::covering(path, &marks, through))
-    }
-
-    async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
-        let body = wire::AppendRequest {
-            path: request.path.to_string(),
-            records: request
-                .records
-                .into_iter()
-                .map(crate::wire_codec::append_record_wire)
-                .collect(),
-            if_tail: request.if_tail,
-            idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
-        };
-        let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.append(request).await })
-            })
-            .await?;
-        let outcome = decode_response(response, append_outcome_from_wire)?;
-        if let AppendOutcome::Committed(receipt) = &outcome {
-            self.revisions.observe(&receipt.revision);
+                crate::WriteOutcome::Append,
+            )),
+            crate::WriteRequest::Fork(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let body = wire::ForkRequest {
+                        exclude: request
+                            .exclude
+                            .into_iter()
+                            .map(|path| path.to_string())
+                            .collect(),
+                        source: request.source.to_string(),
+                        destination: request.destination.to_string(),
+                        at_tail: request.at_tail,
+                        idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
+                    };
+                    let response = self
+                        .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                            Box::pin(async move { service.fork(request).await })
+                        })
+                        .await?;
+                    let receipt =
+                        decode_response(response, crate::wire_codec::fork_receipt_from_wire)?;
+                    self.revisions.observe(&receipt.revision);
+                    Ok(receipt)
+                },
+                crate::WriteOutcome::Fork,
+            )),
+            crate::WriteRequest::Commit(request) => Box::pin(futures::TryFutureExt::map_ok(
+                async move {
+                    let body = commit_to_wire(&request);
+                    let response = self
+                        .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
+                            Box::pin(async move { service.commit(request).await })
+                        })
+                        .await?;
+                    let outcome = decode_response(response, commit_outcome_from_wire)?;
+                    if let CommitOutcome::Committed(receipt) = &outcome {
+                        self.revisions.observe(&receipt.revision);
+                    }
+                    Ok(outcome)
+                },
+                crate::WriteOutcome::Commit,
+            )),
         }
-        Ok(outcome)
-    }
-
-    async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
-        let body = wire::ForkRequest {
-            exclude: request
-                .exclude
-                .into_iter()
-                .map(|path| path.to_string())
-                .collect(),
-            source: request.source.to_string(),
-            destination: request.destination.to_string(),
-            at_tail: request.at_tail,
-            idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
-        };
-        let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.fork(request).await })
-            })
-            .await?;
-        let receipt = decode_response(response, crate::wire_codec::fork_receipt_from_wire)?;
-        self.revisions.observe(&receipt.revision);
-        Ok(receipt)
     }
 
     async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
@@ -228,27 +188,6 @@ impl StreamProvider for Client {
             .await
     }
 
-    async fn children_page(
-        &self,
-        request: ChildrenPageRequest,
-    ) -> Result<ChildrenPage, StreamError> {
-        self.session()?.children_page(request, 0).await
-    }
-
-    async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
-        let body = commit_to_wire(&request);
-        let response = self
-            .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
-                Box::pin(async move { service.commit(request).await })
-            })
-            .await?;
-        let outcome = decode_response(response, commit_outcome_from_wire)?;
-        if let CommitOutcome::Committed(receipt) = &outcome {
-            self.revisions.observe(&receipt.revision);
-        }
-        Ok(outcome)
-    }
-
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         let body = wire::ReadCommitRequest {
             commit_id: Bytes::copy_from_slice(commit_id.as_bytes()),
@@ -261,3 +200,6 @@ impl StreamProvider for Client {
         decode_response(response, envelope_from_wire)
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::NativeStreamProvider for Client {}
