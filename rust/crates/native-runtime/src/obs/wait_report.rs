@@ -14,8 +14,8 @@ use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 /// Collects the live [`super::waiting`] spans of one subscriber.
 ///
 /// Install this layer alongside the host's diagnostic layer, without applying
-/// the diagnostic verbosity filter to it. The process owner calls [`Self::report`]
-/// at shutdown or after its existing termination signal. This layer installs no
+/// the diagnostic verbosity filter to it. The process owner takes [`Self::snapshot`]
+/// on its original report request, before cancellation. This layer installs no
 /// signal handler, task, timer or readiness mechanism.
 ///
 /// Each span links and unlinks its own node in constant work, independent of

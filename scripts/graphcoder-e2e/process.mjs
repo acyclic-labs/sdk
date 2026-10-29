@@ -3,7 +3,6 @@ import { closeSync, createWriteStream, mkdtempSync, openSync, readFileSync, read
 import { tmpdir } from "node:os";
 import { Writable } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
-import { stripVTControlCharacters } from "node:util";
 import assert from "node:assert/strict";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,6 +25,7 @@ export class Processes {
   stopping = false;
   started = 0;
   #transcripts;
+  #closing;
   constructor({ transcripts } = {}) { this.#transcripts = transcripts; }
   get transcripts() { return this.#transcripts ??= mkdtempSync(join(tmpdir(), "e2e-transcripts-")); }
   start(program, args, options = {}) {
@@ -34,7 +34,8 @@ export class Processes {
     const report = scopeReport ? new ProcessReport() : undefined;
     const child = spawn(program, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], ...spawnOptions,
       ...(report ? { stdio: ["pipe", "pipe", "pipe", "pipe"], env: {
-        ...(spawnOptions.env ?? process.env), ACYCLIC_REPORT_FD: "3", ACYCLIC_REPORT_GENERATION: report.generation,
+        ...(spawnOptions.env ?? process.env), ACYCLIC_REPORT_FD: "3",
+        ACYCLIC_REPORT_GENERATION: report.generation, ACYCLIC_REPORT_REQUEST_ID: report.requestId,
       } } : {}),
     });
     report?.attach(child);
@@ -55,7 +56,6 @@ export class Processes {
     exited.catch(() => {});
     // Reaped once the child and its pipes are gone, however `closed` settles.
     const reaped = new Promise(resolve => {
-      child.once("error", resolve);
       child.once("close", () => { this.children.delete(child); resolve(); });
     });
     const closed = new Promise((resolve, reject) => {
@@ -119,7 +119,10 @@ export class Processes {
     const [, result] = await Promise.all([running.exited, running.closed]);
     return result;
   }
-  async close() {
+  close() {
+    return this.#closing ??= this.#close();
+  }
+  async #close() {
     this.stopping = true;
     const children = [...this.children.values()];
     const reporting = children.filter(child => child.report);
@@ -392,9 +395,4 @@ export class OutputWatch {
   }
   // Whether `needle` last appeared after `other` last did.
   later(needle, other) { return (this.#last.get(needle) ?? -1) > (this.#last.get(other) ?? -1); }
-}
-
-export function waitDetails(stderr) {
-  return Array.from(stripVTControlCharacters(stderr).matchAll(/^waiting: (\S+) (\S+) since (\d+(?:\.\d+)?) \(.*\)\r?$/gm),
-    match => ({ primitive: match[1], key: match[2], since: Number(match[3]) }));
 }

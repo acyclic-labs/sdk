@@ -47,15 +47,56 @@ test("selected report acknowledgement distinguishes live, empty, refusal and pro
 });
 
 test("rejected control delivery remains a sink failure and still retires the same owner", { skip: process.platform === "win32" }, async () => {
+  for (const error of [undefined, new Error("deliberately withdrawn report sink")]) {
+    const scope = new Processes();
+    const running = launch(scope, false, "1");
+    try {
+      await ready(running);
+      const channel = running.child.stdio[3];
+      const closed = new Promise(resolve => channel.once("close", resolve));
+      channel.destroy(error);
+      await closed;
+      await scope.close();
+      const result = await running.closed;
+      assert.equal(result.termination.report_outcome, "sink-failed");
+      assert.equal(result.termination.missing_wait_report, true);
+      assert.equal(scope.children.size, 0);
+    } finally { await scope.close(); }
+  }
+});
+
+test("a dropped report request cannot acknowledge and concurrent close joins the same physical owner", { skip: process.platform === "win32" }, async () => {
   const scope = new Processes();
-  const running = launch(scope, false, "1");
+  const running = launch(scope, false, "live");
   try {
     await ready(running);
-    running.child.stdio[3].destroy(new Error("deliberately withdrawn report sink"));
-    await scope.close();
+    let requests = 0;
+    // Drop the original outgoing request before the real producer receives it.
+    running.child.stdio[3].write = (_chunk, done) => { requests++; done(); return true; };
+    const closing = scope.close();
+    assert.equal(scope.close(), closing, "all callers retain the original close join and deadline");
+    await closing;
     const result = await running.closed;
-    assert.equal(result.termination.report_outcome, "sink-failed");
-    assert.equal(result.termination.missing_wait_report, true);
+    assert.equal(requests, 1, "only the admitted request can be sent");
+    assert.equal(result.termination.report_outcome, "unacknowledged");
+    assert.equal(result.termination.report_cause, "original-drain-deadline");
+    assert.equal(scope.children.size, 0);
+  } finally { await scope.close(); }
+});
+
+test("a caller IO error cannot substitute for the selected process completion event", { skip: process.platform === "win32" }, async () => {
+  const scope = new Processes();
+  const running = launch(scope, false, "hold");
+  let physicallyClosed = false;
+  running.child.once("close", () => { physicallyClosed = true; });
+  try {
+    await ready(running);
+    const failure = new Error("deliberately failed caller input");
+    running.child.stdin.destroy(failure);
+    await assert.rejects(running.closed, error => error === failure);
+    assert.equal(physicallyClosed, false, "the original report producer is still alive");
+    await scope.close();
+    assert.equal(physicallyClosed, true, "cleanup joins the actual native completion");
     assert.equal(scope.children.size, 0);
   } finally { await scope.close(); }
 });
