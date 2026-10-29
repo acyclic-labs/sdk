@@ -93,6 +93,9 @@ impl<B: NativeMachine> AdmittedMachine<B> {
             MachineState::Suspended => MachineState::Suspending,
             _ => MachineState::Destroying,
         };
+        // Keep the original physical producer alive across admission, cleanup
+        // and publication. Dropping this future closes its loss notification.
+        let producer = self.journal.producer(key)?;
         let admitted = match self
             .journal
             .begin(
@@ -139,9 +142,14 @@ impl<B: NativeMachine> AdmittedMachine<B> {
             value.state = target;
             value.changed_at_unix_ms = now()?;
         }
-        self.journal
+        let result = self
+            .journal
             .finish(key, digest, admitted, &value, outcome)
-            .await
+            .await;
+        if result.is_ok() {
+            producer.send_replace(true);
+        }
+        result
     }
 }
 

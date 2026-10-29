@@ -2,7 +2,7 @@
 use super::*;
 use acyclic_stream::{MemoryStream, StreamPath};
 
-fn enrollment(machine: MachineId) -> MachineObservation {
+pub(super) fn enrollment(machine: MachineId) -> MachineObservation {
     MachineObservation {
         id: machine,
         state: MachineState::Running,
@@ -27,7 +27,7 @@ fn enrollment(machine: MachineId) -> MachineObservation {
     }
 }
 
-fn options() -> LocalOptions {
+pub(super) fn options() -> LocalOptions {
     LocalOptions {
         cwd: std::fs::canonicalize(std::env::temp_dir()).unwrap(),
         environment: BTreeMap::from([("ACYCLIC_TEST_MACHINE_PROCESS".into(), "credit".into())]),

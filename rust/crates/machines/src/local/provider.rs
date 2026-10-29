@@ -7,6 +7,8 @@ use std::io;
 use tokio::sync::{OwnedRwLockReadGuard, RwLock, watch};
 
 mod file;
+#[cfg(test)]
+mod tests;
 
 /// Opens a public provider for the original host-owned workspace incarnation.
 /// The caller supplies its actual image/volume contract and already-admitted

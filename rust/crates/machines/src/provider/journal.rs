@@ -30,6 +30,9 @@ pub(crate) struct Journal {
     streams: Arc<dyn StreamProvider>,
     root: StreamPath,
     machine: MachineId,
+    // At most one physical transition runs under the incarnation's admission
+    // lock. This is its live producer, never an operation/result registry.
+    producer: std::sync::Mutex<Option<(OperationId, tokio::sync::watch::Receiver<bool>)>>,
 }
 
 pub(crate) enum Admission {
@@ -52,7 +55,20 @@ impl Journal {
             streams,
             root,
             machine,
+            producer: std::sync::Mutex::new(None),
         }
+    }
+
+    pub(crate) fn producer(
+        &self,
+        key: IdempotencyKey,
+    ) -> Result<tokio::sync::watch::Sender<bool>, ProviderError> {
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        *self
+            .producer
+            .lock()
+            .map_err(|_| ProviderError::Unavailable)? = Some((OperationId(key.0), receiver));
+        Ok(sender)
     }
 
     fn path(&self, suffix: impl fmt::Display) -> Result<StreamPath, ProviderError> {
@@ -266,17 +282,59 @@ impl Journal {
         let key = IdempotencyKey(operation.0);
         let path = self.operation(key)?;
         let head = self.head(path.clone()).await?;
+        let mut request = acyclic_stream::FollowRequest::new(path, head.tail);
+        request.preceding = head.last.as_ref().map(|record| record.commit_id);
         let value: Operation = decode(head)?;
         let initial = OperationObservation {
             id: operation,
             phase: value.phase,
         };
-        // A pending producer that lost its physical owner has no authority to
-        // promise future completion. Recovery never repeats that mutation.
-        if initial.phase == OperationPhase::Pending {
+        if initial.phase != OperationPhase::Pending {
+            return Ok(stream::once(async move { Ok(initial) }).boxed());
+        }
+        let mut producer = self
+            .producer
+            .lock()
+            .map_err(|_| ProviderError::Unavailable)?
+            .as_ref()
+            .filter(|(id, _)| *id == operation)
+            .map(|(_, receiver)| receiver.clone())
+            .ok_or(ProviderError::Indeterminate(key))?;
+        if !*producer.borrow() && producer.has_changed().is_err() {
             return Err(ProviderError::Indeterminate(key));
         }
-        Ok(stream::once(async move { Ok(initial) }).boxed())
+        let records = tokio::select! {
+            biased;
+            result = self.streams.follow(request) => result.map_err(|_| ProviderError::Indeterminate(key))?,
+            () = producer_lost(&mut producer) => return Err(ProviderError::Indeterminate(key)),
+        };
+        let updates = stream::try_unfold(
+            (acyclic_stream::records_only(records), producer, false),
+            move |(mut records, mut producer, done)| async move {
+                if done {
+                    return Ok(None);
+                }
+                let record = tokio::select! {
+                    biased;
+                    record = records.next() => record.and_then(Result::ok)
+                        .ok_or(ProviderError::Indeterminate(key))?,
+                    () = producer_lost(&mut producer) => return Err(ProviderError::Indeterminate(key)),
+                };
+                let value: Envelope<Operation> = serde_json::from_slice(record.value.as_ref())
+                    .map_err(|_| ProviderError::Indeterminate(key))?;
+                let phase = value.value.phase;
+                Ok(Some((
+                    OperationObservation {
+                        id: operation,
+                        phase,
+                    },
+                    (records, producer, phase != OperationPhase::Pending),
+                )))
+            },
+        );
+        Ok(stream::once(async move { Ok(initial) })
+            .chain(updates)
+            .boxed())
     }
 
     pub(crate) async fn events(
@@ -329,6 +387,15 @@ impl Journal {
             events,
             next_sequence,
         })
+    }
+}
+
+async fn producer_lost(producer: &mut tokio::sync::watch::Receiver<bool>) {
+    let published = producer.wait_for(|published| *published).await.is_ok();
+    if published {
+        // Successful publication transferred progress to the canonical follow.
+        // Delivery may follow the commit receipt; it needs no live mutator.
+        futures::future::pending::<()>().await;
     }
 }
 
