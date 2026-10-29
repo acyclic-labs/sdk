@@ -6,6 +6,9 @@ pub enum GitCompatError<E: std::error::Error + 'static> {
     /// Durable adapter failed.
     #[error("Git compatibility store failed: {0}")]
     Store(E),
+    /// The original request owner could not authenticate reply withdrawal.
+    #[error("Git compatibility request observation failed: {0}")]
+    RequestObservation(std::io::Error),
     /// Persisted state is incompatible or internally inconsistent.
     #[error("Git compatibility state is invalid")]
     InvalidState,
