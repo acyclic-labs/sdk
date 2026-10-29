@@ -9,6 +9,14 @@ import {
 const endpoint = "https://inference.example";
 const models = () => toJsonString(ListModelsResponseSchema, create(ListModelsResponseSchema));
 
+// Capture immediately without invoking a promise matcher before its producer
+// can run. A failed dispatch also ends the admission wait instead of hanging.
+const rejected = (work: Promise<unknown>): Promise<unknown> => work.then(() => undefined, error => error);
+const dispatched = (event: Promise<void>, result: Promise<unknown>): Promise<void> => Promise.race([
+  event,
+  result.then(error => { throw new Error("operation ended before dispatch", { cause: error }); }),
+]);
+
 /** Exercise the injected transport against a real HTTP server; only routing is adapted. */
 function localFetch(url: string): typeof fetch {
   return (input, init) => fetch(String(input).replace(endpoint, url), init);
@@ -44,12 +52,12 @@ test("late HTTP rejection retains a newer lease and policy denial leaves it reus
     const transport = new HttpInferenceTransport(endpoint, { credential: owner.cache.provider }, localFetch(server.url.origin));
     const old = transport.listModels();
     // Own the rejection immediately while the original server attempt is held.
-    const refused = expect(old).rejects.toMatchObject({ status: 401 });
-    await admitted.promise;
+    const refused = rejected(old);
+    await dispatched(admitted.promise, refused);
     owner.change();
     await transport.listModels();
     reply.resolve();
-    await refused;
+    expect(await refused).toMatchObject({ status: 401 });
     for (const denied of [403, 500]) {
       status = denied;
       await expect(transport.listModels()).rejects.toBeInstanceOf(InferenceTransportError);
@@ -78,11 +86,11 @@ test("changed source and absolute expiry refuse unary bodies before JSON decodin
     } });
     try {
       const transport = new HttpInferenceTransport(endpoint, { credential: owner.cache.provider }, localFetch(server.url.origin));
-      const result = expect(transport.listModels()).rejects.toThrow("credential source changed or expired");
-      await admitted.promise;
+      const result = rejected(transport.listModels());
+      await dispatched(admitted.promise, result);
       owner[stop]();
       reply.resolve();
-      await result;
+      expect(await result).toMatchObject({ message: "credential source changed or expired" });
       expect(owner.refreshes()).toBe(1);
     } finally { reply.resolve(); await server.stop(true); }
   }
@@ -106,11 +114,11 @@ test("a buffered stream cannot admit another event after its original lease expi
 
 test("cancelled credential resolution aborts its original producer before HTTP dispatch", async () => {
   const started = Promise.withResolvers<void>();
-  const stopped = Promise.withResolvers<void>();
+  let stopped = false;
   const owner = new CredentialCache((_rejected, signal) => {
     started.resolve();
     return new Promise<CredentialSnapshot>((_resolve, reject) => {
-      signal.addEventListener("abort", () => { stopped.resolve(); reject(signal.reason); }, { once: true });
+      signal.addEventListener("abort", () => { stopped = true; reject(signal.reason); }, { once: true });
     });
   }, () => ({ revision: "original", nowUnixSeconds: 1 }));
   let calls = 0;
@@ -119,11 +127,11 @@ test("cancelled credential resolution aborts its original producer before HTTP d
     return new Response(models());
   });
   const controller = new AbortController();
-  const result = expect(transport.inspectRun(create(InspectRunRequestSchema), controller.signal)).rejects.toThrow();
-  await started.promise;
+  const result = rejected(transport.inspectRun(create(InspectRunRequestSchema), controller.signal));
+  await dispatched(started.promise, result);
   controller.abort();
-  await result;
-  await stopped.promise;
+  expect(await result).toBeInstanceOf(Error);
+  expect(stopped).toBe(true);
   expect(calls).toBe(0);
 });
 
@@ -156,12 +164,12 @@ test("a response arriving after cancellation releases its original body without 
     return new Response(body, { status: 401 });
   });
   const controller = new AbortController();
-  const result = expect(transport.inspectRun(create(InspectRunRequestSchema), controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+  const result = rejected(transport.inspectRun(create(InspectRunRequestSchema), controller.signal));
   try {
-    await admitted.promise;
+    await dispatched(admitted.promise, result);
     controller.abort();
     reply.resolve();
-    await result;
+    expect(await result).toMatchObject({ name: "AbortError" });
     expect(cancelled).toBe(1);
     await owner.cache.provider();
     expect(owner.refreshes()).toBe(1);
