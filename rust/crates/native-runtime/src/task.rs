@@ -27,7 +27,9 @@ pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
 /// closure before it awaits this result. Once admitted, the service retains
 /// the closure through physical completion if the caller disappears. Closures
 /// must not wait for work submitted to this same service: reentrant submission
-/// returns [`std::io::ErrorKind::WouldBlock`] before entering its queue.
+/// returns [`std::io::ErrorKind::WouldBlock`] before entering its queue. Polling
+/// an accepted result from this service returns the same refusal and detaches
+/// its observer; the original job retains physical completion custody.
 /// `medium`, `operation` and the opaque `key` identify the original producer in
 /// wait reports. Never include credentials, user content or paths in the key.
 pub fn spawn_persistence<F, T>(
@@ -66,7 +68,32 @@ where
                 })
             })
     };
-    async move { task?.await? }
+    PersistenceTask(task)
+}
+
+struct PersistenceTask<T>(Result<TaskHandle<std::io::Result<T>>, std::io::Error>);
+
+impl<T> std::future::Future for PersistenceTask<T> {
+    type Output = std::io::Result<T>;
+
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        let this = self.get_mut();
+        if PERSISTENCE_JOB.with(|job| job.borrow().is_some()) {
+            // Detaching the observer cannot cancel an accepted physical job.
+            this.0 = Err(std::io::ErrorKind::WouldBlock.into());
+        }
+        match &mut this.0 {
+            Ok(task) => std::future::Future::poll(std::pin::Pin::new(task), context)
+                .map(|result| result.and_then(std::convert::identity)),
+            Err(error) => std::task::Poll::Ready(Err(std::mem::replace(
+                error,
+                std::io::ErrorKind::WouldBlock.into(),
+            ))),
+        }
+    }
 }
 
 thread_local! {
@@ -347,7 +374,13 @@ mod tests {
     }
 
     #[test]
-    fn persistence_reports_the_original_job_and_refuses_same_service_dependencies() {
+    fn persistence_reports_the_original_job_and_refuses_same_service_dependencies()
+    -> std::io::Result<()> {
+        if crate::tests::passed_in_exclusive_process(
+            "task::tests::persistence_reports_the_original_job_and_refuses_same_service_dependencies",
+        )? {
+            return Ok(());
+        }
         use tracing_subscriber::layer::SubscriberExt as _;
         fn refuses_reentry() {
             struct RejectedKey;
@@ -371,6 +404,24 @@ mod tests {
         let _dispatch = tracing::dispatcher::set_default(&dispatch);
         let runtime = super::coordination_runtime().unwrap();
         runtime.block_on(async {
+            let custody = std::sync::Arc::new(std::sync::Mutex::new(()));
+            let retained = custody.clone();
+            let (accepted_started, accepted_starting) = tokio::sync::oneshot::channel();
+            let (accepted_release, accepted_held) = std::sync::mpsc::channel::<()>();
+            let (accepted_finished, accepted_finishing) = tokio::sync::oneshot::channel();
+            let mut accepted = Box::pin(super::spawn_persistence(
+                "local",
+                "retained",
+                &16,
+                move || {
+                    let guard = retained.lock().unwrap();
+                    accepted_started.send(()).unwrap();
+                    let result = accepted_held.recv();
+                    drop(guard);
+                    accepted_finished.send(result).unwrap();
+                },
+            ));
+            accepted_starting.await.unwrap();
             let (started, starting) = tokio::sync::oneshot::channel();
             let (release, held) = std::sync::mpsc::channel();
             let job = super::spawn_persistence("local", "write", &17, move || {
@@ -389,6 +440,13 @@ mod tests {
                     std::future::Future::poll(std::pin::Pin::new(&mut adapter), &mut context),
                     std::task::Poll::Ready(Ok(()))
                 ));
+                // An observer accepted earlier cannot wait on this service
+                // from one of its own workers, even without new submission.
+                assert!(matches!(
+                    std::future::Future::poll(accepted.as_mut(), &mut context),
+                    std::task::Poll::Ready(Err(error))
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                ));
             });
             starting.await.unwrap();
             let mut bytes = Vec::new();
@@ -400,8 +458,17 @@ mod tests {
             job.await.unwrap();
             let mut bytes = Vec::new();
             report.report(&mut bytes).unwrap();
-            assert!(bytes.is_empty(), "a terminal job remained live");
+            let observed = String::from_utf8(bytes).unwrap();
+            assert!(!observed.contains("local/write/17"), "{observed}");
+            assert!(observed.contains("local/retained/16"), "{observed}");
+            assert!(custody.try_lock().is_err());
+            // Loss of the original release producer terminates the job. A
+            // refused observer has no authority to release its held storage.
+            drop(accepted_release);
+            assert!(accepted_finishing.await.unwrap().is_err());
+            assert!(custody.try_lock().is_ok());
         });
+        Ok(())
     }
 
     #[test]
