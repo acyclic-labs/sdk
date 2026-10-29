@@ -21,7 +21,7 @@ pub trait ApprovalFiles: acyclic_stream::ProviderPlatform {
     fn read<'a>(
         &'a self,
         path: &'a str,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> BoxProviderFuture<'a, Result<Option<Vec<u8>>>>;
 
     /// Atomically create only if absent and wait for durability before returning
@@ -30,7 +30,7 @@ pub trait ApprovalFiles: acyclic_stream::ProviderPlatform {
         &'a self,
         path: &'a str,
         bytes: Vec<u8>,
-        maximum_bytes: u64,
+        maximum_bytes: Option<u64>,
     ) -> BoxProviderFuture<'a, Result<ApprovalCreate>>;
 }
 
@@ -41,12 +41,12 @@ pub trait ApprovalFiles: acyclic_stream::ProviderPlatform {
 pub struct ApprovalRequest<'a> {
     id: &'a str,
     bytes: &'a [u8],
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 }
 
 impl<'a> ApprovalRequest<'a> {
     /// Checks the file bound and prevents aliases outside the request directory.
-    pub fn new(id: &'a str, bytes: &'a [u8], maximum_bytes: u64) -> Result<Self> {
+    pub fn new(id: &'a str, bytes: &'a [u8], maximum_bytes: Option<u64>) -> Result<Self> {
         check_bound(bytes.len(), maximum_bytes)?;
         if id.is_empty()
             || id == "."
@@ -73,8 +73,8 @@ impl<'a> ApprovalRequest<'a> {
     pub fn bytes(&self) -> &[u8] {
         self.bytes
     }
-    /// Finite bound used for each retained review file for this request.
-    pub fn maximum_bytes(&self) -> u64 {
+    /// Optional byte policy for every review and dispatch file for this request.
+    pub fn maximum_bytes(&self) -> Option<u64> {
         self.maximum_bytes
     }
     /// Canonical path of a principal's retained review.
@@ -87,10 +87,12 @@ impl<'a> ApprovalRequest<'a> {
     }
 }
 
-pub(super) fn check_bound(length: usize, maximum_bytes: u64) -> Result<()> {
-    if maximum_bytes == 0 || maximum_bytes == u64::MAX || length as u64 > maximum_bytes {
+pub(super) fn check_bound(length: usize, maximum_bytes: Option<u64>) -> Result<()> {
+    if maximum_bytes
+        .is_some_and(|maximum| maximum == 0 || maximum == u64::MAX || length as u64 > maximum)
+    {
         return Err(Error::Invalid(
-            "approval file exceeds its finite byte bound".into(),
+            "approval file exceeds its explicit byte policy".into(),
         ));
     }
     Ok(())
@@ -100,7 +102,7 @@ pub(super) async fn create_exact(
     files: &dyn ApprovalFiles,
     path: &str,
     bytes: Vec<u8>,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
 ) -> Result<bool> {
     check_bound(bytes.len(), maximum_bytes)?;
     match files.create(path, bytes.clone(), maximum_bytes).await? {

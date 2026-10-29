@@ -18,7 +18,7 @@ impl Hooks {
                 "hook configuration path exceeds path bound".into(),
             ));
         }
-        let bytes = self.encode(limits.file_bytes)?;
+        let bytes = self.encode(Some(limits.file_bytes))?;
         let digest = blake3::hash(&bytes);
         let mut operation = [0; 16];
         operation.copy_from_slice(&digest.as_bytes()[..16]);
@@ -35,18 +35,18 @@ impl Hooks {
             .0)
     }
 
-    /// Encodes normalized rules under a positive finite configuration-file bound.
-    pub fn encode(&self, maximum_bytes: u64) -> Result<Vec<u8>> {
-        if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+    /// Encodes normalized rules under an optional configuration-file policy.
+    pub fn encode(&self, maximum_bytes: Option<u64>) -> Result<Vec<u8>> {
+        if matches!(maximum_bytes, Some(0 | u64::MAX)) {
             return Err(Error::Invalid(
-                "hook configuration requires a finite positive byte bound".into(),
+                "hook configuration byte policy must be positive and finite".into(),
             ));
         }
         crate::executor::json::json_bytes_bounded(
             self,
             crate::executor::json::JsonBounds {
-                maximum_bytes: Some(maximum_bytes),
-                maximum_items: Some(maximum_bytes),
+                maximum_bytes,
+                maximum_items: maximum_bytes,
                 maximum_depth: 16,
             },
             None,
@@ -106,7 +106,7 @@ mod tests {
         #[test]
         fn normalized_snapshot_preserves_selection(
             rules in prop::collection::vec((0usize..HookEvent::ALL.len(), prop::sample::select(vec!["", "*", "shell", "Edit|Write", "^Read$", "[invalid"]), ".{0,24}", 0u64..1000, any::<bool>()), 0..8),
-            maximum in prop_oneof![0u64..2048, Just(u64::MAX)],
+            maximum in prop::option::of(prop_oneof![0u64..2048, Just(u64::MAX)]),
             subject in prop_oneof!["[a-zA-Z]{0,12}", Just("shell".into()), Just("Edit".into()), Just("Write".into()), Just("Read".into())],
         ) {
             let rules: Vec<_> = rules.into_iter().map(|(event, matcher, command, timeout_ms, block)| HookRule {
@@ -125,7 +125,7 @@ mod tests {
             }
             let snapshot = serde_json::to_vec(&original)?;
             let bounded = original.encode(maximum);
-            prop_assert_eq!(bounded.is_ok(), snapshot.len() as u64 <= maximum && maximum > 0 && maximum != u64::MAX);
+            prop_assert_eq!(bounded.is_ok(), maximum.is_none_or(|maximum| snapshot.len() as u64 <= maximum && maximum > 0 && maximum != u64::MAX));
             if let Ok(encoded) = bounded { prop_assert_eq!(encoded, snapshot.clone()); }
             let decoded: Hooks = serde_json::from_slice(&snapshot)?;
             prop_assert_eq!(serde_json::to_vec(&decoded)?, snapshot);

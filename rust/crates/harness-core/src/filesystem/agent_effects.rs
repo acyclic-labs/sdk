@@ -77,7 +77,7 @@ where
             // The call key already orders effects by model step. The file's
             // create-once identity supplies replay without a directory index.
             let path = format!("{}/{call}.json", self.directory);
-            if let Some(existing) = self.files.read(&path, self.maximum_bytes).await? {
+            if let Some(existing) = self.files.read(&path, Some(self.maximum_bytes)).await? {
                 return decode(&existing);
             }
             // A spawn names a new child: a name already taken would make the
@@ -92,7 +92,11 @@ where
                 }
             }
             let bytes = crate::agent::records::seal(effect)?;
-            match self.files.create(&path, &bytes, self.maximum_bytes).await? {
+            match self
+                .files
+                .create(&path, &bytes, Some(self.maximum_bytes))
+                .await?
+            {
                 Some(existing) => decode(&existing),
                 None => Ok(effect.clone()),
             }
@@ -105,7 +109,10 @@ where
             for name in self.files.list(&self.directory).await? {
                 let bytes = self
                     .files
-                    .read(&format!("{}/{name}", self.directory), self.maximum_bytes)
+                    .read(
+                        &format!("{}/{name}", self.directory),
+                        Some(self.maximum_bytes),
+                    )
                     .await?
                     .ok_or_else(|| Error::Storage("listed agent effect is missing".into()))?;
                 recorded.push(decode(&bytes)?);
