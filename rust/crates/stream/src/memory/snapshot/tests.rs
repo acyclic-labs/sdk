@@ -29,7 +29,8 @@ async fn snapshots_retain_retry_identity_at_capacity() -> Result<(), StreamError
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"snapshot-once"))?,
     };
     let first = stream.append(request.clone()).await?;
-    let restored = MemoryStream::new(limits);
+    let authority = stream.revisions.current();
+    let restored = MemoryStream::new(limits).with_authority(authority.scope, authority.incarnation);
     restored.install_state(&stream.encode_state().await).await?;
     assert_eq!(restored.append(request.clone()).await?, first);
     assert_eq!(restored.tail(request.path.clone()).await?, 1);
@@ -82,7 +83,8 @@ async fn real_append_fork_and_commit_snapshots_preserve_exclusive_tails_and_retr
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"commit"))?,
     };
     let commit_result = stream.commit(committed.clone()).await?;
-    let restored = MemoryStream::default();
+    let authority = stream.revisions.current();
+    let restored = MemoryStream::default().with_authority(authority.scope, authority.incarnation);
     restored.install_state(&stream.encode_state().await).await?;
     assert_eq!(restored.append(appended).await?, append_result);
     assert_eq!(restored.fork(forked).await?, fork_result);
@@ -198,7 +200,8 @@ async fn current_writer_empty_forks_and_atomic_source_changes_roundtrip() -> Res
         idempotency_key: IdempotencyKey::new(Bytes::from_static(b"atomic-fork"))?,
     };
     let outcome = stream.commit(request.clone()).await?;
-    let restored = MemoryStream::default();
+    let authority = stream.revisions.current();
+    let restored = MemoryStream::default().with_authority(authority.scope, authority.incarnation);
     restored.install_state(&stream.encode_state().await).await?;
     assert_eq!(restored.commit(request).await?, outcome);
     assert_eq!(restored.tail(empty).await?, 0);

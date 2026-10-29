@@ -230,7 +230,7 @@ async fn canonical_all_data_preserves_the_exact_cursor_and_both_watermarks() -> 
 async fn invalid_follow_modes_and_checked_latest_are_rejected_before_session_rpc() -> TestResult {
     let fixture = Fixture::open(Arc::new(MemoryStream::default()), "node").await?;
     let client = fixture.client()?;
-    for follow in [
+    for (case, follow) in [
         wire::SessionFollow::default(),
         wire::SessionFollow {
             delivery: 99,
@@ -250,6 +250,14 @@ async fn invalid_follow_modes_and_checked_latest_are_rejected_before_session_rpc
             ..subscription("status", false)
         },
         wire::SessionFollow {
+            at_least: vec![wire::Revision::default()],
+            ..subscription("status", false)
+        },
+        wire::SessionFollow {
+            read_limit: 1,
+            ..subscription("status", false)
+        },
+        wire::SessionFollow {
             resource: crate::wire_codec::session::stream_resource("../bad"),
             ..subscription("status", true)
         },
@@ -257,15 +265,23 @@ async fn invalid_follow_modes_and_checked_latest_are_rejected_before_session_rpc
             preceding_commit_id: vec![7; 32].into(),
             ..subscription("status", true)
         },
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         assert!(
             client
                 .follow_data(follow, 1, crate::FollowFilter::default())
                 .await
-                .is_err()
+                .is_err(),
+            "invalid follow case {case} was accepted"
+        );
+        assert_eq!(
+            fixture.counts.sessions.load(Ordering::Relaxed),
+            0,
+            "invalid follow case {case} opened a session"
         );
     }
-    assert_eq!(fixture.counts.sessions.load(Ordering::Relaxed), 0);
     Ok(())
 }
 

@@ -252,10 +252,34 @@ impl FiniteRead {
         Ok(Some(record))
     }
 
-    fn take(&mut self) -> Option<Record> {
+    fn take_record(&mut self) -> Option<Record> {
         let record = self.window.as_mut()?.next()?;
         self.next = record.sequence.checked_add(1)?;
         self.remaining -= 1;
         Some(record)
+    }
+}
+
+impl Iterator for FiniteRead {
+    type Item = Result<Record, StreamError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.peek(|| Ok::<_, StreamError>(()), || StreamError::Unavailable) {
+            Ok(Some(_)) => Some(self.take_record().ok_or(StreamError::Unavailable)),
+            result => {
+                let error = result.err();
+                self.remaining = 0;
+                error.map(Err)
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self
+            .history
+            .tail
+            .saturating_sub(self.next)
+            .min(u64::from(self.remaining));
+        (0, usize::try_from(remaining).ok())
     }
 }

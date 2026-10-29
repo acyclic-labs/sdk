@@ -303,16 +303,7 @@ impl StreamProvider for MemoryStream {
         }
         let cursor = FiniteRead::new(path, request);
         drop(state);
-        Ok(stream::try_unfold(cursor, |mut cursor| async move {
-            if cursor
-                .peek(|| Ok::<_, StreamError>(()), || StreamError::Unavailable)?
-                .is_none()
-            {
-                return Ok(None);
-            }
-            Ok(cursor.take().map(|record| (record, cursor)))
-        })
-        .boxed())
+        Ok(stream::iter(cursor).boxed())
     }
 
     async fn follow(
@@ -410,7 +401,9 @@ impl crate::NativeStreamProvider for MemoryStream {
                     )?;
                     let copied = std::mem::size_of::<Record>() as u64;
                     meter.admit_examination(1, copied)?;
-                    let record = cursor.take().ok_or(std::io::ErrorKind::InvalidData)?;
+                    let record = cursor
+                        .take_record()
+                        .ok_or(std::io::ErrorKind::InvalidData)?;
                     #[cfg(test)]
                     let read = crate::test_meter::trace::recordings_reordered()
                         .then(|| bytes.record(length));

@@ -145,7 +145,7 @@ proptest! {
     fn ordinary_views_do_not_recheck_the_bytes_range(data in prop::collection::vec(any::<u8>(), 0..257), from in 0usize..257, to in 0usize..257) {
         let start = from.min(data.len());
         let end = start.max(to.min(data.len()));
-        let ordinary = OwnedBytes::copy_from_slice(&data).slice(start..end);
+        let ordinary = OwnedBytes::from(Bytes::copy_from_slice(&data)).slice(start..end);
         let retained = OwnedBytes::from(data.clone()).slice(start..end);
         for (bytes, expected_checks) in [(&ordinary, 0), (&retained, 1)] {
             RANGE_CHECKS.with(|count| count.set(0));
