@@ -13,24 +13,26 @@ export function openGuestResponse(response: GuestFetchResponse, signal?: AbortSi
   close(): void;
 } {
   const terminal = "trailers" in response ? response.trailers : Promise.resolve(new Headers());
-  // A producer can fail before its consumer starts pulling. Retain that failure
-  // for the terminal await without creating an unhandled rejection meanwhile.
-  void terminal.catch(() => undefined);
   let stop!: (cause: unknown) => void;
   const stopped = new Promise<never>((_resolve, reject) => { stop = reject; });
   void stopped.catch(() => undefined);
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
   let closed = false;
-  const close = () => {
+  const terminate = (cause: unknown) => {
     if (closed) return;
     closed = true;
     signal?.removeEventListener("abort", close);
-    const cause = signal?.reason ?? new DOMException("fetch response closed", "AbortError");
     stop(cause);
     if (reader) void reader.cancel(cause).catch(() => undefined);
     else if (response.body && !response.body.locked) void response.body.cancel(cause).catch(() => undefined);
     if ("close" in response) response.close();
   };
+  const close = () => terminate(signal?.reason ?? new DOMException("fetch response closed", "AbortError"));
+  // A failed terminal producer must also wake an in-flight body read. One
+  // lifetime handler retains the original cause; no reaction is added per chunk.
+  void terminal.catch(cause => {
+    try { terminate(cause); } catch { /* The producer failure remains primary. */ }
+  });
   signal?.addEventListener("abort", close, { once: true });
   if (signal?.aborted) close();
   let consumed = false;

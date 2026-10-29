@@ -5,6 +5,44 @@ import { connect, constants, createServer } from "node:http2";
 import { Readable } from "node:stream";
 import { openGuestResponse } from "../dist/fetch-response.js";
 
+test("terminal rejection cancels a pending body read with the original cause", async () => {
+  const terminal = Promise.withResolvers(), reading = Promise.withResolvers();
+  const failure = new Error("terminal producer failed");
+  let closes = 0, cancellation;
+  const response = openGuestResponse({
+    status:200,headers:new Headers(),trailers:terminal.promise,
+    body:new ReadableStream({
+      pull() { reading.resolve(); },
+      cancel(cause) { cancellation = cause; },
+    }),
+    close() { closes++; },
+  });
+  const frames = response.frames[Symbol.asyncIterator]();
+  const pending = frames.next();
+  await reading.promise;
+  terminal.reject(failure);
+  await assert.rejects(pending,error => error === failure);
+  assert.equal(cancellation,failure);
+  assert.equal(closes,1);
+  response.close();
+  assert.equal(closes,1);
+});
+
+test("terminal rejection before consumption closes the original producer once", async () => {
+  const terminal = Promise.withResolvers(), cancelled = Promise.withResolvers();
+  const failure = new Error("terminal failed before consumption");
+  let closes = 0;
+  const response = openGuestResponse({
+    status:200,headers:new Headers(),trailers:terminal.promise,
+    body:new ReadableStream({cancel(cause) { cancelled.resolve(cause); }}),
+    close() { closes++; },
+  });
+  terminal.reject(failure);
+  assert.equal(await cancelled.promise,failure);
+  await assert.rejects(response.frames[Symbol.asyncIterator]().next(),error => error === failure);
+  assert.equal(closes,1);
+});
+
 test("native HTTP/2 keeps upload streaming, terminal trailers and original close custody", async context => {
   const server = createServer();
   let client;
