@@ -1,3 +1,5 @@
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_stream::NativeStreamProvider as _;
 use acyclic_stream::StreamProviderExt as _;
 // Included in attestation::tests: use the same probe as the native vectors.
 proptest::proptest! {

@@ -22,6 +22,8 @@
 use super::TurnAdmission;
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::NativeReadMeter;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_stream::NativeStreamProvider as _;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, BoxProviderFuture, CommitId, CommitOutcome, CommitRequest,
     CommittedEnvelope, FollowStream, ForkReceipt, ForkRequest, IdempotencyKey,
@@ -63,7 +65,7 @@ pub trait Attestor: ProviderPlatform + 'static {
 }
 
 /// A provider that may require per-request evidence.
-pub trait AttestedProvider: StreamProvider + Sized {
+pub trait AttestedProvider: crate::store::JournalProvider + Sized {
     /// This provider bound to one write's `attestation`, or `None` to write
     /// on `self` because it requires no evidence.
     ///
@@ -143,20 +145,7 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
     async fn durability_barrier(&self) -> Result<(), StreamError> {
         self.inner.durability_barrier().await
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_durability_barrier(
-        &self,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, ()> {
-        self.inner.native_durability_barrier(meter)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn prepare_native_durability_barrier(
-        &self,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> std::io::Result<NativeProviderFuture<'_, ()>> {
-        self.inner.prepare_native_durability_barrier(meter)
-    }
+
     async fn inspect_idempotency(
         &self,
         key: IdempotencyKey,
@@ -205,6 +194,26 @@ impl<P: AttestedProvider + 'static> acyclic_stream::ExplicitStreamProvider for A
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.inner.read_commit(commit_id).await
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<P: AttestedProvider + acyclic_stream::NativeStreamProvider + 'static>
+    acyclic_stream::ExplicitNativeStreamProvider for Attested<P>
+{
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_durability_barrier(
+        &self,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, ()> {
+        self.inner.native_durability_barrier(meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prepare_native_durability_barrier(
+        &self,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> std::io::Result<NativeProviderFuture<'_, ()>> {
+        self.inner.prepare_native_durability_barrier(meter)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn native_inspect_idempotency(
@@ -434,7 +443,11 @@ mod tests {
         ) -> Result<super::CommittedEnvelope, super::StreamError> {
             self.inner.read_commit(id).await
         }
+    }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(not(target_arch = "wasm32"))]
+    impl acyclic_stream::NativeStreamProvider for Probe {
         fn native_write(
             &self,
             request: acyclic_stream::WriteRequest,
@@ -453,7 +466,6 @@ mod tests {
             let result = digest.map(|digest| self.write(digest));
             super::NativeProviderFuture::ready(Ok(Err(result.unwrap_or_else(|error| error))))
         }
-
         fn native_commit_guarded<E, F, Fut>(
             &self,
             request: super::CommitRequest,
@@ -556,7 +568,7 @@ mod tests {
             &acyclic_fs::CancellationToken::new(),
         )
         .map_err(|(error, _)| error.to_string())?;
-        let prepared = super::StreamProvider::native_prepare_commit(
+        let prepared = acyclic_stream::NativeStreamProvider::native_prepare_commit(
             &attested,
             request,
             64,

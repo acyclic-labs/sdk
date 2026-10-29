@@ -89,6 +89,9 @@ impl StreamProvider for FaultStream {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for FaultStream {}
+
 fn service() -> Result<(Service, Arc<FaultStream>), Status> {
     let stream = Arc::new(FaultStream::default());
     let objects = acyclic_objects::MemoryObjects::memory();

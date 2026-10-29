@@ -160,6 +160,9 @@ impl acyclic_stream::StreamProvider for CutStream {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for CutStream {}
+
 type CutFs = Fs<
     crate::distributed::StreamAuthorityStore<CutStream>,
     crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,

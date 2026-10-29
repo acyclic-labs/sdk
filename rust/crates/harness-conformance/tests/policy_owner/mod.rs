@@ -57,6 +57,9 @@ impl StreamProvider for Session {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for Session {}
+
 struct Streams;
 impl Substrate for Streams {
     fn capabilities(&self) -> BTreeSet<String> {

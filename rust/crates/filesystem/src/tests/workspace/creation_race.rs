@@ -155,6 +155,9 @@ impl acyclic_stream::StreamProvider for YieldStream {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for YieldStream {}
+
 type RaceFs = Fs<
     crate::distributed::StreamAuthorityStore<YieldStream>,
     crate::LogicalObjectStore<acyclic_objects::MemoryObjects>,

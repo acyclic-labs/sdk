@@ -8,7 +8,9 @@ pub trait StreamProviderExt: StreamProvider {
         &self,
         request: AppendRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> impl Future<Output = NativeStreamResult<AppendOutcome>> + Send;
+    ) -> impl Future<Output = NativeStreamResult<AppendOutcome>> + Send
+    where
+        Self: NativeStreamProvider;
     /// Projects funded commit publication without another future allocation.
     #[cfg(not(target_arch = "wasm32"))]
     fn native_commit(
@@ -16,7 +18,9 @@ pub trait StreamProviderExt: StreamProvider {
         request: CommitRequest,
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> impl Future<Output = NativeStreamResult<CommitOutcome>> + Send;
+    ) -> impl Future<Output = NativeStreamResult<CommitOutcome>> + Send
+    where
+        Self: NativeStreamProvider;
 
     /// Canonical append publication, preserving its genuine retry family.
     fn append(
@@ -79,7 +83,10 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         &self,
         request: AppendRequest,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> impl Future<Output = NativeStreamResult<AppendOutcome>> + Send {
+    ) -> impl Future<Output = NativeStreamResult<AppendOutcome>> + Send
+    where
+        Self: NativeStreamProvider,
+    {
         let future = self.native_write(WriteRequest::Append(request), None, meter);
         async move {
             let result = future.await?;
@@ -100,7 +107,10 @@ impl<P: StreamProvider + ?Sized> StreamProviderExt for P {
         request: CommitRequest,
         deadline: Option<u64>,
         meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> impl Future<Output = NativeStreamResult<CommitOutcome>> + Send {
+    ) -> impl Future<Output = NativeStreamResult<CommitOutcome>> + Send
+    where
+        Self: NativeStreamProvider,
+    {
         let future = self.native_write(WriteRequest::Commit(request), deadline, meter);
         async move {
             let result = future.await?;

@@ -115,6 +115,9 @@ impl StreamProvider for Arc<Counted> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::NativeStreamProvider for Arc<Counted> {}
+
 #[tokio::test]
 async fn saturated_latest_conflates_only_ordinary_values_and_shares_healthy_all() -> TestResult {
     let memory = Arc::new(MemoryStream::default());

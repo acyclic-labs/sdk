@@ -75,3 +75,6 @@ impl StreamProvider for Provider {
         self.memory.read_commit(id).await
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for Provider {}

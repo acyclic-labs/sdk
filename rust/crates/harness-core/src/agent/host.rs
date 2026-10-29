@@ -42,7 +42,7 @@ pub enum Delivered {
 }
 
 /// One runtime for every agent in one account and namespace.
-pub struct AgentHost<P: StreamProvider + ?Sized + 'static> {
+pub struct AgentHost<P: crate::store::JournalProvider + ?Sized + 'static> {
     provider: Arc<P>,
     agents: Agents<P>,
     runtime: Runtime<P>,
@@ -50,14 +50,14 @@ pub struct AgentHost<P: StreamProvider + ?Sized + 'static> {
 }
 
 /// The agents' actor store in `provider`'s domain, under [`super::ACTORS`].
-pub fn actor_store<P: StreamProvider + ?Sized + 'static>(
+pub fn actor_store<P: crate::store::JournalProvider + ?Sized + 'static>(
     provider: &Arc<P>,
 ) -> Result<Store<P>, Error> {
     let root = StreamPath::new(super::ACTORS).map_err(|_| Error::Path("actor root"))?;
     Ok(Store::new(provider.clone(), root))
 }
 
-impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
+impl<P: crate::store::JournalProvider + ?Sized + 'static> AgentHost<P> {
     /// Host for the agents of `within`'s account and namespace, with actor state
     /// under [`super::ACTORS`] in `provider`'s consistency domain.
     pub fn new<D: TurnDriver + 'static>(

@@ -325,6 +325,10 @@ impl StreamProvider for MemoryStream {
             .cloned()
             .ok_or(StreamError::NotFound)
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::NativeStreamProvider for MemoryStream {
     #[cfg(not(target_arch = "wasm32"))]
     fn native_read(
         &self,
@@ -422,7 +426,6 @@ impl StreamProvider for MemoryStream {
                 .map(|value| crate::NativeStreamOutput::new(value, ReadAllocation::empty(&meter))))
         })
     }
-
     #[cfg(not(target_arch = "wasm32"))]
     fn native_inspect_idempotency(
         &self,
@@ -501,7 +504,6 @@ impl StreamProvider for MemoryStream {
             work.finish(result)
         })
     }
-
     #[cfg(not(target_arch = "wasm32"))]
     fn native_write(
         &self,

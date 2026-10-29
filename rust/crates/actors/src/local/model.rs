@@ -67,6 +67,10 @@ macro_rules! delegate {
                 })
             }
         }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        impl acyclic_stream::NativeStreamProvider for Faulty {}
+
     };
 }
 

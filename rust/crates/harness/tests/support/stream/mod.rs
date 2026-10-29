@@ -326,6 +326,12 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
         self.measure_received(&envelope);
         Ok(envelope)
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<P: acyclic_stream::NativeStreamProvider> acyclic_stream::NativeStreamProvider
+    for LostSessionAck<P>
+{
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_inspect_idempotency(
         &self,
@@ -354,7 +360,6 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             Ok(result)
         })
     }
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_tail(
         &self,
@@ -391,7 +396,6 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             result
         })
     }
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_read(
         &self,
@@ -470,7 +474,6 @@ impl<P: StreamProvider> StreamProvider for LostSessionAck<P> {
             )))
         })
     }
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn native_write(
         &self,

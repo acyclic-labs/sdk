@@ -379,6 +379,9 @@ mod source_bound_lost_ack {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    impl acyclic_stream::NativeStreamProvider for LostCreationAck {}
+
     #[tokio::test]
     async fn lost_stream_creation_ack_reopens_same_source_bound_allocation()
     -> Result<(), Box<dyn std::error::Error>> {

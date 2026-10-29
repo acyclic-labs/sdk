@@ -15,22 +15,7 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().durability_barrier().await
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn native_durability_barrier(
-        &self,
-        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> NativeProviderFuture<'_, ()> {
-        self.record(RequestClass::Data);
-        self.inner().native_durability_barrier(_meter)
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn prepare_native_durability_barrier(
-        &self,
-        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> std::io::Result<NativeProviderFuture<'_, ()>> {
-        self.record(RequestClass::Data);
-        self.inner().prepare_native_durability_barrier(_meter)
-    }
+
     async fn inspect_idempotency(
         &self,
         idempotency_key: IdempotencyKey,
@@ -69,6 +54,26 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().read_commit(commit_id).await
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<P: crate::NativeStreamProvider> crate::ExplicitNativeStreamProvider for Counted<P> {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_durability_barrier(
+        &self,
+        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> NativeProviderFuture<'_, ()> {
+        self.record(RequestClass::Data);
+        self.inner().native_durability_barrier(_meter)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn prepare_native_durability_barrier(
+        &self,
+        _meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<NativeProviderFuture<'_, ()>> {
+        self.record(RequestClass::Data);
+        self.inner().prepare_native_durability_barrier(_meter)
+    }
     #[cfg(not(target_arch = "wasm32"))]
     fn native_inspect_idempotency(
         &self,
@@ -106,7 +111,6 @@ impl<P: StreamProvider> ExplicitStreamProvider for Counted<P> {
         self.record(RequestClass::Data);
         self.inner().native_write(request, deadline, meter)
     }
-
     #[cfg(not(target_arch = "wasm32"))]
     fn native_commit_guarded<E, F, Fut>(
         &self,

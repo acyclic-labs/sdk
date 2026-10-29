@@ -163,6 +163,9 @@ impl StreamProvider for ModelStream {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for ModelStream {}
+
 #[derive(Clone, Copy)]
 enum Change {
     Publish,

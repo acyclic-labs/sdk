@@ -45,7 +45,7 @@ fn decode(bytes: &[u8]) -> Result<TurnEffect> {
 
 impl<P, A, O> TurnEffects for FilesystemTurnEffects<P, A, O>
 where
-    P: StreamProvider + ?Sized + 'static,
+    P: crate::store::JournalProvider + ?Sized + 'static,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

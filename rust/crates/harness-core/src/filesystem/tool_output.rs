@@ -140,7 +140,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     ///
     /// # Errors
     /// Fails unless `streams` shares the filesystem's process-owned backend.
-    pub fn change_provider<P: acyclic_stream::StreamProvider>(
+    pub fn change_provider<P: crate::store::JournalProvider>(
         &self,
         streams: Arc<P>,
     ) -> Result<acyclic_fs::session::ChangeProvider<P, A, O>> {

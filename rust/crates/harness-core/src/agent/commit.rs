@@ -81,7 +81,7 @@ pub fn send(to: &AgentPath, sender: &Sender, record: &InboxRecord) -> Result<Com
 }
 
 /// Observed inbox tail of `agent`; [`Error::NoSuchAgent`] when it was never created.
-pub async fn inbox_tail<P: StreamProvider + ?Sized>(
+pub async fn inbox_tail<P: crate::store::JournalProvider + ?Sized>(
     provider: &P,
     agent: &AgentPath,
 ) -> Result<u64, Error> {
@@ -262,7 +262,7 @@ pub enum Submitted {
 /// Submits a request once. An uncertain completion returns
 /// [`Error::Unknown`] carrying the identical request, which the caller retries
 /// unchanged until it resolves; it never mints a new key.
-pub async fn submit<P: StreamProvider + ?Sized>(
+pub async fn submit<P: crate::store::JournalProvider + ?Sized>(
     provider: &P,
     request: CommitRequest,
 ) -> Result<Submitted, Error> {

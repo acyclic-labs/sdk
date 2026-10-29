@@ -135,6 +135,48 @@ mod replay_tests {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    impl crate::NativeStreamProvider for Gapped {}
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn portable_success_cannot_substitute_for_native_admission()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use std::sync::atomic::Ordering;
+        let provider = Gapped {
+            inner: MemoryStream::default(),
+            missing: u64::MAX,
+        };
+        let path = StreamPath::new("native-refusal")?;
+        let request = AppendRequest {
+            path: path.clone(),
+            records: vec!["opaque".into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        let meter = Arc::new(crate::test_meter::Meter::default());
+        assert!(matches!(
+            provider
+                .native_append(request.clone(), meter.original())
+                .await?,
+            Err(StreamError::Unsupported)
+        ));
+        assert_eq!(
+            provider.tail(path.clone()).await,
+            Err(StreamError::NotFound)
+        );
+        assert_eq!(meter.allocations.load(Ordering::SeqCst), 0);
+        assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
+        meter.assert_refunded();
+        // A fallback to the ordinary path would succeed and mutate the stream.
+        assert!(matches!(
+            provider.append(request).await?,
+            AppendOutcome::Committed(_)
+        ));
+        assert_eq!(provider.tail(path).await?, 1);
+        Ok(())
+    }
+
     async fn filled<P: StreamProvider>(provider: P, records: u64) -> Stream<P> {
         let stream = Stream::new(Arc::new(provider), "replay").unwrap();
         let mut next = 0;

@@ -250,3 +250,21 @@ producer frame. Both commit entry points use the same generic guard owner;
 local callbacks remain owned through detached physical completion. The
 allocation control compares native dispatch with its projection and deliberately
 boxes a projection to expose the otherwise unadmitted extra frame.
+
+The portable `StreamProvider` contract has eight operations: `context`, `heads`,
+`durability_barrier`, `inspect_idempotency`, `write`, `read`, `follow`, and
+`read_commit`. Append, Fork, Commit, single heads, tails, watermarks and child pages
+are shared projections rather than additional provider methods. `WriteRequest`
+retains the genuine request family and its existing retry identity. Backends
+choose their publication future before its one allocation; transparent adapters
+return the inner future directly instead of allocating another frame.
+
+`NativeStreamProvider` is a separately required original-work capability. Native
+filesystem authority and execution-journal consumers require it explicitly;
+portable providers and browser consumers do not inherit native scheduling methods.
+Its producers share the same decision engine and finite-history cursor as ordinary
+operations. Native admission still precedes allocation of the original frame;
+owned typed guards and pre-funded completion retain their distinct custody.
+Unsupported guarantees return `Unsupported` before work. The portable-success
+negative control verifies that this refusal cannot fall back to a successful
+ordinary write, including zero native allocations and no publication.

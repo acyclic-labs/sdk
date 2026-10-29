@@ -1,9 +1,11 @@
 //! One explicit durability cut across the journal's independently selected stores.
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_stream::NativeStreamProvider as _;
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider + ?Sized,
+    P: crate::store::JournalProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {

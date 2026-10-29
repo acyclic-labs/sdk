@@ -200,3 +200,6 @@ impl StreamProvider for Client {
         decode_response(response, envelope_from_wire)
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::NativeStreamProvider for Client {}

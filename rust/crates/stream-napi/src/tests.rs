@@ -295,6 +295,9 @@ impl StreamProvider for TcpDropProbe {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for TcpDropProbe {}
+
 #[allow(
     clippy::too_many_lines,
     reason = "the real TCP lifecycle test keeps connection, follow, close, and server-drop assertions together"

@@ -10,43 +10,6 @@ impl StreamProvider for LocalStream {
         self.seal_accepted().await
     }
 
-    fn native_durability_barrier(
-        &self,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> crate::NativeProviderFuture<'_, ()> {
-        let stream = self.clone();
-        crate::native::Work::start(meter, |work| async move {
-            let stream = Self {
-                work: Some(Arc::clone(&work)),
-                ..stream
-            };
-            let result = async {
-                stream.seal_accepted().await?;
-                Ok(((), None))
-            }
-            .await;
-            work.finish(result)
-        })
-    }
-
-    fn prepare_native_durability_barrier(
-        &self,
-        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> std::io::Result<crate::NativeProviderFuture<'_, ()>> {
-        let work = crate::native::Work::new(Arc::clone(&meter))?;
-        // This ticket survives original cancellation and excludes competing
-        // work from consuming the phase's final durability allowance.
-        work.prepare_durability(1)?;
-        let stream = Self {
-            work: Some(Arc::clone(&work)),
-            ..self.clone()
-        };
-        crate::NativeProviderFuture::try_new(&meter, async move {
-            let result = stream.seal_accepted_with_reservation(true).await;
-            work.finish(result.map(|()| ((), None)))
-        })
-    }
-
     async fn inspect_idempotency(
         &self,
         idempotency_key: IdempotencyKey,
@@ -237,6 +200,45 @@ impl StreamProvider for LocalStream {
         self.accepted(self.inner.provider.read_commit(commit_id))
             .await?
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::NativeStreamProvider for LocalStream {
+    fn native_durability_barrier(
+        &self,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> crate::NativeProviderFuture<'_, ()> {
+        let stream = self.clone();
+        crate::native::Work::start(meter, |work| async move {
+            let stream = Self {
+                work: Some(Arc::clone(&work)),
+                ..stream
+            };
+            let result = async {
+                stream.seal_accepted().await?;
+                Ok(((), None))
+            }
+            .await;
+            work.finish(result)
+        })
+    }
+    fn prepare_native_durability_barrier(
+        &self,
+        meter: Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> std::io::Result<crate::NativeProviderFuture<'_, ()>> {
+        let work = crate::native::Work::new(Arc::clone(&meter))?;
+        // This ticket survives original cancellation and excludes competing
+        // work from consuming the phase's final durability allowance.
+        work.prepare_durability(1)?;
+        let stream = Self {
+            work: Some(Arc::clone(&work)),
+            ..self.clone()
+        };
+        crate::NativeProviderFuture::try_new(&meter, async move {
+            let result = stream.seal_accepted_with_reservation(true).await;
+            work.finish(result.map(|()| ((), None)))
+        })
+    }
     fn native_tail(
         &self,
         path: StreamPath,
@@ -276,7 +278,6 @@ impl StreamProvider for LocalStream {
                 .unwrap_or_else(|error| Ok(Err(error)))
         })
     }
-
     fn native_write(
         &self,
         request: crate::WriteRequest,
@@ -299,7 +300,6 @@ impl StreamProvider for LocalStream {
             }
         }
     }
-
     fn native_commit_guarded<E, F, Fut>(
         &self,
         request: CommitRequest,

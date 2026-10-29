@@ -129,6 +129,10 @@ macro_rules! delegate {
                 self.0.write(request)
             }
         }
+
+        #[cfg(not(target_arch = "wasm32"))]
+        impl acyclic_stream::NativeStreamProvider for UnkeyedRetry {}
+
     };
 }
 

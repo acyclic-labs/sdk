@@ -21,7 +21,7 @@ pub(crate) enum CommitPhase {
     clippy::too_many_lines,
     reason = "Acknowledgment and same-key recovery settle one originally admitted commit quota."
 )]
-pub(crate) async fn commit<P: StreamProvider + ?Sized>(
+pub(crate) async fn commit<P: crate::store::JournalProvider + ?Sized>(
     (mut request, mut quota): (acyclic_stream::CommitRequest, CodecQuota<'_, '_>),
     client: &Arc<P>,
     operation: Option<OperationId>,

@@ -35,7 +35,7 @@ struct StoredContextRevision {
 
 /// Stream-backed context source shared by memory, retrieval, skills, and compaction stages.
 pub struct DurableContextProvider {
-    provider: Arc<dyn StreamProvider>,
+    provider: Arc<dyn crate::store::JournalProvider>,
     path: StreamPath,
     source: String,
     source_revision: String,
@@ -51,7 +51,7 @@ impl crate::filesystem::PreparationRecord for StoredContextRevision {}
 impl DurableContextProvider {
     /// Creates a durable provider with a positive per-page work bound over one Stream path.
     pub fn new(
-        provider: Arc<dyn StreamProvider>,
+        provider: Arc<dyn crate::store::JournalProvider>,
         path: StreamPath,
         source: impl Into<String>,
         source_revision: impl Into<String>,

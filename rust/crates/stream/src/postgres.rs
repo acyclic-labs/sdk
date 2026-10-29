@@ -441,3 +441,6 @@ impl StreamProvider for PostgresStream {
         Ok(self.guarded(self.inner.core.follow(request).await?))
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::NativeStreamProvider for PostgresStream {}

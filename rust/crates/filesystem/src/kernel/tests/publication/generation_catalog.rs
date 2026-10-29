@@ -154,6 +154,10 @@ mod probe {
             self.read_request();
             self.inner.read_commit(id).await
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl acyclic_stream::NativeStreamProvider for Provider {
         fn native_inspect_idempotency(
             &self,
             key: IdempotencyKey,

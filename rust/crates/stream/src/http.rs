@@ -422,6 +422,10 @@ impl StreamProvider for HttpStream {
         Ok(envelope)
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+impl crate::NativeStreamProvider for HttpStream {}
+
 fn credential_header(token: &str) -> Result<HeaderValue, ConnectError> {
     if !acyclic_auth::credential::valid_credential(token) {
         return Err(ConnectError);

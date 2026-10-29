@@ -746,6 +746,9 @@ impl StreamProvider for Refusing {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for Refusing {}
+
 /// An admission's private-volume grant: exact volume labels, or one
 /// structured `filesystem:` grant over the whole volume.
 #[derive(Clone, Copy)]

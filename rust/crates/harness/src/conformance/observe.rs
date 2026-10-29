@@ -213,4 +213,7 @@ impl StreamProvider for Observed {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for Observed {}
+
 impl acyclic_harness_core::filesystem::attestation::AttestedProvider for Observed {}

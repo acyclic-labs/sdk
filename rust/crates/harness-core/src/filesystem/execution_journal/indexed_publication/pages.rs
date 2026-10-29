@@ -62,7 +62,7 @@ impl Cut<'_> {
         Ok(request)
     }
 
-    async fn stage<P: StreamProvider + ?Sized>(
+    async fn stage<P: crate::store::JournalProvider + ?Sized>(
         &self,
         provider: &Arc<P>,
         offset: usize,
@@ -116,7 +116,7 @@ impl Cut<'_> {
         }
     }
 
-    pub(super) async fn publish<P: StreamProvider + ?Sized>(
+    pub(super) async fn publish<P: crate::store::JournalProvider + ?Sized>(
         &self,
         provider: &Arc<P>,
         records: &[OwnedBytes],

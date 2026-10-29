@@ -11,7 +11,9 @@ pub(crate) fn native_call_result<T>(
     })
 }
 
-pub(in crate::distributed) async fn inspect_idempotency<P: StreamProvider + ?Sized>(
+pub(in crate::distributed) async fn inspect_idempotency<
+    P: crate::store::JournalProvider + ?Sized,
+>(
     client: &Arc<P>,
     key: StreamIdempotencyKey,
     binding: &acyclic_stream::request::CommitBinding,

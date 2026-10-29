@@ -361,6 +361,9 @@ impl StreamProvider for Evidence {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for Evidence {}
+
 /// Attests each digest with itself, recording every request for evidence.
 #[derive(Default)]
 struct Digests(std::sync::Mutex<Vec<[u8; 32]>>);

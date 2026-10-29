@@ -855,6 +855,9 @@ impl StreamProvider for ReleaseSpy {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for ReleaseSpy {}
+
 fn competing_requests(
     authority: AuthorityId,
     grouped: bool,

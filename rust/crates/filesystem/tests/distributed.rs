@@ -117,6 +117,9 @@ impl StreamProvider for PausingStream {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+impl acyclic_stream::NativeStreamProvider for PausingStream {}
+
 #[tokio::test]
 #[allow(
     clippy::too_many_lines,

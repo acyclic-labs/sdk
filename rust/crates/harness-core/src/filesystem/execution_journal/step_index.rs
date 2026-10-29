@@ -110,7 +110,7 @@ impl Pending {
         Ok(())
     }
 
-    pub(super) async fn stage<P: StreamProvider + ?Sized>(
+    pub(super) async fn stage<P: crate::store::JournalProvider + ?Sized>(
         &self,
         writer: &mut Writer<'_, P>,
         mut root: Option<NodeRef>,
@@ -225,7 +225,7 @@ fn decode(
 /// Tool admission is part of the step chain, rather than a second durable map
 /// of the same observations. Newest matching state wins; strictly decreasing
 /// record positions prevent cycles and keep recovery within this one step.
-pub(super) async fn tool_state<P: StreamProvider + ?Sized>(
+pub(super) async fn tool_state<P: crate::store::JournalProvider + ?Sized>(
     reader: &Reader<'_, P>,
     root: Option<NodeRef>,
     tail: u64,
@@ -262,7 +262,7 @@ pub(super) async fn tool_state<P: StreamProvider + ?Sized>(
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O>
 where
-    P: StreamProvider + ?Sized,
+    P: crate::store::JournalProvider + ?Sized,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
@@ -425,7 +425,7 @@ where
     }
 }
 
-async fn collect_step<P: StreamProvider + ?Sized>(
+async fn collect_step<P: crate::store::JournalProvider + ?Sized>(
     reader: &Reader<'_, P>,
     root: Option<NodeRef>,
     tail: u64,
