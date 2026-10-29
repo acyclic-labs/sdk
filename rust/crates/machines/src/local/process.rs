@@ -77,8 +77,10 @@ impl LocalMachine {
         &self,
         command: ExecCommand,
         mut handler: H,
-        deadline: std::time::Instant,
+        deadline: impl Into<Option<std::time::Instant>>,
     ) -> LocalExecution<H> {
+        let deadline = deadline.into();
+        let schedule = deadline.map_or_else(|| CaptureSchedule::new(None), CaptureSchedule::until);
         let machine = self.id;
         let (maximum, control) = match admit(&command) {
             Ok(admitted) => admitted,
@@ -100,7 +102,7 @@ impl LocalMachine {
                 let mut handler = control.bind(handler);
                 let started = (|| {
                     handler.check().map_err(StartFailure::Refused)?;
-                    if std::time::Instant::now() >= deadline {
+                    if deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
                         return Err(StartFailure::Refused(io::ErrorKind::TimedOut.into()));
                     }
                     let mut argv = command.argv.into_iter();
@@ -136,13 +138,9 @@ impl LocalMachine {
                     Ok::<_, StartFailure>((tree, input))
                 })();
                 match started {
-                    Ok((tree, input)) => Ok(tree.stream_capture(
-                        &spawner,
-                        CaptureSchedule::until(deadline),
-                        maximum,
-                        input,
-                        handler,
-                    )),
+                    Ok((tree, input)) => {
+                        Ok(tree.stream_capture(&spawner, schedule, maximum, input, handler))
+                    }
                     Err(failure) => {
                         handler.retired(matches!(&failure, StartFailure::Refused(_)));
                         Err((
@@ -182,8 +180,8 @@ impl LocalMachine {
     }
 }
 
-fn admit(command: &ExecCommand) -> Result<(usize, ProcessControl), ProviderError> {
-    let maximum = command.maximum_output_bytes.map_or(Ok(usize::MAX), usize::try_from)
+fn admit(command: &ExecCommand) -> Result<(Option<usize>, ProcessControl), ProviderError> {
+    let maximum = command.maximum_output_bytes.map(usize::try_from).transpose()
         .map_err(|_| ProviderError::Invalid("local output allowance is not representable; recovery: select an addressable byte allowance".into()))?;
     let control = match command.expiry_unix_ms {
         Some(expiry) => ProcessControl::open(expiry),

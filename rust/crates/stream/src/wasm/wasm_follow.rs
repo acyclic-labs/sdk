@@ -4,6 +4,28 @@ pub struct WasmFollow {
     state: Rc<FollowState>,
 }
 
+impl WasmFollow {
+    /// Adapts a canonical record subscription to the shared browser cursor.
+    pub fn from_records(records: crate::RecordStream, followed: StreamPath) -> Self {
+        Self {
+            state: Rc::new(FollowState::new(
+                records
+                    .map(move |record| {
+                        record.map(|record| {
+                            wire_codec::read_response_wire(vec![wire_codec::record_wire(
+                                record,
+                                Some(&followed),
+                            )])
+                            .encode_to_vec()
+                        })
+                    })
+                    .boxed_local(),
+                StreamError::Unavailable,
+            )),
+        }
+    }
+}
+
 #[wasm_bindgen]
 impl WasmFollow {
     /// Waits for one record. Returns `null` after close or stream termination.

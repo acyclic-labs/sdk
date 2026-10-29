@@ -20,9 +20,9 @@ pub struct ShellInput {
     /// Optional directory relative to the task view. Parent traversal is forbidden.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    /// Positive timeout in seconds. Omission uses 300 seconds.
+    /// Optional positive timeout in seconds. Omission waits for exit or cancellation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(range(min = 1, max = 4294967))]
+    #[schemars(range(min = 1))]
     pub timeout: Option<u32>,
 }
 
@@ -45,12 +45,16 @@ impl ShellInput {
         Ok(())
     }
 
-    pub(crate) fn timeout_ms(&self) -> Result<u32> {
+    pub(crate) fn timeout_ms(&self) -> Result<Option<u64>> {
         self.timeout
-            .unwrap_or(300)
-            .checked_mul(1000)
-            .filter(|timeout| *timeout > 0)
-            .ok_or_else(|| Error::Invalid("shell timeout is outside the native clock range".into()))
+            .map(|seconds| {
+                if seconds == 0 {
+                    Err(Error::Invalid("shell timeout must be positive".into()))
+                } else {
+                    Ok(u64::from(seconds) * 1000)
+                }
+            })
+            .transpose()
     }
 }
 

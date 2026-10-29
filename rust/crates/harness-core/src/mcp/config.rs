@@ -14,10 +14,10 @@ pub struct McpConfig {
 pub struct McpServer {
     /// Selected connection implementation and parameters.
     pub transport: McpTransport,
-    /// Finite initialization deadline.
-    pub startup_timeout_ms: u32,
-    /// Finite deadline for each tool exchange.
-    pub tool_timeout_ms: u32,
+    /// Optional initialization deadline.
+    pub startup_timeout_ms: Option<u64>,
+    /// Optional deadline for each tool exchange.
+    pub tool_timeout_ms: Option<u64>,
     /// Optional allowlist of server-local tool names.
     pub enabled_tools: Option<Vec<String>>,
     /// Server-local tools excluded even when allowlisted.
@@ -185,8 +185,8 @@ impl ImportedServer {
         };
         Ok(McpServer {
             transport,
-            startup_timeout_ms: milliseconds(self.startup_timeout_sec.unwrap_or(10.0))?,
-            tool_timeout_ms: milliseconds(self.tool_timeout_sec.unwrap_or(60.0))?,
+            startup_timeout_ms: self.startup_timeout_sec.map(milliseconds).transpose()?,
+            tool_timeout_ms: self.tool_timeout_sec.map(milliseconds).transpose()?,
             enabled_tools: self.enabled_tools,
             disabled_tools: self.disabled_tools,
             required: self.required,
@@ -195,10 +195,10 @@ impl ImportedServer {
     }
 }
 
-fn milliseconds(seconds: f64) -> Result<u32> {
+fn milliseconds(seconds: f64) -> Result<u64> {
     let invalid = || Error::Invalid("MCP timeout must be positive whole milliseconds".into());
     let duration = Duration::try_from_secs_f64(seconds).map_err(|_| invalid())?;
-    let milliseconds = u32::try_from(duration.as_millis()).map_err(|_| invalid())?;
+    let milliseconds = u64::try_from(duration.as_millis()).map_err(|_| invalid())?;
     if milliseconds == 0 || !duration.subsec_nanos().is_multiple_of(1_000_000) {
         return Err(invalid());
     }

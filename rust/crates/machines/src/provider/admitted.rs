@@ -13,7 +13,7 @@ pub(crate) trait NativeMachine: Send + Sync + 'static {
     async fn exec(
         &self,
         command: ExecCommand,
-        until: std::time::Instant,
+        until: Option<std::time::Instant>,
     ) -> Result<ExecStream, ProviderError>;
     async fn read(
         &self,
@@ -351,7 +351,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
             acyclic_native_runtime::obs::OperationSpan::new,
             async {
                 let deadline = GuestDeadline::new(
-                    Duration::from_millis(command.timeout_ms),
+                    command.timeout_ms.map(Duration::from_millis),
                     command.expiry_unix_ms,
                 )?;
                 let busy = self.busy();

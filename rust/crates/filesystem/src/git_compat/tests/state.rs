@@ -1,5 +1,73 @@
 use super::*;
 
+#[tokio::test]
+async fn request_observation_failure_preserves_the_original_durable_cut() {
+    let original = OperationId::from_bytes([1; 16]);
+    let next = OperationId::from_bytes([2; 16]);
+    let repository = GitCompatRepository::new(workspace(), MemoryGitCompatStore::default());
+    repository
+        .record_commit(None, generation(1), BTreeSet::new(), "initial", "agent", 10)
+        .await
+        .expect("initial commit");
+    let repository = repository.for_request(GitRequest {
+        operation: original,
+        unanswered: std::sync::Arc::new(|_| Ok(true)),
+    });
+    let tag = |name: &str| GitCommand::Tag {
+        name: Some(name.to_owned()),
+        target: None,
+        delete: false,
+    };
+    let output = repository
+        .execute(tag("original"), tree(1))
+        .await
+        .expect("original request");
+    let before = repository
+        .store
+        .load(workspace())
+        .await
+        .expect("load")
+        .expect("state");
+    assert_eq!(before.request(original), Some(&output));
+
+    let repository = repository.for_request(GitRequest {
+        operation: next,
+        unanswered: std::sync::Arc::new(move |operation| {
+            if operation == original {
+                Err(std::io::ErrorKind::PermissionDenied.into())
+            } else {
+                Ok(true)
+            }
+        }),
+    });
+    assert!(matches!(
+        repository.execute(tag("next"), tree(1)).await,
+        Err(GitCompatError::RequestObservation(error)) if error.kind() == std::io::ErrorKind::PermissionDenied
+    ));
+    assert_eq!(
+        repository.store.load(workspace()).await.expect("load"),
+        Some(before)
+    );
+
+    // Only the original owner's positive withdrawal permits retirement.
+    let repository = repository.for_request(GitRequest {
+        operation: next,
+        unanswered: std::sync::Arc::new(move |operation| Ok(operation != original)),
+    });
+    let output = repository
+        .execute(tag("next"), tree(1))
+        .await
+        .expect("retry same request");
+    let after = repository
+        .store
+        .load(workspace())
+        .await
+        .expect("load")
+        .expect("state");
+    assert!(after.request(original).is_none());
+    assert_eq!(after.request(next), Some(&output));
+}
+
 #[test]
 fn commit_identity_authenticates_every_generation_locator() {
     let generation = |locator| {

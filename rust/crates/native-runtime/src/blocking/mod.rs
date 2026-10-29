@@ -4,6 +4,9 @@ pub(crate) use wait::{
 };
 
 mod wait;
+pub use wait::wait_native_future;
+mod wait_credit;
+pub use wait_credit::{BlockingWaitCredit, blocking_wait_credit};
 
 thread_local! {
     static INLINE_BLOCKING: Cell<bool> = const { Cell::new(false) };

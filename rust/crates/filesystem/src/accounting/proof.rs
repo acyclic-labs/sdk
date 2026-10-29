@@ -46,10 +46,9 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
     // Borrowed canonical fields, decoded manifest/root, exact payload, and
     // canonical re-encoding are bounded together before any archive decode.
     // Eight source lengths cover both representations and the retained source.
-    let evidence_bound = config
-        .limits
-        .maximum_generation_bytes
-        .min(measured.remaining()?.peak_allocation_bytes / 8);
+    let evidence_bound = measured.remaining()?.peak_allocation_bytes / 8;
+    // Each encoded identity consumes 33 bytes of the same admitted evidence.
+    let evidence_objects = evidence_bound / ObjectId::ENCODED_LEN as u64;
     let archived = {
         let mut work = crate::AuthorityWork::new(measured.remaining()?, cancellation);
         let result = objects
@@ -57,7 +56,7 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
                 authority_id,
                 record,
                 evidence_bound,
-                config.limits.maximum_objects_per_generation,
+                evidence_objects,
                 &mut work,
             )
             .await;
@@ -71,7 +70,7 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
             authority_id,
             record,
             evidence_bound,
-            config.limits.maximum_objects_per_generation,
+            evidence_objects,
         )
         .map_err(|failure| AccountingError::Proof(failure.to_string()))?;
         if original.manifest.generation_root != root
@@ -84,9 +83,6 @@ pub(super) async fn prove_bytes<O: AsyncObjectStore>(
     }
     let limits = ClosureLimits {
         decode: DecodeLimits::for_volume(config),
-        maximum_objects: config.limits.maximum_objects_per_generation,
-        maximum_files: config.limits.maximum_files_per_generation,
-        maximum_object_bytes: config.limits.maximum_generation_bytes,
         profile: config.profile,
         symbolic_links: config.symbolic_links,
         hard_links: config.hard_links,

@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "./process-capture.mjs";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -58,7 +58,7 @@ saveReport();
 try {
   report.phase = "source";
   saveReport();
-  const source = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
+  const source = captureCommand("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
   if (source.error || source.status !== 0) throw new Error("cannot identify contract source checkout");
   report.source_commit = source.stdout.trim();
   if (process.env.CI_HEAD_SHA && report.source_commit !== process.env.CI_HEAD_SHA) throw new Error("contract checkout differs from CI_HEAD_SHA");

@@ -106,10 +106,6 @@ impl AgentCall {
             headers: Vec::new(),
             body: encode_agent_reply(result, &self.command)?,
         };
-        if response.encoded_len() > acyclic_stream::wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES
-        {
-            return Err(CommandError::Capacity);
-        }
         let response =
             domain::InvokeActorResponse::try_from(response).map_err(|_| CommandError::Invalid)?;
         Ok(wire::InvokeActorResponse::from(response)
@@ -628,11 +624,7 @@ impl<'a> PreparedAgentInvocation<'a> {
     ) -> Result<AgentReply, AgentExchangeError> {
         self.send(|invocation| async move {
             session
-                .actor_call(
-                    &invocation,
-                    credential,
-                    acyclic_stream::wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
-                )
+                .actor_call(&invocation, credential, None)
                 .await
                 .map_err(AgentExchangeError::Session)
         })
