@@ -552,7 +552,7 @@ fn first_render_cold_warm_and_offline() {
     );
     assert!(full <= 3 * RTT + 4 * FRAME, "cold status {full} ms");
     cold.run_until(2_000, |_| false);
-    let snapshot = cold.explorer.reader_ref().snapshot();
+    let snapshot = cold.explorer.reader_ref().snapshot().unwrap();
 
     // Warm: the persisted cache renders the first frame; revalidation follows.
     let mut warm = Client::new(policy(), RTT);
@@ -933,7 +933,7 @@ fn provisional_suffix_is_anchored_and_dropped_on_replacement() {
     reader.set_follows([stream.clone()]);
     reader.deliver(&stream, record(0), 1);
     let mut restored = Reader::new(ReaderPolicy::default()).unwrap();
-    restored.restore(&reader.snapshot()).unwrap();
+    restored.restore(&reader.snapshot().unwrap()).unwrap();
     assert_eq!(restored.follow_anchor(&stream, 1), Some(commit(&stream, 0)));
 }
 

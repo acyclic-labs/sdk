@@ -355,9 +355,15 @@ impl WasmExplorer {
         state.wake();
     }
 
-    /// The cache as bytes for IndexedDB.
-    pub fn snapshot(&self) -> Uint8Array {
-        Uint8Array::from(&self.state.borrow().explorer.reader_ref().snapshot()[..])
+    /// The cache as bytes for IndexedDB. While source admission is pending,
+    /// returns undefined so persistence retains the previous snapshot.
+    pub fn snapshot(&self) -> Option<Uint8Array> {
+        self.state
+            .borrow()
+            .explorer
+            .reader_ref()
+            .snapshot()
+            .map(|snapshot| Uint8Array::from(&snapshot[..]))
     }
 
     /// Restores a snapshot written by [`Self::snapshot`].

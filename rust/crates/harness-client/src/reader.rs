@@ -575,10 +575,15 @@ impl Reader {
         &self.policy
     }
 
-    /// Persist the cache.
+    /// Persist the cache. `None` defers persistence while source admission is
+    /// pending, so the caller retains its previous saved snapshot.
     #[must_use]
-    pub fn snapshot(&self) -> Vec<u8> {
-        self.cache.snapshot()
+    pub fn snapshot(&self) -> Option<Vec<u8>> {
+        if self.credentials.as_ref().is_some_and(Credentials::pending) {
+            None
+        } else {
+            Some(self.cache.snapshot())
+        }
     }
 
     /// Warm start from persisted bytes. While the registered source resolves,
@@ -1842,7 +1847,7 @@ mod reader_tests {
             HeadObservation::Applied
         );
         let mut restored = Reader::new(ReaderPolicy::default()).unwrap();
-        restored.restore(&reader.snapshot()).unwrap();
+        restored.restore(&reader.snapshot().unwrap()).unwrap();
         restored.set_follows([stream.clone()]);
         assert_eq!(restored.follows().collect::<Vec<_>>(), vec![(&stream, 1)]);
         assert_eq!(restored.follow_anchor(&stream, 1), Some(old));
@@ -1983,7 +1988,7 @@ mod reader_tests {
                 commit_id: CommitId::from_bytes([2; 32]),
             }),
         );
-        let snapshot = reader.snapshot();
+        let snapshot = reader.snapshot().unwrap();
         assert!(reader.restore(&snapshot).is_err());
         reader.complete(ops[0].id(), Outcome::Failed(Failure::Denied), 0);
         reader.complete(

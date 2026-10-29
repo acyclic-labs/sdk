@@ -150,6 +150,10 @@ impl Credentials {
         }));
     }
 
+    pub(super) fn pending(&self) -> bool {
+        self.status == CredentialStatus::Pending
+    }
+
     pub(super) fn status(&self) -> CredentialStatus {
         if self.status == CredentialStatus::Current
             && self
@@ -400,6 +404,7 @@ mod tests {
         assert!(!reader.advance_credentials(0, &mut cx));
         assert_eq!(checks.load(Ordering::SeqCst), 1);
         assert!(!reader.readable());
+        assert!(reader.snapshot().is_none());
         assert!(!reader.advance_credentials(1, &mut cx));
         assert_eq!(checks.load(Ordering::SeqCst), 1);
         send.send(()).unwrap();
@@ -409,7 +414,7 @@ mod tests {
         let admitted_checks = checks.load(Ordering::SeqCst);
         assert_eq!(admitted_checks, 2);
         assert!(!reader.readable());
-        assert!(reader.snapshot().is_empty());
+        assert!(reader.snapshot().unwrap().is_empty());
         assert!(reader.restore(b"untrusted").is_err());
         assert_eq!(reader.next_deadline(), None);
         reader.network_changed(true, 2);
@@ -430,7 +435,7 @@ mod tests {
         assert!(reader.advance_credentials(0, &mut cx));
         assert_eq!(reader.credential_status(), CredentialStatus::Unsupported);
         assert!(!reader.readable());
-        assert!(reader.snapshot().is_empty());
+        assert!(reader.snapshot().unwrap().is_empty());
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
@@ -678,7 +683,7 @@ mod tests {
                     reader.complete(id, Outcome::Head(head.clone()), 0);
                 }
                 assert!(reader.cache().record(&path, 0).is_none());
-                assert!(reader.snapshot().is_empty());
+                assert!(reader.snapshot().unwrap().is_empty());
                 reader.network_changed(true, 0);
                 assert!(!reader.advance_credentials(0, &mut cx));
                 reader.credentials.as_mut().unwrap().retry(0);
@@ -789,7 +794,7 @@ mod tests {
             reader.complete(id, Outcome::Head(head), 500);
             let view = reader.cache().record(&path, 0).unwrap().clone();
             let old_backing = reader.cache().backing_bytes();
-            let snapshot = reader.snapshot();
+            let snapshot = reader.snapshot().unwrap();
             assert!(!snapshot.is_empty());
             let mut restored = Reader::new(ReaderPolicy::default()).unwrap();
             restored.credentials = Some(Credentials::new(source.clone().into(), 500, 10_000));
@@ -826,7 +831,7 @@ mod tests {
             assert!(reader.cache().record(&path, 0).is_none());
             assert!(reader.cache().tail(&path).is_none());
             assert!(!reader.cache().origin_known(&path));
-            assert!(reader.snapshot().is_empty());
+            assert!(reader.snapshot().unwrap().is_empty());
             source.invalidate().unwrap();
             assert!(ready.0.load(Ordering::SeqCst));
             reader.advance_credentials(600, &mut cx);
@@ -917,7 +922,7 @@ mod tests {
                     Outcome::Head(provider.head(path.clone()).await.unwrap()),
                     0,
                 );
-                let snapshot = reader.snapshot();
+                let snapshot = reader.snapshot().unwrap();
                 reader.restore(&snapshot).unwrap();
                 assert_eq!(
                     reader.cache().record(&path, 0).unwrap().as_ref(),
