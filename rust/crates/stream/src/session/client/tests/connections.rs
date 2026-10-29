@@ -142,8 +142,7 @@ async fn discovery_and_home_recovery_reuse_the_first_installed_link() -> TestRes
         let (mut pool, _healthy) = pool::fixture::fixture(&channel);
         pool.reset_home();
         let (records, _pending) = mpsc::channel(2);
-        let route = pool.routes.get_mut(&1).unwrap();
-        route.node = destination.into();
+        let route = pool.routes.rehome(&1, destination).unwrap();
         route.records = records;
         route.opened = false;
         let redundant = pool.links.remove("bad").unwrap();

@@ -528,7 +528,7 @@ pub fn verify_node_dials(fault: u8) {
             let (records, receiver) = mpsc::channel(2);
             pool.routes.get_mut(&1).unwrap().records = records;
             if same_node {
-                pool.routes.get_mut(&1).unwrap().node = "good".into();
+                pool.routes.rehome(&1, "good").unwrap();
             }
             let client = Client {
                 connections: super::super::super::Connections::new(),
@@ -643,7 +643,7 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
         pool.links.remove("bad");
         let (records, receiver_a) = mpsc::channel(2);
         pool.routes.get_mut(&1).unwrap().records = records;
-        pool.routes.get_mut(&1).unwrap().node = "good".into();
+        pool.routes.rehome(&1, "good").unwrap();
         let client = Client {
             connections: super::super::super::Connections::new(),
             executor: std::sync::Arc::new(crate::runtime::PlatformExecutor),

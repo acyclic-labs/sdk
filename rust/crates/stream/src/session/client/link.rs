@@ -91,8 +91,8 @@ impl Pool {
     }
     pub(super) fn dial_owner(&self, node: &str) -> Option<u64> {
         self.routes
-            .iter()
-            .find(|(_, route)| route.node == node && route.live())
+            .on_node(node)
+            .find(|(_, route)| route.live())
             .map(|(id, _)| *id)
     }
     pub(super) fn read(&mut self, node: String, mut response: Response) {
@@ -315,8 +315,8 @@ impl Pool {
         // repeat a mutating invocation.
         let interrupted = self
             .routes
-            .iter()
-            .filter(|(_, route)| route.node == node && !route.resumable())
+            .on_node(node)
+            .filter(|(_, route)| !route.resumable())
             .map(|(id, _)| *id)
             .collect::<Vec<_>>();
         for id in interrupted {
@@ -332,19 +332,24 @@ impl Pool {
         };
         let registering = self
             .routes
-            .values()
-            .any(|route| route.node == node && route.live() && route.ready.is_some());
-        for route in self
+            .on_node(node)
+            .any(|(_, route)| route.live() && route.ready.is_some());
+        let ids = self
             .routes
-            .values_mut()
-            .filter(|route| route.node == node && route.live())
-        {
+            .on_node(node)
+            .filter(|(_, route)| route.live())
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in ids {
+            let route = self
+                .routes
+                .rehome(&id, destination)
+                .ok_or(StreamError::Unavailable)?;
             route.generation = route.progress.fence()?;
             route.observation.in_scope(|| {
                 tracing::debug!(event = "reconnect", generation = route.generation);
             });
             route.opened = false;
-            route.node = destination.into();
         }
         self.dial(
             wire::SessionNode {

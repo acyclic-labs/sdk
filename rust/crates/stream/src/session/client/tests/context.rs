@@ -307,9 +307,8 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
         let b_origin = origin(&b_dispatch, false);
         let (sender, receiver) = mpsc::channel(2);
         let a_progress = Arc::clone(&pool.routes.get(&1).unwrap().progress);
-        let a = pool.routes.get_mut(&1).unwrap();
+        let a = pool.routes.rehome(&1, "good").unwrap();
         a.records = sender;
-        a.node = "good".into();
         a.observation = a_origin.in_scope(|| Observation::channel(1).operation.clone());
         pool.routes.get_mut(&3).unwrap().observation =
             b_origin.in_scope(|| Observation::channel(3).operation.clone());
