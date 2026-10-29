@@ -27,13 +27,17 @@ where
 #[derive(Clone, Copy)]
 pub(super) enum FilePublication<'a> {
     Replace(Option<&'a GenerationRef>),
-    Authorized(acyclic_fs::access::PolicyFence, &'a ContentGrant),
+    Authorized(
+        acyclic_fs::access::PolicyFence,
+        &'a ContentGrant,
+        Option<acyclic_fs::access::PolicyFence>,
+    ),
 }
 
 impl FilePublication<'_> {
     fn fence(self) -> Option<acyclic_fs::access::PolicyFence> {
         match self {
-            Self::Authorized(fence, _) => Some(fence),
+            Self::Authorized(fence, _, _) => Some(fence),
             Self::Replace(_) => None,
         }
     }
@@ -43,8 +47,9 @@ fn require_publication_time(
     publication: FilePublication<'_>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    if let FilePublication::Authorized(_, grant) = publication {
+    if let FilePublication::Authorized(_, grant, root_fence) = publication {
         grant.recheck(io)?;
+        require_publication_fence(root_fence)?;
     }
     require_publication_fence(publication.fence())
 }
