@@ -176,9 +176,8 @@ impl<'a> View<'a> {
     pub(crate) async fn optional(
         self,
         path: &str,
-        maximum: u64,
     ) -> crate::Result<Option<acyclic_stream::OwnedBytes>> {
-        match self.read(path, maximum).await {
+        match self.read(path, None).await {
             Ok(bytes) => Ok(Some(bytes)),
             Err(Error::NativeSource { source, .. })
                 if matches!(*source, acyclic_fs::LazyWorkspaceError::NotFound) =>
