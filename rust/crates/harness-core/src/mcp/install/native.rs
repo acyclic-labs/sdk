@@ -229,7 +229,7 @@ where
             return Err(Error::Invalid("MCP discovery exceeds tool bound".into()));
         }
         if let Some(allowance) = remaining {
-            let bytes = crate::executor::json::json_byte_length(&page, allowance, &mut None)?;
+            let bytes = crate::executor::json::json_byte_length(&page, Some(allowance), &mut None)?;
             remaining = Some(
                 allowance
                     .checked_sub(bytes)
