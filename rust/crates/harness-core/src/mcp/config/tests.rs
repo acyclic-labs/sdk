@@ -24,8 +24,8 @@ fn normalizes_both_transports_and_keeps_credentials_host_owned() -> Result<()> {
         .servers()
         .next()
         .ok_or_else(|| Error::Invalid("missing server".into()))?;
-    assert_eq!(server.startup_timeout_ms, 1500);
-    assert_eq!(server.tool_timeout_ms, 2000);
+    assert_eq!(server.startup_timeout_ms, Some(1500));
+    assert_eq!(server.tool_timeout_ms, Some(2000));
     assert_eq!(
         server.enabled_tools.as_deref(),
         Some(["read".into()].as_slice())
@@ -63,8 +63,8 @@ fn normalizes_both_transports_and_keeps_credentials_host_owned() -> Result<()> {
             .servers()
             .next()
             .ok_or_else(|| Error::Invalid("missing HTTP server".into()))?;
-        assert_eq!(server.startup_timeout_ms, 10_000);
-        assert_eq!(server.tool_timeout_ms, 60_000);
+        assert_eq!(server.startup_timeout_ms, None);
+        assert_eq!(server.tool_timeout_ms, None);
         let McpTransport::Http {
             url,
             headers,

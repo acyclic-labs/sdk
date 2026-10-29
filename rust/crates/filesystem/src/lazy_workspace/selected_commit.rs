@@ -113,7 +113,7 @@ impl<
         if saved != input {
             return Err(LazyWorkspaceError::StaleIdentity);
         }
-        for _ in 0..MAXIMUM_CAS_ATTEMPTS {
+        loop {
             let state = self
                 .store
                 .load_lazy_workspace(self.workspace.id(), ctx)
@@ -149,7 +149,11 @@ impl<
             {
                 return Ok(snapshot);
             }
+            ctx.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })?;
+            acyclic_stream::runtime::yield_now().await?;
         }
-        Err(LazyWorkspaceError::Concurrent)
     }
 }

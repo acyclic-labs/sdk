@@ -9,11 +9,7 @@ use acyclic_stream::OwnedBytes;
 
 use crate::kernel::Child;
 fn name(byte: u8) -> Result<AttributeName, Box<dyn std::error::Error>> {
-    Ok(AttributeName::new(
-        AttributeClass::PosixXattr,
-        vec![byte],
-        8,
-    )?)
+    Ok(AttributeName::new(AttributeClass::PosixXattr, vec![byte])?)
 }
 
 fn entry(byte: u8) -> Result<AttributeEntry, Box<dyn std::error::Error>> {
@@ -78,32 +74,11 @@ async fn lookup_reads_one_frontier_and_authenticates_absence()
     assert_eq!(absent.value, None);
     assert_eq!(absent.work.page_reads, 2);
 
-    let failure = lookup_attribute(
-        &store,
-        root,
-        &name(3)?,
-        DecodeLimits {
-            maximum_visited_pages: 1,
-            ..DecodeLimits::default()
-        },
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await
-    .err()
-    .ok_or("lookup exceeded its visited-page limit")?;
-    assert!(matches!(
-        failure.error,
-        AttributeLookupError::AllocationFailed
-    ));
-    assert_eq!(failure.work.page_reads, 1);
-
     let names = vec![name(4)?, name(1)?, name(4)?, name(5)?];
     let batch = lookup_attributes(
         &store,
         root,
         &names,
-        4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -149,7 +124,6 @@ async fn precancelled_batch_is_inert() -> Result<(), Box<dyn std::error::Error>>
         &store,
         root,
         &names,
-        4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -378,7 +352,6 @@ async fn validation_and_boundary_queries_are_fail_closed_and_exact()
         &store,
         root,
         &[],
-        4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
@@ -388,23 +361,6 @@ async fn validation_and_boundary_queries_are_fail_closed_and_exact()
     .ok_or("empty attribute batch unexpectedly succeeded")?;
     assert!(matches!(empty.error, AttributeLookupError::EmptyBatch));
     assert_eq!(*empty.work, WorkCounters::default());
-    let excessive = lookup_attributes(
-        &store,
-        root,
-        &[name(1)?, name(3)?],
-        1,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .await
-    .err()
-    .ok_or("excessive attribute batch unexpectedly succeeded")?;
-    assert!(matches!(
-        excessive.error,
-        AttributeLookupError::TooManyQueries
-    ));
-    assert_eq!(*excessive.work, WorkCounters::default());
 
     for (requested, expected) in [
         (1, Some(entry(1)?)),

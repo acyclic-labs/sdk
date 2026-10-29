@@ -2,7 +2,7 @@
 
 #![cfg(target_arch = "wasm32")]
 
-use acyclic_machines::{MAX_PAGE_SIZE, SimulatedMachines};
+use acyclic_machines::SimulatedMachines;
 use sha2::{Digest as _, Sha256};
 use tsify::Tsify;
 use uuid::Uuid;
@@ -55,22 +55,20 @@ pub fn normalize_identity(kind: String, value: String) -> Result<String, JsValue
     Ok(Uuid::from_bytes(bytes).to_string())
 }
 
-/// Validates the canonical Machines page-size policy before any provider is
-/// called, including custom TypeScript providers.
-#[wasm_bindgen(js_name = validatePageSize)]
-pub fn validate_page_size(
+/// Normalize a JavaScript request hint through the canonical page policy.
+#[wasm_bindgen(js_name = pageSize)]
+pub fn page_size(
     #[wasm_bindgen(unchecked_param_type = "number")] value: &JsValue,
-) -> Result<(), JsValue> {
-    let value = value
-        .as_f64()
-        .ok_or_else(|| js_error("invalid-page-size", "machine page limit must be 1..=256"))?;
-    if !public::is_safe_integer(value) || value < 1.0 || value > f64::from(MAX_PAGE_SIZE) {
+    chunk: u32,
+) -> Result<u32, JsValue> {
+    if !value.as_f64().is_some_and(public::is_safe_integer) {
         return Err(js_error(
             "invalid-page-size",
-            "machine page limit must be 1..=256",
+            "page size must be a positive JavaScript safe integer",
         ));
     }
-    Ok(())
+    let requested: public::SafeNumber = public::from_js(value.clone())?;
+    acyclic_machines::page_limit(requested.0, chunk).map_err(public::provider_error)
 }
 
 /// Parses and normalizes an immutable OCI image reference using the canonical

@@ -9,6 +9,7 @@ use super::{Capabilities, RestoreGuard};
 
 pub(crate) struct State<W: Write> {
     pub(crate) guard: RestoreGuard<W>,
+    pub(crate) on_change: Option<fn(&mut W)>,
     active: bool,
     closed: bool,
     restored: bool,
@@ -72,11 +73,22 @@ impl<W: Write> State<W> {
     pub(crate) fn new(writer: W) -> Self {
         Self {
             guard: RestoreGuard::new(writer, &Capabilities::default()),
+            on_change: None,
             active: true,
             closed: false,
             restored: false,
         }
     }
+}
+
+/// Inspect the input mode after a nonblocking read, before waiting outside
+/// the owner lock. Lifecycle notifications remain armed throughout this check.
+pub(crate) fn input_active<W: Write>(state: &Mutex<State<W>>) -> io::Result<bool> {
+    let state = state.lock().map_err(|_| io::ErrorKind::Other)?;
+    if state.closed {
+        return Err(io::ErrorKind::NotConnected.into());
+    }
+    Ok(state.active)
 }
 
 // Lock order: owner slot, then this terminal-state lock. Never acquire the
@@ -122,6 +134,9 @@ pub(crate) fn restore<W: Write>(
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     state.closed |= terminate;
     state.active = false;
+    if let Some(notify) = state.on_change {
+        notify(state.guard.writer());
+    }
     if state.restored {
         return Ok(());
     }
@@ -143,6 +158,9 @@ pub(crate) fn resume<W: Write>(
         state.guard.reapply()?;
         state.active = true;
         state.restored = false;
+        if let Some(notify) = state.on_change {
+            notify(state.guard.writer());
+        }
     }
     Ok(())
 }
