@@ -185,10 +185,7 @@ where
 
     fn shutdown_physical_cleanup(&self) -> Result<bool, MountSourceError> {
         let changed = !self.physically_retired()?;
-        self.cancel_cleanup_with_join(
-            None,
-            crate::native_mount::retirement::SourceRetirementWait::Physical,
-        )?;
+        self.cancel_cleanup(None)?;
         Ok(changed)
     }
 
