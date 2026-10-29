@@ -1,5 +1,6 @@
 use super::*;
 use crate::executor::{ToolErrorClass, ToolFailureCause, ToolFailureKind};
+use acyclic_stream::StreamProviderExt as _;
 
 fn refusal(step: u32) -> ExecutionEvent {
     ExecutionEvent::ToolFailed {

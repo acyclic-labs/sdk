@@ -1,5 +1,6 @@
 use super::*;
 use crate::executor::{ToolErrorClass, ToolFailureCause, ToolFailureKind};
+use acyclic_stream::StreamProviderExt as _;
 
 #[test]
 fn checkpoint_frame_has_fixed_size_and_one_canonical_root_encoding() -> Result<()> {

@@ -190,6 +190,7 @@ impl Drop for NodeCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use acyclic_stream::StreamProviderExt as _;
 
     #[derive(Default)]
     struct Settled {

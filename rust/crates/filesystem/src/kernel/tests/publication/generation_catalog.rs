@@ -2,7 +2,7 @@
 use super::*;
 use crate::{AuthorityWork, PublicationChanges, StreamAuthorityStore};
 use acyclic_stream::{
-    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, StreamProvider,
+    CommitCondition, CommitMutation, CommitOutcome, CommitRequest, StreamProviderExt,
 };
 use std::sync::Arc;
 

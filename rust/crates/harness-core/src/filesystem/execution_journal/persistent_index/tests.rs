@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_stream::StreamProviderExt as _;
 
 fn key(index: u32) -> [u8; 32] {
     *blake3::hash(&index.to_be_bytes()).as_bytes()
