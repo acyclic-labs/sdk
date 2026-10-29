@@ -145,7 +145,7 @@ fn callback_driver_thread_cases() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn in_place_callback_outlasts_its_callers_cooperative_budget()
 -> Result<(), Box<dyn std::error::Error>> {
     let runtime = CallbackRuntime::create()?;
