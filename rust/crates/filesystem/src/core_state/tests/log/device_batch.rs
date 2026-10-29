@@ -72,7 +72,7 @@ async fn checkpoint_batches_one_device_drain_after_all_record_writes()
             })
             .count();
         eprintln!(
-            "CHECKPOINT_DEVICE_DRAIN native={native} records=16 drains={drains} elapsed_us={}",
+            "CHECKPOINT_DEVICE_DRAIN native={native} records=16 drains={drains} elapsed_us={} operations={writes:?}",
             elapsed.as_micros()
         );
         assert_eq!(std::fs::metadata(&wal)?.len(), 0);
