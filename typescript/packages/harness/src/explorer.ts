@@ -75,11 +75,13 @@ export class AgentExplorer {
   #frame: number | undefined;
   #fallbackFrame: ReturnType<typeof setTimeout> | undefined;
   #timer: ReturnType<typeof setTimeout> | undefined;
+  #closed = false;
   readonly #render = () => {
     this.#frame = undefined;
     this.#fallbackFrame = undefined;
+    if (this.#closed) return;
     this.#options.render(this.#core.frame() as ExplorerRow[], this);
-    this.#arm();
+    if (!this.#closed) this.#arm();
   };
   readonly #online = () => { this.#core.networkChanged(true); this.schedule(); };
   readonly #offline = () => { this.#core.networkChanged(false); this.schedule(); };
@@ -115,7 +117,7 @@ export class AgentExplorer {
 
   /** Renders on the next animation frame; repeated calls coalesce. */
   schedule(): void {
-    if (this.#frame !== undefined || this.#fallbackFrame !== undefined) return;
+    if (this.#closed || this.#frame !== undefined || this.#fallbackFrame !== undefined) return;
     if (typeof globalThis.requestAnimationFrame === "function") {
       this.#frame = globalThis.requestAnimationFrame(this.#render);
     } else {
@@ -147,6 +149,10 @@ export class AgentExplorer {
 
   /** Persists admitted state; pending source admission preserves the saved cache. */
   save(): void {
+    if (!this.#closed) this.#persist();
+  }
+
+  #persist(): void {
     if (this.#db === undefined || this.#options.persist === undefined) return;
     const snapshot = this.#core.snapshot();
     if (snapshot === undefined) return;
@@ -157,15 +163,21 @@ export class AgentExplorer {
 
   /** Persists, then drops every follow and read. */
   dispose(): void {
-    this.save();
-    globalThis.removeEventListener?.("online", this.#online);
-    globalThis.removeEventListener?.("offline", this.#offline);
-    globalThis.document?.removeEventListener("visibilitychange", this.#hidden);
-    if (this.#timer !== undefined) clearTimeout(this.#timer);
-    if (this.#frame !== undefined) globalThis.cancelAnimationFrame(this.#frame);
-    if (this.#fallbackFrame !== undefined) clearTimeout(this.#fallbackFrame);
-    this.#frame = undefined;
-    this.#fallbackFrame = undefined;
-    this.#core.free();
+    if (this.#closed) return;
+    this.#closed = true;
+    try {
+      this.#persist();
+    } finally {
+      globalThis.removeEventListener?.("online", this.#online);
+      globalThis.removeEventListener?.("offline", this.#offline);
+      globalThis.document?.removeEventListener("visibilitychange", this.#hidden);
+      if (this.#timer !== undefined) clearTimeout(this.#timer);
+      if (this.#frame !== undefined) globalThis.cancelAnimationFrame(this.#frame);
+      if (this.#fallbackFrame !== undefined) clearTimeout(this.#fallbackFrame);
+      this.#timer = undefined;
+      this.#frame = undefined;
+      this.#fallbackFrame = undefined;
+      this.#core.free();
+    }
   }
 }
