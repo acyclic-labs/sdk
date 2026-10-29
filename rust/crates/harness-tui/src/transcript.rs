@@ -541,64 +541,79 @@ mod tests {
 
     #[test]
     fn block_addresses_stay_on_disk_and_every_page_survives_reflow() {
-        let mut retained = Vec::new();
-        for count in [257, 4_097] {
-            let mut transcript = TranscriptRows::default();
-            let allocations = acyclic_test_support::measure(|| {
-                for index in 0..count {
-                    transcript
-                        .push(true, &format!("prompt {index:08}"))
-                        .unwrap();
-                }
-            });
-            retained.push((allocations.bytes_current, allocations.count_current));
-            let reflow = acyclic_test_support::measure(|| transcript.set_width(20).unwrap());
-            let mut next = 0;
-            for start in (0..transcript.len()).step_by(SEARCH_ROWS) {
-                for line in transcript.window(start..start + SEARCH_ROWS).unwrap() {
-                    let text = line
-                        .spans
-                        .iter()
-                        .map(|span| span.content.as_ref())
-                        .collect::<String>();
-                    if text.is_empty() {
-                        continue;
+        for retain_addresses in [false, true] {
+            let mut retained = Vec::new();
+            for count in [257, 4_097] {
+                let mut transcript = TranscriptRows::default();
+                let mut resident = Vec::new();
+                let allocations = acyclic_test_support::measure(|| {
+                    for index in 0..count {
+                        transcript
+                            .push(true, &format!("prompt {index:08}"))
+                            .unwrap();
+                        if retain_addresses {
+                            let record = transcript.spool.as_ref().unwrap().blocks.last().unwrap();
+                            resident.push(Block::from_record(record).unwrap());
+                        }
                     }
-                    assert_eq!(text, format!("› prompt {next:08}"));
-                    next += 1;
+                });
+                retained.push((allocations.bytes_current, allocations.count_current));
+                let reflow = acyclic_test_support::measure(|| transcript.set_width(20).unwrap());
+                let mut next = 0;
+                for start in (0..transcript.len()).step_by(SEARCH_ROWS) {
+                    for line in transcript.window(start..start + SEARCH_ROWS).unwrap() {
+                        let text = line
+                            .spans
+                            .iter()
+                            .map(|span| span.content.as_ref())
+                            .collect::<String>();
+                        if text.is_empty() {
+                            continue;
+                        }
+                        assert_eq!(text, format!("› prompt {next:08}"));
+                        next += 1;
+                    }
                 }
+                assert_eq!(next, count);
+                // A page read must preserve the append position of both indexes.
+                transcript.push(true, "after page reads").unwrap();
+                assert!(
+                    transcript
+                        .find("after page reads", transcript.len())
+                        .unwrap()
+                        .is_some()
+                );
+                // Cross a block-page boundary with transient entries, then retire
+                // them and reflow the settled addresses without retaining a vector.
+                transcript
+                    .pending((0..257).map(|_| (true, "transient")))
+                    .unwrap();
+                transcript.pending(std::iter::empty()).unwrap();
+                transcript.set_width(80).unwrap();
+                assert_eq!(
+                    transcript.find("transient", transcript.len()).unwrap(),
+                    None
+                );
+                assert!(
+                    transcript
+                        .find("after page reads", transcript.len())
+                        .unwrap()
+                        .is_some()
+                );
+                eprintln!(
+                    "resident_control={retain_addresses} blocks={count} retained={allocations:?} reflow={reflow:?}"
+                );
             }
-            assert_eq!(next, count);
-            // A page read must preserve the append position of both indexes.
-            transcript.push(true, "after page reads").unwrap();
-            assert!(
-                transcript
-                    .find("after page reads", transcript.len())
-                    .unwrap()
-                    .is_some()
-            );
-            // Cross a block-page boundary with transient entries, then retire
-            // them and reflow the settled addresses without retaining a vector.
-            transcript
-                .pending((0..257).map(|_| (true, "transient")))
-                .unwrap();
-            transcript.pending(std::iter::empty()).unwrap();
-            transcript.set_width(80).unwrap();
-            assert_eq!(
-                transcript.find("transient", transcript.len()).unwrap(),
-                None
-            );
-            assert!(
-                transcript
-                    .find("after page reads", transcript.len())
-                    .unwrap()
-                    .is_some()
-            );
-            eprintln!("blocks={count} retained={allocations:?} reflow={reflow:?}");
+            let oracle = || assert_eq!(retained[0], retained[1]);
+            if retain_addresses {
+                // Retaining the real accepted block addresses restores the old
+                // resident Vec<Block> while preserving identical output. The
+                // very same physical allocation oracle must reject that growth.
+                assert!(std::panic::catch_unwind(oracle).is_err());
+            } else {
+                oracle();
+            }
         }
-        // The old resident Vec<Block> grows at these same counts. The oracle
-        // measures live physical allocations, rather than the serialized size.
-        assert_eq!(retained[0], retained[1]);
     }
 
     #[test]
