@@ -196,15 +196,27 @@ operation_service! {
             }
             Err(Status::unimplemented("read_output"))
         }
-        async fn read_file(&self, request: Request<wire::ReadFileRequest>)
-            -> Result<Response<wire::ReadFileResponse>, Status> {
-            self.guest.as_ref().ok_or_else(|| Status::unimplemented("read_file"))?
-                .read_file(request)
+        type ReadFileStream = Pin<Box<dyn Stream<Item = Result<wire::ReadFileResponse, Status>> + Send>>;
+        async fn read_file(&self, request: Request<tonic::Streaming<wire::ReadFileRequest>>)
+            -> Result<Response<Self::ReadFileStream>, Status> {
+            let guest = self.guest.clone().ok_or_else(|| Status::unimplemented("read_file"))?;
+            Ok(Response::new(Box::pin(stream::try_unfold((request.into_inner(), guest),
+                |(mut input, guest)| async move {
+                    let Some(chunk) = input.message().await? else { return Ok(None); };
+                    let response = guest.read_file(Request::new(chunk))?.into_inner();
+                    Ok(Some((response, (input, guest))))
+                }))))
         }
-        async fn write_file(&self, request: Request<wire::WriteFileRequest>)
-            -> Result<Response<wire::WriteFileResponse>, Status> {
-            self.guest.as_ref().ok_or_else(|| Status::unimplemented("write_file"))?
-                .write_file(request)
+        type WriteFileStream = Pin<Box<dyn Stream<Item = Result<wire::WriteFileResponse, Status>> + Send>>;
+        async fn write_file(&self, request: Request<tonic::Streaming<wire::WriteFileRequest>>)
+            -> Result<Response<Self::WriteFileStream>, Status> {
+            let guest = self.guest.clone().ok_or_else(|| Status::unimplemented("write_file"))?;
+            Ok(Response::new(Box::pin(stream::try_unfold((request.into_inner(), guest),
+                |(mut input, guest)| async move {
+                    let Some(chunk) = input.message().await? else { return Ok(None); };
+                    let response = guest.write_file(Request::new(chunk))?.into_inner();
+                    Ok(Some((response, (input, guest))))
+                }))))
         }
     type WatchOperationStream = Pin<
         Box<dyn futures::Stream<Item = Result<wire::OperationState, Status>> + Send + 'static>,

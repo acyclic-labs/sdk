@@ -457,6 +457,11 @@ message MachineOutput {
 // Native guest IO; these are not lifecycle mutations or shell commands. The
 // server joins the caller's original account/incarnation and file grant before
 // touching the guest. One absolute deadline covers admission and completion.
+// A file RPC binds its first FileAccess machine/path/deadline for its lifetime;
+// later chunks retain that admission and supply their own exact offsets. Each
+// request yields one ordered native completion. The producer pulls requests and
+// yields replies under transport backpressure, without eagerly collecting either
+// side. Dropping either side retires that session; writes are never redispatched.
 message FileAccess {
   MachineId machine = 1;
   // Absolute, NUL-free guest path, never a client host path.
@@ -499,8 +504,8 @@ message WriteFileResponse {
 }
 
 service MachinesService {
-  rpc ReadFile(ReadFileRequest) returns (ReadFileResponse) { option (acyclic.validation.v1.auth) = { action: "machines/read-file" extractor: "machines.read-file" }; }
-  rpc WriteFile(WriteFileRequest) returns (WriteFileResponse) { option (acyclic.validation.v1.auth) = { action: "machines/write-file" extractor: "machines.write-file" }; }
+  rpc ReadFile(stream ReadFileRequest) returns (stream ReadFileResponse) { option (acyclic.validation.v1.auth) = { action: "machines/read-file" extractor: "machines.read-file" }; }
+  rpc WriteFile(stream WriteFileRequest) returns (stream WriteFileResponse) { option (acyclic.validation.v1.auth) = { action: "machines/write-file" extractor: "machines.write-file" }; }
   rpc Exec(stream ExecInput) returns (stream ExecOutput) { option (acyclic.validation.v1.auth) = { action: "machines/exec" extractor: "machines.exec" }; }
   rpc ReadOutput(ReadOutputRequest) returns (MachineOutput) { option (acyclic.validation.v1.auth) = { action: "machines/read-output" extractor: "machines.read-output" }; }
   rpc QualifyImage(QualifyImageRequest) returns (ImageQualification) { option (acyclic.validation.v1.auth) = { action: "machines/qualify" extractor: "machines.qualify-image" }; }

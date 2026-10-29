@@ -15,18 +15,24 @@ impl GrpcProvider {
         access.validate_range(limit as usize)?;
         let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
         let mut client = self.file_client(&deadline).await?;
-        let mut request = Request::new(wire::ReadFileRequest {
+        let mut request = Request::new(stream::iter(std::iter::once(wire::ReadFileRequest {
             protocol: Some(protocol()),
             access: Some(encode_access(machine, &access)),
             limit,
-        });
+        })));
         request.set_timeout(deadline.remaining());
-        let response = deadline
+        let mut output = deadline
             .run(client.read_file(request))
             .await
             .ok_or(ProviderError::FileIndeterminate(machine))?
             .map_err(|error| file_error(machine, &error))?
             .into_inner();
+        let response = deadline
+            .run(output.message())
+            .await
+            .ok_or(ProviderError::FileIndeterminate(machine))?
+            .map_err(|_| ProviderError::FileIndeterminate(machine))?
+            .ok_or(ProviderError::FileIndeterminate(machine))?;
         check_access(
             response.machine.as_ref(),
             response.offset,
@@ -54,19 +60,25 @@ impl GrpcProvider {
         let length = data.len();
         let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
         let mut client = self.file_client(&deadline).await?;
-        let mut request = Request::new(wire::WriteFileRequest {
+        let mut request = Request::new(stream::iter(std::iter::once(wire::WriteFileRequest {
             protocol: Some(protocol()),
             access: Some(encode_access(machine, &access)),
             data,
             truncate,
-        });
+        })));
         request.set_timeout(deadline.remaining());
-        let response = deadline
+        let mut output = deadline
             .run(client.write_file(request))
             .await
             .ok_or(ProviderError::FileIndeterminate(machine))?
             .map_err(|error| file_error(machine, &error))?
             .into_inner();
+        let response = deadline
+            .run(output.message())
+            .await
+            .ok_or(ProviderError::FileIndeterminate(machine))?
+            .map_err(|_| ProviderError::FileIndeterminate(machine))?
+            .ok_or(ProviderError::FileIndeterminate(machine))?;
         check_access(
             response.machine.as_ref(),
             response.offset,

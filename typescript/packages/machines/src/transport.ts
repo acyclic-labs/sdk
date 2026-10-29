@@ -23,7 +23,7 @@ export function createMachinesClient(transport: Transport) {
         const query = create(wire.ReadFileRequestSchema, request);
         const access = checkFileAccess(query.access, query.limit);
         if (query.limit < 1) throw new RangeError("file read chunk must be positive");
-        const result = await machines.readFile(query, fileOptions(access, callOptions));
+        const result = await fileCompletion(signal => machines.readFile(oneChunk(query), { ...fileOptions(access, callOptions), signal }), callOptions?.signal);
         checkFileResult(access, result);
         if (result.result.case === "data") {
           if (result.result.value.byteLength > query.limit) throw new ConnectError("file read exceeds requested chunk", Code.DataLoss);
@@ -34,7 +34,7 @@ export function createMachinesClient(transport: Transport) {
         const query = create(wire.WriteFileRequestSchema, request);
         const access = checkFileAccess(query.access, query.data.byteLength);
         if (query.truncate && access.offset !== 0n) throw new RangeError("file truncation requires offset zero");
-        const result = await machines.writeFile(query, fileOptions(access, callOptions));
+        const result = await fileCompletion(signal => machines.writeFile(oneChunk(query), { ...fileOptions(access, callOptions), signal }), callOptions?.signal);
         checkFileResult(access, result);
         if (result.result.case === "written") {
           if (result.result.value > query.data.byteLength) throw new ConnectError("file write exceeds supplied chunk", Code.DataLoss);
@@ -85,6 +85,19 @@ export function createMachinesClient(transport: Transport) {
       },
     },
   };
+}
+
+async function* oneChunk<T>(value: T): AsyncIterable<T> { yield value; }
+
+// A native chunk has one completion. Finish on that receipt rather than waiting
+// for EOF; cancellation also interrupts a pending read and closes the request.
+async function fileCompletion<T>(open: (signal: AbortSignal) => AsyncIterable<T>, parent?: AbortSignal): Promise<T> {
+  const output = ownedStream(open, parent, () => true);
+  try {
+    const result = await output.next();
+    if (result.done) throw new ConnectError("file stream ended without native completion", Code.DataLoss);
+    return result.value;
+  } finally { await output.return(); }
 }
 
 // Transport pulls only the current frame. Argument boundaries and process stdin

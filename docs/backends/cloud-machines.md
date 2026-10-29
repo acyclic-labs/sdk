@@ -28,7 +28,11 @@ refuses omitted-image creation before changing its state.
 `MachinesHost` creates and inspects machines, dispatches streamed exec, reads and
 writes guest files, suspends and deletes machines. Native `ReadFile`/`WriteFile`
 carry exact binary chunks, an absolute guest path and offset, and one absolute
-deadline. Replies preserve short IO and POSIX errno. A write can be partial after
+deadline. Both canonical RPCs are bidirectional chunk streams: one native receipt
+per requested chunk, with the first path/machine/deadline binding the session.
+Generated service clients can retain a stream across chunks; the harness's scalar
+file primitive sends one chunk and completes on its receipt without waiting for EOF.
+Replies preserve short IO and POSIX errno. A write can be partial after
 interruption and is never automatically repeated. Suspend preserves the machine and is distinct
 from deletion; there is no separate public stop RPC.
 

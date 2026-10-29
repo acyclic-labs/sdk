@@ -76,21 +76,33 @@ test("native binary file IO preserves ranges, short writes, errno and original i
   const access = { machine, path: "/workspace/$(literal) ' file", offset: 9007199254740993n, deadlineUnixMs: BigInt(Date.now() + 60000) };
   const data = new Uint8Array([0, 255, 10]);
   const calls = [];
+  const cancelled = Promise.withResolvers();
   const { machines } = await fixture(t, {
-    readFile(query, context) {
+    async *readFile(input, context) {
       authenticate(context);
-      calls.push("read");
-      assert.deepEqual(query.access, create(wire.FileAccessSchema, access));
-      if (query.limit === 1) return { machine, offset: access.offset, result: { case: "errno", value: 13 } };
-      if (query.limit === 2) return { machine: identity(99), offset: access.offset, result: { case: "data", value: data } };
-      return { machine, offset: access.offset, result: { case: "data", value: data } };
+      for await (const query of input) {
+        calls.push("read");
+        assert.deepEqual(query.access, create(wire.FileAccessSchema, access));
+        if (query.limit === 4) return;
+        if (query.limit === 5) {
+          context.signal.addEventListener("abort", cancelled.resolve, { once: true });
+          yield { machine, offset: access.offset, result: { case: "data", value: data } };
+          await cancelled.promise;
+          return;
+        }
+        if (query.limit === 1) yield { machine, offset: access.offset, result: { case: "errno", value: 13 } };
+        else if (query.limit === 2) yield { machine: identity(99), offset: access.offset, result: { case: "data", value: data } };
+        else yield { machine, offset: access.offset, result: { case: "data", value: data } };
+      }
     },
-    writeFile(query, context) {
+    async *writeFile(input, context) {
       authenticate(context);
-      calls.push("write");
-      assert.deepEqual(query.data, data);
-      if (query.truncate) throw new ConnectError("completion lost", Code.Unavailable);
-      return { machine, offset: query.access.offset, result: { case: "written", value: 2 } };
+      for await (const query of input) {
+        calls.push("write");
+        assert.deepEqual(query.data, data);
+        if (query.truncate) throw new ConnectError("completion lost", Code.Unavailable);
+        yield { machine, offset: query.access.offset, result: { case: "written", value: 2 } };
+      }
     },
   });
   const read = await machines.readFile({ protocol, access, limit: 3 });
@@ -98,6 +110,9 @@ test("native binary file IO preserves ranges, short writes, errno and original i
   assert.deepEqual((await machines.readFile({ protocol, access, limit: 1 })).result, { case: "errno", value: 13 });
   assert.deepEqual((await machines.writeFile({ protocol, access, data })).result, { case: "written", value: 2 });
   await assert.rejects(machines.readFile({ protocol, access, limit: 2 }), error => error.code === Code.DataLoss);
+  await assert.rejects(machines.readFile({ protocol, access, limit: 4 }), error => error.code === Code.DataLoss);
+  assert.deepEqual((await machines.readFile({ protocol, access, limit: 5 })).result, { case: "data", value: data });
+  await cancelled.promise;
   const dispatched = calls.length;
   for (const invalid of [
     { ...access, path: "relative" }, { ...access, path: "/a\0b" },
