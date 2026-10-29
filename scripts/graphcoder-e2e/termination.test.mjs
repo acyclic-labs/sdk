@@ -88,7 +88,8 @@ test("selected owner exit cannot discard its already written acknowledgement", {
 });
 
 test("a dropped report request cannot acknowledge and concurrent close joins the same physical owner", { skip: process.platform === "win32" }, async () => {
-  const scope = new Processes();
+  const transitions = [];
+  const scope = new Processes({ onReport: transition => transitions.push(transition) });
   const running = launch(scope, false, "live");
   try {
     await ready(running);
@@ -102,8 +103,31 @@ test("a dropped report request cannot acknowledge and concurrent close joins the
     assert.equal(requests, 1, "only the admitted request can be sent");
     assert.equal(result.termination.report_outcome, "unacknowledged");
     assert.equal(result.termination.report_cause, "original-drain-deadline");
+    assert.deepEqual(transitions.map(transition => transition.outcome), ["requested", "unacknowledged"]);
+    for (const transition of transitions) {
+      assert.equal(transition.request_id, result.termination.request_id);
+      assert.equal(transition.generation, result.termination.generation);
+    }
     assert.equal(scope.children.size, 0);
   } finally { await scope.close(); }
+});
+
+test("a report transition observer failure is returned only after physical retirement", { skip: process.platform === "win32" }, async () => {
+  const failure = new Error("deliberately failed report phase observer");
+  const transitions = [];
+  const scope = new Processes({ onReport: transition => { transitions.push(transition); throw failure; } });
+  const running = launch(scope, false, "live");
+  let physicallyClosed = false;
+  running.child.once("close", () => { physicallyClosed = true; });
+  try {
+    await ready(running);
+    await assert.rejects(scope.close(), error => error === failure);
+    const result = await running.closed;
+    assert.equal(physicallyClosed, true);
+    assert.equal(scope.children.size, 0);
+    assert.deepEqual(transitions.map(transition => transition.outcome), ["requested", "report"]);
+    assert.equal(result.termination.report_outcome, "report");
+  } finally { await scope.close().catch(() => {}); }
 });
 
 test("a caller IO error cannot substitute for the selected process completion event", { skip: process.platform === "win32" }, async () => {
