@@ -224,30 +224,25 @@ impl<P: StreamProvider + ?Sized> Driver<P> {
                     if !access.check().await {
                         return Err(StreamError::Unavailable);
                     }
-                    let head = provider.head(path.clone()).await?;
+                    let head = provider.head(path.clone()).await;
                     if !access.check().await {
                         return Err(StreamError::Unavailable);
                     }
+                    let head = head?;
                     let records = provider
                         .follow(acyclic_stream::FollowRequest {
                             preceding: anchor,
                             ..acyclic_stream::FollowRequest::new(path.clone(), from)
                         })
                         .await
-                        .map(acyclic_stream::records_only)?;
-                    Ok((head, records))
+                        .map(acyclic_stream::records_only);
+                    if !access.check().await {
+                        return Err(StreamError::Unavailable);
+                    }
+                    records.map(|records| (head, records))
                 }
                 .await;
-                Some((
-                    path,
-                    from,
-                    observed,
-                    if opened.is_ok() && !access.check().await {
-                        Err(StreamError::Unavailable)
-                    } else {
-                        opened
-                    },
-                ))
+                Some((path, from, observed, opened))
             };
             self.opening.push(Box::pin(async move {
                 Abortable::new(open, registration).await.ok().flatten()
