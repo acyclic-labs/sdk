@@ -230,7 +230,7 @@ impl<T> OwnershipReleaseBarrier<T> {
 
     /// Awaits final payload and fence retirement without blocking an executor.
     /// Dropping this future removes its notification registration.
-    pub async fn wait_async(self) {
+    pub async fn released(self) {
         loop {
             let changed = self.released.asynchronous.notified();
             tokio::pin!(changed);

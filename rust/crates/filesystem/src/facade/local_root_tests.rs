@@ -68,7 +68,7 @@ async fn failed_initialization_can_retry_with_the_same_retained_owner()
     .await??;
     let released = fs.local_root_release_barrier().ok_or("missing lifecycle")?;
     drop(fs);
-    tokio::time::timeout(std::time::Duration::from_secs(2), released.wait_async()).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(2), released.released()).await?;
     assert!(root.exists(), "the retained caller still owns the root");
     drop(retained);
     assert!(

@@ -212,7 +212,7 @@ async fn release_waits_for_actual_payload_and_fence_cleanup_and_survives_waiter_
     let (fence, fence_entered, finish_fence) = held();
     let anchor = OwnershipAnchor::new(owner);
     let observed = anchor.release_barrier();
-    let mut cancelled = Box::pin(anchor.release_barrier().wait_async());
+    let mut cancelled = Box::pin(anchor.release_barrier().released());
     assert!(
         cancelled
             .as_mut()
@@ -220,7 +220,7 @@ async fn release_waits_for_actual_payload_and_fence_cleanup_and_survives_waiter_
             .is_pending()
     );
     drop(cancelled);
-    let mut waiting = Box::pin(anchor.release_barrier().wait_async());
+    let mut waiting = Box::pin(anchor.release_barrier().released());
     assert!(
         waiting
             .as_mut()

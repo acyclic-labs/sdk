@@ -402,7 +402,7 @@ async fn check(native: bool, delivery: Delivery) -> TestResult {
         }
         gate.release.notify_one();
     }
-    owner_released.wait_async().await;
+    owner_released.released().await;
     assert_eq!(
         weak.strong_count(),
         0,
@@ -423,7 +423,7 @@ async fn check(native: bool, delivery: Delivery) -> TestResult {
         );
         drop(collector);
     }
-    released.wait_async().await;
+    released.released().await;
     if native {
         assert_eq!(original.live_allocation_bytes(), baseline);
     } else {
