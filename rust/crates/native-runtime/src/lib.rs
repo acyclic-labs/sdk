@@ -60,8 +60,6 @@ pub mod owner_record;
 pub mod private_file;
 /// OS-owned custody for persisted authority signing seeds.
 pub mod signing_key;
-#[cfg(windows)]
-pub use file::device_control_in_place;
 #[cfg(unix)]
 pub use file::read_declared_source_bytes;
 #[cfg(not(any(windows, target_os = "linux")))]
@@ -74,6 +72,8 @@ pub use file::{
 };
 #[cfg(any(windows, target_os = "linux", target_vendor = "apple"))]
 pub(crate) use file::{FileIdentity, file_identity};
+#[cfg(windows)]
+pub use file::{NativeControlCompletion, device_control_in_place};
 pub(crate) use file::{
     NativeFilePayload, is_uncertain_io_error, validate_prepared_read_range, validate_write_batch,
     with_file_admission, with_file_scope, write_bounded_in_place,

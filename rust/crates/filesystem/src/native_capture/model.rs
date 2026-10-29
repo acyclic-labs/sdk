@@ -74,8 +74,8 @@ pub struct CaptureOptions {
     pub expected_root_identity: NativeRootIdentity,
     /// Maximum changed paths admitted in one atomic transaction.
     pub maximum_paths: Option<u32>,
-    /// Maximum physically allocated host ranges admitted per regular file.
-    pub maximum_extent_spans: u32,
+    /// Optional caller policy for physically allocated host ranges per regular file.
+    pub maximum_extent_spans: Option<u32>,
 }
 
 /// Canonical path eligibility for native capture.
