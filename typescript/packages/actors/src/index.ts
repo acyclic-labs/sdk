@@ -4,6 +4,7 @@ export * as semantic from "./generated/semantic/actors/readonly.js";
 export * from "./client.js";
 export * from "./guest.js";
 export { GuestActivation } from "./guest-host.js";
+export { openGuestResponse, type GuestResponseFrame } from "./fetch-response.js";
 export { performanceObserver, type AcyclicObserver, type OperationEvent } from "./observe.js";
 export { credentialProvider, type CredentialProvider, type CredentialOptions } from "./credential.js";
 

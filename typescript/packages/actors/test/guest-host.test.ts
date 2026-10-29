@@ -3,6 +3,11 @@ import { Buffer } from "node:buffer";
 import { GuestActivation } from "../src/guest-host.js";
 import { defineActor, GUEST_ABI_VERSION, type GuestContext } from "../src/guest.js";
 
+async function json(response: Awaited<ReturnType<GuestActivation<unknown, unknown>["fetch"]>>) {
+  if (!(response instanceof Response)) throw new Error("expected buffered response");
+  return response.json();
+}
+
 test.each(["Uint8Array", "Buffer"])("typed guests preserve original contexts, quiesced checkpoint cuts and terminal failure (%s)", async backing => {
   const bytes = (value: number[]) => backing === "Buffer" ? Buffer.from(value) : new Uint8Array(value);
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
@@ -51,7 +56,7 @@ test.each(["Uint8Array", "Buffer"])("typed guests preserve original contexts, qu
   const capture = activation.checkpoint();
   const next = activation.fetch(new Request("https://example.test/next"), { ...context, deliveryId: "next" });
   release.resolve();
-  expect(await (await held).json()).toEqual({ count: 8, delivery: "held" });
+  expect(await json(await held)).toEqual({ count: 8, delivery: "held" });
   await capturing.promise;
   expect(nextCalls).toBe(0);
   publish.resolve();
@@ -61,7 +66,7 @@ test.each(["Uint8Array", "Buffer"])("typed guests preserve original contexts, qu
   expect(checkpoint.bytes).toEqual(new Uint8Array([8]));
   checkpoint.bytes[0] = 88;
   expect(capturedSource![0]).toBe(77);
-  expect(await (await next).json()).toEqual({ count: 9, delivery: "next" });
+  expect(await json(await next)).toEqual({ count: 9, delivery: "next" });
   expect(restores).toBe(1);
   expect(() => activation.fetch(new Request("https://example.test/"), {
     ...context, actor: { ...context.actor, id: "other" },
@@ -74,5 +79,5 @@ test.each(["Uint8Array", "Buffer"])("typed guests preserve original contexts, qu
   const nested = new GuestActivation(actor, null, context);
   await expect(nested.fetch(new Request("https://example.test/nested"), context)).rejects.toThrow("nested guest state");
   const fresh = new GuestActivation(actor, null, context);
-  expect(await (await fresh.fetch(new Request("https://example.test/next"), context)).json()).toEqual({ count: 1, delivery: null });
+  expect(await json(await fresh.fetch(new Request("https://example.test/next"), context))).toEqual({ count: 1, delivery: null });
 });

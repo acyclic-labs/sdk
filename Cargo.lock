@@ -33,6 +33,7 @@ dependencies = [
  "futures",
  "http",
  "http-body",
+ "http-body-util",
  "loom",
  "proptest",
  "prost",

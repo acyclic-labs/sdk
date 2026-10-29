@@ -191,7 +191,7 @@ pub struct ActorDefinition<State, Bindings> {
     ) -> GuestFuture<'a, Checkpoint>,
     /// HTTP entry, using the fetch member of the single event union.
     #[ts(
-        type = "(state: GuestState<State>, request: Request, context: GuestContext<Bindings>) => Response | Promise<Response>"
+        type = "(state: GuestState<State>, request: Request, context: GuestContext<Bindings>) => GuestFetchResponse | Promise<GuestFetchResponse>"
     )]
     pub fetch: for<'a> fn(
         &'a GuestState<State>,

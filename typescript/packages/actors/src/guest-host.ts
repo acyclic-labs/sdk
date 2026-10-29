@@ -2,7 +2,7 @@
 import { ActorReference } from "@acyclic-labs/auth/addressing";
 import { ActorActivation } from "./durable.js";
 import { GUEST_ABI_VERSION } from "./generated/guest.js";
-import type { ActorDefinition, ActorRuntime, Checkpoint, GuestContext, GuestEvent, GuestEventResult, GuestState } from "./generated/guest.js";
+import type { ActorDefinition, ActorRuntime, Checkpoint, GuestContext, GuestFetchResponse, GuestEvent, GuestEventResult, GuestState } from "./generated/guest.js";
 
 const encoder = new TextEncoder();
 let mutating = false;
@@ -63,7 +63,7 @@ export class GuestActivation<State, Bindings> {
     this.#admit(context);
     return this.#activation.deliver(state => this.#definition.event(state, event, context));
   }
-  fetch(request: Request, context: GuestContext<Bindings>): Promise<Response> {
+  fetch(request: Request, context: GuestContext<Bindings>): Promise<GuestFetchResponse> {
     this.#admit(context);
     return this.#activation.deliver(state => this.#definition.fetch(state, request, context));
   }
