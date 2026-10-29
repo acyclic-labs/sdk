@@ -66,7 +66,7 @@ impl Client {
             .reply(
                 Kind::Heads(wire_codec::heads_request_to_wire(request.clone())),
                 credential,
-                wire_codec::session::MAX_ACTOR_CALL_REPLY_BYTES,
+                None,
             )
             .await?;
         let view = wire_codec::heads_from_response(

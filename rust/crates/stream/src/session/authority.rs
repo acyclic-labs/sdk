@@ -524,7 +524,7 @@ impl Authority {
             let authorization = visibility.authorization.clone();
             (binding, authorization, Some(visibility))
         } else {
-            let (revision, _, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
+            let (revision, credential) = slots.entries.get(&slot).ok_or(Rejection::Forbidden)?;
             let capability = credential.as_ref().map_err(|error| *error)?;
             let primary = request
                 .paths
