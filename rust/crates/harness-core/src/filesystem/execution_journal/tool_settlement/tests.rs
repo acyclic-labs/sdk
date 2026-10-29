@@ -76,7 +76,6 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
                     volume: &journal.volume,
                     verifier: &journal.verifier,
                     scope: &journal.scope,
-                    maximum_bytes: journal.maximum_payload_bytes,
                     io: None,
                 },
             )?;
