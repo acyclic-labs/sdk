@@ -6,11 +6,11 @@
     {"when": {"user": "after clear"}, "text": ["CLEAR_E2E_FRESH_REPLY"]}
   ]},
   "inputs": [{"mode": "pty", "actions": [
-    {"when": {"contains": ["graphcoder"], "cursor": true}, "prompt": "before clear"},
-    {"when": {"contains": ["CLEAR_E2E_PRIVATE_REPLY", "Enter sends"]}, "prompt": "/clearall "},
-    {"when": {"contains": ["Clear all conversations? Enter yes or no.", "Enter sends"]}, "prompt": "yes"},
-    {"when": {"contains": ["graphcoder", "Enter sends"], "absent": ["CLEAR_E2E_PRIVATE_REPLY", "Enter yes or no."]}, "prompt": "after clear"},
-    {"when": {"contains": ["CLEAR_E2E_FRESH_REPLY", "Enter sends"], "absent": ["CLEAR_E2E_PRIVATE_REPLY"]}, "send": "\u0004"}
+    {"when": {"contains": ["GraphCoder"], "cursor": true}, "prompt": "before clear"},
+    {"when": {"contains": ["CLEAR_E2E_PRIVATE_REPLY", "○"]}, "prompt": "/clearall "},
+    {"when": {"contains": ["Clear all conversations? Enter yes or no.", "○"]}, "prompt": "yes"},
+    {"when": {"contains": ["GraphCoder", "○"], "absent": ["CLEAR_E2E_PRIVATE_REPLY", "Enter yes or no."]}, "prompt": "after clear"},
+    {"when": {"contains": ["CLEAR_E2E_FRESH_REPLY", "○"], "absent": ["CLEAR_E2E_PRIVATE_REPLY"]}, "send": "\u0004"}
   ]}],
   "assert": {"requests": 2}
 }

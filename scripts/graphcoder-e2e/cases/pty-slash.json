@@ -23,7 +23,7 @@
         {
           "when": {
             "contains": [
-              "graphcoder"
+              "GraphCoder"
             ],
             "cursor": true
           },
@@ -33,7 +33,7 @@
           "when": {
             "contains": [
               "SLASH_RENDERED",
-              "Enter sends"
+              "\u25cb"
             ]
           },
           "send": "\u0004"

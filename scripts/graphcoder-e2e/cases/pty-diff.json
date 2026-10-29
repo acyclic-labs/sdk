@@ -36,7 +36,7 @@
         {
           "when": {
             "contains": [
-              "graphcoder"
+              "GraphCoder"
             ],
             "cursor": true
           },
@@ -46,7 +46,7 @@
           "when": {
             "contains": [
               "DONE_EDIT",
-              "Enter sends"
+              "○"
             ]
           },
           "prompt": "/diff "
@@ -68,7 +68,7 @@
           "when": {
             "cursor": true,
             "contains": [
-              "graphcoder",
+              "GraphCoder",
               "DONE_EDIT",
               "diff.txt (added) +1 -0",
               "+DIFF_E2E_CONTENT"

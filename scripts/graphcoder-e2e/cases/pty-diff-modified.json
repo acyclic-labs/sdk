@@ -38,7 +38,7 @@
         {
           "when": {
             "contains": [
-              "graphcoder"
+              "GraphCoder"
             ],
             "cursor": true
           },
@@ -48,7 +48,7 @@
           "when": {
             "contains": [
               "DONE_EDIT",
-              "Enter sends"
+              "○"
             ]
           },
           "prompt": "/diff "

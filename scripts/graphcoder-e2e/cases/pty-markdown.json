@@ -21,7 +21,7 @@
         {
           "when": {
             "contains": [
-              "graphcoder"
+              "GraphCoder"
             ],
             "cursor": true
           },
@@ -31,7 +31,7 @@
           "when": {
             "contains": [
               "test answer",
-              "Enter sends"
+              "\u25cb"
             ],
             "bold": "test answer",
             "absent": [
