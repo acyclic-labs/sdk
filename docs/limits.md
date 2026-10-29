@@ -1283,3 +1283,8 @@ Canonical descriptor and Stream contract generation passed on `dabc96ee038356b37
 | Constant or policy | File:line | Category | Action |
 |---|---|---|---|
 | Source completion/cancellation signal ownership | `rust/crates/filesystem/src/native_mount/adapter/mod.rs:60`; `source_factory.rs:45`; `source_io.rs:193` | 3 retained event backpressure | Consolidate the gate/Condvar into one shared signal, retaining its exact Arc-layout allocation and namespace funding until the last producer/waker drops. Reuse that signal as the cancellation waker, eliminating its separate adapter allocation. Optional waits allocate only the original-funded cancellation node; physical waits allocate nothing. Completion still follows original accepted producer/alias custody retirement. Existing event controls assert actual per-wait allocation counts; selected finite and root-cancellation negatives remain. Compilation pending. |
+
+
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
+| Cron schedule256-byte refusal | `rust/crates/manifest/src/cron.rs:30` | 1 deleted | Read the fixed five-field grammar from a borrowed iterator rather than collect arbitrary field counts. Keep ASCII punctuation/digit grammar, exact field arity, actual numeric ranges/steps, and calendar/weekday semantics. Valid long lists no longer refuse. Existing shared-grant scaling property now uses schedules past256 bytes. Zero parser allocations, formerly one vector allocation for every candidate; zero syscalls, barriers, RPCs or new locks. Compilation pending. |
