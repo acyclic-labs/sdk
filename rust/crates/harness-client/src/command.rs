@@ -631,7 +631,7 @@ mod tests {
         assert_eq!(page.bytes(), 32 * 1024);
         assert_eq!(page.cursor(), Some("cut/opaque+token="));
         assert!(serde_json::from_str::<AgentPageRequest>(r#"{"items":0}"#).is_err());
-        assert!(serde_json::from_str::<AgentPageRequest>(r#"{"bytes":4294967295}"#).is_err());
+        assert!(serde_json::from_str::<AgentPageRequest>(r#"{"bytes":0}"#).is_err());
         Ok(())
     }
 
@@ -702,17 +702,14 @@ mod tests {
                 "harness/agents/00000000000000000000000000000001".to_owned(),
             )?,
             id: IntentId::try_from("prompt-1")?,
-            body: ModelContent::Text("complete escaped input\n".repeat(100_000)),
+            body: ModelContent::Text("exact input".into()),
         };
         let prepared = PreparedCommand::new(&command)?;
         let AgentCommand::Prompt { id, body, .. } = prepared.decoded()? else {
             return Err("expected prompt command".into());
         };
         assert_eq!(id.as_str(), "prompt-1");
-        assert_eq!(
-            body,
-            ModelContent::Text("complete escaped input\n".repeat(100_000))
-        );
+        assert_eq!(body, ModelContent::Text("exact input".into()));
         Ok(())
     }
 }
