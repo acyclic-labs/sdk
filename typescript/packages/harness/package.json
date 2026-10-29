@@ -61,6 +61,9 @@
     "generate": "bun ../../../scripts/generate.mjs harness",
     "prepack": "bun run generate"
   },
+  "dependencies": {
+    "@acyclic-labs/machines": "0.2.0"
+  },
   "peerDependencies": {
     "react": "^19.0.0"
   },
