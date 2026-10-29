@@ -5,7 +5,7 @@ use super::{
     Connection,
     agent_conversation::Conversation,
     storage,
-    tool_output::{CHUNK_BYTES, OutputTail},
+    tool_output::{OutputTail, read_newest},
 };
 use crate::{
     Result,
@@ -209,20 +209,22 @@ impl Observer {
         else {
             return Ok(());
         };
-        let mut bytes = Vec::with_capacity(plan.reads.len());
-        for (path, _) in &plan.reads {
-            bytes.push(
-                Conversation::read(
-                    &self.connection,
-                    &self.agent,
-                    ReadTarget::ToolOutput { path: path.clone() },
-                    CHUNK_BYTES as u64,
-                )
-                .await?,
-            );
-        }
-        self.tail.apply(plan, bytes);
+        // Only the displayed tail is read, in bounded ranges, however large
+        // the announced files are.
+        let (connection, agent) = (&self.connection, &self.agent);
+        let (bytes, cut) = read_newest(&plan.reads, |path, offset| {
+            Conversation::read_at(connection, agent, ReadTarget::ToolOutput { path }, offset)
+        })
+        .await?;
+        self.tail.apply(plan, bytes, cut);
         Ok(())
+    }
+
+    /// The next conversation sequence not yet observed: every entry before
+    /// it was returned as [`Event::Turn`].
+    #[must_use]
+    pub const fn seen(&self) -> u64 {
+        self.next_turn
     }
 
     /// The newest call's output, its last 16 KiB at most.

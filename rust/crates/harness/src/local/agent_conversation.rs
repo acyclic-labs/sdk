@@ -246,14 +246,8 @@ impl Conversation {
     ) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         loop {
-            let reply = connection
-                .execute(&AgentCommand::Read {
-                    agent: agent.clone(),
-                    target: target.clone(),
-                    offset: bytes.len() as u64,
-                })
-                .await?;
-            let (range, length) = reply.content().map_err(failed)?;
+            let (range, length) =
+                Self::read_at(connection, agent, target.clone(), bytes.len() as u64).await?;
             if length > maximum {
                 return Err(Error::Invalid("read file exceeds its limit".into()));
             }
@@ -263,6 +257,24 @@ impl Conversation {
                 return Ok(bytes);
             }
         }
+    }
+
+    /// One bounded range of `target` on `agent` from `offset`, and the
+    /// target's whole length.
+    pub(super) async fn read_at(
+        connection: &Connection,
+        agent: &AgentPath,
+        target: ReadTarget,
+        offset: u64,
+    ) -> Result<(Vec<u8>, u64)> {
+        let reply = connection
+            .execute(&AgentCommand::Read {
+                agent: agent.clone(),
+                target,
+                offset,
+            })
+            .await?;
+        reply.content().map_err(failed)
     }
 
     /// The text of a staged prompt or turn output.
