@@ -22,11 +22,9 @@ pub fn sync_file(
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return crate::persistence_syscall(|| {
-        testing::durable_operation("file:sync", || sync_file_impl(file, durability, meter))
-    });
+    return testing::durable_operation("file:sync", || sync_file_impl(file, durability, meter));
     #[cfg(not(feature = "test-support"))]
-    crate::persistence_syscall(|| sync_file_impl(file, durability, meter))
+    sync_file_impl(file, durability, meter)
 }
 
 fn sync_file_impl(
@@ -40,9 +38,11 @@ fn sync_file_impl(
             return barrier_sync(file);
         }
         #[cfg(target_vendor = "apple")]
-        return apple::sync_once(file, durability, || {
-            meter.check()?;
-            meter.admit_durability()
+        return crate::persistence_syscall(|| {
+            apple::sync_once(file, durability, || {
+                meter.check()?;
+                meter.admit_durability()
+            })
         })
         .and_then(|()| meter.check());
         #[cfg(any(windows, target_os = "linux"))]
@@ -51,7 +51,7 @@ fn sync_file_impl(
         loop {
             meter.check()?;
             meter.admit_durability()?;
-            let result = sync_file_unsequenced(file, durability);
+            let result = crate::persistence_syscall(|| sync_file_unsequenced(file, durability));
             match result {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 result => return result.and_then(|()| meter.check()),
@@ -66,7 +66,7 @@ fn sync_file_impl(
     );
     operation.in_scope(|| {
         operation.finish(with_file_admission(file, || {
-            sync_file_unsequenced(file, durability)
+            crate::persistence_syscall(|| sync_file_unsequenced(file, durability))
         }))
     })
 }
@@ -89,7 +89,7 @@ fn sync_full(file: &File, meter: Option<&dyn NativeReadMeter>) -> io::Result<()>
             use std::os::windows::io::AsHandle as _;
             file.as_handle()
         };
-        match sync_descriptor_once(descriptor) {
+        match crate::persistence_syscall(|| sync_descriptor_once(descriptor)) {
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
             result => {
                 return result.and_then(|()| match meter {
@@ -119,11 +119,9 @@ pub(crate) fn sync_file_unsequenced(file: &File, durability: Durability) -> io::
 /// Flushes file data according to `durability`.
 pub fn sync_data(file: &File, durability: Durability) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return crate::persistence_syscall(|| {
-        testing::durable_operation("file:sync_data", || sync_data_impl(file, durability))
-    });
+    return testing::durable_operation("file:sync_data", || sync_data_impl(file, durability));
     #[cfg(not(feature = "test-support"))]
-    crate::persistence_syscall(|| sync_data_impl(file, durability))
+    sync_data_impl(file, durability)
 }
 
 fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
@@ -135,18 +133,20 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
     );
     operation.in_scope(|| {
         operation.finish(with_file_admission(file, || {
-            #[cfg(target_vendor = "apple")]
-            return apple::sync_once(file, durability, || Ok(()));
-            #[cfg(not(target_vendor = "apple"))]
-            match durability {
-                Durability::Full => {
-                    #[cfg(windows)]
-                    return sync_file_unsequenced(file, durability);
-                    #[cfg(not(windows))]
-                    file.sync_data()
+            crate::persistence_syscall(|| {
+                #[cfg(target_vendor = "apple")]
+                return apple::sync_once(file, durability, || Ok(()));
+                #[cfg(not(target_vendor = "apple"))]
+                match durability {
+                    Durability::Full => {
+                        #[cfg(windows)]
+                        return sync_file_unsequenced(file, durability);
+                        #[cfg(not(windows))]
+                        file.sync_data()
+                    }
+                    Durability::Barrier => barrier_sync(file),
                 }
-                Durability::Barrier => barrier_sync(file),
-            }
+            })
         }))
     })
 }

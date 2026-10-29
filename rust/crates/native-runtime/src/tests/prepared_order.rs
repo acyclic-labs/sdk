@@ -48,16 +48,41 @@ fn waits_for_predecessor(
     let predecessor = Arc::new(OperationFence::default());
     *file.health.tail.lock().map_err(|_| io::ErrorKind::Other)? = Some(predecessor.clone());
     let (entered, events) = mpsc::channel();
-    let subscriber = tracing_subscriber::registry().with(Waiting(entered.clone()));
+    let report = crate::obs::WaitReport::default();
+    let subscriber = tracing_subscriber::registry()
+        .with(report.clone())
+        .with(Waiting(entered.clone()));
     let previous = predecessor.clone();
     let worker = std::thread::spawn(move || {
-        tracing::subscriber::with_default(subscriber, || run(file, previous, entered))
+        tracing::subscriber::with_default(subscriber, || {
+            crate::coordination_runtime()?.block_on(async {
+                crate::spawn_persistence("native-file", "borrowed", &1, move || {
+                    run(file, previous, entered)
+                })
+                .await?
+            })
+        })
     });
     // Both the correct waiter and the broken early executor send an event.
     // Release the predecessor and join before asserting, including the mutant.
     let first = events.recv();
+    let mut observation = Vec::new();
+    let reported = report.report(&mut observation);
     predecessor.complete();
     let was_complete = worker.join().map_err(|_| io::ErrorKind::Other)??;
+    reported?;
+    let observation = String::from_utf8(observation).map_err(io::Error::other)?;
+    assert!(
+        observation.contains("stage=file-predecessor"),
+        "{observation}"
+    );
+    assert!(
+        observation.contains(&format!(
+            "predecessor={:#x}",
+            Arc::as_ptr(&predecessor) as usize
+        )),
+        "{observation}"
+    );
     assert_eq!(
         first.map_err(io::Error::other)?,
         Entered::Waiting,

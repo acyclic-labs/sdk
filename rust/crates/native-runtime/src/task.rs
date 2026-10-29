@@ -40,70 +40,105 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let waiting = crate::obs::waiting(
-        "persistence-completion",
-        format_args!("{medium}/{operation}/{key}"),
-        std::future::pending::<()>(),
-    );
-    let progress = waiting.context().clone();
-    let completion = if PERSISTENCE_JOB.with(|job| job.borrow().is_some()) {
+    let task = if PERSISTENCE_JOB.with(|job| job.borrow().is_some()) {
         Err(std::io::Error::from(std::io::ErrorKind::WouldBlock))
     } else {
-        progress.in_scope(|| {
-            crate::task_completion(
-                move || Ok(work()),
-                None,
-                None,
-                None,
-                &crate::workers::PERSISTENCE_WORKERS,
-            )
-        })
+        let waiting = crate::obs::waiting(
+            "persistence-completion",
+            format_args!("{medium}/{operation}/{key}"),
+            std::future::pending::<()>(),
+        );
+        let progress = waiting.context().clone();
+        progress
+            .in_scope(|| {
+                crate::task_completion(
+                    move || Ok(work()),
+                    None,
+                    None,
+                    None,
+                    &crate::workers::PERSISTENCE_WORKERS,
+                )
+            })
+            .map(|completion| {
+                spawn(async move {
+                    let _waiting = waiting;
+                    completion.await
+                })
+            })
     };
-    let task = completion.map(|completion| {
-        spawn(async move {
-            let _waiting = waiting;
-            completion.await
-        })
-    });
     async move { task?.await? }
 }
 
 thread_local! {
-    static PERSISTENCE_JOB: std::cell::RefCell<Option<crate::obs::OperationSpan>> = const { std::cell::RefCell::new(None) };
+    static PERSISTENCE_JOB: std::cell::RefCell<Option<PersistenceJob>> = const { std::cell::RefCell::new(None) };
 }
 
-pub(crate) struct PersistenceTurn(Option<crate::obs::OperationSpan>);
+struct PersistenceJob {
+    progress: crate::obs::OperationSpan,
+    stage: u64,
+    predecessor: u64,
+}
+
+pub(crate) struct PersistenceTurn(Option<Option<PersistenceJob>>);
 
 impl PersistenceTurn {
     pub(crate) fn enter(progress: Option<crate::obs::OperationSpan>) -> Self {
-        Self(PERSISTENCE_JOB.with(|job| job.replace(progress)))
+        Self(progress.map(|progress| {
+            PERSISTENCE_JOB.with(|job| {
+                job.replace(Some(PersistenceJob {
+                    progress,
+                    stage: 2,
+                    predecessor: 0,
+                }))
+            })
+        }))
     }
 }
 
 impl Drop for PersistenceTurn {
     fn drop(&mut self) {
-        PERSISTENCE_JOB.with(|job| job.replace(self.0.take()));
+        if let Some(previous) = self.0.take() {
+            PERSISTENCE_JOB.with(|job| job.replace(previous));
+        }
     }
 }
 
 /// Marks a physical call in the original persistence job, without submitting work.
 pub fn persistence_syscall<T>(call: impl FnOnce() -> T) -> T {
-    struct Running;
-    impl Drop for Running {
+    persistence_stage(3, 0, call)
+}
+
+pub(crate) fn persistence_predecessor<T>(key: usize, wait: impl FnOnce() -> T) -> T {
+    persistence_stage(5, key as u64, wait)
+}
+
+fn persistence_stage<T>(stage: u64, predecessor: u64, call: impl FnOnce() -> T) -> T {
+    struct Restore(Option<(u64, u64)>);
+    impl Drop for Restore {
         fn drop(&mut self) {
             PERSISTENCE_JOB.with(|job| {
-                if let Some(job) = job.borrow().as_ref() {
-                    job.record("stage", 2_u64);
+                if let Some(job) = job.borrow_mut().as_mut()
+                    && let Some((stage, predecessor)) = self.0
+                {
+                    job.stage = stage;
+                    job.predecessor = predecessor;
+                    job.progress.record("predecessor", predecessor);
+                    job.progress.record("stage", stage);
                 }
             });
         }
     }
-    PERSISTENCE_JOB.with(|job| {
-        if let Some(job) = job.borrow().as_ref() {
-            job.record("stage", 3_u64);
-        }
+    let previous = PERSISTENCE_JOB.with(|job| {
+        job.borrow_mut().as_mut().map(|job| {
+            let previous = (job.stage, job.predecessor);
+            job.stage = stage;
+            job.predecessor = predecessor;
+            job.progress.record("predecessor", predecessor);
+            job.progress.record("stage", stage);
+            previous
+        })
     });
-    let _running = Running;
+    let _restore = Restore(previous);
     call()
 }
 
@@ -307,6 +342,23 @@ mod tests {
     #[test]
     fn persistence_reports_the_original_job_and_refuses_same_service_dependencies() {
         use tracing_subscriber::layer::SubscriberExt as _;
+        fn refuses_reentry() {
+            struct RejectedKey;
+            impl std::fmt::Display for RejectedKey {
+                fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    panic!("rejected persistence key was formatted")
+                }
+            }
+            let nested = super::spawn_persistence("local", "nested", &RejectedKey, || {
+                panic!("reentrant persistence body ran")
+            });
+            let mut nested = std::pin::pin!(nested);
+            let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+            assert!(
+                matches!(std::future::Future::poll(nested.as_mut(), &mut context),
+                std::task::Poll::Ready(Err(error)) if error.kind() == std::io::ErrorKind::WouldBlock)
+            );
+        }
         let report = crate::obs::WaitReport::default();
         let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
         let _dispatch = tracing::dispatcher::set_default(&dispatch);
@@ -321,13 +373,15 @@ mod tests {
                 });
                 // The negative control attempts to wait on its own service.
                 // Its body must never enter that service, even with free workers.
-                let nested = super::spawn_persistence("local", "nested", &18, || {
-                    panic!("reentrant persistence body ran")
-                });
-                let mut nested = std::pin::pin!(nested);
+                refuses_reentry();
+                // An inline native adapter retains the same physical owner.
+                let _inline = crate::InlineBlocking::enter();
+                let mut adapter = crate::run_blocking_io(refuses_reentry, None).unwrap();
                 let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-                assert!(matches!(std::future::Future::poll(nested.as_mut(), &mut context),
-                    std::task::Poll::Ready(Err(error)) if error.kind() == std::io::ErrorKind::WouldBlock));
+                assert!(matches!(
+                    std::future::Future::poll(std::pin::Pin::new(&mut adapter), &mut context),
+                    std::task::Poll::Ready(Ok(()))
+                ));
             });
             starting.await.unwrap();
             let mut bytes = Vec::new();

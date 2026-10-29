@@ -116,7 +116,9 @@ fn admitted<T>(
     });
     let predecessor = completion.enqueue(health);
     if let Some(predecessor) = predecessor {
-        predecessor.wait_until_complete();
+        crate::task::persistence_predecessor(Arc::as_ptr(&predecessor) as usize, || {
+            predecessor.wait_until_complete();
+        });
     }
     let result = with_file_scope(Some(health), run);
     completion.complete();

@@ -62,6 +62,7 @@ pub fn waiting<F: Future>(primitive: &'static str, key: impl Display, future: F)
             primitive,
             key = %key,
             stage = 0_u64,
+            predecessor = 0_u64,
             finished = tracing::field::Empty,
         )),
     }

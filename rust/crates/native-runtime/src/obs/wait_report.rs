@@ -22,8 +22,8 @@ use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 /// history or other waits. Reporting visits the live waits once and releases
 /// the registry lock before writing. Keys are opaque operation identities;
 /// callers must never supply prompts or credentials.
-/// Persistence jobs include their creating span as the causal predecessor;
-/// this edge does not assert a dependency on an earlier queue member.
+/// Persistence jobs include their creating span as the causal origin. A file
+/// predecessor identifies the exact native fence currently blocking that job.
 #[derive(Clone, Default)]
 pub struct WaitReport(Arc<Mutex<Chain>>);
 
@@ -37,7 +37,8 @@ struct Node {
     fields: Fields,
     stage: std::sync::atomic::AtomicU64,
     job: u64,
-    predecessor: Option<u64>,
+    origin: Option<u64>,
+    predecessor: std::sync::atomic::AtomicU64,
     started: SystemTime,
     elapsed: Instant,
     links: Mutex<Links>,
@@ -91,7 +92,8 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
             fields,
             stage: std::sync::atomic::AtomicU64::new(0),
             job: id.clone().into_u64(),
-            predecessor: span.parent().map(|parent| parent.id().into_u64()),
+            origin: span.parent().map(|parent| parent.id().into_u64()),
+            predecessor: std::sync::atomic::AtomicU64::new(0),
             started: SystemTime::now(),
             elapsed: Instant::now(),
             links: Mutex::default(),
@@ -122,6 +124,7 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
         struct Finished {
             finished: bool,
             stage: Option<u64>,
+            predecessor: Option<u64>,
         }
         impl Visit for Finished {
             fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
@@ -133,6 +136,8 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
             fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
                 if field.name() == "stage" {
                     self.stage = Some(value);
+                } else if field.name() == "predecessor" {
+                    self.predecessor = Some(value);
                 }
             }
         }
@@ -147,6 +152,13 @@ impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for WaitReport {
         }
         if finished.finished {
             self.retire(id, context);
+        }
+        if let Some(predecessor) = finished.predecessor
+            && let Some(span) = context.span(id)
+            && let Some(SpanWait(node)) = span.extensions().get::<SpanWait>()
+        {
+            node.predecessor
+                .store(predecessor, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
@@ -217,12 +229,15 @@ impl WaitReport {
                     2 => "running",
                     3 => "syscall",
                     4 => "published",
+                    5 => "file-predecessor",
                     _ => "invalid",
                 };
                 write!(
                     output,
-                    " job={} predecessor={:?} stage={stage}",
-                    node.job, node.predecessor
+                    " job={} origin={:?} predecessor={:#x} stage={stage}",
+                    node.job,
+                    node.origin,
+                    node.predecessor.load(std::sync::atomic::Ordering::Relaxed)
                 )?;
             }
             writeln!(
