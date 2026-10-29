@@ -1,5 +1,7 @@
 use super::*;
-use std::{io::Read as _, task::Waker};
+#[cfg(unix)]
+use std::io::Read as _;
+use std::task::Waker;
 use tracing_subscriber::layer::SubscriberExt as _;
 
 fn poll(completion: &mut DiagnosticCompletion) -> Poll<io::Result<()>> {
@@ -146,68 +148,78 @@ fn full_output_does_not_block_cancellation_or_other_producers() -> io::Result<()
         ));
         assert!(retired.load(Ordering::Acquire));
 
-        struct PanicOutput;
-        impl Write for PanicOutput {
-            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
-                panic!("diagnostic output control")
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                panic!("diagnostic output control")
-            }
-        }
-        let failure = report
-            .snapshot()
-            .try_write_to(PanicOutput)?
-            .await
-            .unwrap_err();
-        assert_eq!(
-            failure.get_ref().unwrap().downcast_ref(),
-            Some(&DiagnosticFailure::WriterPanicked)
-        );
-        report.snapshot().try_write_to(io::sink())?.await?;
-
-        struct Counted(Arc<std::sync::atomic::AtomicUsize>);
-        impl Write for Counted {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.0.fetch_add(1, Ordering::Relaxed);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        let (producer, receiver) = tokio::sync::oneshot::channel::<()>();
-        let operation = tracing::dispatcher::with_default(&dispatch, || {
-            crate::obs::waiting("channel-close", "batched-key", receiver)
-        });
-        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        report
-            .snapshot()
-            .write_to(&mut Counted(Arc::clone(&writes)))?;
-        // The original unbuffered formatter fails the one-chunk write oracle.
-        assert!(writes.swap(0, Ordering::Relaxed) > 1);
-        report
-            .snapshot()
-            .try_write_to(Counted(Arc::clone(&writes)))?
-            .await?;
-        assert_eq!(writes.load(Ordering::Relaxed), 1);
-        drop(operation);
-        drop(producer);
-
-        // Dropping the observer does not abandon an accepted physical report.
-        // EOF proves writer retirement, not that admission has been released;
-        // no subsequent submission relies on the detached job's completion.
-        let (output, mut input) = UnixStream::pair()?;
-        let (producer, receiver) = tokio::sync::oneshot::channel::<()>();
-        let operation = tracing::dispatcher::with_default(&dispatch, || {
-            crate::obs::waiting("channel-close", "detached-key", receiver)
-        });
-        drop(report.snapshot().try_write_to(output)?);
-        drop(operation);
-        drop(producer);
-        let mut bytes = String::new();
-        input.read_to_string(&mut bytes)?;
-        assert!(bytes.starts_with("waiting: channel-close detached-key since "));
-        Ok(())
+        writer_failures_and_detached_reports(&report, &dispatch).await
     })
+}
+
+#[cfg(unix)]
+async fn writer_failures_and_detached_reports(
+    report: &super::super::WaitReport,
+    dispatch: &tracing::Dispatch,
+) -> io::Result<()> {
+    use std::os::unix::net::UnixStream;
+
+    struct PanicOutput;
+    impl Write for PanicOutput {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            panic!("diagnostic output control")
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            panic!("diagnostic output control")
+        }
+    }
+    let failure = report
+        .snapshot()
+        .try_write_to(PanicOutput)?
+        .await
+        .unwrap_err();
+    assert_eq!(
+        failure.get_ref().unwrap().downcast_ref(),
+        Some(&DiagnosticFailure::WriterPanicked)
+    );
+    report.snapshot().try_write_to(io::sink())?.await?;
+
+    struct Counted(Arc<std::sync::atomic::AtomicUsize>);
+    impl Write for Counted {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let (producer, receiver) = tokio::sync::oneshot::channel::<()>();
+    let operation = tracing::dispatcher::with_default(dispatch, || {
+        crate::obs::waiting("channel-close", "batched-key", receiver)
+    });
+    let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    report
+        .snapshot()
+        .write_to(&mut Counted(Arc::clone(&writes)))?;
+    // The original unbuffered formatter fails the one-chunk write oracle.
+    assert!(writes.swap(0, Ordering::Relaxed) > 1);
+    report
+        .snapshot()
+        .try_write_to(Counted(Arc::clone(&writes)))?
+        .await?;
+    assert_eq!(writes.load(Ordering::Relaxed), 1);
+    drop(operation);
+    drop(producer);
+
+    // Dropping the observer does not abandon an accepted physical report.
+    // EOF proves writer retirement, not that admission has been released;
+    // no subsequent submission relies on the detached job's completion.
+    let (output, mut input) = UnixStream::pair()?;
+    let (producer, receiver) = tokio::sync::oneshot::channel::<()>();
+    let operation = tracing::dispatcher::with_default(dispatch, || {
+        crate::obs::waiting("channel-close", "detached-key", receiver)
+    });
+    drop(report.snapshot().try_write_to(output)?);
+    drop(operation);
+    drop(producer);
+    let mut bytes = String::new();
+    input.read_to_string(&mut bytes)?;
+    assert!(bytes.starts_with("waiting: channel-close detached-key since "));
+    Ok(())
 }

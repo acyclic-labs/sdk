@@ -26,8 +26,8 @@ fn source(wake: &crate::ProcessWake) -> Source<'_> {
         Source::Readable(wake.as_fd())
     }
     #[cfg(windows)]
-    // SAFETY: the returned source borrows the original wake's owned handle.
     {
+        // SAFETY: the returned source borrows the original wake's owned handle.
         Source::Exit(unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(wake.raw()) })
     }
 }
@@ -62,8 +62,8 @@ fn fatal_wait_error() -> io::Error {
         // SAFETY: plain fields, initialized before being passed as output.
         let mut entry: OVERLAPPED_ENTRY = unsafe { std::mem::zeroed() };
         let mut removed = 0;
-        // SAFETY: valid output storage; the handle deliberately names no port.
         assert_eq!(
+            // SAFETY: valid output storage; the handle deliberately names no port.
             unsafe {
                 GetQueuedCompletionStatusEx(
                     windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE,

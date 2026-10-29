@@ -65,6 +65,12 @@ pub fn shell_command(command: &str, selected: Option<&str>) -> io::Result<Comman
     Ok(shell)
 }
 
+/// Resolves a native host launcher through the shared executable search policy.
+pub fn host_command(program: impl AsRef<std::ffi::OsStr>) -> io::Result<Command> {
+    let cwd = std::env::current_dir()?;
+    ExecutableSearch::from_environment(&cwd, |key| std::env::var_os(key)).command(program)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,10 +116,4 @@ mod tests {
         assert_eq!(args, expected);
         assert!(shell_command("echo x", Some("unknown")).is_err());
     }
-}
-
-/// Resolves a native host launcher through the shared executable search policy.
-pub fn host_command(program: impl AsRef<std::ffi::OsStr>) -> io::Result<Command> {
-    let cwd = std::env::current_dir()?;
-    ExecutableSearch::from_environment(&cwd, |key| std::env::var_os(key)).command(program)
 }

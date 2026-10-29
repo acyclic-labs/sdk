@@ -8,7 +8,6 @@ use std::process::Child;
 use std::process::Command;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, HANDLE, NTSTATUS, RtlNtStatusToDosError,
-    WAIT_TIMEOUT,
 };
 use windows_sys::Win32::Storage::FileSystem::ReadFile;
 use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
@@ -19,7 +18,7 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Pipes::PeekNamedPipe;
 use windows_sys::Win32::System::Threading::{
-    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateEventW, WaitForSingleObject,
+    CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED, CreateEventW,
 };
 
 pub(super) use std::os::windows::io::AsRawHandle as Pipe;
@@ -667,9 +666,7 @@ fn trees_started_from_many_threads_are_created_on_one() -> io::Result<()> {
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null());
                 let mut tree = super::ProcessTree::spawn(&mut command)?;
-                while tree.try_wait(None)?.is_none() {
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
+                tree.wait(std::time::Duration::from_secs(5))?;
                 Ok(std::thread::current().id())
             })
         })
@@ -687,10 +684,11 @@ fn trees_started_from_many_threads_are_created_on_one() -> io::Result<()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     assert!(created.len() >= callers.len(), "{created:?}");
+    let first = created.first().ok_or(io::ErrorKind::NotFound)?;
     assert!(
-        created.iter().all(|thread| *thread == created[0]),
+        created.iter().all(|thread| thread == first),
         "every process is created on one thread: {created:?}"
     );
-    assert!(!callers.contains(&created[0]), "and on none of its callers");
+    assert!(!callers.contains(first), "and on none of its callers");
     Ok(())
 }

@@ -69,8 +69,7 @@ fn write_completion_retires_buffers_before_success_and_errors() {
 fn write_completion_retains_partial_bytes_and_retires_every_batch_owner() {
     let (first, first_dropped) = bytes();
     let (second, second_dropped) = bytes();
-    let (mut state, file, published) =
-        state(vec![first_dropped.clone(), second_dropped.clone()], false);
+    let (mut state, file, published) = state(vec![first_dropped.clone(), second_dropped], false);
     let (written, suffix) = state
         .write_done(
             1,

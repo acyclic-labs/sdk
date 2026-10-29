@@ -208,7 +208,7 @@ fn unix_user_data_directory() -> io::Result<std::path::PathBuf> {
 // Admission must follow every appended component and alias, including the
 // service directory. A persistent account home alone does not establish that
 // its data directory is outside a service-private temporary mount.
-#[cfg(any(test, not(feature = "test-support")))]
+#[cfg(any(all(not(test), not(feature = "test-support")), all(test, unix)))]
 fn credential_directory(data: &Path) -> io::Result<std::path::PathBuf> {
     let root = data.join("acyclic.authority.signing-seed.v1");
     let mut create = fs::DirBuilder::new();
@@ -225,7 +225,7 @@ fn credential_directory(data: &Path) -> io::Result<std::path::PathBuf> {
     Ok(resolved)
 }
 
-#[cfg(any(test, not(feature = "test-support")))]
+#[cfg(any(all(not(test), not(feature = "test-support")), all(test, unix)))]
 fn persistent_user_directory(path: &Path) -> io::Result<&Path> {
     #[cfg(unix)]
     let temporary = ["/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp"]

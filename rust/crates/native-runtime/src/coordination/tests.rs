@@ -55,7 +55,7 @@ fn canonical_placement_and_wakes_never_move_an_actor() -> io::Result<()> {
         producer.send(()).map_err(|()| io::ErrorKind::BrokenPipe)?;
         assert_eq!(task.await??, (original, original));
         // A rotating executor fails the exact same identity oracle.
-        let other = executor(&pool.others[0])
+        let other = executor(pool.others.first().ok_or(io::ErrorKind::NotFound)?)
             .spawn(async { std::thread::current().id() })
             .await?;
         let first = executor(&pool.first)
@@ -95,7 +95,7 @@ fn a_busy_shard_cannot_delay_its_sibling_producer() -> io::Result<()> {
     let pool = Coordination::start(NonZeroUsize::new(2).unwrap())?;
     pool.block_on(sibling_progress(
         executor(&pool.first),
-        executor(&pool.others[0]),
+        executor(pool.others.first().ok_or(io::ErrorKind::NotFound)?),
     ))?;
     // The actual single-current-thread scheduling boundary fails the same
     // progress oracle; the old owner cannot run its sibling producer.
@@ -116,7 +116,7 @@ fn a_busy_shard_cannot_delay_its_sibling_producer() -> io::Result<()> {
 #[test]
 fn delivery_custody_outlives_its_observer_and_producer_loss_is_terminal() -> io::Result<()> {
     let pool = Coordination::start(NonZeroUsize::new(1).unwrap())?;
-    let owner = pool.actor(&"actor").unwrap();
+    let owner = pool.actor(&"actor")?;
     pool.block_on(async {
         let (started, starting) = tokio::sync::oneshot::channel();
         let (release, held) = tokio::sync::oneshot::channel::<()>();
@@ -229,13 +229,13 @@ fn application_lifetime_joins_original_blocked_delivery_after_observer_loss() ->
             finished: Some(finished),
         };
         let submit = async move {
-            executor.spawn(async move {
+            (executor.spawn(async move {
                 let _original = original;
                 let _ = starting.send(());
                 held.recv().map_err(io::Error::other)
-            })
+            }),)
         };
-        let task = if retained {
+        let (task,) = if retained {
             pool.block_on(with_actor_lifetime(alive, submit))
         } else {
             // The former serving-loop owner closes its original lifetime
@@ -281,11 +281,11 @@ fn actor_lifetime_inheritance_is_constant_and_excludes_background_tasks() -> io:
                 });
                 assert_eq!(copied.count_total, count);
             }
-            crate::spawn(async move { held.await })
+            (crate::spawn(held),)
         }));
     });
     assert_eq!(allocation.count_total, 1);
-    let background = pool.block_on(scoped.ok_or(io::ErrorKind::NotFound)?);
+    let (background,) = pool.block_on(scoped.ok_or(io::ErrorKind::NotFound)?);
     assert!(
         lifetime.has_changed().is_err(),
         "a transport cannot retain its own close producer"
@@ -364,10 +364,8 @@ fn nested_actor_submission_retains_the_original_application_producer() -> io::Re
     let child = pool.actor(&"child")?;
     let (alive, mut lifetime) = tokio::sync::watch::channel(());
     let (release, held) = tokio::sync::oneshot::channel::<()>();
-    let task = pool.block_on(with_actor_lifetime(alive, async move {
-        parent
-            .spawn(async move { child.spawn(async move { held.await }) })
-            .await
+    let (task,) = pool.block_on(with_actor_lifetime(alive, async move {
+        parent.spawn(async move { (child.spawn(held),) }).await
     }))?;
     assert!(lifetime.has_changed().is_ok());
     drop(task);

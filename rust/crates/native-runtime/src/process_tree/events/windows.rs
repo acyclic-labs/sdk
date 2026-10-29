@@ -90,6 +90,60 @@ enum Kind {
     Write,
 }
 
+/// The existing pipe payload and its original allocation credit retire together.
+#[derive(Default)]
+struct PipeBuffer {
+    data: Vec<u8>,
+    allocation: Option<crate::ReadAllocation>,
+}
+
+impl PipeBuffer {
+    fn copy_from(
+        &mut self,
+        bytes: &[u8],
+        meter: Option<&Arc<dyn crate::NativeReadMeter>>,
+    ) -> io::Result<()> {
+        if let Some(meter) = meter {
+            let retained = self.allocation.as_ref().is_some_and(|allocation| {
+                Arc::ptr_eq(allocation.meter(), meter)
+                    || meter
+                        .allocation_owner()
+                        .is_some_and(|owner| Arc::ptr_eq(allocation.meter(), &owner))
+            });
+            if !retained {
+                // Admit the new owner before transferring existing capacity.
+                self.allocation = Some(crate::ReadAllocation::adopt(meter, self.data.capacity())?);
+            }
+        } else if self.allocation.is_some() {
+            // An unmetered caller cannot retain the previous caller's credit.
+            // Free the funded payload before releasing that original credit.
+            *self = Self::default();
+        }
+        self.data.clear();
+        if self.data.capacity() < bytes.len() {
+            if let Some(allocation) = &mut self.allocation {
+                allocation.grow(bytes.len() - self.data.capacity())?;
+            }
+            let allocated = self.data.try_reserve_exact(bytes.len());
+            if let Some(allocation) = &mut self.allocation {
+                allocation.reconcile_capacity(self.data.capacity())?;
+            }
+            allocated.map_err(|error| match meter {
+                Some(meter) => meter.allocation_failed(error),
+                None => io::Error::new(io::ErrorKind::OutOfMemory, error),
+            })?;
+        }
+        if let Some(meter) = meter {
+            meter.admit_examination(0, bytes.len() as u64)?;
+        }
+        self.data.extend_from_slice(bytes);
+        if let Some(meter) = meter {
+            meter.record_examination(0, bytes.len() as u64)?;
+        }
+        Ok(())
+    }
+}
+
 /// One pipe's single outstanding overlapped operation.
 ///
 /// While an operation is pending the kernel owns `overlapped` and `buffer`,
@@ -103,7 +157,7 @@ pub(in crate::process_tree) struct PipeOperation {
     kind: Kind,
     pending: AtomicBool,
     token: AtomicU64,
-    buffer: UnsafeCell<Vec<u8>>,
+    buffer: UnsafeCell<PipeBuffer>,
     result: Mutex<Option<io::Result<usize>>>,
     write_reservation: Mutex<Option<crate::NativeByteReservation<Arc<dyn crate::NativeReadMeter>>>>,
 }
@@ -138,7 +192,7 @@ impl PipeOperation {
             kind,
             pending: AtomicBool::new(false),
             token: AtomicU64::new(0),
-            buffer: UnsafeCell::new(Vec::new()),
+            buffer: UnsafeCell::new(PipeBuffer::default()),
             result: Mutex::new(None),
             write_reservation: Mutex::new(None),
         }))
@@ -208,10 +262,12 @@ impl PipeOperation {
         let length = Self::write_length(bytes.len());
         // SAFETY: no operation is pending, so this process owns the buffer.
         let buffer = unsafe { &mut *self.buffer.get() };
-        buffer.clear();
-        buffer.extend_from_slice(bytes.get(..length).unwrap_or(bytes));
-        let pointer = buffer.as_ptr();
-        let length = u32::try_from(buffer.len()).map_err(io::Error::other)?;
+        buffer.copy_from(
+            bytes.get(..length).unwrap_or(bytes),
+            reservation.as_ref().map(|reservation| &reservation.meter),
+        )?;
+        let pointer = buffer.data.as_ptr();
+        let length = u32::try_from(buffer.data.len()).map_err(io::Error::other)?;
         *self
             .write_reservation
             .lock()
@@ -279,7 +335,7 @@ impl PipeOperation {
             return Ok(None);
         }
         // SAFETY: no operation is pending, so this process owns the buffer.
-        let empty = unsafe { (*self.buffer.get()).as_mut_ptr() };
+        let empty = unsafe { (*self.buffer.get()).data.as_mut_ptr() };
         match self.start(|overlapped| {
             // SAFETY: a zero-byte read never touches its buffer, which this
             // operation owns until the read completes; so does the OVERLAPPED.

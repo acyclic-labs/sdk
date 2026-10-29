@@ -73,7 +73,7 @@ fn transferring_signal_ownership_has_constant_cost_without_cloning() -> io::Resu
         assert_eq!(copied.count_total, 1);
         assert_eq!(
             copied.bytes_total,
-            u64::try_from(count * std::mem::size_of::<ProcessWake>()).unwrap()
+            u64::try_from(count * std::mem::size_of::<ProcessWake>()).map_err(io::Error::other)?
         );
     }
     Ok(())

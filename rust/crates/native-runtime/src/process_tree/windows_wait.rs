@@ -1,4 +1,4 @@
-use super::super::capture_wait::pending::{Cleanup, Event};
+use super::super::handle_wait::resources::{Cleanup, Event};
 use std::ffi::c_void;
 use std::io;
 use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};

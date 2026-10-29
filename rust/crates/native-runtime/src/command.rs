@@ -217,13 +217,14 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn native_search_rejects_an_activation_alias_before_a_later_direct_image() {
-        let root = tempfile::tempdir().unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let root = tempfile::tempdir_in(executable.parent().unwrap()).unwrap();
         let first = root.path().join("first");
         let second = root.path().join("second");
         std::fs::create_dir(&first).unwrap();
         std::fs::create_dir(&second).unwrap();
         std::fs::write(first.join("shell.exe"), []).unwrap();
-        std::fs::hard_link(std::env::current_exe().unwrap(), second.join("shell.exe")).unwrap();
+        std::fs::hard_link(executable, second.join("shell.exe")).unwrap();
         let search = ExecutableSearch::new(
             root.path(),
             Some(std::env::join_paths([&first, &second]).unwrap()),

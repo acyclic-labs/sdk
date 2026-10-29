@@ -287,8 +287,14 @@ impl NativeReadMeter for ReadBudgetMeter {
         self.check()?;
         Self::charge(&self.used_bytes, maximum, self.byte_limit).map(|_| ())
     }
-    fn cancel_reserved_bytes(&self, _: NativeOperationKind, maximum: u64) {
+    fn cancel_reserved_bytes(&self, kind: NativeOperationKind, maximum: u64) {
         assert!(self.used_bytes.fetch_sub(maximum, Ordering::AcqRel) >= maximum);
+        #[cfg(windows)]
+        if kind == NativeOperationKind::Write {
+            self.bytes_recorded.lock().unwrap().take();
+        }
+        #[cfg(not(windows))]
+        let _ = kind;
     }
     fn record_reserved_bytes(
         &self,
@@ -310,10 +316,14 @@ impl NativeReadMeter for ReadBudgetMeter {
         );
         self.read.fetch_add(actual, Ordering::AcqRel);
         #[cfg(windows)]
-        if kind == NativeOperationKind::Write {
-            if let Some(recorded) = self.bytes_recorded.lock().unwrap().take() {
-                let _ = recorded.send((maximum, actual));
-            }
+        if kind == NativeOperationKind::Write
+            && let Some(recorded) = self
+                .bytes_recorded
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take()
+        {
+            let _ = recorded.send((maximum, actual));
         }
         if self.cancel_after_read && actual != 0 {
             self.cancelled.store(true, Ordering::Release);
@@ -404,14 +414,16 @@ impl NativeReadMeter for ReadBudgetMeter {
         self.check()?;
         self.record_examination(items, 0)
     }
-    fn admit_examination(&self, items: u64, _: u64) -> io::Result<()> {
+    fn admit_examination(&self, items: u64, copied: u64) -> io::Result<()> {
         self.check()?;
+        self.preflight(&self.copied, copied, u64::MAX)?;
         match self.item_limit {
             Some(limit) => self.preflight(&self.examined_items, items, limit),
             None => Ok(()),
         }
     }
-    fn record_examination(&self, items: u64, _: u64) -> io::Result<()> {
+    fn record_examination(&self, items: u64, copied: u64) -> io::Result<()> {
+        Self::charge(&self.copied, copied, u64::MAX)?;
         match self.item_limit {
             Some(limit) => Self::charge(&self.examined_items, items, limit).map(|_| ()),
             None => Ok(()),

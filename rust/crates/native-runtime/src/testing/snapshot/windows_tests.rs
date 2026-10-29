@@ -2,15 +2,11 @@ use super::*;
 use acyclic_test_support::differential;
 
 // Always release readonly files, including on an assertion or IO failure.
-struct WritableOnDrop(Vec<PathBuf>);
+struct WritableOnDrop(Vec<PathBuf>, std::fs::Permissions);
 impl Drop for WritableOnDrop {
     fn drop(&mut self) {
         for path in &self.0 {
-            if let Ok(metadata) = std::fs::metadata(path) {
-                let mut permissions = metadata.permissions();
-                permissions.set_readonly(false);
-                let _ = std::fs::set_permissions(path, permissions);
-            }
+            let _ = std::fs::set_permissions(path, self.1.clone());
         }
     }
 }
@@ -27,6 +23,7 @@ fn restores_every_readonly_bit_without_reopening_writable_entries() -> io::Resul
                 .into_iter()
                 .flat_map(|root| relative.map(|relative| root.join(relative)))
                 .collect(),
+            std::fs::metadata(temporary.path())?.permissions(),
         );
         std::fs::create_dir_all(source.join("nested"))?;
         std::fs::write(source.join(relative[2]), b"bytes\0\r\n")?;
@@ -133,8 +130,8 @@ fn snapshot_enumeration_preserves_the_image_with_fewer_physical_queries() -> io:
         std::fs::write(root.join(format!("nested/é&%/{index}.bin")), [index; 32])?;
     }
     let readonly = root.join("nested/é&%/7.bin");
-    let _writable = WritableOnDrop(vec![readonly.clone()]);
     let mut permissions = std::fs::metadata(&readonly)?.permissions();
+    let _writable = WritableOnDrop(vec![readonly.clone()], permissions.clone());
     permissions.set_readonly(true);
     std::fs::set_permissions(readonly, permissions)?;
     let expected = legacy_capture(root)?;

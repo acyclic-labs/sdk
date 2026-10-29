@@ -13,6 +13,30 @@ fn event_capture_child() -> io::Result<()> {
     };
     if mode == "callback" {
         println!("CALLBACK_DONE");
+    } else if mode == "member-tree" {
+        let mut member = Command::new(std::env::current_exe()?)
+            .args([
+                "--exact",
+                "process_tree::capture_events_tests::event_capture_child",
+                "--nocapture",
+            ])
+            .env("ACYCLIC_TEST_EVENT_CAPTURE", "member")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let announced = (|| {
+            println!("JOB_PAGE_CHILD={}", member.id());
+            std::io::stdout().flush()?;
+            std::io::stdin().read(&mut [0])
+        })();
+        drop(member.stdin.take());
+        let retired = member.wait();
+        announced?;
+        retired?;
+    } else if mode == "member" {
+        // The owning parent closes this pipe, or its original Job kills us.
+        let _received = std::io::stdin().read(&mut [0])?;
     } else if mode == "metered-write" {
         // The parent deliberately leaves this full pipe undrained until its
         // stdin write is pending and the original caller has cancelled.
@@ -85,7 +109,10 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
     let bytes = [b'w'; 64 * 1024];
     let meter = crate::tests::ReadBudgetMeter::shared(u64::MAX, bytes.len() as u64);
     let (recorded, completion) = std::sync::mpsc::channel();
-    *meter.bytes_recorded.lock().unwrap() = Some(recorded);
+    *meter
+        .bytes_recorded
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(recorded);
     let pipe = process.child.as_mut().unwrap().stdin.as_mut().unwrap();
     // One real unmetered fixture write fills the pipe before the measured
     // write, rather than assuming an empty pipe cannot accept a full chunk.
@@ -106,6 +133,12 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
         "the child must block on its real stderr pipe"
     );
     assert_eq!(meter.used_bytes.load(Ordering::Acquire), bytes.len() as u64);
+    assert_eq!(meter.memory.load(Ordering::Acquire), bytes.len() as u64);
+    let (retired, retirement) = std::sync::mpsc::channel();
+    *meter
+        .memory_retired
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retired);
     assert!(
         meter
             .reserve_bytes(crate::NativeOperationKind::Write, 1)
@@ -124,17 +157,38 @@ fn pending_stdin_keeps_original_credit_and_records_after_cancel_without_another_
         .as_mut()
         .unwrap()
         .read_exact(&mut output)?;
-    let result = completion
-        .recv_timeout(Duration::from_secs(3))
-        .map_err(io::Error::other);
-    process.terminate(None)?;
-    assert_eq!(result?, (bytes.len() as u64, bytes.len() as u64));
+    let result = completion.recv().map_err(io::Error::other);
     assert_eq!(meter.used_bytes.load(Ordering::Acquire), bytes.len() as u64);
     assert!(
         meter.check().is_err(),
         "completion must not revive admission"
     );
+    // The physical operation now owns the only remaining meter references.
+    // Its final payload release signals retirement; dropping that producer
+    // without release closes the channel instead of retaining a test sender.
+    drop(meter);
+    let retired = retirement.recv().map_err(io::Error::other);
+    process.terminate(None)?;
+    assert_eq!(result?, (bytes.len() as u64, bytes.len() as u64));
+    retired?;
     assert!(process.is_reaped());
+
+    let meter = crate::tests::ReadBudgetMeter::shared(u64::MAX, u64::MAX);
+    let (recorded, completion) = std::sync::mpsc::channel();
+    *meter
+        .bytes_recorded
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(recorded);
+    let owner: Arc<dyn crate::NativeReadMeter> = meter;
+    drop(crate::NativeByteReservation::new(
+        owner,
+        crate::NativeOperationKind::Write,
+        bytes.len(),
+    )?);
+    assert!(
+        completion.recv().is_err(),
+        "a dropped credit has no producer"
+    );
     Ok(())
 }
 

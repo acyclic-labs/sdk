@@ -297,7 +297,7 @@ mod tests {
         Ok(())
     }
 
-    /// GraphCoder startup creates custody under a read-only account profile.
+    /// `GraphCoder` startup creates custody under a read-only account profile.
     /// A generated identity opens no lock path; an import of that same seed,
     /// the negative control, still creates its account-namespace lock.
     #[test]

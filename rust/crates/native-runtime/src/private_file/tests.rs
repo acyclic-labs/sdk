@@ -42,9 +42,8 @@ fn credential_identity_requires_a_persistent_account_namespace() -> io::Result<(
     // This is the actual former admission boundary, and its unchanged parent
     // still passes. The full namespace must fail before any credential access.
     assert!(persistent_user_directory(&home).is_ok());
-    let error = match credential_directory(&data) {
-        Ok(_) => return Err(io::Error::other("temporary data alias was admitted")),
-        Err(error) => error,
+    let Err(error) = credential_directory(&data) else {
+        return Err(io::Error::other("temporary data alias was admitted"));
     };
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     assert_eq!(

@@ -1,5 +1,5 @@
 //! Job membership is rechecked after a pinned member exits, never on a timer.
-use super::super::capture_wait::{CaptureWait, pending::Cleanup};
+use super::super::handle_wait::{HandleWait, resources::Cleanup};
 use super::*;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::time::Instant;
@@ -29,7 +29,7 @@ pub(super) fn wait_empty(
             continue;
         };
         if wait.is_none() {
-            wait = Some(CaptureWait::new(meter)?);
+            wait = Some(HandleWait::new(meter)?);
         }
         wait.as_mut()
             .ok_or(io::ErrorKind::InvalidData)?
@@ -198,10 +198,10 @@ mod tests {
         command
             .args([
                 "--exact",
-                "process_tree::custody::windows::member_tests::job_member_page_child",
+                "process_tree::capture_events_tests::event_capture_child",
                 "--nocapture",
             ])
-            .env("ACYCLIC_JOB_MEMBER_PAGE_CHILD", "parent")
+            .env("ACYCLIC_TEST_EVENT_CAPTURE", "member-tree")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());

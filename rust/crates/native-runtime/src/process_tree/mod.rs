@@ -18,11 +18,11 @@ mod capture_callback_tests;
 #[cfg(test)]
 mod capture_events_tests;
 #[cfg(windows)]
-#[path = "capture_wait_windows.rs"]
-mod capture_wait;
-#[cfg(windows)]
 mod custodian;
 mod events;
+#[cfg(windows)]
+#[path = "windows_handle_wait.rs"]
+mod handle_wait;
 mod wake;
 pub use wake::ProcessWake;
 #[cfg(unix)]
@@ -640,6 +640,10 @@ impl ProcessTree {
         if let Some(child) = self.child.as_mut() {
             drop(child.stdin.take());
         }
+        // A pending Windows write remains owned by its completion packet.
+        // Completed storage needs no cached writer once input has closed.
+        #[cfg(windows)]
+        drop(self.writer.0.take());
     }
 
     /// Polls the direct child without releasing ownership of its descendants.
