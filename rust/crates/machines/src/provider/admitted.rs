@@ -32,7 +32,7 @@ pub(crate) trait NativeMachine: Send + Sync + 'static {
 
 pub(crate) struct AdmittedMachine<B> {
     backend: B,
-    observation: Mutex<MachineObservation>,
+    observation: Mutex<(MachineObservation, Option<IdempotencyKey>)>,
     journal: Journal,
 }
 
@@ -60,7 +60,7 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         }
         Ok(Self {
             backend,
-            observation: Mutex::new(observation),
+            observation: Mutex::new((observation, None)),
             journal,
         })
     }
@@ -79,8 +79,8 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         key: IdempotencyKey,
         target: MachineState,
     ) -> Result<MutationOutcome, ProviderError> {
-        let mut value = self.observation.lock().await;
-        Self::select(&value, machine)?;
+        let (value, pending_key) = &mut *self.observation.lock().await;
+        Self::select(value, machine)?;
         let (intent, outcome) = match target {
             MachineState::Suspended => (
                 Intent::Suspend(machine),
@@ -107,6 +107,7 @@ impl<B: NativeMachine> AdmittedMachine<B> {
         let physical = (value.state != target).then_some(&pending);
         let pending_state = pending.state;
         let state = &mut value.state;
+        let closing_key = &mut *pending_key;
         let admitted = match self
             .journal
             .begin(key, digest, physical, move || {
@@ -129,6 +130,7 @@ impl<B: NativeMachine> AdmittedMachine<B> {
                 Ok(move || {
                     if *state != target {
                         *state = pending_state;
+                        *closing_key = Some(key);
                     }
                 })
             })
@@ -152,6 +154,7 @@ impl<B: NativeMachine> AdmittedMachine<B> {
             .finish(key, digest, admitted, &pending, outcome)
             .await?;
         *value = pending;
+        *pending_key = None;
         Ok(result)
     }
 }
@@ -171,15 +174,16 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
             command.expiry_unix_ms,
         )?;
         deadline.run(async {
-            let value = self.observation.lock().await;
-            Self::select(&value, machine)?;
+            let admitted = self.observation.lock().await;
+            let value = &admitted.0;
+            Self::select(value, machine)?;
             if value.state != MachineState::Running {
                 return Err(ProviderError::Conflict(
                     "Machine is not running; recovery: wake the original incarnation before executing"
                         .into(),
                 ));
             }
-            drop(value);
+            drop(admitted);
             self.backend.exec(command, deadline.until()).await
         }).await.unwrap_or(Err(ProviderError::CommandIndeterminate(machine)))
     }
@@ -190,15 +194,16 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         limit: u32,
     ) -> Result<FileRead, ProviderError> {
         let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
-        let value = deadline
+        let admitted = deadline
             .run(self.observation.lock())
             .await
             .ok_or_else(|| ProviderError::Rejected("file deadline expired before native admission; recovery: obtain a fresh original deadline".into()))?;
-        Self::select(&value, machine)?;
+        let value = &admitted.0;
+        Self::select(value, machine)?;
         if value.state == MachineState::Destroyed {
             return Err(ProviderError::NotFound(machine.to_string()));
         }
-        drop(value);
+        drop(admitted);
         self.backend.read(access, limit, &deadline).await
     }
     async fn write_file(
@@ -209,26 +214,27 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         truncate: bool,
     ) -> Result<FileWrite, ProviderError> {
         let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
-        let value = deadline
+        let admitted = deadline
             .run(self.observation.lock())
             .await
             .ok_or_else(|| ProviderError::Rejected("file deadline expired before native admission; recovery: obtain a fresh original deadline".into()))?;
-        Self::select(&value, machine)?;
+        let value = &admitted.0;
+        Self::select(value, machine)?;
         if value.state != MachineState::Running {
             return Err(ProviderError::Conflict(
                 "Machine is not running; recovery: wake the original incarnation before writing"
                     .into(),
             ));
         }
-        drop(value);
+        drop(admitted);
         self.backend.write(access, data, truncate, &deadline).await
     }
     async fn inspect_machine(
         &self,
         machine: MachineId,
     ) -> Result<MachineObservation, ProviderError> {
-        let value = self.observation.lock().await;
-        Self::select(&value, machine)?;
+        let (value, _) = &*self.observation.lock().await;
+        Self::select(value, machine)?;
         Ok(value.clone())
     }
     async fn list_machines(
@@ -241,7 +247,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
                 "empty Machine page credit; recovery: supply positive credit".into(),
             ));
         }
-        let value = self.observation.lock().await;
+        let (value, _) = &*self.observation.lock().await;
         Ok(MachinePage {
             machines: if after.is_none_or(|after| after < value.id) {
                 vec![value.clone()]
@@ -252,7 +258,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         })
     }
     async fn qualify_image(&self, image: Image) -> Result<ImageQualification, ProviderError> {
-        let value = self.observation.lock().await;
+        let (value, _) = &*self.observation.lock().await;
         if image != value.contract.image {
             return Err(unsupported("replace the admitted host image"));
         }
@@ -263,7 +269,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         })
     }
     async fn create(&self, request: CreateMachine) -> Result<MutationOutcome, ProviderError> {
-        let value = self.observation.lock().await;
+        let (value, _) = &*self.observation.lock().await;
         let digest = intent_digest(&(value.id, &Intent::Create(&request)))?;
         // The local factory enrolls an existing workspace. It never fabricates
         // another filesystem view or an immutable image capture.
@@ -283,7 +289,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         match self
             .journal
             .begin(request.idempotency_key, digest, None, || {
-                settled(&value, request.idempotency_key).map(|()| || {})
+                settled(value, request.idempotency_key).map(|()| || {})
             })
             .await?
         {
@@ -294,7 +300,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
                         request.idempotency_key,
                         digest,
                         head,
-                        &value,
+                        value,
                         MutationOutcome::Created(value.clone()),
                     )
                     .await
@@ -307,15 +313,15 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         volume: wire::selection::VolumeRef,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let value = self.observation.lock().await;
-        Self::select(&value, machine)?;
+        let (value, _) = &*self.observation.lock().await;
+        Self::select(value, machine)?;
         if value.contract.selected_volume_ref.as_ref() != Some(&volume) {
             return Err(unsupported("replace the admitted selected volume"));
         }
         let digest = intent_digest(&(value.id, &Intent::Attach(machine, &volume)))?;
         match self
             .journal
-            .begin(key, digest, None, || settled(&value, key).map(|()| || {}))
+            .begin(key, digest, None, || settled(value, key).map(|()| || {}))
             .await?
         {
             Admission::Replay(original) => Ok(original),
@@ -325,7 +331,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
                         key,
                         digest,
                         head,
-                        &value,
+                        value,
                         MutationOutcome::VolumeAttached(value.clone()),
                     )
                     .await
@@ -359,15 +365,15 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         policy: SuspensionPolicy,
         key: IdempotencyKey,
     ) -> Result<MutationOutcome, ProviderError> {
-        let value = self.observation.lock().await;
-        Self::select(&value, machine)?;
+        let (value, _) = &*self.observation.lock().await;
+        Self::select(value, machine)?;
         if policy != value.contract.suspension {
             return Err(unsupported("install an automatic suspension producer"));
         }
         let digest = intent_digest(&(value.id, &Intent::Policy(machine, policy)))?;
         match self
             .journal
-            .begin(key, digest, None, || settled(&value, key).map(|()| || {}))
+            .begin(key, digest, None, || settled(value, key).map(|()| || {}))
             .await?
         {
             Admission::Replay(original) => Ok(original),
@@ -377,7 +383,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
                         key,
                         digest,
                         head,
-                        &value,
+                        value,
                         MutationOutcome::SuspensionPolicySet(machine, policy),
                     )
                     .await
@@ -390,11 +396,28 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         after: Option<u64>,
         limit: u32,
     ) -> Result<EventPage, ProviderError> {
-        Self::select(&*self.observation.lock().await, machine)?;
+        Self::select(&self.observation.lock().await.0, machine)?;
         self.journal.events(after, limit).await
     }
     async fn recover(&self, key: IdempotencyKey) -> Result<MutationOutcome, ProviderError> {
-        self.journal.recover(key).await
+        let outcome = self.journal.recover(key).await?;
+        if self.observation.lock().await.1 != Some(key) {
+            return Ok(outcome);
+        }
+        // A retained terminal result proves that its atomic Machine publication
+        // committed, even when the original reply or observer was lost. Read it
+        // without holding admission, then join only that same pending key.
+        let published = self
+            .journal
+            .machine()
+            .await
+            .map_err(|_| ProviderError::Indeterminate(key))?;
+        let (value, pending_key) = &mut *self.observation.lock().await;
+        if *pending_key == Some(key) {
+            *value = published;
+            *pending_key = None;
+        }
+        Ok(outcome)
     }
     async fn recover_operation(&self, key: IdempotencyKey) -> Result<OperationId, ProviderError> {
         let operation = OperationId(key.0);
