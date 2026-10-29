@@ -30,7 +30,6 @@ mod records;
 mod reply;
 mod settled;
 pub use settled::{TurnChildren, answer, settled};
-mod slots;
 mod volumes;
 pub use volumes::SpawnVolumes;
 
