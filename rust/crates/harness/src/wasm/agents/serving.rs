@@ -359,6 +359,21 @@ impl WasmAgentServer {
         drop(self.lifetime.borrow_mut().take());
     }
 
+    /// Bind platform metadata and queue waits to this same host owner. Dropping
+    /// the call aborts its signal; a closed owner never invokes the callback.
+    #[wasm_bindgen(js_name = withLifetime)]
+    pub async fn with_lifetime(
+        &self,
+        operation: Function,
+    ) -> std::result::Result<JsValue, JsValue> {
+        self.owned(async {
+            let cancel = host::Cancel::new().map_err(|_| stream_error(StreamError::Unavailable))?;
+            let result = operation.call1(&JsValue::UNDEFINED, &cancel.signal)?;
+            wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&result)).await
+        })
+        .await
+    }
+
     pub async fn read(
         &self,
         agent: String,

@@ -91,6 +91,10 @@ lifetime, terminating active sessions and commands with typed `Unavailable`.
 Direct storage controls share that lifetime: closing the owner cancels their
 pending reads and refuses subsequent work before storage is accessed. Platform
 policy and admission callbacks receive the original operation's `AbortSignal`.
+Metadata flushes, placement, alarm writes and queued event commands use the same
+owner lifetime. Closure releases their callers while the admitted primitive is
+still pending, and prevents queued commands from starting storage work. Retained
+creation intents and recovery alarms remain available to the next owner.
 Stream failures retain their canonical string `code` at the JavaScript boundary.
 An alarm update failure retains the healthy host and its previously admitted
 recovery alarm, so a later wake can resume without replaying a committed turn.
@@ -124,7 +128,6 @@ that deployment or its live inference provider.
 | Uncertain startup | One submission per explicit open; one retained pending handle only on uncertainty | Unbounded immediate root resubmissions and a second prepared request |
 | Waiting for an answer | One status subscription at an explicit committed cut, registered before the reply recheck | Periodic status requests |
 | Known host shutdown | One terminal control frame per active channel, independent of data credit | Reconnecting to an endpoint whose runtime has already stopped |
-| Inbox delivery | One atomic inbox/activation commit; notify the selected resident actor only after its receipt | Waiting for activation discovery when the local owner is already known |
 
 These are source-level operation counts. The integration check measures functional
 liveness; it does not establish throughput, memory or live model latency.

@@ -55,7 +55,7 @@ export class EventAgentHost {
         manifest: guest.manifest(),
         onRecord: (delivery: Uint8Array, signal: AbortSignal, interrupt: AbortSignal) => guest.onRecord(delivery, signal, interrupt),
         policy: (principal: Uint8Array, command: AgentCommand, signal: AbortSignal) => access.policy(principal, command, signal),
-        admitted: () => recoverable(storage, events),
+        admitted: (signal: AbortSignal) => recoverable(storage, events, signal),
       });
     } finally { providers.free(); stream.free(); }
   }
@@ -74,20 +74,23 @@ export class EventAgentHost {
     return row as unknown as Identity;
   }
 
-  private async retain(identity: Identity | null): Promise<void> {
+  private async retain(identity: Identity | null, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
     this.storage.put("identity", JSON.stringify(identity));
     await this.storage.flush();
+    signal.throwIfAborted();
   }
 
-  private async resume(identity: Identity): Promise<Identity> {
+  private async resume(identity: Identity, signal: AbortSignal): Promise<Identity> {
     if (identity.stage === "claiming") {
       const placement = await this.ledger.register(this.name, this.host.wakePaths(identity.path));
+      signal.throwIfAborted();
       if ("refused" in placement) {
-        await this.retain(null);
+        await this.retain(null, signal);
         throw new Error(`STEP actor-placement refused: ${placement.refused}; recovery: choose an unclaimed actor path and an available consistency domain`);
       }
       identity = { ...identity, stage: "creating" };
-      await this.retain(identity);
+      await this.retain(identity, signal);
     }
     // A reopened event host binds the same committed tree before any command.
     // Opening a child observes its adoption; it does not deliver a turn.
@@ -99,12 +102,12 @@ export class EventAgentHost {
     } else await this.host.adopt(identity.path);
     if (identity.stage === "creating") {
       identity = { ...identity, stage: "ready" };
-      await this.retain(identity);
+      await this.retain(identity, signal);
     }
     return identity;
   }
 
-  private async place(candidate: Identity): Promise<Identity> {
+  private async place(candidate: Identity, signal: AbortSignal): Promise<Identity> {
     const identity = this.identity();
     if (identity && (identity.intent !== candidate.intent || identity.brief !== candidate.brief
       || identity.path !== candidate.path || identity.create !== candidate.create)) {
@@ -112,37 +115,46 @@ export class EventAgentHost {
     }
     // Retain the proposal before the first remote claim. A lost acknowledgement
     // retries exactly that claim; only a definitive refusal makes it reusable.
-    if (!identity) await this.retain(candidate);
-    return this.resume(identity ?? candidate);
+    if (!identity) await this.retain(candidate, signal);
+    return this.resume(identity ?? candidate, signal);
   }
-  private command<T>(action: () => Promise<T>): Promise<T> {
-    const next = this.commands.then(action);
+  private owned<T>(action: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    return this.host.withLifetime(action);
+  }
+
+  private command<T>(action: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const previous = this.commands;
+    const next = this.owned(async signal => {
+      await previous;
+      signal.throwIfAborted();
+      return action(signal);
+    });
     this.commands = next.catch(() => undefined);
     return next;
   }
 
-  private event<T>(action: () => Promise<T>): Promise<T> {
+  private event<T>(action: (signal: AbortSignal) => Promise<T>): Promise<T> {
     // Commit controls while a turn is running so its canonical inbox follow
     // can abort the guest. Only delivery holds the actor's execution slot.
-    return this.command(async () => {
-      await recoverable(this.storage, this.events);
+    return this.owned(() => this.command(async signal => {
+      await recoverable(this.storage, this.events, signal);
       const generation = this.events.generation;
       const identity = this.identity();
-      if (identity?.stage === "ready") await this.resume(identity);
-      return { value: await action(), generation };
+      if (identity?.stage === "ready") await this.resume(identity, signal);
+      return { value: await action(signal), generation };
     }).then(({ value, generation }) => {
       const next = this.serial.then(() => this.drain(generation));
       this.serial = next.catch(() => undefined);
       return next.then(() => value);
-    });
+    }));
   }
 
   private async drain(generation: number): Promise<void> {
     let alarm: bigint | undefined;
     try {
-      const identity = await this.command(async () => {
+      const identity = await this.command(async signal => {
         const pending = this.identity();
-        return pending ? this.resume(pending) : undefined;
+        return pending ? this.resume(pending, signal) : undefined;
       });
       if (identity) {
         alarm = await this.host.drain(identity.path);
@@ -165,10 +177,10 @@ export class EventAgentHost {
 
   create(intent: string, brief?: string): Promise<string> {
     const path = this.host.validateCreate(intent, brief);
-    return this.event(async () => {
+    return this.event(async signal => {
       const identity: Identity = { intent, path, create: true, stage: "claiming" };
       if (brief !== undefined) identity.brief = brief;
-      await this.place(identity);
+      await this.place(identity, signal);
       return path;
     });
   }
@@ -185,27 +197,29 @@ export class EventAgentHost {
   /** Explicitly activate an already spawned child; spawning alone never calls this. */
   async adopt(path: string): Promise<void> {
     await this.host.validateAdopt(path);
-    return this.event(async () => {
-      await this.place({ intent: path, path, create: false, stage: "claiming" });
+    return this.event(async signal => {
+      await this.place({ intent: path, path, create: false, stage: "claiming" }, signal);
     });
   }
 
   async read(stream: "inbox" | "conversation" | "status", from = 0n, limit = 128) {
-    const identity = this.identity();
-    if (identity?.stage !== "ready") return [];
-    return this.host.read(identity.path, stream, from, limit);
+    return this.owned(async () => {
+      const identity = this.identity();
+      if (identity?.stage !== "ready") return [];
+      return this.host.read(identity.path, stream, from, limit);
+    });
   }
 
   /** Expose the public session protocol through the platform's duplex binding.
    * Input returns complete protobuf frames; null is producer EOF. The binding
    * must cancel its pending read when signal aborts and close on disconnect. */
   async session(next: (signal: AbortSignal) => Promise<Uint8Array | null>): Promise<HostedSession> {
-    await this.command(async () => {
+    await this.command(async signal => {
       const identity = this.identity();
       if (identity?.stage !== "ready") {
         throw new Error("STEP session-open failed; recovery: complete the original actor placement before opening a session");
       }
-      await this.resume(identity);
+      await this.resume(identity, signal);
     });
     return this.host.session(next);
   }
@@ -226,10 +240,10 @@ export class EventAgentHost {
 
   /** Canonical calls may await a spawn while a separate wake delivers it. */
   async call(invocation: Uint8Array, credential: Uint8Array): Promise<Uint8Array> {
-    await this.command(async () => {
+    await this.command(async signal => {
       const identity = this.identity();
       if (identity?.stage !== "ready") throw new Error("STEP actor-call failed; recovery: complete the original root placement");
-      await this.resume(identity);
+      await this.resume(identity, signal);
     });
     const generation = this.events.generation;
     try { return await this.host.call(invocation, credential); }
@@ -240,8 +254,9 @@ export class EventAgentHost {
   wake(): Promise<void> { return this.event(async () => undefined); }
 }
 
-async function recoverable(storage: EventStorage, events: { generation: number }): Promise<void> {
+async function recoverable(storage: EventStorage, events: { generation: number }, signal: AbortSignal): Promise<void> {
   await storage.alarm(Date.now() + 1000);
+  signal.throwIfAborted();
   if (!Number.isSafeInteger(++events.generation)) {
     throw new Error("STEP actor-event failed: event counter exhausted; recovery: reopen this named event host from its retained storage");
   }

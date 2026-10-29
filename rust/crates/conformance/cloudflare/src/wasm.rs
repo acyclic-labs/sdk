@@ -236,7 +236,7 @@ pub async fn qualify(
     fresh: js_sys::Function,
     hosted: js_sys::Function,
 ) -> std::result::Result<(), JsValue> {
-    verify(&Sqlite(fresh, hosted)).await
+    verify(&Sqlite(fresh, hosted), "sqlite").await
 }
 
 /// The same suites over actual cross-DO canonical RPC, including pull cursors.
@@ -245,16 +245,28 @@ pub async fn qualify_rpc(
     fresh: js_sys::Function,
     hosted: js_sys::Function,
 ) -> std::result::Result<(), JsValue> {
-    verify(&Rpc(fresh, hosted)).await
+    verify(&Rpc(fresh, hosted), "rpc").await
 }
 
-async fn verify(backend: &(impl Backend + StreamFixture)) -> std::result::Result<(), JsValue> {
-    let result: Result = async {
-        let stream = backend.stream().await?;
-        acyclic_stream::conformance::verify(stream.as_ref()).await?;
-        drop(stream);
-        acyclic_agent_host_conformance::verify(backend).await
-    }
-    .await;
-    result.map_err(|error| JsValue::from_str(&format!("STEP cloudflare-conformance failed: {error}; recovery: bash scripts/qualify-cloudflare.sh")))
+async fn verify(
+    backend: &(impl Backend + StreamFixture),
+    name: &str,
+) -> std::result::Result<(), JsValue> {
+    let stream = backend
+        .stream()
+        .await
+        .map_err(|error| failure(name, "stream-open", error))?;
+    acyclic_stream::conformance::verify(stream.as_ref())
+        .await
+        .map_err(|error| failure(name, "stream-suite", error))?;
+    drop(stream);
+    acyclic_agent_host_conformance::verify(backend)
+        .await
+        .map_err(|error| failure(name, "agent-host-suite", error))
+}
+
+fn failure(backend: &str, step: &str, error: impl std::fmt::Display) -> JsValue {
+    JsValue::from_str(&format!(
+        "STEP cloudflare-{backend}-{step} failed: {error}; recovery: bash scripts/qualify-cloudflare.sh"
+    ))
 }

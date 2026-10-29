@@ -2,8 +2,9 @@ import { expect, test } from "bun:test";
 import { initializeClientQueries } from "../src/client-query.js";
 import { AgentGuest, WasmAgentProviders, WasmAgentServer, WasmSessionAuthority, WasmStream } from "../generated/wasm/acyclic_harness_wasm.js";
 import { agentsFixture } from "./browser-agents-fixture.mjs";
+import { EventAgentHost, type StreamLedger, type EventStorage } from "../src/event-host.js";
 
-test("portable host disposal ends pending storage controls and refuses new work", async () => {
+async function setup() {
   const id = "00112233-4455-6677-8899-aabbccddeeff";
   const agent = `harness/agents/${"01".repeat(16)}`;
   const fixture = await agentsFixture(id, async function* () {}, initializeClientQueries);
@@ -19,6 +20,11 @@ test("portable host disposal ends pending storage controls and refuses new work"
   }]], expires_at: null })}`;
   const admission = { audience, scope: fixture.owner.issueScope("host", [filesystem], undefined),
     account: [...new TextEncoder().encode("test")], namespace: "agents" };
+  return { agent, fixture, authority, admission };
+}
+
+test("portable host disposal ends pending storage controls and refuses new work", async () => {
+  const { agent, fixture, authority, admission } = await setup();
   const operations = {
     validateAdopt: (host: WasmAgentServer) => host.validateAdopt(agent),
     read: (host: WasmAgentServer) => host.read(agent, "status", 0n, 1),
@@ -36,7 +42,7 @@ test("portable host disposal ends pending storage controls and refuses new work"
       const objects = { length: wait, read: wait, put: wait };
       const providers = WasmAgentProviders.injected(stream, objects, false, fixture.options);
       const guest = AgentGuest.open(providers, fixture.options, fixture.owner, fixture.registry,
-        { kind: "admitted", audience, scope: admission.scope });
+        { kind: "admitted", audience: admission.audience, scope: admission.scope });
       const host = WasmAgentServer.open(providers, fixture.options, fixture.owner, fixture.registry,
         admission, authority, { manifest: guest.manifest(), onRecord: () => { throw new Error("unexpected guest delivery"); },
           policy: () => true, admitted: async () => {} });
@@ -58,6 +64,58 @@ test("portable host disposal ends pending storage controls and refuses new work"
       } finally {
         host.close(); host.free(); guest.free(); providers.free(); stream.free();
       }
+    }
+  } finally { authority.free(); fixture.free(); }
+}, 10_000);
+
+test("event owner loss releases metadata, placement and queued waits", async () => {
+  const { fixture, authority, admission } = await setup();
+  try {
+    for (const phase of ["alarm", "flush", "placement"]) {
+      const entered = Promise.withResolvers<void>();
+      const producer = Promise.withResolvers<void>();
+      const values = new Map<string, string>();
+      const calls = { alarm: 0, flush: 0, placement: 0, write: 0, provider: 0 };
+      const wait = async (step: string) => {
+        if (step === phase) { entered.resolve(); await producer.promise; }
+      };
+      const storage: EventStorage = {
+        get: key => values.get(key), entries: () => [...values], transaction: action => action(),
+        put: (key, value) => { ++calls.write; values.set(key, value); },
+        alarm: async () => { ++calls.alarm; await wait("alarm"); },
+        flush: async () => { ++calls.flush; await wait("flush"); },
+      };
+      const unexpected = async (): Promise<never> => {
+        ++calls.provider;
+        throw new Error("provider must not run after the pending placement owner closes");
+      };
+      const ledger: StreamLedger = {
+        register: async () => { ++calls.placement; await wait("placement"); return { admitted: true }; },
+        dispatch: unexpected, open: unexpected,
+        objectLength: unexpected, objectRead: unexpected, objectPut: unexpected,
+      };
+      const host = new EventAgentHost(storage, ledger, phase, fixture.options, fixture.owner, fixture.registry,
+        { admission, authority, credential: new Uint8Array(), policy: () => true });
+      const result = (operation: Promise<unknown>) => operation.then(
+        () => new Error(`${phase} unexpectedly completed`), error => error);
+      try {
+        const pending = result(host.create("retained-intent"));
+        await Promise.race([entered.promise, pending.then(error => { throw error; })]);
+        const queued = result(host.create("retained-intent"));
+        const wake = result(host.wake());
+        const before = { ...calls };
+        host.close();
+        // The admitted primitive remains pending; loss of its owner releases
+        // both this request and commands waiting behind it.
+        for (const error of await Promise.all([pending, queued, wake])) {
+          expect(error).toBeInstanceOf(Error);
+          expect(error.code).toBe("unavailable");
+        }
+        expect(calls).toEqual(before);
+        await expect(host.create("new-intent")).rejects.toThrow("unavailable");
+        await expect(host.read("status")).rejects.toThrow("unavailable");
+        expect(calls).toEqual(before);
+      } finally { host.close(); producer.resolve(); }
     }
   } finally { authority.free(); fixture.free(); }
 }, 10_000);
