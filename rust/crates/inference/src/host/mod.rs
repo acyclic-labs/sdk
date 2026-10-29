@@ -406,25 +406,19 @@ impl Inference {
                     .list(self.request(wire::ListModelsRequest {}).await?)
                     .await?
                     .into_inner();
-                if response.models.is_empty() || response.models.len() > 4_096 {
+                if response.models.is_empty() {
                     return Err(Error::Invalid("model capability count is invalid"));
                 }
                 let mut names = std::collections::BTreeSet::new();
                 for model in &response.models {
                     let mut retention_profiles = std::collections::BTreeSet::new();
                     if model.model.is_empty()
-                        || model.model.len() > 256
                         || !names.insert(model.model.as_str())
                         || fixed::<32>(&model.execution_profile).is_err()
                         || model.maximum_context == 0
                         || model.maximum_output == 0
                         || model.features.is_empty()
-                        || model.features.len() > 64
-                        || model
-                            .features
-                            .iter()
-                            .any(|feature| feature.is_empty() || feature.len() > 64)
-                        || model.retention_profiles.len() > 64
+                        || model.features.iter().any(|feature| feature.is_empty())
                         || model.retention_profiles.iter().any(|profile| {
                             fixed::<32>(&profile.profile).is_err()
                                 || profile.minimum_duration_ms == 0
