@@ -277,7 +277,10 @@ impl StreamProvider for MemoryStream {
         let cursor = FiniteRead::new(path, request);
         drop(state);
         Ok(stream::try_unfold(cursor, |mut cursor| async move {
-            if cursor.peek(|| Ok::<_, StreamError>(()))?.is_none() {
+            if cursor
+                .peek(|| Ok::<_, StreamError>(()), || StreamError::Unavailable)?
+                .is_none()
+            {
                 return Ok(None);
             }
             Ok(cursor.take().map(|record| (record, cursor)))
@@ -360,7 +363,11 @@ impl StreamProvider for MemoryStream {
             let cursor = stream::try_unfold(cursor, move |mut cursor| {
                 let meter = Arc::clone(&cursor_meter);
                 async move {
-                    let Some(record) = cursor.peek(|| meter.examine(1, 0))? else {
+                    let Some(record) = cursor.peek(
+                        || meter.examine(1, 0),
+                        || std::io::ErrorKind::InvalidData.into(),
+                    )?
+                    else {
                         return Ok(None);
                     };
                     let length = record.value.len();

@@ -222,3 +222,36 @@ async fn lazy_native_read_keeps_original_late_examination_refusal() -> MemoryRes
     meter.assert_refunded();
     Ok(())
 }
+
+#[tokio::test]
+async fn lazy_finite_reads_refuse_a_noncontiguous_page() -> MemoryResult<()> {
+    let provider = seeded().await?;
+    let mut cursor = {
+        let state = provider.state.read().await;
+        FiniteRead::new(
+            state.paths.get(&path("native/read")?).unwrap(),
+            read_request()?,
+        )
+    };
+    cursor.next = 1;
+    cursor.window = Some(HistoryWindow {
+        records: Arc::clone(
+            cursor
+                .history
+                .root
+                .as_ref()
+                .and_then(|root| match root.as_ref() {
+                    History::Batch { records, .. } => Some(records),
+                    _ => None,
+                })
+                .unwrap(),
+        ),
+        start: 0,
+        end: 3,
+    });
+    assert!(matches!(
+        cursor.peek(|| Ok::<_, StreamError>(()), || StreamError::Unavailable),
+        Err(StreamError::Unavailable)
+    ));
+    Ok(())
+}

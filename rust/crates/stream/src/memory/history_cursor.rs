@@ -199,6 +199,7 @@ impl FiniteRead {
     fn peek<E>(
         &mut self,
         mut examine: impl FnMut() -> Result<(), E>,
+        invalid: impl Fn() -> E,
     ) -> Result<Option<&Record>, E> {
         if self.remaining == 0 || self.next >= self.history.tail {
             return Ok(None);
@@ -231,11 +232,24 @@ impl FiniteRead {
                 },
                 examine,
             )?;
+            if self
+                .window
+                .as_ref()
+                .and_then(|window| window.records.records.get(window.start))
+                .is_none_or(|record| record.sequence != after)
+            {
+                return Err(invalid());
+            }
         }
-        Ok(self
+        let record = self
             .window
             .as_ref()
-            .and_then(|window| window.records.records.get(window.start)))
+            .and_then(|window| window.records.records.get(window.start))
+            .ok_or_else(&invalid)?;
+        if self.key.is_none() && record.sequence != self.next {
+            return Err(invalid());
+        }
+        Ok(Some(record))
     }
 
     fn take(&mut self) -> Option<Record> {
