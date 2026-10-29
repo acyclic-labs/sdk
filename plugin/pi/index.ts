@@ -23,11 +23,16 @@ export default function acyclic(pi: ExtensionAPI) {
   let selected: Location | undefined;
   let bridge: ChildProcessWithoutNullStreams | undefined;
   let ended: Promise<void> | undefined;
-  let initialized: Promise<void> | undefined;
+  let initialized = false;
   let failure: Error | undefined;
   let sequence = 0;
-  const pending = new Map<number, {yes: (value: Response) => void; no: (error: Error) => void}>();
+  const pending = new Map<number, {yes: (value: Response) => void; no: (error: Error) => void; dispatch: () => void}>();
   const task = () => { if (!selected) throw new Error("Acyclic workspace owner is unavailable"); return selected; };
+  const stop = (error: Error) => {
+    failure ??= new Error(`step=serve Pi coordination: ${error.message}; recovery=pi`);
+    for (const entry of pending.values()) entry.no(failure);
+    pending.clear(); bridge?.stdin.end();
+  };
 
   function call(name: string, args: Action, signal?: AbortSignal): Promise<Response> {
     if (failure) return Promise.reject(failure);
@@ -37,16 +42,20 @@ export default function acyclic(pi: ExtensionAPI) {
       bridge = spawn(executable, ["__mcp", "pi"], {cwd: location.cwd, windowsHide: true,
         env: {...process.env, ACYCLIC_WORKSPACE: location.cwd, ACYCLIC_TASK: location.task}});
       bridge.stderr.resume();
-      const stop = (error: Error) => {
-        failure ??= new Error(`step=serve Pi coordination: ${error.message}; recovery=pi`);
-        for (const entry of pending.values()) entry.no(failure);
-        pending.clear(); bridge?.stdin.end();
-      };
       createInterface({input: bridge.stdout}).on("line", line => {
         try {
           const message = JSON.parse(line);
           if (message.error && message.id == null) {
             stop(new Error(JSON.stringify(message.error)));
+            return;
+          }
+          if (message.id === 0) {
+            if (message.error) throw new Error(JSON.stringify(message.error));
+            if (initialized || message.result?.protocolVersion !== "2025-06-18")
+              throw new Error("step=initialize Pi coordination: invalid negotiated response; recovery=acyclic install pi");
+            bridge!.stdin.write(JSON.stringify({jsonrpc: "2.0", method: "notifications/initialized"}) + "\n");
+            initialized = true;
+            for (const entry of pending.values()) entry.dispatch();
             return;
           }
           const entry = pending.get(message.id);
@@ -58,11 +67,6 @@ export default function acyclic(pi: ExtensionAPI) {
       bridge.on("error", stop);
       bridge.stdin.on("error", stop);
       ended = new Promise(resolve => bridge!.once("close", () => {stop(new Error("Acyclic coordination session ended")); bridge = undefined; resolve();}));
-      initialized = new Promise<Response>((yes, no) => pending.set(0, {yes, no})).then(result => {
-        if (!result || !("protocolVersion" in result) || result.protocolVersion !== "2025-06-18")
-          throw new Error("step=initialize Pi coordination: unsupported negotiated version; recovery=acyclic install pi");
-        bridge!.stdin.write(JSON.stringify({jsonrpc: "2.0", method: "notifications/initialized"}) + "\n");
-      }).catch(error => { stop(error); throw failure; });
       bridge.stdin.write(JSON.stringify({jsonrpc: "2.0", id: 0, method: "initialize", params: {protocolVersion: "2025-06-18", capabilities: {}, clientInfo: {name: "acyclic-pi", version: "0.2.0"}}}) + "\n");
     }
     const id = ++sequence;
@@ -74,13 +78,15 @@ export default function acyclic(pi: ExtensionAPI) {
       };
       if (signal?.aborted) { cancel(); return; }
       signal?.addEventListener("abort", cancel, {once: true});
+      const dispatch = () => {
+        try {
+          dispatched = true;
+          bridge!.stdin.write(JSON.stringify({jsonrpc: "2.0", id, method: "tools/call", params: {name, arguments: args}}) + "\n");
+        } catch (error) { stop(error instanceof Error ? error : new Error(String(error))); }
+      };
       pending.set(id, {yes: value => {signal?.removeEventListener("abort", cancel); yes(value);},
-        no: error => {signal?.removeEventListener("abort", cancel); no(error);}});
-      initialized!.then(() => {
-        if (!pending.has(id)) return;
-        dispatched = true;
-        bridge!.stdin.write(JSON.stringify({jsonrpc: "2.0", id, method: "tools/call", params: {name, arguments: args}}) + "\n");
-      }).catch(error => { pending.delete(id); signal?.removeEventListener("abort", cancel); no(error); });
+        no: error => {signal?.removeEventListener("abort", cancel); no(error);}, dispatch});
+      if (initialized) dispatch();
     });
   }
 

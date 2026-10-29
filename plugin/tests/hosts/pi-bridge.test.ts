@@ -42,7 +42,12 @@ test("Pi failed spawn closes custody and shutdown without an exit event", async 
     const cancelled = new AbortController(); cancelled.abort();
     await assert.rejects(tools.get("spawn")!.execute("cancelled", { reference: "child", prompt: "fixture" }, cancelled.signal), /cancelled/);
     assert.equal(spawns, 0, "cancelled dispatch must not allocate a native process");
-    await assert.rejects(tools.get("spawn")!.execute("fixture", { reference: "child", prompt: "fixture" }), /ENOENT/);
+    const refused = assert.rejects(tools.get("spawn")!.execute("fixture", { reference: "child", prompt: "fixture" }), /ENOENT/);
+    const initializing = new AbortController();
+    const request = tools.get("wait")!.execute("initializing", { reference: "child" }, initializing.signal);
+    initializing.abort();
+    await assert.rejects(request, /cancelled/);
+    await refused;
     await closed;
     assert.equal(exits, 0, "a failed native spawn never emits exit");
     assert(child);
