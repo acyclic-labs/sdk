@@ -1632,3 +1632,10 @@ Check314 on5923124c5e (job1793270611151-49530-48d676ba) fails only GraphCoder te
 | New headless stdin usize::MAX sentinel | `rust/crates/harness/src/bin/graphcoder/headless.rs:22` | 1 default whole-line bound | Project true None to the existing shared AsyncLines decoder; no hidden finite fallback. Compiled at04fea1737b. Whole-line residency remains separately open. |
 
 Check315 at04fea1737b (job1793270811433-50741-0f06c41b) passes complete native Harness-core/Harness/Harness-client/GraphCoder all-target compilation with serve/filesystem-local/native-execution/test-support after actual merged main1766/1798/1804/1806. Includes new native projection event waits and unbounded stdin. Later optional terminal deadline source is unqualified; runtime308 original four failures remain open.
+
+
+| Limit / protocol cycle | File:line | Category | Action |
+|---|---|---|---|
+| Redirect-count cap removed, repeated URL terminal missing (P1) | `rust/crates/harness-search/src/url_fetch/http.rs:100` | 4 hostile/corrupt protocol cycle | Reject a canonical URL already in the current redirect chain before opening it again; retain unbounded distinct redirects. One hash index moves original parsed URLs without cloning, admits replacement backing before allocation and carries their original native custody until retirement. Same mechanism serves ordinary and native fetch, preserving cancellation/unsafe-address/HTTPS policy. Actual self/two-URL cycle,65-exchange exact body/provenance and native original-ledger retirement controls added; compile/runtime pending. No fixed redirect total or timeout restored. |
+
+Check316 onb13fb091c0 (job1793271186008-52125-ca298048) fails at one stale native-runtime stdin test usize::MAX caller; later source uses None with the original blocking-slot/line/EOF controls intact. Windows/Darwin/TUI runtime stages did not run. P1 redirect-cycle correction and new real-network controls are pending qualification.315 prior composition compile passes;308 original four failures unchanged.
