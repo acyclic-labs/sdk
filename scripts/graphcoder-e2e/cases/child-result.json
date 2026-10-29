@@ -7,23 +7,21 @@
         { "id": "spawn", "name": "spawn", "arguments": { "name": "worker", "task": "CHILD_RESULT_TASK" } }
       ] },
       { "when": { "user": "PARENT_CHILD_RESULT_TASK", "tool_result": "agent" },
-        "text": ["SPAWNED {{tool_result:/agent}}"] },
+        "text": ["SPAWNED {{tool_result:/agent}}"], "tools": [
+          { "id": "wait", "name": "wait", "arguments": { "agents": [{ "$tool_result": "/agent" }] } }
+        ] },
       { "when": { "user": "CHILD_RESULT_TASK" }, "text": ["CHILD_RESULT_NATIVE_E2E"] },
-      { "when": { "user": "WAIT_CHILD_RESULT" }, "tools": [
-        { "id": "wait", "name": "wait", "arguments": { "agents": [{ "$tool_result": "/agent" }] } }
-      ] },
-      { "when": { "user": "WAIT_CHILD_RESULT", "tool_result": "CHILD_RESULT_NATIVE_E2E" },
-        "text": ["PARENT_READ_CHILD_RESULT"] },
+      { "when": { "user": "PARENT_CHILD_RESULT_TASK", "tool_result": "CHILD_RESULT_NATIVE_E2E" },
+        "text": ["PARENT_READ_CHILD_RESULT {{tool_result:/settled/0/answer}}"] },
       { "when": { "user": "REPORT_CHILD_RESULT" }, "text": ["done"] }
     ]
   },
   "inputs": [{ "mode": "conversation", "turns": [
     { "id": "spawn", "text": "PARENT_CHILD_RESULT_TASK" },
-    { "id": "wait", "text": "WAIT_CHILD_RESULT", "answer": "PARENT_READ_CHILD_RESULT" },
     { "id": "report", "text": "REPORT_CHILD_RESULT", "answer": "done" }
   ] }],
   "assert": {
-    "requests": 6,
+    "requests": 5,
     "last_model_contains": ["CHILD_RESULT_NATIVE_E2E", "PARENT_READ_CHILD_RESULT"],
     "tool_contains": ["harness/agents/"],
     "tool_results": [{ "settled": [{ "phase": "idle", "answer": "CHILD_RESULT_NATIVE_E2E" }], "running": [] }],
