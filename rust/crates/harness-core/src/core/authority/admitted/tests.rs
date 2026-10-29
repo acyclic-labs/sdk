@@ -710,7 +710,6 @@ fn typed_private_delegation_preserves_owner_policy_and_never_widens_attenuation(
                 &child,
                 &volume,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None
             )
             .is_err()
@@ -819,7 +818,6 @@ fn exact_child_revocation_refuses_retained_access_with_an_older_guest_snapshot()
             &child,
             &volume,
             VolumeOperation::Read,
-            u64::MAX,
             &mut None,
         )?;
         retained.require(&volume, VolumeOperation::Read, None)?;
@@ -887,7 +885,6 @@ fn shared_runtime_checkpoint_owner_loss_refuses_without_fabricating_custody() ->
             runtime.caller().expect("admitted caller").1,
             &volume,
             VolumeOperation::Read,
-            u64::MAX,
             &mut None,
         )?;
         retained.require(&volume, VolumeOperation::Read, None)?;
@@ -1009,8 +1006,8 @@ fn original_turn_interrupt_releases_scope_derivation_before_journal_binding() ->
                 executors.clone(),
                 TurnLimits {
                     maximum_bytes: u64::MAX,
-                    max_steps: u32::MAX,
-                    history_turns: u32::MAX,
+                    max_steps: Some(u32::MAX),
+                    history_turns: Some(u64::from(u32::MAX)),
                 },
                 Default::default(),
             )
