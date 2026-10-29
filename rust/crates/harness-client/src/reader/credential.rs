@@ -76,13 +76,13 @@ pub(super) struct Credentials {
     resolving: Option<Resolution>,
     lease: Option<ResolvedCredential>,
     watch_ready_at: u64,
-    timeout_ms: u64,
+    timeout_ms: Option<u64>,
     deadline: Option<u64>,
     status: CredentialStatus,
 }
 
 impl Credentials {
-    pub(super) fn new(provider: CredentialProvider, now: u64, timeout_ms: u64) -> Self {
+    pub(super) fn new(provider: CredentialProvider, now: u64, timeout_ms: Option<u64>) -> Self {
         let mut state = Self {
             provider,
             registering: None,
@@ -103,7 +103,7 @@ impl Credentials {
         self.watch = None;
         self.resolving = None;
         self.lease = None;
-        self.deadline = Some(now.saturating_add(self.timeout_ms));
+        self.deadline = self.timeout_ms.map(|timeout| now.saturating_add(timeout));
         // Registration precedes both resolution and any retained-data access.
         self.registering = Some(self.provider.watch());
         self.status = CredentialStatus::Pending;
@@ -392,7 +392,7 @@ mod tests {
             checks: checks.clone(),
         });
         let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
-        reader.credentials = Some(Credentials::new(provider, 0, 100));
+        reader.credentials = Some(Credentials::new(provider, 0, Some(100)));
         reader.reset_source();
         let ready = Arc::new(Ready(AtomicBool::new(false)));
         let waker = Waker::from(ready.clone());
@@ -424,7 +424,7 @@ mod tests {
                 async { Ok("credential".into()) }
             }),
             0,
-            100,
+            Some(100),
         ));
         reader.reset_source();
         assert!(reader.advance_credentials(0, &mut cx));
@@ -468,7 +468,7 @@ mod tests {
 
         // Complete registration, lose its producer, cancel at the original
         // deadline, or deliver a cut invalidated while registration awaited.
-        for case in 0..5 {
+        for case in 0..6 {
             let validity = Arc::new(Mutex::new(CredentialValidity {
                 now_unix_seconds: 10,
                 revision: Some(CredentialRevision::from([1; 32])),
@@ -492,10 +492,10 @@ mod tests {
                 registrations: registrations.clone(),
                 resolutions: resolutions.clone(),
             });
-            let timeout = if case == 4 {
+            let timeout = if case >= 4 {
                 ReaderPolicy::default().timeout_ms
             } else {
-                25
+                Some(25)
             };
             let mut state = Credentials::new(provider, 10, timeout);
             let ready = Arc::new(Ready(AtomicBool::new(false)));
@@ -504,10 +504,23 @@ mod tests {
             assert!(!state.poll(10, &mut cx));
             assert_eq!(state.status(), CredentialStatus::Pending);
             assert!(!state.access().allows());
-            assert_eq!(state.deadline(), Some(10 + timeout));
+            assert_eq!(state.deadline(), timeout.map(|timeout| 10 + timeout));
             assert_eq!(resolutions.load(Ordering::SeqCst), 0);
 
             match case {
+                5 => {
+                    // No registration deadline is invented while the producer
+                    // retains custody; only its delivery advances admission.
+                    assert!(!state.poll(1_000_010, &mut cx));
+                    assert_eq!(state.status(), CredentialStatus::Pending);
+                    assert_eq!(state.deadline(), None);
+                    assert_eq!(resolutions.load(Ordering::SeqCst), 0);
+                    assert!(send.send(watch.unwrap()).is_ok());
+                    assert!(ready.0.load(Ordering::SeqCst));
+                    assert!(state.poll(1_000_010, &mut cx));
+                    assert_eq!(state.status(), CredentialStatus::Current);
+                    assert_eq!(resolutions.load(Ordering::SeqCst), 1);
+                }
                 4 => {
                     // The owner captures its clock after awaiting registration,
                     // with one second left on a still-valid original lease.
@@ -646,7 +659,7 @@ mod tests {
                     registrations: registrations.clone(),
                 });
                 let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
-                reader.credentials = Some(Credentials::new(provider, 0, 10_000));
+                reader.credentials = Some(Credentials::new(provider, 0, Some(10_000)));
                 reader.reset_source();
                 let ready = Arc::new(Ready(AtomicBool::new(false)));
                 let waker = Waker::from(ready.clone());
@@ -715,7 +728,7 @@ mod tests {
                 revision: Some(CredentialRevision::from([1; 32])),
             },
         );
-        let mut credentials = Credentials::new(source.clone().into(), 10, 25);
+        let mut credentials = Credentials::new(source.clone().into(), 10, Some(25));
         let waker = futures::task::noop_waker();
         let mut cx = Context::from_waker(&waker);
         assert!(!credentials.poll(10, &mut cx));
@@ -755,7 +768,7 @@ mod tests {
                 move || observed.lock().unwrap().clone(),
             );
             let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
-            reader.credentials = Some(Credentials::new(source.clone().into(), 500, 10_000));
+            reader.credentials = Some(Credentials::new(source.clone().into(), 500, Some(10_000)));
             reader.reset_source();
             assert!(!reader.readable());
             let ready = Arc::new(Ready(AtomicBool::new(false)));
@@ -792,10 +805,11 @@ mod tests {
             let snapshot = reader.snapshot();
             assert!(!snapshot.is_empty());
             let mut restored = Reader::new(ReaderPolicy::default()).unwrap();
-            restored.credentials = Some(Credentials::new(source.clone().into(), 500, 10_000));
+            restored.credentials = Some(Credentials::new(source.clone().into(), 500, Some(10_000)));
             restored.reset_source();
             restored.restore(&snapshot).unwrap();
-            assert_eq!(restored.residency().snapshot_bytes, snapshot.len());
+            assert!(restored.residency().snapshot_bytes > 0);
+            assert!(restored.residency().snapshot_bytes <= restored.policy().cache_bytes);
             assert!(restored.cache().record(&path, 0).is_none());
             restored.advance_credentials(500, &mut cx);
             assert_eq!(restored.residency().snapshot_bytes, 0);
@@ -899,7 +913,7 @@ mod tests {
                     },
                 );
                 let mut reader = Reader::new(ReaderPolicy::default()).unwrap();
-                reader.credentials = Some(Credentials::new(source.clone().into(), 0, 10_000));
+                reader.credentials = Some(Credentials::new(source.clone().into(), 0, Some(10_000)));
                 reader.reset_source();
                 let waker = futures::task::noop_waker();
                 let mut cx = Context::from_waker(&waker);
@@ -925,12 +939,32 @@ mod tests {
                 );
                 for other in &snapshots {
                     assert!(reader.restore(other).is_err());
+                    let mut pending = Reader::new(ReaderPolicy::default()).unwrap();
+                    pending.credentials = Some(Credentials::new(source.clone().into(), 0, None));
+                    pending.reset_source();
+                    pending.restore(other).unwrap();
+                    assert!(!pending.readable());
+                    assert!(pending.cache().record(&path, 0).is_none());
+                    pending.advance_credentials(0, &mut cx);
+                    assert!(pending.readable());
+                    assert!(pending.cache().record(&path, 0).is_none());
+                    assert_eq!(pending.residency().snapshot_bytes, 0);
                 }
+                let mut pending = Reader::new(ReaderPolicy::default()).unwrap();
+                pending.credentials = Some(Credentials::new(source.clone().into(), 0, None));
+                pending.reset_source();
+                pending.restore(&snapshot).unwrap();
+                // A later lease with the same revision must not revive the
+                // original persisted lease by extending its absolute expiry.
                 expires.store(25, Ordering::SeqCst);
                 source.invalidate().unwrap();
                 reader.advance_credentials(1, &mut cx);
                 assert!(reader.readable());
                 assert!(reader.restore(&snapshot).is_err());
+                pending.advance_credentials(1, &mut cx);
+                assert!(pending.readable());
+                assert!(pending.cache().record(&path, 0).is_none());
+                assert_eq!(pending.residency().snapshot_bytes, 0);
                 snapshots.push(snapshot);
             }
         });

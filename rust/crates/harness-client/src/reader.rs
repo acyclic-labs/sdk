@@ -385,7 +385,7 @@ const MAX_ANCHORS: usize = 256;
 /// Footprint of one client, for tests and diagnostics.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Residency {
-    /// One encoded snapshot awaiting source admission, separately bounded.
+    /// Staged cache charge awaiting source admission, under the cache budget.
     pub snapshot_bytes: usize,
     /// Cache charge, never above the byte budget.
     pub cache_bytes: usize,
@@ -415,7 +415,7 @@ pub struct Reader {
     policy: ReaderPolicy,
     cache: RecordCache,
     credentials: Option<Credentials>,
-    pending_snapshot: Option<Vec<u8>>,
+    pending_snapshot: Option<cache::PendingSnapshot>,
     driver: Option<std::sync::Arc<()>>,
     demand: BTreeMap<OpKey, Demand>,
     next_ticket: u64,
@@ -519,7 +519,7 @@ impl Reader {
                 if let Some(snapshot) = self.pending_snapshot.take() {
                     // A cache miss is harmless; it never authenticates a source
                     // or changes the requested observation's logical outcome.
-                    let _ = self.cache.restore(&snapshot);
+                    let _ = self.cache.install_snapshot(snapshot);
                 }
             }
             CredentialStatus::Pending => {}
@@ -587,10 +587,7 @@ impl Reader {
             return Err(SnapshotError);
         }
         if self.credential_status() == CredentialStatus::Pending {
-            if bytes.len() > self.cache.snapshot_limit() {
-                return Err(SnapshotError);
-            }
-            self.pending_snapshot = Some(bytes.to_vec());
+            self.pending_snapshot = Some(self.cache.prepare_snapshot(bytes)?);
             self.generation += 1;
             return Ok(());
         }
@@ -601,16 +598,10 @@ impl Reader {
 
     /// Adapt to memory pressure: shrink (or regrow) the one cache budget.
     pub fn set_cache_budget(&mut self, bytes: usize) {
-        let bytes = bytes;
         self.policy.cache_bytes = bytes;
         self.cache.set_budget(bytes);
-        if self
-            .pending_snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.len() > self.cache.snapshot_limit())
-        {
-            self.pending_snapshot = None;
-            self.generation += 1;
+        if let Some(snapshot) = &mut self.pending_snapshot {
+            snapshot.set_budget(bytes);
         }
     }
 
@@ -667,7 +658,10 @@ impl Reader {
     #[must_use]
     pub fn residency(&self) -> Residency {
         Residency {
-            snapshot_bytes: self.pending_snapshot.as_ref().map_or(0, Vec::len),
+            snapshot_bytes: self
+                .pending_snapshot
+                .as_ref()
+                .map_or(0, cache::PendingSnapshot::bytes),
             cache_bytes: self.cache.bytes(),
             passed_bytes: self.cache.passed_bytes(),
             backing_bytes: self.cache.backing_bytes(),

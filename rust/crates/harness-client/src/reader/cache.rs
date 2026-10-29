@@ -130,6 +130,23 @@ pub struct RecordCache {
     max_streams: usize,
 }
 
+/// Parsed cache residency awaiting exact source admission. Its contents are
+/// private until the saved binding is admitted by the original credential owner.
+pub(super) struct PendingSnapshot {
+    binding: Option<CredentialBinding>,
+    cache: RecordCache,
+}
+
+impl PendingSnapshot {
+    pub(super) fn bytes(&self) -> usize {
+        self.cache.bytes()
+    }
+
+    pub(super) fn set_budget(&mut self, bytes: usize) {
+        self.cache.set_budget(bytes);
+    }
+}
+
 impl RecordCache {
     /// An empty cache under one byte budget and a stream-metadata bound.
     #[must_use]
@@ -166,16 +183,6 @@ impl RecordCache {
         self.bytes = 0;
         self.cached_payload = 0;
         self.resident.clear();
-    }
-
-    pub(super) fn snapshot_limit(&self) -> usize {
-        self.max_bytes
-            .saturating_mul(3)
-            .saturating_add(
-                self.max_streams
-                    .saturating_mul(2 * acyclic_stream::MAX_PATH_BYTES + 192),
-            )
-            .saturating_add(MAGIC.len() + 64)
     }
 
     /// Cached charge under the byte budget: keys, values and bookkeeping of
@@ -953,12 +960,14 @@ impl RecordCache {
     /// # Errors
     /// Refuses malformed input without retaining any part of it.
     pub fn restore(&mut self, bytes: &[u8]) -> Result<(), SnapshotError> {
-        if bytes.len() > self.snapshot_limit() {
-            return Err(SnapshotError);
-        }
-        let binding = self.access.binding()?;
+        // Check current custody before spending work on an immediate restore.
+        self.access.binding()?;
+        let prepared = self.prepare_snapshot(bytes)?;
+        self.install_snapshot(prepared)
+    }
+
+    pub(super) fn prepare_snapshot(&self, bytes: &[u8]) -> Result<PendingSnapshot, SnapshotError> {
         let mut restored = Self::new(self.max_bytes, self.max_streams);
-        restored.access = self.access.clone();
         // Views from the old cache remain charged through an atomic restore.
         restored.backings = self.backings.clone();
         restored.clock = self.clock;
@@ -967,7 +976,7 @@ impl RecordCache {
         if input.take(MAGIC.len())? != MAGIC {
             return Err(SnapshotError);
         }
-        input.binding(binding.as_ref())?;
+        let binding = input.binding()?;
         let count = input.count()?;
         for _ in 0..count {
             let path = input.path()?;
@@ -1075,8 +1084,24 @@ impl RecordCache {
         if !input.0.is_empty() {
             return Err(SnapshotError);
         }
-        // The exact source and original absolute expiry must still hold after
-        // parsing. A renewed lease cannot extend a persisted lease's lifetime.
+        Ok(PendingSnapshot {
+            binding,
+            cache: restored,
+        })
+    }
+
+    pub(super) fn install_snapshot(
+        &mut self,
+        prepared: PendingSnapshot,
+    ) -> Result<(), SnapshotError> {
+        // A renewed lease cannot extend a persisted lease's lifetime. Check
+        // the full revision and original expiry at the publication boundary.
+        let binding = self.access.binding()?;
+        if binding != prepared.binding {
+            return Err(SnapshotError);
+        }
+        let mut restored = prepared.cache;
+        restored.access = self.access.clone();
         if self.access.binding()? != binding {
             return Err(SnapshotError);
         }
@@ -1123,14 +1148,14 @@ fn put_binding(
     Ok(())
 }
 
-/// Snapshot input exceeds admission bounds, is malformed, or the reader is active.
+/// Snapshot input is malformed, mismatches source custody, or the reader is active.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SnapshotError;
 
 impl std::fmt::Display for SnapshotError {
     fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         output.write_str(
-            "record cache snapshot rejected: invalid input, exceeded budget, or active reader",
+            "record cache snapshot rejected: invalid input, source mismatch, or active reader",
         )
     }
 }
@@ -1153,28 +1178,33 @@ fn put_str(out: &mut Vec<u8>, value: &str) {
 struct Input<'a>(&'a [u8]);
 
 impl<'a> Input<'a> {
-    fn binding(&mut self, expected: Option<&CredentialBinding>) -> Result<(), SnapshotError> {
-        match (self.u8()?, expected) {
-            (0, None) => return Ok(()),
-            (1, Some(binding)) => {
-                match (self.u8()?, &binding.revision) {
-                    (0, CredentialRevision::Bytes(bytes)) if self.take(32)? == bytes => {}
-                    (1, CredentialRevision::Text(units)) if self.count()? == units.len() => {
-                        for unit in units.iter() {
-                            if self.take(2)? != unit.to_le_bytes() {
-                                return Err(SnapshotError);
-                            }
-                        }
+    fn binding(&mut self) -> Result<Option<CredentialBinding>, SnapshotError> {
+        match self.u8()? {
+            0 => Ok(None),
+            1 => {
+                let revision = match self.u8()? {
+                    0 => CredentialRevision::from(
+                        <[u8; 32]>::try_from(self.take(32)?).map_err(|_| SnapshotError)?,
+                    ),
+                    1 => {
+                        let count = self.count()?;
+                        // Validate the complete encoded value before allocating.
+                        let bytes = self.take(count.checked_mul(2).ok_or(SnapshotError)?)?;
+                        let units: Vec<u16> = bytes
+                            .chunks_exact(2)
+                            .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+                            .collect();
+                        CredentialRevision::from(units)
                     }
                     _ => return Err(SnapshotError),
-                }
-                if self.u64()? == binding.expires_at_unix_seconds {
-                    return Ok(());
-                }
+                };
+                Ok(Some(CredentialBinding {
+                    revision,
+                    expires_at_unix_seconds: self.u64()?,
+                }))
             }
-            _ => {}
+            _ => Err(SnapshotError),
         }
-        Err(SnapshotError)
     }
     fn take(&mut self, count: usize) -> Result<&'a [u8], SnapshotError> {
         if self.0.len() < count {
@@ -1218,7 +1248,7 @@ mod tests {
 
     #[test]
     fn changed_aliases_unlink_and_corrupt_cycles_never_resolve_to_another_stream() {
-        let path = |name| StreamPath::new(format!("test/{name}")).unwrap();
+        let path = |name: &str| StreamPath::new(format!("test/{name}")).unwrap();
         let mut cache = RecordCache::new(4096, 4);
         cache.observe_origin(
             &path("child"),
@@ -1318,17 +1348,25 @@ mod tests {
     #[test]
     fn a_larger_snapshot_streams_into_smaller_residency_without_reviving_evicted_histories() {
         let path = |index| StreamPath::new(format!("test/s{index}")).unwrap();
-        let mut source = RecordCache::new(1 << 20, 100);
-        for index in 0..100 {
+        let mut source = RecordCache::new(1 << 20, 1025);
+        for index in 0..1025 {
             source.note_commit(&path(index), 0, CommitId::from_bytes([1; 32]));
             source.insert_record(&path(index), 0, OwnedBytes::from_static(b"old"), None);
         }
         let mut target = RecordCache::new(256, 1);
-        target.restore(&source.snapshot()).unwrap();
-        assert!(target.bytes() <= 256);
+        let snapshot = source.snapshot();
+        assert!(snapshot.len() > 64 * 1024);
+        let mut staged = target.prepare_snapshot(&snapshot).unwrap();
+        assert!(target.is_empty());
+        assert!(staged.bytes() <= 256);
+        staged.set_budget(192);
+        assert!(staged.bytes() <= 192);
+        target.set_budget(192);
+        target.install_snapshot(staged).unwrap();
+        assert!(target.bytes() <= 192);
         assert_eq!(target.streams(), 1);
         let retained = target.meta.keys().next().unwrap().clone();
-        let evicted = (0..100).map(path).find(|path| *path != retained).unwrap();
+        let evicted = (0..1025).map(path).find(|path| *path != retained).unwrap();
         assert!(target.record(&evicted, 0).is_none());
         target.note_commit(&evicted, 0, CommitId::from_bytes([2; 32]));
         target.insert_record(&evicted, 0, OwnedBytes::from_static(b"new"), None);
