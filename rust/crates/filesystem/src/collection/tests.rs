@@ -577,12 +577,33 @@ async fn an_intact_old_closure_survives_unrelated_collections_with_original_work
         if native {
             denied = KernelAccounting::native(&denied_original, &cancellation);
         }
-        assert!(
-            collection
-                .admit(&objects, scope, |_| false, &mut denied)
-                .await
-                .is_err()
-        );
+        let refusal = match collection
+            .admit(&objects, scope, |_| false, &mut denied)
+            .await
+        {
+            Ok(_) => return Err("finite work admitted an unfunded object read".into()),
+            Err(error) => error,
+        };
+        if native {
+            #[cfg(not(target_arch = "wasm32"))]
+            assert!(matches!(
+                refusal,
+                crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
+                    crate::WorkError::BudgetExceeded {
+                        counter: "object_bytes_read",
+                        ..
+                    }
+                ))
+            ));
+        } else {
+            assert!(matches!(
+                refusal,
+                crate::FsError::Work(crate::WorkError::BudgetExceeded {
+                    counter: "object_bytes_read",
+                    ..
+                })
+            ));
+        }
         assert_eq!(denied.spent().object_bytes_read, 0);
         let cancelled = crate::CancellationToken::new();
         cancelled.cancel();
