@@ -877,6 +877,7 @@ dependencies = [
  "pin-project-lite",
  "proptest",
  "rustix",
+ "security-framework 3.7.0",
  "serde",
  "serde_json",
  "subtle",

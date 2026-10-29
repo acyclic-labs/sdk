@@ -329,7 +329,7 @@ impl AuthorityRoot {
     ) -> Result<Self> {
         custody
             .with_seed(|seed| Self::new(id, *seed, audience))
-            .map_err(|_| Error::Unauthorized("OS signing-key custody is unavailable".into()))
+            .map_err(|error| Error::Unauthorized(error.to_string()))
     }
 
     /// Creates an issuer from host-managed key material.

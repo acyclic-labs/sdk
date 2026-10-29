@@ -1,6 +1,6 @@
 //! One credential entry owns a signing seed; persisted host metadata contains
-//! only its public opaque reference. Production prefers OS custody, with private
-//! config-directory files when no native store is reachable. Test and fixture
+//! only its public opaque reference. Production selects native custody unless
+//! the owner explicitly requests private-file custody. Test and fixture
 //! builds use process-local custody.
 //!
 //! A freshly generated seed needs no shared lock namespace: its identity is
@@ -46,8 +46,12 @@ pub struct ProvisionalSigningKey {
 
 enum Selection {
     Held(keyring::Entry, SecretBytes),
-    Vacant(Vec<keyring::Entry>),
+    Vacant(keyring::Entry),
 }
+
+mod error;
+use error::failure;
+pub use error::{CustodyCause, CustodyFailure};
 
 #[cfg(test)]
 thread_local! {
@@ -80,18 +84,15 @@ impl Drop for ProvisionalSigningKey {
 }
 
 fn unavailable() -> io::Error {
-    io::Error::other(
-        "signing-key custody failed; recovery: unlock the user's credential store or restore owner-only access to the original application configuration and reopen the original state directory",
-    )
+    failure("validate", CustodyCause::InvalidStoredSeed)
 }
 
 impl SigningKeyReference {
     /// Generate a root seed once using the shared entropy seam and retain it in
-    /// the first available custody store before publishing its reference.
+    /// the explicitly selected custody store before publishing its reference.
     /// The fresh identity is unknown to every other process until this owner
     /// publishes its reference, so no cross-process identity lock is needed.
-    /// Native stores are preferred; an unavailable native store selects the
-    /// private application configuration directory for this new identity.
+    /// Native-store failure never selects a different custody policy.
     pub fn create() -> io::Result<ProvisionalSigningKey> {
         let seed = Zeroizing::new(new_key()?);
         Self::admit(&seed, None)
@@ -128,7 +129,7 @@ impl SigningKeyReference {
         transaction: Option<crate::FileLock>,
     ) -> io::Result<ProvisionalSigningKey> {
         let reference = Self(*blake3::hash(seed).as_bytes());
-        let vacant = match reference.select() {
+        let entry = match reference.select()? {
             Selection::Held(entry, existing) => {
                 if !bool::from(existing.0.as_slice().ct_eq(seed)) {
                     return Err(unavailable());
@@ -140,35 +141,36 @@ impl SigningKeyReference {
                     _transaction: transaction,
                 });
             }
-            Selection::Vacant(entries) => entries,
+            Selection::Vacant(entry) => entry,
         };
-        for entry in vacant {
-            // Only an absent identity can select another backend. Retain the
-            // original handle and arm cleanup before a possibly lost write ack.
-            let mut key = ProvisionalSigningKey {
-                reference,
-                cleanup: AtomicBool::new(true),
-                entry,
-                _transaction: None,
-            };
-            if key.entry.set_secret(seed).is_err() {
-                continue;
-            }
-            let stored = SecretBytes(key.entry.get_secret().map_err(|_| unavailable())?);
-            if !bool::from(stored.0.as_slice().ct_eq(seed)) {
-                return Err(unavailable());
-            }
-            key._transaction = transaction;
-            return Ok(key);
+        // Retain the selected handle and arm cleanup before a possibly lost
+        // write acknowledgement. No failure selects another backend.
+        let mut key = ProvisionalSigningKey {
+            reference,
+            cleanup: AtomicBool::new(true),
+            entry,
+            _transaction: None,
+        };
+        key.entry
+            .set_secret(seed)
+            .map_err(|error| error::backend("write", error))?;
+        let stored = SecretBytes(
+            key.entry
+                .get_secret()
+                .map_err(|error| error::backend("verify", error))?,
+        );
+        if !bool::from(stored.0.as_slice().ct_eq(seed)) {
+            return Err(unavailable());
         }
-        Err(unavailable())
+        key._transaction = transaction;
+        Ok(key)
     }
 
     /// Borrow secret material only for bootstrap, then clear the OS output buffer
     /// on success, refusal or unwind. The reference never carries seed bytes.
     pub fn with_seed<T>(&self, consume: impl FnOnce(&[u8; 32]) -> T) -> io::Result<T> {
-        let Selection::Held(_entry, secret) = self.select() else {
-            return Err(unavailable());
+        let Selection::Held(_entry, secret) = self.select()? else {
+            return Err(failure("read", CustodyCause::MissingEntry));
         };
         let seed: &[u8; 32] = secret.0.as_slice().try_into().map_err(|_| unavailable())?;
         if !bool::from(blake3::hash(seed).as_bytes().ct_eq(&self.0)) {
@@ -177,65 +179,62 @@ impl SigningKeyReference {
         Ok(consume(seed))
     }
 
-    /// This key's entry in its one store: the first store holding it, else
-    /// every reachable vacant store in preference order for creation. Existing
-    /// custody is never copied or regenerated when its store becomes unavailable.
-    fn select(&self) -> Selection {
+    /// Probe exactly the selected store. A refusal is never treated as absence.
+    fn select(&self) -> io::Result<Selection> {
         let name = blake3::Hash::from_bytes(self.0).to_hex();
-        let mut vacant = Vec::new();
-        for entry in stores(name.as_str()) {
-            match entry.get_secret().map(SecretBytes) {
-                Ok(held) => return Selection::Held(entry, held),
-                Err(keyring::Error::NoEntry) => vacant.push(entry),
-                Err(_) => {}
-            }
+        let entry = store(name.as_str())?;
+        match entry.get_secret().map(SecretBytes) {
+            Ok(held) => Ok(Selection::Held(entry, held)),
+            Err(keyring::Error::NoEntry) => Ok(Selection::Vacant(entry)),
+            Err(error) => Err(error::backend("read", error)),
         }
-        Selection::Vacant(vacant)
     }
 
     #[cfg(test)]
     fn entry(&self) -> io::Result<keyring::Entry> {
-        match self.select() {
+        match self.select()? {
             Selection::Held(entry, _held) => Ok(entry),
-            Selection::Vacant(entries) => entries.into_iter().next().ok_or_else(unavailable),
+            Selection::Vacant(entry) => Ok(entry),
         }
     }
 }
 
-/// The OS credential stores for `name`, in preference order: the one native
-/// store on Windows and Apple platforms. On Linux this is the Secret Service,
-/// only when a D-Bus session exists, then the kernel keyring
-/// ([`crate::kernel_keyring`]), which needs no daemon,
-/// followed by private configuration files when native custody is unavailable.
+/// One explicit process custody policy, shared by every native consumer.
+/// Linux selects Secret Service with a session bus, otherwise the kernel store.
+/// Private files require an explicit owner choice; failures never change policy.
 #[cfg(not(any(test, feature = "test-support")))]
-fn stores(name: &str) -> impl Iterator<Item = keyring::Entry> {
+fn store(name: &str) -> io::Result<keyring::Entry> {
+    match std::env::var_os("ACYCLIC_SIGNING_CUSTODY").as_deref() {
+        None => {}
+        Some(value) if value == "native" => {}
+        Some(value) if value == "private-file" => return file::entry(name),
+        Some(_) => return Err(failure("select", CustodyCause::InvalidPolicy)),
+    }
+    if std::env::var_os("ACYCLIC_SIGNING_CUSTODY_DIRECTORY").is_some() {
+        return Err(failure("select", CustodyCause::InvalidPolicy));
+    }
     #[cfg(target_os = "linux")]
     {
-        std::iter::once_with(move || {
-            std::env::var_os("DBUS_SESSION_BUS_ADDRESS")?;
-            keyring::secret_service::SsCredential::new_with_target(None, SERVICE, name)
-                .ok()
-                .map(|service| keyring::Entry::new_with_credential(Box::new(service)))
-        })
-        .flatten()
-        .chain(std::iter::once_with(move || {
-            keyring::Entry::new_with_credential(Box::new(crate::kernel_keyring::KernelKey::new(
-                SERVICE, name,
+        if std::env::var_os("DBUS_SESSION_BUS_ADDRESS").is_some() {
+            let service =
+                keyring::secret_service::SsCredential::new_with_target(None, SERVICE, name)
+                    .map_err(|error| error::backend("open", error))?;
+            Ok(keyring::Entry::new_with_credential(Box::new(service)))
+        } else {
+            Ok(keyring::Entry::new_with_credential(Box::new(
+                crate::kernel_keyring::KernelKey::new(SERVICE, name),
             )))
-        }))
-        .chain(std::iter::once_with(move || file::entry(name).ok()).flatten())
+        }
     }
     #[cfg(not(target_os = "linux"))]
     {
-        std::iter::once_with(move || keyring::Entry::new(SERVICE, name).ok())
-            .flatten()
-            .chain(std::iter::once_with(move || file::entry(name).ok()).flatten())
+        keyring::Entry::new(SERVICE, name).map_err(|error| error::backend("open", error))
     }
 }
 
 #[cfg(any(test, feature = "test-support"))]
-fn stores(name: &str) -> impl Iterator<Item = keyring::Entry> {
-    std::iter::once(fixture::entry(name))
+fn store(name: &str) -> io::Result<keyring::Entry> {
+    Ok(fixture::entry(name))
 }
 
 #[cfg(test)]

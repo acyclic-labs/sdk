@@ -12,7 +12,8 @@ struct Credential {
 
 #[cfg(not(any(test, feature = "test-support")))]
 pub(super) fn entry(name: &str) -> io::Result<keyring::Entry> {
-    let config = dirs::config_dir().filter(|path| path.is_absolute()).ok_or_else(|| {
+    let config = std::env::var_os("ACYCLIC_SIGNING_CUSTODY_DIRECTORY").map(PathBuf::from)
+        .or_else(dirs::config_dir).filter(|path| path.is_absolute()).ok_or_else(|| {
         io::Error::new(io::ErrorKind::NotFound,
             "signing custody configuration directory unavailable; recovery: configure an absolute application configuration directory")
     })?;
