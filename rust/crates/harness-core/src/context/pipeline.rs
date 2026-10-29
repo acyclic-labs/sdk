@@ -410,9 +410,8 @@ impl ContextPipeline {
             return Ok(());
         }
         let frame = crate::executor::with_history_io(io, |work| {
-            let context_bytes = crate::executor::json::json_byte_length(context, u64::MAX, work)?;
-            let messages =
-                crate::executor::json::json_byte_length(&context.messages, u64::MAX, work)?;
+            let context_bytes = crate::executor::json::json_byte_length(context, None, work)?;
+            let messages = crate::executor::json::json_byte_length(&context.messages, None, work)?;
             Ok::<_, crate::Error>(context_bytes - messages)
         })?;
         let optional_limits = Limits {

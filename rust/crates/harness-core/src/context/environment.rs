@@ -84,7 +84,7 @@ impl EnvironmentFacts {
             return Ok(None);
         }
         let used = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(context, u64::MAX, work)
+            crate::executor::json::json_byte_length(context, None, work)
         })?;
         let mut bodies = u64::MAX;
         crate::model::reserve_instruction_bodies(&context.messages, &mut bodies, io)?;
@@ -93,7 +93,7 @@ impl EnvironmentFacts {
             content: ModelContent::Text(String::new()),
         };
         let wrapper = crate::executor::with_history_io(io, |work| {
-            crate::executor::json::json_byte_length(&wrapper, u64::MAX, work)
+            crate::executor::json::json_byte_length(&wrapper, None, work)
         })?;
         // Empty string quotes are already in wrapper. One separator and at
         // most one extra input-index digit accompany the inserted message.

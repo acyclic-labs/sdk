@@ -108,7 +108,7 @@ pub(super) fn stock_json_bound<T: Serialize>(
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
-    crate::executor::json::json_byte_length(value, maximum, &mut None).map(|_| ())
+    crate::executor::json::json_byte_length(value, Some(maximum), &mut None).map(|_| ())
 }
 
 impl StockExecution<'_> {
