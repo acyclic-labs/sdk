@@ -1339,3 +1339,7 @@ Cron parser follow-through: numeric tokens use the same u8 parser after checking
 | Constant or policy | File:line | Category | Action |
 |---|---|---|---|
 | Publication abandonment readiness via an externally observed atomic flag | `rust/crates/filesystem/src/native_mount/adapter/tests/concurrent/publication.rs:114` | Event wait fixed | Wait on the guard's Notify permit while driving the same publication future. Preserve entered-count, rejection, drop/abandon, observer/retry and original budget controls. No sleeps, periodic probes or raised timeout. Production cost unchanged. Full runtime validation remains pending. |
+
+| Constant or policy | File:line | Category | Action |
+|---|---|---|---|
+| Linux subscriber-pause flood expecting SDK-fabricated overflow | `rust/crates/filesystem/src/source_watch/tests.rs:239` | 1 obsolete expectation deleted | The same real 20000-file flood must deliver every original path unless the host actually reports loss. Keep post-flood delivery/exactness and Windows native-buffer overflow assertion. Borrow and sort delivered paths once for membership checks; no quadratic scan, sleeps, budget/count increase or filtered tests. The original-funded queue runtime control passed; this expectation update awaits compilation. |
