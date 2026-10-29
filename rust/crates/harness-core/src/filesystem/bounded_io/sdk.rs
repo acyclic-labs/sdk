@@ -179,7 +179,7 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
     let mut storage = [0_u8; 19 + 2 * acyclic_fs::ObjectId::ENCODED_LEN];
     let label = &mut storage[..label_bytes];
     label[..19].copy_from_slice(b"harness-generation-");
-    hex::encode_to_slice(&reference, &mut label[19..])
+    hex::encode_to_slice(reference.as_slice(), &mut label[19..])
         .map_err(|error| LazyError::WorkspaceCause(WorkspaceError::Path(error.to_string())))?;
     let label = std::str::from_utf8(label)
         .map_err(|error| LazyError::WorkspaceCause(WorkspaceError::Path(error.to_string())))?;

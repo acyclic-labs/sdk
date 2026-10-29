@@ -172,7 +172,7 @@ impl Fixture {
         let retained = acyclic_fs::kernel::decode_retention_created(&records[0].payload, 4096)?;
         assert_eq!(retained.volume_id, self.workspace.id().volume_id());
         assert_eq!(
-            hex::encode(retained.generation_root.to_bytes()),
+            hex::encode(retained.generation_root.to_bytes().as_slice()),
             self.file.version()
         );
         assert_eq!(

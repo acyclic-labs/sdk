@@ -266,7 +266,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
     let decoded = GenerationId::from_bytes(generation.as_resource().key())
         .expect("published canonical generation");
     assert_eq!(decoded.object_id().storage.is_some(), sealed);
-    assert_eq!(hex::encode(decoded.to_bytes()), first.version());
+    assert_eq!(hex::encode(decoded.to_bytes().as_slice()), first.version());
     for invalid in [
         decoded.digest().into_bytes().to_vec(),
         decoded.to_bytes()[..decoded.to_bytes().len() - 1].to_vec(),
