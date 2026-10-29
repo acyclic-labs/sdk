@@ -499,9 +499,6 @@ mod http {
             }
             "fork" => {
                 let excluded = array(field(item, "exclude")?)?;
-                if excluded.len() > crate::MAX_ITEMS {
-                    return Err("too many exclusions");
-                }
                 for excluded in excluded {
                     path(excluded)?;
                 }
