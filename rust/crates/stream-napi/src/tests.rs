@@ -1,5 +1,6 @@
 use super::*;
 mod reconnect;
+mod tail;
 use acyclic_stream::{
     AppendOutcome, AppendRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope,
     ForkRequest, IdempotencyKey, IdempotencyObservation, ReadRequest, RecordStream, StreamProvider,
