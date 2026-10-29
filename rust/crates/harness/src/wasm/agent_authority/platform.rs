@@ -236,6 +236,8 @@ pub(super) fn open(owner: JsValue) -> Result<WasmAgentAuthority, JsValue> {
         platform.clone(),
     )
     .map_err(js_error)?;
+    #[cfg(feature = "browser")]
+    let retained_context = context.clone();
     let authority = crate::core::AdmittedAuthority::from_platform(
         verifier,
         admission.scope,
@@ -247,6 +249,8 @@ pub(super) fn open(owner: JsValue) -> Result<WasmAgentAuthority, JsValue> {
     Ok(WasmAgentAuthority {
         issuer: crate::core::RuntimeAuthority::admitted(authority, admission.operation),
         caller,
+        #[cfg(feature = "browser")]
+        context: retained_context,
     })
 }
 

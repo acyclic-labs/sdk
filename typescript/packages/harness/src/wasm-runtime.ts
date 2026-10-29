@@ -23,12 +23,14 @@ export function assertBrowserWasmExports(value: unknown): void {
   const exports = value as Record<string, unknown>;
   const authority = hasClass(exports, "WasmAgentAuthority", "wasmagentauthority", ["issueScope", "free"], true);
   const registry = hasClass(exports, "WasmAgentRegistry", "wasmagentregistry", ["registerTool", "configureModel", "bindMachinesWorkspace", "free"], true);
+  const machines = hasClass(exports, "WasmMachinesWorkspace", "wasmmachinesworkspace", ["free"])
+    && hasStaticMethods(exports, "WasmMachinesWorkspace", "wasmmachinesworkspace", ["open"]);
   const agents = hasClass(exports, "WasmAgents", "wasmagents", [
     "create", "send", "cancel", "archive", "pause", "list", "read", "readFile", "free",
   ]) && hasStaticMethods(exports, "WasmAgents", "wasmagents", ["open", "openHosting"]);
   const guest = hasClass(exports, "AgentGuest", "agentguest", ["manifest", "onRecord", "free"])
     && hasStaticMethods(exports, "AgentGuest", "agentguest", ["open", "abiVersion"]);
-  if (!authority || !registry || !agents || !guest) {
+  if (!authority || !registry || !machines || !agents || !guest) {
     throw new Error("harness WASM does not provide the required browser host exports");
   }
 }
