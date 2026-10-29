@@ -469,7 +469,7 @@ async fn mounted_publication_retries_and_replacements_keep_their_volume_with_neg
             .observe_staged_once(
                 operation,
                 None,
-                64,
+                Some(64),
                 crate::conversation::ContentAccess::default()
             )?
             .await?
@@ -583,7 +583,7 @@ async fn project_only_callers_recover_their_own_operations() -> Result<()> {
     };
     let observe = move |operation| async move {
         publisher
-            .observe_staged_once(operation, None, 1024, access())?
+            .observe_staged_once(operation, Some(1024), access())?
             .await
             .map(|(file, _)| file)
     };
@@ -623,7 +623,7 @@ async fn project_only_callers_recover_their_own_operations() -> Result<()> {
             .observe_staged_once(
                 OperationId::new(),
                 None,
-                1024,
+                Some(1024),
                 crate::conversation::ContentAccess {
                     ceiling: Some(&none),
                     io: None

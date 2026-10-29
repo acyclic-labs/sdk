@@ -20,9 +20,7 @@ impl FollowFilter {
     }
     /// Validates and canonicalizes a requested subscription filter.
     pub fn new(mut requested: wire::SessionFilter) -> Result<Self, StreamError> {
-        if requested.encoded_len() > crate::MAX_COMMAND_BYTES
-            || requested.all_of.len() > crate::MAX_ITEMS
-        {
+        if requested.encoded_len() > crate::MAX_COMMAND_BYTES {
             return Err(StreamError::LimitExceeded);
         }
         let conjunction = std::mem::take(&mut requested.all_of);
@@ -265,23 +263,15 @@ fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, Str
     if !filter.all_of.is_empty() {
         return Err(StreamError::InvalidArgument);
     }
-    if filter.keys.len() > crate::MAX_ITEMS
-        || filter.attributes.len() > crate::MAX_RECORD_ATTRIBUTES
-        || filter.encoded_len() > crate::MAX_COMMAND_BYTES
-    {
+    if filter.encoded_len() > crate::MAX_COMMAND_BYTES {
         return Err(StreamError::LimitExceeded);
     }
     for range in &filter.keys {
-        if range.start.len() > crate::MAX_RECORD_KEY_BYTES
-            || range.end.len() > crate::MAX_RECORD_KEY_BYTES
-        {
-            return Err(StreamError::LimitExceeded);
-        }
         if !range.end.is_empty() && range.start >= range.end {
             return Err(StreamError::InvalidArgument);
         }
     }
-    filter.keys.sort_by(|left, right| {
+    filter.keys.sort_unstable_by(|left, right| {
         left.start
             .cmp(&right.start)
             .then_with(|| left.end.cmp(&right.end))
@@ -301,7 +291,7 @@ fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, Str
     filter.keys = ranges;
     filter
         .attributes
-        .sort_by(|left, right| left.name.cmp(&right.name));
+        .sort_unstable_by(|left, right| left.name.cmp(&right.name));
     if filter
         .attributes
         .windows(2)
@@ -316,10 +306,7 @@ fn canonical(mut filter: wire::SessionFilter) -> Result<wire::SessionFilter, Str
         {
             return Err(StreamError::InvalidArgument);
         }
-        if attribute.any_of.len() > crate::MAX_ITEMS {
-            return Err(StreamError::LimitExceeded);
-        }
-        attribute.any_of.sort();
+        attribute.any_of.sort_unstable();
         attribute.any_of.dedup();
     }
     Ok(filter)

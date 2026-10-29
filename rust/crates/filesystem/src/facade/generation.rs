@@ -1,7 +1,5 @@
 use super::*;
 
-pub(super) const MAXIMUM_VOLUME_EVENT_BYTES: u64 = 4 * 1024;
-
 /// One independently configured volume handle reconstructed from authority.
 pub struct Volume<A: 'static, O: 'static> {
     pub(crate) fs: Fs<A, O>,
@@ -69,15 +67,14 @@ fn generation_from_payload(
 ) -> Result<ObjectId, FsError> {
     let mut observer = crate::kernel::OriginalReadAccounting::new(accounting)?;
     let (record_volume, root) = if sequence == Sequence::new(1) {
-        let created = decode_volume_created(payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut |step| {
+        let created = decode_volume_created(payload, payload.len() as u64, &mut |step| {
             observer.observe(step)
         })?;
         (created.volume_id, created.initial_generation_root)
     } else {
-        let published =
-            decode_published_generation(payload, MAXIMUM_VOLUME_EVENT_BYTES, &mut |step| {
-                observer.observe(step)
-            })?;
+        let published = decode_published_generation(payload, payload.len() as u64, &mut |step| {
+            observer.observe(step)
+        })?;
         (published.volume_id, published.generation_root)
     };
     let _allocation = observer.into_allocation();
@@ -190,11 +187,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
     ) -> Result<(ObjectId, Head), FsError> {
         let authority_id = volume_authority_id(self.id);
         let mut authority = authority_work(accounting, cancellation)?;
+        let maximum_payload_bytes = authority.accounting().remaining()?.authority_bytes_read;
         let result = self
             .fs
             .inner
             .authority
-            .head_payload(authority_id, MAXIMUM_VOLUME_EVENT_BYTES, &mut authority)
+            .head_payload(authority_id, maximum_payload_bytes, &mut authority)
             .await;
         record_authority_work(accounting, &authority)?;
         // Introduce the payload after its funding, so every exit drops the
@@ -218,7 +216,7 @@ fn generation_from_head_payload(
     volume_id: VolumeId,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
 ) -> Result<ObjectId, FsError> {
-    if let Ok(deleted) = decode_workspace_deleted(payload, MAXIMUM_VOLUME_EVENT_BYTES) {
+    if let Ok(deleted) = decode_workspace_deleted(payload, payload.len() as u64) {
         if deleted != volume_id {
             return Err(FsError::VolumeMismatch);
         }

@@ -112,9 +112,9 @@ async fn zero_reconcile_limits_do_not_close_or_claim_a_window() {
             .expect("lease");
         let mut limits = OperationReconcileLimits::default();
         match field {
-            0 => limits.maximum_generations = 0,
-            1 => limits.maximum_changes = 0,
-            2 => limits.maximum_conflicts = 0,
+            0 => limits.maximum_generations = Some(0),
+            1 => limits.maximum_changes = Some(0),
+            2 => limits.maximum_conflicts = Some(0),
             _ => unreachable!("only the three reconcile bounds are covered"),
         }
 
@@ -701,3 +701,55 @@ async fn duplicate_close_persists_expiry_of_the_remaining_lease() {
 }
 
 mod streams;
+
+#[tokio::test]
+async fn lease_admission_waits_through_contention_without_a_retry_ceiling() {
+    struct ContendedStore {
+        inner: MemoryOperationWindowStore,
+        remaining: AtomicU64,
+    }
+    impl OperationWindowStore for ContendedStore {
+        type Error = MemoryOperationWindowStoreError;
+
+        async fn load(
+            &self,
+            id: WorkspaceId,
+        ) -> Result<Option<OperationWindowSnapshot>, Self::Error> {
+            self.inner.load(id).await
+        }
+
+        async fn compare_and_swap(
+            &self,
+            id: WorkspaceId,
+            expected: u64,
+            replacement: OperationWindowSnapshot,
+        ) -> Result<bool, Self::Error> {
+            if self
+                .remaining
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Ok(false);
+            }
+            self.inner.compare_and_swap(id, expected, replacement).await
+        }
+    }
+    let coordinator = OperationWindowCoordinator::new(ContendedStore {
+        inner: MemoryOperationWindowStore::new(),
+        remaining: AtomicU64::new(100),
+    });
+    let id = WorkspaceId::from_bytes([97; 16]);
+    let lease = coordinator
+        .begin(id, generation(3), "contended", 1, 1000)
+        .await
+        .expect("eventually admitted");
+    assert_eq!(lease.workspace_id, id);
+    assert_eq!(coordinator.store().remaining.load(Ordering::SeqCst), 0);
+    let snapshot = coordinator.snapshot(id).await.expect("published lease");
+    let OperationWindowPhase::Active { leases, .. } = snapshot.phase else {
+        panic!("active lease");
+    };
+    assert!(leases.contains_key(&lease.lease_id));
+}

@@ -334,19 +334,48 @@ pub fn write_all_at(
     write_bounded_in_place(file, offset, bytes, meter)
 }
 
+/// Terminal native output, including a completed page requiring continuation.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeControlCompletion {
+    /// All output for this request is present.
+    Complete(usize),
+    /// This output page is present; repeat the query from its continuation.
+    MoreData(usize),
+}
+
+#[cfg(windows)]
+impl NativeControlCompletion {
+    /// Requires the request's complete output, preserving the native status.
+    pub fn into_complete(self) -> io::Result<usize> {
+        match self {
+            Self::Complete(bytes) => Ok(bytes),
+            Self::MoreData(_) => Err(io::Error::from_raw_os_error(234)),
+        }
+    }
+}
+
 /// Completes one device request on a held handle, optionally admitting its operation kind.
+/// Partial output retains its byte count for continuation after kernel custody ends.
 #[cfg(windows)]
 pub fn device_control_in_place(
-    file: &impl std::os::windows::io::AsRawHandle,
+    file: &File,
     code: u32,
     input: &[u8],
     output: &mut [u8],
-    meter: Option<(&dyn NativeReadMeter, NativeOperationKind)>,
-) -> io::Result<usize> {
-    if let Some((meter, _)) = meter {
+    kind: NativeOperationKind,
+    meter: Option<&dyn NativeReadMeter>,
+) -> io::Result<NativeControlCompletion> {
+    if let Some(meter) = meter {
         meter.check()?;
     }
-    windows::control_in_place(file, code, input, output, meter)
+    let access = match kind {
+        NativeOperationKind::Read => 0x0012_0089,
+        NativeOperationKind::Write | NativeOperationKind::Durability => 0x0012_0116,
+    };
+    windows::with_overlapped(file, access, false, meter, |file| {
+        windows::control_in_place(file, code, input, output, meter.map(|meter| (meter, kind)))
+    })
 }
 
 /// One owned positional write whose buffer remains live through completion.

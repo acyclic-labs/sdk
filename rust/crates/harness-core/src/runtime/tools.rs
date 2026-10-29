@@ -187,8 +187,8 @@ fn copy_approval_subject(
         let arguments = crate::executor::json::json_value_copy_bounded(
             &invocation.arguments,
             crate::executor::json::JsonBounds {
-                maximum_bytes: remaining.bytes_encoded,
-                maximum_items: remaining.items_examined,
+                maximum_bytes: Some(remaining.bytes_encoded),
+                maximum_items: Some(remaining.items_examined),
                 maximum_depth: crate::executor::json::RECORD_MAXIMUM_DEPTH,
             },
             Some(crate::wire::ErrorCode::Invalid),

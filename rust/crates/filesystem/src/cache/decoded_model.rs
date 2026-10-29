@@ -44,8 +44,6 @@ fn scenario(alias: bool, split: bool) {
             ObjectCacheOptions {
                 maximum_entries: 1,
                 maximum_bytes: 8,
-                maximum_in_flight: 1,
-                maximum_waiters_per_object: 1,
             },
         )
         .unwrap(),

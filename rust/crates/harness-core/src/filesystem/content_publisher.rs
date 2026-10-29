@@ -17,7 +17,7 @@ pub struct FilesystemContentPublisher<A: 'static, O: 'static> {
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     grant: ContentGrant,
-    maximum_bytes: u64,
+    maximum_bytes: Option<u64>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
@@ -29,14 +29,15 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         volume: &VolumeRef,
         verifier: &AuthorityVerifier,
         scope: &Scope,
-        maximum_bytes: u64,
+        maximum_bytes: impl Into<Option<u64>>,
         io: Option<&PreparationIo>,
     ) -> Result<Arc<Self>> {
-        if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+        let maximum_bytes = maximum_bytes.into();
+        if maximum_bytes == Some(0) {
             return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
-                "content publication limit must be positive and finite",
+                "content publication limit must be positive",
             ));
         }
         crate::executor::with_history_io(io, |work| -> Result<_> {
@@ -46,9 +47,6 @@ impl<A, O> FilesystemContentPublisher<A, O> {
                 scope,
                 volume,
                 VolumeOperation::Write,
-                io.map(|io| io.remaining().map(|remaining| remaining.bytes_encoded))
-                    .transpose()?
-                    .unwrap_or(u64::MAX),
                 &mut quota,
             )?;
             let volume = volume.copy_in_quota(&mut quota)?;
@@ -147,7 +145,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
         &'a self,
         operation: OperationId,
         replacement: Option<(&'a VolumeRef, &'a str)>,
-        maximum: u64,
+        maximum: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
         let crate::conversation::ContentAccess { ceiling, io } = access;
@@ -191,7 +189,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
                     bytes,
                     media,
                     display,
-                    self.maximum_bytes,
+                    self.maximum_bytes.unwrap_or((bytes.len() as u64).max(1)),
                     &retry,
                     None,
                     crate::conversation::ContentAccess { ceiling, io },
@@ -214,7 +212,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         &self,
         operation: OperationId,
         replacement: Option<(&VolumeRef, &str)>,
-        maximum: u64,
+        maximum: Option<u64>,
         ceiling: Option<&crate::Capabilities>,
         io: Option<&PreparationIo>,
     ) -> Result<Option<FileRef>> {
@@ -243,7 +241,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     volume: &self.volume,
                     key: &retry,
                     expected_path: replacement.map(|(_, path)| path),
-                    maximum_bytes: maximum.min(self.maximum_bytes),
+                    maximum_bytes: maximum.into_iter().chain(self.maximum_bytes).min(),
                     internal_class: None,
                     purpose: if replacement.is_some() {
                         super::PublicationPurpose::WriteReceipt
@@ -314,7 +312,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 bytes,
                 media,
                 display,
-                self.maximum_bytes,
+                self.maximum_bytes.unwrap_or((bytes.len() as u64).max(1)),
                 &retry,
                 None,
                 generation,
@@ -485,7 +483,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     volume: &self.volume,
                     key: &key,
                     expected_path: Some(path),
-                    maximum_bytes: maximum.min(self.maximum_bytes),
+                    maximum_bytes: Some(
+                        self.maximum_bytes
+                            .map_or(maximum, |limit| maximum.min(limit)),
+                    ),
                     internal_class: None,
                     purpose: super::PublicationPurpose::WriteReceipt,
                     scope: self.grant.policy_scope(),

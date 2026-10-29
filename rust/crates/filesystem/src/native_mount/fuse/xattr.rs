@@ -115,11 +115,6 @@ impl FuseProjection {
             for name in &page.0.names {
                 work.charge(Items.delta(1))?;
                 let required = name.len().checked_add(1).ok_or(libc::EOVERFLOW)?;
-                if encoded.len().checked_add(required).ok_or(libc::EOVERFLOW)?
-                    > MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES
-                {
-                    return Err(libc::E2BIG.into());
-                }
                 work.admit(Copy.delta(required as u64))?;
                 fuse_reserve(&mut encoded, required, work)?;
                 encoded.extend_from_slice(name);

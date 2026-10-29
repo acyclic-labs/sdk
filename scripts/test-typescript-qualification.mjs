@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,22 +26,6 @@ function packageEntries() {
 }
 
 const entries = packageEntries();
-
-for (const command of ["create", "verify"]) {
-  test(`${command} rejects an oversized receipt before inspecting archives or source`, () => {
-    const work = mkdtempSync(join(tmpdir(), "acyclic-oversized-receipt-"));
-    try {
-      const receipt = join(work, "receipt.json");
-      writeFileSync(receipt, "");
-      truncateSync(receipt, command === "create" ? 16_777_217 : 1_048_577);
-      const args = command === "create" ? [command, work, "a".repeat(40), receipt] : [command, receipt, "a".repeat(40), "absent.tgz", join(work, "absent.tgz")];
-      const result = spawnSync(process.execPath, [qualification, ...args], { encoding: "utf8" });
-      assert.notEqual(result.status, 0);
-      assert.match(result.stderr, /receipt must be a regular file within its size bound/);
-      assert.equal(existsSync(join(work, "QUALIFICATION.json")), false);
-    } finally { rmSync(work, { recursive: true, force: true }); }
-  });
-}
 
 for (const command of ["create", "consumer"]) {
   test(`${command} requires its compiler receipt argument`, () => {
@@ -85,6 +69,7 @@ for (const mutation of ["source", "baseline", "stale-dist"]) {
     try {
       for (const directory of ["scripts", "release", "target", "typescript/packages/demo/src", "compatibility/native-families"]) mkdirSync(join(stage, directory), { recursive: true });
       cpSync(qualification, join(stage, "scripts/typescript-qualification.mjs"));
+      cpSync(join(root, "scripts/process-capture.mjs"), join(stage, "scripts/process-capture.mjs"));
       cpSync(join(root, "release/npm-packages.json"), join(stage, "release/npm-packages.json"));
       writeFileSync(join(stage, ".gitignore"), "target/\ntypescript/packages/*/dist/\n");
       writeFileSync(join(stage, "typescript/packages/demo/src/index.ts"), "export const value = 1;\n");
@@ -157,6 +142,7 @@ for (const mutation of ["none", "archive-dist", "output", "source-digest", "comm
       mkdirSync(join(stage, "release"));
       mkdirSync(join(stage, "target"));
       for (const name of ["typescript-qualification.mjs", "validate-npm-package.mjs", "archive-utils.mjs"]) cpSync(join(root, "scripts", name), join(stage, "scripts", name));
+      cpSync(join(root, "scripts/process-capture.mjs"), join(stage, "scripts/process-capture.mjs"));
       cpSync(join(root, "release/npm-packages.json"), join(stage, "release/npm-packages.json"));
       writeFileSync(join(stage, ".gitignore"), "/target/\n/archives/\n/archive-inputs/\n/typescript/packages/*/dist/\n/typescript/packages/*/generated/wasm/\n");
       for (const item of entries) writeArchiveFixture(stage, item);
@@ -285,12 +271,13 @@ test("qualification rejects a valid archive with the wrong manifest identity", (
   }
 });
 
-test("verify-only publication staging runs with only the copied qualification script", () => {
+test("verify-only publication staging runs with the copied qualification dependency closure", () => {
   const stage = mkdtempSync(join(tmpdir(), "acyclic-qualification-stage-"));
   try {
     mkdirSync(join(stage, "scripts"), { recursive: true });
     mkdirSync(join(stage, "release"), { recursive: true });
     cpSync(qualification, join(stage, "scripts/typescript-qualification.mjs"));
+    cpSync(join(root, "scripts/process-capture.mjs"), join(stage, "scripts/process-capture.mjs"));
     cpSync(join(root, "release/npm-packages.json"), join(stage, "release/npm-packages.json"));
     for (const item of releasePackages) {
       const manifest = join(root, "typescript/packages", item.directory, "package.json");

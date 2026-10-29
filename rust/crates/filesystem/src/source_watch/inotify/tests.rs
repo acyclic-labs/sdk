@@ -58,12 +58,8 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     let mut birth = crate::NativeMaterializationWork::from_meter(original.clone());
     let delivery = Arc::new(Delivery::new(Arc::new(Ignored), &mut birth)?);
     let watch = NativeSourceWatch::start_driver(&host, delivery, &mut birth)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !watch.shared.polling.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
-        std::thread::yield_now();
-    }
-    assert!(watch.shared.polling.load(Ordering::Acquire));
-    let paused = watch.paused();
+    // The cursor lock waits for any delivery already in progress.
+    let mut paused = watch.shared.reading();
     // Startup leaves a retired gauge in the owner's admission registry; its
     // compaction is owner housekeeping that the next owner charge settles.
     original.lock().reconcile_cancellation_registry()?;
@@ -136,6 +132,85 @@ fn reused_watch_keeps_storage_on_its_owner_and_io_on_each_caller()
     assert!(ordinary.receipt().bytes_copied > 0);
     assert_eq!(ordinary.live_allocation_bytes(), 0);
     watch.unadmit_with_work(Path::new("a"), &mut ordinary)?;
+
+    // Keep delivery paused while real kernel records accumulate beyond one
+    // read chunk. Each drain routes newly completed filesystem work; it is
+    // not a readiness loop and prevents a real kernel queue overflow.
+    let hub = hub::hub()?;
+    for index in 0..128 {
+        std::fs::write(
+            root.path().join(format!("{index:03}-{}", "x".repeat(200))),
+            b"changed",
+        )?;
+        hub.drain()?;
+    }
+    let (queued, overflowed) = watch
+        .shared
+        .inbox
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .pending();
+    assert!(queued > READ_BUFFER_BYTES);
+    assert!(!overflowed, "a subscriber backlog is not kernel loss");
+    let retained = watch.shared.retained_variable_bytes.load(Ordering::Acquire);
+    assert!(retained > retained_before + READ_BUFFER_BYTES as u64);
+    let mut remaining = queued;
+    while remaining != 0 {
+        let read = watch
+            .shared
+            .inbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take(
+                &mut paused.buffer,
+                READ_BUFFER_BYTES,
+                &watch.shared,
+                &mut caller,
+            )?;
+        assert!(read <= READ_BUFFER_BYTES);
+        remaining = remaining
+            .checked_sub(read)
+            .ok_or("queued records changed while paused")?;
+    }
+    assert_eq!(
+        watch
+            .shared
+            .inbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pending(),
+        (0, false)
+    );
+    let retained = watch.shared.retained_variable_bytes.load(Ordering::Acquire);
+    assert!(retained < retained_before + READ_BUFFER_BYTES as u64);
+    {
+        let mut owner = original.lock();
+        owner.budget.allocation_operations = owner.receipt().allocation_operations;
+    }
+    std::fs::write(root.path().join("denied"), b"changed")?;
+    hub.drain()?;
+    {
+        let inbox = watch
+            .shared
+            .inbox
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        assert!(matches!(
+            inbox.failure(),
+            Some(DemandError::Work(WorkError::BudgetExceeded {
+                counter: "allocation_operations",
+                ..
+            }))
+        ));
+        assert!(
+            !inbox.pending().1,
+            "explicit funding refusal preserves its typed cause"
+        );
+    }
+    assert_eq!(
+        watch.shared.retained_variable_bytes.load(Ordering::Acquire),
+        retained
+    );
     drop(paused);
     watch.stop_accepted_cleanup()?;
     assert!(watch.shared.physically_cleared());
@@ -1082,7 +1157,7 @@ fn eventually(what: &str, done: impl Fn() -> bool) -> Result<(), Box<dyn std::er
 /// Every watch shares the hub's service pool; a pass that waited for a held
 /// cursor parked a pool thread, and once records had scheduled the held watch
 /// once per pool thread, no other watch in the process was delivered until the
-/// cursor was released. A long pause (`lost_changes_are_reported_as_everything`
+/// cursor was released. A long pause (`a_paused_watch_preserves_changes_or_reports_host_loss`
 /// writing 20000 files) starved concurrent demand watches past their deadline.
 /// The held watch is served as soon as its cursor is released. Negative
 /// controls: a service pass taking `self.reading()` instead of

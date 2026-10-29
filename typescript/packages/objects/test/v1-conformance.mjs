@@ -271,12 +271,29 @@ test("Objects v1 never reports a reply that does not answer its request", async 
   await assert.rejects(client(json("BlobInfo", wire.BlobInfoSchema, { ...info, digest: other })).head(digest), fail(wire.ErrorCode.UNAVAILABLE));
   await assert.rejects(client(json("ListBlobsResponse", wire.ListBlobsResponseSchema, { digests: [digest, other, digest] })).list({ limit: 2 }), fail(wire.ErrorCode.UNAVAILABLE));
 });
-test("Objects v1 HTTP bounds responses and refuses unsafe endpoints", async () => {
+test("Objects v1 HTTP enforces explicit wire byte policies and refuses unsafe endpoints", async () => {
   let calls = 0;
   const fetcher = async () => { calls++; return new Response(new Uint8Array(100), { headers: { "content-type": "application/json" } }); };
   const client = new HttpObjectsV1({ endpoint: "https://objects.example", token: "fixture", maximumResponseBytes: 16, fetch: fetcher });
   await assert.rejects(client.usage(), fail(wire.ErrorCode.QUOTA_EXCEEDED));
   assert.equal(calls, 1);
+  // Protobuf fits the policy; base64 in the actual JSON body does not.
+  const body = new Uint8Array(900);
+  const digest = await blobDigest(body);
+  const input = toBinary(wire.PutBlobRequestSchema, create(wire.PutBlobRequestSchema, { digest, body }));
+  const encoded = encode_objects_v1_json("PutBlobRequest", input);
+  assert.ok(input.byteLength < 1000);
+  assert.ok(encoded.byteLength > 1000);
+  const requestBound = new HttpObjectsV1({ endpoint: "https://objects.example", token: "fixture", maximumRequestBytes: 1000, fetch: fetcher });
+  await assert.rejects(requestBound.put(body), fail(wire.ErrorCode.QUOTA_EXCEEDED));
+  assert.equal(calls, 1);
+  let submitted;
+  const exact = new HttpObjectsV1({ endpoint: "https://objects.example", token: "fixture", maximumRequestBytes: encoded.byteLength, fetch: async (_url, init) => {
+    submitted = init.body;
+    return new Response(json("PutResponse", wire.PutResponseSchema, { outcome: { case: "created", value: { digest, length: BigInt(body.length) } } }));
+  } });
+  assert.ok(verified(await exact.put(body)));
+  assert.deepEqual(submitted, encoded);
   for (const endpoint of ["http://objects.example", "https://user@objects.example", "https://objects.example/?query=1", "https://objects.example/#fragment"]) assert.throws(() => new HttpObjectsV1({ endpoint, token: "fixture" }));
 });
 test("Objects v1 HTTP bounds a call by the caller's deadline alone", async () => {
@@ -286,6 +303,6 @@ test("Objects v1 HTTP bounds a call by the caller's deadline alone", async () =>
   await assert.rejects(new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs: 20, fetch: hanging }).usage(), fail(wire.ErrorCode.DEADLINE_ELAPSED));
   // Negative control: a reply inside a long caller deadline is served.
   const late = async () => { await new Promise(resolve => setTimeout(resolve, 50)); return replying(json("UsageResponse", wire.UsageResponseSchema, { blobs: 2n }))(); };
-  assert.equal((await new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs: 0x7fff_ffff, fetch: late }).usage()).blobs, 2n);
-  for (const timeoutMs of [0, 0x8000_0000, 1.5]) assert.throws(() => new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs }), RangeError);
+  assert.equal((await new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs: 0x8000_0000, fetch: late }).usage()).blobs, 2n);
+  for (const timeoutMs of [0, -1, Infinity, 1.5]) assert.throws(() => new HttpObjectsV1({ endpoint, token: "fixture", timeoutMs }), RangeError);
 });

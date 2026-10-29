@@ -27,6 +27,8 @@ $toolchain = $pinned.Matches[0].Groups[1].Value
 $log = Join-Path $env:RUNNER_TEMP 'rust-setup.log'
 $status = Join-Path $env:RUNNER_TEMP 'rust-setup.status'
 $restored = Join-Path $env:RUNNER_TEMP 'rust-setup.dependencies'
+$node = (Get-Command node -CommandType Application).Source
+$waitPath = Join-Path $PSScriptRoot 'graphcoder-e2e/wait-path.mjs'
 $install = @"
 rustup toolchain install $toolchain --profile minimal --no-self-update --component clippy --component rustfmt
 rustup default $toolchain
@@ -49,17 +51,19 @@ switch ($Phase) {
 `$PSNativeCommandUseErrorActionPreference = `$true
 $($inherited -join "`n")
 Set-Location -LiteralPath '$($env:GITHUB_WORKSPACE.Replace("'", "''"))'
+`$result = 0
 try {
     & {
 $install
-        while (-not (Test-Path -LiteralPath '$restored')) { Start-Sleep -Milliseconds 250 }
+        & '$($node.Replace("'", "''"))' '$($waitPath.Replace("'", "''"))' '$($restored.Replace("'", "''"))'
 $unpack
     } *>> '$log'
-    Set-Content -LiteralPath '$status' -Value 0
 } catch {
     `$_ | Out-String | Add-Content -LiteralPath '$log'
-    Set-Content -LiteralPath '$status' -Value 1
+    `$result = 1
 }
+Set-Content -LiteralPath '$status.pending' -Value `$result
+Move-Item -LiteralPath '$status.pending' -Destination '$status' -Force
 "@ | Set-Content -LiteralPath $script
         $shell = (Get-Process -Id $PID).Path
         try {
@@ -79,9 +83,10 @@ $unpack
     }
     'finish' {
         New-Item -ItemType File -Force -Path $restored | Out-Null
-        $deadline = (Get-Date).AddMinutes(10)
-        while (-not (Test-Path -LiteralPath $status) -and (Get-Date) -lt $deadline) {
-            Start-Sleep -Milliseconds 250
+        & {
+            # A terminal deadline still falls through to the original inline recovery.
+            $PSNativeCommandUseErrorActionPreference = $false
+            & $node $waitPath $status 600
         }
         if (Test-Path -LiteralPath $log) {
             Write-Host '::group::Detached Rust setup'

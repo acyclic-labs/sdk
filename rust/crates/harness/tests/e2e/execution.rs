@@ -84,7 +84,7 @@ pub(super) async fn run_with_filesystem<
         operation_id: OperationId::new(),
         input: ModelContent::Text(case.take_instruction()?),
         selected_context: None,
-        max_steps: case.max_steps.unwrap_or(16),
+        max_steps: case.max_steps,
     };
     let journal = storage.journal();
     let operation = input.operation_id;

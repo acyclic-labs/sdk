@@ -139,7 +139,11 @@ impl FileTool {
             Self::Write => {
                 let input = decode::<WriteFileInput>(&invocation.arguments, work)?;
                 self.public_path(&input.0.path, io)?;
-                if input.0.path.len() > scope.limits().path_bytes {
+                if scope
+                    .limits()
+                    .path_bytes
+                    .is_some_and(|maximum| input.0.path.len() > maximum.get())
+                {
                     return Err(error(
                         crate::wire::ErrorCode::Invalid,
                         "file path exceeds original task bound",

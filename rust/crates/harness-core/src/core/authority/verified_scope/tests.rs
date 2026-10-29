@@ -33,14 +33,7 @@ fn fixture() -> Result<(AuthorityRoot, AuthorityVerifier, Scope, VolumeRef)> {
 #[test]
 fn content_grants_recheck_fresh_trust_without_reauthenticating_the_scope() -> Result<()> {
     let (issuer, verifier, scope, volume) = fixture()?;
-    let grant = ContentGrant::verify(
-        &verifier,
-        &scope,
-        &volume,
-        VolumeOperation::Read,
-        u64::MAX,
-        &mut None,
-    )?;
+    let grant = ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read, &mut None)?;
     let cloned = grant.clone();
     let (result, signatures) = acyclic_test_support::differential::observe(
         || (),
@@ -164,7 +157,6 @@ fn grant_construction_releases_failed_custody_and_accounts_for_success() -> Resu
             &denied,
             &volume,
             VolumeOperation::Read,
-            u64::MAX,
             &mut Some(&mut io.history_io())
         )
         .is_err()
@@ -176,7 +168,6 @@ fn grant_construction_releases_failed_custody_and_accounts_for_success() -> Resu
         &scope,
         &volume,
         VolumeOperation::Read,
-        u64::MAX,
         &mut Some(&mut io.history_io()),
     )?;
     assert_eq!(
@@ -303,7 +294,6 @@ fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<(
         &scope,
         &volume,
         VolumeOperation::Read,
-        u64::MAX,
         &mut Some(&mut probe.history_io()),
     )?;
     assert_eq!(probe.owned_bytes()?, grant.logical_owned_bytes()?);
@@ -327,7 +317,6 @@ fn grant_construction_releases_custody_at_every_allocation_failure() -> Result<(
             &scope,
             &volume,
             VolumeOperation::Read,
-            u64::MAX,
             &mut Some(&mut io.history_io()),
         );
         assert!(

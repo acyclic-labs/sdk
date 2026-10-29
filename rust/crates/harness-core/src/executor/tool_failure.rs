@@ -1,9 +1,6 @@
 use super::*;
 use std::fmt::{self, Write as _};
 
-/// Most UTF-8 bytes of a recorded tool-failure message the model receives.
-pub const TOOL_FAILURE_MESSAGE_BYTES: usize = 256;
-
 /// Stable, credential-free category of the error behind a settled tool failure.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(rename_all = "snake_case")]
@@ -56,15 +53,14 @@ impl ToolErrorClass {
     }
 }
 
-/// Bounded, sanitized cause of a settled tool failure: enough for the model to act on, while
-/// the raw error stays in the `warn` log.
+/// Complete, sanitized cause of a settled tool failure; the raw error stays in the `warn` log.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::HeapLayout)]
 #[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
 pub struct ToolFailureCause {
     /// Stable category.
     pub class: ToolErrorClass,
-    /// At most [`TOOL_FAILURE_MESSAGE_BYTES`] of the error's text, without control characters.
+    /// Complete error text without control characters.
     pub message: String,
 }
 
@@ -79,8 +75,8 @@ impl ToolFailureCause {
         })
     }
 
-    /// The reason a call was refused before dispatch, sanitized and bounded like
-    /// every cause. The shared result renderer adds the tool-failure prefix.
+    /// The cause of a call refused before dispatch: its complete model-visible text, sanitized
+    /// like every cause, classed by the refusing error.
     pub(crate) fn refusal(
         name: &str,
         reason: ToolFailureKind,
@@ -105,12 +101,10 @@ impl ToolFailureCause {
         Ok(Self { class, message })
     }
 
-    /// Whether a recorded cause has the bounded, sanitized, nonblank shape this module writes.
+    /// Whether a recorded cause has the sanitized, nonblank shape this module writes.
     #[must_use]
     pub fn is_canonical(&self) -> bool {
-        self.message.len() <= TOOL_FAILURE_MESSAGE_BYTES
-            && !self.message.chars().any(char::is_control)
-            && !self.message.trim().is_empty()
+        !self.message.chars().any(char::is_control) && !self.message.trim().is_empty()
     }
 }
 
@@ -179,16 +173,16 @@ impl fmt::Display for RefusalText<'_> {
     }
 }
 
-/// The sanitized, bounded text of the error behind a failure, never blank: an error whose text
+/// The complete sanitized text of the error behind a failure, never blank: an error whose text
 /// is blank is described by its stable class, so no cause is erased.
 pub(crate) struct CauseText<'a>(pub &'a Error);
 
 impl fmt::Display for CauseText<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut probe = Visible(false);
-        // Probe the exact bounded text we will emit. A visible character beyond the bound
-        // cannot keep an all-whitespace prefix from erasing the recorded cause.
-        let _ = write!(probe, "{}", Sanitized(self.0));
+        // Sanitization replaces controls with spaces, so the raw display has
+        // exactly the same visible characters. Stop at the first one.
+        let _ = write!(probe, "{}", self.0);
         if probe.0 {
             write!(formatter, "{}", Sanitized(self.0))
         } else {
@@ -209,38 +203,31 @@ impl fmt::Write for Visible {
     }
 }
 
-/// Displays text with control characters replaced and its UTF-8 bounded on a character.
+/// Displays complete text with control characters replaced by spaces.
 pub(crate) struct Sanitized<'a>(pub &'a dyn fmt::Display);
 
 impl fmt::Display for Sanitized<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut bounded = Bounded {
-            output: formatter,
-            remaining: TOOL_FAILURE_MESSAGE_BYTES,
-        };
-        write!(bounded, "{}", self.0)
+        write!(Sanitizing(formatter), "{}", self.0)
     }
 }
 
-struct Bounded<'a, 'b> {
-    output: &'a mut fmt::Formatter<'b>,
-    remaining: usize,
-}
+struct Sanitizing<'a, 'b>(&'a mut fmt::Formatter<'b>);
 
-impl fmt::Write for Bounded<'_, '_> {
+impl fmt::Write for Sanitizing<'_, '_> {
     fn write_str(&mut self, text: &str) -> fmt::Result {
-        for character in text.chars() {
-            let character = if character.is_control() {
-                ' '
-            } else {
-                character
-            };
-            if character.len_utf8() > self.remaining {
-                self.remaining = 0;
-                return Ok(());
+        let mut start = 0;
+        for (index, character) in text.char_indices() {
+            if character.is_control() {
+                if start != index {
+                    self.0.write_str(&text[start..index])?;
+                }
+                self.0.write_char(' ')?;
+                start = index + character.len_utf8();
             }
-            self.remaining -= character.len_utf8();
-            self.output.write_char(character)?;
+        }
+        if start != text.len() {
+            self.0.write_str(&text[start..])?;
         }
         Ok(())
     }
@@ -300,7 +287,7 @@ mod tests {
         #![proptest_config(ProptestConfig::with_cases(512))]
         // Class G: no settled tool failure reaches the model or the journal without its cause.
         #[test]
-        fn every_tool_failure_entry_point_carries_a_nonblank_bounded_cause(
+        fn every_tool_failure_entry_point_carries_a_complete_nonblank_cause(
             kind in 0..KINDS.len(),
             variant in any::<u8>(),
             text in r"(\PC|[\n\t\x1b ]){0,400}",
@@ -353,7 +340,7 @@ mod tests {
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(128))]
         #[test]
-        fn bounded_native_causes_remain_visible_after_any_whitespace_prefix(
+        fn native_causes_preserve_the_complete_tail_after_any_whitespace_prefix(
             prefix in prop::collection::vec(prop::sample::select(vec![' ', '\t', '\n', '\u{2003}']), 0..400),
             tail in "[a-zé]{1,400}",
         ) {
@@ -373,29 +360,26 @@ mod tests {
                 let cause = entry(kind, "example.tool", &error).unwrap();
                 prop_assert!(cause.is_canonical(), "{kind:?}: {cause:?}");
             }
-            // Negative control: the old unbounded probe always sees the tail, then emits
-            // a prefix the journal rejects if whitespace consumes the entire byte bound.
-            if prefix.len() >= TOOL_FAILURE_MESSAGE_BYTES {
-                let mut old_probe = Visible(false);
-                let _ = write!(old_probe, "{error}");
-                prop_assert!(old_probe.0);
-                let erased = ToolFailureCause {
-                    class: ToolErrorClass::of(&error),
-                    message: Sanitized(&error).to_string(),
-                };
-                prop_assert!(!erased.is_canonical());
-                prop_assert_eq!(entry(ToolFailureKind::ExecutorRejected, "example.tool", &error).unwrap().message, "conflict error");
-            }
+            let cause = entry(ToolFailureKind::ExecutorRejected, "example.tool", &error).unwrap();
+            prop_assert!(cause.message.ends_with(&tail));
+            let expected: String = error.to_string().chars()
+                .map(|character| if character.is_control() { ' ' } else { character })
+                .collect();
+            prop_assert_eq!(cause.message, expected);
         }
     }
 
     #[test]
-    fn causes_are_bounded_on_characters_and_free_of_controls() -> Result<()> {
+    fn causes_preserve_complete_unicode_text_and_remove_controls() -> Result<()> {
         let error = Error::NotFound(format!("line\none\u{1b}[31m{}", "é".repeat(400)));
         let cause = ToolFailureCause::of(&error, &mut None)?;
         assert_eq!(cause.class, ToolErrorClass::NotFound);
         assert!(cause.is_canonical());
-        assert!(cause.message.len() > TOOL_FAILURE_MESSAGE_BYTES - 2);
+        assert_eq!(
+            cause.message,
+            error.to_string().replace(['\n', '\u{1b}'], " ")
+        );
+        assert!(cause.message.ends_with(&"é".repeat(400)));
         assert!(cause.message.contains("line one [31m"));
         // Negative control: unsanitized text is not canonical.
         let raw = ToolFailureCause {

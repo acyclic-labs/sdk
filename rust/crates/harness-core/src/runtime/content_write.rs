@@ -199,7 +199,12 @@ impl TaskContext {
         scope: &RuntimeScope,
         io: Option<&ContentIo>,
     ) -> Result<(FileRef, u64)> {
-        if bytes.len() as u64 > scope.limits.file_bytes || path.len() > scope.limits.path_bytes {
+        if bytes.len() as u64 > scope.limits.file_bytes
+            || scope
+                .limits
+                .path_bytes
+                .is_some_and(|maximum| path.len() > maximum.get())
+        {
             return Err(content_error(
                 io,
                 ErrorCode::Invalid,

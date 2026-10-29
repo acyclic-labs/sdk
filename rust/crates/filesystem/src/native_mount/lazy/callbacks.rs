@@ -188,10 +188,7 @@ where
 
     fn shutdown_physical_cleanup(&self) -> Result<bool, MountSourceError> {
         let changed = !self.physically_retired()?;
-        self.cancel_cleanup_with_join(
-            None,
-            crate::native_mount::retirement::SourceRetirementWait::Physical,
-        )?;
+        self.cancel_cleanup(None)?;
         Ok(changed)
     }
 
@@ -554,24 +551,19 @@ where
         maximum_entries: u32,
         work: &crate::NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError> {
-        let attempts = if cursor.is_some() {
-            1
-        } else {
-            MAXIMUM_INTERRUPTED_LISTINGS
-        };
-        let mut page = Err(MountSourceError::Stale);
-        for _ in 0..attempts {
+        let mut page = loop {
             work.charge(crate::WorkCounters {
                 items_examined: 1,
                 ..crate::WorkCounters::UNCHARGED
             })
             .map_err(MountSourceError::NativeWork)?;
-            page = self.directory_page(path, cursor, maximum_entries, work);
-            if !matches!(page, Err(MountSourceError::Stale)) {
-                break;
+            match self.directory_page(path, cursor, maximum_entries, work) {
+                // A previously issued cursor belongs to its original epoch;
+                // retrying it cannot make an invalidated cut current again.
+                Err(MountSourceError::Stale) if cursor.is_none() => continue,
+                result => break result?,
             }
-        }
-        let mut page = page?;
+        };
         while page.entries.is_empty() {
             work.charge(crate::WorkCounters {
                 items_examined: 1,

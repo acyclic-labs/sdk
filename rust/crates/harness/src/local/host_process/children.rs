@@ -26,12 +26,8 @@ use std::task::{Context, Poll, Waker};
 mod tools;
 pub use tools::{TOOLS, serve};
 
-/// Byte bound of one native event line and of a retained answer's source.
-const EVENT_LIMIT: usize = 65_536;
-/// The saved log's line where the bounded framer dropped one native event.
+/// The saved log's marker for a malformed native event.
 const EVENT_OMITTED: &[u8] = b"{\"type\":\"acyclic.event_omitted\"}";
-/// Byte bound of a retained answer.
-const ANSWER_LIMIT: usize = 4096;
 
 struct Running {
     process: HostSessionProcess,
@@ -369,7 +365,7 @@ impl NativeChildren {
             process,
             claim,
             failure: None,
-            events: acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT),
+            events: acyclic_native_runtime::lines::LineBuffer::new(None),
             answer: Outcome::Succeeded(String::new()),
             settlement: None,
             wake,
@@ -664,7 +660,7 @@ fn answer(event: &Value) -> Option<Outcome<String>> {
         event.get("result")
     };
     if let Some(text) = text.and_then(Value::as_str) {
-        return Some(Outcome::Succeeded(bounded(text)));
+        return Some(Outcome::Succeeded(text.to_owned()));
     }
     // Pi can report a failed assistant turn and still exit successfully. Keep
     // its semantic outcome until process exit; a subsequent successful turn
@@ -694,21 +690,12 @@ fn answer(event: &Value) -> Option<Outcome<String>> {
         && event.get("type").and_then(Value::as_str) == Some("message_end"))
     .then(|| event.pointer("/message/content").and_then(Value::as_array))
     .flatten()?;
-    Some(Outcome::Succeeded(bounded(
-        &parts
+    Some(Outcome::Succeeded(
+        parts
             .iter()
             .filter_map(|part| part.get("text").and_then(Value::as_str))
-            .collect::<String>(),
-    )))
-}
-
-fn bounded(text: &str) -> String {
-    text.chars()
-        .scan(0, |bytes, ch| {
-            *bytes += ch.len_utf8();
-            (*bytes <= ANSWER_LIMIT).then_some(ch)
-        })
-        .collect()
+            .collect(),
+    ))
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -747,28 +734,30 @@ mod framing {
     }
 
     #[test]
-    fn oversized_native_events_are_omitted_once_without_wedging_the_stream() {
-        let mut events = acyclic_native_runtime::lines::LineBuffer::new(EVENT_LIMIT);
-        let mut omitted = 0;
-        for _ in 0..16 {
-            for event in events.push(&[b'x'; 8192]) {
-                assert!(event.is_err());
-                omitted += 1;
+    fn native_event_answers_survive_chunk_boundaries_and_large_lines() {
+        let text = "🌍".repeat(33_000);
+        let native_events = [
+            serde_json::json!({"item": {"type": "agent_message", "text": text}}),
+            serde_json::json!({"result": text}),
+            serde_json::json!({"type": "message_end", "message": {
+                "role": "assistant", "content": [{"text": text}]
+            }}),
+        ];
+        let mut events = acyclic_native_runtime::lines::LineBuffer::new(None);
+        for native_event in native_events {
+            let mut bytes = serde_json::to_vec(&native_event).expect("event encoding");
+            bytes.push(b'\n');
+            let mut lines = Vec::new();
+            for chunk in bytes.chunks(8192) {
+                lines.extend(events.push(chunk));
             }
-            assert!(events.buffered_bytes() <= EVENT_LIMIT);
+            let [Ok(line)] = lines.as_slice() else {
+                panic!("complete native event: {lines:?}");
+            };
+            let event: Value = serde_json::from_str(line).expect("frame is JSON");
+            assert!(matches!(answer(&event), Some(Outcome::Succeeded(answer)) if answer == text));
         }
-        assert_eq!(omitted, 1, "oversized output must be reported once");
-        let lines = events.push(b"\n{\"result\":\"probe\"}\n");
-        let [Ok(line)] = lines.as_slice() else {
-            panic!("valid frame after omitted event: {lines:?}");
-        };
-        let event: Value = serde_json::from_str(line).expect("frame is JSON");
-        assert_eq!(answer(&event), Some(Outcome::Succeeded("probe".into())));
-    }
-
-    #[test]
-    fn native_answers_are_bounded_on_character_boundaries() {
-        assert!(bounded(&"😀".repeat(4096)).len() <= ANSWER_LIMIT);
+        assert_eq!(events.buffered_bytes(), 0);
     }
 
     /// The ready queue holds only children whose registration fired, and a

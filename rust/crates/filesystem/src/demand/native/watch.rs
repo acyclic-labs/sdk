@@ -170,7 +170,6 @@ impl NativeDemandInner {
                     match crate::native_name::host_name_bytes_with_source_work(
                         name,
                         self.profile,
-                        self.limits.maximum_component_bytes,
                         work,
                     ) {
                         Ok(name) => name,
@@ -182,11 +181,7 @@ impl NativeDemandInner {
                 } else {
                     0
                 };
-                let Ok(name) = crate::kernel::LogicalName::new(
-                    encoding,
-                    bytes,
-                    self.limits.maximum_component_bytes,
-                ) else {
+                let Ok(name) = crate::kernel::LogicalName::new(encoding, bytes) else {
                     drop(guard);
                     work.release(ordinary)?;
                     break;

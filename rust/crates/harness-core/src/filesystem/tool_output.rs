@@ -69,10 +69,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             crate::core::filesystem_scope_label(authority.scope.capabilities(), &mut None)?
         {
             let cancellation = acyclic_fs::CancellationToken::new();
-            let io = PreparationIo::from_budget(
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )?;
+            let io = PreparationIo::for_unmeasured(&cancellation)?;
             let view = super::access::access_view(
                 &workspace,
                 &authority.scope,

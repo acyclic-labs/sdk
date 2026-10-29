@@ -132,7 +132,7 @@ impl CheckoutPublisher {
             // Recover the original committed generation before capture: a
             // missing physical publication must not become a deletion.
             let original = match &publication {
-                Publication::Once { .. } => writer.observe_staged_once(operation, None, self.maximum, crate::conversation::ContentAccess { ceiling, io: None })?.await?.0,
+                Publication::Once { .. } => writer.observe_staged_once(operation, None, Some(self.maximum), crate::conversation::ContentAccess { ceiling, io: None })?.await?.0,
                 Publication::Path { .. } => writer.observe_staged_path(operation, &relative, self.maximum, ceiling).await?,
                 Publication::Replace(source) => writer.observe_staged_at(operation, source, self.maximum, ceiling).await?,
             };
@@ -345,7 +345,7 @@ impl ContentPublisher for CheckoutPublisher {
         &'a self,
         operation: OperationId,
         replacement: Option<(&'a VolumeRef, &'a str)>,
-        maximum: u64,
+        maximum: Option<u64>,
         access: crate::conversation::ContentAccess<'a, 'a>,
     ) -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
         let crate::conversation::ContentAccess { ceiling, io } = access;

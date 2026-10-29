@@ -192,7 +192,7 @@ impl TurnHost for Host {
         let open = OpenTurn {
             executor: self.0.clone(),
             journal: Arc::new(Unused),
-            max_steps: 4,
+            max_steps: Some(4),
             custody: None,
             selected: None,
             checkpoint: None,

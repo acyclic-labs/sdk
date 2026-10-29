@@ -54,12 +54,7 @@ impl ConversationState {
     ) -> Result<()> {
         self.require_native_work(work)?;
         self.validate_append(&message, work)?;
-        let history_digest = advance_history_digest(
-            self.history_digest(),
-            &message,
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            work,
-        )?;
+        let history_digest = advance_history_digest(self.history_digest(), &message, None, work)?;
         self.adopt_existing_metadata(work)?;
         let mut cache = crate::wire_codec::CodecQuota::new(work, 0)?;
         let retained = grow_conversation_buffer(

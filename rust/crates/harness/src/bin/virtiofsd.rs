@@ -38,12 +38,7 @@ mod linux {
         let socket = socket.ok_or("step=select socket; recovery: acyclic-virtiofsd --socket PATH --config LOCAL_CONFIG.json")?;
         let config = config.ok_or("step=select local enrollment; recovery: acyclic-virtiofsd --socket PATH --config LOCAL_CONFIG.json")?;
         let mut bytes = Vec::new();
-        std::fs::File::open(&config)?
-            .take(64 * 1024 + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() > 64 * 1024 {
-            return Err("step=read local enrollment; recovery: reduce LOCAL_CONFIG.json to at most 65536 bytes, then rerun acyclic-virtiofsd --socket PATH --config LOCAL_CONFIG.json".into());
-        }
+        std::fs::File::open(&config)?.read_to_end(&mut bytes)?;
         let config: Config = serde_json::from_slice(&bytes)?;
         // The operator supplies the finite original allowance. Missing JSON
         // fields deserialize to zero, and cannot turn into an unbounded grant.

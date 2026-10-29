@@ -358,7 +358,7 @@ proptest::proptest! {
         proptest::prop_assert_eq!(&ticket.validate_request_bytes(&bytes, &mut None).unwrap().0, &request);
         let native = crate::executor::json::json_from_slice_bounded(
             std::marker::PhantomData::<Interaction>, &bytes,
-            crate::executor::json::JsonBounds { maximum_bytes: bytes.len() as u64, maximum_items: bytes.len() as u64, maximum_depth: 256 },
+            crate::executor::json::JsonBounds { maximum_bytes: Some(bytes.len() as u64),maximum_items: Some(bytes.len() as u64),maximum_depth: 256 },
             Some(crate::wire::ErrorCode::Invalid),
             Some(crate::executor::json::JsonValueSchema::Interaction), &mut |_| Ok(()),
         ).unwrap();

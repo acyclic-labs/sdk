@@ -5,12 +5,13 @@ impl StockExecution<'_> {
         &self,
         selected_base: bool,
         stage_messages: usize,
-    ) -> usize {
-        self.stock
-            .limits
-            .context_messages
-            .saturating_sub(if selected_base { 2 } else { 0 })
-            .saturating_sub(stage_messages)
+    ) -> Option<usize> {
+        self.stock.limits.context_messages.map(|maximum| {
+            maximum
+                .get()
+                .saturating_sub(if selected_base { 2 } else { 0 })
+                .saturating_sub(stage_messages)
+        })
     }
 
     pub(super) async fn compact_response(
@@ -165,7 +166,7 @@ impl StockExecution<'_> {
         context: &crate::context::Context,
         pre_stage: bool,
         policy: &crate::context::ThresholdCompaction,
-        message_limit: usize,
+        message_limit: Option<usize>,
     ) -> Result<(usize, usize)> {
         let canonical_request = crate::model::PreparedModelRequest::prepare(
             self.request_from_context(context)?,
@@ -182,7 +183,7 @@ impl StockExecution<'_> {
             policy,
             context,
             &count,
-            message_limit,
+            message_limit.unwrap_or(context.messages.len()),
             self.io,
         )?;
         let mandatory = with_history_io(self.io, |work| {
