@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { Terminal, screenText } from "../graphcoder-pty/screen.mjs";
 import { TerminalFrames, FailureHistory } from "./frames.mjs";
+import { OutputWatch } from "./process.mjs";
 
 function bold(terminal, text) {
   const buffer = terminal.buffer.active;
@@ -16,14 +17,23 @@ function bold(terminal, text) {
   return false;
 }
 
+export const SHOW_CURSOR = "\x1b[?25h", HIDE_CURSOR = "\x1b[?25l";
+const OVERFLOW = "has overflowed its stack";
+
+// The needles a PTY input watches in its raw output.
+export function rawNeedles(actions) {
+  return [OVERFLOW, SHOW_CURSOR, HIDE_CURSOR, ...actions.flatMap(action => action.when?.raw ?? [])];
+}
+
+// `raw` is the OutputWatch over the executable's raw terminal output.
 export function matches(screen, raw, condition) {
   const visible = screenText(screen);
   return (condition.contains ?? []).every(text => visible.includes(text))
     && (!condition.task_failure || expectedTaskFailure(visible, condition))
     && (condition.absent ?? []).every(text => !visible.includes(text))
     && (!condition.bold || bold(screen, condition.bold))
-    && (condition.raw ?? []).every(text => raw.includes(text))
-    && (!condition.cursor || raw.lastIndexOf("\x1b[?25h") > raw.lastIndexOf("\x1b[?25l"));
+    && (condition.raw ?? []).every(text => raw.has(text))
+    && (!condition.cursor || raw.later(SHOW_CURSOR, HIDE_CURSOR));
 }
 
 function expectedTaskFailure(visible, condition) {
@@ -38,18 +48,18 @@ export async function pty(processes, binary, fixture, input, capture) {
   const running = processes.startTerminal(binary, [...fixture.args, ...(input.resume ? ["--resume"] : [])],
     { cwd: fixture.workspace, env: fixture.env });
   screen.onData(data => running.child.stdin.write(data));
+  const raw = new OutputWatch(rawNeedles(input.actions));
   let index = 0, failure;
   const snapshots = [];
   function frame() {
     if (failure || index >= input.actions.length || !frames.ready()) return;
     try {
       const visible = screenText(screen);
-      const raw = running.stdout;
       const action = input.actions[index];
-      if (raw.includes("has overflowed its stack") || failures.unexpected(visible, action.when)) {
+      if (raw.has(OVERFLOW) || failures.unexpected(visible, action.when)) {
         throw new Error(`shipping executable failed before the next screen assertion: ${visible}`);
       }
-      if (action.after_request && !fixture.requests.some(event => event.path === action.after_request.path && event.step === action.after_request.step)) return;
+      if (action.after_request && !fixture.requested(action.after_request)) return;
       if (!matches(screen, raw, action.when)) return;
       failures.accept(visible, action.when);
       snapshots.push({ action: index, visible });
@@ -61,18 +71,18 @@ export async function pty(processes, binary, fixture, input, capture) {
   }
   const unsubscribe = fixture.onRequest(frame);
   running.child.stdout.on("data", bytes => {
+    raw.write(bytes);
     frames.write(bytes, frame);
   });
   const result = await running.closed;
-  const raw = result.stdout;
   unsubscribe();
   await new Promise(resolve => screen.write("", resolve));
   const visible = screenText(screen);
-  capture({ ...result, raw, snapshots, visible, actions: index });
+  capture({ ...result, snapshots, visible, actions: index });
   frames.dispose();
   screen.dispose();
   if (failure) throw failure;
-  assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${result.stderr}\n${raw}`);
+  assert.equal(index, input.actions.length, `PTY completed ${index}/${input.actions.length} actions: ${result.stderr}\n${result.stdout}`);
   if (!input.killed) assert.equal(result.code, input.exit ?? 0, result.stderr + visible);
   else assert.ok(result.signal || result.code !== 0, "PTY executable must be killed");
   for (const text of input.settled_contains ?? []) {

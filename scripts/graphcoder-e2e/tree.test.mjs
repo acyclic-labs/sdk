@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { Processes, Events } from "./process.mjs";
+import { Processes, Spool } from "./process.mjs";
 import { alive } from "./orphan-check.mjs";
 
 const fixture = fileURLToPath(new URL("./tree-fixture.py", import.meta.url));
@@ -38,7 +38,7 @@ test("external acceptance owns service descendants on normal exit and cancellati
           assert.equal(result.code, 0, result.stderr);
         } else {
           const running = owned.startOwned(python, args);
-          pids = (await new Events(running.child.stdout, running.closed).wait(event => event.pids)).pids;
+          pids = (await new Spool(running.child.stdout, running.closed).next(event => event.pids)).pids;
           await owned.close();
           const result = await running.closed;
           assert.ok(result.signal || result.code !== 0, "cancellation must remain a failed acceptance run");

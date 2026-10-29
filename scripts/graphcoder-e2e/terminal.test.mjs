@@ -2,16 +2,18 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { Processes, Events, conptyArgs } from "./process.mjs";
+import { Processes, Spool, OutputWatch, conptyArgs } from "./process.mjs";
 import { alive } from "./orphan-check.mjs";
 
 const fixture = fileURLToPath(new URL("./terminal-fixture.py", import.meta.url));
 const posix = { skip: process.platform === "win32", timeout: 5000 };
+// Output after this call that contains `text`; registered in the same tick as
+// the input that prompts it.
 const shown = (running, text) => new Promise((resolve, reject) => {
-  const check = () => { if (running.stdout.includes(text)) { running.child.stdout.off("data", check); resolve(); } };
+  const watch = new OutputWatch([text]);
+  const check = bytes => { if (watch.write(bytes).has(text)) { running.child.stdout.off("data", check); resolve(); } };
   running.child.stdout.on("data", check);
-  running.closed.then(result => reject(new Error(`closed before ${text}: ${JSON.stringify(result)}`)));
-  check();
+  running.closed.then(result => reject(new Error(`closed before ${text}: ${JSON.stringify({ code: result.code, signal: result.signal })}`)));
 });
 
 test("ConPTY launch contract carries the shared terminal arguments and refuses others", () => {
@@ -75,7 +77,7 @@ test("terminal root leads a sized session, takes raw input and drains output aft
   const processes = new Processes();
   try {
     const running = processes.startTerminal("python3", [fixture, "probe"]);
-    const probe = await new Events(running.child.stdout, running.closed).wait(event => "tty" in event);
+    const probe = await new Spool(running.child.stdout, running.closed).next(event => "tty" in event);
     // Owner budget: exactly one owner process between the test and the executable.
     assert.deepEqual(probe, { tty: true, size: [80, 24], leader: true, foreground: true, parent: running.child.pid });
     // The interrupt reaches the root's foreground group, not its owner.
@@ -94,7 +96,7 @@ test("a second launcher inside the terminal fails the owner budget", posix, asyn
   try {
     // Negative control: a forking shell between owner and executable, like the old script(1) path.
     const running = processes.startTerminal("/bin/sh", ["-c", `python3 '${fixture}' probe; exit $?`]);
-    const probe = await bounded(t, new Events(running.child.stdout, running.closed).wait(event => "tty" in event));
+    const probe = await bounded(t, new Spool(running.child.stdout, running.closed).next(event => "tty" in event));
     assert.notEqual(probe.parent, running.child.pid);
   } finally { await processes.close(); }
 });
@@ -106,7 +108,7 @@ for (const escape of ["group", ...(process.platform === "linux" ? ["session"] : 
     try {
       // Negative control: without custody the escaped holder outlives the kill and pins the pipe.
       const raw = processes.start("python3", [fixture, escape], witnessed);
-      pids = (await new Events(raw.child.stdout, raw.closed).wait(event => event.pids)).pids;
+      pids = (await new Spool(raw.child.stdout, raw.closed).next(event => event.pids)).pids;
       let closed = false;
       raw.closed.then(() => { closed = true; });
       raw.killExecutable();
@@ -118,7 +120,7 @@ for (const escape of ["group", ...(process.platform === "linux" ? ["session"] : 
 
       const running = processes.startTerminal("python3", [fixture, escape], witnessed);
       const holders = released(running);
-      pids = (await new Events(running.child.stdout, running.closed).wait(event => event.pids)).pids;
+      pids = (await new Spool(running.child.stdout, running.closed).next(event => event.pids)).pids;
       running.killExecutable();
       const result = await bounded(t, running.closed);
       assert.equal(result.code, 128 + 9, "the owner reports the executable's SIGKILL after draining");
@@ -136,7 +138,7 @@ test("terminal owner death fails the run and hangs up its executable", posix, as
   try {
     const running = processes.startTerminal("python3", [fixture, "probe"], witnessed);
     const executable = released(running);
-    await new Events(running.child.stdout, running.closed).wait(event => "tty" in event);
+    await new Spool(running.child.stdout, running.closed).next(event => "tty" in event);
     running.child.kill("SIGKILL");
     const result = await running.closed;
     assert.equal(result.signal, "SIGKILL", "wrapper death must not report the executable's success");
