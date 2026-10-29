@@ -7,7 +7,7 @@
 //! the first of them to fire wakes the waiter. An async waiter costs a waker;
 //! a synchronous caller parks its own thread.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
@@ -74,7 +74,7 @@ struct Registry {
     armed: HashMap<u64, Armed>,
     timers: BTreeSet<(Instant, u64)>,
     failure: Option<Arc<io::Error>>,
-    sources: HashMap<SourceKey, u64>,
+    sources: HashSet<SourceKey>,
     #[cfg(test)]
     lock_count: usize,
 }
@@ -314,11 +314,7 @@ impl Hub {
                 .ok_or_else(|| io::Error::other("process readiness tokens exhausted"))?;
             let token = registry.next;
             for (index, source) in sources.iter().enumerate() {
-                if let std::collections::hash_map::Entry::Vacant(entry) =
-                    registry.sources.entry(source.key())
-                {
-                    entry.insert(token);
-                } else {
+                if !registry.sources.insert(source.key()) {
                     for previous in sources.iter().take(index) {
                         registry.sources.remove(&previous.key());
                     }
