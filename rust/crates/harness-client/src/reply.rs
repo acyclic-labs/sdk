@@ -323,6 +323,7 @@ fn validate_reply(
             let bytes = (data.len() / 4 * 3).saturating_sub(padding) as u64;
             return if data.len() % 4 == 0
                 && bytes <= MAX_READ_BYTES
+                && (bytes != 0 || offset == length)
                 && offset.checked_add(bytes).is_some_and(|end| end <= *length)
             {
                 Ok(())
@@ -709,6 +710,71 @@ mod tests {
             Ok(AgentReply::Diff { .. })
         ));
         assert!(encode_agent_reply(&Ok(AgentReply::Diff { items: vec![] }), &continued).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn read_ranges_preserve_complete_bytes_and_refuse_false_eof()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let agent =
+            AgentPath::try_from("harness/agents/00000000000000000000000000000001".to_owned())?;
+        let command = |offset| AgentCommand::Read {
+            agent: agent.clone(),
+            target: crate::ReadTarget::ToolOutput {
+                path: "output".into(),
+            },
+            offset,
+        };
+        let chunk = usize::try_from(MAX_READ_BYTES)?;
+        let original: Vec<_> = (0..chunk * 2 + 1)
+            .map(|index| (index % 251) as u8)
+            .collect();
+        let length = original.len() as u64;
+        let mut collected = Vec::new();
+        for range in original.chunks(chunk) {
+            let request = command(collected.len() as u64);
+            let encoded = encode_agent_reply(&Ok(AgentReply::read(range, length)), &request)?;
+            let reply = decode_agent_reply(&encoded, &request)??;
+            let (decoded, extent) = reply.content()?;
+            assert_eq!(extent, length);
+            collected.extend_from_slice(&decoded);
+        }
+        assert_eq!(collected, original);
+        for offset in [0, MAX_READ_BYTES, length - 1, length, length + 1] {
+            let request = command(offset);
+            let reply = AgentReply::read(&[], length);
+            // Exercise incoming bytes independently of the canonical encoder:
+            // a false EOF must be refused on either side of the shared codec.
+            let incoming = Envelope {
+                value: Some(envelope::Value::Reply(serde_json::to_vec(&reply)?)),
+                reason: None,
+            }
+            .encode_to_vec();
+            if offset == length {
+                let encoded = encode_agent_reply(&Ok(reply), &request)?;
+                assert_eq!(encoded, incoming);
+                assert_eq!(
+                    decode_agent_reply(&incoming, &request)??.content()?,
+                    (vec![], length)
+                );
+            } else {
+                assert!(matches!(
+                    encode_agent_reply(&Ok(reply), &request),
+                    Err(CommandError::Invalid)
+                ));
+                assert!(matches!(
+                    decode_agent_reply(&incoming, &request),
+                    Err(CommandError::Invalid)
+                ));
+            }
+        }
+        assert!(matches!(
+            encode_agent_reply(
+                &Ok(AgentReply::read(&original[..chunk + 1], length)),
+                &command(0)
+            ),
+            Err(CommandError::Invalid)
+        ));
         Ok(())
     }
 
