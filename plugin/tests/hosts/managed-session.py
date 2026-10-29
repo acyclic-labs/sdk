@@ -145,7 +145,7 @@ if prompt=='resumed':
    while not (view/'ready').exists():assert time.monotonic()<deadline,'child native write readiness';time.sleep(.01)
    print('NATIVE_FIXTURE_PASS cancelled-native-ready',time.monotonic()-started,flush=True)
    waiter=submit('wait','cancelled');stopped=tool('cancel','cancelled');response(waiter)
-   assert stopped['control']=='Interrupt' and stopped['status']['settled'],stopped
+   assert stopped['control']=='interrupt' and stopped['status']['settled'],stopped
    pid=int((view/'descendant.pid').read_text());proc=pathlib.Path('/proc')/str(pid)/'stat'
    assert not proc.exists() or proc.read_text().split()[2]=='Z','descendant still running after cancel'
    assert not (workspace/'cancelled.txt').exists(),'cancelled child write leaked before merge'
@@ -153,7 +153,7 @@ if prompt=='resumed':
    print('NATIVE_FIXTURE_PASS cancelled-capture-merge',flush=True)
    blocked=tool('spawn','blocked-input','B'+'x'*32767);view=pathlib.Path(blocked['cwd']);deadline=time.monotonic()+2
    while not (view/'ready').exists():assert time.monotonic()<deadline,'blocked input readiness';time.sleep(.01)
-   stopped=tool('cancel','blocked-input');assert stopped['status']['settled'] and stopped['control']=='Interrupt',stopped
+   stopped=tool('cancel','blocked-input');assert stopped['status']['settled'] and stopped['control']=='interrupt',stopped
    print('NATIVE_FIXTURE_PASS blocked-input-cancel',flush=True)
   if scenario=='recursive':
    recursive=tool('spawn','recursive','recursive');finished=tool('wait','recursive')
@@ -172,7 +172,7 @@ if prompt=='resumed':
    assert not (workspace/'resumed.txt').exists(),'resumed child write leaked before merge'
    client({'kind':'fs','task':parent,'command':'merge agents/retained'});assert (workspace/'resumed.txt').read_text()=='native'
    print('NATIVE_FIXTURE_PASS resume-recreated-view-merge',flush=True)
-   archived=tool('archive','retained');assert archived['control']=='Archive',archived
+   archived=tool('archive','retained');assert archived['control']=='archive',archived
   close_bridge();stop_owner()
   print(json.dumps({'suite':'managed-native-session-'+scenario,'native_agent_fixture':True,'real_codex_workspace_write_sandbox':True,'model_calls':0,'cwd_and_discovery':True,'outside_denied':True,'seconds':time.monotonic()-started}),flush=True)
  except BaseException:
