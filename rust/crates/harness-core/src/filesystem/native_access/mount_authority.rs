@@ -9,6 +9,17 @@ pub struct NativeMountAuthority {
     bootstrap: bool,
 }
 impl NativeMountAuthority {
+    /// Retains the original verifier and signed caller scope without bootstrap
+    /// custody. Mount admission verifies this scope before any volume IO.
+    #[must_use]
+    pub fn admitted(verifier: AuthorityVerifier, scope: Scope) -> Self {
+        Self {
+            verifier,
+            scope,
+            bootstrap: false,
+        }
+    }
+
     /// Called by the runtime composition while it still owns the bootstrap issuer.
     pub fn new(issuer: &crate::core::AuthorityRoot, agent: crate::AgentId) -> Result<Self> {
         Ok(Self {
@@ -26,11 +37,10 @@ impl NativeMountAuthority {
     /// Retains an already authenticated task workload without acquiring root custody.
     pub fn for_scope(&self, scope: &Scope) -> Result<Self> {
         self.verifier.verify(scope, &mut None)?;
-        Ok(Self {
-            bootstrap: false,
-            verifier: self.verifier.clone(),
-            scope: scope.copy(&mut None)?,
-        })
+        Ok(Self::admitted(
+            self.verifier.clone(),
+            scope.copy(&mut None)?,
+        ))
     }
 
     /// Bind a raw facade to an authenticated task and its invocation ceiling.
@@ -183,8 +193,12 @@ mod tests {
         .map_err(|error| Error::Invalid(error.to_string()))?]);
         let narrow =
             issuer.bootstrap_scope("narrow-mount", &limited, port.scope.agent(), &mut None)?;
-        let options = port
-            .for_scope(&narrow)?
+        let io = PreparationIo::from_native_work(&work)?;
+        let admitted = NativeMountAuthority::admitted(
+            issuer.verifier(&mut Some(&mut io.history_io()))?,
+            narrow.copy(&mut Some(&mut io.history_io()))?,
+        );
+        let options = admitted
             .mount_options(&workspace, None, true, &work)
             .await?;
         let view = options
@@ -222,7 +236,7 @@ mod tests {
             "a legacy directory grant became a whole-volume mount"
         );
         // Negative control: bootstrap custody is explicitly retained by the host,
-        // while for_scope above only retains the authenticated narrow workload.
+        // while admitted above only retains the authenticated narrow workload.
         let bootstrap = port.mount_options(&workspace, None, true, &work).await?;
         let source = workspace.native_source(&bootstrap).await?;
         use acyclic_fs::native_mount::MountFilesystem;
@@ -254,7 +268,10 @@ mod tests {
         assert!(guard.check(&work)?.await.is_err());
         assert!(guard.check_write(&work)?.await.is_err());
         let after = work.receipt();
-        assert_eq!(before.backend_read_operations, after.backend_read_operations);
+        assert_eq!(
+            before.backend_read_operations,
+            after.backend_read_operations
+        );
         assert_eq!(
             before.backend_write_operations,
             after.backend_write_operations
