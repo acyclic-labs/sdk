@@ -82,7 +82,7 @@ pub(super) async fn stock_count_tokens(
 
 pub(super) fn stock_json_bound<T: Serialize>(
     value: &T,
-    maximum: u64,
+    maximum: Option<u64>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -90,7 +90,7 @@ pub(super) fn stock_json_bound<T: Serialize>(
         return crate::executor::json::count_json_bytes_trusted(
             value,
             crate::executor::json::JsonBounds {
-                maximum_bytes: Some(maximum),
+                maximum_bytes: maximum,
                 maximum_items: Some(io.remaining()?.items_examined),
                 maximum_depth: 256,
             },
@@ -102,13 +102,13 @@ pub(super) fn stock_json_bound<T: Serialize>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let _bytes_hold;
-        let bytes = io.encode(value, Some(maximum), false)?;
+        let bytes = io.encode(value, maximum, false)?;
         _bytes_hold = io.guard_bytes(&bytes)?;
         return Ok(());
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
-    crate::executor::json::json_byte_length(value, Some(maximum), &mut None).map(|_| ())
+    crate::executor::json::json_byte_length(value, maximum, &mut None).map(|_| ())
 }
 
 impl StockExecution<'_> {

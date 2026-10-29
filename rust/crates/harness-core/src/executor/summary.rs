@@ -33,8 +33,8 @@ impl StockExecution<'_> {
         crate::executor::with_history_io(self.io, |work| {
             instruction.validate_limits(self.stock.limits, work)
         })?;
-        stock_json_bound(&source, self.stock.limits.file_bytes, self.io)?;
-        stock_json_bound(&instruction, self.stock.limits.file_bytes, self.io)?;
+        stock_json_bound(&source, Some(self.stock.limits.file_bytes), self.io)?;
+        stock_json_bound(&instruction, Some(self.stock.limits.file_bytes), self.io)?;
         let summary_output = self.output_budget()?;
         if summary_output.is_none() {
             return Err(stock_boundary(
@@ -151,7 +151,7 @@ impl StockExecution<'_> {
                     stock_string_push(
                         &mut text,
                         &delta,
-                        self.stock.limits.render_bytes,
+                        Some(self.stock.limits.render_bytes),
                         "summary output exceeds caller render budget",
                         self.io,
                     )?;
@@ -161,7 +161,7 @@ impl StockExecution<'_> {
                     stock_string_push(
                         &mut text,
                         &completed,
-                        self.stock.limits.render_bytes,
+                        Some(self.stock.limits.render_bytes),
                         "summary output exceeds caller render budget",
                         self.io,
                     )?;
