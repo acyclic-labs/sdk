@@ -1037,12 +1037,36 @@ impl TurnEffects for Recorded {
     }
 }
 
-/// A writer that names the agent's private volume; spawn stages nothing.
+/// A writer that names the agent's private volume and stages every brief as
+/// one fixed file.
 struct Writer(VolumeRef);
 
 impl acyclic_harness_core::conversation::ContentPublisher for Writer {
     fn volume(&self) -> &VolumeRef {
         &self.0
+    }
+
+    fn stage_once<'a>(
+        &'a self,
+        _: OperationId,
+        _: &'a str,
+        _: &'a [u8],
+        _: &'a str,
+        _: &'a str,
+        _: acyclic_harness_core::conversation::ContentAccess<'a, 'a>,
+    ) -> acyclic_harness_core::Result<
+        acyclic_harness_core::conversation::BoundedContentFuture<
+            'a,
+            (
+                FileRef,
+                Option<acyclic_harness_core::conversation::ContentHold<'a>>,
+            ),
+        >,
+    > {
+        let file = super::driver::file("brief.md")?;
+        acyclic_harness_core::conversation::BoundedContentFuture::new(None, move || async move {
+            Ok((file, None))
+        })
     }
 }
 

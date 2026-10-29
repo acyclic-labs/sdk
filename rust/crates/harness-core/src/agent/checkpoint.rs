@@ -348,7 +348,7 @@ mod tests {
             records.push(InboxRecord::Spawn(SpawnRequest {
                 by: from.clone(),
                 id: intent(),
-                brief: widest_text(MAX_MESSAGE_BYTES),
+                brief: Box::new(file()),
             }));
             for action in [
                 crate::agent::ContextAction::Compact {

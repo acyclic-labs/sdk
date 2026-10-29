@@ -166,7 +166,7 @@ mod tests {
             u64::MAX,
             &mut None,
         )?;
-        let files = Arc::new(AgentInternalFiles::new(host, volume, write));
+        let files = Arc::new(AgentInternalFiles::new(host, volume.clone(), write));
         let effects = FilesystemTurnEffects::new(
             files.clone(),
             Arc::new(acyclic_stream::MemoryStream::default()),
@@ -178,7 +178,18 @@ mod tests {
             Ok(TurnEffect::Spawn {
                 intent: IntentId::try_from(name)
                     .map_err(|error| Error::Invalid(error.to_string()))?,
-                brief: name.into(),
+                brief: Box::new(crate::conversation::FileRef::new(
+                    volume.clone(),
+                    format!("briefs/{name}.md"),
+                    "version-1".into(),
+                    crate::conversation::FileDescriptor::from_bytes(
+                        name.as_bytes(),
+                        "text/markdown",
+                        &mut None,
+                    )?,
+                    name.into(),
+                    &mut None,
+                )?),
             })
         };
         let first = effect("first")?;

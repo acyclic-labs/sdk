@@ -458,7 +458,7 @@ impl WasmAgents {
         background: bool,
     ) -> std::result::Result<WasmAgents, JsValue> {
         options.limits.validate(&mut None).map_err(js_error)?;
-        let composer = providers.spawn_volumes(&options, owner, &owner.admission()?);
+        let composer = providers.spawn_volumes();
         let Providers {
             stream, filesystem, ..
         } = providers;

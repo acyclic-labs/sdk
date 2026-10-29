@@ -17,12 +17,12 @@ use std::collections::BTreeSet;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum TurnEffect {
-    /// Spawn the child named by `intent`, created holding `brief`.
+    /// Spawn the child named by `intent`, adopted with `brief`.
     Spawn {
         /// Spawning intent; names the child.
         intent: IntentId,
-        /// Task brief.
-        brief: String,
+        /// Task brief, staged on the spawning agent's private volume.
+        brief: Box<FileRef>,
     },
     /// Send a message to the parent or an open child.
     Send {
@@ -103,7 +103,7 @@ pub fn outs(agent: &AgentState, recorded: Vec<TurnEffect>) -> Vec<Out> {
             TurnEffect::Spawn { intent, brief } => {
                 spawned.insert(intent.clone()).then(|| Out::Spawn {
                     intent,
-                    brief: Some(brief.into_bytes()),
+                    brief: Some(*brief),
                     volumes: Vec::new(),
                 })
             }

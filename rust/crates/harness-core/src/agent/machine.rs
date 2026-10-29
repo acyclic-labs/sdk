@@ -292,9 +292,9 @@ pub enum Out {
     Spawn {
         /// Spawning intent; names the child.
         intent: IntentId,
-        /// Task brief bytes; [`super::SpawnVolumes`] creates the child's private
-        /// volume holding them, and the child names that file at adoption.
-        brief: Option<Vec<u8>>,
+        /// Task brief, staged on the spawning agent's private volume; the
+        /// child's adoption names it.
+        brief: Option<FileRef>,
         /// Volumes bound to the child (filled by the filesystem contribution).
         volumes: Vec<VolumeBinding>,
     },
@@ -495,7 +495,7 @@ pub(super) async fn prepare_step<T: TurnDriver + ?Sized>(
         ) => {
             outs.push(Out::Spawn {
                 intent: requested_intent(sequence)?,
-                brief: Some(spawn.brief.into_bytes()),
+                brief: Some(*spawn.brief),
                 volumes: Vec::new(),
             });
             // A turn in progress keeps the slots its recorded spawns take.

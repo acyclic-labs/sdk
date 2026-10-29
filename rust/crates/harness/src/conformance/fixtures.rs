@@ -85,7 +85,13 @@ impl TurnDriver for Driver {
             if matches!(id.as_str(), "spawn" | "respawn") {
                 outs.push(Out::Spawn {
                     intent: IntentId::try_from("child")?,
-                    brief: (id.as_str() == "respawn").then(|| b"different prompt".to_vec()),
+                    brief: match id.as_str() {
+                        "respawn" => Some(
+                            super::vectors::prompt()
+                                .map_err(|error| Error::Turn(Box::new(error)))?,
+                        ),
+                        _ => None,
+                    },
                     volumes: Vec::new(),
                 });
             }

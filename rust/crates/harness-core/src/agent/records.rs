@@ -199,8 +199,8 @@ pub struct SpawnRequest {
     pub by: Sender,
     /// Stable intent identity.
     pub id: IntentId,
-    /// Task brief, at most [`MAX_MESSAGE_BYTES`].
-    pub brief: String,
+    /// Task brief, staged on the parent's private volume.
+    pub brief: Box<FileRef>,
 }
 
 /// A child delegates an approval request to this agent (the parent approver).
@@ -478,12 +478,7 @@ impl AgentRecord for InboxRecord {
             | Self::Archive(Control { by: from, .. })
             | Self::Context(ContextRequest { by: from, .. }) => check_sender(from),
             Self::Hook(hook) => check_text(&hook.host),
-            Self::Spawn(spawn) => {
-                if spawn.brief.is_empty() || spawn.brief.len() > MAX_MESSAGE_BYTES {
-                    return Err(Error::Record("spawn brief must be 1-4096 bytes"));
-                }
-                check_sender(&spawn.by)
-            }
+            Self::Spawn(spawn) => check_sender(&spawn.by),
             Self::Approval(_)
             | Self::ApprovalRequested(_)
             | Self::Awaited

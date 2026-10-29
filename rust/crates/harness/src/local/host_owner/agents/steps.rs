@@ -58,7 +58,7 @@ pub(super) fn apply(
 ) -> Result<Option<Running>> {
     session.rejected = None;
     match event {
-        Event::Spawn { reference, prompt } => {
+        Event::Spawn { reference, brief } => {
             let intent = IntentId::try_from(reference.as_str()).map_err(storage)?;
             if agent
                 .open_children
@@ -66,11 +66,6 @@ pub(super) fn apply(
             {
                 return Ok(reject(session, id, "native child already exists"));
             }
-            let brief = serde_json::to_vec(&Brief {
-                reference: reference.clone(),
-                prompt,
-            })
-            .map_err(storage)?;
             outs.push(Out::Spawn {
                 intent,
                 brief: Some(brief),

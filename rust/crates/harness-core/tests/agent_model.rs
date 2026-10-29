@@ -958,7 +958,7 @@ fn spawn_request(sequence: u64) -> Wake {
         record: InboxRecord::Spawn(SpawnRequest {
             by: user(),
             id: intent(&format!("s{sequence}")),
-            brief: "task".into(),
+            brief: Box::new(driver::file("task").expect("file")),
         }),
     }
 }

@@ -894,6 +894,41 @@ async fn a_ten_mebibyte_prompt_is_accepted_and_reads_back_exactly() -> Result<()
 }
 
 #[tokio::test]
+async fn a_spawn_brief_past_one_frame_is_the_childs_first_input_exactly() -> Result<()> {
+    use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
+    let (_directory, harness, _provider) = checkout_with(&[]).await?;
+    let (agents, root) = harness.agents().await?;
+    let (agents, root) = (Arc::clone(agents), root.clone());
+    let connection = harness.connect().await?;
+    // Two frames and more: the client stages the command, and the host stages
+    // the brief once on the parent, where the child's adoption names it.
+    let brief = "brief \u{e9}\u{1f600}\n".repeat(2 * 1024 * 1024 / 12);
+    let spawn = AgentCommand::Spawn {
+        parent: root.clone(),
+        id: crate::agent::IntentId::try_from("large").map_err(agent)?,
+        brief: crate::model::ModelContent::Text(brief.clone()),
+    };
+    let AgentReply::Spawned { agent: child, .. } = connection.execute(&spawn).await? else {
+        return Err(Error::Invalid("spawn was not delivered".into()));
+    };
+    let entries = settled(&agents, &child).await?;
+    let entry = ConversationEntry::decode(&entries[0]).map_err(agent)?;
+    let TurnInput::Brief { brief: file } = entry.input else {
+        return Err(Error::Invalid(
+            "the child's first input is not its brief".into(),
+        ));
+    };
+    let read = Conversation::read(&connection, &root, ReadTarget::File { file: *file }).await?;
+    assert!(read == brief.as_bytes());
+    // A retried spawn names the same child.
+    assert!(matches!(
+        connection.execute(&spawn).await?,
+        AgentReply::Spawned { agent, .. } if agent == child
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn a_prompt_carries_a_thousand_mentions_as_one_reference() -> Result<()> {
     use crate::model::{ModelContent, ModelContentPart};
     const MENTIONS: usize = 1_000;

@@ -79,15 +79,14 @@ pub fn lower(step: &Step, cursor: u64, key: IdempotencyKey) -> Result<CommitRequ
         .ok_or(Error::Record("conversation tail precedes its appends"))?;
     for out in &step.outs {
         if let Out::Spawn {
-            intent, volumes, ..
+            intent,
+            brief,
+            volumes,
         } = out
         {
-            let spawn = commit::spawn(
-                path,
-                intent,
-                cursor,
-                adoption(state, volumes, cursor, prior_conversation),
-            )?;
+            let mut adopted = adoption(state, volumes, cursor, prior_conversation);
+            adopted.brief.clone_from(brief);
+            let spawn = commit::spawn(path, intent, cursor, adopted)?;
             builder.created.insert(spawn.child.inbox()?);
             for condition in spawn.request.conditions {
                 builder.condition(condition);
@@ -177,8 +176,6 @@ pub(super) fn adoption(
         // The checkpoint inherited at the cut, never one this step appends.
         checkpoint: state.checkpoint.filter(|at| *at < conversation_tail),
         volumes: volumes.to_vec(),
-        // The brief is a file in the child's private volume, whose version
-        // exists only once the spawn's commit seals.
         brief: None,
         policy: state.policy.clone(),
     }

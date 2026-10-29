@@ -535,10 +535,15 @@ where
             }
             AgentCommand::Spawn { parent, id, brief } => {
                 let parent = self.within_tree(parent)?;
+                let brief = text(brief)?;
+                let brief = self
+                    .bound
+                    .stage_text(parent, "brief", by, id, (brief, brief))
+                    .await?;
                 let record = InboxRecord::Spawn(SpawnRequest {
                     by: by.clone(),
                     id: id.clone(),
-                    brief: text(brief)?.to_owned(),
+                    brief: Box::new(brief),
                 });
                 let Delivered::Committed { inbox } = agents.send(parent, by, &record).await? else {
                     return Err(Error::Record("the parent is archived"));

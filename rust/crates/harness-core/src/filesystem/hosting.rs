@@ -347,12 +347,7 @@ where
         let driver = ExecutorDriver::new(Arc::clone(&turner));
         // A host keeping state beside its volumes (a lazy checkout) chooses
         // each spawn's fork cut, so a child's project is a related fork.
-        let spawns = FilesystemSpawnVolumes::new(
-            Arc::clone(&volumes),
-            issuer.clone(),
-            admission.clone(),
-            maximum_bytes,
-        );
+        let spawns = FilesystemSpawnVolumes::new(Arc::clone(&volumes));
         let spawns = Arc::new(match cuts {
             Some(cuts) => spawns.with_fork_cuts(cuts),
             None => spawns,

@@ -156,8 +156,8 @@ pub(super) enum Event {
     Spawn {
         /// Parent-local name; the spawn intent.
         reference: String,
-        /// Initial prompt.
-        prompt: String,
+        /// The child's [`Brief`], staged on the parent's private volume.
+        brief: FileRef,
     },
     /// Claim the next input.
     Claim,
@@ -197,7 +197,14 @@ pub(super) struct HostDriver {
 }
 
 impl HostDriver {
-    async fn content(&self, agent: &AgentState, bound: u64) -> Result<Content> {
+    /// Content access of `agent` over its own volumes and the `external`
+    /// files it names.
+    async fn content(
+        &self,
+        agent: &AgentState,
+        bound: u64,
+        external: &[FileRef],
+    ) -> Result<Content> {
         let AgentAuthority {
             scope,
             verifier,
@@ -208,7 +215,7 @@ impl HostDriver {
             &TurnAdmission::LocalRoot,
             &agent.path,
             &agent.volumes,
-            &[],
+            external,
         )
         .await?;
         Ok(Content {
@@ -230,9 +237,12 @@ impl HostDriver {
         })
     }
 
-    /// Reads one file the agent's own volumes hold.
+    /// Reads one file the agent names: on its own volumes, or a brief on
+    /// its parent's.
     pub(super) async fn read(&self, agent: &AgentState, file: &FileRef) -> Result<Vec<u8>> {
-        let content = self.content(agent, MAXIMUM_BYTES).await?;
+        let content = self
+            .content(agent, MAXIMUM_BYTES, std::slice::from_ref(file))
+            .await?;
         Ok(content
             .reader
             .read(file, MAXIMUM_BYTES, None, None)?
@@ -247,7 +257,7 @@ impl HostDriver {
         operation: OperationId,
         bytes: &[u8],
     ) -> Result<FileRef> {
-        let content = self.content(agent, MAXIMUM_BYTES).await?;
+        let content = self.content(agent, MAXIMUM_BYTES, &[]).await?;
         Ok(content
             .writer
             .stage_once(
@@ -260,6 +270,47 @@ impl HostDriver {
             )?
             .await?
             .0)
+    }
+
+    /// The brief of `agent`'s child session `reference`, staged once on the
+    /// agent's private volume. A reference names one prompt: a spawn
+    /// replayed with another is a conflict.
+    pub(super) async fn brief(
+        &self,
+        agent: &AgentState,
+        reference: &str,
+        prompt: &str,
+    ) -> Result<FileRef> {
+        let mut hasher = blake3::Hasher::new_derive_key("acyclic.native-host.brief.v1");
+        hasher.update(reference.as_bytes());
+        let mut operation = [0; 16];
+        hasher.finalize_xof().fill(&mut operation);
+        let operation = OperationId::from_bytes(operation);
+        let content = self.content(agent, MAXIMUM_BYTES, &[]).await?;
+        if let Some(file) = content
+            .writer
+            .observe_staged_once(operation, MAXIMUM_BYTES, ContentAccess::default())?
+            .await?
+            .0
+        {
+            let bytes = content
+                .reader
+                .read(&file, MAXIMUM_BYTES, None, None)?
+                .await?;
+            let brief = serde_json::from_slice::<Brief>(&bytes).map_err(storage)?;
+            if brief.prompt != prompt {
+                return Err(Error::Conflict(format!(
+                    "session {reference} was already spawned with a different prompt"
+                )));
+            }
+            return Ok(file);
+        }
+        let bytes = serde_json::to_vec(&Brief {
+            reference: reference.into(),
+            prompt: prompt.into(),
+        })
+        .map_err(storage)?;
+        self.stage(agent, operation, &bytes).await
     }
 
     /// Stages the native event log of the turn claimed under `claim` once.
@@ -275,7 +326,7 @@ impl HostDriver {
         hasher.finalize_xof().fill(&mut operation);
         let operation = OperationId::from_bytes(operation);
         let content = self
-            .content(agent, crate::local::host_process::EVENT_LOG_BYTES)
+            .content(agent, crate::local::host_process::EVENT_LOG_BYTES, &[])
             .await?;
         Ok(content
             .writer
@@ -445,7 +496,6 @@ impl TurnDriver for Shared {
 pub(super) struct NativeAgents {
     host: Arc<AgentHost<LocalStream>>,
     driver: Arc<HostDriver>,
-    volumes: Arc<dyn crate::agent::SpawnVolumes>,
     files: Arc<LocalFilesystem>,
     issuer: AuthorityRoot,
     bindings: [VolumeBinding; 2],
@@ -465,12 +515,7 @@ impl NativeAgents {
             issuer: issuer.clone(),
         });
         let within = ActorReference::new(b"local", b"native", b"hosts").map_err(storage)?;
-        let volumes = FilesystemSpawnVolumes::new(
-            local.files.clone(),
-            issuer.clone(),
-            TurnAdmission::LocalRoot,
-            MAXIMUM_BYTES,
-        );
+        let volumes = FilesystemSpawnVolumes::new(local.files.clone());
         let volumes = if let Some(workspace) = local.workspace() {
             volumes.with_fork_cuts(Arc::new(crate::local::workspace::LazyForkCuts(Arc::clone(
                 workspace,
@@ -486,7 +531,7 @@ impl NativeAgents {
                 within,
                 ActorLimits::new(60_000, 1 << 20, 1 << 16).map_err(storage)?,
                 Arc::new(SystemClock),
-                Arc::clone(&volumes),
+                volumes,
             )
             .map_err(storage)?,
         );
@@ -497,7 +542,6 @@ impl NativeAgents {
         Ok(Self {
             host,
             driver,
-            volumes,
             files: local.files.clone(),
             issuer,
             bindings: [
@@ -568,17 +612,15 @@ impl NativeAgents {
         self.driver.stage_events(&state, claim, bytes).await
     }
 
-    /// The brief spawned `child` was created with.
-    pub(super) async fn brief(&self, child: &AgentPath) -> Result<Brief> {
-        let state = self.state(child).await?;
-        let file = self
-            .volumes
-            .brief(child, &state.volumes)
-            .await
-            .map_err(storage)?
-            .ok_or_else(|| Error::NotFound("spawned session has no brief".into()))?;
-        let bytes = self.driver.read(&state, &file).await?;
-        serde_json::from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))
+    /// The brief of `parent`'s child session `reference`; see
+    /// [`HostDriver::brief`].
+    pub(super) async fn brief(
+        &self,
+        parent: &AgentState,
+        reference: &str,
+        prompt: &str,
+    ) -> Result<FileRef> {
+        self.driver.brief(parent, reference, prompt).await
     }
 
     /// `agent`'s session after its last turn.
