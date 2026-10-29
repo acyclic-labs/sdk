@@ -407,7 +407,15 @@ describe("Machines simulation", () => {
     if (created.kind !== "created") throw new Error("wrong create outcome");
     const encode = (value: unknown) => JSON.stringify(value, (_key, item) => typeof item === "bigint" ? { $bigint: item.toString() } : item instanceof Uint8Array ? { $bytes: btoa(String.fromCharCode(...item)) } : item);
     const serve = (value: unknown) => new HttpMachinesProvider({ endpoint: "https://example.test", token: "x", fetcher: async () => new Response(encode(value)) });
+    const { image: _requestedImage, ...defaultImageRequest } = request("hosted-mutation-bindings");
+    expect(await serve(created).create(defaultImageRequest)).toEqual(created);
+    expect(await serve(created).create({ ...defaultImageRequest, image: null } as never)).toEqual(created);
+    const resolvedDefault = { ...created, machine: { ...created.machine, contract: { ...created.machine.contract, image: { kind: "custom", digestHex: "09".repeat(32) } } } };
+    expect(await serve(resolvedDefault).create(defaultImageRequest)).toEqual(resolvedDefault);
+    await expect(serve(resolvedDefault).create(request("hosted-mutation-bindings"))).rejects.toThrow("image was substituted");
+    await expect(serve({ ...resolvedDefault, machine: { ...resolvedDefault.machine, contract: { ...resolvedDefault.machine.contract, image: null } } }).create(defaultImageRequest)).rejects.toThrow();
     await expect(serve({ ...created, machine: { ...created.machine, contract: { ...created.machine.contract, suspension: { kind: "manual" } } } }).create(request("hosted-mutation-bindings"))).rejects.toThrow();
+    await expect(serve({ ...resolvedDefault, machine: { ...resolvedDefault.machine, contract: { ...resolvedDefault.machine.contract, suspension: { kind: "manual" } } } }).create(defaultImageRequest)).rejects.toThrow();
 
     const checkpointed = await simulated.checkpoint(created.machine.id, idempotencyKey("hosted-mutation-checkpoint"));
     if (checkpointed.kind !== "checkpointed") throw new Error("wrong checkpoint outcome");

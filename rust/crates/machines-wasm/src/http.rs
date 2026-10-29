@@ -398,8 +398,10 @@ fn same_count(values: &Value, values_field: &str, expected: &Value) -> Result<()
 fn bind_created_machine(value: &Value, expected: &Value) -> Result<(), JsValue> {
     let machine = field(value, "machine")?;
     let contract = field(machine, "contract")?;
+    if expected.get("image").is_some_and(|image| !image.is_null()) {
+        same_value(contract, "image", expected, "image", "image")?;
+    }
     for (name, label) in [
-        ("image", "image"),
         ("compatibility", "compatibility policy"),
         ("suspension", "suspension policy"),
         ("expiration", "expiration policy"),
