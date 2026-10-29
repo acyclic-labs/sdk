@@ -168,9 +168,16 @@ struct WasmAgentRecord {
 pub struct WasmAgentRegistry {
     tools: ToolRegistry,
     model: Option<(Model, Arc<dyn ModelProvider>, CompactionPolicy)>,
+    workspace: Option<Arc<dyn crate::tool::ToolExecutor>>,
 }
 
 impl WasmAgentRegistry {
+    /// Retains the opener's admitted workspace executor. Machines hosts pass
+    /// their `MachinesWorkspace`; each turn supplies its own task authority.
+    pub fn bind_workspace(&mut self, workspace: Arc<dyn crate::tool::ToolExecutor>) {
+        self.workspace = Some(workspace);
+    }
+
     /// Installs a production provider without translating its admitted requests,
     /// token counts, content custody or streamed events through JavaScript.
     pub fn bind_model(

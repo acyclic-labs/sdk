@@ -11,7 +11,7 @@ use acyclic_harness_core::{
     core::{AggregateKind, Authority, AuthorityRoot},
     executor::Executor,
     executor::StockExecutor,
-    filesystem::{FilesystemHost, FilesystemTurnHost, PRIVATE_VOLUME, TurnLimits},
+    filesystem::{FilesystemHost, FilesystemTurnHost, PRIVATE_VOLUME, Tasks, TurnLimits},
     filesystem::{TurnAdmission, TurnAuthority, TurnExecutors},
     model::{Model, ModelContent, ModelRequest, ModelRole},
     resources::ProviderRef,
@@ -66,26 +66,27 @@ async fn private(path: &AgentPath) -> Result<(Host, VolumeBinding)> {
 struct Stock {
     selection: Model,
     model: Arc<ScriptedModelProvider>,
+    bindings: Arc<acyclic_harness_core::runtime::AgentHarness>,
 }
 
 impl TurnExecutors for Stock {
     fn executor<'a>(
         &'a self,
-        _: &'a AgentState,
-        _: OperationId,
+        agent: &'a AgentState,
+        turn: OperationId,
         _: &'a ModelContent,
-        _: &'a TurnAuthority,
+        authority: &'a TurnAuthority,
     ) -> BoxProviderFuture<'a, acyclic_harness_core::Result<Arc<dyn Executor>>> {
         Box::pin(async move {
-            Ok(Arc::new(
-                StockExecutor::new(
-                    self.selection.clone(),
-                    self.model.clone(),
-                    ContextPipeline::default(),
-                    ToolRegistry::default(),
-                )
-                .with_compaction_policy(CompactionPolicy::Disabled),
-            ) as Arc<dyn Executor>)
+            let executor = StockExecutor::new(
+                self.selection.clone(),
+                self.model.clone(),
+                ContextPipeline::default(),
+                ToolRegistry::default(),
+            )
+            .with_compaction_policy(CompactionPolicy::Disabled);
+            let (executor, _) = Tasks::bind(&self.bindings, executor, agent, turn, authority)?;
+            Ok(Arc::new(executor) as Arc<dyn Executor>)
         })
     }
 }
@@ -97,7 +98,19 @@ fn executors(model: Arc<ScriptedModelProvider>) -> Result<Arc<dyn TurnExecutors>
         "1".into(),
         serde_json::Value::Null,
     )?;
-    Ok(Arc::new(Stock { selection, model }))
+    let bindings = acyclic_harness_core::runtime::Bindings {
+        scope: acyclic_harness_core::runtime::RuntimeScope::new(
+            Capabilities::new([acyclic_harness_core::contract::capability::MODEL_GENERATE]),
+            Default::default(),
+        )?,
+        ..Default::default()
+    }
+    .build()?;
+    Ok(Arc::new(Stock {
+        selection,
+        model,
+        bindings,
+    }))
 }
 
 fn requested(id: &str, child: &AgentPath) -> Wake {

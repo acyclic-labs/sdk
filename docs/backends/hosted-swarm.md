@@ -13,6 +13,13 @@ remain in the host. The preset supplies GraphCoder's prompt, tools and approval
 policy. Additional workspace tools and task context are explicit host choices.
 Storage implementations stay below the shared filesystem and Actors engines.
 
+An admitted workspace executor belongs in `runtime::Bindings.workspace_tools`.
+Build those bindings once, then pass `filesystem::Tasks(bindings)` as the turn
+context. It binds each turn's original volume grants, content access, execution
+journal and approval policy to that turn's operation. Native context manifests
+and hooks use the same `Tasks::bind` operation. The workspace executor therefore
+receives the original task context rather than an unrelated tool callback.
+
 Keep the same root intent when reopening storage. An uncertain root publication
 returns `ActorsError::Unknown` with its `PendingActors` composition. Retain that
 handle, then pass it as `ServerConfig::harness` after the provider's recovery

@@ -12,8 +12,8 @@ use super::{
 use crate::{
     agent::{AgentHandler, ExecutorDriver, actor_store},
     filesystem::{
-        FilesystemHost, FilesystemSpawnVolumes, FilesystemTurnHost, Grants, StockExecutors,
-        TurnAdmission, TurnLimits,
+        FilesystemHost, FilesystemSpawnVolumes, FilesystemTurnHost, Grants, StockExecutors, Tasks,
+        TurnAdmission, TurnContext, TurnLimits,
     },
 };
 use acyclic_actors::domain::ActorLimits;
@@ -320,14 +320,37 @@ impl Providers {
             .model
             .clone()
             .ok_or_else(|| js_error(Error::Invalid("no model is configured".into())))?;
-        let mut tools = options.preset.tools(false, Vec::new()).map_err(js_error)?;
+        let mut tools = options
+            .preset
+            .tools(registry.workspace.is_some(), Vec::new())
+            .map_err(js_error)?;
         tools.extend(registry.tools.clone()).map_err(js_error)?;
         let grants = options.preset.tool_grants(&tools).map_err(js_error)?;
+        let context: Arc<dyn TurnContext> = match &registry.workspace {
+            Some(workspace) => Arc::new(Tasks(
+                crate::runtime::Bindings {
+                    workspace_tools: Some(Arc::clone(workspace)),
+                    scope: crate::runtime::RuntimeScope::new(
+                        crate::Capabilities::new(
+                            grants
+                                .into_iter()
+                                .chain([crate::contract::capability::MODEL_GENERATE.to_owned()]),
+                        ),
+                        options.limits,
+                    )
+                    .map_err(js_error)?,
+                    ..Default::default()
+                }
+                .build()
+                .map_err(js_error)?,
+            )),
+            None => Arc::new(Grants(grants)),
+        };
         Ok(options.preset.executors(
             (model, provider),
             tools,
             (options.limits, compaction),
-            Arc::new(Grants(grants)),
+            context,
         ))
     }
 

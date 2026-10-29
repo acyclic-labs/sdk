@@ -10,8 +10,8 @@ use crate::{
     conversation::{ContentAccess, ContentPublisher, VolumeRef},
     executor::{Executor, StockExecutor},
     filesystem::{
-        FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, TurnAuthority, TurnContext, TurnExecutors,
-        TurnLimits,
+        FilesystemTurnHost, GOAL_VOLUME, PRIVATE_VOLUME, Tasks, TurnAuthority, TurnContext,
+        TurnExecutors, TurnLimits,
     },
     model::ModelContent,
 };
@@ -141,17 +141,11 @@ impl TurnContext for LocalContext {
                         .await?
                 }
             };
-            let context = local
-                .harness
-                .agent_context(&authority.grants, authority.content.clone())?
-                .with_execution_journal(Arc::clone(&authority.journal))
-                .for_agent(agent.path.clone(), agent.volumes.clone());
             let executor = executor
                 .with_context_manifest(manifest, authority.content.reader.clone())
-                .await?
-                .with_tool_authority(context.scope().clone(), authority.approval.clone())?
-                .with_task_context(&context, turn)?
-                .with_live_reply(crate::executor::LiveReply::new(
+                .await?;
+            let (executor, context) = Tasks::bind(&local.harness, executor, agent, turn, authority)?;
+            let executor = executor.with_live_reply(crate::executor::LiveReply::new(
                     Arc::clone(writer),
                     format!("{}/{turn}", crate::filesystem::TOOL_OUTPUT),
                 ));
@@ -161,6 +155,8 @@ impl TurnContext for LocalContext {
             let executor = executor
                 .with_agent_hooks(&context, turn, input, session_operation(&agent.path))
                 .await?;
+            #[cfg(not(any(test, feature = "hooks")))]
+            let _ = context;
             Ok(executor)
         })
     }

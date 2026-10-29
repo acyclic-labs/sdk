@@ -13,7 +13,7 @@ use crate::{
     executor::{Executor, StockExecutor},
     model::{Model, ModelContent, ModelProvider},
     preset::Preset,
-    runtime::RuntimeScope,
+    runtime::{AgentHarness, RuntimeScope, TaskContext},
     tool::ToolRegistry,
 };
 use acyclic_stream::BoxProviderFuture;
@@ -38,6 +38,45 @@ pub trait TurnContext: acyclic_stream::ProviderPlatform + 'static {
 /// under exactly the grants its admission gives it, plus `grants`, and the
 /// model may generate.
 pub struct Grants(pub Vec<String>);
+
+/// Stock turns backed by the opener's immutable runtime bindings. Workspace
+/// tools receive the turn's original content, journal and task identity.
+pub struct Tasks(pub Arc<AgentHarness>);
+
+impl Tasks {
+    /// Binds one executor and returns the same task context for host hooks.
+    pub fn bind(
+        harness: &Arc<AgentHarness>,
+        executor: StockExecutor,
+        agent: &AgentState,
+        turn: OperationId,
+        authority: &TurnAuthority,
+    ) -> Result<(StockExecutor, TaskContext)> {
+        let context = harness
+            .agent_context(&authority.grants, authority.content.clone())?
+            .with_execution_journal(Arc::clone(&authority.journal))
+            .for_agent(agent.path.clone(), agent.volumes.clone());
+        let executor = executor
+            .with_tool_authority(context.scope().clone(), authority.approval.clone())?
+            .with_task_context(&context, turn)?;
+        Ok((executor, context))
+    }
+}
+
+impl TurnContext for Tasks {
+    fn prepare<'a>(
+        &'a self,
+        (executor, _): (StockExecutor, Limits),
+        agent: &'a AgentState,
+        turn: OperationId,
+        _: &'a ModelContent,
+        authority: &'a TurnAuthority,
+    ) -> BoxProviderFuture<'a, Result<StockExecutor>> {
+        Box::pin(async move {
+            Self::bind(&self.0, executor, agent, turn, authority).map(|(executor, _)| executor)
+        })
+    }
+}
 
 impl TurnContext for Grants {
     fn prepare<'a>(
