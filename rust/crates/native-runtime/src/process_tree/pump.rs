@@ -92,14 +92,10 @@ impl From<Vec<ProcessWake>> for CaptureWakes {
 
 /// The owner callbacks of an async capture, run on the blocking pool.
 pub trait CaptureHandler: Send + 'static {
-    /// Retained owner signals, captured once on the first blocking turn.
-    fn wakes(&self) -> &[ProcessWake] {
-        &[]
-    }
     /// Transfers the fixed signal set into the capture owner. Override this to
     /// move a single signal or an existing vector without allocating or cloning.
     fn take_wakes(&mut self) -> io::Result<CaptureWakes> {
-        Ok(self.wakes().to_vec().into())
+        Ok(None.into())
     }
     /// Confirms that capture may continue; an error stops and cleans it up.
     fn check(&mut self) -> io::Result<()>;

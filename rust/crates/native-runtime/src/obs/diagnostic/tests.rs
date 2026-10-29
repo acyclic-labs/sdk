@@ -166,19 +166,6 @@ fn full_output_does_not_block_cancellation_or_other_producers() -> io::Result<()
         );
         report.snapshot().try_write_to(io::sink())?.await?;
 
-        // Dropping the observer does not abandon an accepted physical report.
-        let (output, mut input) = UnixStream::pair()?;
-        let (producer, receiver) = tokio::sync::oneshot::channel::<()>();
-        let operation = tracing::dispatcher::with_default(&dispatch, || {
-            crate::obs::waiting("channel-close", "detached-key", receiver)
-        });
-        drop(report.snapshot().try_write_to(output)?);
-        drop(operation);
-        drop(producer);
-        let mut bytes = String::new();
-        input.read_to_string(&mut bytes)?;
-        assert!(bytes.starts_with("waiting: channel-close detached-key since "));
-
         struct Counted(Arc<std::sync::atomic::AtomicUsize>);
         impl Write for Counted {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -206,6 +193,21 @@ fn full_output_does_not_block_cancellation_or_other_producers() -> io::Result<()
         assert_eq!(writes.load(Ordering::Relaxed), 1);
         drop(operation);
         drop(producer);
+
+        // Dropping the observer does not abandon an accepted physical report.
+        // EOF proves writer retirement, not that admission has been released;
+        // no subsequent submission relies on the detached job's completion.
+        let (output, mut input) = UnixStream::pair()?;
+        let (producer, receiver) = tokio::sync::oneshot::channel::<()>();
+        let operation = tracing::dispatcher::with_default(&dispatch, || {
+            crate::obs::waiting("channel-close", "detached-key", receiver)
+        });
+        drop(report.snapshot().try_write_to(output)?);
+        drop(operation);
+        drop(producer);
+        let mut bytes = String::new();
+        input.read_to_string(&mut bytes)?;
+        assert!(bytes.starts_with("waiting: channel-close detached-key since "));
         Ok(())
     })
 }

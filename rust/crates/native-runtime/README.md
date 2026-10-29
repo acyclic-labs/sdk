@@ -96,8 +96,8 @@ Capture setup and every handler callback run on the blocking service. The first
 turn takes ownership of the fixed control-signal set before invoking checks or
 output observers. Subsequent waits use those owned signals without invoking a
 handler on coordination. `take_wakes` moves a single inline signal or an existing
-vector with no allocation or signal clone; its compatibility default copies the
-signal owners once per capture. Setup shares the first turn's existing job, so
+vector with no allocation or signal clone; its default supplies no signals.
+Setup shares the first turn's existing job, so
 this boundary adds no worker submission, pipe byte copy, flush or durability barrier.
 
 `obs::WaitReport::snapshot()` captures owned observations before cancellation;

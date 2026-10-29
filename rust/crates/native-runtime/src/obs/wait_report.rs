@@ -192,7 +192,7 @@ impl WaitReport {
 
     /// Writes a snapshot of live primitive/key/start observations, then flushes.
     ///
-    /// This synchronous compatibility entry may block the calling thread.
+    /// This synchronous entry may block the calling thread.
     /// Coordination owners use [`Self::snapshot`] and
     /// [`WaitSnapshot::try_write_to`] to keep cancellation independent of output.
     pub fn report(&self, output: &mut impl Write) -> io::Result<()> {
