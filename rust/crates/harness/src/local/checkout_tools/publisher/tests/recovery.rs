@@ -101,8 +101,9 @@ async fn replay_after_an_interrupted_capture_is_settled(skip: bool, recover: boo
         .await
         .map_err(storage)?
         .value;
-    let settled =
-        capture.is_some_and(|capture| hex::encode(capture.id().to_bytes()) == replayed.version());
+    let settled = capture.is_some_and(|capture| {
+        hex::encode(capture.id().to_bytes().as_slice()) == replayed.version()
+    });
     let edited = match publisher.stage_at(OperationId::new(), &replayed, b"edited\n", None, None) {
         Ok(staged) => staged.await.is_ok(),
         Err(_) => false,
@@ -157,7 +158,7 @@ async fn staged_reference(harness: &Fixture, file: &FileRef) -> Result<FileRef> 
     FileRef::new(
         file.volume().clone(),
         file.path().to_owned(),
-        hex::encode(staged.to_bytes()),
+        hex::encode(staged.to_bytes().as_slice()),
         file.descriptor().clone(),
         file.display_name().to_owned(),
         &mut None,
@@ -297,7 +298,10 @@ async fn another_write_before_recovery_leaves_the_interrupted_capture_its_own() 
         .map_err(storage)?
         .value
         .ok_or_else(|| Error::Invalid("another write took the interrupted capture".into()))?;
-    assert_eq!(recovered.version(), hex::encode(capture.id().to_bytes()));
+    assert_eq!(
+        recovered.version(),
+        hex::encode(capture.id().to_bytes().as_slice())
+    );
     assert_eq!(
         std::fs::read(directory.path().join("result.txt")).map_err(storage)?,
         b"agent bytes
@@ -356,7 +360,11 @@ async fn a_clean_capture_records_its_settlement_without_native_mutations() -> Re
     })
     .await?;
     let key = acyclic_fs::IdempotencyKey::from_bytes(
-        capture::capture_operation(OperationId::from_bytes(operation.into_bytes()), 1).into_bytes(),
+        capture::capture_operation(
+            OperationId::from_bytes(operation.into_bytes().as_slice()),
+            1,
+        )
+        .into_bytes(),
     );
     let settled = view
         .workspace()
@@ -562,8 +570,9 @@ async fn an_unwritten_owed_write_is_settled(finish: Finish, unapplied: bool) -> 
         .await
         .map_err(storage)?
         .value;
-    let settled =
-        capture.is_some_and(|capture| hex::encode(capture.id().to_bytes()) == finished.version());
+    let settled = capture.is_some_and(|capture| {
+        hex::encode(capture.id().to_bytes().as_slice()) == finished.version()
+    });
     let edited = match publisher.stage_at(OperationId::new(), &finished, b"edited\n", None, None) {
         Ok(staged) => staged.await.is_ok(),
         Err(_) => false,

@@ -299,7 +299,10 @@ async fn fresh_checkout_writes_publish_external_and_authored_changes_in_one_capt
                 expected
             );
         }
-        assert_eq!(file.version(), hex::encode(after.id().to_bytes()));
+        assert_eq!(
+            file.version(),
+            hex::encode(after.id().to_bytes().as_slice())
+        );
         let mut generation = after;
         let mut count = 0;
         while generation.id() != before.id() {
