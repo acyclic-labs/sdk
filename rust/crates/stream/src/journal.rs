@@ -3,7 +3,9 @@
 #[cfg(not(target_arch = "wasm32"))]
 use crate::OwnedBytes as Bytes;
 use crate::wire_codec;
-use crate::{AppendRequest, CommitRequest, ForkRequest, MemoryStream, StreamError, StreamProvider};
+use crate::{
+    AppendRequest, CommitRequest, ForkRequest, MemoryStream, StreamError, StreamProviderExt,
+};
 pub(crate) use crate::{WriteOutcome as Outcome, WriteRequest as Command};
 use prost::Message;
 

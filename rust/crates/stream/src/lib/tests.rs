@@ -258,3 +258,77 @@ mod replay_tests {
         }
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod write_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn canonical_write_preserves_genuine_families_and_atomic_fork_tail()
+    -> Result<(), StreamError> {
+        let provider = MemoryStream::default();
+        let source = StreamPath::new("write/source")?;
+        let destination = StreamPath::new("write/fork")?;
+        let append = AppendRequest {
+            path: source.clone(),
+            records: vec![b"first".to_vec().into()],
+            if_tail: Some(0),
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        let append_request = WriteRequest::Append(append.clone());
+        let appended = provider.write(append_request.clone()).await?;
+        let WriteOutcome::Append(AppendOutcome::Committed(receipt)) = &appended else {
+            return Err(StreamError::InvalidResponse);
+        };
+        assert_eq!(
+            provider.append(append.clone()).await?,
+            AppendOutcome::Committed(receipt.clone())
+        );
+        let fork_request = WriteRequest::Fork(ForkRequest {
+            source: source.clone(),
+            destination: destination.clone(),
+            at_tail: None,
+            exclude: Vec::new(),
+            idempotency_key: IdempotencyKey::unique(),
+        });
+        let forked = provider.write(fork_request.clone()).await?;
+        let WriteOutcome::Fork(forked_receipt) = &forked else {
+            return Err(StreamError::InvalidResponse);
+        };
+        assert_eq!(forked_receipt.forked_at, 1);
+        let mut commit = CommitRequest {
+            deadline_unix_millis: None,
+            conditions: vec![CommitCondition::Tail {
+                path: source.clone(),
+                expected: 1,
+            }],
+            mutations: vec![CommitMutation::Append {
+                path: source.clone(),
+                records: vec![b"second".to_vec().into()],
+            }],
+            idempotency_key: IdempotencyKey::unique(),
+        };
+        let commit_request = WriteRequest::Commit(commit.clone());
+        let committed = provider.write(commit_request.clone()).await?;
+        assert!(matches!(
+            &committed,
+            WriteOutcome::Commit(CommitOutcome::Committed(_))
+        ));
+        assert_eq!(provider.tail(source).await?, 2);
+        assert_eq!(provider.tail(destination).await?, 1);
+        for (request, expected) in [
+            (append_request, appended),
+            (fork_request, forked),
+            (commit_request, committed),
+        ] {
+            assert_eq!(provider.write(request).await?, expected);
+        }
+        // Reusing a key for another family must not recover or re-encode the append.
+        commit.idempotency_key = append.idempotency_key;
+        assert_eq!(
+            provider.write(WriteRequest::Commit(commit)).await,
+            Err(StreamError::IdempotencyMismatch)
+        );
+        Ok(())
+    }
+}

@@ -464,6 +464,7 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
 mod tests {
     use super::*;
     use crate::OwnedBytes as Bytes;
+    use crate::StreamProviderExt as _;
     use crate::{IdempotencyKey, IdempotencyObservation, MemoryStream, StreamPath, StreamProvider};
 
     #[tokio::test]

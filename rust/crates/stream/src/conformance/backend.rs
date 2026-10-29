@@ -1,4 +1,5 @@
 use super::{histories, verify_contract, wave1};
+use crate::StreamProviderExt as _;
 use crate::{
     AppendOutcome, AppendRequest, IdempotencyKey, OwnedBytes, ProviderPlatform, ReadRequest,
     StreamError, StreamPath, StreamProvider, UnixMillisClock as _,

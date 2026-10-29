@@ -1,4 +1,5 @@
 //! Owned custody of one exact keyed commit, independent of its waiters.
+use crate::StreamProviderExt as _;
 use crate::{BoxProviderFuture, CommitOutcome, CommitRequest, StreamError, StreamProvider};
 use futures::{FutureExt as _, channel::oneshot, future::Shared};
 use std::{
