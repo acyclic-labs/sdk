@@ -4,17 +4,9 @@ use acyclic_harness_client::{AgentId, AgentPath};
 use acyclic_stream::grpc::Client;
 use std::io::Read as _;
 
-fn input_file(path: &str, maximum: usize) -> std::io::Result<Vec<u8>> {
+fn input_file(path: &str) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(maximum as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > maximum {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("CLIENT_INPUT file exceeds {maximum} bytes: {path}"),
-        ));
-    }
+    std::fs::File::open(path)?.read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 
@@ -28,9 +20,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let endpoint = std::env::var("ACYCLIC_CONFORMANCE_ENDPOINT")?;
     let token = std::env::var("ACYCLIC_CONFORMANCE_TOKEN")?;
     let credential = std::env::var("ACYCLIC_CONFORMANCE_SESSION_CREDENTIAL")?;
-    if credential.len() > 131_072 {
-        return Err("CLIENT_INPUT credential exceeds byte bound".into());
-    }
     let credential = hex::decode(credential)?;
     let provider = match std::env::var("ACYCLIC_CONFORMANCE_CA") {
         Ok(path) => {
@@ -44,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     session.register_credential(0, credential.into())?;
     match std::env::var("ACYCLIC_CONFORMANCE_TOOL_FIXTURE") {
         Ok(path) => {
-            let fixture = serde_json::from_slice(&input_file(&path, 8 * 1024 * 1024)?)?;
+            let fixture = serde_json::from_slice(&input_file(&path)?)?;
             let report =
                 acyclic_conformance::client::tool_output::verify(&provider, session, 0, &fixture)
                     .await?;
@@ -56,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     match std::env::var("ACYCLIC_CONFORMANCE_CONTROL_FIXTURE") {
         Ok(path) => {
-            let fixture = serde_json::from_slice(&input_file(&path, 32 * 1024 * 1024)?)?;
+            let fixture = serde_json::from_slice(&input_file(&path)?)?;
             let report =
                 acyclic_conformance::client::controls::verify(&provider, &session, 0, &fixture)
                     .await?;
@@ -70,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "ACYCLIC_CONFORMANCE_NAMESPACE",
     )?)?);
     let path = std::env::var("ACYCLIC_CONFORMANCE_AGENT_FIXTURE")?;
-    let fixture: Fixture = serde_json::from_slice(&input_file(&path, 65_536)?)?;
+    let fixture: Fixture = serde_json::from_slice(&input_file(&path)?)?;
     if fixture.agent != namespace
         && !fixture
             .agent
