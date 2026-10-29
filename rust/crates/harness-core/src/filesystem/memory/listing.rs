@@ -142,7 +142,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
             crate::executor::with_history_io(Some(&io), |observer| {
                 crate::executor::json::canonical_json_digest(
                     invocation,
-                    io.remaining()?.bytes_encoded,
+                    Some(io.remaining()?.bytes_encoded),
                     observer,
                 )
             })?
@@ -237,7 +237,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> LocalListF
             crate::executor::with_history_io(Some(&io), |observer| {
                 crate::executor::json::canonical_json_digest(
                     invocation,
-                    io.remaining()?.bytes_encoded,
+                    Some(io.remaining()?.bytes_encoded),
                     observer,
                 )
             })?
@@ -502,7 +502,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
         Box::pin(async move {
             let mut observed = self.observed.lock().await;
             let admission_digest =
-                crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
+                crate::executor::json::canonical_json_digest(&invocation, None, &mut None)?;
             if let Some(original) = observed.get(&invocation.operation_id) {
                 return if original.admission_digest == admission_digest {
                     self.recheck(&original.result, &invocation, _context.as_ref())
@@ -535,7 +535,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ToolExecut
         Box::pin(async move {
             let observed = self.observed.lock().await;
             let admission_digest =
-                crate::executor::json::canonical_json_digest(&invocation, u64::MAX, &mut None)?;
+                crate::executor::json::canonical_json_digest(&invocation, None, &mut None)?;
             match observed.get(&invocation.operation_id) {
                 Some(original) if original.admission_digest == admission_digest => self
                     .recheck(&original.result, &invocation, _context.as_ref())

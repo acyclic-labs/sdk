@@ -76,9 +76,9 @@ mod tests {
     }
 
     fn previous_labels(volume: &VolumeRef) -> Result<[String; 4]> {
-        let digest = crate::executor::json::canonical_json_digest(volume, u64::MAX, &mut None)?;
+        let digest = crate::executor::json::canonical_json_digest(volume, None, &mut None)?;
         let directory =
-            crate::executor::json::canonical_json_digest(&(volume, ""), u64::MAX, &mut None)?;
+            crate::executor::json::canonical_json_digest(&(volume, ""), None, &mut None)?;
         Ok([
             content_label("harness-", digest, &mut None)?,
             content_label(
@@ -172,7 +172,7 @@ mod tests {
             // Its temporary encoded document already exceeds the label budget.
             let restored_result = crate::executor::json::canonical_json_digest(
                 &volume,
-                crate::store::default_projection_read_limits().maximum_bytes,
+                None,
                 &mut Some(&mut restored_io),
             );
             assert!(
