@@ -13,12 +13,18 @@ pub(crate) trait NativeMachine: Send + Sync + 'static {
         command: ExecCommand,
         until: std::time::Instant,
     ) -> Result<ExecStream, ProviderError>;
-    async fn read(&self, access: FileAccess, limit: u32) -> Result<FileRead, ProviderError>;
+    async fn read(
+        &self,
+        access: FileAccess,
+        limit: u32,
+        deadline: &GuestDeadline,
+    ) -> Result<FileRead, ProviderError>;
     async fn write(
         &self,
         access: FileAccess,
         data: Vec<u8>,
         truncate: bool,
+        deadline: &GuestDeadline,
     ) -> Result<FileWrite, ProviderError>;
     async fn stop(&self) -> Result<(), ProviderError>;
     async fn wake(&self) -> Result<(), ProviderError>;
@@ -121,6 +127,11 @@ impl<B: NativeMachine> AdmittedMachine<B> {
                     .into(),
             ));
                     }
+                    // Validation precedes the original admission commit. Once
+                    // submitted, losing its receipt cannot reopen execution.
+                    if value.state != target {
+                        value.state = pending.state;
+                    }
                     Ok(())
                 },
             )
@@ -130,7 +141,6 @@ impl<B: NativeMachine> AdmittedMachine<B> {
             Admission::Original(head) => head,
         };
         if value.state != target {
-            value.state = pending.state;
             let physical = if target == MachineState::Running {
                 self.backend.wake().await
             } else {
@@ -182,13 +192,17 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         access: FileAccess,
         limit: u32,
     ) -> Result<FileRead, ProviderError> {
-        let value = self.observation.lock().await;
+        let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
+        let value = deadline
+            .run(self.observation.lock())
+            .await
+            .ok_or_else(|| ProviderError::Rejected("file deadline expired before native admission; recovery: obtain a fresh original deadline".into()))?;
         Self::select(&value, machine)?;
         if value.state == MachineState::Destroyed {
             return Err(ProviderError::NotFound(machine.to_string()));
         }
         drop(value);
-        self.backend.read(access, limit).await
+        self.backend.read(access, limit, &deadline).await
     }
     async fn write_file(
         &self,
@@ -197,7 +211,11 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
         data: Vec<u8>,
         truncate: bool,
     ) -> Result<FileWrite, ProviderError> {
-        let value = self.observation.lock().await;
+        let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
+        let value = deadline
+            .run(self.observation.lock())
+            .await
+            .ok_or_else(|| ProviderError::Rejected("file deadline expired before native admission; recovery: obtain a fresh original deadline".into()))?;
         Self::select(&value, machine)?;
         if value.state != MachineState::Running {
             return Err(ProviderError::Conflict(
@@ -206,7 +224,7 @@ impl<B: NativeMachine> MachinesProvider for AdmittedMachine<B> {
             ));
         }
         drop(value);
-        self.backend.write(access, data, truncate).await
+        self.backend.write(access, data, truncate, &deadline).await
     }
     async fn inspect_machine(
         &self,

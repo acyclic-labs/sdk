@@ -218,7 +218,12 @@ impl NativeMachine for LocalBackend {
             .map_err(|_| ProviderError::Unavailable)? = next;
         Ok(())
     }
-    async fn read(&self, access: FileAccess, limit: u32) -> Result<FileRead, ProviderError> {
+    async fn read(
+        &self,
+        access: FileAccess,
+        limit: u32,
+        deadline: &crate::provider::deadline::GuestDeadline,
+    ) -> Result<FileRead, ProviderError> {
         if limit == 0 {
             return Err(ProviderError::Invalid(
                 "zero file read credit; recovery: supply positive chunk credit".into(),
@@ -226,7 +231,7 @@ impl NativeMachine for LocalBackend {
         }
         access.validate_range(limit as usize)?;
         let offset = access.offset;
-        self.file(access, false, move |file| {
+        self.file(access, false, deadline, move |file| {
             let mut bytes = vec![0; limit as usize];
             let count = file::read_at(file, &mut bytes, offset)?;
             bytes.truncate(count);
@@ -243,13 +248,14 @@ impl NativeMachine for LocalBackend {
         access: FileAccess,
         data: Vec<u8>,
         truncate: bool,
+        deadline: &crate::provider::deadline::GuestDeadline,
     ) -> Result<FileWrite, ProviderError> {
         access.validate_range(data.len())?;
         if truncate && access.offset != 0 {
             return Err(ProviderError::Invalid("truncation has a nonzero offset; recovery: truncate only the original offset-zero chunk".into()));
         }
         let offset = access.offset;
-        self.file(access, true, move |file| {
+        self.file(access, true, deadline, move |file| {
             if truncate {
                 file.set_len(0)?;
             }

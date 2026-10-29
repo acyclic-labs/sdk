@@ -9,10 +9,10 @@ impl LocalBackend {
         &self,
         access: FileAccess,
         write: bool,
+        deadline: &GuestDeadline,
         transfer: impl FnOnce(&File) -> io::Result<T> + Send + 'static,
     ) -> Result<Result<T, NonZeroU32>, ProviderError> {
         admission(&access)?;
-        let deadline = GuestDeadline::absolute(access.deadline_unix_ms)?;
         let mut owner = self.execution()?;
         let mut observed = owner.state.subscribe();
         let mut wait = PhysicalWait {

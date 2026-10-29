@@ -6,6 +6,132 @@ use acyclic_stream::{
 };
 use futures::FutureExt;
 
+#[tokio::test]
+async fn lost_admission_reply_keeps_original_incarnation_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    for destroy in [false, true] {
+        let machine = MachineId::new();
+        let directory = tempfile::tempdir()?;
+        let streams = Arc::new(
+            acyclic_stream::LocalStream::open(
+                directory.path(),
+                acyclic_stream::LocalStreamLimits::default(),
+            )
+            .await?,
+        );
+        let root = StreamPath::new(format!("machine-tests/{machine}"))?;
+        let path = StreamPath::new(format!("{root}/machines/{machine}"))?;
+        let backend = LocalBackend {
+            machine: LocalMachine::new(machine, options())?,
+            generation: std::sync::Mutex::new(Generation::new()?),
+        };
+        let local =
+            AdmittedMachine::open(backend, enrollment(machine), streams.clone(), root).await?;
+        let key = IdempotencyKey::new();
+        let (schedule, mut boundaries) = acyclic_native_runtime::testing::Schedule::new();
+        let mut submitted = Box::pin(schedule.scope(async {
+            if destroy {
+                local.destroy_machine(machine, key).await
+            } else {
+                local.suspend(machine, key).await
+            }
+        }));
+        let admission = loop {
+            let boundary = tokio::select! {
+                result = &mut submitted => panic!("original admission completed before releasing its physical commit: {result:?}"),
+                boundary = boundaries.recv() => boundary.unwrap(),
+            };
+            if boundary.name == "native:submitted" && boundary.detail.starts_with("commit ") {
+                break boundary;
+            }
+            boundary.release();
+        };
+        // The actual durable provider retains the already submitted mutation
+        // when its original observer disappears. No fake receipt participates.
+        drop(submitted);
+        admission.release();
+        let drained = schedule.drained();
+        tokio::pin!(drained);
+        loop {
+            tokio::select! {
+                biased;
+                () = &mut drained => break,
+                boundary = boundaries.recv() => boundary.unwrap().release(),
+            }
+        }
+        let admitted = streams.head(path.clone()).await?;
+        assert_eq!(admitted.tail, 2);
+        assert_eq!(
+            local.inspect_machine(machine).await?.state,
+            if destroy {
+                MachineState::Destroying
+            } else {
+                MachineState::Suspending
+            }
+        );
+        assert!(matches!(
+            local
+                .exec(
+                    machine,
+                    ExecCommand::new(vec!["must-not-spawn".into()], 5_000)?
+                )
+                .await,
+            Err(ProviderError::Conflict(_))
+        ));
+        let later = IdempotencyKey::new();
+        assert!(matches!(local.wake(machine, later).await,
+            Err(ProviderError::Indeterminate(original)) if original == later));
+        assert_eq!(streams.head(path).await?, admitted);
+        assert!(matches!(local.recover(key).await,
+            Err(ProviderError::Indeterminate(original)) if original == key));
+    }
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn file_deadlines_include_waiting_for_original_lifecycle_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    let machine = MachineId::new();
+    let backend = LocalBackend {
+        machine: LocalMachine::new(machine, options())?,
+        generation: std::sync::Mutex::new(Generation::new()?),
+    };
+    let mut physical = backend.execution()?;
+    let local = AdmittedMachine::open(
+        backend,
+        enrollment(machine),
+        Arc::new(acyclic_stream::MemoryStream::default()),
+        StreamPath::new(format!("machine-tests/{machine}"))?,
+    )
+    .await?;
+    let mut stopping = Box::pin(local.suspend(machine, IdempotencyKey::new()));
+    assert!(futures::poll!(&mut stopping).is_pending());
+    let path = std::env::temp_dir().join(format!("acyclic-unentered-file-{machine}"));
+    let expiry = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis() as u64
+        + 5_000;
+    let access = FileAccess::new(path.to_str().unwrap().into(), 0, expiry)?;
+    let mut read = Box::pin(local.read_file(machine, access.clone(), 1));
+    let mut write = Box::pin(local.write_file(machine, access, vec![1], true));
+    assert!(futures::poll!(&mut read).is_pending());
+    assert!(futures::poll!(&mut write).is_pending());
+    tokio::time::advance(Duration::from_secs(5)).await;
+    // Poll once: the former ordering fails here instead of hanging the test.
+    assert!(matches!(
+        futures::poll!(&mut read),
+        std::task::Poll::Ready(Err(ProviderError::Rejected(_)))
+    ));
+    assert!(matches!(
+        futures::poll!(&mut write),
+        std::task::Poll::Ready(Err(ProviderError::Rejected(_)))
+    ));
+    physical.retired(true);
+    assert_eq!(stopping.await?, MutationOutcome::Suspended(machine));
+    assert!(!path.exists());
+    Ok(())
+}
+
 #[tokio::test(start_paused = true)]
 async fn queued_spawn_observation_obeys_original_deadline_and_shutdown()
 -> Result<(), Box<dyn std::error::Error>> {

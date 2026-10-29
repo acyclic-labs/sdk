@@ -31,8 +31,9 @@ async fn blocked_physical_file_io_expires_without_attesting_retirement()
         .as_millis() as u64
         + 100;
     let access = FileAccess::new(path.to_str().unwrap().into(), 0, deadline)?;
+    let deadline = GuestDeadline::absolute(deadline)?;
     let (entered, entering) = tokio::sync::oneshot::channel();
-    let mut operation = Box::pin(backend.file(access, false, move |file| {
+    let mut operation = Box::pin(backend.file(access, false, &deadline, move |file| {
         let _ = entered.send(());
         let _lock = FileLock::acquire(file.try_clone()?, FileLockMode::Exclusive)?;
         Ok(())
