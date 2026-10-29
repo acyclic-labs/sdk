@@ -12,6 +12,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
 serde.workspace = true
 serde_bytes.workspace = true

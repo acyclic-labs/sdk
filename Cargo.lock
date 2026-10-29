@@ -804,6 +804,7 @@ name = "acyclic-machines-wasm"
 version = "0.2.0"
 dependencies = [
  "acyclic-machines",
+ "acyclic-stream",
  "base64 0.23.1",
  "futures",
  "hex",

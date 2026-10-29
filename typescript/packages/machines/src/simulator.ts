@@ -1,3 +1,4 @@
+import { ownedStream } from "./owned-stream.js";
 /** Browser and Node simulator backed by the canonical Rust Machines provider. */
 import { WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
 import type {
@@ -65,5 +66,24 @@ export class SimulatedMachines implements MachinesProvider {
   recoverOperation(key: IdempotencyKey): Promise<OperationId> { return this.#run(key, (inner, authored) => inner.recoverOperation(authored)).then(operationId); }
   inspectOperation(operationId: OperationId): Promise<OperationObservation> { return this.#run(operationId, (inner, authored) => inner.inspectOperation(authored)).then(asPublic<OperationOut, OperationObservation>); }
   cancel(operationId: OperationId): Promise<OperationObservation> { return this.#run(operationId, (inner, authored) => inner.cancel(authored)).then(asPublic<OperationOut, OperationObservation>); }
-  async *watchOperation(operationId: OperationId): AsyncIterable<OperationObservation> { for (const value of await this.#run(operationId, (inner, authored) => inner.watchOperation(authored))) yield asPublic<OperationOut, OperationObservation>(value); }
+  watchOperation(operationId: OperationId): AsyncIterableIterator<OperationObservation> & { return(): Promise<IteratorResult<OperationObservation>> } {
+    const inner = this.#inner;
+    return ownedStream(async function* (signal) {
+      const watch = await inner.watchOperation(operationId);
+      const close = () => watch.close();
+      signal.addEventListener("abort", close, { once: true });
+      if (signal.aborted) close();
+      try {
+        for (;;) {
+          const value = await watch.next();
+          if (value === null) return;
+          yield asPublic<OperationOut, OperationObservation>(value);
+        }
+      } finally {
+        signal.removeEventListener("abort", close);
+        watch.close();
+        watch.free();
+      }
+    }, undefined, value => value.phase !== "pending");
+  }
 }

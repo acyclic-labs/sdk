@@ -98,7 +98,7 @@ impl Serialize for SafeNumber {
 fn err(message: impl Into<String>) -> JsValue {
     crate::js_error("invalid", message.into())
 }
-fn from_js<T: for<'de> Deserialize<'de>>(value: JsValue) -> Result<T, JsValue> {
+pub(crate) fn from_js<T: for<'de> Deserialize<'de>>(value: JsValue) -> Result<T, JsValue> {
     serde_wasm_bindgen::from_value(value).map_err(|e| err(e.to_string()))
 }
 
@@ -110,13 +110,13 @@ fn reject_retired_mode(value: &JsValue) -> Result<(), JsValue> {
     }
     Ok(())
 }
-fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
+pub(crate) fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsValue> {
     let serializer = serde_wasm_bindgen::Serializer::new()
         .serialize_large_number_types_as_bigints(true)
         .serialize_missing_as_null(true);
     value.serialize(&serializer).map_err(|e| err(e.to_string()))
 }
-fn provider_error(error: ProviderError) -> JsValue {
+pub(crate) fn provider_error(error: ProviderError) -> JsValue {
     let code = match &error {
         ProviderError::NotFound(_) => "not-found",
         ProviderError::Conflict(_) => "conflict",
@@ -154,7 +154,7 @@ fn machine(value: String) -> Result<MachineId, JsValue> {
 fn checkpoint(value: String) -> Result<CheckpointId, JsValue> {
     parse_id("checkpoint", value, CheckpointId::parse)
 }
-fn operation(value: String) -> Result<OperationId, JsValue> {
+pub(crate) fn operation(value: String) -> Result<OperationId, JsValue> {
     parse_id("operation", value, OperationId::parse)
 }
 
@@ -717,7 +717,7 @@ pub enum ForkFidelityOut {
     MemoryAndDisk,
     DiskOnly,
 }
-fn operation_out(value: OperationObservation) -> OperationOut {
+pub(crate) fn operation_out(value: OperationObservation) -> OperationOut {
     OperationOut {
         id: value.id.to_string(),
         phase: match value.phase {
@@ -1035,17 +1035,6 @@ pub async fn dispatch<P: MachinesProvider>(
                 provider.cancel(operation(from_js(payload)?)?),
                 operation_out
             )
-        }
-        "watchOperation" => {
-            let mut stream = provider
-                .watch_operation(operation(from_js(payload)?)?)
-                .await
-                .map_err(provider_error)?;
-            let mut values = Vec::new();
-            while let Some(value) = futures::StreamExt::next(&mut stream).await {
-                values.push(operation_out(value.map_err(provider_error)?));
-            }
-            to_js(&values)
         }
         _ => Err(err("unknown Machines operation")),
     }

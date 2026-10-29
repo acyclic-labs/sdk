@@ -170,6 +170,7 @@ impl WasmStream {
                 frames
                     .map(|frame| frame.map(|frame| frame.encode_to_vec()))
                     .boxed_local(),
+                StreamError::Unavailable,
             )),
         })
     }
@@ -324,6 +325,7 @@ impl WasmStream {
                         })
                     })
                     .boxed_local(),
+                StreamError::Unavailable,
             )),
         })
     }

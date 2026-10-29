@@ -446,7 +446,7 @@ impl super::WasmStream {
             })
             .boxed_local();
         Ok(super::WasmFollow {
-            state: Rc::new(super::FollowState::new(stream)),
+            state: Rc::new(super::FollowState::new(stream, StreamError::Unavailable)),
         })
     }
 }

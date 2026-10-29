@@ -1,3 +1,4 @@
+import { ownedStream } from "./owned-stream.js";
 import { create, type MessageInitShape } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type CallOptions, type Transport } from "@connectrpc/connect";
 import * as wire from "../generated/proto/machines/v1/machines_pb.js";
@@ -126,44 +127,6 @@ function checkIdentity(request: { value: Uint8Array } | undefined, response: { v
   if (!request || !response || request.value.length !== response.value.length || request.value.some((byte, index) => byte !== response.value[index])) throw new ConnectError(`response ${kind} identity differs from request`, Code.DataLoss);
 }
 
-// Connect's promise-client iterator does not forward return() to the RPC.
-// Own cancellation outside the generator so return() also interrupts a pending next().
-function ownedStream<T>(open: (signal: AbortSignal) => AsyncIterable<T>, parent: AbortSignal | undefined, terminal: (value: T) => boolean): AsyncIterableIterator<T> & { return(): Promise<IteratorResult<T>> } {
-  let iterator: AsyncIterator<T> | undefined;
-  let controller: AbortController | undefined;
-  let closed = false;
-  const abort = () => controller?.abort(parent?.reason);
-  const close = () => {
-    closed = true;
-    controller?.abort();
-    parent?.removeEventListener("abort", abort);
-  };
-  return {
-    [Symbol.asyncIterator]() { return this; },
-    async next() {
-      if (closed) return { done: true, value: undefined };
-      if (!iterator) {
-        controller = new AbortController();
-        parent?.addEventListener("abort", abort, { once: true });
-        if (parent?.aborted) abort();
-        iterator = open(controller.signal)[Symbol.asyncIterator]();
-      }
-      try {
-        const result = await iterator.next();
-        if (result.done || terminal(result.value)) close();
-        return result;
-      } catch (cause) {
-        close();
-        throw cause;
-      }
-    },
-    async return() {
-      close();
-      await iterator?.return?.();
-      return { done: true, value: undefined };
-    },
-  };
-}
 
 function checkFileAccess(access: wire.FileAccess | undefined, length: number): wire.FileAccess {
   if (!access || !access.machine || !access.path.startsWith("/") || access.path.includes("\0") || access.offset < 0n || access.offset > MAX_OFFSET || access.deadlineUnixMs < 1n || access.deadlineUnixMs > MAX_OFFSET) throw new RangeError("invalid absolute guest file access");

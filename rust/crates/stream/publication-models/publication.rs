@@ -9,8 +9,14 @@ mod change;
 mod interest;
 mod probe;
 pub use acyclic_stream::query_sync;
-#[path = "../src/wasm/follow_state.rs"]
-mod cursor;
+#[path = "../src/pull.rs"]
+mod pull;
+mod cursor {
+    use super::{StreamError, pull};
+    type FollowFrames = futures::stream::LocalBoxStream<'static, Result<Vec<u8>, StreamError>>;
+    type FollowState = pull::PullCursor<Vec<u8>, StreamError>;
+    include!("cursor.rs");
+}
 #[path = "../src/http/shared.rs"]
 mod shared;
 mod shared_models {

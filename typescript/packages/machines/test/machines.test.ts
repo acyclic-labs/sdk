@@ -197,7 +197,7 @@ describe("Machines simulation", () => {
     expect((await provider.inspectMachine(created.machine.id)).contract.budgets.concurrency).toBe(0);
   });
 
-  test("recovers and observes durable mutation operations", async () => {
+  test("recovers and pulls terminal mutation observations", async () => {
     const provider = new SimulatedMachines();
     await provider.create(request("operation-1"));
     const operation = await provider.recoverOperation("operation-1");
@@ -207,6 +207,22 @@ describe("Machines simulation", () => {
     const observations = [];
     for await (const observation of provider.watchOperation(operation)) observations.push(observation);
     expect(observations).toEqual([expected]);
+    const unopened = provider.watchOperation(operation);
+    await unopened.return();
+    expect(await unopened.next()).toEqual({ done: true, value: undefined });
+    const wasm = new WasmSimulatedMachines();
+    try {
+      await wasm.create(request("pull-operation"));
+      const id = await wasm.recoverOperation("pull-operation");
+      const watch = await wasm.watchOperation(id);
+      try {
+        expect(await watch.next()).toEqual({ id, phase: "succeeded" });
+        expect(await watch.next()).toBeNull();
+        watch.close();
+        expect(await watch.next()).toBeNull();
+      } finally { watch.free(); }
+    } finally { wasm.free(); }
+
     await expect(provider.recoverOperation("unknown")).rejects.toMatchObject({ name: "MachinesError", code: "not-found" });
     await expect(provider.inspectOperation("operation:unknown:0")).rejects.toMatchObject({ name: "MachinesError", code: "not-found" });
   });
