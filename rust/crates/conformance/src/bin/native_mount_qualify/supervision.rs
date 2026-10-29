@@ -20,7 +20,7 @@ pub(super) fn qualification_case_worker(case: &str) -> Result<(), Failure> {
                 .ok_or("backend kind absent")?;
             tokio::runtime::Runtime::new()?.block_on(mutation_matrix(kind))
         }
-        "crash-detach-recovery" => crash_recovery(),
+        "crash-detach-recovery" => tokio::runtime::Runtime::new()?.block_on(crash_recovery()),
         "rename-before-hydration" => {
             tokio::runtime::Runtime::new()?.block_on(rename_hydration_case())
         }
@@ -62,6 +62,98 @@ pub(super) fn spawn_captured_child(command: &mut Command) -> Result<CapturedChil
         stdout,
         stderr,
     })
+}
+
+impl CapturedChild {
+    pub(super) fn write_diagnostics(&mut self, label: &str) -> Result<(), Failure> {
+        write_child_diagnostics(label, &mut self.stdout, &mut self.stderr)
+    }
+}
+
+/// Waits for the actual child's atomically published ready record. File hints
+/// only schedule another observation; they never certify readiness themselves.
+pub(super) async fn captured_child_ready(
+    child: &mut CapturedChild,
+    marker: &Path,
+    deadline: Instant,
+) -> Result<(), Failure> {
+    use acyclic_fs::{NativeMaterializationWork, NativeWatch, NativeWatchOptions, WatchBatch};
+
+    let original = NativeMaterializationWork::new(
+        acyclic_fs::WorkBudget::UNBOUNDED,
+        &acyclic_fs::CancellationToken::new(),
+    )
+    .map_err(|(error, _)| error)?;
+    let mut watch = NativeWatch::open_with_profile_with_native_work(
+        marker.parent().ok_or("ready marker has no parent")?,
+        if cfg!(windows) {
+            acyclic_fs::model::FilesystemProfile::Windows
+        } else {
+            acyclic_fs::model::FilesystemProfile::Posix
+        },
+        NativeWatchOptions {
+            recursive: false,
+            ..Default::default()
+        },
+        &original,
+    )?;
+    if let WatchBatch::RescanRequired { reason, .. } =
+        watch.accept_lazy_baseline_with_native_work(&original)?
+    {
+        return Err(format!("ready marker watch cannot establish continuity: {reason:?}").into());
+    }
+    let observation = async {
+        loop {
+            // Both subscriptions precede the marker and process observations.
+            let changed = watch.changed_with_native_work(&original);
+            let exited = child.process.readiness()?;
+            if observe_ready_marker(marker)? {
+                return Ok(());
+            }
+            if let Some(status) = child.process.try_wait(None)? {
+                return Err(format!("child exited before readiness ({status})").into());
+            }
+            tokio::select! {
+                result = changed => {
+                    result?;
+                    // A page is work already delivered by the native producer.
+                    // Unconsumed pages keep readiness set; there is no total cap.
+                    let batch = watch.poll_with_native_work_guarded(256, &original, |_| Ok(()))?;
+                    if let WatchBatch::RescanRequired { reason, .. } = &batch.0 {
+                        return Err(format!("ready marker watch lost continuity: {reason:?}").into());
+                    }
+                }
+                () = exited => {}
+            }
+        }
+    };
+    tokio::time::timeout_at(deadline.into(), observation)
+        .await
+        .map_err(|_| -> Failure { "child did not publish readiness before its deadline".into() })?
+}
+
+/// The fixture record is the literal `ready`, rather than arbitrary payload.
+/// Check the complete fixed schema with stack storage, including trailing data.
+fn observe_ready_marker(marker: &Path) -> Result<bool, Failure> {
+    let mut file = match File::open(marker) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    let mut record = [0; 6];
+    let mut end = 0;
+    loop {
+        if end == record.len() {
+            return Err("child published a malformed ready marker".into());
+        }
+        match file.read(&mut record[end..]) {
+            Ok(0) if &record[..end] == b"ready" => return Ok(true),
+            Ok(0) => return Err("child published a malformed ready marker".into()),
+            Ok(count) => end += count,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
 }
 
 pub(super) struct CapturedOutput {
