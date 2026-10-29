@@ -491,23 +491,23 @@ impl Hub {
                 for watch in route.all.values().filter_map(Weak::upgrade) {
                     deliver(watch, record, ready);
                 }
-                let named = if name.is_empty() || mask & SELF_RECORDS != 0 {
-                    // Records about the directory itself reach every interest.
-                    route
-                        .named
-                        .values()
-                        .flat_map(HashMap::iter)
-                        .collect::<Vec<_>>()
-                } else {
-                    route.named.get(name).into_iter().flatten().collect()
+                let mut deliver_named = |named: &HashMap<u64, Weak<Shared>>| {
+                    for (subscriber, watch) in named {
+                        if route.all.contains_key(subscriber) {
+                            continue;
+                        }
+                        if let Some(watch) = watch.upgrade() {
+                            deliver(watch, record, ready);
+                        }
+                    }
                 };
-                for (subscriber, watch) in named {
-                    if route.all.contains_key(subscriber) {
-                        continue;
+                if name.is_empty() || mask & SELF_RECORDS != 0 {
+                    // Records about the directory itself reach every interest.
+                    for named in route.named.values() {
+                        deliver_named(named);
                     }
-                    if let Some(watch) = watch.upgrade() {
-                        deliver(watch, record, ready);
-                    }
+                } else if let Some(named) = route.named.get(name) {
+                    deliver_named(named);
                 }
                 if mask & libc::IN_IGNORED != 0 {
                     // The kernel removed this descriptor.
