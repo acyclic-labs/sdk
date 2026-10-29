@@ -201,9 +201,14 @@ export class SpoolEnded extends Error {
 // Every wait has a producer: each write's callback settles it, a transcript
 // failure latches a typed `spool` cause that every current and later
 // caller receives, and EOF follows the source's end or its close.
+//
+// The spool is open until one `#settle(cause)` ends it. Settling sets the
+// terminal state first, then rejects every waiter, then releases a chunk
+// held for drain; that chunk, and all later work, sees the terminal state
+// and is dropped.
 export class Spool {
   sequence = 0;
-  ended;
+  #state = { open: true };
   #pending = new Set();
   #listeners = new Set();
   #index = new Map();
@@ -230,10 +235,11 @@ export class Spool {
       partial = parts.pop();
       let full = false;
       for (const line of parts) if (!this.#line(line.endsWith("\r") ? line.slice(0, -1) : line)) full = true;
-      if (!full || this.ended) { done(); return; }
+      if (!full || !this.#state.open) { done(); return; }
       // Lines already in this chunk are written; the next chunk waits for drain.
       let released = false;
       this.#blocked = () => { if (!released) { released = true; this.#blocked = undefined; done(); } };
+      // `#settle` releases it too, after the spool is terminal.
       this.#file.once("drain", this.#blocked);
     };
     const sink = new Writable({
@@ -246,17 +252,19 @@ export class Spool {
       stream.once("close", () => { if (!stream.readableEnded) resolve(); });
     });
     stream.pipe(sink);
-    stream.once("error", error => this.fail(new SpoolEnded("source", error.message, error)));
+    stream.once("error", error => this.#settle(new SpoolEnded("source", error.message, error)));
     // EOF only after every line the source produced has been taken.
-    closed.then(result => drained.then(() => this.fail(new SpoolEnded("eof", `source exited: ${JSON.stringify({ code: result.code, signal: result.signal })}`, result))),
-      error => this.fail(new SpoolEnded("source", error.message, error)));
+    closed.then(result => drained.then(() => this.#settle(new SpoolEnded("eof", `source exited: ${JSON.stringify({ code: result.code, signal: result.signal })}`, result))),
+      error => this.#settle(new SpoolEnded("source", error.message, error)));
   }
+  // Why the spool ended, or undefined while it is open.
+  get ended() { return this.#state.cause; }
   // Takes one line; false when the transcript asks the source to wait.
   #line(line) {
-    if (this.ended) return true;
+    if (!this.#state.open) return true;
     let event;
     try { event = JSON.parse(line); } catch (error) {
-      this.fail(new SpoolEnded("malformed", `line ${this.sequence + 1} is not JSON: ${line.slice(0, 200)}`, error));
+      this.#settle(new SpoolEnded("malformed", `line ${this.sequence + 1} is not JSON: ${line.slice(0, 200)}`, error));
       return true;
     }
     this.sequence++;
@@ -274,7 +282,7 @@ export class Spool {
     }
     for (const key of this.#key?.(event) ?? []) {
       if (this.#index.has(key)) {
-        if (this.#unique) { this.fail(new SpoolEnded("duplicate", `key ${key} repeated at event ${this.sequence}`, event)); return true; }
+        if (this.#unique) { this.#settle(new SpoolEnded("duplicate", `key ${key} repeated at event ${this.sequence}`, event)); return true; }
         continue;
       }
       this.#index.set(key, event);
@@ -287,22 +295,26 @@ export class Spool {
     }
     return room;
   }
-  // A transcript failure: typed, latched for history, and the end of the spool.
+  // A transcript failure: latched for history even after another ending,
+  // and the end of the spool.
   #break(error) {
     this.#broken ??= new SpoolEnded("spool", `transcript ${this.#path ?? "sink"}: ${error.message}`, error);
-    this.fail(this.#broken);
+    this.#settle(this.#broken);
   }
-  fail(error) {
-    // A chunk held for drain is released however the spool ends.
-    this.#blocked?.();
-    if (this.ended) return;
-    this.ended = error;
-    for (const wait of this.#pending) wait.reject(error);
+  // The one transition out of open; later calls do nothing.
+  #settle(cause) {
+    if (!this.#state.open) return;
+    this.#state = { open: false, cause };
+    const pending = [...this.#pending, ...[...this.#waiting.values()].flat()];
     this.#pending.clear();
-    for (const waits of this.#waiting.values()) for (const wait of waits) wait.reject(error);
     this.#waiting.clear();
+    for (const wait of pending) wait.reject(cause);
+    const blocked = this.#blocked;
+    this.#blocked = undefined;
+    blocked?.();
     this.#file?.end();
   }
+  fail(cause) { this.#settle(cause); }
   // The first event after this call that `match` accepts.
   next(match) {
     if (this.ended) return Promise.reject(this.ended);

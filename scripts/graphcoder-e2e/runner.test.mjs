@@ -226,6 +226,22 @@ test("a transcript write that fails or is lost ends history and waits with the s
   });
 });
 
+test("a write that fails with a chunk queued rejects the pending waiter; the queued chunk is dropped", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "e2e-history-"));
+  // A one-byte buffer holds the first chunk for drain; its write then fails.
+  const transcript = createWriteStream(join(directory, "failed.jsonl"), { highWaterMark: 1, fs: {
+    open: fsOpen, close: fsClose,
+    write: (_fd, _buffer, _offset, _length, _position, done) => setImmediate(() => done(new Error("injected EIO"))),
+  } });
+  const source = new PassThrough();
+  const events = new Spool(source, new Promise(() => {}), { transcript });
+  const second = events.next(event => event.n === 2);
+  source.write('{"n":1}\n');
+  source.write('{"n":2}\n');
+  await assert.rejects(second, error => error.kind === "spool" && /injected EIO/.test(error.message));
+  assert.equal(events.sequence, 1, "the queued chunk was dropped after the transcript failed");
+});
+
 test("a source closed without ending still ends the spool and its transcript", async () => {
   const source = new PassThrough();
   let close; const closed = new Promise(resolve => { close = resolve; });
