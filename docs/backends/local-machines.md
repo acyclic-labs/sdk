@@ -1,34 +1,52 @@
-# Local Machines execution
+# Local Machines
 
-Enable `acyclic-machines/local`. Bind `local::LocalMachine::new(machine_id,
-LocalOptions { cwd, environment, inherit_environment, process_custody })` from
-the host's existing admitted workspace. Pass the same public `ExecCommand` to
-`exec(command, handler)`. The native `CaptureHandler` retains the original
-source checks, publication callbacks and workspace custody. It runs on the
-shared native IO workers. No shell is inserted around argv.
+Enable `acyclic-machines/local`. The public factory binds one existing,
+source-admitted host workspace and its exact Machine incarnation:
 
-Pull `execution` for binary stdout/stderr and the original terminal
-exit or stopped capture. After its terminal result, `execution.finish().await`
-returns the original handler. Admission refusal returns a stream error and
-preserves that handler too. Interrupted physical ownership returns
-`CommandIndeterminate` with the original Machine identity. Dropping output
-closes native credit and wakes cleanup even for a silent child.
+```rust,ignore
+let provider = acyclic_machines::local::provider(
+    observation, native_options, streams, journal_path,
+).await?; // Arc<dyn MachinesProvider>
+let host = MachinesHost::new(provider, provider_ref)?;
+let tools = host.workspace(machine, &selected_volume, original_scope, verifier)?
+    .with_shell(resolved_shell, &acyclic_host_platform::shell::PLATFORM)?;
+// The server and local application both install these same workspace tools.
+bindings.workspace_tools = Some(Arc::new(tools));
+```
 
-The relative command deadline starts at admission and survives submission and
-spawn. An optional authenticated absolute expiry uses the shared wall alarm.
-One direct child and the existing process containment/capture pump perform
-execution. Stdin and output buffers move without a payload copy; output has one
-queued batch, not a second reader or collector. Later consumers that concatenate
-frames still pay for that concatenation.
+`native_options` is `local::LocalOptions { cwd, environment,
+inherit_environment, process_custody }`, from the existing host admission.
+The observation's selected volume is that same canonical `VolumeRef`.
+The factory supplies no filesystem authority, root issuer or second executor.
+File tools retain the task's existing authenticated content bindings.
+Hosted Linux uses the same `MachinesWorkspace` with its default bash selection.
 
-This is the execution primitive for a local Machine owner, not a complete
-durable lifecycle provider or a filesystem authorization boundary. Processes
-retain the host user's OS privileges. The host must retain its existing path
-policy, selected-volume admission, callback custody and publication logic.
-Checkpoint/fork and lifecycle composition remain separate requirements.
+Exec moves binary stdin into the original native pipe owner, then streams
+stdout/stderr and the exact terminal exit or stopped capture. Dropping output
+closes credit and wakes native cleanup, including a silent or stalled child.
+One queued batch, the existing ProcessTree and its configured custody perform
+execution; Machines adds no process or payload copy to this handoff. Relative
+timeout starts at admission. Authenticated expiry uses the shared wall alarm.
 
-Run `cargo test -p acyclic-machines --features conformance,local --lib` and
-`cargo test -p acyclic-native-runtime --lib`. Real-process controls cover binary
-stdin, channel bytes, cwd, exact exit, original handler/buffer identity, expiry
-before spawn, producer loss and elapsed admission deadlines. They do not
-establish complete local lifecycle conformance or hosted volume enrollment.
+ReadFile/WriteFile use native positional IO with at most 64 KiB per chunk.
+There is no shell encoding, write replay or per-write durability barrier.
+Suspend stops and joins admitted commands while retaining the workspace;
+Wake admits fresh commands; Destroy is terminal. A physical completion callback
+releases live execution admission independently of retained output observations.
+Unproved cleanup remains uncertainty on the original operation, never success.
+
+The shared core publishes keyed results and Machine events atomically through
+the supplied Streams provider, whose persistence guarantees remain authoritative.
+Reopening uses those original results. An abandoned pending physical operation
+is explicitly indeterminate and is never dispatched again. This is a scoped
+workspace provider, not a fleet allocator. It does not change the admitted
+volume/image, freeze process memory, snapshot a mutable tree, attest billing or
+provide tenant isolation. Processes retain the host user's OS privileges.
+Automatic suspension/expiry and snapshot capabilities are refused at enrollment.
+
+Run `cargo test -p acyclic-machines --features conformance,local --lib`.
+Real-process controls cover binary channels/input, exit, source buffer identity,
+stop with withheld output credit, file offsets, expired writes, original-result
+recovery after reopening and failed cleanup refusing terminal destruction.
+These controls do not establish the full lifecycle suite's snapshot/fork
+requirements, crash-persistent storage or hosted guest volume enrollment.
