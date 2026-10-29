@@ -1,5 +1,6 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import "fake-indexeddb/auto";
+import { IDBFactory as ModelIDBFactory } from "fake-indexeddb";
 import { CredentialCache, CredentialSnapshot } from "../../auth/src/credential.js";
 import { WasmExplorer, WasmStream } from "../generated/wasm/acyclic_harness_wasm.js";
 import { AgentExplorer } from "../src/explorer.js";
@@ -156,4 +157,50 @@ test("a failed persistence transaction still releases the reader", async () => {
     explorer.dispose();
     explorer.schedule();
   } finally { transactions.mockRestore(); explorer.dispose(); stream.free(); }
+});
+
+test("disposal commits its saved bytes and releases the database connection", async () => {
+  const previous = globalThis.indexedDB;
+  globalThis.indexedDB = new ModelIDBFactory();
+  const connections: IDBDatabase[] = [];
+  const snapshots = spyOn(WasmExplorer.prototype, "snapshot");
+  const open = IDBFactory.prototype.open;
+  const opens = spyOn(IDBFactory.prototype, "open").mockImplementation(function (
+    this: IDBFactory, name: string, version?: number,
+  ) {
+    const request = open.call(this, name, version);
+    request.addEventListener("success", () => { connections.push(request.result); });
+    return request;
+  });
+  const stream = new WasmStream(), key = crypto.randomUUID();
+  let explorer: AgentExplorer | undefined;
+  let deletion: Promise<boolean> | undefined;
+  try {
+    explorer = await AgentExplorer.open(stream, { persist: key, render() {} });
+    explorer.dispose();
+    explorer.dispose();
+    expect(snapshots).toHaveBeenCalledTimes(1);
+    const observer = await database();
+    try {
+      const bytes = await saved(observer, key);
+      expect(bytes).toBeInstanceOf(Uint8Array);
+      expect(bytes).toEqual(snapshots.mock.results[0]?.value);
+    } finally { observer.close(); }
+
+    // The database request provides both completion and blocked events.
+    // Leaking the disposed explorer's connection must fail without a timeout.
+    const request = indexedDB.deleteDatabase("acyclic-reader");
+    const blocked = deferred<boolean>();
+    deletion = new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(true);
+      request.onerror = () => reject(request.error);
+    });
+    request.onblocked = () => blocked.resolve(false);
+    expect(await Promise.race([deletion, blocked.promise])).toBe(true);
+  } finally {
+    explorer?.dispose(); stream.free(); opens.mockRestore(); snapshots.mockRestore();
+    for (const connection of connections) connection.close();
+    await deletion;
+    globalThis.indexedDB = previous;
+  }
 });
