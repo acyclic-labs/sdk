@@ -1,6 +1,7 @@
 /** One headless OpenCode worker in a directory, on a model, with an optional deadline.
  *  stdin is closed on purpose: OpenCode reads piped input when stdin is not a TTY and would wait forever. */
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
+import { captureCommand } from "./generated/process-capture.mjs";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -84,6 +85,6 @@ export function runWorker(dir: string, model: string, task: string, opts: Worker
 }
 
 export function opencodeAvailable(binary = process.env.OPENCODE_BIN ?? "opencode"): string | null {
-  const p = spawnSync(binary, ["--version"], { encoding: "utf8" });
+  const p = captureCommand(binary, ["--version"], { encoding: "utf8" });
   return !p.error && p.status === 0 ? p.stdout.trim() : null;
 }
