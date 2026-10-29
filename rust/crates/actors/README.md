@@ -26,6 +26,22 @@ caller-supplied private CA; that CA is then the whole trust.
 nine operations using canonical Protobuf JSON. Invocation carries request and
 response headers. HTTP mutations are not automatically retried.
 
+## Guest streaming fetch
+
+`GuestStreamingResponse` carries `GuestBody`, an HTTP body that preserves data
+frames, terminal trailers and cancellation when dropped. Existing buffered
+bytes and lazy chunk streams remain supported without collecting the body.
+
+JavaScript `ActorDefinition.fetch` accepts a WHATWG `Response` or
+`GuestResponseStream`: status, initial headers, a lazy body, a terminal
+`Promise<Headers>` and the original `close` callback. `GuestActivation` retains
+that response unchanged. `openGuestResponse` exposes one lazy frame consumer
+for local and hosted transports. The transport must publish trailer frames
+after data and close the original response on disconnect or failure. A failed
+body or trailer promise is an error, never a successful empty trailer result.
+Ordinary responses terminate with empty trailers. This extends the existing
+fetch boundary; it adds no manifest grant or authority.
+
 ## Deployment secret selections
 
 Actor and Worker deployments carry an ordered `secrets` list of `{name,

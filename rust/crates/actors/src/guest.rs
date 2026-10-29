@@ -175,6 +175,7 @@ pub fn typescript() -> String {
             output.push('\n');
         )+};
     }
+    output.push_str(body::JAVASCRIPT_FETCH_RESPONSE);
     declarations!(AlarmInfo, WebSocketId, WebSocketAutoResponse, GuestRequest, GuestResponse, SocketPayload, SocketCloseInitiator,
         SocketTransport, GuestSocketEvent, GuestEvent, GuestEventResult,
         CodecIdentity, Checkpoint, GuestError, CheckpointCodec<()>,

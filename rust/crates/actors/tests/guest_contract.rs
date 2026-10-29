@@ -273,6 +273,33 @@ async fn native_fetch_supports_lazy_chunks_and_buffered_adaptation()
     } else {
         return Err("stream was buffered".into());
     }
+    // Use the original frame channel: unread/drop cancellation closes that
+    // producer, and terminal headers are never folded into initial headers.
+    use http_body::{Body as _, Frame};
+    use std::pin::Pin;
+    let (sender, frames) = futures::channel::mpsc::unbounded();
+    let data = Bytes::from_static(b"grpc-data");
+    sender.unbounded_send(Ok(Frame::data(data.clone())))?;
+    let mut trailers = http::HeaderMap::new();
+    trailers.insert("grpc-status", "0".parse()?);
+    trailers.append("x-terminal", "a".parse()?);
+    trailers.append("x-terminal", "b".parse()?);
+    sender.unbounded_send(Ok(Frame::trailers(trailers.clone())))?;
+    let mut body = GuestBody::Frames(Box::pin(http_body_util::StreamBody::new(frames)));
+    let frame = futures::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
+        .await
+        .ok_or("missing data")??;
+    assert_eq!(
+        frame.data_ref().ok_or("expected data")?.as_ptr(),
+        data.as_ptr()
+    );
+    let terminal = futures::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
+        .await
+        .ok_or("missing trailers")??;
+    assert_eq!(terminal.trailers_ref(), Some(&trailers));
+    assert!(!sender.is_closed());
+    drop(body);
+    assert!(sender.is_closed());
     Ok(())
 }
 
