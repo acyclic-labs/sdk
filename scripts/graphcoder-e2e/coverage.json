@@ -118,7 +118,8 @@
         "pty-approval-deny",
         "pty-approval-form-approve",
         "pty-approval-form-deny",
-        "pty-approval-policy-deny"
+        "pty-approval-policy-deny",
+        "pty-approval-clear-confirm"
       ]
     },
     "A12": {

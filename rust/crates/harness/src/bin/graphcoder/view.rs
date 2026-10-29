@@ -55,6 +55,14 @@ impl Outcome {
     }
 }
 
+/// A prompt the view opened itself, answered by the next submission.
+enum Prompt {
+    /// The feedback form: the submission is a report.
+    Feedback,
+    /// A command that runs once its yes arrives.
+    Confirm(CommandRequest),
+}
+
 #[derive(Default)]
 struct View {
     transcript: TranscriptRows,
@@ -84,14 +92,16 @@ struct View {
     width: u16,
     pending_dirty: bool,
     search: Option<(String, usize)>,
-    /// A confirmed command awaiting its yes or no.
-    confirm: Option<CommandRequest>,
+    /// The one prompt the view itself opened. The next submission answers
+    /// it before anything else, a waiting approval included, and it hides
+    /// that approval while open: one prompt is visible at a time, and every
+    /// answer goes to it. A prompt opens only from a submission no prompt
+    /// took, so a second never opens over the first.
+    prompt: Option<Prompt>,
     /// A command's result or refusal, until the next prompt.
     notice: Option<String>,
     /// The pending approval's explanation, shown above the prompt.
     approval_prompt: Option<String>,
-    /// The feedback form is open: the next submission is a report.
-    feedback: bool,
     /// Reports saved in this session.
     reports: Vec<String>,
 }
@@ -346,7 +356,7 @@ impl View {
     }
 
     fn status(&self) -> String {
-        if let Some(CommandRequest::ClearAll) = &self.confirm {
+        if let Some(Prompt::Confirm(CommandRequest::ClearAll)) = &self.prompt {
             return "Clear all conversations? Enter yes or no.".into();
         }
         if let Some(notice) = self.notice.as_ref().or(self.ended.as_ref()) {
@@ -460,12 +470,13 @@ pub async fn run(
         if std::mem::take(&mut view.ring) {
             terminal.bell();
         }
-        let approval_rows = if overlay.is_none() && !view.feedback && view.approval().is_some() {
-            view.approval_rows()
-        } else {
-            Vec::new()
-        };
-        let feedback = view.feedback;
+        let approval_rows =
+            if overlay.is_none() && view.prompt.is_none() && view.approval().is_some() {
+                view.approval_rows()
+            } else {
+                Vec::new()
+            };
+        let feedback = matches!(view.prompt, Some(Prompt::Feedback));
         let (areas, page) = {
             let status = Line::raw(view.status());
             let screen = Screen {
@@ -532,14 +543,24 @@ pub async fn run(
                         match effect {
                             InputEffect::Submit { text, .. } => {
                                 view.notice = None;
-                                // A report is never an approval answer.
-                                if std::mem::take(&mut view.feedback) {
-                                    view.reports.push(text);
-                                    view.notice = Some(format!(
-                                        "Feedback saved locally ({} this session)",
-                                        view.reports.len()
-                                    ));
-                                    continue;
+                                // The view's own prompt is the visible one:
+                                // it takes this answer, never the approval.
+                                match view.prompt.take() {
+                                    Some(Prompt::Feedback) => {
+                                        view.reports.push(text);
+                                        view.notice = Some(format!(
+                                            "Feedback saved locally ({} this session)",
+                                            view.reports.len()
+                                        ));
+                                        continue;
+                                    }
+                                    Some(Prompt::Confirm(request)) => {
+                                        if matches!(text.trim(), "y" | "Y" | "yes") {
+                                            view.request(&conversation, request).await?;
+                                        }
+                                        continue;
+                                    }
+                                    None => {}
                                 }
                                 // Commands stay usable while an approval
                                 // waits; only other input answers it.
@@ -556,12 +577,6 @@ pub async fn run(
                                     }
                                     continue;
                                 }
-                                if let Some(request) = view.confirm.take() {
-                                    if matches!(text.trim(), "y" | "Y" | "yes") {
-                                        view.request(&conversation, request).await?;
-                                    }
-                                    continue;
-                                }
                                 match catalog.resolve(&text, u64::MAX) {
                                     Ok(None) => {}
                                     Ok(Some(CommandResolution::Submit { request: CommandRequest::Quit })) => {
@@ -573,11 +588,11 @@ pub async fn run(
                                         continue;
                                     }
                                     Ok(Some(CommandResolution::Select { query: CommandQuery::Feedback })) => {
-                                        view.feedback = true;
+                                        view.prompt = Some(Prompt::Feedback);
                                         continue;
                                     }
                                     Ok(Some(CommandResolution::Confirm { request })) => {
-                                        view.confirm = Some(request);
+                                        view.prompt = Some(Prompt::Confirm(request));
                                         continue;
                                     }
                                     Ok(Some(CommandResolution::Submit { request })) => {
@@ -625,8 +640,8 @@ pub async fn run(
                             InputEffect::Host(Action::Escape) if overlay.is_some() => {
                                 overlay = None;
                             }
-                            InputEffect::Host(Action::Escape) if view.feedback => {
-                                view.feedback = false;
+                            InputEffect::Host(Action::Escape) if view.prompt.is_some() => {
+                                view.prompt = None;
                             }
                             InputEffect::Interrupt | InputEffect::Host(Action::Escape)
                                 if view.busy() || view.approval().is_some() =>
