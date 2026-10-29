@@ -132,6 +132,53 @@ fn ownership_release_deadline_refuses_a_retained_owner() -> io::Result<()> {
     barrier.wait_until(std::time::Instant::now())
 }
 
+#[test]
+fn ownership_release_waits_for_physical_cleanup_and_retained_fences()
+-> Result<(), Box<dyn std::error::Error>> {
+    struct Cleanup {
+        entered: std::sync::mpsc::Sender<()>,
+        resume: std::sync::mpsc::Receiver<()>,
+    }
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = self.entered.send(());
+            let _ = self.resume.recv();
+        }
+    }
+    for retained_fence in [false, true] {
+        let (entered, cleanup_entered) = std::sync::mpsc::channel();
+        let (resume, cleanup_resume) = std::sync::mpsc::channel();
+        let cleanup = std::sync::Mutex::new(Cleanup {
+            entered,
+            resume: cleanup_resume,
+        });
+        let anchor = if retained_fence {
+            OwnershipAnchor::fenced(OwnershipAnchor::new(()), cleanup)
+        } else {
+            OwnershipAnchor::new(cleanup)
+        };
+        let observer = anchor.release_barrier();
+        let deadline_observer = anchor.release_barrier();
+        let dropped = std::thread::spawn(move || drop(anchor));
+        cleanup_entered.recv_timeout(std::time::Duration::from_secs(10))?;
+        // The actual final destructor is blocked; zero strong references
+        // alone cannot authorize reopening or completion of a release wait.
+        let released_before_cleanup = observer.is_released();
+        let bounded = deadline_observer.wait_until(std::time::Instant::now());
+        resume.send(())?;
+        dropped
+            .join()
+            .map_err(|_| "owner cleanup thread panicked")?;
+        assert!(
+            !released_before_cleanup,
+            "release preceded physical cleanup"
+        );
+        assert_eq!(bounded.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        observer.wait_until(std::time::Instant::now())?;
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn callback_cancellation_retains_captured_prefix_and_original_owner() -> io::Result<()> {

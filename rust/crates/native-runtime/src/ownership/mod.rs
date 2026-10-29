@@ -15,15 +15,18 @@ impl Clone for OwnershipAnchor {
     }
 }
 
-impl Drop for OwnershipReleaseBarrier {
+struct ReleaseSignal {
+    released: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl Drop for ReleaseSignal {
     fn drop(&mut self) {
-        if self.owner.strong_count() == 0 {
-            let (lock, released) = &*self.released;
-            let _guard = lock
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            released.notify_all();
-        }
+        let (lock, released) = &*self.released;
+        let mut complete = lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *complete = true;
+        released.notify_all();
     }
 }
 
@@ -33,6 +36,8 @@ impl Drop for OwnershipReleaseBarrier {
 struct SharedOwner<Owner, Fence> {
     _owner: Owner,
     fences: crate::sync::Mutex<Vec<Fence>>,
+    // Final field: signal only after physical cleanup and every retained fence.
+    release: ReleaseSignal,
 }
 
 impl<Owner, Fence> SharedOwner<Owner, Fence> {
@@ -40,6 +45,9 @@ impl<Owner, Fence> SharedOwner<Owner, Fence> {
         Self {
             _owner: owner,
             fences: crate::sync::Mutex::new(Vec::new()),
+            release: ReleaseSignal {
+                released: Arc::new((Mutex::new(false), Condvar::new())),
+            },
         }
     }
 
@@ -88,22 +96,18 @@ impl OwnershipAnchor {
 
     /// Erases and retains one ownership value behind a cloneable lifetime token.
     pub fn new(owner: impl Send + Sync + 'static) -> Self {
-        let owner: Arc<dyn RetainFence> =
-            Arc::new(SharedOwner::<_, Box<dyn Send + Sync>>::new(owner));
+        let owner = SharedOwner::<_, Box<dyn Send + Sync>>::new(owner);
+        let released = Arc::clone(&owner.release.released);
         Self {
-            release: OwnershipReleaseBarrier {
-                owner: Arc::downgrade(&owner),
-                released: Arc::new((Mutex::new(()), Condvar::new())),
-            },
-            _owner: owner,
+            release: OwnershipReleaseBarrier { released },
+            _owner: Arc::new(owner),
         }
     }
 
-    /// Observes the exact boundary at which every clone has released the owner.
+    /// Observes completion of the final owner's cleanup and retained fences.
     #[must_use]
     pub fn release_barrier(&self) -> OwnershipReleaseBarrier {
         OwnershipReleaseBarrier {
-            owner: self.release.owner.clone(),
             released: Arc::clone(&self.release.released),
         }
     }
@@ -111,18 +115,21 @@ impl OwnershipAnchor {
 
 /// A non-owning release condition for an [`OwnershipAnchor`] clone family.
 pub struct OwnershipReleaseBarrier {
-    owner: Weak<dyn RetainFence>,
-    released: Arc<(Mutex<()>, Condvar)>,
+    released: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl OwnershipReleaseBarrier {
-    /// Returns whether every ownership-anchor clone has released the owner.
+    /// Returns whether the final owner's cleanup and retained fences completed.
     #[must_use]
     pub fn is_released(&self) -> bool {
-        self.owner.strong_count() == 0
+        *self
+            .released
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Blocks until every ownership-anchor clone has released the owner.
+    /// Blocks until the final owner's cleanup and retained fences complete.
     pub fn wait(self) {
         self.wait_for(None);
     }
@@ -145,7 +152,7 @@ impl OwnershipReleaseBarrier {
         let mut guard = lock
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        while self.owner.strong_count() != 0 {
+        while !*guard {
             guard = match deadline {
                 None => released
                     .wait(guard)
