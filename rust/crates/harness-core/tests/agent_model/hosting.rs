@@ -620,18 +620,43 @@ async fn trees_sharing_a_stream_each_claim_only_their_own_agents() -> Result {
     // The activation log orders b's roots around a's: a reaching its second
     // root has passed b's first two, and b reaching its third has passed a's.
     create(&b2, 3).await?;
-    create(&a2, 4).await?;
-    create(&b2, 5).await?;
+    let last_a = create(&a2, 4).await?;
+    let last_b = create(&b2, 5).await?;
     let resident = |bound: &Bound<MemoryStream, Objects>| bound.agents().runtime().counts().0;
-    for _ in 0..2_000 {
-        if resident(&a) == 2 && resident(&b) == 3 {
-            break;
+    // Arm the committed state streams before observing their checkpoints.
+    // Processing each tree's last adoption proves that its earlier activation
+    // entries were claimed, including when publication precedes this wait.
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        use futures::TryStreamExt as _;
+        for (bound, agent) in [(&a, &last_a), (&b, &last_b)] {
+            let actor = bound.agents().actor(agent)?;
+            let store = bound.agents().runtime().store();
+            let mut changes = stream
+                .follow(acyclic_stream::FollowRequest::new(store.path(&actor)?, 0))
+                .await?;
+            loop {
+                if store
+                    .load(&actor)
+                    .await?
+                    .state()
+                    .and_then(|state| state.checkpoint())
+                    .is_some()
+                {
+                    break;
+                }
+                changes
+                    .try_next()
+                    .await?
+                    .ok_or("actor state follow ended before adoption")?;
+            }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-    }
+        Result::Ok(())
+    })
+    .await??;
     assert_eq!((resident(&a), resident(&b)), (2, 3));
     for runner in runners {
         runner.abort();
+        assert!(runner.await.is_err_and(|error| error.is_cancelled()));
     }
     Ok(())
 }
