@@ -64,10 +64,19 @@ mod tests {
     use std::process::{Command, Stdio};
     use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
+    fn exchange(future: impl Future<Output = io::Result<()>>) -> io::Result<()> {
+        crate::coordination_runtime()?.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), future)
+                .await
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::TimedOut, "protocol exchange did not complete")
+                })?
+        })
+    }
+
     #[test]
     fn quiet_protocol_read_leaves_the_coordination_worker_available() -> io::Result<()> {
-        let runtime = crate::coordination_runtime()?;
-        runtime.block_on(async {
+        exchange(async {
             let mut command = Command::new("powershell.exe");
             command.args(["-NoProfile", "-NonInteractive", "-Command",
                 "[Console]::Out.WriteLine('ready'); $line = [Console]::ReadLine(); [Console]::Out.WriteLine($line)"])
@@ -122,7 +131,7 @@ mod tests {
         }
         // SAFETY: creation returned one owned event handle.
         let event = unsafe { OwnedHandle::from_raw_handle(event) };
-        crate::coordination_runtime()?.block_on(async {
+        exchange(async {
             let mut command = Command::new("powershell.exe");
             command.args(["-NoProfile", "-NonInteractive", "-Command", &format!(
                 "$event = [Threading.EventWaitHandle]::OpenExisting('{name}'); [Console]::Out.WriteLine('ready'); $null = $event.WaitOne(); $line = [Console]::ReadLine(); [Console]::Out.WriteLine($line.Length); [Console]::Out.WriteLine([Console]::ReadLine())"
@@ -137,6 +146,11 @@ mod tests {
             let mut line = String::new();
             output.read_line(&mut line).await?;
             assert_eq!(line.trim_end(), "ready");
+            let completed_wait = events::arm(
+                &[events::Source::Pipe(input.writer.0.as_ref().unwrap())],
+                None,
+            )?;
+            assert!(completed_wait.fired());
             let bytes = vec![b'x'; events::PipeOperation::write_length(usize::MAX)];
             let mut accepted = input.write(&bytes).await?;
             assert_eq!(accepted, bytes.len());
@@ -147,6 +161,9 @@ mod tests {
                 accepted += bytes.len();
             }
             assert!(input.writer.0.as_ref().unwrap().pending());
+            // An earlier completion may wake a newer wait. Its notification
+            // must not certify this still-pending write or accept later bytes.
+            input.wait = Some(completed_wait);
             {
                 let mut next = std::pin::pin!(input.write(b"discarded"));
                 std::future::poll_fn(|cx| {
@@ -197,11 +214,12 @@ impl ProcessPipeWriter {
 
     fn poll_completion(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         let operation = self.writer.0.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
-        if operation.pending() {
+        while operation.pending() {
             if self.wait.is_none() {
                 self.wait = Some(events::arm(&[events::Source::Pipe(operation)], None)?);
             }
             ready!(Pin::new(self.wait.as_mut().ok_or(io::ErrorKind::BrokenPipe)?).poll(cx));
+            self.wait = None;
         }
         self.wait = None;
         if let Some(result) = operation.take_written() {
