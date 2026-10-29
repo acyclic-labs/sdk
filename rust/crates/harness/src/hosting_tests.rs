@@ -519,6 +519,21 @@ async fn a_served_tree_dispatches_session_commands_within_its_admission() -> Res
         Some(StreamError::AccessDenied)
     ));
     owner.denied.store(false, Ordering::SeqCst);
+    // A lost source owner ends the same waiter with a typed refusal, rather
+    // than leaving its original admitted channel pending forever.
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (release, resume) = tokio::sync::oneshot::channel();
+    *owner.diff.lock().map_err(|_| "diff control poisoned")? = Some(DiffPause {
+        entered,
+        release: resume,
+    });
+    drop(release);
+    assert!(matches!(
+        call(&client, "agents", &diff).await?,
+        Err(AgentControlFailure::Refused { code, reason })
+            if code == "agent_turn_error" && reason.contains("diff source owner closed")
+    ));
+    waiting.await?;
     let children = AgentCommand::Children {
         agent: root.clone(),
         page: Default::default(),
