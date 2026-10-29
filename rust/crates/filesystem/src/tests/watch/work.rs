@@ -44,11 +44,15 @@ async fn native_change_wait_uses_retained_events_and_settles_on_cancel_or_drop()
         assert_eq!(idle.backend_write_operations, 0);
         std::fs::write(root.path().join("delivered"), b"complete")?;
         tokio::time::timeout(Duration::from_secs(5), changed.as_mut()).await??;
-        let expected = namespace("/delivered")?;
+        let expected = NamespacePath::from_portable(
+            &crate::path::PortablePath::parse("/delivered", VolumeLimits::default())?,
+            VolumeLimits::default(),
+        )?;
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 watch.changed_with_native_work(&work).await?;
-                let receipt = watch.poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
+                let receipt = watch.poll(64, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                    .map_err(|failure| failure.error)?;
                 match receipt.value {
                     WatchBatch::Changes { changes, .. } if changes.iter().any(|change|
                         matches!(change, WatchChange::Created(path) | WatchChange::Modified(path)
