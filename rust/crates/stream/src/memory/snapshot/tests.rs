@@ -144,9 +144,23 @@ fn retained_snapshot_ownership_retires_deep_chains_iteratively() {
     let mut root = None;
     for _ in 0..30000 {
         let mut node = RetainedFact::reserved(None);
-        Arc::get_mut(&mut node).expect("reserved node").previous = root;
+        node.get_mut().expect("reserved node").previous = root;
         root = Some(node);
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let first_owner = root.clone();
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let other_start = start.clone();
+        let other = std::thread::spawn(move || {
+            other_start.wait();
+            drop(first_owner);
+        });
+        start.wait();
+        drop(root);
+        other.join().expect("concurrent fact owner retired");
+    }
+    #[cfg(target_arch = "wasm32")]
     drop(root);
 }
 
