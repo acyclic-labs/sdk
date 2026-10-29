@@ -36,7 +36,6 @@ async fn native_session_refuses_outgoing_commands_after_lease_change_without_a_r
                 destination_node: "node".into(),
                 receive_bytes: crate::MAX_COMMAND_BYTES as u64,
                 receive_frames: crate::MAX_ITEMS as u32,
-                credentials: vec![],
             }),
         ))
         .await?;

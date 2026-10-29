@@ -223,9 +223,9 @@ impl<P: Blobs + ?Sized> LogicalObjectStore<P> {
                         packet((root.clone(), references), custody, original)?,
                         original.runtime_meter(),
                     )
-                    .map_err(native_error)?
+                    .map_err(|error| native_error(error, original))?
                     .await
-                    .map_err(native_error)?;
+                    .map_err(|error| native_error(error, original))?;
             }
             _ => {
                 work.charge(WorkCounters {
