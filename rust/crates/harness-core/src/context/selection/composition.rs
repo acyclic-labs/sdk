@@ -182,7 +182,7 @@ fn preflight_context_composition(
             work,
         )
     })?;
-    let mut remaining = limits.render_bytes - bytes;
+    let mut remaining = Some(limits.render_bytes - bytes);
     crate::model::reserve_instruction_bodies(first, &mut remaining, io)?;
     crate::model::reserve_instruction_bodies(second, &mut remaining, io)?;
     Ok(current_input_index)
