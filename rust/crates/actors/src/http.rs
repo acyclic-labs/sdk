@@ -173,7 +173,8 @@ macro_rules! operations {
         pub async fn $method(&self, request: &wire::$input) -> Result<wire::$output, Error> {
             let (method, route) = *HTTP_ROUTES.get($index).ok_or(Error::InvalidArgument)?;
             crate::domain::$input::try_from(request.clone()).map_err(|_| Error::InvalidArgument)?;
-            crate::client::validate_operation(method, request).map_err(|_| Error::InvalidArgument)?;
+            crate::client::validate_operation_request!($input, method, request)
+                .map_err(|_| Error::InvalidArgument)?;
             self.call(
                 route,
                 concat!("acyclic.actors.v1.", stringify!($input)),

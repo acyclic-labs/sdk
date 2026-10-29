@@ -2,11 +2,14 @@
 
 use crate::domain;
 use crate::wire;
+
+mod validation;
 pub use acyclic_auth::credential::CredentialProvider;
 use prost::Message;
 use std::future::Future;
 use tokio_util::sync::CancellationToken;
 use tonic::metadata::{Ascii, MetadataValue};
+pub(crate) use validation::{validate_operation, validate_operation_request};
 
 /// Sensitive bearer metadata applied to each generated RPC.
 #[derive(Clone)]
@@ -524,7 +527,7 @@ macro_rules! client_operations {
             pub async fn $method(&self, request: &domain::$input) -> Result<domain::$output, Error> {
                 self.stage(async {
                     let input = wire::$input::from(request.clone());
-                    validate_operation($name, &input)?;
+                    validate_operation_request!($input, $name, &input)?;
                     self.dispatch(input, None, |input| async move {
                         self.inner.clone().$method(input).await
                     }, |response| Ok(response.try_into()?)).await
@@ -555,7 +558,7 @@ macro_rules! client_operations {
                         let input = domain::$input::try_from(input)
                             .map_err(|error| Error::Configuration(error.to_string()))?;
                         let input = wire::$input::from(input);
-                        validate_operation($name, &input)?;
+                        validate_operation_request!($input, $name, &input)?;
                         self.dispatch(input, authorization, |input| async move {
                             self.inner.clone().$method(input).await
                         }, |response| {
@@ -773,35 +776,3 @@ mod request_path_tests;
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod credential_tests;
-
-/// Apply operation-specific constraints on shared deployment envelopes before I/O.
-pub(crate) fn validate_operation(request_name: &str, request: &impl Message) -> Result<(), Error> {
-    // RPC descriptors use UpperCamelCase; HTTP_ROUTES exposes lowerCamelCase.
-    // Both dispatchers select their operation before reaching this shared check.
-    if request_name.eq_ignore_ascii_case("DeployWorker")
-        || request_name.eq_ignore_ascii_case("DeployNamespace")
-    {
-        let deployment = wire::DeploymentRequest::decode(request.encode_to_vec().as_slice())
-            .map_err(|e| Error::Configuration(e.to_string()))?;
-        if request_name.eq_ignore_ascii_case("DeployNamespace") {
-            if deployment.limits.is_none() || deployment.worker_limits.is_some() {
-                return Err(Error::Configuration(
-                    "namespace deploy requires actor limits".into(),
-                ));
-            }
-            return Ok(());
-        }
-        crate::addressing::validate_dns_label(deployment.name.as_bytes())
-            .map_err(|e| Error::Configuration(e.to_string()))?;
-        if deployment.worker_limits.is_none()
-            || deployment.limits.is_some()
-            || !deployment.subscriptions.is_empty()
-            || !deployment.jurisdiction.is_empty()
-        {
-            return Err(Error::Configuration(
-                "Worker deploy cannot carry actor subscriptions or jurisdiction".into(),
-            ));
-        }
-    }
-    Ok(())
-}
