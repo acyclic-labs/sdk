@@ -536,7 +536,7 @@ async fn each_publication_writes_only_what_is_not_already_durable()
     // A sweep may have removed it, so the next publication writes it.
     let collecting = store.collection.begin().await;
     let (gate, _) = collecting.sweepable(vec![shared.digest]).await;
-    collecting.sweeping(shared.digest);
+    collecting.sweeping();
     provider
         .delete(acyclic_objects::Digest::from_bytes(
             *shared.digest.as_bytes(),

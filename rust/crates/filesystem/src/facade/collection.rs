@@ -161,7 +161,7 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             cancellation.check()?;
             let (_gate, sweepable) = collecting.sweepable(batch.to_vec()).await;
             for digest in sweepable {
-                collecting.sweeping(digest);
+                collecting.sweeping();
                 let deleted = provider
                     .delete(acyclic_objects::Digest::from_bytes(digest.into_bytes()))
                     .await
