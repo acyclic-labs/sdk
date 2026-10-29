@@ -488,7 +488,8 @@ bun() {
   [[ "$3" == "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" ]]
   [[ "$4" == "$SDK_ARTIFACT_DIR/packages/harness/qualification-receipt.json" ]]
   touch "$fixture/harness-started"
-  while [[ ! -f "$fixture/filesystem-started" || ! -f "$fixture/finish-entered" ]]; do sleep 0.01; done
+  node scripts/graphcoder-e2e/wait-path.mjs "$fixture/filesystem-started" 10
+  node scripts/graphcoder-e2e/wait-path.mjs "$fixture/finish-entered" 10
   touch "$fixture/harness.done"
   return "$fail_harness"
 }
@@ -496,7 +497,7 @@ bash() {
   [[ "$#" == 2 && "$1" == scripts/check-filesystem-package.sh ]]
   [[ "$2" == "$SDK_ARTIFACT_DIR/packages/filesystem" ]]
   touch "$fixture/filesystem-started"
-  while [[ ! -f "$fixture/harness-started" ]]; do sleep 0.01; done
+  node scripts/graphcoder-e2e/wait-path.mjs "$fixture/harness-started" 10
   touch "$fixture/filesystem.done"
   return "$fail_fs"
 }
@@ -598,9 +599,9 @@ bun() {
   esac
   printf 'started:%s\\n' "$id"
   touch "$fixture/$id"
-  while [[ ! -f "$fixture/all-launched" ]]; do sleep 0.01; done
+  node scripts/graphcoder-e2e/wait-path.mjs "$fixture/all-launched" 10
   if [[ "$mutated" == 1 && "$id" != "$fail_id" ]]; then
-    while [[ ! -f "$fixture/release-cleanup" ]]; do sleep 0.01; done
+    node scripts/graphcoder-e2e/wait-path.mjs "$fixture/release-cleanup" 10
   fi
   touch "$fixture/$id.done"
   printf 'completed:%s\\n' "$id"
