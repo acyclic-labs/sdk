@@ -3,6 +3,7 @@ export * from "../generated/proto/actors/v1/actors_pb.js";
 export * as semantic from "./generated/semantic/actors/readonly.js";
 export * from "./client.js";
 export * from "./guest.js";
+export { GuestActivation } from "./guest-host.js";
 export { performanceObserver, type AcyclicObserver, type OperationEvent } from "./observe.js";
 export { credentialProvider, type CredentialProvider, type CredentialOptions } from "./credential.js";
 
