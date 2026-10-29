@@ -1557,7 +1557,7 @@ async fn a_small_file_bound_never_fails_a_turn_on_its_lists() -> Result<()> {
             volume_config(directory.path(), project.clone(), provider.clone())?
                 .compaction(crate::context::CompactionPolicy::Disabled)
                 .limits(crate::conversation::Limits {
-                    file_bytes: FILE_BYTES,
+                    file_bytes: Some(FILE_BYTES),
                     ..Default::default()
                 }),
         )

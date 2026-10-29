@@ -81,7 +81,7 @@ fn agent_approvals(
     maximum_file_bytes: u64,
 ) -> Result<Arc<AgentApprovals>> {
     let limits = Limits {
-        file_bytes: maximum_file_bytes,
+        file_bytes: Some(maximum_file_bytes),
         ..Limits::default()
     };
     let policy = AgentApprovalPolicy::new(policy, None, Default::default(), limits)?;
@@ -149,7 +149,10 @@ impl<
     /// Builds an optional directory listing tool for explicit custom registration.
     pub fn list_files_tool(&self, limits: Limits) -> Result<Tool> {
         limits.validate(&mut None)?;
-        if limits.file_bytes > self.maximum_file_bytes {
+        if limits
+            .file_bytes
+            .is_none_or(|maximum| maximum > self.maximum_file_bytes)
+        {
             return Err(Error::Invalid(
                 "tool file limit exceeds the bound storage volume".into(),
             ));
