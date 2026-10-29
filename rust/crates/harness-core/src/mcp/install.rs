@@ -222,7 +222,7 @@ fn register(
             limits.tool_bytes,
             &catalog,
         ),
-        u64::MAX,
+        None,
         &mut None,
     )?)
     .to_hex()

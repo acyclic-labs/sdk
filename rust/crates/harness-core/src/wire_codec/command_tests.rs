@@ -19,7 +19,7 @@ proptest! {
         if digest != 0 {
             let (_, command) = decode_command_envelope(envelope.clone())?;
             envelope.intent_digest = crate::executor::json::canonical_json_digest(
-                &command, crate::store::default_projection_read_limits().maximum_bytes, &mut None,
+                &command, None, &mut None,
             )?.to_vec();
             if digest == 2 {
                 let first = envelope.intent_digest.first_mut()
@@ -51,7 +51,7 @@ proptest! {
                 clean.intent_digest.clear();
                 let (_, command) = decode_command_envelope(clean)?;
                 let expected = crate::executor::json::canonical_json_digest(
-                    &command, crate::store::default_projection_read_limits().maximum_bytes, &mut None,
+                    &command, None, &mut None,
                 )?;
                 if envelope.intent_digest == expected { Ok(()) } else { Err(wire::ErrorCode::Conflict) }
             },
