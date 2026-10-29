@@ -170,7 +170,7 @@ impl PreparedModelRequest {
             let (bytes, hold) = crate::conversation::verified_content_bytes(
                 verifier,
                 &reference,
-                reference.descriptor().byte_length(),
+                Some(reference.descriptor().byte_length()),
                 None,
                 io,
             )
