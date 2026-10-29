@@ -3,8 +3,6 @@ use super::*;
 
 #[derive(Default)]
 pub(super) struct Validation<'a> {
-    keys: usize,
-    attributes: usize,
     payload: usize,
     invalid: bool,
     previous_key: Option<&'a [u8]>,
@@ -13,24 +11,16 @@ pub(super) struct Validation<'a> {
 
 impl<'a> Validation<'a> {
     pub(super) fn key(&mut self, key: &'a [u8]) -> Result<(), StreamError> {
-        if self.keys == MAX_RECORD_KEYS || key.len() > MAX_RECORD_KEY_BYTES {
-            return Err(StreamError::LimitExceeded);
-        }
         self.invalid |= self.previous_key.is_some_and(|previous| previous >= key);
-        self.keys += 1;
         self.previous_key = Some(key);
         self.payload = self.payload.saturating_add(key.len());
         Ok(())
     }
 
     pub(super) fn attribute(&mut self, name: &'a str, value: &[u8]) -> Result<(), StreamError> {
-        if self.attributes == MAX_RECORD_ATTRIBUTES {
-            return Err(StreamError::LimitExceeded);
-        }
         self.invalid |= name.is_empty()
             || name.chars().any(char::is_control)
             || self.previous_name.is_some_and(|previous| previous >= name);
-        self.attributes += 1;
         self.previous_name = Some(name);
         self.payload = self
             .payload
@@ -60,9 +50,11 @@ mod tests {
         let bytes = OwnedBytes::from_static(b"ab");
         for keys in [[0..1, 0..1], [1..2, 0..1]] {
             let meter = Arc::new(Meter::default());
-            let prepared = PreparedHeaderControls::new(&meter.original(), 2)?;
+            let prepared = PreparedHeaderControls::new_shape(&meter.original(), 2, keys.len(), 0)?;
             assert!(
-                prepared.finish(bytes.clone(), &keys, &[]).is_err(),
+                prepared
+                    .finish(bytes.clone(), keys.iter().cloned(), std::iter::empty())
+                    .is_err(),
                 "prepared ingress bypassed canonical key order"
             );
             meter.assert_refunded();

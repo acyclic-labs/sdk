@@ -21,7 +21,7 @@ impl NativeCheckout {
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
         let receipt = checkout
-            .discard(acyclic_fs::performance::BOUNDARY_BUDGET, &self.cancellation)
+            .discard(acyclic_fs::WorkBudget::UNBOUNDED, &self.cancellation)
             .await
             .map_err(napi_error)?;
         mutation_result(receipt.work)

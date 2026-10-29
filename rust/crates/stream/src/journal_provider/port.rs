@@ -34,7 +34,12 @@ impl CommandJournal for HostPort {
         let metadata = metadata.to_vec();
         let head = word(&metadata, 0)?;
         let bytes = word(&metadata, 8)?;
-        if head > u64::from(self.limits.commands) || bytes > self.limits.journal_bytes {
+        if self
+            .limits
+            .commands
+            .is_some_and(|limit| head > u64::from(limit))
+            || self.limits.journal_bytes.is_some_and(|limit| bytes > limit)
+        {
             return Err(StreamError::Capacity);
         }
         self.bytes = bytes;
@@ -81,14 +86,18 @@ impl CommandJournal for HostPort {
         let count = u32::try_from(frames.len()).map_err(unavailable)?;
         let next = expected
             .checked_add(count)
-            .filter(|value| *value <= self.limits.commands)
+            .filter(|value| self.limits.commands.is_none_or(|limit| *value <= limit))
             .ok_or(StreamError::Capacity)?;
         let bytes = frames
             .iter()
             .try_fold(self.bytes, |total, frame| {
                 total.checked_add(frame.command.encoded_len() as u64 + 17)
             })
-            .filter(|bytes| *bytes <= self.limits.journal_bytes)
+            .filter(|bytes| {
+                self.limits
+                    .journal_bytes
+                    .is_none_or(|limit| *bytes <= limit)
+            })
             .ok_or(StreamError::Capacity)?;
         let changes = js_sys::Array::new();
         for frame in frames {

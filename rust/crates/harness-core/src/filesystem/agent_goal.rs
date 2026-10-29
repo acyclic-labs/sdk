@@ -53,7 +53,6 @@ impl<A, O> FilesystemTurnGoal<A, O> {
                 scope,
                 volume,
                 VolumeOperation::Write,
-                u64::MAX,
                 &mut None,
             )?,
             volume: volume.clone(),

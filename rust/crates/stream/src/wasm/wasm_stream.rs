@@ -12,14 +12,14 @@ pub struct WasmStream {
 #[serde(deny_unknown_fields)]
 #[tsify(large_number_types_as_bigints)]
 struct WasmJournalStreamLimits {
-    commands: u32,
-    journal_bytes: u64,
-    paths: u32,
-    path_bytes: u32,
-    records: u32,
-    payload_bytes: u32,
-    commits: u32,
-    idempotency_results: u32,
+    commands: Option<u32>,
+    journal_bytes: Option<u64>,
+    paths: Option<u32>,
+    path_bytes: Option<u32>,
+    records: Option<u32>,
+    payload_bytes: Option<u32>,
+    commits: Option<u32>,
+    idempotency_results: Option<u32>,
 }
 
 #[wasm_bindgen]
@@ -89,12 +89,12 @@ impl WasmStream {
             commands: limits.commands,
             journal_bytes: limits.journal_bytes,
             memory: crate::MemoryLimits {
-                paths: limits.paths as usize,
-                path_bytes: limits.path_bytes as usize,
-                records: limits.records as usize,
-                payload_bytes: limits.payload_bytes as usize,
-                commits: limits.commits as usize,
-                idempotency_results: limits.idempotency_results as usize,
+                paths: limits.paths.map(|value| value as usize),
+                path_bytes: limits.path_bytes.map(|value| value as usize),
+                records: limits.records.map(|value| value as usize),
+                payload_bytes: limits.payload_bytes.map(|value| value as usize),
+                commits: limits.commits.map(|value| value as usize),
+                idempotency_results: limits.idempotency_results.map(|value| value as usize),
             },
         };
         let provider = crate::JournalStream::open(journal, limits)
@@ -128,11 +128,11 @@ impl WasmStream {
     #[wasm_bindgen(js_name = openBrowser)]
     pub async fn open_browser(
         name: String,
-        maximum_commands: u32,
-        maximum_journal_bytes: u64,
+        maximum_commands: Option<u32>,
+        maximum_journal_bytes: Option<u64>,
     ) -> Result<WasmStream, JsValue> {
         let limits = crate::BrowserStreamLimits {
-            commands: u64::from(maximum_commands),
+            commands: maximum_commands.map(u64::from),
             journal_bytes: maximum_journal_bytes,
             ..Default::default()
         };
@@ -221,7 +221,7 @@ impl WasmStream {
         &self,
         invocation: &[u8],
         credential: u32,
-        maximum_reply_bytes: u32,
+        maximum_reply_bytes: Option<u32>,
     ) -> Result<Vec<u8>, JsValue> {
         check_command_size(invocation)?;
         self.session
@@ -230,7 +230,7 @@ impl WasmStream {
             .actor_call(
                 &bytes::Bytes::copy_from_slice(invocation),
                 credential,
-                maximum_reply_bytes as usize,
+                maximum_reply_bytes.map(|maximum| maximum as usize),
             )
             .await
             .map(|reply| reply.to_vec())
@@ -356,22 +356,7 @@ impl WasmStream {
         }
         let path = request.path.clone();
         let stream = crate::records_only(self.provider.follow(request).await.map_err(js_error)?);
-        Ok(WasmFollow {
-            state: Rc::new(FollowState::new(
-                stream
-                    .map(move |record| {
-                        record.map(|record| {
-                            wire_codec::read_response_wire(vec![wire_codec::record_wire(
-                                record,
-                                Some(&path),
-                            )])
-                            .encode_to_vec()
-                        })
-                    })
-                    .boxed_local(),
-                StreamError::Unavailable,
-            )),
-        })
+        Ok(WasmFollow::from_records(stream, path))
     }
 }
 

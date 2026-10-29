@@ -121,3 +121,91 @@ async fn return_observation_retries_unrelated_data_but_denies_revocation()
     }
     Ok(())
 }
+
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn structured_observation_derives_credentials_only_for_complete_tool_output_read()
+-> Result<(), Box<dyn Error>> {
+    use acyclic_harness::{
+        agent::{AgentId as PathId, AgentPath, VolumeBinding},
+        filesystem::AgentAuthority,
+    };
+    let fixture = Fixture::new().await?;
+    let path = AgentPath::root(&PathId::from_bytes([7; 16]));
+    let issuer = fixture.issuer.with_audience(Authority {
+        kind: AggregateKind::Conversation,
+        id: path.id().as_str().into(),
+    });
+    let binding = VolumeBinding {
+        name: "private".into(),
+        volume: fixture.volume.clone(),
+    };
+    for (actions, paths, admitted) in [
+        (
+            vec![Action::List, Action::Read],
+            vec!["tools", "tools/**"],
+            true,
+        ),
+        (vec![Action::Create, Action::Write], vec!["**"], false),
+        (
+            vec![Action::List, Action::Read],
+            vec!["tools", "tools/public/**"],
+            false,
+        ),
+    ] {
+        let capability = Capability {
+            layers: vec![
+                paths
+                    .into_iter()
+                    .map(|path| Grant {
+                        actions: actions.iter().copied().collect(),
+                        resource: ResourcePattern {
+                            lineage_root: None,
+                            volume: None,
+                            generations: Generations::All,
+                            path: path.into(),
+                        },
+                    })
+                    .collect(),
+            ],
+            expires_at: None,
+        };
+        let grants = Capabilities::new([capability.to_scope_label()?]);
+        let scope = issuer.bootstrap_scope(
+            "observer",
+            &grants,
+            Some(AgentId::from_bytes([7; 16])),
+            &mut None,
+        )?;
+        let authority = AgentAuthority {
+            issuer: issuer.clone(),
+            verifier: issuer.verifier(&mut None)?,
+            scope,
+            grants,
+            private: &binding,
+        };
+        let result = fixture
+            .host
+            .agent_observation(
+                &authority,
+                &path,
+                &fixture.volume,
+                Arc::new(acyclic_stream::SystemUnixMillisClock),
+                None,
+            )
+            .await;
+        if admitted {
+            let observation = result?;
+            assert!(!observation.credential.is_empty());
+            assert_eq!(
+                observation.resource,
+                fixture.host.tool_resource(&fixture.volume).await?
+            );
+        } else {
+            assert!(
+                matches!(result, Err(error) if error.code() == acyclic_harness::wire::ErrorCode::Unauthorized)
+            );
+        }
+    }
+    Ok(())
+}

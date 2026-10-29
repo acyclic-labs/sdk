@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Log } from "../src/log.js";
@@ -51,11 +51,31 @@ test("router maps Jev answers to tiers and fan-out", async () => {
   assert.equal(r.tier, "frontier"); assert.equal(r.fanOut, 3); assert.equal(r.kind, "refactor"); assert.deepEqual(r.models, DEFAULT_POLICY.tiers.frontier);
 });
 
-test("renderState includes task, diff, and probe", () => {
+test("rendered state keeps every changed file and complete diff unless excerpts are selected", () => {
   const base = mkdtempSync(join(tmpdir(), "base-")); const fork = mkdtempSync(join(tmpdir(), "fork-"));
-  writeFileSync(join(base, "a.py"), "def add(a, b):\n    return a - b\n"); writeFileSync(join(fork, "a.py"), "def add(a, b):\n    return a + b\n");
-  const s = renderState("fix add", base, [{ fork: { id: "1", path: fork, base: "", label: "A" }, model: "m", changes: [{ status: "M", path: "a.py" }], probe: "1 passed" }], 12, 2000);
-  assert.match(s, /^Task:\nfix add/); assert.match(s, /=== fork A \(m\)/); assert.match(s, /-    return a - b/); assert.match(s, /\+    return a \+ b/); assert.match(s, /1 passed/);
+  try {
+    const tail = "x".repeat(2001) + "complete-diff-tail";
+    writeFileSync(join(base, "a.py"), "def add(a, b):\n    return a - b\n");
+    writeFileSync(join(fork, "a.py"), "def add(a, b):\n    return a + b\n# " + tail + "\n");
+    const changes = [{ status: "M", path: "a.py" }];
+    for (let i = 1; i <= 12; i++) {
+      const path = `extra-${i}.txt`;
+      writeFileSync(join(fork, path), `file-${i}\n`);
+      changes.push({ status: "A", path });
+    }
+    const error = "e".repeat(601) + "complete-worker-error";
+    const reports = [{ fork: { id: "1", path: fork, base: "", label: "A" }, model: "m", changes, probe: "1 passed", worker: { ok: false, error } }];
+    const state = renderState("fix add", base, reports);
+    assert.match(state, /^Task:\nfix add/); assert.match(state, /=== fork A \(m\)/);
+    assert.match(state, /-    return a - b/); assert.match(state, /\+    return a \+ b/); assert.match(state, /1 passed/);
+    assert.ok(state.includes(tail)); assert.ok(state.includes(error));
+    for (const change of changes) assert.ok(state.includes(`+++ b/${change.path}`));
+    const excerpt = renderState("fix add", base, reports, 1, 32);
+    assert.match(excerpt, /12 more/); assert.match(excerpt, /chars\)/);
+    assert.ok(!excerpt.includes(tail)); assert.ok(!excerpt.includes("+++ b/extra-12.txt"));
+  } finally {
+    rmSync(base, { recursive: true, force: true }); rmSync(fork, { recursive: true, force: true });
+  }
 });
 
 test("board aggregates wins, safety, tests, cost, and derives routing", () => {

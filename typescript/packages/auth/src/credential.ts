@@ -44,9 +44,8 @@ export class CredentialSnapshot {
 
 /** Validate at the transport boundary without exposing credential material. */
 export function validateCredential(token: unknown): asserts token is string {
-  if (typeof token !== "string" || token.length > 12 * 1024 ||
-      new TextEncoder().encode(token).byteLength > 12 * 1024 || !token.trim() || /[\r\n\0]/.test(token)) {
-    throw new TypeError("credential must be non-empty, at most 12 KiB, and free of CR, LF, or NUL");
+  if (typeof token !== "string" || !token.trim() || /[\r\n\0]/.test(token)) {
+    throw new TypeError("credential must be non-empty and free of CR, LF, or NUL");
   }
 }
 
