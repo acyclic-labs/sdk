@@ -46,7 +46,10 @@ pub(super) async fn prepare_at<P: PublicationOwner>(
     if head == original.head {
         return Ok(Some(original));
     }
-    if head.epoch != original.head.epoch || head.sequence <= original.head.sequence {
+    if !core.preconditions.rebase
+        || head.epoch != original.head.epoch
+        || head.sequence <= original.head.sequence
+    {
         return Ok(None);
     }
     if input

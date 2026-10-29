@@ -432,11 +432,35 @@ async fn check_pending_withdrawal(native: bool) -> TestResult {
             "withdrawal changed the survivor count"
         );
         verify_withdrawn_member(&volume, operations, usize::from(!cancel_member), &cancel).await?;
-        if cancel_member {
-            commit(&mut b, &cancel).await?;
-        } else {
-            commit(&mut a, &cancel).await?;
-        }
+        let withdrawn = if cancel_member { &mut b } else { &mut a };
+        let conflict = withdrawn
+            .commit(
+                OperationId::new(),
+                None,
+                None,
+                None,
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<FsError>,
+            )
+            .await?;
+        assert!(matches!(
+            conflict.value,
+            LivePublicationObservation::Conflict { .. }
+        ));
+        assert!(matches!(
+            withdrawn
+                .rebase_head(
+                    volume.config.limits.maximum_checkout_dependencies,
+                    B,
+                    &cancel,
+                )
+                .await?
+                .value,
+            RebaseDecision::Safe { .. }
+        ));
+        commit(withdrawn, &cancel).await?;
         assert!(
             !a.has_pending_mutations() && !b.has_pending_mutations(),
             "fresh round did not recover aborted members"

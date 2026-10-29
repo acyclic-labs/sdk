@@ -103,6 +103,8 @@ pub(crate) struct PublicationPreconditions {
     pub config: crate::VolumeConfig,
     /// Authority head actually observed for the immutable base.
     pub head: Head,
+    /// An explicitly prepared merge permits composition across a newer head.
+    pub rebase: bool,
     /// Exact traversal, observation and mutation preconditions against that base.
     pub reads: super::CheckoutDependencies,
 }
