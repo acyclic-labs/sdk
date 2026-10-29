@@ -34,6 +34,9 @@ impl LocalWorkspace {
         {
             mounts
         } else {
+            state
+                .allocated_mounts
+                .retain(|_, mounts| mounts.strong_count() != 0);
             let mounts = self.bound_mounts(project, scratch, authority).await?;
             state.allocated_mounts.insert(key, Arc::downgrade(&mounts));
             mounts
