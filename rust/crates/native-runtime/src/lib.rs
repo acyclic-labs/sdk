@@ -128,7 +128,9 @@ pub mod resources;
 mod task;
 #[cfg(feature = "test-support")]
 pub mod testing;
-pub use blocking::{InlineBlocking, run_blocking_io, wait_native_future};
+pub use blocking::{
+    BlockingWaitCredit, InlineBlocking, blocking_wait_credit, run_blocking_io, wait_native_future,
+};
 pub(crate) use blocking::{
     PreparedWake, inline_blocking_allowed, measured_completion_meter, task_completion,
     wait_measured_completion,
