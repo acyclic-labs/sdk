@@ -87,9 +87,9 @@ impl PreparationIo {
         result
     }
 
-    fn bounds(&self, bytes: u64, depth: u32) -> Result<JsonBounds> {
+    fn bounds(&self, bytes: Option<u64>, depth: u32) -> Result<JsonBounds> {
         Ok(JsonBounds {
-            maximum_bytes: Some(bytes),
+            maximum_bytes: bytes,
             maximum_items: Some(self.remaining()?.items_examined),
             maximum_depth: depth,
         })
@@ -98,11 +98,11 @@ impl PreparationIo {
     pub fn encode<T: Serialize>(
         &self,
         value: &T,
-        maximum: u64,
+        maximum: Option<u64>,
         canonical: bool,
     ) -> Result<acyclic_stream::OwnedBytes> {
         let remaining = self.remaining()?;
-        if maximum != 0 {
+        if maximum != Some(0) {
             self.preflight(WorkCounters {
                 bytes_encoded: 1,
                 items_examined: 1,
@@ -110,7 +110,7 @@ impl PreparationIo {
             })?;
         }
         let bounds = JsonBounds {
-            maximum_bytes: Some(maximum.min(remaining.bytes_encoded)),
+            maximum_bytes: maximum.map(|maximum| maximum.min(remaining.bytes_encoded)),
             maximum_items: Some(remaining.items_examined),
             maximum_depth: 256,
         };
@@ -190,7 +190,7 @@ impl PreparationIo {
             .original_native_work()
             .is_some()
             .then_some(crate::wire::ErrorCode::Storage);
-        let bounds = self.bounds(bytes.len() as u64, 256)?;
+        let bounds = self.bounds(Some(bytes.len() as u64), 256)?;
         let mut decoded: (T, _) =
             self.decode_guarded(Some(T::diagnostic_label_bytes()), code, |observe| {
                 crate::executor::json::json_from_slice_bounded(
@@ -213,7 +213,7 @@ impl PreparationIo {
         code: crate::wire::ErrorCode,
     ) -> Result<(T, DecodeReservation<'a>)> {
         let bounds = self.bounds(
-            bytes.len() as u64,
+            Some(bytes.len() as u64),
             crate::executor::json::RECORD_MAXIMUM_DEPTH,
         )?;
         let schema = T::json_value_schema();
@@ -241,7 +241,7 @@ impl PreparationIo {
     pub(crate) fn value_json<T: Serialize>(
         &self,
         value: &T,
-        maximum: u64,
+        maximum: Option<u64>,
     ) -> Result<serde_json::Value> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.original_native_work().is_none() {
@@ -267,7 +267,7 @@ impl PreparationIo {
     pub(crate) fn check_json_byte_bound(
         &self,
         value: &serde_json::Value,
-        maximum: u64,
+        maximum: Option<u64>,
     ) -> Result<()> {
         if self.original_native_work().is_none() {
             return Err(self.invalid("native JSON sizing requires original work"));
@@ -315,7 +315,7 @@ impl PreparationIo {
     ) -> Result<(T, DecodeReservation<'_>)> {
         #[cfg(target_arch = "wasm32")]
         {
-            let bytes = self.encode(value, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+            let bytes = self.encode(value, Some(acyclic_stream::MAX_RECORD_BYTES as u64), false)?;
             let _bytes = self.guard_bytes(&bytes)?;
             self.decode(std::marker::PhantomData::<T>, &bytes, code)
         }
@@ -345,7 +345,7 @@ impl PreparationIo {
         if self.original_native_work().is_none() {
             return Err(self.invalid("native Value decoding requires original work"));
         }
-        let bounds = self.bounds(u64::MAX, 128)?;
+        let bounds = self.bounds(None, 128)?;
         self.decode_guarded(
             (schema != Schema::Root).then_some(labels),
             Some(code),
