@@ -508,6 +508,17 @@ fn deployment_limit_alternatives_are_exclusive_and_operation_scoped()
     )?;
     let raw: wire::DeploymentRequest = worker.into();
     assert!(crate::client::validate_operation("DeployWorker", &raw).is_ok());
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let allocation = acyclic_test_support::measure(|| {
+            assert!(crate::client::validate_operation("DeployWorker", &raw).is_ok());
+        });
+        assert_eq!(
+            allocation.count_total, 0,
+            "typed admission must borrow its input"
+        );
+        assert_eq!(allocation.bytes_total, 0);
+    }
     assert!(crate::client::validate_operation("DeployNamespace", &raw).is_err());
     let mut neither = raw.clone();
     neither.worker_limits = None;
