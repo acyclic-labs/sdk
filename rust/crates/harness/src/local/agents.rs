@@ -78,6 +78,19 @@ impl crate::hosting::Platform for LocalUser {
         Box::pin(async { Ok(PolicyDecision::Allow) })
     }
 
+    fn prompt_command<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> BoxProviderFuture<'a, Result<Option<String>>> {
+        Box::pin(async move {
+            self.0
+                .upgrade()
+                .ok_or_else(|| Error::Unsupported("local harness is closed".into()))?
+                .resolve_prompt_command(text)
+                .await
+        })
+    }
+
     fn attachments<'a>(
         &'a self,
         key: &'a [u8],

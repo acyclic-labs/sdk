@@ -67,6 +67,18 @@ pub trait Platform: ProviderPlatform + 'static {
         Box::pin(async { Ok(()) })
     }
 
+    /// The text a prompt's leading `/name` selects: a prompt command's or
+    /// skill's body with its arguments substituted, which the message stages
+    /// in place of `text` so the model reads exactly it. `None` keeps `text`.
+    /// A platform with no project of its own to read expands none.
+    fn prompt_command<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> BoxProviderFuture<'a, crate::Result<Option<String>>> {
+        let _ = text;
+        Box::pin(async { Ok(None) })
+    }
+
     /// The attachment manifest of the files a prompt's `@` mentions in
     /// `text` name (see [`Message::attachments`]), staged once for the
     /// message `key` identifies, so a resend replays it exactly. A platform
@@ -392,6 +404,12 @@ where
             AgentCommand::Prompt { agent, id, body } => {
                 let agent = self.within_tree(agent)?;
                 let text = text(body)?;
+                let expanded = self
+                    .platform
+                    .prompt_command(text)
+                    .await
+                    .map_err(|error| Error::Turn(Box::new(error)))?;
+                let text = expanded.as_deref().unwrap_or(text);
                 let body = self
                     .bound
                     .stage_text(agent, "message", by, id, text)
