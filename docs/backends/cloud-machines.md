@@ -109,6 +109,12 @@ limit. Native OS exec reports actual capacity errors. The native producer must
 propagate consumed-input credit through the original stream; the clients keep
 no background input queue and never replay interrupted input.
 
+The TypeScript package uses `createMachinesClient(authenticatedTransport)` from
+`@acyclic-labs/machines/transport`, or `createMachinesGrpcClient` from its `grpc`
+entry in Node. The private JSON HTTP adapter and its whole-response watch codec
+are retired. Lifecycle, exec and files use the public protobuf service; each
+watch observation is delivered on its own pull credit.
+
 Run the shared lifecycle and protocol checks with:
 
 ```sh

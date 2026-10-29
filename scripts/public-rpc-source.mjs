@@ -119,7 +119,12 @@ export function createSourceInspector(root, read = path => {
       : manifest.exports?.["."]?.default === "./dist/index.js" &&
         manifest.exports?.["./grpc"]?.default === `./dist/${objects ? "v1-grpc" : "grpc"}.js` &&
         manifest.exports?.["./proto"]?.default === `./generated/proto/${family}/${version}/${family}_pb.js` &&
-        (objects ? exported(`${tsBase}index.ts`, "./v1.js") && exported(`${tsBase}index.ts`, "./v1-http.js") : exported(`${tsBase}index.ts`, "./http.js"));
+        (objects ? exported(`${tsBase}index.ts`, "./v1.js") && exported(`${tsBase}index.ts`, "./v1-http.js")
+          : family === "machines"
+          ? manifest.exports?.["./transport"]?.default === "./dist/transport.js" &&
+            /export function createMachinesClient\(transport: Transport\)/.test(source(`${tsBase}transport.ts`)) &&
+            source(`${tsBase}transport.ts`).includes("createClient(wire.MachinesService, transport)")
+          : exported(`${tsBase}index.ts`, "./http.js"));
     return { rustGrpc, rustHttp, typescriptGrpcNodeBun, typescriptHttp, typescriptGrpcWeb: Boolean(typescriptGrpcWeb), typescriptPackageExported: Boolean(typescriptPackageExported) };
   };
 }

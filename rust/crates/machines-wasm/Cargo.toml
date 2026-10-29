@@ -16,14 +16,12 @@ acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = fa
 acyclic-machines = { version = "=0.2.0", path = "../machines", default-features = false }
 serde.workspace = true
 serde_bytes.workspace = true
-serde_json.workspace = true
 sha2.workspace = true
 futures.workspace = true
 hex.workspace = true
 uuid.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-base64 = "0.23.1"
 js-sys.workspace = true
 serde-wasm-bindgen.workspace = true
 tsify.workspace = true

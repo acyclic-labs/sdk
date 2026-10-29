@@ -6,6 +6,7 @@ import { ActorsService } from "../typescript/packages/actors/generated/proto/act
 import { StreamService } from "../typescript/packages/stream/generated/proto/stream/v1/stream_pb.js";
 import { BlobsService } from "../typescript/packages/objects/generated/proto/objects/v1/objects_pb.js";
 
+import { MachinesService } from "../typescript/packages/machines/generated/proto/machines/v1/machines_pb.js";
 const root = new URL("..", import.meta.url);
 const read = path => { try { return readFileSync(new URL(path, root), "utf8"); } catch (error) { if (error.code === "ENOENT") return ""; throw error; } };
 function missing(label, service, rpc, path, replace, flag) {
@@ -68,3 +69,6 @@ for (const service of [BlobsService, StreamService]) {
 missing("missing Stream factory delegation removes Node/Bun exposure", StreamService, "Read", "typescript/packages/stream/src/grpc.ts", s => s.replace("const { client, sessions } = streamGrpc(options)", "const { client, sessions } = removed(options)"), "typescriptGrpcNodeBun");
 missing("missing Stream generated client removes Node/Bun exposure", StreamService, "Read", "typescript/packages/stream/src/grpc.ts", s => s.replace("createClient(StreamService, home)", "removed(StreamService, home)"), "typescriptGrpcNodeBun");
 missing("missing Stream transport removes Node/Bun exposure", StreamService, "Read", "typescript/packages/stream/src/grpc.ts", s => s.replace("return createGrpcTransport(", "return removedTransport("), "typescriptGrpcNodeBun");
+
+missing("missing Machines descriptor transport removes package exposure", MachinesService, "WatchOperation", "typescript/packages/machines/src/transport.ts", s => s.replace("createClient(wire.MachinesService, transport)", "removed(wire.MachinesService, transport)"), "typescriptPackageExported");
+missing("missing Machines transport export removes package exposure", MachinesService, "WatchOperation", "typescript/packages/machines/package.json", s => { const manifest = JSON.parse(s); delete manifest.exports["./transport"]; return JSON.stringify(manifest); }, "typescriptPackageExported");
