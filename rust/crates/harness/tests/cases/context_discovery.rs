@@ -222,7 +222,6 @@ impl Fixture {
             &scope,
             &volume,
             VolumeOperation::Write,
-            u64::MAX,
             &mut None,
         )?;
         let reader = FilesystemContentVerifier::new(
