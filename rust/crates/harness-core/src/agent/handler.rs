@@ -306,6 +306,9 @@ impl<P: StreamProvider + ?Sized + 'static, D: TurnDriver> AgentHandler<P, D> {
             },
             (None, _) => return Err(Error::Record("first agent input is not ForkAdopted")),
         };
+        if delivery.actor.id() != path.id().as_str() {
+            return Err(Error::Record("agent actor identity differs"));
+        }
         if cut.path != path.inbox()? {
             return Err(Error::Record("agent inbox subscription differs"));
         }

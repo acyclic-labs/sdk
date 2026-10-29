@@ -1,0 +1,48 @@
+{
+  "original_commit": "28d5c495b63e6d7efd7556d164a49f33574ac80c",
+  "scope": "Source-byte extraction, not an execution or equivalence result.",
+  "files": [
+    {
+      "path": "rust/fuzz/corpus/harness_admission/accepted",
+      "original_sha256": "79331ac1a54d065ddfec38963a5ea35717221d904a8361a21fcbbfd33d28f98a",
+      "derived_sha256": "c1d35f2a8e4bc5d71868c04a5852fdf82a271022eb06bf89dc6dc0da70eb22d9",
+      "derivation": "admission"
+    },
+    {
+      "path": "rust/fuzz/corpus/harness_admission/empty-idempotency-key",
+      "original_sha256": "ec566600aca34084892c1e528244f7f4e5a2ca2107f6606dad70d3cb03ad870f",
+      "derived_sha256": "ed7873e2f874548a95569b55920ec80e62e5d1e7a0a51dc8719d747e2d2b59d7",
+      "derivation": "admission"
+    },
+    {
+      "path": "rust/fuzz/corpus/harness_admission/empty-identity",
+      "original_sha256": "8c20ea4beedf38ef12e3c9adc679adca2db7d0719dc9e7391c8b8852b36f88d5",
+      "derived_sha256": "f4b6df8902fb5c2122fedd7470cd4b4caa95d22f9fb37528e25864ad213af8f0",
+      "derivation": "admission"
+    },
+    {
+      "path": "rust/fuzz/corpus/harness_admission/mismatched-identity",
+      "original_sha256": "cccd7a3c7d9fdd30f411dba70572812bf0b2e5a092dc9e959feaefb06ae3b0b9",
+      "derived_sha256": "4832129859de6188bd49b67e602b65933ce9dce9886a027ea8ca7f80c56a20a2",
+      "derivation": "admission"
+    },
+    {
+      "path": "rust/fuzz/corpus/harness_admission/missing-admission-identity",
+      "original_sha256": "cc1383d2f1795449f6056e1703ed645869ee29352c9d1cd7047f35392df3973d",
+      "derived_sha256": "cf178ba2cf192966da8f124b64b68b7c1296d27d6ff87d516ea5e97359e414f4",
+      "derivation": "admission"
+    },
+    {
+      "path": "rust/fuzz/corpus/harness_admission/missing-command-identity",
+      "original_sha256": "cfbc29c134962cb20ea3a618b82cbc1f793399cefe7169851ada34f3a546037a",
+      "derived_sha256": "cfbc29c134962cb20ea3a618b82cbc1f793399cefe7169851ada34f3a546037a",
+      "derivation": "admission"
+    },
+    {
+      "path": "rust/fuzz/corpus/harness_admission/truncated",
+      "original_sha256": "428f6d7e89a1b345221f88db8af74389653730f048724e0dabece69990d6b7be",
+      "derived_sha256": "428f6d7e89a1b345221f88db8af74389653730f048724e0dabece69990d6b7be",
+      "derivation": "malformed original retained verbatim"
+    }
+  ]
+}

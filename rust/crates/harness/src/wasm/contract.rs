@@ -29,7 +29,6 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         "extension_configuration" => admit(value, |v: &ExtensionConfiguration| v.validate()),
         "extension_admission" => admit(value, |v: &ExtensionAdmission| v.validate(&mut None)),
         "interaction_ticket" => admit(value, |v: &InteractionTicket| v.validate(&mut None)),
-        "resolution_receipt" => admit(value, |v: &ResolutionReceipt| v.validate()),
         "conversation_message" => {
             let limits: Limits = from_js(context)?;
             admit(value, |v: &ConversationMessage| {

@@ -1,0 +1,114 @@
+{
+  "original_commit": "28d5c495b63e6d7efd7556d164a49f33574ac80c",
+  "scope": "Source-byte extraction, not an execution or equivalence result.",
+  "files": [
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/accepted",
+      "original_sha256": "8805abfec65c5318418904dd127566b958bf293e0d5ffc15767d193d884075d2",
+      "derived_sha256": "8805abfec65c5318418904dd127566b958bf293e0d5ffc15767d193d884075d2",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/command-invalid-json",
+      "original_sha256": "19ee7c8c96b0238fc2c9a0ad4c8f87beac7f3e99b3d1f621bf983b40a5edf711",
+      "derived_sha256": "8805abfec65c5318418904dd127566b958bf293e0d5ffc15767d193d884075d2",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/command-nested",
+      "original_sha256": "8c90f2dc1de63e00ecb90a36abe1c837cae2b744811ccea3e2e82258b85d95ba",
+      "derived_sha256": "8805abfec65c5318418904dd127566b958bf293e0d5ffc15767d193d884075d2",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/command-nested-unsorted",
+      "original_sha256": "01852fe2271e12294cc6132555a6639c28e20bbae3d3dad551609ceb0cc8db76",
+      "derived_sha256": "8805abfec65c5318418904dd127566b958bf293e0d5ffc15767d193d884075d2",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/command-noncanonical",
+      "original_sha256": "bb1f1652ca853071f864fd71f5d8b4969ab81f718a950f1dc42c9921818a2c43",
+      "derived_sha256": "8805abfec65c5318418904dd127566b958bf293e0d5ffc15767d193d884075d2",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/command-truncated",
+      "original_sha256": "645d4483dcc65c247ebd684310f83f0789c21dbd745a52e7c6982eed0f3bb476",
+      "derived_sha256": "645d4483dcc65c247ebd684310f83f0789c21dbd745a52e7c6982eed0f3bb476",
+      "derivation": "malformed original retained verbatim"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/command-valid",
+      "original_sha256": "d0bbbb7814e341764c5970b911369adf394b7522346d5ba753e55c30ca175f60",
+      "derived_sha256": "8805abfec65c5318418904dd127566b958bf293e0d5ffc15767d193d884075d2",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/event-missing-protocol",
+      "original_sha256": "456392a4a54f8f392ac6f5cf1b9b32729431c5847592046e771c501bd23d10fe",
+      "derived_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/event-unknown-field",
+      "original_sha256": "3fc3b2c9011ff887f85fa8bbb9ec31590e1acfcbd7f362622a2f16d368ccdb49",
+      "derived_sha256": "8805abfec65c5318418904dd127566b958bf293e0d5ffc15767d193d884075d2",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/event-valid",
+      "original_sha256": "93e8c583853ac07d1afe6e15aa1599cc65581d6434e3d10fa23aeae2c3c481cf",
+      "derived_sha256": "8805abfec65c5318418904dd127566b958bf293e0d5ffc15767d193d884075d2",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/event-wrong-protocol",
+      "original_sha256": "64a10f03bf418337c734d30f794f99469d7f70d7e7f6aebb40813a36b59f574f",
+      "derived_sha256": "2aa16d23f5c1662790221289120109c0181a60a54baad35a9b84320e7bdd7cc1",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/invalid-utf8",
+      "original_sha256": "dc50e8a874bd4543b7b665a71220e4e8f2a7eadaea89b541e2830d3d7b32bd30",
+      "derived_sha256": "dc50e8a874bd4543b7b665a71220e4e8f2a7eadaea89b541e2830d3d7b32bd30",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/missing-digest",
+      "original_sha256": "2b72e79c117bd304e40852714c5db9ad8dec5ea8a25c135886a05e77c0dd06f4",
+      "derived_sha256": "2b72e79c117bd304e40852714c5db9ad8dec5ea8a25c135886a05e77c0dd06f4",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/missing-protocol",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "derived_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/truncated",
+      "original_sha256": "ee165d6c86b2357d95929553309c7732281defc5f2296646e9086140059f3d08",
+      "derived_sha256": "ee165d6c86b2357d95929553309c7732281defc5f2296646e9086140059f3d08",
+      "derivation": "malformed original retained verbatim"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/unknown-field",
+      "original_sha256": "2033451554d16a8e6a7ae5c37fd003f14238dbc8bdf4624d5543350f74d04f2e",
+      "derived_sha256": "8805abfec65c5318418904dd127566b958bf293e0d5ffc15767d193d884075d2",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/wrong-digest",
+      "original_sha256": "8d0092f2210f72f05cd1a7f0412cc1f21ca78282e295420d3986962912353e80",
+      "derived_sha256": "8d0092f2210f72f05cd1a7f0412cc1f21ca78282e295420d3986962912353e80",
+      "derivation": "protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/wrong-version",
+      "original_sha256": "106894dc95385f8009ead531d530579905fa11df6bbed424bee5d51a70fde2f0",
+      "derived_sha256": "106894dc95385f8009ead531d530579905fa11df6bbed424bee5d51a70fde2f0",
+      "derivation": "protocol"
+    }
+  ]
+}

@@ -121,63 +121,6 @@ message Scope {
   bytes workload = 7;
 }
 
-// Non-bearer metadata for a committed event. The event attestation is bound
-// to the complete event and cannot be reused as a command authorization.
-message RecordedScope {
-  string id = 1;
-  repeated string capabilities = 2;
-  string issuer = 3;
-  string agent_id = 4;
-}
-
-// Transport-neutral command whose canonical payload is interpreted by Rust.
-message CommandEnvelope {
-  acyclic.protocol.v1.ProtocolIdentity protocol = 1;
-  Authority authority = 2;
-  OperationIdentity operation = 3;
-  uint64 expected_revision = 4;
-  Scope scope = 5;
-  EventReference causal_parent = 6;
-  string action_type = 7;
-  bytes canonical_action_json = 8;
-  bytes intent_digest = 9;
-}
-
-// Canonical durable event carried identically by every transport.
-message EventEnvelope {
-  acyclic.protocol.v1.ProtocolIdentity protocol = 1;
-  Authority authority = 2;
-  uint64 revision = 3;
-  string operation_id = 4;
-  bytes intent_digest = 5;
-  RecordedScope scope = 6;
-  EventReference causal_parent = 7;
-  string event_type = 8;
-  bytes canonical_payload_json = 9;
-  bytes attestation = 10;
-}
-
-enum ApplyState {
-  APPLY_STATE_UNSPECIFIED = 0;
-  APPLY_STATE_APPLIED = 1;
-  APPLY_STATE_REPLAYED = 2;
-}
-
-message ApplyResponse {
-  ApplyState state = 1;
-  EventEnvelope event = 2;
-}
-
-// Versioned restoration accelerator. Events remain authoritative.
-message SnapshotEnvelope {
-  acyclic.protocol.v1.ProtocolIdentity protocol = 1;
-  Authority authority = 2;
-  uint64 revision = 3;
-  uint32 format_version = 4;
-  bytes canonical_state_json = 5;
-  bytes state_digest = 6;
-}
-
 // Transport-independent resumable subscription cursor.
 message ReplayCursor {
   Authority authority = 1;
@@ -190,16 +133,6 @@ message ResumeRequest {
   repeated ReplayCursor cursors = 2;
 }
 
-// One fully validated contiguous authoritative delivery.
-message Delivery {
-  Authority authority = 1;
-  string generation = 2;
-  uint64 from_revision = 3;
-  uint64 through_revision = 4;
-  repeated EventEnvelope events = 5;
-  bool live = 6;
-}
-
 message Acknowledge {
   Authority authority = 1;
   string generation = 2;
@@ -208,9 +141,10 @@ message Acknowledge {
 
 // Framing used unchanged by embedded, HTTP/SSE, WebSocket, JSONL/stdio and gRPC adapters.
 message ClientFrame {
+  reserved 2;
+  reserved "command";
   oneof frame {
     ResumeRequest resume = 1;
-    CommandEnvelope command = 2;
     Acknowledge acknowledge = 3;
     acyclic.protocol.v1.HandshakeRequest handshake = 4;
     ObserveRequest observe = 5;
@@ -219,8 +153,9 @@ message ClientFrame {
 }
 
 message ServerFrame {
+  reserved 1;
+  reserved "delivery";
   oneof frame {
-    Delivery delivery = 1;
     Admission admission = 2;
     Error error = 3;
     acyclic.protocol.v1.HandshakeResponse handshake = 4;
@@ -386,15 +321,6 @@ message InteractionResolution {
   uint64 expected_version = 2;
   InteractionOutcome outcome = 3;
   FileRef detail = 4;
-}
-
-message ResolutionReceipt {
-  string id = 1;
-  uint64 version = 2;
-  string operation_id = 3;
-  uint64 conversation_revision = 4;
-  bool replayed = 5;
-  InteractionOutcome outcome = 6;
 }
 
 message Attachment {

@@ -1,53 +1,6 @@
-//! Admission for the closed event-envelope schema.
+//! Retained construction custody on the original history observer.
 use super::*;
-use std::mem::size_of;
 
-fn carrier_quota(buffers: u64, capabilities: u64) -> Result<u64> {
-    let slots = if capabilities == 0 {
-        Some(0)
-    } else {
-        capabilities.checked_mul(2).map(|n| n.max(4))
-    };
-    slots
-        .and_then(|n| n.checked_mul(size_of::<String>() as u64))
-        .and_then(|n| buffers.checked_add(n))
-        .and_then(|n| n.checked_add(size_of::<wire::EventEnvelope>() as u64))
-        .ok_or_else(|| Error::Storage("event custody overflow".into()))
-}
-pub(super) fn metadata_quota(authority: &Authority, event: &Event) -> Result<(u64, u64)> {
-    let (issuer, agent) = event.scope.wire_parts();
-    let buffer = |n: u64| n.checked_mul(2).and_then(|n| n.checked_add(8));
-    let overflow = || Error::Storage("event metadata overflow".into());
-    let mut buffers: u64 =
-        (64 * 2 + 8) + (36 * 2 + 8) + if agent.is_some() { 36 * 2 + 8 } else { 0 };
-    let mut copied = 0_u64;
-    for length in [
-        EVENT_WIRE_VERSION.len(),
-        authority.id.len(),
-        event.scope.id().len(),
-        issuer.len(),
-        event.payload.tag().len(),
-        32,
-        32,
-    ]
-    .into_iter()
-    .chain(event.scope.capabilities().iter().map(str::len))
-    .chain(
-        event
-            .causal_parent
-            .iter()
-            .map(|parent| parent.authority.id.len()),
-    ) {
-        copied = copied.checked_add(length as u64).ok_or_else(overflow)?;
-        buffers = buffers
-            .checked_add(buffer(length as u64).ok_or_else(overflow)?)
-            .ok_or_else(overflow)?;
-    }
-    let owned = carrier_quota(buffers, event.scope.capabilities().iter().count() as u64)?
-        .checked_add(crate::executor::json::sdk_json_diagnostic_bytes())
-        .ok_or_else(overflow)?;
-    Ok((owned, copied))
-}
 /// Custody released on drop or transferred to the output owner.
 pub(crate) struct Quota<'a, 'b> {
     work: &'a mut Option<&'b mut dyn HistoryIo>,
@@ -175,36 +128,6 @@ impl Drop for Quota<'_, '_> {
         }
     }
 }
-pub(super) fn envelope_owned(envelope: &wire::EventEnvelope) -> u64 {
-    let scope = envelope.scope.as_ref().map_or(0, |scope| {
-        scope.id.capacity()
-            + scope.issuer.capacity()
-            + scope.agent_id.capacity()
-            + scope.capabilities.capacity() * size_of::<String>()
-            + scope
-                .capabilities
-                .iter()
-                .map(String::capacity)
-                .sum::<usize>()
-    });
-    (scope
-        + envelope
-            .protocol
-            .as_ref()
-            .map_or(0, |p| p.version.capacity() + p.descriptor_digest.capacity())
-        + envelope.authority.as_ref().map_or(0, |a| a.id.capacity())
-        + envelope
-            .causal_parent
-            .as_ref()
-            .and_then(|p| p.authority.as_ref())
-            .map_or(0, |a| a.id.capacity())
-        + envelope.operation_id.capacity()
-        + envelope.intent_digest.capacity()
-        + envelope.event_type.capacity()
-        + envelope.canonical_payload_json.capacity()
-        + envelope.attestation.capacity()) as u64
-}
-
 impl<'a, 'b> Quota<'a, 'b> {
     pub(crate) fn observed(work: &'a mut Option<&'b mut dyn HistoryIo>) -> Result<Self> {
         if let Some(io) = work.as_deref_mut() {

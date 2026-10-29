@@ -1,6 +1,5 @@
 //! Checked ownership admission for history event and snapshot decoding.
 use super::{JsonValueShape, Result};
-const EVENT_LABEL_BYTES: u64 = 3994;
 const COMMON_LABEL_BYTES: u64 = 317;
 /// Static diagnostic allowance for the SDK's preparation records.
 pub const fn preparation_serde_diagnostic_label_bytes() -> u64 {
@@ -52,21 +51,3 @@ fn sum_with_code(values: &[u64], code: Option<crate::wire::ErrorCode>) -> Result
             .ok_or_else(|| super::boundary("event JSON admission overflow", code))
     })
 }
-/// Diagnostic bytes of a history event or checkpoint decode.
-///
-/// The decoder stops at its first error, which quotes at most one string or
-/// key of the document beside the static labels.
-pub(crate) fn history_diagnostic_bytes(
-    shape: JsonValueShape,
-    code: Option<crate::wire::ErrorCode>,
-) -> Result<u64> {
-    sum_with_code(
-        &[
-            diagnostic_bytes(shape.diagnostic_source_bytes(), EVENT_LABEL_BYTES, code)?,
-            multiply_with_code(SNAPSHOT_DIAGNOSTIC_BYTES + 4, 2, code)?,
-        ],
-        code,
-    )
-}
-
-const SNAPSHOT_DIAGNOSTIC_BYTES: u64 = 784;

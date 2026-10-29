@@ -35,7 +35,6 @@ proptest! {
     #[test]
     fn protocol_decisions_survive_wire_round_trips(
         protocol in protocol(),
-        payload in proptest::collection::vec(any::<u8>(), 0..1024),
         invalid_status in any::<bool>(),
     ) {
         let expected = match &protocol {
@@ -43,16 +42,13 @@ proptest! {
             Some(protocol) if protocol != &current_protocol() => Err(wire::ErrorCode::Unsupported),
             Some(_) => Ok(()),
         };
-        let command = wire::CommandEnvelope {
-            protocol: protocol.clone(), canonical_action_json: payload, ..Default::default()
-        };
-        let decoded = wire::CommandEnvelope::decode(command.encode_to_vec().as_slice())
-            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
-        prop_assert_eq!(&decoded, &command);
-        prop_assert_eq!(validate_command_protocol(&command).map_err(|error| error.code()), expected);
-        prop_assert_eq!(validate_command_protocol(&decoded).map_err(|error| error.code()), expected);
         let resume = wire::ResumeRequest { protocol: protocol.clone(), ..Default::default() };
-        prop_assert_eq!(validate_resume_protocol(&resume).map_err(|error| error.code()), expected);
+        let decoded = wire::ResumeRequest::decode(resume.encode_to_vec().as_slice())
+            .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
+        prop_assert_eq!(&decoded, &resume);
+        for resume in [&resume, &decoded] {
+            prop_assert_eq!(validate_resume_protocol(resume).map_err(|error| error.code()), expected);
+        }
         let handshake = wire::HandshakeRequest { protocol: protocol.clone(), required: None };
         prop_assert_eq!(negotiate(&handshake, &wire::CapabilitySet::default()).map(|_| ()).map_err(|error| error.code()), expected);
         let owner = wire::Authority { kind: wire::AggregateKind::Task as i32, id: "owner".into() };
@@ -75,10 +71,6 @@ proptest! {
 
 #[test]
 fn protocol_validation_needs_no_owned_identity() -> Result<()> {
-    let command = wire::CommandEnvelope {
-        protocol: Some(current_protocol()),
-        ..Default::default()
-    };
     let resume = wire::ResumeRequest {
         protocol: Some(current_protocol()),
         ..Default::default()
@@ -96,7 +88,7 @@ fn protocol_validation_needs_no_owned_identity() -> Result<()> {
             tracing::Dispatch::none()
         };
         let _guard = tracing::dispatcher::set_default(&dispatch);
-        for operation in 0..3 {
+        for operation in 0..2 {
             let mut samples = Vec::with_capacity(64);
             let mut counts = None;
             for _ in 0..64 {
@@ -105,8 +97,7 @@ fn protocol_validation_needs_no_owned_identity() -> Result<()> {
                 let allocation = acyclic_test_support::measure(|| {
                     for _ in 0..128 {
                         let result = match operation {
-                            0 => validate_command_protocol(std::hint::black_box(&command)),
-                            1 => validate_resume_protocol(std::hint::black_box(&resume)),
+                            0 => validate_resume_protocol(std::hint::black_box(&resume)),
                             _ => validate_operation_status(
                                 "operation",
                                 Some(std::hint::black_box(&owner)),

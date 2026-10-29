@@ -51,15 +51,8 @@ pub fn negotiate(
     })
 }
 
-/// Rejects malformed or non-identity-preserving admission results.
-pub fn validate_admission(
-    command: &wire::CommandEnvelope,
-    admission: &wire::Admission,
-) -> Result<()> {
-    validate_admission_identity(command.operation.as_ref(), admission)
-}
-
-pub(crate) fn validate_admission_identity(
+/// Rejects admission results that lose the original operation and retry identity.
+pub fn validate_admission_identity(
     expected: Option<&wire::OperationIdentity>,
     admission: &wire::Admission,
 ) -> Result<()> {
@@ -147,16 +140,6 @@ pub fn validate_wire_handshake(request: &[u8], response: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Validates protobuf-encoded command admission identity.
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-pub fn validate_wire_admission(command: &[u8], admission: &[u8]) -> Result<()> {
-    let command = wire::CommandEnvelope::decode(command)
-        .map_err(|error| Error::Invalid(format!("invalid command envelope: {error}")))?;
-    let admission = wire::Admission::decode(admission)
-        .map_err(|error| Error::Invalid(format!("invalid admission: {error}")))?;
-    validate_admission(&command, &admission)
-}
-
 /// Validates protobuf-encoded operation status identity.
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub fn validate_wire_status(request: &[u8], status: &[u8]) -> Result<()> {
@@ -190,25 +173,23 @@ mod tests {
             expected in proptest::option::of(("(?s).{0,64}", "(?s).{0,64}")),
             actual in proptest::option::of(("(?s).{0,64}", "(?s).{0,64}")),
             echo in proptest::bool::ANY,
-            payload in proptest::collection::vec(proptest::num::u8::ANY, 0..4096),
             state in proptest::num::i32::ANY,
         ) {
             let identity = |(operation_id, idempotency_key)| wire::OperationIdentity {
                 operation_id, idempotency_key,
             };
-            let command = wire::CommandEnvelope {
+            let request = wire::Admission {
                 operation: expected.map(identity),
-                canonical_action_json: payload,
                 ..Default::default()
             };
             let admission = wire::Admission {
-                operation: if echo { command.operation.clone() } else { actual.map(identity) },
+                operation: if echo { request.operation.clone() } else { actual.map(identity) },
                 state,
                 ..Default::default()
             };
             // Exactly one nonempty identity must survive the handoff, irrespective
-            // of payload and admission state. Missing command identity wins first.
-            let expected = match command.operation.as_ref() {
+            // of admission state. Missing expected identity wins first.
+            let expected = match request.operation.as_ref() {
                 None => Err(wire::ErrorCode::Invalid),
                 Some(expected) if !expected.operation_id.is_empty()
                     && !expected.idempotency_key.is_empty()
@@ -216,16 +197,16 @@ mod tests {
                 Some(_) => Err(wire::ErrorCode::Conflict),
             };
             proptest::prop_assert_eq!(
-                validate_admission(&command, &admission).map_err(|error| error.code()), expected,
+                validate_admission_identity(request.operation.as_ref(), &admission).map_err(|error| error.code()), expected,
             );
-            let decoded_command = wire::CommandEnvelope::decode(command.encode_to_vec().as_slice())
+            let decoded_request = wire::Admission::decode(request.encode_to_vec().as_slice())
                 .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
             let decoded_admission = wire::Admission::decode(admission.encode_to_vec().as_slice())
                 .map_err(|error| proptest::test_runner::TestCaseError::fail(error.to_string()))?;
-            proptest::prop_assert_eq!(&decoded_command, &command);
+            proptest::prop_assert_eq!(&decoded_request, &request);
             proptest::prop_assert_eq!(&decoded_admission, &admission);
             proptest::prop_assert_eq!(
-                validate_admission(&decoded_command, &decoded_admission).map_err(|error| error.code()), expected,
+                validate_admission_identity(decoded_request.operation.as_ref(), &decoded_admission).map_err(|error| error.code()), expected,
             );
         }
     }
@@ -258,33 +239,6 @@ mod tests {
         assert!(matches!(
             negotiate(&empty, &supported),
             Err(Error::Unsupported(_))
-        ));
-    }
-
-    #[test]
-    fn admission_rejects_missing_or_empty_identity() {
-        let command = wire::CommandEnvelope {
-            operation: None,
-            ..Default::default()
-        };
-        assert!(matches!(
-            validate_admission(&command, &wire::Admission::default()),
-            Err(Error::Invalid(_))
-        ));
-        let command = wire::CommandEnvelope {
-            operation: Some(wire::OperationIdentity {
-                operation_id: String::new(),
-                idempotency_key: "key".into(),
-            }),
-            ..Default::default()
-        };
-        let admission = wire::Admission {
-            operation: command.operation.clone(),
-            ..Default::default()
-        };
-        assert!(matches!(
-            validate_admission(&command, &admission),
-            Err(Error::Conflict(_))
         ));
     }
 

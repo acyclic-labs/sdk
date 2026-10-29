@@ -20,9 +20,9 @@ pub use identity::{
 /// Nesting accepted by saved preparation-record readers.
 pub(crate) const RECORD_MAXIMUM_DEPTH: u32 = 128;
 mod diagnostics;
+pub(crate) use diagnostics::audited_serde_diagnostic_bytes;
 #[cfg(feature = "filesystem")]
 pub(crate) use diagnostics::json_typed_diagnostic_source_owned_bytes;
-pub(crate) use diagnostics::{audited_serde_diagnostic_bytes, history_diagnostic_bytes};
 pub use diagnostics::{
     json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes,
 };

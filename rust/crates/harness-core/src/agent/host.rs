@@ -170,12 +170,18 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
     /// record `sequence` requested: the outcome that step committed, never a
     /// guess from an earlier state, however many steps later it is asked.
     /// Waits, on the parent's actor state stream, for that step to commit.
+    /// An intent not named by `sequence` is a conflict, refused before IO.
     pub async fn spawned(
         &self,
         parent: &AgentPath,
         sequence: u64,
         intent: &IntentId,
     ) -> Result<SpawnOutcome, Error> {
+        if super::machine::requested_intent(sequence)? != *intent {
+            return Err(Error::Conflict(
+                "spawn intent differs from its inbox sequence",
+            ));
+        }
         let actor = self.actor(parent)?;
         let store = self.runtime.store();
         let path = store.path(&actor).map_err(actor_error)?;
@@ -371,18 +377,25 @@ impl<P: StreamProvider + ?Sized + 'static> AgentHost<P> {
         mut request: CommitRequest,
     ) -> Result<Delivered, Error> {
         let inbox = to.inbox()?;
+        let actor = self.actor(to)?;
         request
             .mutations
-            .push(self.runtime.store().activation(&self.actor(to)?).mutation);
+            .push(self.runtime.store().activation(&actor).mutation);
         match submit(&*self.provider, request).await? {
-            Submitted::Committed(receipt) => receipt
-                .appends
-                .iter()
-                .find(|append| append.path == inbox)
-                .map(|append| Delivered::Committed {
+            Submitted::Committed(receipt) => {
+                let append = receipt
+                    .appends
+                    .iter()
+                    .find(|append| append.path == inbox)
+                    .ok_or(Error::Record("commit receipt omits the inbox append"))?;
+                // Persistent activation serves hosted dispatchers. A locally
+                // driven runtime has no idle follow, so signal its ready slot
+                // on this same confirmed-commit path as well.
+                self.runtime.wake(&actor);
+                Ok(Delivered::Committed {
                     inbox: append.start,
                 })
-                .ok_or(Error::Record("commit receipt omits the inbox append")),
+            }
             Submitted::RecipientClosed(_) => Ok(Delivered::Closed),
             Submitted::NoSuchAgent(_) => Err(Error::NoSuchAgent),
             Submitted::Conflict(_) => Err(Error::Record("inbox commit conflicted")),

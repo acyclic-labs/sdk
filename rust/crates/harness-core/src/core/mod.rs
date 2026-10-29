@@ -3,11 +3,12 @@
 use crate::store::history::HistoryIo;
 use crate::wire_codec::CodecQuota;
 use crate::{
-    AgentId, Capabilities, EffectAttemptId, EffectId, Error, IdempotencyKey, OperationId, Result,
-    conversation::{
-        ConversationMessage, FileRef, ModelContextSelection, VolumeOperation, VolumeOwner,
-        is_internal_path,
-    },
+    AgentId, Capabilities, Error, Result,
+    conversation::{FileRef, VolumeOperation, VolumeOwner, is_internal_path},
+};
+#[cfg(test)]
+use crate::{
+    conversation::{ConversationMessage, ModelContextSelection},
     interaction::{InteractionResolution, InteractionTicket},
 };
 use serde::{Deserialize, Serialize};
@@ -18,14 +19,12 @@ use std::sync::Arc;
 mod authority;
 mod capability_bytes;
 mod copying;
-mod effects;
 #[cfg(test)]
 mod element_sizes;
 mod extension_types;
 mod filesystem_access;
 pub(crate) use filesystem_access::{
-    ReadGrant, contains_content_grant_with_work, directory_read_grant,
-    directory_read_granted_with_work, file_read_grant, filesystem_scope_label,
+    ReadGrant, directory_read_granted_with_work, file_read_grant, filesystem_scope_label,
     volume_write_granted_with_work,
 };
 pub(crate) mod ownership;
@@ -45,12 +44,7 @@ pub use authority::{
     AuthorityIssuer, AuthorityRoot, AuthorityVerifier, Scope,
 };
 
-pub use effects::{EffectAttestation, EffectGuarantee, EffectState, EffectStatus};
-
-pub use records::{
-    Action, ApplyResult, Command, Event, EventPayload, EventReference, LifecycleState,
-    RecordedScope,
-};
+pub use records::EventReference;
 
 pub use extension_types::{
     ExtensionAdmission, ExtensionConfiguration, ExtensionDependency, ExtensionForkPolicy,

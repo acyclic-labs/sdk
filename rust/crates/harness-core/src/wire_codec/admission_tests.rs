@@ -2,10 +2,9 @@ use super::*;
 use std::mem::size_of;
 
 #[test]
-fn boxed_effect_slots_are_admitted_before_allocation_and_released_after_drop() -> Result<()> {
+fn boxed_codec_slots_are_admitted_before_allocation_and_released_after_drop() -> Result<()> {
     for native in [false, true] {
         check_boxed_slot::<{ size_of::<crate::conversation::FileRef>() }>(native)?;
-        check_boxed_slot::<{ size_of::<crate::core::EffectAttestation>() }>(native)?;
     }
     Ok(())
 }

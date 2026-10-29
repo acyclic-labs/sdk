@@ -4,7 +4,7 @@
     reason = "wasm-bindgen's exported ABI owns JavaScript values and byte buffers"
 )]
 
-use crate::wire_codec::{decode_event_payload as decode_payload_wire, protocol_identity};
+use crate::wire_codec::protocol_identity;
 use crate::{
     AgentId, BatchId, Capabilities, ConversationId, EffectId, GroupId, OperationId, PolicyLayer,
     SessionId, TaskId, TurnId,
@@ -19,7 +19,7 @@ use crate::{
         ExtensionDependency, ExtensionRecord, ExtensionStateMigration, Scope,
     },
     executor::ModelEventAdmission,
-    interaction::{ApprovalBinding, InteractionResolution, InteractionTicket, ResolutionReceipt},
+    interaction::{ApprovalBinding, InteractionResolution, InteractionTicket},
     model::{ModelContent, ModelEvent, ModelMessage},
     projection::{SelectedModelContext, select_model_context, validate_model_context_selection},
     resources::{ProviderRef, ResourceRef},

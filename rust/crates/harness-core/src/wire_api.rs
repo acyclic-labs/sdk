@@ -2,7 +2,7 @@
 
 use crate::contract::capability;
 pub use crate::wire_validation::{
-    current_protocol, negotiate, validate_admission, validate_cancel_response,
+    current_protocol, negotiate, validate_admission_identity, validate_cancel_response,
     validate_operation_status,
 };
 use crate::{
@@ -11,20 +11,6 @@ use crate::{
     wire,
     wire_codec::{COMPILED_PROTOCOL, decode_authority, decode_scope, validate_protocol},
 };
-
-/// Whether a replay stops at its opening cut or remains subscribed to appends.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReplayMode {
-    /// Finite inspection of events committed when replay opens.
-    Snapshot,
-    /// Replay followed by every later accepted event.
-    Follow,
-}
-
-/// Requires every stateless command to carry the exact negotiated wire identity.
-pub fn validate_command_protocol(command: &wire::CommandEnvelope) -> Result<()> {
-    validate_request_protocol(command.protocol.as_ref())
-}
 
 /// Requires every replay request to carry the exact negotiated wire identity.
 pub fn validate_resume_protocol(request: &wire::ResumeRequest) -> Result<()> {
@@ -156,13 +142,11 @@ mod tests {
 
     #[test]
     fn stateless_calls_require_the_exact_protocol() {
-        let mut command = wire::CommandEnvelope::default();
         let mut resume = wire::ResumeRequest::default();
-        assert!(validate_command_protocol(&command).is_err());
         assert!(validate_resume_protocol(&resume).is_err());
         // A malformed request is the caller's fault, never a retryable storage failure.
         assert!(matches!(
-            validate_command_protocol(&command),
+            validate_resume_protocol(&resume),
             Err(Error::Invalid(_))
         ));
         assert!(matches!(
@@ -188,9 +172,7 @@ mod tests {
             }),
             Err(Error::Unsupported(_))
         ));
-        command.protocol = Some(current_protocol());
         resume.protocol = Some(current_protocol());
-        assert!(validate_command_protocol(&command).is_ok());
         assert!(validate_resume_protocol(&resume).is_ok());
     }
 

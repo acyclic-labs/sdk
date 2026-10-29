@@ -613,41 +613,4 @@ impl PreparationIo {
         observer.copy_bytes(copied)
     }
 }
-impl PreparationIo {
-    pub(crate) fn contains_capability<T: Serialize>(
-        &self,
-        grants: &crate::Capabilities,
-        value: &T,
-        prefix: &str,
-    ) -> Result<bool> {
-        self.charged(WorkCounters {
-            items_examined: 1,
-            ..Default::default()
-        })?;
-        if !grants
-            .0
-            .range::<str, _>((
-                std::ops::Bound::Included(prefix),
-                std::ops::Bound::Unbounded,
-            ))
-            .next()
-            .is_some_and(|grant| grant.starts_with(prefix))
-        {
-            return Ok(false);
-        }
-        let digest = crate::executor::preparation_digest(value, Some(self))?;
-        self.charged(WorkCounters {
-            bytes_encoded: if self.original_native_work().is_some() {
-                64
-            } else {
-                0
-            },
-            ..Default::default()
-        })?;
-        Ok(crate::conversation::contains_content_label(
-            grants, prefix, digest,
-        ))
-    }
-}
-
 use crate::executor::stock_boundary;

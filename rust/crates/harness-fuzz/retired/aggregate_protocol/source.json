@@ -1,0 +1,264 @@
+{
+  "state": "historical-retired-aggregate-proof-not-current-execution",
+  "original_commit": "28d5c495b63e6d7efd7556d164a49f33574ac80c",
+  "original_manifest": {
+    "path": "rust/crates/harness-fuzz/Cargo.toml",
+    "git_blob": "04479a7727c6e83fd10ed8cc80e0f6f7e42db0fe",
+    "sha256": "ece7f790ca9a662c62aaa5b59ae723b6d71606d264cc4676335d7829df79f8a6",
+    "bytes": 5493
+  },
+  "original_registration": "[[bin]]\nname = \"protocol_identity\"\npath = \"fuzz_targets/protocol_identity.rs\"\nrequired-features = [\"runtime\"]\ntest = false\ndoc = false\nbench = false\n\n",
+  "production_dependencies": [
+    {
+      "path": "rust/crates/harness-core/proto/harness/v2/harness.proto",
+      "git_blob": "06c86048b55d9e3206906c446dd2b192186f57d7",
+      "sha256": "cbe04f9a3c01ee55de8eca2ec0083bb5bf22c6737f436c6ac8faa0390d1f9a17",
+      "bytes": 20550
+    },
+    {
+      "path": "rust/crates/harness-core/Cargo.toml",
+      "git_blob": "a102e24dcd0136fa032ce487b274c69be7c94755",
+      "sha256": "f30cf31e08f71527f0ef5ea2dd157fb6d53eb510f24668d8195ad2773324e5f7",
+      "bytes": 7613
+    },
+    {
+      "path": "rust/crates/harness/Cargo.toml",
+      "git_blob": "1812d3e1cd619429b74cefed058f0b366f20ff80",
+      "sha256": "bf0d8e010e8619c20d411af1be3218b2810d00158701de91f3e3435ce358f7d4",
+      "bytes": 11338
+    },
+    {
+      "path": "Cargo.toml",
+      "git_blob": "217eb724b816780f5d12f79b09aae73cd5e03c87",
+      "sha256": "1827172745cb42d406e3f4f03b8300d0ca9035258077331cb9a8c1c9c8078d4d",
+      "bytes": 7650
+    },
+    {
+      "path": "Cargo.lock",
+      "git_blob": "5357aa8a71ce5a8033fbe3fd542deb78a09d6366",
+      "sha256": "53d025396fa70b9e615951bcc6d2ca14783d43b76b2941df14e357fbe4fbfae4",
+      "bytes": 202483
+    },
+    {
+      "path": "rust/crates/harness-core/src/wire_validation.rs",
+      "git_blob": "dcf29a0903a54a4f0c64bfc6aa16bfaa4ab7297e",
+      "sha256": "5cb4e1f3e957dc99091e50196cd61752c8f69f2e18eb7f312aa8c94c10c676f2",
+      "bytes": 12544
+    },
+    {
+      "path": "rust/crates/harness-core/src/wire_api.rs",
+      "git_blob": "3c75d6fb42ced1151b39d6f3c4ced99481e73f98",
+      "sha256": "a01ca14b2aad1cc534d91b1b334ed43740a582b06ad995c337c41e22c0fcfe9d",
+      "bytes": 10105
+    },
+    {
+      "path": "rust/crates/harness-core/src/core/records.rs",
+      "git_blob": "721c0ea215de9221cb3bdb06e4c14611f8b04653",
+      "sha256": "bdfc59f15ca056f14a95822db2fa2441654934ab4b9c566878b997da944fc5fc",
+      "bytes": 15824
+    },
+    {
+      "path": "rust/crates/harness-core/src/wire_codec/admission.rs",
+      "git_blob": "8ec3971566564b8431c96c99ea1109172be1120a",
+      "sha256": "2a6d77deee4140b3bdaeafbc7fa4d8ccaa32fa56598512e1f87f312382202f00",
+      "bytes": 9117
+    },
+    {
+      "path": "rust/crates/harness-core/src/wire_codec/admission_tests.rs",
+      "git_blob": "b6ba77317bc93ad3b2d9c30daad8375514294f50",
+      "sha256": "d09b956b1f015b0beeabc50df934abd77a3a4caedd60c8181d9e98f5243a0e30",
+      "bytes": 2146
+    },
+    {
+      "path": "rust/crates/harness-core/src/wire_codec/authority.rs",
+      "git_blob": "ae9ba3d8cfeb035ab2c40dc4557eedc6bcdcd660",
+      "sha256": "f92a38a70139e8ee34ceede0327b37fdfcec7f7a694ac0cee55edefbb1cc6b11",
+      "bytes": 3473
+    },
+    {
+      "path": "rust/crates/harness-core/src/wire_codec/command.rs",
+      "git_blob": "1e4c56232cb665277ddc13389a76baa4b36537c8",
+      "sha256": "285426407cf43bfe105d27460cca6afc77e83594d940348b49c8174ae5d3a399",
+      "bytes": 2854
+    },
+    {
+      "path": "rust/crates/harness-core/src/wire_codec/command_tests.rs",
+      "git_blob": "8bd9be901c01adf753170f098492132169d494ff",
+      "sha256": "81a33dff7ae37c873f4e4b95846106f5726d96913ade95c5d36581ed9753e97f",
+      "bytes": 6387
+    },
+    {
+      "path": "rust/crates/harness-core/src/wire_codec/errors.rs",
+      "git_blob": "380fbe722945d6e7c1984330b4f73860e92ca13f",
+      "sha256": "ed6de09baef3764395a9eb1c49608654a3f92d66cc5eb29fb212394c27fa4170",
+      "bytes": 467
+    },
+    {
+      "path": "rust/crates/harness-core/src/wire_codec/event.rs",
+      "git_blob": "c4bdc7cd9c4ef76dbed59b9d05a4d4d37542e1e0",
+      "sha256": "67f54e34a68a44cae47547fb8f8681bb14ced4d1339315a683cec1f0b7f87383",
+      "bytes": 4013
+    },
+    {
+      "path": "rust/crates/harness-core/src/wire_codec/mod.rs",
+      "git_blob": "f078a909bb7e05ea61ca8320a508d2c4d5d22aa6",
+      "sha256": "76eb11711aa318b2d40487684f9f8d1e486159559d7092ad9a652273f39159e2",
+      "bytes": 1817
+    },
+    {
+      "path": "rust/crates/harness-core/src/wire_codec/protocol.rs",
+      "git_blob": "0a53f805ef8012018bb7d7e93e73e38cac1d4e2a",
+      "sha256": "46cf8482c9fc8e0d56db0074172e9a8e36c262bbb5614bf00e23c7b677d47061",
+      "bytes": 894
+    },
+    {
+      "path": "rust/crates/harness-core/src/wire_codec/protocol_tests.rs",
+      "git_blob": "e37a3ed29a1aa9534a8f72d955311d8f57d310a1",
+      "sha256": "35bf2916b9b25cd91535f2c0bf3ba5b05feed19e0b635a6e9f003ce58e54e1be",
+      "bytes": 1871
+    },
+    {
+      "path": "rust/crates/harness-core/src/wire_codec/tests.rs",
+      "git_blob": "5c7c797bd0472cfab2cb1912613320e9394552ef",
+      "sha256": "678360619d14b4b5269d48d23c65781a2b7bccaa1b766d117407f27ff4563925",
+      "bytes": 2225
+    }
+  ],
+  "files": [
+    {
+      "path": "rust/crates/harness-fuzz/fuzz_targets/protocol_identity.rs",
+      "git_blob": "92e76cbba4dd13e43bf550ead8b6dc5469cf23bc",
+      "sha256": "e5a3084e9c5edfb32ba7872aa62227e4ede1b121f34bbe781b0720b3964c0a4b",
+      "bytes": 3828,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/protocol_identity.rs"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/accepted",
+      "git_blob": "51c378af2816c40a642f86fc42e66c549c78eb97",
+      "sha256": "8805abfec65c5318418904dd127566b958bf293e0d5ffc15767d193d884075d2",
+      "bytes": 71,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/accepted"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/command-invalid-json",
+      "git_blob": "5794e8e0fc0254f51bf7c2c2d1f42d80f4ab4a96",
+      "sha256": "19ee7c8c96b0238fc2c9a0ad4c8f87beac7f3e99b3d1f621bf983b40a5edf711",
+      "bytes": 261,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/command-invalid-json"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/command-nested",
+      "git_blob": "714cab44647c09b9e62e7e15260303e2777cea6c",
+      "sha256": "8c90f2dc1de63e00ecb90a36abe1c837cae2b744811ccea3e2e82258b85d95ba",
+      "bytes": 786,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/command-nested"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/command-nested-unsorted",
+      "git_blob": "67f7362d0419ea325c14489abbc9854f2847fa09",
+      "sha256": "01852fe2271e12294cc6132555a6639c28e20bbae3d3dad551609ceb0cc8db76",
+      "bytes": 786,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/command-nested-unsorted"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/command-noncanonical",
+      "git_blob": "062b854b61a0fb452b23b2b31fa25b4e7536c0d6",
+      "sha256": "bb1f1652ca853071f864fd71f5d8b4969ab81f718a950f1dc42c9921818a2c43",
+      "bytes": 320,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/command-noncanonical"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/command-truncated",
+      "git_blob": "56e138337aaebe31c5d6c3e6560303b621bd78f0",
+      "sha256": "645d4483dcc65c247ebd684310f83f0789c21dbd745a52e7c6982eed0f3bb476",
+      "bytes": 318,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/command-truncated"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/command-valid",
+      "git_blob": "cb6b9386278c858bdc863591e9670ab6c2e85de3",
+      "sha256": "d0bbbb7814e341764c5970b911369adf394b7522346d5ba753e55c30ca175f60",
+      "bytes": 319,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/command-valid"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/event-missing-protocol",
+      "git_blob": "d4712d01044e13468bb2c9873a69535e9dbb4c58",
+      "sha256": "456392a4a54f8f392ac6f5cf1b9b32729431c5847592046e771c501bd23d10fe",
+      "bytes": 904,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/event-missing-protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/event-unknown-field",
+      "git_blob": "f1ec0a1702ef8e4fe4d8808ce9372cfd021f9c28",
+      "sha256": "3fc3b2c9011ff887f85fa8bbb9ec31590e1acfcbd7f362622a2f16d368ccdb49",
+      "bytes": 977,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/event-unknown-field"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/event-valid",
+      "git_blob": "8ccb72a6024d8baab2ea215378749f42ac4e00ba",
+      "sha256": "93e8c583853ac07d1afe6e15aa1599cc65581d6434e3d10fa23aeae2c3c481cf",
+      "bytes": 975,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/event-valid"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/event-wrong-protocol",
+      "git_blob": "c27825ec50f411c507620242d455a5bceab672d6",
+      "sha256": "64a10f03bf418337c734d30f794f99469d7f70d7e7f6aebb40813a36b59f574f",
+      "bytes": 975,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/event-wrong-protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/invalid-utf8",
+      "git_blob": "a0c4ce20cf623aec682154ca5da5816e28805c2c",
+      "sha256": "dc50e8a874bd4543b7b665a71220e4e8f2a7eadaea89b541e2830d3d7b32bd30",
+      "bytes": 5,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/invalid-utf8"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/missing-digest",
+      "git_blob": "491a842dc23fb9c978f9d48774a1ed1480533cfa",
+      "sha256": "2b72e79c117bd304e40852714c5db9ad8dec5ea8a25c135886a05e77c0dd06f4",
+      "bytes": 5,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/missing-digest"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/missing-protocol",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/missing-protocol"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/truncated",
+      "git_blob": "d44b72830f9541d2ec9b191c920ab692a16b0dc1",
+      "sha256": "ee165d6c86b2357d95929553309c7732281defc5f2296646e9086140059f3d08",
+      "bytes": 11,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/truncated"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/unknown-field",
+      "git_blob": "53adbf02897bcf37e4899533c672a55e36e54a74",
+      "sha256": "2033451554d16a8e6a7ae5c37fd003f14238dbc8bdf4624d5543350f74d04f2e",
+      "bytes": 73,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/unknown-field"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/wrong-digest",
+      "git_blob": "1d02daa4a6f0e47d3e9f66e1563b00c666efd934",
+      "sha256": "8d0092f2210f72f05cd1a7f0412cc1f21ca78282e295420d3986962912353e80",
+      "bytes": 71,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/wrong-digest"
+    },
+    {
+      "path": "rust/crates/harness-fuzz/corpus/protocol_identity/wrong-version",
+      "git_blob": "7d093de12f9634aeb322df4c094d960e3f33e204",
+      "sha256": "106894dc95385f8009ead531d530579905fa11df6bbed424bee5d51a70fde2f0",
+      "bytes": 71,
+      "preserved_path": "rust/crates/harness-fuzz/retired/aggregate_protocol/corpus/wrong-version"
+    }
+  ],
+  "reproduction": "Check out original_commit and use rust/crates/harness-fuzz/Cargo.toml with its original protocol_identity registration and required features. All preserved proof bytes receive zero deletion credit.",
+  "live_coverage": "The active target retains the surviving protocol or admission identity validation and protobuf round-trip controls. Historical aggregate canonical JSON coverage does not qualify another implementation."
+}

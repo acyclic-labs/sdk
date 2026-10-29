@@ -30,8 +30,6 @@ pub enum HistoryContentFuture<'a, T> {
     Native(crate::NativeFutureBundle<'a, T>),
 }
 
-impl<'a, T> HistoryContentFuture<'a, T> {}
-
 impl<T> Future for HistoryContentFuture<'_, T> {
     type Output = Result<T>;
 

@@ -28,16 +28,9 @@ macro_rules! ceiling {
         }
     };
 }
-ceiling!(event, Event, 376);
-ceiling!(event_payload, EventPayload, 152);
-ceiling!(effect_status, EffectStatus, 24);
-ceiling!(effect_state, EffectState, 712);
 ceiling!(extension_binding, registry::ExtensionBinding, 192);
 ceiling!(extension_admission, ExtensionAdmission, 88);
-ceiling!(command, Command, 336);
-ceiling!(action, Action, 88);
 ceiling!(scope, Scope, 160);
-ceiling!(recorded_scope, RecordedScope, 96);
 ceiling!(capabilities, crate::Capabilities, 24);
 ceiling!(extension_state_migration, ExtensionStateMigration, 408);
 ceiling!(extension_record, ExtensionRecord, 368);
