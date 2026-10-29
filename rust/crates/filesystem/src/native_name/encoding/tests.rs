@@ -1,11 +1,5 @@
 use super::*;
 
-#[test]
-fn encoding_rejects_a_component_before_allocating_beyond_its_bound() {
-    assert!(host_name_bytes(OsStr::new("ab"), FilesystemProfile::Portable, 1).is_err());
-    assert!(host_name_bytes(OsStr::new("ab"), FilesystemProfile::Windows, 3).is_err());
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 fn finite_name_budget() -> WorkBudget {
     WorkBudget {
@@ -25,12 +19,7 @@ fn native_name_zero_and_exact_budgets_preserve_real_allocations()
     let cancellation = CancellationToken::new();
     let mut zero = DemandWork::new(WorkBudget::default(), &cancellation);
     assert!(matches!(
-        host_name_bytes_measured(
-            OsStr::new("native"),
-            FilesystemProfile::Portable,
-            255,
-            &mut zero,
-        ),
+        host_name_bytes_measured(OsStr::new("native"), FilesystemProfile::Portable, &mut zero,),
         Err(DemandError::Work(_))
     ));
     assert_eq!(zero.work, WorkCounters::default());
@@ -38,7 +27,6 @@ fn native_name_zero_and_exact_budgets_preserve_real_allocations()
     let (_, bytes) = host_name_bytes_measured(
         OsStr::new("native"),
         FilesystemProfile::Portable,
-        255,
         &mut measured,
     )?;
     assert_eq!(bytes, b"native");
@@ -48,7 +36,6 @@ fn native_name_zero_and_exact_budgets_preserve_real_allocations()
     let (_, bytes) = host_name_bytes_measured(
         OsStr::new("native"),
         FilesystemProfile::Portable,
-        255,
         &mut exact,
     )?;
     assert_eq!(bytes, b"native");
@@ -77,7 +64,6 @@ fn native_name_uses_original_allocation_custody() -> Result<(), Box<dyn std::err
     let ((encoding, bytes), custody) = host_name_bytes_with_native_work(
         OsStr::new("native"),
         FilesystemProfile::Portable,
-        255,
         &original,
     )?;
     assert_eq!(encoding, NameEncoding::Utf8);
@@ -109,7 +95,6 @@ fn native_name_cancel_and_short_unit_budget_keep_actual_prefix() {
         host_name_bytes_measured(
             OsStr::new("native"),
             FilesystemProfile::Portable,
-            255,
             &mut cancelled,
         ),
         Err(DemandError::Cancelled)
@@ -119,12 +104,7 @@ fn native_name_cancel_and_short_unit_budget_keep_actual_prefix() {
     short.items_examined = 1;
     let mut measured = DemandWork::new(short, &CancellationToken::new());
     assert!(matches!(
-        host_name_bytes_measured(
-            OsStr::new("ab"),
-            FilesystemProfile::Windows,
-            255,
-            &mut measured,
-        ),
+        host_name_bytes_measured(OsStr::new("ab"), FilesystemProfile::Windows, &mut measured,),
         Err(DemandError::Work(_))
     ));
     assert_eq!(measured.work.items_examined, 1);
@@ -149,7 +129,6 @@ fn original_name_preserves_non_utf8_bytes_and_capacity() -> Result<(), Box<dyn s
     let ((encoding, bytes), allocation) = host_name_bytes_with_native_work(
         OsStr::from_bytes(&raw),
         FilesystemProfile::Posix,
-        255,
         &original,
     )?;
     assert_eq!(encoding, NameEncoding::PosixBytes);
@@ -161,7 +140,6 @@ fn original_name_preserves_non_utf8_bytes_and_capacity() -> Result<(), Box<dyn s
         host_name_bytes_with_native_work(
             OsStr::from_bytes(&raw),
             FilesystemProfile::Portable,
-            255,
             &original,
         ),
         Err(crate::NativeTreeMaterializationError::InvalidLayout)
@@ -186,12 +164,7 @@ fn original_utf16_quota_keeps_completed_prefix_and_retires_capacity()
     let baseline = original.live_allocation_bytes();
     let prior = original.receipt();
     assert!(matches!(
-        host_name_bytes_with_native_work(
-            OsStr::new("ab"),
-            FilesystemProfile::Windows,
-            255,
-            &original,
-        ),
+        host_name_bytes_with_native_work(OsStr::new("ab"), FilesystemProfile::Windows, &original,),
         Err(crate::NativeTreeMaterializationError::Work(_))
     ));
     let completed = original.receipt();
@@ -205,12 +178,7 @@ fn original_utf16_quota_keeps_completed_prefix_and_retires_capacity()
     cancellation.cancel();
     let before = original.receipt();
     assert!(matches!(
-        host_name_bytes_with_native_work(
-            OsStr::new("c"),
-            FilesystemProfile::Portable,
-            255,
-            &original,
-        ),
+        host_name_bytes_with_native_work(OsStr::new("c"), FilesystemProfile::Portable, &original,),
         Err(crate::NativeTreeMaterializationError::Cancelled)
     ));
     assert_eq!(original.receipt(), before);
@@ -232,7 +200,6 @@ fn original_wide_name_preserves_unpaired_surrogates() -> Result<(), Box<dyn std:
     let ((encoding, bytes), allocation) = host_wide_name_bytes_with_source_work(
         &[0xd800, 0x0061],
         FilesystemProfile::Windows,
-        255,
         &mut original.clone(),
     )?;
     assert_eq!(encoding, NameEncoding::WindowsUtf16Le);
@@ -245,7 +212,6 @@ fn original_wide_name_preserves_unpaired_surrogates() -> Result<(), Box<dyn std:
         host_wide_name_bytes_with_source_work(
             &[0xd800],
             FilesystemProfile::Portable,
-            255,
             &mut original.clone(),
         ),
         Err(DemandError::InvalidRequest)

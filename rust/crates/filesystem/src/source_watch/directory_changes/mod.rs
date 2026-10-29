@@ -72,6 +72,8 @@ pub(crate) struct NativeSourceWatch {
     shared: Arc<Shared>,
 }
 struct Shared {
+    hub: Arc<hub::Hub>,
+    hub_links: Mutex<hub::Links>,
     directory: AtomicPtr<std::ffi::c_void>,
     extended: AtomicBool,
     complete: AtomicBool,
@@ -145,6 +147,7 @@ fn buffer(bytes: u64) -> Box<[std::mem::MaybeUninit<u64>]> {
 }
 impl Drop for Shared {
     fn drop(&mut self) {
+        self.hub.detach(self);
         assert!(
             self.delivery.original.is_none() || !is_open(&self.directory),
             "native owner must retire before release"
@@ -178,7 +181,9 @@ impl Drop for ReadsGuard<'_> {
     fn drop(&mut self) {
         drop(self.reads.take());
         // After the release: a hub that found the reads held set this first.
-        if self.shared.missed.swap(false, Ordering::AcqRel) && hub::wake(self.shared).is_err() {
+        if self.shared.missed.swap(false, Ordering::AcqRel)
+            && self.shared.hub.wake(self.shared).is_err()
+        {
             self.shared.delivery.abandon();
         }
     }
@@ -202,6 +207,13 @@ impl Shared {
             reads: Some(reads),
         })
     }
+    /// Publishes actual native retirement independently from packet arrival.
+    fn complete_stop(&self) {
+        let arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
+        self.stop_completed.store(true, Ordering::Release);
+        drop(arrivals);
+        self.arrived.notify_all();
+    }
     /// The hub collected a packet for this watch.
     fn collected(&self) {
         drop(self.arrivals.lock().unwrap_or_else(PoisonError::into_inner));
@@ -210,21 +222,32 @@ impl Shared {
     /// Waits until the hub has collected the pending read's completion.
     /// The hub itself cannot wait for its own collection: it answers false,
     /// and the read's packet resumes whatever waited.
-    fn await_completion(&self, reads: &Reads) -> bool {
+    fn await_completion(&self, reads: &Reads) -> Result<bool, DemandError> {
+        self.hub.check()?;
         if reads.collected() {
-            return true;
+            return Ok(true);
         }
         if hub::serving() {
-            return false;
+            return Ok(false);
         }
         let mut arrivals = self.arrivals.lock().unwrap_or_else(PoisonError::into_inner);
         while !reads.collected() {
+            self.hub.check()?;
             arrivals = self
                 .arrived
                 .wait(arrivals)
                 .unwrap_or_else(PoisonError::into_inner);
         }
-        true
+        self.hub.check()?;
+        Ok(true)
+    }
+    fn service_failed(&self, code: i32) {
+        // Wake blocked native observers before calling a potentially reentrant sink.
+        drop(self.arrivals.lock().unwrap_or_else(PoisonError::into_inner));
+        self.arrived.notify_all();
+        let mut work = self.delivery.callback_work();
+        self.delivery
+            .failed_with_work(io::Error::from_raw_os_error(code).into(), &mut work);
     }
     fn note_failure(&self, error: DemandError) {
         if let Some(birth) = &self.delivery.original {

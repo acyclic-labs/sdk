@@ -29,7 +29,7 @@ pub struct OpenTurn {
     /// Journal of this agent's turns, on its private volume.
     pub journal: Arc<dyn ExecutionJournal>,
     /// Model and tool steps allowed in one turn.
-    pub max_steps: u32,
+    pub max_steps: Option<u32>,
     /// Signing custody of the journal's authority; the journal holds only a
     /// weak admission port, so the custody lives exactly as long as the turn.
     pub custody: Option<crate::core::RuntimeAuthority>,
@@ -409,19 +409,6 @@ fn host_error(error: crate::Error) -> Error {
 }
 
 /// The children `effects` spawn that `agent` does not already have open.
-fn reserved(agent: &AgentState, effects: Vec<super::TurnEffect>) -> usize {
-    effects
-        .into_iter()
-        .filter_map(|effect| match effect {
-            super::TurnEffect::Spawn { intent, .. } => {
-                super::TurnEffect::child(&agent.path, &intent).ok()
-            }
-            _ => None,
-        })
-        .filter(|child| !agent.open_children.contains(child))
-        .collect::<std::collections::BTreeSet<_>>()
-        .len()
-}
 
 /// Stages `text` as `turn`'s whole output.
 async fn stage_text(open: &OpenTurn, turn: OperationId, text: String) -> Result<FileRef, Error> {
@@ -462,7 +449,6 @@ async fn settle_selection(
         targets: None,
     };
     Ok(TurnStep {
-        reserved_children: 0,
         checkpoint: None,
         outs: settled(&entry, open)?,
         wait: Wait::Input,
@@ -563,7 +549,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     targets: announced(&open),
                 };
                 return Ok(TurnStep {
-                    reserved_children: 0,
                     checkpoint: None,
                     outs: settled(&entry, &open)?,
                     wait: Wait::Input,
@@ -571,7 +556,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                 });
             }
             let failed = |message: &str| TurnStep {
-                reserved_children: 0,
                 checkpoint: None,
                 outs: Vec::new(),
                 wait: Wait::Done(AgentOutcome::Failed {
@@ -630,7 +614,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     // stays open to its parent's messages until archived, and a
                     // parent observes its answer through `wait`.
                     TurnStep {
-                        reserved_children: 0,
                         checkpoint: None,
                         outs,
                         wait: Wait::Input,
@@ -662,7 +645,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             segment,
                             roster: open.roster.clone(),
                         })?),
-                        reserved_children: 0,
                         outs,
                         wait: Wait::Continue,
                         drops: None,
@@ -677,12 +659,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                     // A `wait` call dispatches once its children settle: the
                     // turn commits that wait, holding no delivery, and their
                     // settlement resumes it in this same segment.
-                    let reserved_children = match &open.effects {
-                        Some(effects) => {
-                            reserved(agent, effects.recorded().await.map_err(host_error)?)
-                        }
-                        None => 0,
-                    };
                     return Ok(TurnStep {
                         checkpoint: Some(encode(&Checkpoint {
                             inbox,
@@ -690,7 +666,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             segment,
                             roster: open.roster.clone(),
                         })?),
-                        reserved_children,
                         outs: Vec::new(),
                         wait: Wait::Children { children, any },
                         drops: None,
@@ -715,13 +690,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                         }],
                         _ => Vec::new(),
                     };
-                    // The paused turn's recorded spawns keep their slots.
-                    let reserved_children = match &open.effects {
-                        Some(effects) => {
-                            reserved(agent, effects.recorded().await.map_err(host_error)?)
-                        }
-                        None => 0,
-                    };
                     return Ok(TurnStep {
                         checkpoint: Some(encode(&Checkpoint {
                             inbox,
@@ -729,7 +697,6 @@ impl<H: TurnHost> TurnDriver for ExecutorDriver<H> {
                             segment,
                             roster: open.roster.clone(),
                         })?),
-                        reserved_children,
                         outs,
                         wait: Wait::Approval(id),
                         drops: None,

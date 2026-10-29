@@ -1,7 +1,6 @@
 import { ActorActivation } from "./activation.js";
 export { ActorActivation } from "./activation.js";
 import { ActorReference } from "@acyclic-labs/auth/addressing";
-import { WEB_SOCKET_TAG_COUNT, WEB_SOCKET_TAG_CHARACTERS, WEB_SOCKET_ATTACHMENT_BYTES, WEB_SOCKET_AUTO_RESPONSE_CHARACTERS } from "./generated/guest.js";
 import type { AlarmInfo, WebSocketAutoResponse } from "./generated/guest.js";
 
 /** Host adapter admitted for one actor. Serialized addresses grant no authority. */
@@ -30,15 +29,12 @@ export class DurableObjectState {
   deleteAll(): Promise<void> { return this.#host.deleteAll(this.#address()); }
   acceptWebSocket(socket: WebSocket, tags: readonly string[] = []): void {
     tags = [...tags];
-    validateTags(tags);
     this.#host.acceptWebSocket(this.#address(), socket, tags);
   }
   getWebSockets(tag?: string): WebSocket[] {
-    if (tag !== undefined) validateTags([tag]);
     return this.#host.getWebSockets(this.#address(), tag);
   }
   serializeAttachment(socket: WebSocket, bytes: Uint8Array): void {
-    if (bytes.byteLength > WEB_SOCKET_ATTACHMENT_BYTES) throw new RangeError("WebSocket attachment exceeds 2048 bytes");
     this.#host.serializeAttachment(this.#address(), socket, new Uint8Array(bytes));
   }
   deserializeAttachment(socket: WebSocket): Uint8Array | null {
@@ -46,18 +42,11 @@ export class DurableObjectState {
     return bytes === null ? null : new Uint8Array(bytes);
   }
   setWebSocketAutoResponse(pair: WebSocketAutoResponse | null): void {
-    if (pair !== null && ([...pair.request].length > WEB_SOCKET_AUTO_RESPONSE_CHARACTERS || [...pair.response].length > WEB_SOCKET_AUTO_RESPONSE_CHARACTERS)) {
-      throw new RangeError("WebSocket auto-response exceeds 2048 characters");
-    }
     this.#host.setWebSocketAutoResponse(this.#address(), pair === null ? null : { ...pair });
   }
   getWebSocketAutoResponse(): WebSocketAutoResponse | null { return this.#host.getWebSocketAutoResponse(this.#address()); }
   getWebSocketAutoResponseTimestamp(socket: WebSocket): bigint | null { return this.#host.getWebSocketAutoResponseTimestamp(this.#address(), socket); }
   getTags(socket: WebSocket): string[] { return this.#host.getTags(this.#address(), socket); }
-}
-
-function validateTags(tags: readonly string[]): void {
-  if (tags.length > WEB_SOCKET_TAG_COUNT || tags.some(tag => [...tag].length > WEB_SOCKET_TAG_CHARACTERS)) throw new RangeError("WebSocket tags exceed 10 tags or 256 characters");
 }
 
 /** Validate host metadata before delivering an alarm to application code. */

@@ -78,12 +78,7 @@ pub(super) async fn resolve_path_with_accounting<S: AsyncObjectStore>(
                         return Err(PathLookupError::KindMismatch.into());
                     }
                     let copied = if observe {
-                        let (name, guard) = copy_name(
-                            component,
-                            limits.maximum_name_bytes,
-                            accounting,
-                            data_custody,
-                        )?;
+                        let (name, guard) = copy_name(component, accounting, data_custody)?;
                         Some(crate::kernel::file_read::ReadOwned {
                             value: name,
                             custody: guard,

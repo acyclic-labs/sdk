@@ -134,7 +134,7 @@ impl Preset {
     #[must_use]
     pub fn execution_limits(&self, mut limits: Limits) -> Limits {
         if let Some(steps) = self.max_steps {
-            limits.model_steps = steps;
+            limits.model_steps = Some(steps);
         }
         limits
     }

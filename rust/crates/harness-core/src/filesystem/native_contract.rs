@@ -308,7 +308,7 @@ impl NativeProcessRequest {
         }
         let value = (NATIVE_PROCESS_EFFECT_KIND, task, command, self);
         let Some(io) = io else {
-            return crate::executor::json::canonical_json_digest(&value, u64::MAX, &mut None);
+            return crate::executor::json::canonical_json_digest(&value, None, &mut None);
         };
         let guard;
         let encoded = io.encode(&value, io.remaining()?.bytes_encoded, true)?;

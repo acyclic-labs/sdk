@@ -4,12 +4,11 @@ use super::*;
 pub(super) async fn expand<O: AsyncObjectStore>(
     endpoints: &[super::super::namespace_view::NamespaceView<'_, O>; 2],
     changes: &GenerationDiff,
-    maximum_entries: u32,
+    maximum_entries: Option<u32>,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
 ) -> Result<(Vec<ChangedPath>, KernelOwnedAllocation), WorkspaceError> {
-    let seeds =
-        resolve_changed_paths(endpoints, changes, u32::MAX, accounting, cancellation).await?;
+    let seeds = resolve_changed_paths(endpoints, changes, None, accounting, cancellation).await?;
     let mut paths = (Vec::new(), accounting.claim_owned(0, 0)?);
     for (index, view) in endpoints.iter().enumerate() {
         append_endpoint(
@@ -31,7 +30,7 @@ pub(super) async fn expand<O: AsyncObjectStore>(
     reverse_drop(seeds, bytes, accounting)?;
     paths::sort_and_coalesce(&mut paths, accounting)?;
     let paths = retain_changed_paths(paths, accounting)?;
-    if paths.0.len() > maximum_entries as usize {
+    if maximum_entries.is_some_and(|maximum| paths.0.len() > maximum as usize) {
         return Err(WorkspaceError::ChangedPathLimit);
     }
     Ok(paths)
@@ -68,7 +67,7 @@ async fn append_endpoint<O: AsyncObjectStore>(
         // Seeds are path-sorted. A selected ancestor owns every nested seed's
         // expansion, so overlapping bindings cannot repeatedly walk a subtree.
         let descendants = view
-            .descendants(&seed.path, u32::MAX, accounting, cancellation)
+            .descendants(&seed.path, None, accounting, cancellation)
             .await?;
         if !descendants.0.complete {
             return Err(WorkspaceError::ChangedPathLimit);
