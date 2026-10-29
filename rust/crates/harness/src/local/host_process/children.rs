@@ -272,9 +272,9 @@ impl NativeChildren {
             for line in running.events.push(bytes) {
                 let Ok(line) = line else {
                     // A dropped answer must replace an earlier preview. Keep
-                    // draining through the same bounded framer and process
+                    // draining through the same framer and process
                     // owner; later complete answers remain usable.
-                    running.answer = "[Native output omitted: an event exceeded the 65,536-byte limit or contained invalid UTF-8.]".into();
+                    running.answer = "[Native output omitted: an event contained invalid UTF-8.]".into();
                     // The saved log marks where the event was dropped.
                     running.process.record_event(EVENT_OMITTED)?;
                     continue;
