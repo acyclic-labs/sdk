@@ -15,6 +15,12 @@ use serde::Serialize;
 use std::{cell::RefCell, rc::Rc, task::Waker};
 use wasm_bindgen::prelude::*;
 
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = performance, js_name = now)]
+    fn monotonic_now() -> f64;
+}
+
 struct State {
     explorer: Explorer,
     driver: Driver<dyn StreamProvider>,
@@ -27,7 +33,7 @@ struct State {
 impl State {
     fn now(&self) -> u64 {
         // Whole milliseconds since the explorer opened.
-        (js_sys::Date::now() - self.origin).max(0.0) as u64
+        (monotonic_now() - self.origin).max(0.0) as u64
     }
 
     fn wake(&mut self) {
@@ -129,7 +135,7 @@ impl WasmExplorer {
             driver,
             waker: None,
             changed,
-            origin: js_sys::Date::now(),
+            origin: monotonic_now(),
             closed: false,
         }));
         let task = Rc::downgrade(&state);
