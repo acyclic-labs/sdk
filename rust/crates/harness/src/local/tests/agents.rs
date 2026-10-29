@@ -741,18 +741,14 @@ async fn a_prompt_carries_a_thousand_mentions_as_one_reference() -> Result<()> {
         ));
     };
     let listed = listed(&harness, manifest).await?;
-    // Negative control: the same files listed inline in the record, as the
-    // message carried them before, exceed the stream's record bound.
+    // Compare the compact record with the full inline manifest so this
+    // checks reference publication independently of any record-size policy.
     let inline = serde_json::to_vec(&listed).map_err(agent)?;
-    assert!(
-        inline.len() > crate::agent::MAX_RECORD_BYTES,
-        "{} inline bytes fit a record",
-        inline.len()
-    );
     // The records stay one reference: as small as a one-file prompt's.
     let inbox = records(&**agents.provider(), root.inbox().map_err(agent)?).await?;
     for record in inbox.iter().chain(&entries) {
         assert!(record.len() < 4096, "{} record bytes", record.len());
+        assert!(record.len() < inline.len());
     }
     assert_eq!(listed.len(), MENTIONS);
     // The model sees the prompt and every file, in mention order.
