@@ -57,6 +57,8 @@ pub use process_tree::{
     ProcessCustody, ProcessCustodyLease, ProcessDrain, ProcessInput, ProcessOutput,
     ProcessReadiness, ProcessTree, ProcessTreeIo, ProcessTreeStorage, ProcessWake,
 };
+#[cfg(windows)]
+pub use process_tree::{ProcessPipeReader, ProcessPipeWriter};
 
 mod file;
 #[cfg(all(target_os = "linux", not(any(test, feature = "test-support"))))]

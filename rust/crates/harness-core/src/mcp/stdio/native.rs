@@ -109,9 +109,17 @@ impl StdioMcpTransport {
             let output = tree
                 .take_stdout()
                 .ok_or_else(|| Error::Invalid("MCP stdout pipe missing".into()))?;
+            #[cfg(unix)]
             let input = tokio::process::ChildStdin::from_std(input).map_err(Error::process_io)?;
+            #[cfg(windows)]
+            let input = acyclic_native_runtime::ProcessPipeWriter::from_stdin(input)
+                .map_err(Error::process_io)?;
+            #[cfg(unix)]
             let output =
                 tokio::process::ChildStdout::from_std(output).map_err(Error::process_io)?;
+            #[cfg(windows)]
+            let output = acyclic_native_runtime::ProcessPipeReader::from_stdout(output)
+                .map_err(Error::process_io)?;
             Self::bind(output, input, maximum_bytes, timeout, Some(process)).await
         })
         .await
