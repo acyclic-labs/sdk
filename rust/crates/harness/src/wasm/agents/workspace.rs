@@ -140,7 +140,7 @@ mod deadline {
             context,
             authority: authority.clone(),
         };
-        if budget.remaining().is_zero() || !budget.current() {
+        if !budget.current() {
             return Err(ProviderError::Cancelled);
         }
         Ok(budget)
@@ -153,8 +153,8 @@ mod deadline {
     }
 
     impl Deadline for Budget {
-        fn remaining(&self) -> Duration {
-            self.context.remaining().unwrap_or(Duration::ZERO)
+        fn remaining(&self) -> Option<Duration> {
+            Some(self.context.remaining().unwrap_or(Duration::ZERO))
         }
 
         async fn run<F>(&self, future: F) -> Option<F::Output>
@@ -162,11 +162,11 @@ mod deadline {
             F: Future + ProviderTask,
             F::Output: ProviderTask,
         {
-            if self.remaining().is_zero() || !self.current() {
+            if !self.current() {
                 return None;
             }
             let result = self.context.run(future).await.ok()?;
-            (!self.remaining().is_zero() && self.current()).then_some(result)
+            self.current().then_some(result)
         }
     }
 }
