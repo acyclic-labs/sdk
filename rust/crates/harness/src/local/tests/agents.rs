@@ -909,6 +909,12 @@ async fn parent_and_child_writes_retain_their_own_project_volume() -> Result<()>
     use crate::model::{ModelContent, ModelContentPart, ModelEvent, ToolCall, ToolResultContent};
     use crate::test_support::{ScriptedEvent, ScriptedTurn};
     use acyclic_harness_client::{AgentCommand, AgentReply, ReadTarget};
+    let _subscriber = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_test_writer()
+            .finish(),
+    );
 
     let write = |text: &str| {
         ScriptedTurn::Events(vec![
