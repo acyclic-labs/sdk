@@ -10,8 +10,10 @@ pub(crate) fn expand(contract: ItemTrait) -> syn::Result<TokenStream> {
             "provider contract must not be generic",
         ));
     }
-    let mut explicit = contract.clone();
-    explicit.ident = format_ident!("Explicit{}", contract.ident);
+    let original = quote!(#contract);
+    let required = format_ident!("Explicit{}", contract.ident);
+    let mut explicit = contract;
+    let name = std::mem::replace(&mut explicit.ident, required);
     let mut forwarding = Vec::new();
     for item in &mut explicit.items {
         let TraitItem::Fn(method) = item else {
@@ -51,7 +53,7 @@ pub(crate) fn expand(contract: ItemTrait) -> syn::Result<TokenStream> {
     // rustc expands cfg_attr before invoking this attribute macro. Preserve
     // async_trait in either form so trait and forwarding impl have identical
     // erased-future lifetimes on native and WASM targets.
-    let attrs: Vec<_> = contract
+    let attrs: Vec<_> = explicit
         .attrs
         .iter()
         .filter(|attr| {
@@ -63,10 +65,9 @@ pub(crate) fn expand(contract: ItemTrait) -> syn::Result<TokenStream> {
                     .is_some_and(|part| part.ident == "async_trait")
         })
         .collect();
-    let name = &contract.ident;
     let required = &explicit.ident;
     Ok(quote! {
-        #contract
+        #original
         #explicit
         #(#attrs)*
         impl<__Provider: #required> #name for __Provider {
