@@ -74,6 +74,7 @@ export class ActorActivation<State> {
   #failed = false;
   #fenced = false;
   #gate: Promise<void> = Promise.resolve();
+  readonly #deliveries = new Set<Promise<unknown>>();
   constructor(initialize: () => State | Promise<State>) { this.#initialize = initialize; }
   blockConcurrencyWhile<Result>(callback: (state: State) => Result | Promise<Result>): Promise<Result> {
     const operation = this.#gate.then(async () => {
@@ -98,7 +99,26 @@ export class ActorActivation<State> {
     const state = await this.blockConcurrencyWhile(state => state);
     // Ownership may be revoked after admission resolves but before this continuation.
     if (this.#fenced) throw new Error("activation fenced; host must discard heap");
-    return handler(state);
+    const delivery = (async () => {
+      try {
+        const result = await handler(state);
+        if (this.#fenced) throw new Error("activation fenced; host must discard heap");
+        return result;
+      } catch (error) { this.fence(); throw error; }
+    })();
+    this.#deliveries.add(delivery);
+    try { return await delivery; }
+    finally { this.#deliveries.delete(delivery); }
+  }
+  /** Host capture waits for admitted handlers and gates new deliveries until complete.
+   * Call outside a handler: a handler cannot wait for its own completion.
+   */
+  quiesce<Result>(capture: (state: State) => Result | Promise<Result>): Promise<Result> {
+    return this.blockConcurrencyWhile(async state => {
+      await Promise.all(this.#deliveries);
+      if (this.#fenced) throw new Error("activation fenced; host must discard heap");
+      return capture(state);
+    });
   }
   /** Host cancellation/ownership loss permanently invalidates this heap. */
   fence(): void { this.#fenced = true; }
