@@ -4,7 +4,8 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
     }
 
     pub(super) fn captures_pending(&self) -> bool {
-        self.capture_gate
+        self.capture_signal
+            .gate
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .producers
@@ -501,14 +502,12 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
                 ),
             folded_directories: folded_cache::FoldedDirectoryCache::new(),
             cancellation: CancellationToken::new(),
-            capture_gate: Arc::new(StdMutex::new(CaptureSourceGate::default())),
-            capture_quiesced: Arc::new(std::sync::Condvar::new()),
+            capture_signal: Arc::new(CaptureSourceSignal::default()),
             runtime,
             native_original: None,
             native_io_original: None,
             native_callback_guard: None,
             cleanup_credit: StdMutex::new(None),
-            _namespace_allocation: None,
             _source_allocation: None,
         })
     }
@@ -523,7 +522,8 @@ impl<A: 'static, O: 'static> CheckoutMountSource<A, O> {
 
     /// Cancels future and in-flight canonical operations owned by this mount.
     pub fn cancel(&self) {
-        self.capture_gate
+        self.capture_signal
+            .gate
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .cancelled = true;
