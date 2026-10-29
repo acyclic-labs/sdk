@@ -124,7 +124,11 @@ async fn a_foreign_actor_cannot_run_the_agents_committed_input() -> Result {
         },
         now_unix_ms: 0,
         record: Some(record),
-        subscriptions: SubscriptionCuts::new(anchor, state.subscriptions().clone()),
+        subscriptions: SubscriptionCuts::new(
+            snapshot.path().clone(),
+            anchor,
+            state.subscriptions().clone(),
+        ),
     };
     let mut foreign = delivery.clone();
     foreign.actor = ActorReference::new(b"account", b"agents", id(9).as_str().as_bytes())?;

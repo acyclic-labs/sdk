@@ -4,10 +4,11 @@ use crate::store::history::HistoryIo;
 use crate::wire_codec::CodecQuota;
 use crate::{
     AgentId, Capabilities, Error, Result,
-    conversation::{
-        ConversationMessage, FileRef, ModelContextSelection, VolumeOperation, VolumeOwner,
-        is_internal_path,
-    },
+    conversation::{FileRef, VolumeOperation, VolumeOwner, is_internal_path},
+};
+#[cfg(test)]
+use crate::{
+    conversation::{ConversationMessage, ModelContextSelection},
     interaction::{InteractionResolution, InteractionTicket},
 };
 use serde::{Deserialize, Serialize};
