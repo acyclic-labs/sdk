@@ -1,5 +1,5 @@
 import { copyVerifiedArchive } from "../../../../../scripts/archive-utils.mjs";
-import { spawnSync } from "node:child_process";
+import { captureCommand } from "../../../../../scripts/process-capture.mjs";
 import { chmodSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,9 +16,9 @@ const marker = `PASS Elixir Rust message/enum/service descriptors, ${methodCount
 const provenanceMarker = "PASS Elixir exact compiled SDK module inventory, source paths and loaded BEAM paths";
 
 // Injection supports offline runner controls; the CLI uses admitted native tools.
-export async function qualify(args, { command = spawnSync, toolchain = pinned,
+export async function qualify(args, { command = captureCommand, toolchain = pinned,
   runtimePin = producerPins.runtime["linux-x64"], lockBytes = read("../templates/qualification/mix.lock"), onProgress = () => {} } = {}) {
-  if (command === spawnSync && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("installed Elixir qualification requires Linux x86_64");
+  if (command === captureCommand && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("installed Elixir qualification requires Linux x86_64");
   const inputs = Object.fromEntries(["package", "receipt", "authority", "runtime-root", "runtime-inventory", "tool-home", "tool-inventory", "cache"].map(name => [name, realpathSync(args[name])]));
   const output = qualificationOutput(args.output, [...Object.values(inputs), realpathSync(join(directory, "../../.."))]);
   onProgress("Verify archive and producer evidence");
@@ -46,7 +46,7 @@ export async function qualify(args, { command = spawnSync, toolchain = pinned,
     HEX_OFFLINE: "1",
     PATH: [elixirBin, otpBin, "/usr/bin", "/bin"].join(":"),
     ERL_FLAGS: "+S 1:1", ELIXIR_ERL_OPTIONS: "+fnu", LC_ALL: "C.UTF-8" });
-  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 20 * 60_000, maxBuffer: 16 * 1024 * 1024 });
+  const execute = (exe, argv, cwd) => command(exe, argv, { cwd, env, encoding: "utf8", timeout: 20 * 60_000 });
   mkdirSync(output);
   const put = (name, bytes) => { const target = join(output, name); mkdirSync(dirname(target), { recursive: true }); writeFileSync(target, bytes, { flag: "wx" }); return target; };
   for (const [name, bytes] of admitted.payload) put("sdk/" + name, bytes);
