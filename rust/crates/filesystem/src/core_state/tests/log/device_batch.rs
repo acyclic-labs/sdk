@@ -36,9 +36,6 @@ async fn checkpoint_batches_one_device_drain_after_all_record_writes()
             )?;
         }
         log.commit(&namespace, change)?;
-        // A checkpoint of acknowledged records starts after the commit's WAL
-        // barrier. Checkpoint still drains an unacknowledged WAL before leaves.
-        log.flush_physical(&namespace)?;
         let wal = namespace.record(CORE_LOG_FAMILY, &[0; 16])?.current;
         assert!(std::fs::metadata(&wal)?.len() > 0);
         let (schedule, mut events) = Schedule::new();
