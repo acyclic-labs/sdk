@@ -8,8 +8,46 @@ use tokio::sync::mpsc;
 /// Owned pipe buffers, moved from the pump without copying their payload.
 /// Each channel contains at most one 64 KiB read.
 pub struct ProcessChunk {
+    /// Exact newly read standard-output bytes.
     pub stdout: Vec<u8>,
+    /// Exact newly read standard-error bytes.
     pub stderr: Vec<u8>,
+}
+
+// Declaration order also governs failed submission and unwinding: physical
+// tree cleanup precedes release of the handler's original funded custody.
+struct Capture<H> {
+    tree: ProcessTree,
+    pump: pump::Pump<'static>,
+    handler: H,
+}
+
+impl<H: CaptureHandler> Capture<H> {
+    fn check(mut self) -> (io::Result<()>, Self) {
+        let checked = (|| {
+            for wake in self.handler.wakes() {
+                wake.consume()?;
+            }
+            self.handler.check()?;
+            self.pump.check_deadline()
+        })();
+        (checked, self)
+    }
+
+    fn turn(mut self) -> (pump::Turn, Self, [Vec<u8>; 2]) {
+        let turn = pump::handled_turn(&mut self.pump, &mut self.tree, &mut self.handler);
+        let bytes = self.pump.take_output();
+        (turn, self, bytes)
+    }
+
+    fn finish(mut self, result: io::Result<()>) -> CaptureOutcome<H> {
+        let result = self.pump.finish(&mut self.tree, result, None);
+        drop(self.tree);
+        CaptureOutcome {
+            handler: self.handler,
+            result,
+        }
+    }
 }
 
 /// The output receiver and original cleanup owner of one process tree.
@@ -69,7 +107,7 @@ impl ProcessTree {
         handler: H,
         sender: mpsc::Sender<ProcessChunk>,
     ) -> io::Result<CaptureOutcome<H>> {
-        let (mut tree, mut pump, mut handler) = match self
+        let (tree, mut pump, handler) = match self
             .start_capture(schedule, max_bytes, input, handler)
             .await?
         {
@@ -77,6 +115,11 @@ impl ProcessTree {
             Err(outcome) => return Ok(outcome),
         };
         pump.stream_output();
+        let mut capture = Capture {
+            tree,
+            pump,
+            handler,
+        };
         let result = 'capture: loop {
             // Reserve before touching either pipe. The other wait contains
             // only control/deadline sources, so a full pipe cannot spin it.
@@ -86,7 +129,7 @@ impl ProcessTree {
                     Err(mpsc::error::TrySendError::Closed(_)) => break Err(receiver_lost()),
                     Err(mpsc::error::TrySendError::Full(_)) => {}
                 }
-                let control = match pump.arm_control(handler.wakes()) {
+                let control = match capture.pump.arm_control(capture.handler.wakes()) {
                     Ok(control) => control,
                     Err(error) => break 'capture Err(error),
                 };
@@ -94,21 +137,9 @@ impl ProcessTree {
                     Some(Ok(permit)) => break Ok(permit),
                     Some(Err(_)) => break Err(receiver_lost()),
                     None => {
-                        let (checked, returned) = crate::run_blocking_io(
-                            move || {
-                                let checked = (|| {
-                                    for wake in handler.wakes() {
-                                        wake.consume()?;
-                                    }
-                                    handler.check()?;
-                                    pump.check_deadline()
-                                })();
-                                (checked, (tree, pump, handler))
-                            },
-                            None,
-                        )?
-                        .await?;
-                        (tree, pump, handler) = returned;
+                        let (checked, returned) =
+                            crate::run_blocking_io(move || capture.check(), None)?.await?;
+                        capture = returned;
                         if let Err(error) = checked {
                             break Err(error);
                         }
@@ -119,16 +150,9 @@ impl ProcessTree {
                 Ok(permit) => permit,
                 Err(error) => break Err(error),
             };
-            let (turn, returned, bytes) = crate::run_blocking_io(
-                move || {
-                    let turn = pump::handled_turn(&mut pump, &mut tree, &mut handler);
-                    let bytes = pump.take_output();
-                    (turn, (tree, pump, handler), bytes)
-                },
-                None,
-            )?
-            .await?;
-            (tree, pump, handler) = returned;
+            let (turn, returned, bytes) =
+                crate::run_blocking_io(move || capture.turn(), None)?.await?;
+            capture = returned;
             let [stdout, stderr] = bytes;
             let yielded = !stdout.is_empty() || !stderr.is_empty();
             if yielded {
@@ -140,7 +164,10 @@ impl ProcessTree {
                 pump::Turn::Done(result) => break result,
                 pump::Turn::Wait if yielded => {}
                 pump::Turn::Wait => {
-                    let wait = match pump.arm_with_wake(&mut tree, Some(handler.wakes())) {
+                    let wait = match capture
+                        .pump
+                        .arm_with_wake(&mut capture.tree, Some(capture.handler.wakes()))
+                    {
                         Ok(wait) => wait,
                         Err(error) => break Err(error),
                     };
@@ -150,15 +177,7 @@ impl ProcessTree {
                 }
             }
         };
-        crate::run_blocking_io(
-            move || {
-                let result = pump.finish(&mut tree, result, None);
-                drop(tree);
-                CaptureOutcome { handler, result }
-            },
-            None,
-        )?
-        .await
+        crate::run_blocking_io(move || capture.finish(result), None)?.await
     }
 }
 
