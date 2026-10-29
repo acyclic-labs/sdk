@@ -1,16 +1,21 @@
 /// A canonical conditional decision, before its visibility transition. The
-/// caller retains the state write guard through any external durable boundary.
+/// caller retains publication ownership through any external durable boundary.
 enum Decision<T, F> {
     Returned(T),
     Accepted { bytes: usize, install: F },
 }
 
 impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
-    fn install(self, core: &MemoryStream, state: &mut State) -> Result<T, StreamError> {
+    fn install(
+        self,
+        core: &MemoryStream,
+        state: &mut State,
+        durable: bool,
+    ) -> Result<T, StreamError> {
         match self {
             Self::Returned(result) => Ok(result),
             Self::Accepted { bytes, install } => {
-                let result = core.publish(bytes, || install(state, false))?;
+                let result = core.publish(bytes, || install(state, durable))?;
                 core.applied(state);
                 Ok(result)
             }
@@ -20,18 +25,35 @@ impl<T, F: FnOnce(&mut State, bool) -> Result<T, StreamError>> Decision<T, F> {
     async fn durable(
         self,
         core: &MemoryStream,
-        state: &mut State,
+        mut state: impl std::ops::DerefMut<Target = State>,
         persist: impl Future<Output = Result<(), StreamError>>,
     ) -> Result<T, StreamError> {
         match self {
             Self::Returned(result) => Ok(result),
             Self::Accepted { bytes, install } => {
+                let decision = Self::Accepted { bytes, install };
+                let mut persist = std::pin::pin!(persist);
+                // An immediate acknowledgement needs no second state acquisition.
+                if let std::task::Poll::Ready(result) = futures::poll!(persist.as_mut()) {
+                    result?;
+                    return decision.install(core, &mut state, true);
+                }
+                // The publication owner excludes competing state transitions.
+                // Readers can keep using the last accepted state during I/O.
+                #[cfg(not(loom))]
+                drop(state);
+                #[cfg(loom)]
+                let state = crate::verification::fault_is(
+                    crate::verification::Fault::HoldStateDuringDurability,
+                )
+                .then_some(state);
                 // Failure or cancellation drops the uninstalled plan. There is
                 // no visible mutation or notification before this succeeds.
                 persist.await?;
-                let result = core.publish(bytes, || install(state, true))?;
-                core.applied(state);
-                Ok(result)
+                #[cfg(loom)]
+                drop(state);
+                let mut state = core.state.write().await;
+                decision.install(core, &mut state, true)
             }
         }
     }
@@ -68,11 +90,16 @@ impl MemoryStream {
     ) -> Result<crate::replicated::Execution, StreamError> {
         use crate::replicated::Execution;
         use crate::{WriteOutcome, WriteRequest};
+        let _publication = self.publication.lock().await;
+        #[cfg(loom)]
+        let _publication =
+            (!crate::verification::fault_is(crate::verification::Fault::ReleasePendingPublication))
+                .then_some(_publication);
         let mut state = self.state.write().await;
         match &canonical.command {
             WriteRequest::Append(request) => self
                 .plan_append_locked(&mut state, request)?
-                .durable(self, &mut state, persist)
+                .durable(self, state, persist)
                 .await
                 .map(|(result, allocation)| Execution {
                     outcome: WriteOutcome::Append(result),
@@ -80,7 +107,7 @@ impl MemoryStream {
                 }),
             WriteRequest::Fork(request) => self
                 .plan_fork_locked(&mut state, request)?
-                .durable(self, &mut state, persist)
+                .durable(self, state, persist)
                 .await
                 .map(|result| Execution {
                     outcome: WriteOutcome::Fork(result),
@@ -89,7 +116,7 @@ impl MemoryStream {
             WriteRequest::Commit(request) => {
                 let digest = canonical.digest.ok_or(StreamError::InvalidResponse)?;
                 self.plan_commit_locked(&mut state, request, digest, deadline)?
-                    .durable(self, &mut state, persist)
+                    .durable(self, state, persist)
                     .await
                     .map(|(result, allocation)| Execution {
                         outcome: WriteOutcome::Commit(result),

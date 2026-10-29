@@ -196,6 +196,13 @@ impl StreamProvider for LocalStream {
         &self,
         commit_id: crate::CommitId,
     ) -> Result<CommittedEnvelope, StreamError> {
+        self.check_available()?;
+        match self.inner.provider.read_commit(commit_id).await {
+            Err(StreamError::NotFound) => {}
+            result => return result,
+        }
+        // A retained envelope is immutable. Only absence must join publication
+        // before it can be reported as authoritative.
         self.accepted(self.inner.provider.read_commit(commit_id))
             .await?
     }

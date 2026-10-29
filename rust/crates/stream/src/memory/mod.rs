@@ -1,4 +1,4 @@
-//! Single-lock deterministic reference state machine; no durability or availability claim.
+//! Deterministic reference state machine; no durability or availability claim.
 
 #[cfg(all(any(test, loom), not(target_arch = "wasm32")))]
 use crate::NativeStreamProvider as _;
@@ -15,7 +15,7 @@ use crate::OwnedBytes as Bytes;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::native::Work;
 use crate::preparation::commit_identity;
-use crate::query_sync::{RwLock, watch};
+use crate::query_sync::{Mutex, RwLock, watch};
 #[cfg(test)]
 use crate::request::validate_append_size;
 use crate::request::{append_digest, commit_digest, condition_path, fork_digest, mutation_path};

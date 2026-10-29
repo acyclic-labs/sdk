@@ -22,6 +22,8 @@ pub(crate) enum Fault {
     IgnorePageRecordBytes,
     OmitPoisonPublication,
     HoldPublicationDuringMaintenance,
+    HoldStateDuringDurability,
+    ReleasePendingPublication,
 }
 
 loom::thread_local! {
@@ -421,6 +423,11 @@ pub fn lock_parity(negative: bool) {
 /// Checks direct memory-provider streams against an unpolled state reservation.
 pub fn memory_follow_parking(retain_pending: bool, checked: bool) {
     crate::memory::parking_model::verify(retain_pending, checked);
+}
+
+/// Checks accepted reads and writer cancellation around a real pending decision.
+pub fn pending_publication(retain_state: bool, release_order: bool, cancel: bool) {
+    crate::memory::parking_model::publication(retain_state, release_order, cancel);
 }
 
 /// Cancels real dispatched snapshot jobs while the writer and consumer race.

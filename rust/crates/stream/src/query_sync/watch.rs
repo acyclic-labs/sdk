@@ -24,6 +24,17 @@ struct Value<T> {
 /// Watch publisher, matching the production subset of Tokio watch.
 pub struct Sender<T>(Arc<State<T>>);
 
+impl<T> Clone for Sender<T> {
+    fn clone(&self) -> Self {
+        self.0
+            .value
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .senders += 1;
+        Self(Arc::clone(&self.0))
+    }
+}
+
 /// One subscriber's independently consumed version.
 pub struct Receiver<T> {
     state: Arc<State<T>>,
@@ -55,9 +66,15 @@ pub fn channel<T>(data: T) -> (Sender<T>, Receiver<T>) {
 }
 
 impl<T> Sender<T> {
-    /// Counts live subscribers; the only other owner is this publisher.
+    /// Counts live subscribers, excluding all publisher handles.
     pub fn receiver_count(&self) -> usize {
-        Arc::strong_count(&self.0).saturating_sub(1)
+        let senders = self
+            .0
+            .value
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .senders;
+        Arc::strong_count(&self.0).saturating_sub(senders)
     }
 
     /// Subscribes at the current version.

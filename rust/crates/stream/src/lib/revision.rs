@@ -240,11 +240,11 @@ impl RevisionTracker {
     /// participant is allocated once per scope. Views never form a chain.
     #[must_use]
     pub fn scoped(
-        self: &crate::query_sync::Arc<Self>,
+        tracker: &crate::query_sync::Arc<Self>,
         scope: RevisionScope,
     ) -> crate::query_sync::Arc<Self> {
-        let source = match &self.0 {
-            TrackedRevisions::All(_) => self,
+        let source = match &tracker.0 {
+            TrackedRevisions::All(_) => tracker,
             TrackedRevisions::Selected { source, .. } => source,
         };
         crate::query_sync::Arc::new(Self(TrackedRevisions::Selected {
@@ -695,7 +695,7 @@ mod tests {
                 });
             }
             let selected = RevisionScope::new(0_u64.to_be_bytes().to_vec());
-            let view = tracker.scoped(selected.clone());
+            let view = RevisionTracker::scoped(&tracker, selected.clone());
             let floor = view.floor(&RevisionCut::default()).unwrap();
             assert_eq!(floor.iter().len(), 1);
             assert_eq!(floor.get(&selected).unwrap().index, 7);
@@ -768,7 +768,7 @@ mod tests {
                     .index,
                 8
             );
-            let again = view.scoped(unrelated.scope.clone());
+            let again = RevisionTracker::scoped(&view, unrelated.scope.clone());
             match &again.0 {
                 TrackedRevisions::Selected { source, .. } => assert!(Arc::ptr_eq(source, &tracker)),
                 TrackedRevisions::All(_) => unreachable!(),

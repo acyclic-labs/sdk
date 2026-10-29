@@ -1,7 +1,9 @@
 /// Deterministic process-local provider with durable-lifetime successful request identities.
 #[derive(Clone)]
 pub struct MemoryStream {
-    // Lock order: LocalStream visibility -> state -> watch internals.
+    // Lock order: LocalStream visibility -> publication -> state -> watch internals.
+    // Publication owns ordering across durable I/O; state guards only visible facts.
+    publication: Arc<Mutex<()>>,
     state: Arc<RwLock<State>>,
     /// The one applied-revision authority of this incarnation; advanced under
     /// the state write guard after each publication.
@@ -51,6 +53,7 @@ impl MemoryStream {
         commit_clock: Arc<dyn UnixMillisClock>,
     ) -> Self {
         Self {
+            publication: Arc::new(Mutex::new(())),
             state: Arc::new(RwLock::new(State::default())),
             revisions: Arc::new(crate::AppliedRevisions::in_process()),
             operation_claims: Arc::new(crate::OperationClaims::default()),
@@ -99,6 +102,7 @@ impl MemoryStream {
         deadline: Option<u64>,
     ) -> Result<(CommitOutcome, Allocation), StreamError> {
         let digest = self.commit_request_digest(&mut request)?;
+        let _publication = self.publication.lock().await;
         self.commit_locked(&mut *self.state.write().await, request, digest, deadline)
     }
 }

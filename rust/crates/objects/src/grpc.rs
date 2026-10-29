@@ -67,7 +67,7 @@ impl GrpcObjects {
     #[must_use]
     pub fn with_revision_scope(&self, scope: acyclic_stream::RevisionScope) -> Self {
         let mut client = self.clone();
-        client.revisions = self.revisions.scoped(scope);
+        client.revisions = RevisionTracker::scoped(&self.revisions, scope);
         client
     }
 

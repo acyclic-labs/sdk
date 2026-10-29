@@ -22,7 +22,7 @@ impl From<StreamError> for RestoreError {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, loom))]
 impl RestoreError {
     fn stream(self) -> StreamError {
         match self {
@@ -44,7 +44,7 @@ impl MemoryStream {
     }
 
     /// Replaces the whole state with one [`Self::encode_state`] encoded.
-    #[cfg(test)]
+    #[cfg(any(test, loom))]
     pub(crate) async fn install_state(&self, encoded: &[u8]) -> Result<(), StreamError> {
         self.restore_state(encoded)
             .await
@@ -62,6 +62,7 @@ impl MemoryStream {
         {
             return Err(StreamError::Capacity.into());
         }
+        let _publication = self.publication.lock().await;
         #[cfg(loom)]
         if crate::verification::fault_is(crate::verification::Fault::RetainReplacedState) {
             let previous = std::mem::replace(&mut *self.state.write().await, decoded);

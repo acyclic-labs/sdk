@@ -275,7 +275,8 @@ impl Client {
     /// channels and observations. Explicit minima are retained unchanged.
     #[must_use]
     pub fn with_revision_scope(&self, scope: crate::RevisionScope) -> Self {
-        self.clone().with_revisions(self.revisions.scoped(scope))
+        self.clone()
+            .with_revisions(crate::RevisionTracker::scoped(&self.revisions, scope))
     }
 
     pub(crate) fn with_revisions(mut self, revisions: Arc<crate::RevisionTracker>) -> Self {

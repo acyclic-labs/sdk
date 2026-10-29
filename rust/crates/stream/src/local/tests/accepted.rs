@@ -1,6 +1,38 @@
 use super::*;
 use futures::TryFutureExt as _;
 
+#[tokio::test]
+async fn immutable_commit_reads_bypass_pending_publication_but_absence_does_not()
+-> Result<(), Box<dyn std::error::Error>> {
+    use futures::FutureExt as _;
+    let directory = tempfile::tempdir()?;
+    let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+    let outcome = provider.commit(keyed_commit("retained", 0)?).await?;
+    let CommitOutcome::Committed(receipt) = outcome else {
+        return Err("seed commit refused".into());
+    };
+    let held = provider.inner.publication.write().await;
+    let observed = provider.read_commit(receipt.commit_id).now_or_never();
+    assert!(matches!(observed, Some(Ok(ref envelope)) if envelope.commit_id == receipt.commit_id));
+    // The former path takes the unrelated publication lock even for a hit.
+    assert!(
+        provider
+            .accepted(provider.inner.provider.read_commit(receipt.commit_id))
+            .now_or_never()
+            .is_none()
+    );
+    let mut missing = std::pin::pin!(provider.read_commit(crate::CommitId::from_bytes([0; 32])));
+    assert!(futures::poll!(missing.as_mut()).is_pending());
+    drop(held);
+    assert!(matches!(missing.await, Err(StreamError::NotFound)));
+    provider.inner.poison();
+    assert!(matches!(
+        provider.read_commit(receipt.commit_id).await,
+        Err(StreamError::Unavailable)
+    ));
+    Ok(())
+}
+
 #[test]
 fn a_flush_never_certifies_a_write_accepted_after_its_device_operation()
 -> Result<(), Box<dyn std::error::Error>> {

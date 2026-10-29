@@ -3,9 +3,10 @@ impl MemoryStream {
         &self,
         request: AppendRequest,
     ) -> Result<(AppendOutcome, Allocation), StreamError> {
+        let _publication = self.publication.lock().await;
         let mut state = self.state.write().await;
         self.plan_append_locked(&mut state, &request)?
-            .install(self, &mut state)
+            .install(self, &mut state, false)
     }
 
     fn plan_append_locked<'a>(

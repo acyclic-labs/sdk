@@ -58,6 +58,7 @@ impl MemoryStream {
             &work.meter,
             maximum,
         ))?;
+        let _publication = self.publication.lock().await;
         let mut state = self.state.write().await;
         let capacity = self.reserve_prepared_capacity(&state, &request, maximum)?;
         let retained = self.reserve_retained(&state)?;
@@ -309,7 +310,8 @@ impl PreparedCommit {
         body.headers = work.record(self.headers.finish(&body.headers))?;
         let (digest, hashed) = digest(&self.conditions, &append(&self.plan.result).path, &body);
         let _ = work.record(record_codec(&mut self.codec, 0, hashed));
-        let mut state = self.provider.state.write().await;
+        let _publication = self.provider.publication.lock().await;
+        let state = self.provider.state.write().await;
         let (mut conflicts, output_claim) = self.conflicts;
         let result = async {
             if let Some(stored) = state.replay(self.key.as_bytes(), || {
@@ -409,7 +411,7 @@ impl PreparedCommit {
                     )
                 },
             }
-            .durable(&self.provider, &mut state, persist)
+            .durable(&self.provider, state, persist)
             .await
         }
         .await;
