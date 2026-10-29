@@ -60,10 +60,6 @@ operation_service! {
     (checkpoint, CheckpointMachineRequest, CheckpointAdmission),
     (fork, ForkCheckpointRequest, ForkAdmission),
     (fork_machine, ForkMachineRequest, ForkMachineAdmission),
-    (wake, MachineMutationRequest, MutationAdmission),
-    (set_suspension_policy, SetSuspensionPolicyRequest, PolicyAdmission),
-    (destroy_machine, MachineMutationRequest, MutationAdmission),
-    (destroy_checkpoint, CheckpointMutationRequest, MutationAdmission),
     (inspect_checkpoint, InspectCheckpointRequest, CheckpointState),
     (list_machines, ListMachinesRequest, MachinePage),
     (events, EventsRequest, EventPage),
@@ -151,6 +147,50 @@ operation_service! {
             return Err(Status::invalid_argument("machine was substituted"));
         }
         Ok(Response::new(admission.clone()))
+    }
+    async fn wake(&self, request: Request<wire::MachineMutationRequest>)
+        -> Result<Response<wire::MutationAdmission>, Status> {
+        let Some(wire::recovered_admission::Result::Wake(value)) = &self.recovered.result else {
+            return Err(Status::unimplemented("wake"));
+        };
+        let request = request.into_inner();
+        if request.idempotency_key != Some(encode_key(self.expected_key)) || request.machine != value.machine {
+            return Err(Status::invalid_argument("wake admission was substituted"));
+        }
+        Ok(Response::new(value.clone()))
+    }
+    async fn destroy_machine(&self, request: Request<wire::MachineMutationRequest>)
+        -> Result<Response<wire::MutationAdmission>, Status> {
+        let Some(wire::recovered_admission::Result::DestroyMachine(value)) = &self.recovered.result else {
+            return Err(Status::unimplemented("destroy_machine"));
+        };
+        let request = request.into_inner();
+        if request.idempotency_key != Some(encode_key(self.expected_key)) || request.machine != value.machine {
+            return Err(Status::invalid_argument("destroy admission was substituted"));
+        }
+        Ok(Response::new(value.clone()))
+    }
+    async fn set_suspension_policy(&self, request: Request<wire::SetSuspensionPolicyRequest>)
+        -> Result<Response<wire::PolicyAdmission>, Status> {
+        let Some(wire::recovered_admission::Result::SetSuspensionPolicy(value)) = &self.recovered.result else {
+            return Err(Status::unimplemented("set_suspension_policy"));
+        };
+        let request = request.into_inner();
+        if request.idempotency_key != Some(encode_key(self.expected_key)) || request.machine != value.machine || request.policy != value.policy {
+            return Err(Status::invalid_argument("policy admission was substituted"));
+        }
+        Ok(Response::new(value.clone()))
+    }
+    async fn destroy_checkpoint(&self, request: Request<wire::CheckpointMutationRequest>)
+        -> Result<Response<wire::MutationAdmission>, Status> {
+        let Some(wire::recovered_admission::Result::DestroyCheckpoint(value)) = &self.recovered.result else {
+            return Err(Status::unimplemented("destroy_checkpoint"));
+        };
+        let request = request.into_inner();
+        if request.idempotency_key != Some(encode_key(self.expected_key)) || request.checkpoint != value.checkpoint {
+            return Err(Status::invalid_argument("checkpoint admission was substituted"));
+        }
+        Ok(Response::new(value.clone()))
     }
     async fn recover(
         &self,

@@ -1,6 +1,179 @@
 use super::*;
 use proptest::prelude::*;
 
+proptest! {
+    #[test]
+    fn terminal_receipt_cannot_cross_resource_or_policy(
+        seed in any::<[u8; 32]>(),
+        other_seed in any::<[u8; 32]>(),
+        idle_ms in 1..u64::MAX,
+    ) {
+        use wire::mutation_outcome::Result as Outcome;
+        let machine = MachineId::from_digest(seed);
+        let other = MachineId::from_digest(other_seed);
+        prop_assume!(machine != other);
+        let checkpoint = CheckpointId::from_digest(seed);
+        let other_checkpoint = CheckpointId::from_digest(other_seed);
+        let key = IdempotencyKey::from_digest(seed);
+        let policy = SuspensionPolicy::AfterIdle(Duration::from_millis(idle_ms));
+        let cases = [
+            (Outcome::Suspended(encode_machine(machine)), MutationOutcome::Suspended(machine), MutationOutcome::Suspended(other)),
+            (Outcome::Woken(encode_machine(machine)), MutationOutcome::Woken(machine), MutationOutcome::Woken(other)),
+            (Outcome::MachineDestroyed(encode_machine(machine)), MutationOutcome::MachineDestroyed(machine), MutationOutcome::MachineDestroyed(other)),
+            (Outcome::CheckpointDestroyed(encode_checkpoint(checkpoint)), MutationOutcome::CheckpointDestroyed(checkpoint), MutationOutcome::CheckpointDestroyed(other_checkpoint)),
+            (Outcome::SuspensionPolicySet(wire::PolicySet {
+                machine: Some(encode_machine(machine)), policy: Some(encode_suspension(policy).expect("finite policy")),
+            }), MutationOutcome::SuspensionPolicySet(machine, policy), MutationOutcome::SuspensionPolicySet(machine, SuspensionPolicy::Manual)),
+        ];
+        for (result, expected, substituted) in cases {
+            let outcome = Some(wire::MutationOutcome { result: Some(result) });
+            prop_assert_eq!(settled_change(outcome.clone(), expected.clone(), key), Ok(expected));
+            prop_assert_eq!(settled_change(outcome, substituted, key), Err(ProviderError::Indeterminate(key)));
+        }
+    }
+}
+
+fn suspended_state(operation: OperationId) -> wire::OperationState {
+    let mut state = operation_state(operation, wire::OperationStatus::Succeeded);
+    state.outcome = Some(wire::MutationOutcome {
+        result: Some(wire::mutation_outcome::Result::Suspended(encode_machine(
+            MachineId::parse("00000000-0000-0000-0000-000000000043").expect("machine"),
+        ))),
+    });
+    state
+}
+
+#[tokio::test]
+async fn lifecycle_and_recovery_require_the_original_terminal_receipt()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use wire::{mutation_outcome::Result as Outcome, recovered_admission::Result as Admission};
+    let checkpoint = CheckpointId::parse("00000000-0000-0000-0000-000000000051")?;
+    let other = MachineId::parse("00000000-0000-0000-0000-000000000052")?;
+    let other_checkpoint = CheckpointId::parse("00000000-0000-0000-0000-000000000052")?;
+    let policy = SuspensionPolicy::Manual;
+    for kind in 0..5 {
+        let (mut service, script, machine) = scripted_operation_service(vec![], vec![]);
+        let key = service.expected_key;
+        let operation = service.expected_operation;
+        let admission = wire::MutationAdmission {
+            operation: Some(wire::OperationId {
+                value: operation.as_bytes().to_vec(),
+            }),
+            machine: Some(encode_machine(machine)),
+            checkpoint: Some(encode_checkpoint(checkpoint)),
+        };
+        let (admission, result, substituted, expected) = match kind {
+            0 => (
+                Admission::Suspend(admission),
+                Outcome::Suspended(encode_machine(machine)),
+                Outcome::Suspended(encode_machine(other)),
+                MutationOutcome::Suspended(machine),
+            ),
+            1 => (
+                Admission::Wake(admission),
+                Outcome::Woken(encode_machine(machine)),
+                Outcome::Woken(encode_machine(other)),
+                MutationOutcome::Woken(machine),
+            ),
+            2 => (
+                Admission::DestroyMachine(admission),
+                Outcome::MachineDestroyed(encode_machine(machine)),
+                Outcome::MachineDestroyed(encode_machine(other)),
+                MutationOutcome::MachineDestroyed(machine),
+            ),
+            3 => (
+                Admission::SetSuspensionPolicy(wire::PolicyAdmission {
+                    operation: Some(wire::OperationId {
+                        value: operation.as_bytes().to_vec(),
+                    }),
+                    machine: Some(encode_machine(machine)),
+                    policy: Some(encode_suspension(policy)?),
+                }),
+                Outcome::SuspensionPolicySet(wire::PolicySet {
+                    machine: Some(encode_machine(machine)),
+                    policy: Some(encode_suspension(policy)?),
+                }),
+                Outcome::SuspensionPolicySet(wire::PolicySet {
+                    machine: Some(encode_machine(other)),
+                    policy: Some(encode_suspension(policy)?),
+                }),
+                MutationOutcome::SuspensionPolicySet(machine, policy),
+            ),
+            _ => (
+                Admission::DestroyCheckpoint(admission),
+                Outcome::CheckpointDestroyed(encode_checkpoint(checkpoint)),
+                Outcome::CheckpointDestroyed(encode_checkpoint(other_checkpoint)),
+                MutationOutcome::CheckpointDestroyed(checkpoint),
+            ),
+        };
+        service.recovered.result = Some(admission);
+        // Internal protocol vectors over the actual generated HTTP/2 service;
+        // these are not captured external provider output.
+        let mut results = vec![
+            Some(wire::MutationOutcome {
+                result: Some(result),
+            }),
+            None,
+            Some(wire::MutationOutcome { result: None }),
+            Some(wire::MutationOutcome {
+                result: Some(Outcome::Forked(wire::ForkedMachines { machines: vec![] })),
+            }),
+            Some(wire::MutationOutcome {
+                result: Some(substituted),
+            }),
+        ];
+        if kind == 3 {
+            results.push(Some(wire::MutationOutcome {
+                result: Some(Outcome::SuspensionPolicySet(wire::PolicySet {
+                    machine: Some(encode_machine(machine)),
+                    policy: Some(encode_suspension(SuspensionPolicy::AfterIdle(
+                        Duration::from_millis(7),
+                    ))?),
+                })),
+            }));
+        }
+        for outcome in &results {
+            let mut terminal = operation_state(operation, wire::OperationStatus::Succeeded);
+            terminal.outcome = outcome.clone();
+            for _ in 0..2 {
+                script
+                    .lock()
+                    .expect("script")
+                    .watches
+                    .push_back(WatchReply::Items(vec![WatchItem::State(terminal.clone())]));
+            }
+        }
+        let (provider, shutdown, server) = serve_operation_service(service).await?;
+        for (index, _) in results.iter().enumerate() {
+            let wanted = if index == 0 {
+                Ok(expected.clone())
+            } else {
+                Err(ProviderError::Indeterminate(key))
+            };
+            let actual = match kind {
+                0 => provider.suspend(machine, key).await,
+                1 => provider.wake(machine, key).await,
+                2 => provider.destroy_machine(machine, key).await,
+                3 => provider.set_suspension_policy(machine, policy, key).await,
+                _ => provider.destroy_checkpoint(checkpoint, key).await,
+            };
+            assert_eq!(actual, wanted, "direct terminal receipt {kind}/{index}");
+            assert_eq!(
+                provider.recover(key).await,
+                wanted,
+                "recovered terminal receipt {kind}/{index}"
+            );
+        }
+        let _ = shutdown.send(());
+        server.await??;
+        let script = script.lock().expect("script");
+        assert_eq!(script.calls, vec!["watch"; results.len() * 2]);
+        assert!(script.watches.is_empty());
+        assert!(script.inspections.is_empty());
+    }
+    Ok(())
+}
+
 #[test]
 fn credential_failure_preserves_admitted_recovery_keys() {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -257,10 +430,7 @@ async fn interrupted_mutation_retains_key_until_explicit_recovery()
         let (service, script, machine) = scripted_operation_service(
             vec![
                 first_watch,
-                WatchReply::Items(vec![WatchItem::State(operation_state(
-                    operation,
-                    wire::OperationStatus::Succeeded,
-                ))]),
+                WatchReply::Items(vec![WatchItem::State(suspended_state(operation))]),
             ],
             vec![],
         );
@@ -318,7 +488,7 @@ async fn quiet_watch_receives_its_terminal_producer_event_without_inspection()
     let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
     let (service, script, machine) = scripted_operation_service(
         vec![WatchReply::Delayed(
-            operation_state(operation, wire::OperationStatus::Succeeded),
+            suspended_state(operation),
             Duration::from_secs(61),
         )],
         vec![],
