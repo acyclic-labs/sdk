@@ -146,7 +146,10 @@ impl Limits {
     ) -> Result<()> {
         self.validate(work)?;
         file.validate(work)?;
-        if file.path().len() > self.path_bytes {
+        if self
+            .path_bytes
+            .is_some_and(|maximum| file.path().len() > maximum.get())
+        {
             return Err(conversation_error(
                 work,
                 crate::wire::ErrorCode::Invalid,
