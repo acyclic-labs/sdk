@@ -1,11 +1,6 @@
 use super::*;
 use crate::hooks::{HookEvent, HookInput, HookOutput, HookSite};
 
-pub(super) enum HookApprovalStop {
-    Progress(ExecutionProgress<()>),
-    Refused(crate::InteractionRejection, String),
-}
-
 impl StockExecution<'_> {
     pub(super) fn append_hook_context(
         &self,
@@ -117,7 +112,7 @@ impl StockExecution<'_> {
         tool: &crate::tool::Tool,
         prompt: String,
         started: bool,
-    ) -> Result<Option<HookApprovalStop>> {
+    ) -> Result<Option<ExecutionProgress<()>>> {
         let hooks =
             self.stock.hooks.as_ref().ok_or_else(|| {
                 Error::Invalid("hook approval has no pinned configuration".into())
@@ -133,26 +128,8 @@ impl StockExecution<'_> {
             None,
             crate::interaction::ApprovalRoute::Human,
         )?;
-        let progress = self
-            .settle_approval(journal, operation, approval, &request, invocation, started)
-            .await?;
-        match progress {
-            // A pre-tool guard refuses this call. Cancellation still stops the
-            // turn, and settle_approval preserves uncertainty after dispatch.
-            Some(ExecutionProgress::Rejected(reason))
-                if reason != crate::InteractionRejection::Cancelled =>
-            {
-                let Interaction::Approval { prompt, .. } = request else {
-                    return Err(stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Conflict,
-                        "hook approval has no approval request",
-                    ));
-                };
-                Ok(Some(HookApprovalStop::Refused(reason, prompt)))
-            }
-            progress => Ok(progress.map(HookApprovalStop::Progress)),
-        }
+        self.settle_approval(journal, operation, approval, &request, invocation, started)
+            .await
     }
 }
 

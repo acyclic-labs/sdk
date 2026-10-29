@@ -158,9 +158,24 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
             })
         }
     }
-    for outcome in [
-        InteractionOutcome::Approved {},
-        InteractionOutcome::Denied {},
+    for (outcome, rejection) in [
+        (InteractionOutcome::Approved {}, None),
+        (
+            InteractionOutcome::Denied {},
+            Some(crate::InteractionRejection::Denied),
+        ),
+        (
+            InteractionOutcome::Declined {},
+            Some(crate::InteractionRejection::Declined),
+        ),
+        (
+            InteractionOutcome::Cancelled {},
+            Some(crate::InteractionRejection::Cancelled),
+        ),
+        (
+            InteractionOutcome::Expired {},
+            Some(crate::InteractionRejection::Expired),
+        ),
     ] {
         let model = Arc::new(scripted_model());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
@@ -227,20 +242,13 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
             .get_mut(&id)
             .ok_or_else(|| Error::NotFound("approval".into()))?
             .1 = Some(outcome.clone());
-        if outcome == (InteractionOutcome::Approved {}) {
-            assert!(matches!(
-                executor.execute_progress(input.clone(), &journal).await?,
-                ExecutionProgress::Ready(TurnOutput { steps: 2, .. })
-            ));
-            assert_eq!(model.requests().len(), 2);
-            assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
-            executor.execute(input, &journal).await?;
-            assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
-        } else {
-            assert!(matches!(
-                executor.execute_progress(input.clone(), &journal).await?,
-                ExecutionProgress::Rejected(crate::InteractionRejection::Denied)
-            ));
+        if let Some(rejection) = rejection {
+            for _ in 0..2 {
+                assert!(matches!(
+                    executor.execute_progress(input.clone(), &journal).await?,
+                    ExecutionProgress::Rejected(recorded) if recorded == rejection
+                ));
+            }
             assert_eq!(model.requests().len(), 1);
             assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
             let reference = stage_json(
@@ -270,6 +278,15 @@ async fn stock_approval_wait_distinguishes_pending_and_known_rejection() -> Resu
                 matches!(executor.execute_progress(input, &journal).await, Err(Error::Indeterminate(operation)) if operation == invocation.operation_id)
             );
             assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+        } else {
+            assert!(matches!(
+                executor.execute_progress(input.clone(), &journal).await?,
+                ExecutionProgress::Ready(TurnOutput { steps: 2, .. })
+            ));
+            assert_eq!(model.requests().len(), 2);
+            assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
+            executor.execute(input, &journal).await?;
+            assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
         }
     }
     Ok(())
