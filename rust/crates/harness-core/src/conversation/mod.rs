@@ -549,7 +549,7 @@ pub mod wire;
 pub mod envelope;
 
 crate::core::ownership::owned_struct!(Limits {
-    file_bytes: Some(file_bytes),
+    file_bytes,
     path_bytes,
     attachments,
     render_bytes,
