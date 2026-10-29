@@ -1427,12 +1427,12 @@ async fn a_commit_flushes_only_its_unflushed_closure_in_one_batch()
     let root = RootId::new(*b"root")?;
     store.medium().flushed();
     blobs.retain(&root, vec![parent]).await?;
-    // Two barriers: both envelopes and payloads, the parent's index key on
-    // the child and the batch's own; then the batch.
-    assert_eq!(store.medium().flushed(), [6, 1]);
+    // One barrier: both envelopes and payloads, the parent's index key on
+    // the child, the batch's own and the batch.
+    assert_eq!(store.medium().flushed(), [7]);
     // Durable now: the same closure costs only the new batch's keys.
     blobs.retain(&root, vec![parent]).await?;
-    assert_eq!(store.medium().flushed(), [1, 1]);
+    assert_eq!(store.medium().flushed(), [2]);
     // A caller's own commit of a durable closure flushes nothing.
     blobs.flush(Some(&[parent])).await?;
     assert_eq!(store.medium().flushed(), Vec::<usize>::new());
@@ -1514,12 +1514,15 @@ impl Survivors {
     }
 }
 
-const SURVIVORS: [Survivors; 9] = [
+const SURVIVORS: [Survivors; 10] = [
     Survivors::None,
     Survivors::All,
     Survivors::Torn,
     Survivors::TornOnly("/p/"),
     Survivors::Damaged("/p/"),
+    // A flush syncs directories concurrently with their files' data, so a
+    // crash inside it may keep any key's name with none of its bytes.
+    Survivors::Damaged("/"),
     Survivors::Only("/e/"),
     Survivors::Only("/p/"),
     Survivors::Only("/i/"),
@@ -1827,17 +1830,20 @@ fn committed_blobs_are_whole(disk: &Disk) -> Result<(), String> {
 async fn a_crash_at_any_step_never_leaves_a_commit_on_a_missing_or_torn_blob()
 -> Result<(), Box<dyn std::error::Error>> {
     // The protocol, then its negative controls: a barrier that makes
-    // nothing durable, a replace a crash can tear, a released root batch
-    // whose removal reaches the disk after its index keys', and a stream
-    // entry appended before its barrier.
+    // nothing durable, a replace a crash can tear, and a stream entry
+    // appended before its barrier.
+    // A commit flushes its closure, index keys and batch in one round, so
+    // what a crash left is judged once repair has run, as the store serves
+    // it. A released batch whose removal reaches the disk after its index
+    // keys' is repaired like any other.
     for (flushes, swaps, lost_removals, append_first) in [
         (true, true, None, false),
+        (true, true, Some("/r/"), false),
         (false, true, None, false),
         (true, false, None, false),
-        (true, true, Some("/r/"), false),
         (true, true, None, true),
     ] {
-        let correct = flushes && swaps && lost_removals.is_none() && !append_first;
+        let correct = flushes && swaps && !append_first;
         let configured = |budget| Crashing {
             lost_removals,
             ..Crashing::new(flushes, swaps, budget)
@@ -1850,13 +1856,20 @@ async fn a_crash_at_any_step_never_leaves_a_commit_on_a_missing_or_torn_blob()
             for survivors in SURVIVORS {
                 let crashed = configured(Some(budget));
                 let _ = commit_scenario(&crashed, append_first).await;
-                let disk = crashed.recover(survivors);
+                let restarted = Crashing::restart(crashed.recover(survivors));
+                let repaired = Store::new(restarted.clone())
+                    .account(b"account")?
+                    .revisions()
+                    .await
+                    .map(drop);
+                repaired.map_err(|error| format!("crash at {budget}, {survivors:?}: {error}"))?;
+                let disk = restarted.recover(Survivors::None);
                 if let Err(broken) = committed_blobs_are_whole(&disk) {
                     violations.push(format!("crash at {budget}, {survivors:?}: {broken}"));
                     continue;
                 }
                 if correct {
-                    // A restart repairs what the crash left and commits again.
+                    // The repaired store commits again.
                     let restarted = Crashing::restart(disk);
                     commit_scenario(&restarted, false)
                         .await
@@ -1870,7 +1883,7 @@ async fn a_crash_at_any_step_never_leaves_a_commit_on_a_missing_or_torn_blob()
         } else {
             assert!(
                 !violations.is_empty(),
-                "control flushes={flushes} swaps={swaps} lost_removals={lost_removals:?}                  append_first={append_first} went undetected"
+                "control flushes={flushes} swaps={swaps} append_first={append_first} went undetected"
             );
         }
     }

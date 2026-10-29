@@ -70,6 +70,9 @@ enum Commit {
     Unknown,
     /// It did not: its keys are removed.
     Failed(Error),
+    /// Its batch exists but may not be durable: its keys stay, and a crash
+    /// before they are leaves a batch repair discards.
+    Unflushed(Error),
 }
 
 /// A medium shared by many accounts. Each [`Account`] is isolated: equal bytes
@@ -495,7 +498,52 @@ impl<M: Medium> Account<M> {
                 }
             }
         }
+        // A root batch is acknowledged only once its closure and index keys
+        // are durable, so one missing any of them was never acknowledged.
+        let mut pages = self.pages(format!("{}r/", self.prefix));
+        while let Some(page) = pages.next().await? {
+            for (key, _) in page {
+                if self.batch_survived(&key, &blobs).await? {
+                    continue;
+                }
+                self.medium.remove(&key).await.map_err(medium)?;
+                repaired.push(key);
+            }
+        }
         Ok(repaired)
+    }
+
+    /// Whether the root batch at `key` is whole, with every member a whole
+    /// blob held by its index key.
+    async fn batch_survived(
+        &self,
+        key: &str,
+        blobs: &HashMap<Digest, Envelope>,
+    ) -> Result<bool, Error> {
+        let Some(bytes) = self.medium.read(key, None).await.map_err(medium)? else {
+            return Ok(true);
+        };
+        let Ok(members) = decode_batch(&bytes) else {
+            return Ok(false);
+        };
+        let (root, name) = key
+            .strip_prefix(&format!("{}r/", self.prefix))
+            .and_then(|rest| rest.split_once('/'))
+            .ok_or_else(corrupt)?;
+        let tag = format!("r{root}.{name}");
+        for member in &members {
+            if !blobs.contains_key(member)
+                || self
+                    .medium
+                    .read(&self.index_key(member, &tag), None)
+                    .await
+                    .map_err(medium)?
+                    .is_none()
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     fn incarnation_key(&self) -> String {
@@ -605,9 +653,12 @@ impl<M: Medium> Account<M> {
         format!("{}{tag}", self.index_prefix(child))
     }
 
-    /// Indexes `references` under `tag`, flushes them with their closure,
-    /// then creates the root batch `key` that commits them. `Failed` leaves
-    /// the keys for the caller to remove; `Unknown` may have committed.
+    /// Indexes `references` under `tag`, creates the root batch `key` that
+    /// commits them, then flushes the closure, its index keys and the batch
+    /// in one round, acknowledged only once all are durable. A crash inside
+    /// the round may keep the batch without its closure; it was never
+    /// acknowledged, and [`Self::repair`] discards it. `Failed` leaves the
+    /// keys for the caller to remove; `Unknown` may have committed.
     async fn commit_batch(
         &self,
         references: &[Digest],
@@ -620,20 +671,19 @@ impl<M: Medium> Account<M> {
             Ok(None) => return Err(Commit::Unknown),
             Err(error) => return Err(Commit::Failed(error)),
         }
-        // Delete consults only the index, so the closure and this batch's
-        // index keys are durable before the batch that commits them.
-        let index = references
+        match self.medium.create(key, batch.into()).await {
+            Ok(_) => {}
+            Err(MediumError::Ambiguous(_)) => return Err(Commit::Unknown),
+            Err(error) => return Err(Commit::Failed(medium(error))),
+        }
+        let mut keys: Vec<String> = references
             .iter()
             .map(|child| self.index_key(child, tag))
             .collect();
-        self.flush_blobs(Some(references), index)
+        keys.push(key.to_owned());
+        self.flush_blobs(Some(references), keys)
             .await
-            .map_err(Commit::Failed)?;
-        match self.medium.create(key, batch.into()).await {
-            Ok(_) => Ok(()),
-            Err(MediumError::Ambiguous(_)) => Err(Commit::Unknown),
-            Err(error) => Err(Commit::Failed(medium(error))),
-        }
+            .map_err(Commit::Unflushed)
     }
 
     /// Removes `tag`'s index keys, once its holder is gone.
@@ -1500,7 +1550,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
         let held = (std::mem::size_of::<String>() + key) as u64 * references.len() as u64;
         self.medium.allocate(held).map_err(medium)?;
         // Every write is withheld before the first key: n keys, then either
-        // their n removals or the closure flush, the batch and its flush. A
+        // their n removals or the batch and the one flush. A
         // refused budget leaves nothing behind, and removing the keys of a
         // retain that failed is never refused.
         let n = references.len() as u64;
@@ -1515,8 +1565,8 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 self.unreference(&references, &tag).await?;
                 return Err(error);
             }
+            Err(Commit::Unflushed(error)) => return Err(error),
         }
-        self.medium.flush(&[key]).await.map_err(moved)?;
         Ok(Retained {
             references: references.len() as u64,
             revision: Some(issued.commit()),
