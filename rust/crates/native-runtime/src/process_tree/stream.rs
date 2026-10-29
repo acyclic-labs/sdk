@@ -34,9 +34,13 @@ impl<H: CaptureHandler> Capture<H> {
         (checked, self)
     }
 
-    fn turn(mut self) -> (pump::Turn, Self, [Vec<u8>; 2]) {
+    fn turn(mut self, streaming: bool) -> (pump::Turn, Self, [Vec<u8>; 2]) {
         let turn = pump::handled_turn(&mut self.pump, &mut self.tree, &mut self.handler);
-        let bytes = self.pump.take_output();
+        let bytes = if streaming {
+            self.pump.take_output()
+        } else {
+            [Vec::new(), Vec::new()]
+        };
         (turn, self, bytes)
     }
 
@@ -89,12 +93,12 @@ impl ProcessTree {
         handler: H,
     ) -> ProcessCaptureStream<H> {
         let (sender, receiver) = mpsc::channel(1);
-        let completion = spawner.spawn(self.capture_streamed(
+        let completion = spawner.spawn(self.capture_driven(
             CaptureSchedule::new(timeout),
             max_bytes,
             input,
             handler,
-            sender,
+            Some(sender),
         ));
         ProcessCaptureStream {
             receiver,
@@ -102,13 +106,13 @@ impl ProcessTree {
         }
     }
 
-    async fn capture_streamed<H: CaptureHandler>(
+    pub(super) async fn capture_driven<H: CaptureHandler>(
         self,
         schedule: CaptureSchedule,
         max_bytes: usize,
         input: Option<OwnedCaptureInput>,
         handler: H,
-        sender: mpsc::Sender<ProcessChunk>,
+        sender: Option<mpsc::Sender<ProcessChunk>>,
     ) -> io::Result<CaptureOutcome<H>> {
         let (tree, mut pump, handler) = match self
             .start_capture(schedule, max_bytes, input, handler)
@@ -117,7 +121,10 @@ impl ProcessTree {
             Ok(started) => started,
             Err(outcome) => return Ok(outcome),
         };
-        pump.stream_output();
+        let streaming = sender.is_some();
+        if streaming {
+            pump.stream_output();
+        }
         let mut capture = Capture {
             tree,
             pump,
@@ -126,42 +133,44 @@ impl ProcessTree {
         let result = 'capture: loop {
             // Reserve before touching either pipe. The other wait contains
             // only control/deadline sources, so a full pipe cannot spin it.
-            let permit = loop {
-                match sender.try_reserve() {
-                    Ok(permit) => break Ok(permit),
-                    Err(mpsc::error::TrySendError::Closed(_)) => break Err(receiver_lost()),
-                    Err(mpsc::error::TrySendError::Full(_)) => {}
-                }
-                let control = match capture.pump.arm_control(capture.handler.wakes()) {
-                    Ok(control) => control,
-                    Err(error) => break 'capture Err(error),
-                };
-                match control_first(control, sender.reserve()).await {
-                    Some(Ok(permit)) => break Ok(permit),
-                    Some(Err(_)) => break Err(receiver_lost()),
-                    None => {
-                        let (checked, returned) =
-                            crate::run_blocking_io(move || capture.check(), None)?.await?;
-                        capture = returned;
-                        if let Err(error) = checked {
-                            break Err(error);
+            let permit = if let Some(sender) = sender.as_ref() {
+                Some(loop {
+                    match sender.try_reserve() {
+                        Ok(permit) => break permit,
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
+                            break 'capture Err(receiver_lost());
+                        }
+                        Err(mpsc::error::TrySendError::Full(_)) => {}
+                    }
+                    let control = match capture.pump.arm_control(capture.handler.wakes()) {
+                        Ok(control) => control,
+                        Err(error) => break 'capture Err(error),
+                    };
+                    match control_first(control, sender.reserve()).await {
+                        Some(Ok(permit)) => break permit,
+                        Some(Err(_)) => break 'capture Err(receiver_lost()),
+                        None => {
+                            let (checked, returned) =
+                                crate::run_blocking_io(move || capture.check(), None)?.await?;
+                            capture = returned;
+                            if let Err(error) = checked {
+                                break 'capture Err(error);
+                            }
                         }
                     }
-                }
-            };
-            let permit = match permit {
-                Ok(permit) => permit,
-                Err(error) => break Err(error),
+                })
+            } else {
+                None
             };
             let (turn, returned, bytes) =
-                crate::run_blocking_io(move || capture.turn(), None)?.await?;
+                crate::run_blocking_io(move || capture.turn(streaming), None)?.await?;
             capture = returned;
             let [stdout, stderr] = bytes;
             let yielded = !stdout.is_empty() || !stderr.is_empty();
-            if yielded {
-                permit.send(ProcessChunk { stdout, stderr });
-            } else {
-                drop(permit);
+            if let Some(permit) = permit {
+                if yielded {
+                    permit.send(ProcessChunk { stdout, stderr });
+                }
             }
             match turn {
                 pump::Turn::Done(result) => break result,
@@ -174,8 +183,12 @@ impl ProcessTree {
                         Ok(wait) => wait,
                         Err(error) => break Err(error),
                     };
-                    if control_first(sender.closed(), wait).await.is_none() {
-                        break Err(receiver_lost());
+                    if let Some(sender) = sender.as_ref() {
+                        if control_first(sender.closed(), wait).await.is_none() {
+                            break Err(receiver_lost());
+                        }
+                    } else {
+                        wait.await;
                     }
                 }
             }

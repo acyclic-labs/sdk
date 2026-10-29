@@ -843,57 +843,8 @@ impl ProcessTree {
                 .capture_physical(schedule, max_bytes, input, handler)
                 .await;
         }
-        self.capture_scheduled(schedule, max_bytes, input, handler)
+        self.capture_driven(schedule, max_bytes, input, handler, None)
             .await
-    }
-
-    /// Captures with each turn as one pool job, awaiting readiness between
-    /// them without holding a thread.
-    async fn capture_scheduled<H: CaptureHandler>(
-        self,
-        schedule: CaptureSchedule,
-        max_bytes: usize,
-        input: Option<OwnedCaptureInput>,
-        handler: H,
-    ) -> io::Result<CaptureOutcome<H>> {
-        let (mut tree, mut pump, mut handler) = match self
-            .start_capture(schedule, max_bytes, input, handler)
-            .await?
-        {
-            Ok(started) => started,
-            Err(outcome) => return Ok(outcome),
-        };
-        let result = loop {
-            let (turned, (returned_tree, returned_pump, returned_handler)) =
-                crate::run_blocking_io(
-                    move || {
-                        let turn = pump::handled_turn(&mut pump, &mut tree, &mut handler);
-                        (turn, (tree, pump, handler))
-                    },
-                    None,
-                )?
-                .await?;
-            tree = returned_tree;
-            pump = returned_pump;
-            handler = returned_handler;
-            match turned {
-                pump::Turn::Done(result) => break result,
-                pump::Turn::Wait => match pump.arm_with_wake(&mut tree, Some(handler.wakes())) {
-                    Ok(wait) => wait.await,
-                    Err(error) => break Err(error),
-                },
-            }
-        };
-        let (result, handler) = crate::run_blocking_io(
-            move || {
-                let result = pump.finish(&mut tree, result, None);
-                drop(tree);
-                (result, handler)
-            },
-            None,
-        )?
-        .await?;
-        Ok(CaptureOutcome { handler, result })
     }
 
     /// Captures in one pool job that blocks on readiness between turns.
