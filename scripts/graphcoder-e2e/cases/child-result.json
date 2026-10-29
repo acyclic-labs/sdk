@@ -7,12 +7,12 @@
         { "id": "spawn", "name": "spawn", "arguments": { "name": "worker", "task": "CHILD_RESULT_TASK" } }
       ] },
       { "when": { "user": "PARENT_CHILD_RESULT_TASK", "tool_result": "agent" },
-        "text": ["SPAWNED {{tool_result:/agent}}"], "tools": [
+        "tools": [
           { "id": "wait", "name": "wait", "arguments": { "agents": [{ "$tool_result": "/agent" }] } }
         ] },
       { "when": { "user": "CHILD_RESULT_TASK" }, "text": ["CHILD_RESULT_NATIVE_E2E"] },
       { "when": { "user": "PARENT_CHILD_RESULT_TASK", "tool_result": "CHILD_RESULT_NATIVE_E2E" },
-        "text": ["PARENT_READ_CHILD_RESULT {{tool_result:/settled/0/answer}}"] },
+        "text": ["SPAWNED {{tool_result:/settled/0/agent}} PARENT_READ_CHILD_RESULT {{tool_result:/settled/0/answer}}"] },
       { "when": { "user": "REPORT_CHILD_RESULT" }, "text": ["done"] }
     ]
   },
