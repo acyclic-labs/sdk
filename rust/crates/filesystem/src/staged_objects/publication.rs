@@ -9,10 +9,12 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         work.accounting()
             .check()
             .map_err(crate::async_storage::object_error)?;
+        let unswept = self.collection.unswept().await;
         let mut spill = self.spill_io.write().await;
         let unswept = self
             .collection
-            .admit(
+            .admit_held(
+                unswept,
                 &self.inner,
                 scope,
                 |id| self.index().objects.contains_key(id),
