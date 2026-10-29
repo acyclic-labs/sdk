@@ -1,7 +1,7 @@
 import { isExpectedNativeAbsence } from "./generated/native-absence.js";
 import { create, fromBinary, toBinary, type MessageShape } from "@bufbuild/protobuf";
 import { observed, resolveObserver, type AcyclicObserver } from "./observe.js";
-import { credentialProvider, type CredentialOptions, type CredentialProvider } from "./credential.js";
+import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "./credential.js";
 import {
   canonicalSemantic,
   requireBigIntCodec,
@@ -96,15 +96,28 @@ export class ActorsClient {
     return observed(this.#observer, "actors", operation, async sizes => {
       if (sizes) sizes.requestBytes = encoded.byteLength;
       throwIfAborted(signal);
-      const token = await abortable(Promise.resolve(this.#credential(signal)), signal);
+      const lease = await resolveCredential(this.#credential, signal).catch(error => {
+        throwIfAborted(signal);
+        throw error;
+      });
+      const token = lease.token();
       const client = await this.#connection(token, signal);
       if (this.#renewable && client.withCredential === undefined) {
         throw new ActorsTransportError("Actors binding does not support per-request credentials", "configuration");
       }
       throwIfAborted(signal);
-      const response = await abortable(this.#renewable
-        ? client.withCredential!(method.name, encoded, token, signal)
-        : client[operation](encoded, signal), signal);
+      lease.check();
+      throwIfAborted(signal);
+      let response: Uint8Array;
+      try {
+        response = await abortable(this.#renewable
+          ? client.withCredential!(method.name, encoded, token, signal)
+          : client[operation](encoded, signal), signal);
+      } catch (error) {
+        if (error instanceof ActorsTransportError && error.metadata?.credentialRejected) lease.reject();
+        throw error;
+      }
+      lease.check();
       if (sizes) sizes.responseBytes = response.byteLength;
       return canonicalSemantic(fromBinary(method.output, response));
     });
@@ -249,12 +262,23 @@ async function nativeResult<T>(result: Promise<NativeActorsResult<T>>, key: "val
   throw new ActorsTransportError(error?.message ?? "Actors operation failed", error?.code ?? "actors_error", error ?? undefined);
 }
 
+async function wasmResult<T>(result: Promise<T>): Promise<T> {
+  try { return await result; }
+  catch (error) {
+    if (error instanceof Error && "metadata" in error && typeof error.metadata === "object" && error.metadata !== null) {
+      const metadata = error.metadata as ActorsErrorMetadata;
+      throw new ActorsTransportError(metadata.message, metadata.code, metadata);
+    }
+    throw error;
+  }
+}
+
 function wasmBinding(): ActorsRustBinding {
   return {
     async connect(endpoint, token, signal, caCertificate) {
       if (caCertificate !== undefined) throw new ActorsTransportError("WASM Actors transport cannot configure a private CA certificate", "configuration");
       const module = await loadWasmModule();
-      const inner = await module.ActorsClient.connect(endpoint, token, signal);
+      const inner = await wasmResult(module.ActorsClient.connect(endpoint, token, signal));
       const wasm = inner as unknown as WasmActorsClient;
       const client = Object.fromEntries(ACTORS_OPERATION_NAMES.map(operation => {
         const method = operation.replace(/[A-Z]/g, character => `_${character.toLowerCase()}`);
@@ -262,7 +286,7 @@ function wasmBinding(): ActorsRustBinding {
           const invoke = (wasm as unknown as Record<string, unknown>)[method];
           if (typeof invoke !== "function") throw new ActorsTransportError(`WASM bridge is missing ${method}`, "configuration");
           throwIfAborted(signal);
-          return abortable(invoke.call(wasm, request, signal) as Promise<Uint8Array>, signal);
+          return wasmResult(abortable(invoke.call(wasm, request, signal) as Promise<Uint8Array>, signal));
         }];
       }));
       const withCredential = (method: string, request: Uint8Array, token: string, signal?: AbortSignal) => {
@@ -270,7 +294,7 @@ function wasmBinding(): ActorsRustBinding {
           throw new ActorsTransportError("WASM Actors bridge does not support per-request credentials", "configuration");
         }
         throwIfAborted(signal);
-        return abortable(wasm.call_with_credential(method, request, token, signal), signal);
+        return wasmResult(abortable(wasm.call_with_credential(method, request, token, signal), signal));
       };
       return { ...client, transport: wasm.transport, withCredential } as ActorsRustClient;
     },

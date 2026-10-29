@@ -16,7 +16,8 @@ fn credential_header(token: &str) -> Result<HeaderValue, Error> {
     if !acyclic_auth::credential::valid_credential(token) {
         return Err(invalid());
     }
-    let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| invalid())?;
+    let mut value = HeaderValue::try_from(acyclic_auth::credential::bearer_bytes(token))
+        .map_err(|_| invalid())?;
     value.set_sensitive(true);
     Ok(value)
 }
@@ -105,16 +106,31 @@ impl HttpObjects {
         })
     }
 
-    async fn authorization(&self) -> Result<HeaderValue, Error> {
+    async fn authorization(
+        &self,
+    ) -> Result<
+        (
+            HeaderValue,
+            Option<acyclic_auth::credential::ResolvedCredential>,
+        ),
+        Error,
+    > {
         if let Some(provider) = &self.credential {
             let token = provider
                 .resolve()
                 .await
                 .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-            credential_header(&token).map_err(|_| Error::from(wire::ErrorCode::AccessDenied))
+            token
+                .check()
+                .await
+                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            let header = credential_header(&token)
+                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            Ok((header, Some(token)))
         } else {
             self.authorization
                 .clone()
+                .map(|header| (header, None))
                 .ok_or_else(|| Error::from(wire::ErrorCode::AccessDenied))
         }
     }
@@ -133,20 +149,42 @@ impl HttpObjects {
             .endpoint
             .join(route)
             .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+        let (authorization, lease) = self.authorization().await?;
         let response = self
             .transport
             .post(url)
-            .header(AUTHORIZATION, self.authorization().await?)
+            .header(AUTHORIZATION, authorization)
             .header("content-type", "application/json")
             .body(json::encode(input_name, input)?)
             .send()
             .await
             .map_err(|_| unavailable())?;
+        if response.status().as_u16() == 401 {
+            if let Some(lease) = &lease {
+                lease
+                    .reject()
+                    .await
+                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            }
+        }
         if response.status().as_u16() != 200 {
             return Err(self.failure(response).await);
         }
-        json::decode(output_name, &self.bytes(response).await?, self.maximum)
-            .map_err(|_| unavailable())
+        let bytes = self.bytes(response).await?;
+        if let Some(lease) = &lease {
+            lease
+                .check()
+                .await
+                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+        }
+        let decoded = json::decode(output_name, &bytes, self.maximum).map_err(|_| unavailable())?;
+        if let Some(lease) = &lease {
+            lease
+                .check()
+                .await
+                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+        }
+        Ok(decoded)
     }
 
     async fn bytes(&self, mut response: Response) -> Result<Vec<u8>, Error> {

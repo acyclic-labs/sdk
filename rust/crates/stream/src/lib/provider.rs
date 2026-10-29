@@ -45,6 +45,15 @@ pub trait StreamProvider: ProviderPlatform + 'static {
     /// Adapters must forward this operation intact; separate head calls cannot
     /// establish this guarantee. Denial refuses the whole view, never absence.
     async fn heads(&self, request: HeadsRequest) -> Result<Heads, StreamError>;
+    /// Exact Auth source used by this provider's transport, when configured.
+    /// Forwarding adapters preserve it. Subscribe before resolving a lease or
+    /// consulting source-bound cached state, then retain the resolved lease's
+    /// binding and check through result admission. A source revision is never
+    /// permission for a target. Raw callbacks have no trusted binding/watch;
+    /// neither those nor an absent source imply a stable cache identity.
+    fn credential_provider(&self) -> Option<&acyclic_auth::credential::CredentialProvider> {
+        None
+    }
     /// Makes every write accepted by this session before the call durable.
     /// Visibility and live delivery do not wait for this barrier.
     async fn durability_barrier(&self) -> Result<(), StreamError> {

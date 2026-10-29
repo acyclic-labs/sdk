@@ -2,7 +2,7 @@ import { checkedReadSequence } from "./record.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
 import { StreamSessions } from "./session.js";
 import { webSocketSession, type SessionWebSocketFactory } from "./session-websocket.js";
-import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
+import { credentialProvider, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { validateAppend } from "./client.js";
 import { StreamLimit } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, publicHttpErrorCode } from "../generated/wasm/acyclic_stream_wasm.js";
@@ -144,7 +144,10 @@ export class HttpStreamProvider implements StreamProvider {
   async #send<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal, sizes?: OperationSizes): Promise<HttpResponseFor<Route>> {
     const payload = typeof body === "string" ? body : JSON.stringify(body);
     if (sizes) sizes.requestBytes = new TextEncoder().encode(payload).byteLength;
-    const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${await this.#credential(signal)}`, "content-type": "application/json" }, body: payload, ...(signal === undefined ? {} : { signal }) });
+    const lease = await resolveCredential(this.#credential, signal);
+    lease.check();
+    const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", redirect: "error", headers: { authorization: `Bearer ${lease.token()}`, "content-type": "application/json" }, body: payload, ...(signal === undefined ? {} : { signal }) });
+    if (response.status === 401) lease.reject();
     let text: string;
     try { text = await boundedText(response, this.#maximum, sizes); }
     catch (error) { if (error instanceof StreamError) throw error; throw new StreamError("invalid_response", `invalid ${route} response encoding: ${error instanceof Error ? error.message : String(error)}`, response.status); }
@@ -152,7 +155,13 @@ export class HttpStreamProvider implements StreamProvider {
       const error = await hostedError(route, text, response.status);
       throw error;
     }
-    try { await ensureStreamWasm(); return decodeHttpResponseFor(route, text); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
+    lease.check();
+    try { await ensureStreamWasm(); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
+    lease.check();
+    let decoded: HttpResponseFor<Route>;
+    try { decoded = decodeHttpResponseFor(route, text); } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
+    lease.check();
+    return decoded;
   }
 }
 

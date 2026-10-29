@@ -62,8 +62,8 @@ fn credential_header(token: &str) -> Result<HeaderValue, Error> {
     if !crate::valid_token(token) {
         return Err(Error::InvalidArgument);
     }
-    let mut value =
-        HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| Error::InvalidArgument)?;
+    let mut value = HeaderValue::try_from(acyclic_auth::credential::bearer_bytes(token))
+        .map_err(|_| Error::InvalidArgument)?;
     value.set_sensitive(true);
     Ok(value)
 }
@@ -227,12 +227,24 @@ impl Client {
         })
     }
 
-    async fn authorization(&self) -> Result<HeaderValue, Error> {
+    async fn authorization(
+        &self,
+    ) -> Result<
+        (
+            HeaderValue,
+            Option<acyclic_auth::credential::ResolvedCredential>,
+        ),
+        Error,
+    > {
         if let Some(provider) = &self.credential {
             let token = provider.resolve().await?;
-            credential_header(&token)
+            token.check().await?;
+            Ok((credential_header(&token)?, Some(token)))
         } else {
-            self.authorization.clone().ok_or(Error::InvalidArgument)
+            self.authorization
+                .clone()
+                .map(|header| (header, None))
+                .ok_or(Error::InvalidArgument)
         }
     }
 
@@ -272,7 +284,7 @@ impl Client {
                     .join(route)
                     .map_err(|_| Error::InvalidArgument)?,
             );
-            let authorization = self.stage(self.authorization()).await?;
+            let (authorization, lease) = self.stage(self.authorization()).await?;
             let mut response = self
                 .stage(async {
                     Ok(request
@@ -284,6 +296,11 @@ impl Client {
                 })
                 .await?;
             let status = response.status();
+            if status.as_u16() == 401 {
+                if let Some(lease) = &lease {
+                    lease.reject().await?;
+                }
+            }
             tracing::Span::current().record("http.status", status.as_u16());
             let bytes = self
                 .stage(async {
@@ -306,7 +323,14 @@ impl Client {
                     raw_details: bytes,
                 });
             }
-            decode(&self.descriptors, output, &bytes)
+            if let Some(lease) = &lease {
+                lease.check().await?;
+            }
+            let decoded = decode(&self.descriptors, output, &bytes)?;
+            if let Some(lease) = &lease {
+                lease.check().await?;
+            }
+            Ok(decoded)
         };
         let result = self.stage(operation).await;
         let span = tracing::Span::current();

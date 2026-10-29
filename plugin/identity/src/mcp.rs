@@ -132,7 +132,7 @@ struct Active {
     key: String,
     task: tokio::task::JoinHandle<()>,
     result: Arc<Mutex<Option<Result<Value, Error>>>>,
-    done: Arc<tokio::sync::Notify>,
+    done: tokio::sync::watch::Receiver<()>,
     login_cancel: Option<tokio::sync::oneshot::Sender<()>>,
     /// A dispatched exchange that finishes and saves its credentials even
     /// after cancellation or the end of input.
@@ -182,20 +182,20 @@ impl ToolProvider for Identities {
             (None, None)
         };
         let result = Arc::new(Mutex::new(None));
-        let done = Arc::new(tokio::sync::Notify::new());
+        let (done, completed) = tokio::sync::watch::channel(());
         let task = {
             let (server, name, result, done) = (
                 Arc::clone(&self.server),
                 name.to_owned(),
                 Arc::clone(&result),
-                Arc::clone(&done),
+                done,
             );
             self.runtime.spawn(async move {
                 let mut server = server.lock().await;
                 server.login_cancelled = login_cancelled;
                 let outcome = server.call(&name).await;
                 *result.lock().unwrap_or_else(PoisonError::into_inner) = Some(outcome);
-                done.notify_one();
+                done.send_replace(());
             })
         };
         self.calls += 1;
@@ -204,7 +204,7 @@ impl ToolProvider for Identities {
             key: key.clone(),
             task,
             result,
-            done,
+            done: completed,
             login_cancel,
             finishes: matches!(
                 name,
@@ -259,14 +259,24 @@ impl ToolProvider for Identities {
         let Some(active) = &self.active else {
             return Ok(None);
         };
-        let finished = active
-            .result
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .take();
+        let finished = {
+            // Inspect producer loss while holding the result lock: a producer
+            // cannot publish between an empty read and a closed-event verdict.
+            let mut result = active.result.lock().unwrap_or_else(PoisonError::into_inner);
+            result.take().or_else(|| {
+                active.done.has_changed().err().map(|_| {
+                    Err(Error::new(
+                        "operation_unavailable",
+                        "identity operation ended before publishing its result; recovery: acyclic identity-mcp",
+                    ))
+                })
+            })
+        };
         let Some(outcome) = finished else {
-            let done = Arc::clone(&active.done);
-            return Ok(Some(Box::pin(async move { done.notified().await })));
+            let mut done = active.done.clone();
+            return Ok(Some(Box::pin(async move {
+                let _ = done.changed().await;
+            })));
         };
         if !active.cancelled && parked.contains(&active.key) {
             settled.push((active.key.clone(), outcome.map_err(|error| error.json())));
@@ -332,6 +342,57 @@ mod tests {
             output: None,
         })
         .expect("server")
+    }
+
+    #[tokio::test]
+    async fn operation_producer_loss_settles_the_parked_request() {
+        let directory = tempfile::tempdir().expect("directory");
+        let server = Arc::new(tokio::sync::Mutex::new(server(
+            directory.path().join("identity.json"),
+        )));
+        // Hold admission before any credential access or HTTP operation. The
+        // real task owns the completion producer while waiting for this lock.
+        let held = server.lock().await;
+        let mut identities = Identities {
+            server: Arc::clone(&server),
+            runtime: tokio::runtime::Handle::current(),
+            active: None,
+            calls: 0,
+        };
+        let ToolCall::Park(key) = identities
+            .call("identity_whoami", &Value::Null)
+            .expect("call")
+        else {
+            panic!("identity operation did not park");
+        };
+        let parked = BTreeSet::from([key.clone()]);
+        let mut settled = Vec::new();
+        let mut wake = identities
+            .progress(&parked, &mut settled)
+            .expect("progress")
+            .expect("wake");
+        assert!(
+            futures::poll!(&mut wake).is_pending(),
+            "a retained producer must remain pending"
+        );
+        assert!(settled.is_empty());
+        identities.active.as_ref().expect("active").task.abort();
+        wake.await;
+        assert!(
+            identities
+                .progress(&parked, &mut settled)
+                .expect("progress after task loss")
+                .is_none()
+        );
+        assert_eq!(settled.len(), 1);
+        let (settled_key, outcome) = settled.pop().expect("settled request");
+        assert_eq!(settled_key, key);
+        assert_eq!(
+            outcome.expect_err("typed task loss")["error"],
+            "operation_unavailable"
+        );
+        assert!(identities.active.is_none());
+        drop(held);
     }
 
     #[tokio::test]

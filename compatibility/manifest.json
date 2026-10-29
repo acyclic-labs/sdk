@@ -6,8 +6,8 @@
     "auth": {
       "version": "0.2.0",
       "crateVersion": "0.2.0",
-      "schemaDigest": "sha256:433481164184ed986dd5722ba8b1e34e3d05a875667128cbf5b6e1f493b5f90e",
-      "descriptorDigest": "sha256:b34d036f74a4dad3f44ca0db5fddb5430709279fd1ec27b70e587ee295cce52d"
+      "schemaDigest": "sha256:8b4c0ff57ccb101c1c5adc1fd6daa161a4f66e2fa483a0741bfe5344395919dc",
+      "descriptorDigest": "sha256:d9201b773a0610159b89efc926fdb78cbcdf0257f7e60268705075ec18de2e89"
     },
     "actors": {
       "version": "0.2.0",

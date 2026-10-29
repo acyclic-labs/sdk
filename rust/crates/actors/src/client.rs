@@ -18,17 +18,15 @@ impl BearerAuth {
         if !crate::valid_token(token) {
             return Err(invalid());
         }
-        let mut value: MetadataValue<Ascii> =
-            format!("Bearer {token}").parse().map_err(|_| invalid())?;
+        let mut value = MetadataValue::try_from(acyclic_auth::credential::bearer_bytes(token))
+            .map_err(|_| invalid())?;
         value.set_sensitive(true);
         Ok(Self(Some(value)))
     }
 }
 impl tonic::service::Interceptor for BearerAuth {
-    fn call(
-        &mut self,
-        mut request: tonic::Request<()>,
-    ) -> Result<tonic::Request<()>, tonic::Status> {
+    fn call(&mut self, request: tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> {
+        let mut request = request;
         let authorization = request
             .extensions_mut()
             .remove::<Self>()
@@ -76,6 +74,9 @@ pub enum Error {
     /// The caller cancelled the operation before the transport completed.
     #[error("Actors operation cancelled")]
     Cancelled,
+    /// The caller's original absolute budget or cancellation ended the wait.
+    #[error(transparent)]
+    Stopped(#[from] acyclic_auth::operation::Stopped),
 }
 
 /// Lossless Rust-owned diagnostic projection shared by both JavaScript bridges.
@@ -91,6 +92,9 @@ pub struct ErrorMetadata {
     pub grpc_code: Option<i32>,
     /// Canonical gRPC category.
     pub grpc_name: Option<String>,
+    /// Authenticated remote credential rejection, distinct from local freshness
+    /// refusal. Only this verdict can invalidate an exact request lease.
+    pub credential_rejected: bool,
     /// Decoded int32 service code, including future values unknown to this SDK version.
     pub service_code: Option<i32>,
     /// Decoded service diagnostic, separate from the gRPC status message.
@@ -125,6 +129,7 @@ impl Error {
                 metadata.message = message;
                 metadata.grpc_code = Some(grpc_code);
                 metadata.grpc_name = Some(code);
+                metadata.credential_rejected = grpc_code == 16;
                 metadata.service_code = detail.as_ref().map(|value| value.code);
                 metadata.service_message = detail.map(|value| value.message);
                 metadata.raw_details = Some(raw_details);
@@ -137,6 +142,14 @@ impl Error {
             Self::Cancelled => {
                 metadata.message = String::from("Actors operation cancelled");
                 metadata.grpc_code = Some(1);
+                metadata.grpc_name = Some(code);
+            }
+            Self::Stopped(reason) => {
+                metadata.message = reason.to_string();
+                metadata.grpc_code = Some(match reason {
+                    acyclic_auth::operation::Stopped::Deadline => 4,
+                    acyclic_auth::operation::Stopped::Cancelled => 1,
+                });
                 metadata.grpc_name = Some(code);
             }
             Self::Semantic(domain::DomainError::Contract(error)) => {
@@ -157,6 +170,8 @@ impl Error {
             Self::Service { grpc_code, .. } => Self::grpc_code_name(*grpc_code),
             Self::Semantic(error) => error.code_name(),
             Self::Cancelled => "cancelled",
+            Self::Stopped(acyclic_auth::operation::Stopped::Deadline) => "deadline_exceeded",
+            Self::Stopped(acyclic_auth::operation::Stopped::Cancelled) => "cancelled",
             Self::Credential(_) => "unauthenticated",
         }
     }
@@ -209,9 +224,31 @@ fn service_error(status: tonic::Status) -> Error {
     }
 }
 
+async fn request_error(
+    status: tonic::Status,
+    lease: Option<&acyclic_auth::credential::ResolvedCredential>,
+) -> Error {
+    if std::error::Error::source(&status)
+        .is_some_and(|source| source.is::<acyclic_auth::credential::CredentialError>())
+    {
+        return Error::Credential(acyclic_auth::credential::CredentialError::Provider(
+            Box::new(status),
+        ));
+    }
+    if status.code() == tonic::Code::Unauthenticated {
+        if let Some(lease) = lease {
+            if let Err(error) = lease.reject().await {
+                return Error::Credential(error);
+            }
+        }
+    }
+    service_error(status)
+}
+
 /// Connected Actors client whose operation methods are shared by all targets.
 pub struct Client {
     credential: Option<CredentialProvider>,
+    context: Option<acyclic_auth::operation::Context>,
     #[cfg(not(target_arch = "wasm32"))]
     inner: crate::grpc::Client,
     #[cfg(target_arch = "wasm32")]
@@ -221,6 +258,67 @@ pub struct Client {
 }
 
 impl Client {
+    /// Bind all operation stages to the caller's original absolute budget.
+    /// Reusing this client retains that same budget; no stage starts a timer.
+    pub fn with_context(mut self, context: acyclic_auth::operation::Context) -> Self {
+        self.context = Some(context);
+        self
+    }
+
+    /// Adopt an authenticated member/SVID channel without opening a connection.
+    /// The caller owns peer verification and mutual TLS. Each request still
+    /// resolves and retains its own credential lease through reply admission.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn from_channel(
+        channel: tonic::transport::Channel,
+        credential: CredentialProvider,
+    ) -> Self {
+        Self {
+            inner: crate::grpc::over(channel, BearerAuth(None)),
+            credential: Some(credential),
+            context: None,
+        }
+    }
+
+    async fn stage<T>(&self, work: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
+        match &self.context {
+            Some(context) => context.run(work).await?,
+            None => work.await,
+        }
+    }
+
+    async fn dispatch<T, U, V, R>(
+        &self,
+        body: T,
+        authorization: Option<BearerAuth>,
+        send: impl FnOnce(tonic::Request<T>) -> R,
+        admit: impl FnOnce(U) -> Result<V, Error>,
+    ) -> Result<V, Error>
+    where
+        R: Future<Output = Result<tonic::Response<U>, tonic::Status>>,
+    {
+        let (request, lease) = self.request(body, authorization).await?;
+        let response = self
+            .stage(async {
+                match send(request).await {
+                    Ok(response) => Ok(response.into_inner()),
+                    Err(status) => Err(request_error(status, lease.as_ref()).await),
+                }
+            })
+            .await?;
+        self.stage(async {
+            if let Some(lease) = &lease {
+                lease.check().await?;
+            }
+            let result = admit(response)?;
+            if let Some(lease) = &lease {
+                lease.check().await?;
+            }
+            Ok(result)
+        })
+        .await
+    }
+
     /// Resolve a current request credential without changing the shared transport.
     pub fn with_credential_provider(mut self, credential: CredentialProvider) -> Self {
         self.credential = Some(credential);
@@ -231,20 +329,34 @@ impl Client {
         &self,
         body: T,
         authorization: Option<BearerAuth>,
-    ) -> Result<tonic::Request<T>, Error> {
+    ) -> Result<
+        (
+            tonic::Request<T>,
+            Option<acyclic_auth::credential::ResolvedCredential>,
+        ),
+        Error,
+    > {
+        let mut lease = None;
         let authorization = if authorization.is_some() {
             authorization
         } else if let Some(provider) = &self.credential {
             let token = provider.resolve().await?;
-            Some(BearerAuth::new(&token)?)
+            token.check().await?;
+            let authorization = Some(BearerAuth::new(&token)?);
+            lease = Some(token);
+            authorization
         } else {
             None
         };
         let mut request = tonic::Request::new(body);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(lease) = &lease {
+            request.extensions_mut().insert(lease.clone());
+        }
         if let Some(authorization) = authorization {
             request.extensions_mut().insert(authorization);
         }
-        Ok(request)
+        Ok((request, lease))
     }
 
     /// Returns `grpc` for native transport and `grpc-web` for browser transport.
@@ -303,6 +415,7 @@ async fn connect_authorized(
         Ok(Client {
             inner,
             credential: None,
+            context: None,
         })
     }
 
@@ -363,6 +476,7 @@ async fn connect_authorized(
         Ok(Client {
             inner,
             credential: None,
+            context: None,
         })
     }
 }
@@ -408,12 +522,13 @@ macro_rules! client_operations {
             $(
             #[doc = concat!("Executes the semantic ", $name, " operation.")]
             pub async fn $method(&self, request: &domain::$input) -> Result<domain::$output, Error> {
-                let input = wire::$input::from(request.clone());
-                validate_operation($name, &input)?;
-                let input = self.request(input, None).await?;
-                let response = self.inner.clone().$method(input).await
-                    .map(tonic::Response::into_inner).map_err(service_error)?;
-                Ok(response.try_into()?)
+                self.stage(async {
+                    let input = wire::$input::from(request.clone());
+                    validate_operation($name, &input)?;
+                    self.dispatch(input, None, |input| async move {
+                        self.inner.clone().$method(input).await
+                    }, |response| Ok(response.try_into()?)).await
+                }).await
             }
             )*
 
@@ -424,10 +539,12 @@ macro_rules! client_operations {
 
             /// Dispatches one request with a fresh credential without changing connection state.
             pub async fn call_with_credential(&self, method: &str, bytes: &[u8], token: &str) -> Result<Vec<u8>, Error> {
-                self.call_with_authorization(method, bytes, Some(BearerAuth::new(token)?)).await
+                self.call_with_authorization(method, bytes, Some(token)).await
             }
 
-            async fn call_with_authorization(&self, method: &str, bytes: &[u8], authorization: Option<BearerAuth>) -> Result<Vec<u8>, Error> {
+            async fn call_with_authorization(&self, method: &str, bytes: &[u8], token: Option<&str>) -> Result<Vec<u8>, Error> {
+                self.stage(async {
+                let authorization = token.map(BearerAuth::new).transpose()?;
                 if bytes.len() > MAX_MESSAGE_BYTES {
                     return Err(Error::Configuration("request exceeds message ceiling".into()));
                 }
@@ -439,14 +556,16 @@ macro_rules! client_operations {
                             .map_err(|error| Error::Configuration(error.to_string()))?;
                         let input = wire::$input::from(input);
                         validate_operation($name, &input)?;
-                        let input = self.request(input, authorization).await?;
-                        let response = self.inner.clone().$method(input).await
-                            .map(tonic::Response::into_inner).map_err(service_error)?;
-                        let output = domain::$output::try_from(response)?;
-                        Ok(wire::$output::from(output).encode_to_vec())
+                        self.dispatch(input, authorization, |input| async move {
+                            self.inner.clone().$method(input).await
+                        }, |response| {
+                            let output = domain::$output::try_from(response)?;
+                            Ok(wire::$output::from(output).encode_to_vec())
+                        }).await
                     }, )*
                     _ => Err(Error::Configuration("unknown Actors service method".into())),
                 }
+                }).await
             }
         }
     };

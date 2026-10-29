@@ -32,6 +32,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         SignedBlock::decl(&ts_rs::Config::default()),
         Capability::decl(&ts_rs::Config::default()),
         AdmittedCapability::decl(&ts_rs::Config::default()),
+        CallerIdentity::decl(&ts_rs::Config::default()),
+        CallerKeyRevocation::decl(&ts_rs::Config::default()),
+        CallerRevocation::decl(&ts_rs::Config::default()),
+        CallerAuthority::decl(&ts_rs::Config::default()),
+        CallerContext::decl(&ts_rs::Config::default()),
         GrantKind::decl(&ts_rs::Config::default()),
         PinValue::decl(&ts_rs::Config::default()),
         CaveatKind::decl(&ts_rs::Config::default()),
@@ -50,6 +55,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Revocation::decl(&ts_rs::Config::default()),
         KeyringSnapshot::decl(&ts_rs::Config::default()),
         SignedKeyringSnapshot::decl(&ts_rs::Config::default()),
+        KeyRevocation::decl(&ts_rs::Config::default()),
+        RevocationDelta::decl(&ts_rs::Config::default()),
+        RevocationCheckpoint::decl(&ts_rs::Config::default()),
+        RevocationPublication::decl(&ts_rs::Config::default()),
+        SignedRevocation::decl(&ts_rs::Config::default()),
         AuditRecord::decl(&ts_rs::Config::default()),
         RecordAttributes::decl(&ts_rs::Config::default()),
         AuditDecision::decl(&ts_rs::Config::default()),
@@ -67,5 +77,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .join("\n")
         + "\n";
     fs::write(path, typescript)?;
+    if std::env::args_os().nth(2).as_deref() == Some(std::ffi::OsStr::new("--wire-baseline")) {
+        fs::write(
+            root.join("compatibility/descriptors/auth-v1.bin"),
+            acyclic_auth::FILE_DESCRIPTOR_SET,
+        )?;
+    }
     Ok(())
 }

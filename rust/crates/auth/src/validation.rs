@@ -62,7 +62,7 @@ pub(crate) fn capability(value: &Capability) -> Result<(), Error> {
     )
 }
 
-const MAX_UNIX_SECONDS: u64 = 253_402_300_799;
+pub(crate) const MAX_UNIX_SECONDS: u64 = 253_402_300_799;
 pub(crate) fn validity(v: &Validity) -> Result<(), Error> {
     require(
         v.not_before_unix_seconds < v.expires_at_unix_seconds

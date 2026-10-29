@@ -1,9 +1,125 @@
 use super::*;
+use acyclic_auth::credential::{
+    CredentialCache, CredentialRevision, CredentialSnapshot, CredentialValidity,
+};
 use proptest::prelude::*;
 use std::sync::{
     Arc,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+#[tokio::test]
+async fn credential_custody_survives_held_successful_http_bodies()
+-> Result<(), Box<dyn std::error::Error>> {
+    for change in 0..6 {
+        let clock = Arc::new(AtomicU64::new(1));
+        let revision = Arc::new(AtomicU64::new(1));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed_clock = clock.clone();
+        let observed_revision = revision.clone();
+        let refreshed = calls.clone();
+        let cache = CredentialCache::new(
+            move |_| {
+                refreshed.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(CredentialSnapshot::new(
+                    "synthetic-http".into(),
+                    CredentialRevision::from([1; 32]),
+                    100,
+                ))
+            },
+            move || CredentialValidity {
+                now_unix_seconds: observed_clock.load(Ordering::SeqCst),
+                revision: (observed_revision.load(Ordering::SeqCst) != 0).then(|| {
+                    CredentialRevision::from([observed_revision.load(Ordering::SeqCst) as u8; 32])
+                }),
+            },
+        );
+        let provider: CredentialProvider = cache.clone().into();
+        provider.resolve().await?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let client = Client::with_credential_provider(
+            &format!("http://{}", listener.local_addr()?),
+            provider.clone(),
+            1024,
+        )?
+        .with_context(acyclic_auth::operation::Context::new(
+            u64::MAX,
+            std::future::pending(),
+            cancellation.clone().cancelled_owned(),
+        ));
+        let body = encode(
+            &client.descriptors,
+            "acyclic.actors.v1.InspectActorResponse",
+            &wire::InspectActorResponse::default(),
+        )?;
+        let (held, ready) = tokio::sync::oneshot::channel();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let server = async {
+            let (mut socket, _) = listener.accept().await?;
+            let mut request = Vec::new();
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                assert_ne!(socket.read_buf(&mut request).await?, 0);
+            }
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await?;
+            held.send(()).unwrap();
+            released.await?;
+            // Cancellation may close the client before the response body is sent.
+            let sent = socket.write_all(&body).await;
+            if change != 5 {
+                sent?;
+            }
+            Ok::<_, Box<dyn std::error::Error>>(())
+        };
+        let change_source = async {
+            ready.await.unwrap();
+            match change {
+                1 => revision.store(2, Ordering::SeqCst),
+                2 => revision.store(0, Ordering::SeqCst),
+                3 => clock.store(100, Ordering::SeqCst),
+                4 => cache.invalidate().unwrap(),
+                5 => cancellation.cancel(),
+                _ => {}
+            }
+            release.send(()).unwrap();
+        };
+        let request = wire::InspectActorRequest {
+            actor_id: "actor-a".into(),
+            ..Default::default()
+        };
+        let (result, server_result, ()) = tokio::join!(
+            client.call::<_, wire::InspectActorResponse>(
+                "actors/inspect",
+                "acyclic.actors.v1.InspectActorRequest",
+                "acyclic.actors.v1.InspectActorResponse",
+                &request
+            ),
+            server,
+            change_source
+        );
+        server_result?;
+        match change {
+            0 => {
+                result?;
+            }
+            5 => assert!(matches!(
+                result,
+                Err(Error::Stopped(acyclic_auth::operation::Stopped::Cancelled))
+            )),
+            _ => assert!(matches!(result, Err(Error::Credential(_)))),
+        }
+        // A local freshness refusal or cancellation never rejects the snapshot.
+        revision.store(1, Ordering::SeqCst);
+        clock.store(1, Ordering::SeqCst);
+        provider.resolve().await?;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            if change == 4 { 2 } else { 1 }
+        );
+    }
+    Ok(())
+}
 
 #[tokio::test]
 async fn deployment_kind_mismatch_is_rejected_before_credentials_or_io()
@@ -93,7 +209,7 @@ fn credential_callbacks_preserve_current_headers_and_fail_before_transport() {
                     )
                     .unwrap();
                     for value in &expected {
-                        let header = client.authorization().await.unwrap();
+                        let (header, _) = client.authorization().await.unwrap();
                         prop_assert_eq!(header.to_str().unwrap(), format!("Bearer {value}"));
                         prop_assert!(header.is_sensitive());
                     }

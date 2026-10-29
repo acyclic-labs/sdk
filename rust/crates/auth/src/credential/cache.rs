@@ -9,17 +9,43 @@ use std::{
 use zeroize::Zeroizing;
 
 mod slot;
+use super::{CredentialWatch, watch::Changes};
 use slot::Slot;
 
 /// Source identity/revision, partitioned by account, audience and auth context.
 /// The source must change this when external credentials or authority change.
 /// It is freshness metadata, not an authenticated policy revision or permission.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CredentialRevision(pub [u8; 32]);
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CredentialRevision {
+    /// Fixed-width source revision supplied by a native custodian.
+    Bytes([u8; 32]),
+    /// Opaque UTF-16 revision, including unpaired surrogate code units, retained
+    /// without hashing, truncation, token decoding or normalization. Distinct
+    /// from byte revisions; adapters must preserve the original code units.
+    Text(Shared<[u16]>),
+}
+
+impl From<[u8; 32]> for CredentialRevision {
+    fn from(value: [u8; 32]) -> Self {
+        Self::Bytes(value)
+    }
+}
+
+impl From<String> for CredentialRevision {
+    fn from(value: String) -> Self {
+        Self::from(value.encode_utf16().collect::<Vec<_>>())
+    }
+}
+
+impl From<Vec<u16>> for CredentialRevision {
+    fn from(value: Vec<u16>) -> Self {
+        Self::Text(value.into())
+    }
+}
 
 /// One trusted source/clock observation. Observation must do no blocking IO;
 /// source watchers publish revisions before changed credentials may be reused.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct CredentialValidity {
     /// Trusted current Unix seconds; expiry uses a half-open interval.
     pub now_unix_seconds: u64,
@@ -68,7 +94,7 @@ impl CredentialSnapshot {
     }
     /// The trusted source revision at publication.
     pub fn revision(&self) -> CredentialRevision {
-        self.revision
+        self.revision.clone()
     }
     /// Absolute half-open expiry, never a new TTL on a cache hit.
     pub fn expires_at(&self) -> u64 {
@@ -127,6 +153,7 @@ struct Inner {
     flight: Mutex<Option<Flight>>,
     refresh: Shared<Refresh>,
     observe: Shared<Observe>,
+    changes: Shared<Changes>,
 }
 
 /// One credential source/auth partition, shared by all its product requests.
@@ -190,15 +217,19 @@ impl CredentialCache {
             flight: Mutex::new(None),
             refresh,
             observe,
+            changes: Shared::new(Changes::default()),
         }))
     }
 
     /// Resolve one current snapshot; failed/expired/stale refreshes refuse.
     pub async fn resolve(&self) -> ResultLease {
         let validity = (self.0.observe)();
-        validity.revision.ok_or(CredentialCacheError::Unavailable)?;
+        validity
+            .revision
+            .as_ref()
+            .ok_or(CredentialCacheError::Unavailable)?;
         if let Some(snapshot) = self.0.current.load() {
-            if valid(&snapshot, validity).is_ok() && self.0.current.matches(&snapshot) {
+            if valid(&snapshot, &validity).is_ok() && self.0.current.matches(&snapshot) {
                 return Ok(snapshot);
             }
         }
@@ -218,7 +249,7 @@ impl CredentialCache {
             .filter(|flight| Shared::ptr_eq(&flight.id, &waiter.id))
             .ok_or(CredentialCacheError::Stale)?;
         if let Ok(snapshot) = &result {
-            valid(snapshot, validity)?;
+            valid(snapshot, &validity)?;
             if self
                 .0
                 .rejected
@@ -250,7 +281,7 @@ impl CredentialCache {
             .0
             .current
             .load()
-            .filter(|snapshot| valid(snapshot, validity).is_ok())
+            .filter(|snapshot| valid(snapshot, &validity).is_ok())
         {
             return Ok(Resolution::Ready(snapshot));
         }
@@ -310,7 +341,24 @@ impl CredentialCache {
         if let Some(flight) = flight {
             flight.abort.abort();
         }
+        self.0.changes.notify()?;
         Ok(true)
+    }
+
+    /// Recheck the exact lease at dispatch after channel acquisition or queuing.
+    /// This does not extend its expiry or observe the source through blocking IO.
+    pub fn check(&self, lease: &CredentialLease) -> Result<(), CredentialCacheError> {
+        valid(lease, &(self.0.observe)())?;
+        if !self.0.current.matches(lease) {
+            return Err(CredentialCacheError::Stale);
+        }
+        Ok(())
+    }
+
+    /// Register for source invalidation or exact server rejection. Source
+    /// custodians must publish changed/unavailable validity before invalidate.
+    pub fn watch(&self) -> Result<CredentialWatch, CredentialCacheError> {
+        self.0.changes.watch(|| (self.0.observe)())
     }
 
     /// Custodian push invalidation (external CLI/account/policy/audience change).
@@ -329,16 +377,20 @@ impl CredentialCache {
         if let Some(flight) = flight {
             flight.abort.abort();
         }
+        self.0.changes.notify()?;
         Ok(())
     }
 }
 
 fn valid(
     snapshot: &CredentialSnapshot,
-    validity: CredentialValidity,
+    validity: &CredentialValidity,
 ) -> Result<(), CredentialCacheError> {
-    let revision = validity.revision.ok_or(CredentialCacheError::Unavailable)?;
-    if revision != snapshot.revision {
+    let revision = validity
+        .revision
+        .as_ref()
+        .ok_or(CredentialCacheError::Unavailable)?;
+    if revision != &snapshot.revision {
         return Err(CredentialCacheError::Stale);
     }
     if validity.now_unix_seconds >= snapshot.expires_at {

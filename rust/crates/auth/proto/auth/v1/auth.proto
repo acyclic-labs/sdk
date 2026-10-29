@@ -27,6 +27,14 @@
 // rates/concurrency at admission, cumulative lifetime totals globally at the
 // metering owner/billing ledger. Delegation and renewal never reset counters.
 // Label is advisory, scoped to its block revocation id, and grants no authority.
+// CallerContext is host-admitted invocation metadata, never a bearer or proof.
+// Its caller remains the original customer across accounts; audience is the exact
+// recipient account/ns/id. Delegation is ordered first delegate to presenter.
+// Hosts authenticate dispatch binding and every authority independently, then
+// recheck current trust/revocation, minimum expiry, target and owner policy on
+// scoped handle use. Decoding this shape does not authenticate its claims.
+// Guest memory receives only the invocation-scoped opaque capability handle,
+// never an account credential, refresh secret, signing key or append authority.
 // Product resource encodings/actions and static/dynamic extractor vocabularies
 // live in validation/v1/options.proto FileOptions. Owners encode substitutions
 // BEFORE expansion: Objects bucket / entire opaque key as separate components;
@@ -127,6 +135,37 @@ message Block {
   bytes next_public_key = 3;
 }
 
+message CallerAuthority {
+  CallerIdentity principal = 1;
+  uint64 expires_at_unix_seconds = 2;
+  CallerRevocation revocation = 3;
+}
+
+message CallerContext {
+  uint32 version = 1;
+  CallerAuthority caller = 2;
+  CallerIdentity audience = 3;
+  repeated CallerAuthority delegation = 4;
+  uint64 expires_at_unix_seconds = 5;
+  bytes capability_handle = 6;
+}
+
+message CallerIdentity {
+  bytes account = 1;
+  bytes ns = 2;
+  bytes id = 3;
+}
+
+message CallerKeyRevocation {
+  string key_id = 1;
+  uint64 key_epoch = 2;
+}
+
+message CallerRevocation {
+  repeated CallerKeyRevocation keys = 1;
+  repeated bytes blocks = 2;
+}
+
 message Capability {
   repeated SignedBlock blocks = 1;
   oneof proof {
@@ -207,6 +246,11 @@ message KeyRange {
   bytes end = 2;
 }
 
+message KeyRevocation {
+  string key_id = 1;
+  uint64 expires_at_unix_seconds = 2;
+}
+
 message KeyringSnapshot {
   string account_id = 1;
   uint64 sequence = 2;
@@ -271,6 +315,26 @@ message Revocation {
   optional string label = 4;
 }
 
+message RevocationCheckpoint {
+  string account_id = 1;
+  uint64 sequence = 2;
+  uint64 retired_before_unix_seconds = 3;
+  uint64 minimum_key_epoch = 4;
+  repeated KeyRevocation keys = 5;
+  repeated Revocation blocks = 6;
+  uint64 issued_at_unix_seconds = 7;
+}
+
+message RevocationDelta {
+  string account_id = 1;
+  uint64 sequence = 2;
+  bytes previous_digest = 3;
+  uint64 issued_at_unix_seconds = 4;
+  repeated KeyRevocation keys = 5;
+  repeated Revocation blocks = 6;
+  optional uint64 revoke_all_before_epoch = 7;
+}
+
 message SignedBlock {
   bytes payload = 1;
   bytes signature = 2;
@@ -279,6 +343,14 @@ message SignedBlock {
 message SignedKeyringSnapshot {
   KeyringSnapshot snapshot = 1;
   bytes signature = 2;
+}
+
+message SignedRevocation {
+  oneof publication {
+    RevocationDelta delta = 1;
+    RevocationCheckpoint checkpoint = 2;
+  }
+  bytes signature = 3;
 }
 
 message SocketHostRule {

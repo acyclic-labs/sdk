@@ -1,6 +1,6 @@
 import { checkedReadSequence } from "./record.js";
 import type { SessionFollow, SessionData } from "../generated/proto/stream/v1/session_pb.js";
-import { credentialProvider, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
+import { credentialProvider, credentialStream, resolveCredential, type CredentialOptions, type CredentialProvider } from "@acyclic-labs/actors/credential";
 import { StreamSessions } from "./session.js";
 import { SessionQueue } from "./session-queue.js";
 import { StreamSessionService, type SessionFrame } from "../generated/proto/stream/v1/session_pb.js";
@@ -67,8 +67,58 @@ function createStreamGrpcTransport(options: Omit<StreamGrpcOptions, keyof Creden
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");
   if (options.caCertificate !== undefined && (options.caCertificate.length === 0 || new TextEncoder().encode(options.caCertificate).byteLength > 64 * 1024)) throw new RangeError("invalid private CA certificate");
   const authenticate: Interceptor = next => async request => {
-    request.header.set("authorization", `Bearer ${await credential(request.signal)}`);
-    return next(request);
+    // Subscribe before resolution so a quiet physical session cannot miss a
+    // source event between admitting its lease and starting the HTTP/2 call.
+    const watch = request.stream ? credential.watch?.() : undefined;
+    const controller = watch ? createLinkedAbortController(request.signal) : undefined;
+    const signal = controller?.signal ?? request.signal;
+    const sourceChanged = () => controller?.abort(new ConnectError("credential source changed or unavailable", Code.PermissionDenied));
+    let closed = false;
+    const cleanup = () => {
+      if (closed) return;
+      closed = true;
+      controller?.signal.removeEventListener("abort", cleanup);
+      watch?.changed.removeEventListener("abort", sourceChanged);
+      watch?.close();
+      controller?.abort();
+    };
+    controller?.signal.addEventListener("abort", cleanup, { once: true });
+    watch?.changed.addEventListener("abort", sourceChanged, { once: true });
+    if (watch?.changed.aborted) sourceChanged();
+    if (signal.aborted) cleanup();
+    const rejected = (error: unknown) => error instanceof ConnectError && error.code === Code.Unauthenticated;
+    const failure = (error: unknown) => watch?.changed.aborted && !request.signal.aborted
+      ? new ConnectError("credential source changed or unavailable", Code.PermissionDenied) : error;
+    let retained = false;
+    let lease: Awaited<ReturnType<typeof resolveCredential>> | undefined;
+    try {
+      const admitted = await resolveCredential(credential, signal);
+      lease = admitted;
+      const custody = { ...admitted, check() {
+        request.signal.throwIfAborted();
+        try { admitted.check(); }
+        catch { throw new ConnectError("credential source changed or expired", Code.PermissionDenied); }
+      } };
+      request.header.set("authorization", `Bearer ${admitted.token()}`);
+      custody.check();
+      const response = await next(request.stream
+        ? { ...request, signal, message: credentialStream(request.message, custody, () => false) }
+        : request);
+      custody.check();
+      if (!response.stream) return response;
+      const message = async function* () {
+        try { yield* credentialStream(response.message, custody, rejected); }
+        catch (error) { throw failure(error); }
+        finally { cleanup(); }
+      };
+      retained = true;
+      return { ...response, message: message() };
+    }
+    catch (error) {
+      if (rejected(error)) lease?.reject();
+      throw failure(error);
+    }
+    finally { if (!retained) cleanup(); }
   };
   return createGrpcTransport({ baseUrl: endpoint.href, interceptors: observeInterceptors([authenticate], resolveObserver(options.observer), "stream"), readMaxBytes: maximum, writeMaxBytes: maximum, nodeOptions: {
     ...(options.caCertificate === undefined ? {} : { ca: [...rootCertificates, options.caCertificate] }),

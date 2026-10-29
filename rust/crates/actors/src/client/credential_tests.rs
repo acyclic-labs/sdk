@@ -21,8 +21,9 @@ fn credential_callbacks_are_fresh_sensitive_and_fail_closed() {
                 let channel = tonic::transport::Endpoint::from_static("https://fixture.invalid").connect_lazy();
                 let client = Client {
                     inner: crate::wire::actors_service_client::ActorsServiceClient::with_interceptor(
-                        crate::grpc::TracedChannel::new(channel, crate::grpc::transport_span), BearerAuth(None)),
+                        crate::grpc::TracedChannel::new(acyclic_auth::channel::guard(channel), crate::grpc::transport_span), BearerAuth(None)),
                     credential: None,
+                    context: None,
                 }.with_credential_provider(CredentialProvider::new(move || {
                     std::future::ready(tokens.get(calls.fetch_add(1, Ordering::Relaxed)).cloned()
                         .ok_or(acyclic_auth::credential::CredentialError::Invalid))
@@ -30,7 +31,8 @@ fn credential_callbacks_are_fresh_sensitive_and_fail_closed() {
                 let mut interceptor = BearerAuth(None);
                 prop_assert!(interceptor.call(tonic::Request::new(())).is_err());
                 for token in &expected {
-                    let request = interceptor.call(client.request((), None).await.unwrap()).unwrap();
+                    let (request, _lease) = client.request((), None).await.unwrap();
+                    let request = interceptor.call(request).unwrap();
                     let header = request.metadata().get("authorization").unwrap();
                     prop_assert_eq!(header.to_str().unwrap(), format!("Bearer {token}"));
                     prop_assert!(header.is_sensitive());

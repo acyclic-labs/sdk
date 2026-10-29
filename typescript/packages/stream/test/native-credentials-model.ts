@@ -5,14 +5,17 @@ const fault = process.env.STREAM_CREDENTIAL_FAULT;
 if (fault) plugin({ name: "native-credential-negative-control", setup(build) {
   build.onLoad({ filter: /[\\/]src[\\/]native-credentials\.ts$/ }, async args => {
     let source = await Bun.file(args.path).text();
-    const condition = "if (active.size === 0) {";
+    const condition = "if (--cohort.interests === 0) {";
     assert(source.includes(condition));
     if (fault === "no-abandon") {
       assert(source.includes("abandon();"));
       source = source.replace("abandon();", "void 0;");
     } else if (fault === "live-abort-set") {
-      assert(source.includes("[...pending]"));
-      source = source.replace("[...pending]", "pending");
+      source = source.replace("current = undefined;", "void 0;");
+    } else if (fault === "ignore-abort") {
+      source = source.replace("await resolveCredential(credential, cohort.controller.signal)",
+        "{ token: async () => await credential(cohort.controller.signal) }");
+      source = source.replace("return request.token();", "return await request.token();");
     } else {
       source = source.replace(condition, fault === "any-release" ? "if (true) {" : "if (false) {");
     }
@@ -77,7 +80,8 @@ for (const events of schedules()) for (let aborts = 0; aborts < 4; aborts++) {
     } else {
       if (signal?.aborted) expected = "cancelled";
       finish?.("fixture");
-      assert.equal(await outcome, expected);
+      assert.equal(await outcome, expected,
+        expected === "cancelled" ? "last request leaked credentials" : "healthy request cancelled");
       settled = true;
     }
   }
@@ -118,4 +122,19 @@ assert.equal(secondSignal?.aborted, false, "reentrant healthy request cancelled"
 secondFinish?.("fixture");
 assert.equal(await secondOutcome, "fixture");
 secondRelease?.();
+
+// The caller owns the abort event even if the source has lost its producer.
+// One event-loop turn drains its promise reactions without waiting on that source.
+let entered = false, finished = false;
+const ignored = nativeCredentials(() => { entered = true; return new Promise<string>(() => {}); });
+const releaseIgnored = ignored.retain();
+const ignoredResult = ignored.resolve().then(() => { finished = true; }, error => {
+  assert(error instanceof DOMException && error.name === "AbortError");
+  finished = true;
+});
+assert(entered);
+releaseIgnored();
+await new Promise<void>(resolve => setImmediate(resolve));
+assert(finished, "abandoned source must settle without its producer");
+await ignoredResult;
 console.log("native credential schedules", explored);

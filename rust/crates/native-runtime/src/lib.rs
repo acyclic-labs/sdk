@@ -58,7 +58,7 @@ mod file;
 mod kernel_keyring;
 pub mod owner_record;
 pub mod private_file;
-/// OS-owned custody for persisted authority signing seeds.
+/// Native or owner-only file custody for persisted authority signing seeds.
 pub mod signing_key;
 #[cfg(windows)]
 pub use file::device_control_in_place;

@@ -1,4 +1,5 @@
 use super::*;
+use futures::FutureExt;
 use proptest::prelude::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -127,7 +128,7 @@ fn session_request_authorization_is_fresh_sensitive_and_has_no_stale_fallback() 
                 });
                 let stale = authorization("stale").unwrap();
                 for (index, token) in tokens.iter().enumerate() {
-                    let value = futures::executor::block_on(request_authorization(
+                    let (value, _) = futures::executor::block_on(request_authorization(
                         Some(&stale),
                         Some(&provider),
                     ))
@@ -145,4 +146,96 @@ fn session_request_authorization_is_fresh_sensitive_and_has_no_stale_fallback() 
             },
         )
         .unwrap();
+}
+
+#[tokio::test]
+async fn wire_rejection_and_owner_denial_keep_exact_credential_custody() -> tests::TestResult {
+    use acyclic_auth::credential::{
+        CredentialCache, CredentialRevision, CredentialSnapshot, CredentialValidity,
+    };
+    use wire::stream_service_server::StreamServiceServer;
+    for (code, replace_before_reply) in [
+        (Code::Unauthenticated, false),
+        (Code::PermissionDenied, false),
+        (Code::Unauthenticated, true),
+    ] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let count = calls.clone();
+        let revision = CredentialRevision::from([1; 32]);
+        let cache = CredentialCache::new(
+            move |_| {
+                futures::future::ready(CredentialSnapshot::new(
+                    format!("synthetic-{}", count.fetch_add(1, Ordering::SeqCst)),
+                    CredentialRevision::from([1; 32]),
+                    100,
+                ))
+            },
+            move || CredentialValidity {
+                now_unix_seconds: 1,
+                revision: Some(CredentialRevision::from([1; 32])),
+            },
+        );
+        let old = cache.resolve().await?;
+        let source = cache.clone();
+        let retained = old.clone();
+        let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
+            tower::service_fn(move |_| {
+                let source = source.clone();
+                let retained = retained.clone();
+                async move {
+                    let (client, server) = tokio::io::duplex(64 * 1024);
+                    tokio::spawn(async move {
+                        let service = StreamServiceServer::with_interceptor(
+                            Service::new(Arc::new(crate::MemoryStream::default())),
+                            move |_: Request<()>| {
+                                if replace_before_reply {
+                                    source
+                                        .reject(&retained)
+                                        .map_err(|_| Status::internal("test source failed"))?;
+                                    futures::executor::block_on(source.resolve())
+                                        .map_err(|_| Status::internal("test source failed"))?;
+                                }
+                                Err(Status::new(code, "synthetic service refusal"))
+                            },
+                        );
+                        tonic::transport::Server::builder()
+                            .add_service(service)
+                            .serve_with_incoming(stream::once(async {
+                                Ok::<_, std::io::Error>(server)
+                            }))
+                            .await
+                    });
+                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
+                }
+            }),
+        );
+        let client = crate::testing::Counted::new(Client::from_channel_with_credential(
+            channel,
+            cache.clone().into(),
+        ));
+        let source = client.credential_provider().expect("forwarded Auth source");
+        let changed = source.watch().await?.expect("trusted source notification");
+        let admitted = source.resolve().await?;
+        let binding = admitted.binding().expect("trusted lease binding");
+        assert_eq!(binding.revision, revision);
+        assert_eq!(binding.expires_at_unix_seconds, 100);
+        assert!(matches!(
+            client.tail(StreamPath::new("synthetic/path")?).await,
+            Err(StreamError::AccessDenied)
+        ));
+        if code == Code::PermissionDenied {
+            assert!(changed.now_or_never().is_none());
+            admitted.check().await?;
+            cache.check(&old)?;
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+        } else {
+            assert!(changed.now_or_never().is_some());
+            assert!(admitted.check().await.is_err());
+            assert!(cache.check(&old).is_err());
+            let current = cache.resolve().await?;
+            cache.check(&current)?;
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+        }
+    }
+    Ok(())
 }

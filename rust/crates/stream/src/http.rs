@@ -118,15 +118,30 @@ impl HttpStream {
     fn revisions(&self) -> Result<crate::query_sync::Arc<crate::RevisionTracker>, StreamError> {
         self.session_client()?.revisions()
     }
-    async fn authorization(&self) -> Result<HeaderValue, StreamError> {
+    async fn authorization(
+        &self,
+    ) -> Result<
+        (
+            HeaderValue,
+            Option<acyclic_auth::credential::ResolvedCredential>,
+        ),
+        StreamError,
+    > {
         if let Some(provider) = &self.credential {
             let token = provider
                 .resolve()
                 .await
                 .map_err(|_| StreamError::AccessDenied)?;
-            credential_header(&token).map_err(|_| StreamError::AccessDenied)
+            token.check().await.map_err(|_| StreamError::AccessDenied)?;
+            Ok((
+                credential_header(&token).map_err(|_| StreamError::AccessDenied)?,
+                Some(token),
+            ))
         } else {
-            self.authorization.clone().ok_or(StreamError::AccessDenied)
+            self.authorization
+                .clone()
+                .map(|header| (header, None))
+                .ok_or(StreamError::AccessDenied)
         }
     }
 
@@ -172,15 +187,24 @@ impl HttpStream {
             .endpoint
             .join(&format!("v1/stream/{route}"))
             .map_err(|_| StreamError::Unavailable)?;
+        let (authorization, lease) = self.authorization().await?;
         let mut response = self
             .client
             .post(url)
-            .header(AUTHORIZATION, self.authorization().await?)
+            .header(AUTHORIZATION, authorization)
             .header("content-type", "application/json")
             .body(body)
             .send()
             .await
             .map_err(|_| StreamError::Unavailable)?;
+        if response.status().as_u16() == 401 {
+            if let Some(lease) = &lease {
+                lease
+                    .reject()
+                    .await
+                    .map_err(|_| StreamError::AccessDenied)?;
+            }
+        }
         let success = response.status().is_success();
         span.record("http.status", response.status().as_u16());
         if response
@@ -201,6 +225,9 @@ impl HttpStream {
             body.extend_from_slice(&chunk);
         }
         span.record("bytes", body.len());
+        if success && let Some(lease) = &lease {
+            lease.check().await.map_err(|_| StreamError::AccessDenied)?;
+        }
         let value: Value = serde_json::from_slice(&body).map_err(|_| StreamError::Unavailable)?;
         if !success {
             let code = value
@@ -216,6 +243,9 @@ impl HttpStream {
         }
         // A well-formed body that breaks the response contract is the peer's fault.
         http_validation::validate(route, &value).map_err(|_| StreamError::InvalidResponse)?;
+        if let Some(lease) = &lease {
+            lease.check().await.map_err(|_| StreamError::AccessDenied)?;
+        }
         Ok(value)
     }
     fn commit_response(value: &Value) -> Result<CommitOutcome, StreamError> {
@@ -284,6 +314,10 @@ impl HttpStream {
 impl StreamProvider for HttpStream {
     fn context(&self) -> crate::ProviderContext<'_> {
         crate::ProviderContext::new(&self.operation_claims)
+    }
+
+    fn credential_provider(&self) -> Option<&CredentialProvider> {
+        self.credential.as_ref()
     }
 
     async fn inspect_idempotency(
@@ -430,7 +464,8 @@ fn credential_header(token: &str) -> Result<HeaderValue, ConnectError> {
     if !acyclic_auth::credential::valid_credential(token) {
         return Err(ConnectError);
     }
-    let mut value = HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| ConnectError)?;
+    let mut value = HeaderValue::try_from(acyclic_auth::credential::bearer_bytes(token))
+        .map_err(|_| ConnectError)?;
     value.set_sensitive(true);
     Ok(value)
 }
@@ -487,7 +522,7 @@ mod tests {
                     )
                     .unwrap();
                     for value in &expected {
-                        let header = block_on(provider.authorization()).unwrap();
+                        let (header, _) = block_on(provider.authorization()).unwrap();
                         prop_assert!(header.is_sensitive());
                         prop_assert_eq!(header.to_str().unwrap(), format!("Bearer {value}"));
                     }

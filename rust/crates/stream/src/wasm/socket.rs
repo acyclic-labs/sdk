@@ -11,10 +11,13 @@ use tokio::sync::mpsc;
 #[derive(Clone)]
 pub(super) struct Endpoint {
     pub(super) url: String,
-    pub(super) credential: js_sys::Function,
+    pub(super) credential: acyclic_auth::credential::CredentialProvider,
 }
 impl Endpoint {
-    pub(super) fn new(url: &str, credential: js_sys::Function) -> Result<Self, StreamError> {
+    pub(super) fn new(
+        url: &str,
+        credential: acyclic_auth::credential::CredentialProvider,
+    ) -> Result<Self, StreamError> {
         let parsed = web_sys::Url::new(url).map_err(|_| StreamError::InvalidArgument)?;
         let local = matches!(
             parsed.hostname().as_str(),
@@ -33,25 +36,10 @@ impl Endpoint {
             credential,
         })
     }
-    pub(super) async fn token(&self) -> Result<String, StreamError> {
-        let result = self
-            .credential
-            .call0(&JsValue::UNDEFINED)
-            .map_err(|_| StreamError::AccessDenied)?;
-        let token = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::resolve(&result))
-            .await
-            .map_err(|_| StreamError::AccessDenied)?
-            .as_string()
-            .ok_or(StreamError::AccessDenied)?;
-        if !acyclic_auth::credential::valid_credential(&token) {
-            return Err(StreamError::AccessDenied);
-        }
-        Ok(token)
-    }
 }
 
 struct Incoming {
-    sender: Option<mpsc::Sender<Result<wire::SessionFrame, StreamError>>>,
+    sender: Option<mpsc::Sender<js_sys::ArrayBuffer>>,
     terminal: Option<StreamError>,
 }
 impl Incoming {
@@ -63,6 +51,7 @@ impl Incoming {
 }
 struct Socket {
     socket: web_sys::WebSocket,
+    credential: acyclic_auth::credential::ResolvedCredential,
     _open: Closure<dyn FnMut(web_sys::Event)>,
     _message: Closure<dyn FnMut(web_sys::MessageEvent)>,
     _error: Closure<dyn FnMut(web_sys::Event)>,
@@ -84,8 +73,26 @@ impl Transport for Endpoint {
     ) -> crate::BoxProviderFuture<'_, Result<Responses, StreamError>> {
         Box::pin(async move {
             use base64::Engine as _;
+            let mut changed = self
+                .credential
+                .watch()
+                .await
+                .map_err(|_| StreamError::AccessDenied)?;
+            let credential = crate::session::transport::credential_event(&mut changed, async {
+                let credential = self
+                    .credential
+                    .resolve()
+                    .await
+                    .map_err(|_| StreamError::AccessDenied)?;
+                credential
+                    .check()
+                    .await
+                    .map_err(|_| StreamError::AccessDenied)?;
+                Ok(credential)
+            })
+            .await??;
             let token =
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(self.token().await?);
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(credential.as_str());
             let url = format!("{}/v1/stream/session", self.url).replacen("http", "ws", 1);
             let protocols = Array::of2(
                 &"acyclic.session.v1".into(),
@@ -116,23 +123,21 @@ impl Transport for Endpoint {
             let messages = incoming.clone();
             let message_socket = socket.clone();
             let message = Closure::new(move |event: web_sys::MessageEvent| {
-                let result = decode_frame(event.data());
                 let mut incoming = messages.borrow_mut();
-                match result {
-                    Ok(frame) => {
-                        if incoming
-                            .sender
-                            .as_ref()
-                            .is_some_and(|sender| sender.try_send(Ok(frame)).is_err())
-                        {
-                            incoming.fail(StreamError::Capacity);
-                            let _ = message_socket.close();
-                        }
+                // Bound retained transport bytes without copying or decoding.
+                let data = event.data().dyn_into::<js_sys::ArrayBuffer>();
+                let error = match data {
+                    Err(_) => Some(StreamError::InvalidResponse),
+                    Ok(data) if data.byte_length() as usize > MAX_COMMAND_BYTES => {
+                        Some(StreamError::LimitExceeded)
                     }
-                    Err(error) => {
-                        incoming.fail(error);
-                        let _ = message_socket.close();
-                    }
+                    Ok(data) => incoming.sender.as_ref().and_then(|sender| {
+                        sender.try_send(data).err().map(|_| StreamError::Capacity)
+                    }),
+                };
+                if let Some(error) = error {
+                    incoming.fail(error);
+                    let _ = message_socket.close();
                 }
             });
             let failure = incoming.clone();
@@ -159,27 +164,50 @@ impl Transport for Endpoint {
             socket.set_onclose(Some(close.as_ref().unchecked_ref()));
             let guard = Socket {
                 socket,
+                credential,
                 _open: open,
                 _message: message,
                 _error: error,
                 _close: close,
             };
-            opened.await.map_err(|_| StreamError::Unavailable)??;
+            crate::session::transport::credential_event(&mut changed, async {
+                opened.await.map_err(|_| StreamError::Unavailable)??;
+                guard
+                    .credential
+                    .check()
+                    .await
+                    .map_err(|_| StreamError::AccessDenied)
+            })
+            .await??;
             let response = futures::stream::try_unfold(
-                (guard, receiver, source, incoming),
-                |(guard, mut receiver, mut source, incoming)| async move {
+                (guard, receiver, source, incoming, changed),
+                |(guard, mut receiver, mut source, incoming, mut changed)| async move {
                     loop {
-                        let event = {
-                            let received = receiver.recv();
-                            futures::pin_mut!(received);
-                            match select(received, source.next()).await {
-                                Either::Left((frame, _)) => Either::Left(frame),
-                                Either::Right((frame, _)) => Either::Right(frame),
-                            }
-                        };
+                        let event =
+                            crate::session::transport::credential_event(&mut changed, async {
+                                let received = receiver.recv();
+                                futures::pin_mut!(received);
+                                let event = match select(received, source.next()).await {
+                                    Either::Left((frame, _)) => Either::Left(frame),
+                                    Either::Right((frame, _)) => Either::Right(frame),
+                                };
+                                guard
+                                    .credential
+                                    .check()
+                                    .await
+                                    .map_err(|_| StreamError::AccessDenied)?;
+                                Ok(event)
+                            })
+                            .await??;
                         match event {
                             Either::Left(Some(frame)) => {
-                                return Ok(Some((frame?, (guard, receiver, source, incoming))));
+                                // Admission occurs at consumption, before copying
+                                // or decoding the queued browser buffer.
+                                let frame = decode_frame(frame)?;
+                                return Ok(Some((
+                                    frame,
+                                    (guard, receiver, source, incoming, changed),
+                                )));
                             }
                             Either::Left(None) => {
                                 return Err(incoming
@@ -210,14 +238,8 @@ impl Transport for Endpoint {
         })
     }
 }
-fn decode_frame(data: JsValue) -> Result<wire::SessionFrame, StreamError> {
-    if !data.is_instance_of::<js_sys::ArrayBuffer>() {
-        return Err(StreamError::InvalidResponse);
-    }
+fn decode_frame(data: js_sys::ArrayBuffer) -> Result<wire::SessionFrame, StreamError> {
     let bytes = Uint8Array::new(&data);
-    if bytes.length() as usize > MAX_COMMAND_BYTES {
-        return Err(StreamError::LimitExceeded);
-    }
     wire_codec::session::decode_frame(&bytes.to_vec())
 }
 

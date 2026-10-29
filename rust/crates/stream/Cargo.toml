@@ -30,7 +30,7 @@ conformance = []
 model-checking = ["dep:loom", "dep:tempfile"]
 test-support = ["acyclic-native-runtime/test-support", "acyclic-auth/test-support"]
 default = ["grpc"]
-grpc = ["session", "dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt", "tokio/macros"]
+grpc = ["session", "acyclic-auth/grpc", "dep:h2", "dep:hyper", "dep:tonic", "dep:tonic-prost", "dep:rustls", "dep:rustls-platform-verifier", "tokio/rt", "tokio/macros"]
 http = ["grpc", "dep:reqwest"]
 local = ["tokio/rt"]
 # The in-process session protocol, without a network transport.
@@ -39,7 +39,7 @@ postgres = ["dep:tokio-postgres", "tokio/rt", "tokio/macros"]
 # Shared byte-array encoding; decoding alone never authenticates native custody.
 serde = ["dep:serde"]
 wasm-journal = ["dep:wasm-bindgen"]
-wasm = ["serde", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic", "dep:tonic-prost", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
+wasm = ["serde", "acyclic-auth/js-credential", "dep:serde-wasm-bindgen", "dep:tsify", "dep:wasm-bindgen", "dep:indexed_db_futures", "dep:web-sys", "dep:tonic", "dep:tonic-prost", "dep:tonic-web-wasm-client", "dep:tracing-subscriber", "tokio/macros"]
 
 [dependencies]
 loom = { version = "0.7.2", features = ["futures"], optional = true }
@@ -113,7 +113,7 @@ tracing-subscriber.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 proptest = { version = "1.11.0", default-features = false, features = ["std"] }
 wasm-bindgen-test = "=0.3.67"
-getrandom = { version = "0.3", default-features = false, features = ["wasm_js"] }
+getrandom = { version = "0.4", default-features = false, features = ["wasm_js"] }
 web-sys = { workspace = true, features = ["Performance"] }
 
 

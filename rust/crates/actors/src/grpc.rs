@@ -3,10 +3,9 @@
 pub use crate::client::BearerAuth;
 use crate::wire;
 use prost::Message;
-use std::sync::Arc;
 use tonic::{
     Status,
-    transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
+    transport::{Channel, Endpoint},
 };
 use tracing::field::Empty;
 
@@ -16,7 +15,8 @@ pub type Client = wire::actors_service_client::ActorsServiceClient<
 >;
 
 /// Shared transport-status channel retaining the originating trace context.
-pub type TracedChannel = acyclic_grpc_observability::TracedChannel<Channel>;
+pub type TracedChannel =
+    acyclic_grpc_observability::TracedChannel<acyclic_auth::channel::CredentialChannel>;
 
 /// Statically named actors RPC span factory.
 pub(crate) fn transport_span(rpc: Option<&str>) -> tracing::Span {
@@ -51,31 +51,25 @@ pub enum ConnectError {
 
 /// Connects a bounded TLS channel.
 async fn connect_channel(endpoint: &str, ca: Option<&[u8]>) -> Result<Channel, ConnectError> {
-    if !reqwest::Url::parse(endpoint).is_ok_and(|url| {
-        url.scheme() == "https"
-            && url.host_str().is_some()
-            && url.username().is_empty()
-            && url.password().is_none()
-            && url.query().is_none()
-            && url.fragment().is_none()
-    }) {
-        return Err(ConnectError::InsecureEndpoint);
-    }
     let configured = Endpoint::from_shared(endpoint.to_owned())?
         .http2_max_header_list_size(tonic_web_wasm_client::limits::HEADER_LIST_BYTES);
-    let configured = if let Some(ca) = ca {
+    let peer = if let Some(ca) = ca {
         if ca.is_empty() || ca.len() > 64 * 1024 {
             return Err(ConnectError::InvalidCaCertificate);
         }
-        configured.tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca)))?
+        acyclic_auth::channel::PeerTrust::PrivateCa(ca)
     } else {
-        let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .map_err(ConnectError::PlatformVerifier)?;
-        configured.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
+        acyclic_auth::channel::PeerTrust::Platform
     };
-    Ok(configured.connect().await?)
+    acyclic_auth::channel::connect(configured, peer, None)
+        .await
+        .map_err(|error| match error {
+            acyclic_auth::channel::ConnectError::Endpoint => ConnectError::InsecureEndpoint,
+            acyclic_auth::channel::ConnectError::Platform(error) => {
+                ConnectError::PlatformVerifier(error)
+            }
+            acyclic_auth::channel::ConnectError::Transport(error) => ConnectError::Transport(error),
+        })
 }
 
 /// Connect trusting exactly `ca` when supplied, otherwise the platform's roots.
@@ -94,14 +88,16 @@ pub(crate) async fn connect_authorized(
     ca: Option<&[u8]>,
 ) -> Result<Client, ConnectError> {
     let channel = connect_channel(endpoint, ca).await?;
-    Ok(
-        wire::actors_service_client::ActorsServiceClient::with_interceptor(
-            TracedChannel::new(channel, transport_span),
-            authorization,
-        )
-        .max_decoding_message_size(16 * 1024 * 1024)
-        .max_encoding_message_size(16 * 1024 * 1024),
+    Ok(over(channel, authorization))
+}
+
+pub(crate) fn over(channel: Channel, authorization: BearerAuth) -> Client {
+    wire::actors_service_client::ActorsServiceClient::with_interceptor(
+        TracedChannel::new(acyclic_auth::channel::guard(channel), transport_span),
+        authorization,
     )
+    .max_decoding_message_size(16 * 1024 * 1024)
+    .max_encoding_message_size(16 * 1024 * 1024)
 }
 
 /// Decode the canonical semantic error carried in gRPC status details.

@@ -8,12 +8,65 @@ import { SessionFilterSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { SessionNode } from "./session-node.js";
 import { grpcFixture, tlsIdentity } from "./session-grpc-fixture.js";
 import type { SessionTransport } from "../src/session.js";
+import { CredentialCache, CredentialSnapshot } from "@acyclic-labs/auth/credential";
 
 let identity: ReturnType<typeof tlsIdentity>;
 let key: string;
 let cert: string;
 beforeAll(() => { identity = tlsIdentity(); ({ key, cert } = identity); });
 afterAll(() => identity?.dispose());
+
+test("gRPC sessions refuse stale outgoing frames and end idle reads on source notification", async () => {
+  for (const change of ["unchanged", "account", "unavailable", "expiry", "invalidate"] as const) {
+    const { node, close, options } = await grpcFixture({ key, cert });
+    let revision: string | undefined = "account/audience/1", now = 1, refreshes = 0;
+    const cache = new CredentialCache(async () => {
+      refreshes++;
+      return new CredentialSnapshot("fixture", revision!, 100);
+    }, () => ({ nowUnixSeconds: now, revision }));
+    let watches = 0;
+    const credential = Object.assign((signal?: AbortSignal) => cache.provider(signal), {
+      resolveRequest: cache.provider.resolveRequest!,
+      watch: () => {
+        const watch = cache.provider.watch!();
+        watches++;
+        return { ...watch, close() { watches--; watch.close(); } };
+      },
+    });
+    const controller = new AbortController();
+    try {
+      const { token: _token, ...endpoint } = options;
+      const provider = new GrpcStreamProvider({ ...endpoint, credential });
+      const incoming = provider.follow("custody", { from: 0n, signal: controller.signal })[Symbol.asyncIterator]();
+      const first = incoming.next();
+      await node.until(() => node.active === 1);
+      node.append("custody");
+      expect((await first).value?.sequence).toBe(0n);
+      expect(watches).toBe(1);
+      // Observe failure before the source can synchronously close the call.
+      const pending = incoming.next().then(value => ({ value }), error => ({ error }));
+      switch (change) {
+        case "account": revision = "other-account/audience/2"; break;
+        case "unavailable": revision = undefined; break;
+        case "expiry": now = 100; break;
+        case "invalidate": cache.invalidate(); expect(watches).toBe(0); break;
+      }
+      if (change !== "invalidate") await provider.registerCredential(1, new Uint8Array([4]));
+      if (change === "unchanged") {
+        await node.until(() => node.received.some(frame => frame.body.case === "credential"));
+        node.append("custody");
+        expect(await pending).toHaveProperty("value.value.sequence", 1n);
+      } else {
+        expect(await pending).toHaveProperty("error.code", "access_denied");
+        expect(node.received.some(frame => frame.body.case === "credential")).toBe(false);
+        expect(watches).toBe(0);
+      }
+      controller.abort();
+      await incoming.return?.();
+      expect(refreshes).toBe(1);
+    } finally { controller.abort(); await close(); }
+  }
+});
 
 test("public gRPC follows and unaries share one physical HTTP/2 session", async () => {
   const { node, counts, close, options } = await grpcFixture({ key, cert });

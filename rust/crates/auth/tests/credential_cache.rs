@@ -17,7 +17,7 @@ use std::{
 };
 
 fn revision(value: u64) -> CredentialRevision {
-    CredentialRevision([value as u8; 32])
+    CredentialRevision::from([value as u8; 32])
 }
 fn snapshot(value: &str, rev: u64, expires: u64) -> CredentialSnapshot {
     CredentialSnapshot::new(value.into(), revision(rev), expires).unwrap()
@@ -31,6 +31,126 @@ fn observer(clock: Arc<AtomicU64>, rev: Arc<AtomicU64>) -> impl Fn() -> Credenti
 fn pending(future: Pin<&mut impl Future>) {
     let mut cx = Context::from_waker(futures::task::noop_waker_ref());
     assert!(matches!(future.poll(&mut cx), Poll::Pending));
+}
+
+#[test]
+fn provider_projects_trusted_binding_and_push_changes_without_raw_identity() {
+    let rev = Arc::new(AtomicU64::new(1));
+    let source_rev = rev.clone();
+    let cache = CredentialCache::new(
+        move |_| {
+            future::ready(Ok(snapshot(
+                "synthetic-binding",
+                source_rev.load(Ordering::SeqCst),
+                100,
+            )))
+        },
+        observer(Arc::new(AtomicU64::new(1)), rev.clone()),
+    );
+    let provider: CredentialProvider = cache.clone().into();
+    let mut change = Box::pin(block_on(provider.watch()).unwrap().unwrap());
+    assert_eq!(change.validity().revision, Some(revision(1)));
+    pending(change.as_mut());
+    let old = block_on(provider.resolve()).unwrap();
+    assert_eq!(
+        old.binding(),
+        Some(CredentialBinding {
+            revision: revision(1),
+            expires_at_unix_seconds: 100
+        })
+    );
+    rev.store(2, Ordering::SeqCst);
+    cache.invalidate().unwrap();
+    block_on(change).unwrap();
+    assert!(block_on(old.check()).is_err());
+
+    let next = block_on(provider.resolve()).unwrap();
+    let mut change = Box::pin(block_on(provider.watch()).unwrap().unwrap());
+    assert_eq!(change.validity().revision, Some(revision(2)));
+    assert_eq!(next.binding().unwrap().revision, revision(2));
+    assert!(!block_on(old.reject()).unwrap());
+    pending(change.as_mut());
+    assert!(block_on(next.reject()).unwrap());
+    block_on(change).unwrap();
+    // Dropped subscriptions release their registration and do not affect peers.
+    drop(block_on(provider.watch()).unwrap());
+    cache.invalidate().unwrap();
+
+    let raw = CredentialProvider::new(|| future::ready(Ok("synthetic-raw".into())));
+    assert!(block_on(raw.watch()).unwrap().is_none());
+    assert_eq!(block_on(raw.resolve()).unwrap().binding(), None);
+}
+
+#[test]
+fn source_watch_retires_epochs_and_reports_last_producer_loss_without_waiting() {
+    use futures::task::{ArcWake, waker};
+
+    struct Reenter {
+        source: CredentialCache,
+        watch: Mutex<Option<CredentialWatch>>,
+    }
+    impl ArcWake for Reenter {
+        fn wake_by_ref(this: &Arc<Self>) {
+            *this.watch.lock().unwrap() = Some(this.source.watch().unwrap());
+        }
+    }
+    let source = CredentialCache::new(
+        |_| future::ready(Ok(snapshot("synthetic", 1, 100))),
+        || CredentialValidity {
+            now_unix_seconds: 1,
+            revision: Some(revision(1)),
+        },
+    );
+    let mut first = Box::pin(source.watch().unwrap());
+    let mut peer = Box::pin(source.watch().unwrap());
+    let reenter = Arc::new(Reenter {
+        source: source.clone(),
+        watch: Mutex::new(None),
+    });
+    let wake = waker(reenter.clone());
+    assert!(
+        first
+            .as_mut()
+            .poll(&mut Context::from_waker(&wake))
+            .is_pending()
+    );
+    pending(peer.as_mut());
+    source.invalidate().unwrap();
+    assert!(matches!(first.now_or_never(), Some(Ok(()))));
+    assert!(matches!(peer.now_or_never(), Some(Ok(()))));
+    let mut next = Box::pin(reenter.watch.lock().unwrap().take().unwrap());
+    // Registration from a wake belongs to the next epoch, not the retired one.
+    pending(next.as_mut());
+    drop(wake);
+    drop(reenter);
+
+    // Discarded subscriptions cannot retain their task wakers or the source.
+    let temporary = Arc::new(Reenter {
+        source: source.clone(),
+        watch: Mutex::new(None),
+    });
+    let weak = Arc::downgrade(&temporary);
+    let wake = waker(temporary.clone());
+    let mut discarded = Box::pin(source.watch().unwrap());
+    assert!(
+        discarded
+            .as_mut()
+            .poll(&mut Context::from_waker(&wake))
+            .is_pending()
+    );
+    drop(discarded);
+    drop(wake);
+    drop(temporary);
+    assert!(weak.upgrade().is_none());
+
+    let retained = source.clone();
+    drop(source);
+    pending(next.as_mut()); // A live producer is the negative control.
+    drop(retained);
+    assert!(matches!(
+        next.now_or_never(),
+        Some(Err(CredentialCacheError::Unavailable))
+    ));
 }
 
 #[test]
@@ -266,15 +386,30 @@ fn exact_401_invalidation_passes_rejected_bearer_and_protects_replacement() {
 
 #[test]
 fn cached_callback_composes_with_existing_provider_and_redacts_invalid_bytes() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let clock = Arc::new(AtomicU64::new(1));
     let cache = CredentialCache::new(
-        |_| future::ready(Ok(snapshot("opaque", 1, 100))),
-        || CredentialValidity {
-            now_unix_seconds: 1,
-            revision: Some(revision(1)),
+        move |_| {
+            future::ready(Ok(snapshot(
+                &format!("opaque{}", count.fetch_add(1, Ordering::SeqCst)),
+                1,
+                100,
+            )))
         },
+        observer(clock.clone(), Arc::new(AtomicU64::new(1))),
     );
     let provider = CredentialProvider::from(cache);
-    assert_eq!(block_on(provider.resolve()).unwrap().as_str(), "opaque");
+    let old = block_on(provider.resolve()).unwrap();
+    block_on(old.check()).unwrap();
+    assert!(block_on(old.reject()).unwrap());
+    let current = block_on(provider.resolve()).unwrap();
+    assert!(!block_on(old.reject()).unwrap());
+    assert!(block_on(old.check()).is_err());
+    block_on(current.check()).unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    clock.store(100, Ordering::SeqCst);
+    assert!(block_on(current.check()).is_err());
     assert!(CredentialSnapshot::new("bad\r\nheader".into(), revision(1), 100).is_err());
     fn send_sync<T: Send + Sync>() {}
     send_sync::<CredentialCache>();

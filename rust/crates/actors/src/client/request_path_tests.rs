@@ -81,13 +81,10 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
         let channel = tonic::transport::Endpoint::from_shared(endpoint)?
             .connect()
             .await?;
-        let client = Client {
-            credential: None,
-            inner: wire::actors_service_client::ActorsServiceClient::with_interceptor(
-                crate::grpc::TracedChannel::new(channel, crate::grpc::transport_span),
-                BearerAuth::new("fixture")?,
-            ),
-        };
+        let client = Client::from_channel(
+            channel.clone(),
+            CredentialProvider::new(|| std::future::ready(Ok("fixture".into()))),
+        );
         let request = wire::InvokeActorRequest {
             invocation_order: None,
             namespace: None,
@@ -154,6 +151,58 @@ async fn request_path_binary_calls_keep_admission_credentials_and_response_seman
             vec![8]
         );
         assert_eq!(renewals.load(Ordering::Relaxed), 2);
+        assert_eq!(calls.load(Ordering::SeqCst), 6);
+
+        // An ended budget wins before input decoding and credential callbacks.
+        let client = client.with_context(acyclic_auth::operation::Context::new(
+            1,
+            std::future::ready(()),
+            std::future::pending(),
+        ));
+        for bytes in [&[0xff][..], &renewed.encode_to_vec()] {
+            assert!(matches!(
+                client.call("InvokeActor", bytes).await,
+                Err(Error::Stopped(acyclic_auth::operation::Stopped::Deadline))
+            ));
+        }
+        assert!(matches!(
+            client.invoke_actor(&typed).await,
+            Err(Error::Stopped(acyclic_auth::operation::Stopped::Deadline))
+        ));
+        assert_eq!(renewals.load(Ordering::Relaxed), 2);
+
+        // Cancellation during credential resolution drops that wait. Dropping
+        // its sole producer has the same typed outcome as an explicit signal.
+        for explicit in [false, true] {
+            let (stop, stopped) = futures::channel::oneshot::channel::<()>();
+            let stop = Arc::new(std::sync::Mutex::new(Some(stop)));
+            let resolved = Arc::clone(&renewals);
+            let client = Client::from_channel(
+                channel.clone(),
+                CredentialProvider::new(move || {
+                    resolved.fetch_add(1, Ordering::Relaxed);
+                    let stop = stop.lock().unwrap().take().unwrap();
+                    if explicit {
+                        let _ = stop.send(());
+                    } else {
+                        drop(stop);
+                    }
+                    std::future::pending()
+                }),
+            )
+            .with_context(acyclic_auth::operation::Context::new(
+                10,
+                std::future::pending(),
+                async {
+                    let _ = stopped.await;
+                },
+            ));
+            assert!(matches!(
+                client.invoke_actor(&typed).await,
+                Err(Error::Stopped(acyclic_auth::operation::Stopped::Cancelled))
+            ));
+        }
+        assert_eq!(renewals.load(Ordering::Relaxed), 4);
         assert_eq!(calls.load(Ordering::SeqCst), 6);
         Ok::<_, Box<dyn std::error::Error>>(())
     }
