@@ -39,6 +39,7 @@ const require = createRequire(import.meta.url);
 // import map uses the stable /node_modules URL; this table makes that URL
 // work with both isolated and hoisted installs.
 const dependencyRoots = new Map([
+  ["/rust/crates/conformance/cloudflare/", resolve(root, "../../../rust/crates/conformance/cloudflare")],
   ["/stream/", resolve(root, "../stream")],
   ["/actors/", resolve(root, "../actors")],
   ["/auth/", resolve(root, "../auth")],

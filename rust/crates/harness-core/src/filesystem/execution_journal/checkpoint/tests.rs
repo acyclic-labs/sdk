@@ -238,7 +238,9 @@ async fn detached_and_forged_checkpoint_heads_cannot_authorize_recovery() -> Res
         )
         .await?
         .expect("initial commit");
-    let original = journal.encode_index_checkpoint(recovery.state, None)?;
+    let original = journal
+        .encode_index_checkpoint(recovery.state, None)
+        .await?;
     let head = journal.index_path(operation, "head", None)?;
     journal
         .stream
@@ -319,6 +321,7 @@ async fn public_checkpoint_recovery_needs_no_live_signing_owner() -> Result<()> 
         journal.verifier.audience().clone(),
         issuer.public_workload_trust()?,
         journal.verifier.public_checkpoint_key(),
+        issuer.trust_changes(),
     )?;
     drop(issuer);
     journal.verifier = public;
@@ -332,6 +335,11 @@ async fn public_checkpoint_recovery_needs_no_live_signing_owner() -> Result<()> 
         recovered.0.tail, 1,
         "public-only checkpoint verification attempted to sign"
     );
-    assert!(journal.encode_index_checkpoint(recovered.0, None).is_err());
+    assert!(
+        journal
+            .encode_index_checkpoint(recovered.0, None)
+            .await
+            .is_err()
+    );
     Ok(())
 }

@@ -20,6 +20,7 @@ acyclic-contract-derive = { version = "=0.2.0", path = "../contract-derive" }
 ed25519-dalek = { version = "=3.0.0", features = ["zeroize"] }
 futures.workspace = true
 prost.workspace = true
+serde.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
@@ -42,7 +43,6 @@ web-sys = { workspace = true, features = ["AbortController", "AbortSignal", "Eve
 
 [dev-dependencies]
 acyclic-differential = { version = "=0.2.0", path = "../differential" }
-serde.workspace = true
 serde_json.workspace = true
 acyclic-test-support = { path = "../test-support" }
 syn = { version = "3", features = ["full"] }

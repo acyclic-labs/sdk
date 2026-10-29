@@ -4,7 +4,23 @@
 //! response reading and any explicitly classified retry share that same stop.
 //! Stopping a wait does not establish whether a remote mutation committed.
 
-use futures::{Future, FutureExt, future::BoxFuture, future::Shared};
+use futures::{Future, FutureExt, future::Shared};
+
+#[cfg(not(target_arch = "wasm32"))]
+type StopFuture = futures::future::BoxFuture<'static, Stopped>;
+#[cfg(target_arch = "wasm32")]
+type StopFuture = futures::future::LocalBoxFuture<'static, Stopped>;
+
+/// A host event accepted by the platform executor.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait OperationEvent: Future + Send + 'static {}
+#[cfg(not(target_arch = "wasm32"))]
+impl<F: Future + Send + 'static> OperationEvent for F {}
+/// A browser event retains its owning event loop.
+#[cfg(target_arch = "wasm32")]
+pub trait OperationEvent: Future + 'static {}
+#[cfg(target_arch = "wasm32")]
+impl<F: Future + 'static> OperationEvent for F {}
 
 /// Why the caller stopped waiting. Neither variant proves remote cancellation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
@@ -21,7 +37,7 @@ pub enum Stopped {
 #[derive(Clone)]
 pub struct Context {
     deadline_unix_millis: u64,
-    stopped: Shared<BoxFuture<'static, Stopped>>,
+    stopped: Shared<StopFuture>,
 }
 
 impl Context {
@@ -31,8 +47,8 @@ impl Context {
     /// should be mapped according to that host's cancellation contract.
     pub fn new(
         deadline_unix_millis: u64,
-        expires: impl Future<Output = ()> + Send + 'static,
-        cancelled: impl Future<Output = ()> + Send + 'static,
+        expires: impl OperationEvent<Output = ()>,
+        cancelled: impl OperationEvent<Output = ()>,
     ) -> Self {
         let stopped = async move {
             futures::pin_mut!(expires, cancelled);
@@ -40,12 +56,20 @@ impl Context {
                 futures::future::Either::Left(_) => Stopped::Cancelled,
                 futures::future::Either::Right(_) => Stopped::Deadline,
             }
-        }
-        .boxed()
-        .shared();
+        };
+        Self::from_stopped(deadline_unix_millis, stopped)
+    }
+
+    /// Bind one original host stop event. Adapters preserve its typed reason;
+    /// losing the event's producer must resolve it as cancellation.
+    pub fn from_stopped(
+        deadline_unix_millis: u64,
+        stopped: impl OperationEvent<Output = Stopped>,
+    ) -> Self {
+        let stopped: StopFuture = Box::pin(stopped);
         Self {
             deadline_unix_millis,
-            stopped,
+            stopped: stopped.shared(),
         }
     }
 
@@ -54,14 +78,27 @@ impl Context {
         self.deadline_unix_millis
     }
 
+    /// Observe the original stop before a synchronous admission boundary.
+    /// This polls only the existing host event and starts no work or timer.
+    pub fn check(&self) -> Result<(), Stopped> {
+        match self.stopped.clone().now_or_never() {
+            Some(reason) => Err(reason),
+            None => Ok(()),
+        }
+    }
+
     /// Run a stage under the original budget. A ready stop is checked before
-    /// polling work, so a cancelled operation cannot begin another callback.
+    /// polling work and before accepting its result. A callback that stops its
+    /// own operation cannot publish success in the same poll.
     pub async fn run<T>(&self, work: impl Future<Output = T>) -> Result<T, Stopped> {
         let stopped = self.stopped.clone();
         futures::pin_mut!(stopped, work);
         match futures::future::select(stopped, work).await {
             futures::future::Either::Left((reason, _)) => Err(reason),
-            futures::future::Either::Right((value, _)) => Ok(value),
+            futures::future::Either::Right((value, stopped)) => match stopped.now_or_never() {
+                Some(reason) => Err(reason),
+                None => Ok(value),
+            },
         }
     }
 }
@@ -127,6 +164,52 @@ mod tests {
             assert_eq!(context.run(ready(7)).await, Ok(7));
             let _ = expire.send(());
             assert_eq!(context.run(pending::<()>()).await, Err(Stopped::Deadline));
+        });
+    }
+
+    #[test]
+    fn a_stop_produced_by_completing_work_refuses_its_result() {
+        block_on(async {
+            for lose_producer in [false, true] {
+                let (cancel, cancelled) = futures::channel::oneshot::channel();
+                let context = Context::new(10, pending(), async {
+                    let _ = cancelled.await;
+                });
+                let result = context
+                    .run(async {
+                        if lose_producer {
+                            drop(cancel);
+                        } else {
+                            cancel.send(()).unwrap();
+                        }
+                        7
+                    })
+                    .await;
+                assert_eq!(result, Err(Stopped::Cancelled));
+                assert_eq!(context.clone().run(ready(8)).await, Err(Stopped::Cancelled));
+            }
+            let (expire, expired) = futures::channel::oneshot::channel();
+            let context = Context::new(
+                10,
+                async {
+                    let _ = expired.await;
+                },
+                pending(),
+            );
+            assert_eq!(
+                context
+                    .run(async {
+                        expire.send(()).unwrap();
+                        7
+                    })
+                    .await,
+                Err(Stopped::Deadline)
+            );
+            // An unchanged owner still admits a ready completion.
+            assert_eq!(
+                Context::new(10, pending(), pending()).run(ready(7)).await,
+                Ok(7)
+            );
         });
     }
 }

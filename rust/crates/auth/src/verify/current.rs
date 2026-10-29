@@ -72,6 +72,40 @@ where
     C: Iterator<Item = Certificate<'a>>,
     N: Iterator<Item = &'a [u8]>,
 {
+    fn preserved_by(self, descendant: &VerifiedCapability) -> Result<bool, VerifyError> {
+        let certificates = descendant.certificates()?;
+        if self.environment != certificates.birth.birth.environment
+            || self.account != certificates.birth.birth.account_id
+            || self.environment_issuer != &descendant.environment_issuer
+            || self.issuers != descendant.issuers
+            || self.not_before > descendant.not_before
+            || self.expires_at < descendant.expires_at
+        {
+            return Ok(false);
+        }
+        let mut inherited = descendant.revocation_ids();
+        for id in self.ids {
+            if !inherited.by_ref().any(|actual| actual == id) {
+                return Ok(false);
+            }
+        }
+        let mut keys = certificates.keys.iter();
+        for certificate in self.certificates {
+            let Some(key) = keys.next() else {
+                return Ok(false);
+            };
+            if certificate.id != key.key.key_id || certificate.epoch != key.key.key_epoch {
+                return Ok(false);
+            }
+            for id in certificate.parents {
+                if !inherited.by_ref().any(|actual| actual == id) {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(keys.next().is_none())
+    }
+
     fn check(mut self, trust: &(impl Trust + ?Sized), now: u64) -> Result<(), VerifyError> {
         if now < self.not_before || now >= self.expires_at {
             return Err(VerifyError::Time);
@@ -141,6 +175,51 @@ fn bytes(value: Option<usize>) -> Result<u64, VerifyError> {
 }
 
 impl VerifiedCapability {
+    /// Project the presented authority's public identity and every revocation
+    /// dependency. The authenticated platform supplies its namespace; a token
+    /// cannot choose that binding. This snapshot never admits later use without
+    /// the original owner's current-trust, audience and expiry checks.
+    pub fn caller_authority(&self, namespace: &[u8]) -> Result<CallerAuthority, VerifyError> {
+        if namespace.is_empty() {
+            return Err(VerifyError::Malformed);
+        }
+        let principal = self.effective().principal();
+        Ok(CallerAuthority {
+            principal: CallerIdentity {
+                account: self.account_id()?.as_bytes().to_vec(),
+                ns: namespace.to_vec(),
+                id: principal
+                    .lineage
+                    .last()
+                    .unwrap_or(&principal.id)
+                    .as_bytes()
+                    .to_vec(),
+            },
+            expires_at_unix_seconds: self.expires_at,
+            revocation: CallerRevocation {
+                keys: self
+                    .certificates()?
+                    .keys
+                    .iter()
+                    .map(|certificate| CallerKeyRevocation {
+                        key_id: certificate.key.key_id.clone(),
+                        key_epoch: certificate.key.key_epoch,
+                    })
+                    .collect(),
+                blocks: self.revocation_ids().map(<[u8]>::to_vec).collect(),
+            },
+        })
+    }
+
+    /// Whether a same-key descendant retains this admission's environment,
+    /// issuers, key identities/epochs, half-open validity and every revocation
+    /// dependency. The canonical issuer preserves ancestor order; extra block
+    /// dependencies may narrow the descendant. One pass, with no allocation.
+    /// This does not authorize new resource grants or an acting identity.
+    pub fn preserved_by(&self, descendant: &Self) -> Result<bool, VerifyError> {
+        self.trust_view()?.preserved_by(descendant)
+    }
+
     fn certificates(&self) -> Result<&CertificateChain, VerifyError> {
         self.blocks
             .first()
@@ -265,6 +344,12 @@ impl VerifiedCapability {
 }
 
 impl TrustEvidence {
+    /// The same-key admission preservation check without retaining the parent's
+    /// bearer, append key or policy graph. See `VerifiedCapability::preserved_by`.
+    pub fn preserved_by(&self, descendant: &VerifiedCapability) -> Result<bool, VerifyError> {
+        self.view().preserved_by(descendant)
+    }
+
     fn view(&self) -> View<'_, impl Iterator<Item = Certificate<'_>>, impl Iterator<Item = &[u8]>> {
         View {
             environment: &self.environment,

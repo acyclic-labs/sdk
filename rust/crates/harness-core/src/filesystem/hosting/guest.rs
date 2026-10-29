@@ -1,6 +1,7 @@
 //! Guest sources derive from the same Bound as hosted turns and publication.
 
 use super::*;
+use crate::conversation::{ContentGrant, VolumeOperation};
 use crate::filesystem::{
     PreparationIo,
     native_access::{NativeMountAuthority, owner_mount_options},
@@ -67,29 +68,27 @@ impl Drop for CancelGuest {
 }
 
 impl GuestAuthorityLifetime {
-    fn new(
-        issuer: &crate::core::AuthorityRoot,
-        verifier: &crate::core::AuthorityVerifier,
-        scope: &Scope,
-        expires_at: u64,
-        work: &NativeMaterializationWork,
-    ) -> crate::Result<Self> {
-        let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
-            crate::Error::Unsupported("guest authority requires an event runtime".into())
-        })?;
-        let io = PreparationIo::from_native_work(work)?;
-        let verified = verifier.authenticate_scope(scope, &mut Some(&mut io.history_io()))?;
-        let owned_bytes = verified.logical_owned_bytes()?;
-        // Subscribe before checking: revocation cannot fall between the check
-        // and event registration. Each wake is an actual trust publication.
-        let mut revisions = issuer.trust_revisions();
-        let cancellation = work.cancellation().clone();
-        let cancelled = work.cancellation_wait()?;
-        let original = work.clone();
-        let stop = CancelGuest(cancellation.clone());
-        let future = async move {
+    fn monitor(
+        verified: crate::core::VerifiedScope,
+        changes: Arc<dyn acyclic_auth::trust::ChangeSource>,
+        context: Option<acyclic_auth::operation::Context>,
+        original: NativeMaterializationWork,
+    ) -> crate::Result<impl std::future::Future<Output = ()> + use<>> {
+        let cancelled = original.cancellation_wait()?;
+        let stop = CancelGuest(original.cancellation().clone());
+        Ok(async move {
             tokio::pin!(cancelled);
+            let stopped = async {
+                match &context {
+                    Some(context) => {
+                        let _ = context.run(std::future::pending::<()>()).await;
+                    }
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::pin!(stopped);
             loop {
+                let changed = changes.changed();
                 let io = match PreparationIo::from_native_work(&original) {
                     Ok(io) => io,
                     Err(_) => {
@@ -103,12 +102,34 @@ impl GuestAuthorityLifetime {
                 }
                 tokio::select! {
                     _ = &mut cancelled => return,
-                    changed = revisions.changed() => {
+                    _ = &mut stopped => { stop.0.cancel(); return; }
+                    changed = changed => {
                         if changed.is_err() { stop.0.cancel(); return; }
                     }
                 }
             }
-        };
+        })
+    }
+
+    fn new(
+        issuer: &crate::core::RuntimeAuthority,
+        verifier: &crate::core::AuthorityVerifier,
+        scope: &Scope,
+        expires_at: u64,
+        work: &NativeMaterializationWork,
+    ) -> crate::Result<Self> {
+        let runtime = tokio::runtime::Handle::try_current().map_err(|_| {
+            crate::Error::Unsupported("guest authority requires an event runtime".into())
+        })?;
+        let io = PreparationIo::from_native_work(work)?;
+        let verified = verifier.authenticate_scope(scope, &mut Some(&mut io.history_io()))?;
+        let owned_bytes = verified.logical_owned_bytes()?;
+        // Subscribe before checking: revocation cannot fall between the check
+        // and event registration. Each wake is an actual trust publication.
+        let context = issuer.operation_context().cloned();
+        let needs_expiry_alarm = context.is_none();
+        let cancellation = work.cancellation().clone();
+        let future = Self::monitor(verified, issuer.trust_changes(), context, work.clone())?;
         let frame = work.claim(
             owned_bytes
                 .checked_add(std::mem::size_of_val(&future) as u64)
@@ -118,7 +139,7 @@ impl GuestAuthorityLifetime {
             1,
             WorkCounters::UNCHARGED,
         )?;
-        let alarm = if expires_at == u64::MAX {
+        let alarm = if !needs_expiry_alarm || expires_at == u64::MAX {
             None
         } else {
             let stop = cancellation.clone();
@@ -221,7 +242,7 @@ where
                 (None, None, None)
             }
             TurnAdmission::Admitted { audience, scope } => {
-                let issuer = self.issuer.with_audience(audience.clone());
+                let issuer = self.issuer.with_audience(audience.clone())?;
                 let verifier = issuer.verifier(&mut Some(&mut io.history_io()))?;
                 let expires_at =
                     verifier.scope_expiry(audience, scope, &mut Some(&mut io.history_io()))?;
@@ -294,7 +315,14 @@ where
                     .mount_options(&workspace, Some(&volume), writable, work)
                     .await?
             }
-            None => owner_mount_options(&workspace, &self.issuer, None, writable, work).await?,
+            None => {
+                let issuer = self.issuer.native().ok_or_else(|| {
+                    crate::Error::Unsupported(
+                        "local guest enrollment requires native custody".into(),
+                    )
+                })?;
+                owner_mount_options(&workspace, issuer, None, writable, work).await?
+            }
         };
         let source = workspace.native_source(&options).await?;
         GuestSessionAdmission::admit(
@@ -316,6 +344,198 @@ where
 mod tests {
     use super::*;
 
+    // The owner verifies against real native trust but exports no signing key.
+    struct PublicObservation(crate::core::AuthorityVerifier);
+    impl crate::core::AuthorityOperations for PublicObservation {
+        fn check(&self, scope: &Scope) -> crate::Result<()> {
+            self.0.verify(scope, &mut None)
+        }
+        fn derive<'a>(
+            &'a self,
+            _context: &'a acyclic_auth::operation::Context,
+            _operation: crate::OperationId,
+            _parent: &'a Scope,
+            _id: &'a str,
+            _request: crate::core::ScopeDerivation<'a>,
+        ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<Scope>> {
+            Box::pin(async { Err(crate::Error::Unsupported("verification-only owner".into())) })
+        }
+        fn checkpoint<'a>(
+            &'a self,
+            _context: &'a acyclic_auth::operation::Context,
+            _operation: crate::OperationId,
+            _kind: crate::core::CheckpointKind,
+            _digest: [u8; 32],
+        ) -> acyclic_stream::BoxProviderFuture<'a, crate::Result<[u8; 64]>> {
+            Box::pin(async { Err(crate::Error::Unsupported("verification-only owner".into())) })
+        }
+    }
+
+    // A bounded memory owner uses the physical fence contract's original event.
+    // The completion is sent only after its private allocation is released.
+    struct PrivateMappings {
+        fenced: Option<tokio::sync::oneshot::Sender<()>>,
+        task: Option<tokio::task::JoinHandle<()>>,
+    }
+    impl GuestMappingFence for PrivateMappings {
+        fn attach(
+            &mut self,
+            work: &NativeMaterializationWork,
+        ) -> Result<(), acyclic_fs::native_mount::NativeMountError> {
+            let cancelled = work.cancellation_wait()?;
+            let fenced = self.fenced.take();
+            let private = vec![0u8; 32].into_boxed_slice();
+            self.task = Some(tokio::spawn(async move {
+                cancelled.await;
+                drop(private);
+                if let Some(fenced) = fenced {
+                    let _ = fenced.send(());
+                }
+            }));
+            Ok(())
+        }
+        fn retire(&mut self) -> Result<(), acyclic_fs::native_mount::NativeMountError> {
+            if self.task.as_ref().is_some_and(|task| task.is_finished()) {
+                Ok(())
+            } else {
+                Err(acyclic_fs::native_mount::NativeMountError::ControlPending)
+            }
+        }
+    }
+    impl Drop for PrivateMappings {
+        fn drop(&mut self) {
+            if let Some(task) = self.task.take() {
+                task.abort();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn independent_platform_revocation_and_source_loss_fence_idle_mappings()
+    -> crate::Result<()> {
+        use futures::FutureExt;
+        acyclic_native_runtime::initialize_native_io_services()
+            .map_err(|error| crate::Error::Storage(error.to_string()))?;
+        for lose_source in [false, true] {
+            let audience = crate::core::Authority {
+                kind: crate::core::AggregateKind::Task,
+                id: "platform-guest".into(),
+            };
+            let issuer = crate::core::AuthorityRoot::new("owner", [72; 32], audience.clone());
+            let unrelated = crate::core::AuthorityRoot::new("other", [73; 32], audience.clone());
+            let scope = issuer.bootstrap_scope(
+                "guest",
+                &crate::Capabilities::default(),
+                None,
+                &mut None,
+            )?;
+            let native = issuer.verifier(&mut None)?;
+            let scope = scope.seal(&native)?;
+            let changes = issuer.trust_changes();
+            let public = crate::core::AuthorityVerifier::from_public(
+                "owner".into(),
+                audience,
+                issuer.public_workload_trust()?,
+                native.public_checkpoint_key(),
+                changes.clone(),
+            )?;
+            let (producer, stopped) = futures::channel::oneshot::channel::<()>();
+            let context = acyclic_auth::operation::Context::from_stopped(
+                native.expiry(&scope)?.saturating_mul(1000),
+                async move {
+                    let _ = stopped.await;
+                    acyclic_auth::operation::Stopped::Cancelled
+                },
+            );
+            let operations = Arc::new(PublicObservation(native));
+            assert!(
+                crate::core::AdmittedAuthority::from_platform(
+                    public.clone(),
+                    scope.clone(),
+                    context.clone(),
+                    operations.clone(),
+                    unrelated.trust_changes(),
+                )
+                .is_err()
+            );
+            let admitted = crate::core::AdmittedAuthority::from_platform(
+                public.clone(),
+                scope.clone(),
+                context.clone(),
+                operations,
+                changes,
+            )?;
+            let runtime = crate::core::RuntimeAuthority::admitted(
+                admitted,
+                crate::OperationId::from_bytes([74; 16]),
+            );
+            let verifier = runtime.verifier(&mut None)?;
+            let verified = verifier.authenticate_scope(&scope, &mut None)?;
+            let cancellation = CancellationToken::new();
+            let work = NativeMaterializationWork::new(
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )
+            .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+            let (fenced, private_released) = tokio::sync::oneshot::channel();
+            let _mappings = GuestMappingAdmission::new(
+                Box::new(PrivateMappings {
+                    fenced: Some(fenced),
+                    task: None,
+                }),
+                &work,
+            )?;
+            let detached_cancellation = CancellationToken::new();
+            let detached_work = NativeMaterializationWork::new(
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &detached_cancellation,
+            )
+            .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+            // Negative control: the old independent local watch had a producer,
+            // but that producer was unrelated to this account's revocations.
+            let detached = GuestAuthorityLifetime::monitor(
+                verified.clone(),
+                unrelated.trust_changes(),
+                Some(context.clone()),
+                detached_work,
+            )?;
+            let monitor = GuestAuthorityLifetime::monitor(
+                verified,
+                runtime.trust_changes(),
+                Some(context),
+                work.clone(),
+            )?;
+            futures::pin_mut!(monitor, detached);
+            assert!(monitor.as_mut().now_or_never().is_none());
+            assert!(detached.as_mut().now_or_never().is_none());
+            assert!(cancellation.check().is_ok());
+            if lose_source {
+                drop(issuer);
+            } else {
+                issuer.revoke_workload(&scope)?;
+            }
+            // The immutable independent snapshot alone still accepts history.
+            public.verify(&scope, &mut None)?;
+            assert!(
+                monitor.as_mut().now_or_never().is_some(),
+                "owner change did not wake the idle monitor"
+            );
+            assert!(
+                detached.as_mut().now_or_never().is_none(),
+                "negative control unexpectedly observed the owner"
+            );
+            assert!(cancellation.check().is_err());
+            assert!(detached_cancellation.check().is_ok());
+            private_released
+                .await
+                .expect("private memory owner completion");
+            assert_eq!(work.receipt().backend_read_operations, 0);
+            assert_eq!(work.receipt().backend_write_operations, 0);
+            drop(producer);
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn idle_guest_revocation_and_monitor_loss_cancel_original_work() -> crate::Result<()> {
         acyclic_native_runtime::initialize_native_io_services()
@@ -336,7 +556,7 @@ mod tests {
             NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                 .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
         let lifetime = GuestAuthorityLifetime::new(
-            &issuer,
+            &issuer.clone().into(),
             &verifier,
             &scope,
             verifier.expiry(&scope)?,
@@ -362,7 +582,7 @@ mod tests {
             NativeMaterializationWork::new(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                 .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
         let lifetime = GuestAuthorityLifetime::new(
-            &issuer,
+            &issuer.clone().into(),
             &verifier,
             &scope,
             verifier.expiry(&scope)?,
@@ -372,6 +592,57 @@ mod tests {
         lifetime.task.abort();
         cancelled.await;
         assert!(cancellation.check().is_err());
+
+        for revoke in [false, true] {
+            let scope = issuer.bootstrap_scope(
+                "platform",
+                &crate::Capabilities::default(),
+                None,
+                &mut None,
+            )?;
+            let (producer, stopped) = futures::channel::oneshot::channel::<()>();
+            let context = acyclic_auth::operation::Context::from_stopped(
+                verifier.expiry(&scope)?.saturating_mul(1000),
+                async move {
+                    let _ = stopped.await;
+                    acyclic_auth::operation::Stopped::Cancelled
+                },
+            );
+            let runtime = crate::core::RuntimeAuthority::admitted(
+                issuer.admit(scope.clone(), context)?,
+                crate::OperationId::from_bytes([72; 16]),
+            );
+            let verifier = runtime.verifier(&mut None)?;
+            let cancellation = CancellationToken::new();
+            let work = NativeMaterializationWork::new(
+                acyclic_fs::performance::BOUNDARY_BUDGET,
+                &cancellation,
+            )
+            .map_err(|(cause, work)| crate::Error::NativeConstruction { cause, work })?;
+            let lifetime = GuestAuthorityLifetime::new(
+                &runtime,
+                &verifier,
+                &scope,
+                verifier.expiry(&scope)?,
+                &work,
+            )?;
+            assert!(cancellation.check().is_ok());
+            assert!(
+                lifetime._alarm.is_none(),
+                "duplicated platform expiry alarm"
+            );
+            let cancelled = work.cancellation_wait()?;
+            if revoke {
+                issuer.revoke_workload(&scope)?;
+            } else {
+                drop(producer);
+            }
+            cancelled.await;
+            assert!(cancellation.check().is_err());
+            assert_eq!(work.receipt().backend_read_operations, 0);
+            assert_eq!(work.receipt().backend_write_operations, 0);
+            drop(lifetime);
+        }
         Ok(())
     }
 }

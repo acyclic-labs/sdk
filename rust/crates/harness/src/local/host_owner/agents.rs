@@ -197,19 +197,20 @@ pub(super) struct HostDriver {
 }
 
 impl HostDriver {
-    fn content(&self, agent: &AgentState, bound: u64) -> Result<Content> {
+    async fn content(&self, agent: &AgentState, bound: u64) -> Result<Content> {
         let AgentAuthority {
             scope,
             verifier,
             private,
             ..
         } = agent_authority(
-            &self.issuer,
+            &self.issuer.clone().into(),
             &TurnAdmission::LocalRoot,
             &agent.path,
             &agent.volumes,
             &[],
-        )?;
+        )
+        .await?;
         Ok(Content {
             reader: FilesystemContentVerifier::new(
                 Arc::clone(&self.files),
@@ -231,7 +232,7 @@ impl HostDriver {
 
     /// Reads one file the agent's own volumes hold.
     pub(super) async fn read(&self, agent: &AgentState, file: &FileRef) -> Result<Vec<u8>> {
-        let content = self.content(agent, MAXIMUM_BYTES)?;
+        let content = self.content(agent, MAXIMUM_BYTES).await?;
         Ok(content
             .reader
             .read(file, MAXIMUM_BYTES, None, None)?
@@ -246,7 +247,7 @@ impl HostDriver {
         operation: OperationId,
         bytes: &[u8],
     ) -> Result<FileRef> {
-        let content = self.content(agent, MAXIMUM_BYTES)?;
+        let content = self.content(agent, MAXIMUM_BYTES).await?;
         Ok(content
             .writer
             .stage_once(
@@ -273,7 +274,9 @@ impl HostDriver {
         let mut operation = [0; 16];
         hasher.finalize_xof().fill(&mut operation);
         let operation = OperationId::from_bytes(operation);
-        let content = self.content(agent, crate::local::host_process::EVENT_LOG_BYTES)?;
+        let content = self
+            .content(agent, crate::local::host_process::EVENT_LOG_BYTES)
+            .await?;
         Ok(content
             .writer
             .stage_once(
@@ -724,15 +727,16 @@ impl NativeAgents {
     }
 
     /// `agent`'s workload over its own volumes, signed for its native views.
-    pub(super) fn view_scope(&self, agent: &AgentState) -> Result<Scope> {
+    pub(super) async fn view_scope(&self, agent: &AgentState) -> Result<Scope> {
         // The agent's own grants, signed by the root issuer that admits views.
         let authority = agent_authority(
-            &self.issuer,
+            &self.issuer.clone().into(),
             &TurnAdmission::LocalRoot,
             &agent.path,
             &agent.volumes,
             &[],
-        )?;
+        )
+        .await?;
         let mut grants = authority
             .grants
             .iter()

@@ -5,50 +5,18 @@
 //! record through `onRecord`, and alone owns sealing, exact retry and
 //! settlement of the transition it returns.
 
-use super::host::Cancel;
 use super::{
     BrowserHandler, WasmAgentAuthority, WasmAgentProviders, WasmAgentRegistry,
     WasmBrowserAgentOptions, from_js, js_error,
 };
-use crate::{
-    Error,
-    core::{Authority, Scope},
-    filesystem::TurnAdmission,
-};
+use crate::Error;
+use crate::wasm::cancel::Cancel;
 use acyclic_actors::guest::{
     CancellationToken, GUEST_ABI_VERSION, GuestError, GuestFuture, Handler as _, wire,
 };
 use js_sys::{Function, Promise, Uint8Array};
-use serde::Deserialize;
-use tsify::Tsify;
 use wasm_bindgen::{JsCast as _, prelude::*};
 use wasm_bindgen_futures::JsFuture;
-
-/// The admission a guest's turns act under, given by whoever opens it.
-#[derive(Deserialize, Tsify)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum WasmGuestAdmission {
-    /// The opener holds `owner`'s custody and is the root of the tree it
-    /// hosts: each agent's scope is a root grant.
-    Root,
-    /// The opener was admitted with `scope`, issued for `audience`: each
-    /// agent's scope is delegated from it and grants no more.
-    Admitted {
-        /// The audience `scope` was issued for.
-        audience: Authority,
-        /// The opener's verified scope.
-        scope: Scope,
-    },
-}
-
-impl From<WasmGuestAdmission> for TurnAdmission {
-    fn from(admission: WasmGuestAdmission) -> Self {
-        match admission {
-            WasmGuestAdmission::Root => Self::LocalRoot,
-            WasmGuestAdmission::Admitted { audience, scope } => Self::Admitted { audience, scope },
-        }
-    }
-}
 
 /// One agent handler package, loaded in a guest.
 #[wasm_bindgen]
@@ -62,25 +30,19 @@ fn guest_error(error: GuestError) -> JsValue {
 
 #[wasm_bindgen]
 impl AgentGuest {
-    /// Opens the guest over the storage its host injects: the guest owns
-    /// none. `options` carries the provider identity and limits, `owner` the
-    /// agents' signing custody, `registry` the turns' model and tools, and
-    /// `admission` the authority its turns act under: an admitted opener's
-    /// own scope, or the root only for the opener that is the tree's root.
-    /// There is no default.
+    /// Opens over injected storage and the original platform-admitted owner.
+    /// Request options cannot replace its caller or grant.
     pub fn open(
         providers: &WasmAgentProviders,
         #[wasm_bindgen(unchecked_param_type = "WasmBrowserAgentOptions")] options: JsValue,
         owner: &WasmAgentAuthority,
         registry: &WasmAgentRegistry,
-        #[wasm_bindgen(unchecked_param_type = "WasmGuestAdmission")] admission: JsValue,
     ) -> Result<AgentGuest, JsValue> {
         let options: WasmBrowserAgentOptions = from_js(options)?;
-        let admission: WasmGuestAdmission = from_js(admission)?;
         Ok(Self {
             handler: providers
                 .providers
-                .handler(&options, owner, registry, &admission.into())?,
+                .handler(&options, owner, registry, &owner.admission()?)?,
         })
     }
 

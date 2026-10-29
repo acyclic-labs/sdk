@@ -12,7 +12,7 @@ use crate::{
         Out, SpawnVolumes, VolumeBinding,
     },
     conversation::{ContentAccess, ContentPublisher, FileRef, VolumeClass, VolumeOwner, VolumeRef},
-    core::AuthorityRoot,
+    core::RuntimeAuthority,
 };
 use acyclic_actors::{
     addressing::ActorReference,
@@ -33,7 +33,7 @@ type Host<P, O> = FilesystemHost<StreamAuthorityStore<P>, O>;
 /// Spawned volumes of agents whose store shares the volumes' authority stream.
 pub struct FilesystemSpawnVolumes<P: ?Sized + 'static, O: 'static> {
     host: Arc<Host<P, O>>,
-    issuer: AuthorityRoot,
+    issuer: RuntimeAuthority,
     admission: super::TurnAdmission,
     maximum_bytes: u64,
     cuts: Option<Arc<dyn ForkCuts>>,
@@ -62,13 +62,13 @@ impl<P: ?Sized, O> FilesystemSpawnVolumes<P, O> {
     #[must_use]
     pub fn new(
         host: Arc<Host<P, O>>,
-        issuer: AuthorityRoot,
+        issuer: impl Into<RuntimeAuthority>,
         admission: super::TurnAdmission,
         maximum_bytes: u64,
     ) -> Self {
         Self {
             host,
-            issuer,
+            issuer: issuer.into(),
             admission,
             maximum_bytes,
             cuts: None,
@@ -307,6 +307,7 @@ where
                 volumes,
                 &[],
             )
+            .await
             .map_err(invalid)?;
             let writer = super::FilesystemContentPublisher::new(
                 Arc::clone(&self.host),

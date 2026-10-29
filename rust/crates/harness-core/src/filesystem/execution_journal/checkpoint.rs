@@ -286,7 +286,7 @@ where
         Ok(())
     }
 
-    pub(super) fn encode_index_checkpoint(
+    pub(super) async fn encode_index_checkpoint(
         &self,
         state: IndexState,
         io: Option<&PreparationIo>,
@@ -294,8 +294,9 @@ where
         let bytes = codec::state_bytes(&state, io)?;
         let digest = crate::model::hash_bytes(&bytes, io)?;
         let proof = crate::executor::with_history_io(io, |work| {
-            self.verifier.execution_checkpoint_proof(digest, work)
-        })?;
+            Ok::<_, Error>(self.verifier.execution_checkpoint_proof(digest, work))
+        })?
+        .await?;
         codec::encode_state(&bytes, &proof, io)
     }
 }

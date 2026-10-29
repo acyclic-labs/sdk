@@ -33,10 +33,19 @@ pub struct HttpObjects {
     endpoint: Url,
     authorization: Option<HeaderValue>,
     credential: Option<CredentialProvider>,
+    context: Option<acyclic_auth::operation::Context>,
     maximum: usize,
 }
 
 impl HttpObjects {
+    /// Bind credentials, connection, body reading, decoding and semantic
+    /// admission to one caller-owned absolute deadline and cancellation event.
+    /// Clones retain that same budget; no stage starts another timer.
+    pub fn with_context(mut self, context: acyclic_auth::operation::Context) -> Self {
+        self.context = Some(context);
+        self
+    }
+
     /// Creates a bounded client with optional exclusive PEM trust.
     pub fn new(
         endpoint: &str,
@@ -87,9 +96,7 @@ impl HttpObjects {
             endpoint.set_path(&format!("{}/", endpoint.path()));
         }
         let authorization = token.map(credential_header).transpose()?;
-        let mut transport = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(30));
+        let mut transport = Client::builder().redirect(reqwest::redirect::Policy::none());
         if let Some(ca) = ca {
             if ca.is_empty() || ca.len() > crate::MAX_PEM_BYTES {
                 return Err(invalid());
@@ -102,6 +109,7 @@ impl HttpObjects {
             endpoint: endpoint.join("v1/objects/").map_err(|_| invalid())?,
             authorization,
             credential,
+            context: None,
             maximum: maximum_response_bytes,
         })
     }
@@ -141,50 +149,61 @@ impl HttpObjects {
         route: &str,
         input: &I,
     ) -> Result<O, Error> {
-        let (_, input_name, output_name) = crate::HTTP_ROUTES
-            .iter()
-            .find(|(path, _, _)| *path == route)
-            .ok_or_else(unavailable)?;
-        let url = self
-            .endpoint
-            .join(route)
-            .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
-        let (authorization, lease) = self.authorization().await?;
-        let response = self
-            .transport
-            .post(url)
-            .header(AUTHORIZATION, authorization)
-            .header("content-type", "application/json")
-            .body(json::encode(input_name, input)?)
-            .send()
-            .await
-            .map_err(|_| unavailable())?;
-        if response.status().as_u16() == 401 {
+        crate::operation::run(self.context.as_ref(), async {
+            let (_, input_name, output_name) = crate::HTTP_ROUTES
+                .iter()
+                .find(|(path, _, _)| *path == route)
+                .ok_or_else(unavailable)?;
+            let url = self
+                .endpoint
+                .join(route)
+                .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+            let (authorization, lease) = self.authorization().await?;
+            let mut request = self
+                .transport
+                .post(url)
+                .header(AUTHORIZATION, authorization)
+                .header("content-type", "application/json")
+                .body(json::encode(input_name, input)?);
+            if self.context.is_none() {
+                request = request.timeout(std::time::Duration::from_secs(30));
+            }
+            if let Some(context) = &self.context {
+                context.check()?;
+            }
+            let response = request.send().await.map_err(|_| unavailable())?;
+            if response.status().as_u16() == 401 {
+                if let Some(lease) = &lease {
+                    lease
+                        .reject()
+                        .await
+                        .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+                }
+            }
+            if response.status().as_u16() != 200 {
+                return Err(self.failure(response).await);
+            }
+            let bytes = self.bytes(response).await?;
             if let Some(lease) = &lease {
                 lease
-                    .reject()
+                    .check()
                     .await
                     .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
             }
-        }
-        if response.status().as_u16() != 200 {
-            return Err(self.failure(response).await);
-        }
-        let bytes = self.bytes(response).await?;
-        if let Some(lease) = &lease {
-            lease
-                .check()
-                .await
-                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-        }
-        let decoded = json::decode(output_name, &bytes, self.maximum).map_err(|_| unavailable())?;
-        if let Some(lease) = &lease {
-            lease
-                .check()
-                .await
-                .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
-        }
-        Ok(decoded)
+            if let Some(context) = &self.context {
+                context.check()?;
+            }
+            let decoded =
+                json::decode(output_name, &bytes, self.maximum).map_err(|_| unavailable())?;
+            if let Some(lease) = &lease {
+                lease
+                    .check()
+                    .await
+                    .map_err(|_| Error::from(wire::ErrorCode::AccessDenied))?;
+            }
+            Ok(decoded)
+        })
+        .await
     }
 
     async fn bytes(&self, mut response: Response) -> Result<Vec<u8>, Error> {
@@ -230,40 +249,53 @@ impl HttpObjects {
     }
 }
 
+#[cfg(test)]
+#[path = "http_context_tests.rs"]
+mod context_tests;
+
 #[async_trait::async_trait]
 impl Blobs for HttpObjects {
     async fn put(&self, body: OwnedBytes, references: Vec<Digest>) -> Result<Put, Error> {
+        if let Some(context) = &self.context {
+            context.check()?;
+        }
         self.put_sealed(crate::Sealed::new(body), references).await
     }
 
     async fn put_sealed(&self, body: crate::Sealed, references: Vec<Digest>) -> Result<Put, Error> {
-        let digest = Digest::sealed(&body);
-        let body = body.into_bytes();
-        let reply: wire::PutResponse = self
-            .call(
-                "blobs/put",
-                &wire::PutBlobRequest {
-                    digest: Some(digest.into()),
-                    body: bytes::Bytes::from_owner(body.clone()),
-                    references: convert::wire_digests(&references),
-                },
-            )
-            .await?;
-        convert::verified_put(&reply, digest, body.len() as u64)
+        crate::operation::admit(self.context.as_ref(), async {
+            let digest = Digest::sealed(&body);
+            let body = body.into_bytes();
+            let reply: wire::PutResponse = self
+                .call(
+                    "blobs/put",
+                    &wire::PutBlobRequest {
+                        digest: Some(digest.into()),
+                        body: bytes::Bytes::from_owner(body.clone()),
+                        references: convert::wire_digests(&references),
+                    },
+                )
+                .await?;
+            convert::verified_put(&reply, digest, body.len() as u64)
+        })
+        .await
     }
 
     async fn put_manifest(&self, manifest: Manifest) -> Result<Put, Error> {
-        let digest = Digest::of(&manifest.encode());
-        let length = manifest.length()?;
-        let reply: wire::PutResponse = self
-            .call(
-                "blobs/put-manifest",
-                &wire::PutManifestRequest {
-                    manifest: Some(convert::manifest(&manifest)),
-                },
-            )
-            .await?;
-        convert::verified_put(&reply, digest, length)
+        crate::operation::admit(self.context.as_ref(), async {
+            let digest = Digest::of(&manifest.encode());
+            let length = manifest.length()?;
+            let reply: wire::PutResponse = self
+                .call(
+                    "blobs/put-manifest",
+                    &wire::PutManifestRequest {
+                        manifest: Some(convert::manifest(&manifest)),
+                    },
+                )
+                .await?;
+            convert::verified_put(&reply, digest, length)
+        })
+        .await
     }
 
     async fn get(
@@ -272,100 +304,125 @@ impl Blobs for HttpObjects {
         range: ByteRange,
         maximum_bytes: u64,
     ) -> Result<Object, Error> {
-        let reply: wire::GetBlobResponse = self
-            .call(
-                "blobs/get",
-                &wire::GetBlobRequest {
-                    digest: Some(digest.into()),
-                    range: Some(convert::range(range)),
-                    maximum_bytes,
-                },
-            )
-            .await?;
-        convert::object(reply, digest, range, maximum_bytes)
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply: wire::GetBlobResponse = self
+                .call(
+                    "blobs/get",
+                    &wire::GetBlobRequest {
+                        digest: Some(digest.into()),
+                        range: Some(convert::range(range)),
+                        maximum_bytes,
+                    },
+                )
+                .await?;
+            convert::object(reply, digest, range, maximum_bytes)
+        })
+        .await
     }
 
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
-        let reply: wire::BlobInfo = self
-            .call(
-                "blobs/head",
-                &wire::HeadBlobRequest {
-                    digest: Some(digest.into()),
-                },
-            )
-            .await?;
-        convert::headed(&reply, digest)
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply: wire::BlobInfo = self
+                .call(
+                    "blobs/head",
+                    &wire::HeadBlobRequest {
+                        digest: Some(digest.into()),
+                    },
+                )
+                .await?;
+            convert::headed(&reply, digest)
+        })
+        .await
     }
 
     async fn delete(&self, digest: Digest) -> Result<crate::Deletion, Error> {
-        let reply: wire::DeleteBlobResponse = self
-            .call(
-                "blobs/delete",
-                &wire::DeleteBlobRequest {
-                    digest: Some(digest.into()),
-                },
-            )
-            .await?;
-        Ok(crate::Deletion {
-            outcome: convert::delete(&reply)?,
-            revision: None,
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply: wire::DeleteBlobResponse = self
+                .call(
+                    "blobs/delete",
+                    &wire::DeleteBlobRequest {
+                        digest: Some(digest.into()),
+                    },
+                )
+                .await?;
+            Ok(crate::Deletion {
+                outcome: convert::delete(&reply)?,
+                revision: None,
+            })
         })
+        .await
     }
 
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<Page, Error> {
-        let reply: wire::ListBlobsResponse = self
-            .call(
-                "blobs/list",
-                &wire::ListBlobsRequest {
-                    after: after.map(Into::into),
-                    limit,
-                },
-            )
-            .await?;
-        convert::listed(&reply, after, limit)
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply: wire::ListBlobsResponse = self
+                .call(
+                    "blobs/list",
+                    &wire::ListBlobsRequest {
+                        after: after.map(Into::into),
+                        limit,
+                    },
+                )
+                .await?;
+            convert::listed(&reply, after, limit)
+        })
+        .await
     }
 
     /// The server acknowledges a put only once it is durable.
     async fn flush(&self, _only: Option<&[Digest]>) -> Result<(), Error> {
-        Ok(())
+        crate::operation::admit(self.context.as_ref(), async { Ok(()) }).await
     }
 
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
-        let reply: wire::RetainResponse = self
-            .call(
-                "blobs/retain",
-                &wire::RetainRequest {
-                    root: root.as_bytes().to_vec(),
-                    references: convert::wire_digests(&references),
-                },
-            )
-            .await?;
-        Ok(convert::retained(&reply))
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply: wire::RetainResponse = self
+                .call(
+                    "blobs/retain",
+                    &wire::RetainRequest {
+                        root: root.as_bytes().to_vec(),
+                        references: convert::wire_digests(&references),
+                    },
+                )
+                .await?;
+            Ok(convert::retained(&reply))
+        })
+        .await
     }
 
     async fn release(&self, root: &RootId) -> Result<crate::Released, Error> {
-        let reply: wire::ReleaseResponse = self
-            .call(
-                "blobs/release",
-                &wire::ReleaseRequest {
-                    root: root.as_bytes().to_vec(),
-                },
-            )
-            .await?;
-        Ok(crate::Released {
-            existed: reply.existed,
-            revision: None,
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply: wire::ReleaseResponse = self
+                .call(
+                    "blobs/release",
+                    &wire::ReleaseRequest {
+                        root: root.as_bytes().to_vec(),
+                    },
+                )
+                .await?;
+            Ok(crate::Released {
+                existed: reply.existed,
+                revision: None,
+            })
         })
+        .await
     }
 
     async fn collect(&self) -> Result<Collection, Error> {
-        let reply: wire::CollectResponse =
-            self.call("blobs/collect", &wire::CollectRequest {}).await?;
-        Ok(convert::collection(&reply))
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply: wire::CollectResponse =
+                self.call("blobs/collect", &wire::CollectRequest {}).await?;
+            Ok(convert::collection(&reply))
+        })
+        .await
     }
 
     async fn usage(&self) -> Result<Usage, Error> {
-        let reply: wire::UsageResponse = self.call("blobs/usage", &wire::UsageRequest {}).await?;
-        Ok(convert::usage(&reply))
+        crate::operation::admit(self.context.as_ref(), async {
+            let reply: wire::UsageResponse =
+                self.call("blobs/usage", &wire::UsageRequest {}).await?;
+            Ok(convert::usage(&reply))
+        })
+        .await
     }
 }

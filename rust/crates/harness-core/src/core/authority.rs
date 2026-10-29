@@ -1,6 +1,11 @@
 //! Aggregate identity and host-issued authorization.
 use super::*;
+mod admitted;
+mod runtime;
 mod runtime_signing;
+pub use admitted::{AdmittedAuthority, AuthorityOperations, CheckpointKind, ScopeDerivation};
+pub use runtime::RuntimeAuthority;
+pub(crate) use runtime::until_turn_stopped;
 mod verified_scope;
 mod workload;
 pub(crate) use verified_scope::VerifiedScope;
@@ -111,7 +116,7 @@ pub struct Scope {
     pub(in crate::core) parent_proof: Option<[u8; 32]>,
     /// Public identity of the authenticated workload tip.
     pub(in crate::core) proof: Box<[u8; 32]>,
-    /// Ed25519 workload chain, including only its restricted append tip.
+    /// Ed25519 workload chain with a restricted append tip or a public seal.
     #[cfg_attr(feature = "wasm", tsify(type = "string"))]
     #[serde(with = "super::capability_bytes")]
     #[heap_layout(as = crate::heap_layout::markers::Base64Bytes)]
@@ -187,6 +192,26 @@ impl Scope {
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
         workload::verify_trusted(trust, audience, self, now_unix_seconds, work).map(|_| ())
+    }
+
+    /// Replace the restricted append tip with public verification evidence.
+    /// Hosts do this before exporting a scope to a guest. The scope's claims,
+    /// proof identity and revocation dependencies remain unchanged; subsequent
+    /// delegation requires its custodian's admitted operation port.
+    pub fn seal(mut self, verifier: &AuthorityVerifier) -> Result<Self> {
+        let capability = workload::verify(
+            verifier,
+            &verifier.audience,
+            &self,
+            workload::now(),
+            &mut None,
+        )?;
+        if !capability.is_sealed() {
+            let mut encoded = capability.encode_sealed().map_err(workload::unauthorized)?;
+            zeroize::Zeroize::zeroize(&mut self.workload);
+            self.workload = std::mem::take(&mut *encoded);
+        }
+        Ok(self)
     }
 
     /// Attenuates this workload offline; possession of a runtime root is unnecessary.
@@ -407,14 +432,19 @@ impl AuthorityRoot {
             .map_err(|_| Error::Storage("runtime trust poisoned".into()))?;
         Ok((
             std::sync::Arc::clone(&trust),
-            *self.runtime.public.revision.borrow(),
+            *self.runtime.revision.borrow(),
         ))
     }
 
     /// Announces each change of the public trust, such as a revocation.
     #[must_use]
     pub fn trust_revisions(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.runtime.public.revision.subscribe()
+        self.runtime.revision.subscribe()
+    }
+
+    /// Original authenticated trust event owner, without signing custody.
+    pub fn trust_changes(&self) -> std::sync::Arc<dyn acyclic_auth::trust::ChangeSource> {
+        self.runtime.public.changes.clone()
     }
 
     /// Revokes this workload and every descendant at this runtime's public trust boundary.
@@ -428,7 +458,6 @@ impl AuthorityRoot {
             .map_err(|_| Error::Storage("runtime trust poisoned".into()))?;
         let revision = self
             .runtime
-            .public
             .revision
             .borrow()
             .checked_add(1)
@@ -436,7 +465,7 @@ impl AuthorityRoot {
         std::sync::Arc::make_mut(&mut trust)
             .revoked_block_ids
             .insert(*scope.proof);
-        self.runtime.public.revision.send_replace(revision);
+        self.runtime.revision.send_replace(revision);
         Ok(())
     }
 
@@ -572,20 +601,10 @@ impl AuthorityRoot {
         id: impl Into<String>,
         file: &FileRef,
     ) -> Result<Scope> {
-        file.validate(&mut None)?;
-        if is_internal_path(file.path()) {
-            return Err(Error::Unauthorized(
-                "internal storage files cannot be delegated".into(),
-            ));
-        }
-        let volume = file.volume();
-        self.require_private_owner_read(owner_scope, volume)?;
-        self.issue_derived(
+        self.delegate_read(
             owner_scope,
             &id.into(),
-            &Capabilities::new([file.read_capability(&mut None)?]),
-            Some(reader),
-            &mut None,
+            ScopeDerivation::PrivateFileRead { file, reader },
         )
     }
 
@@ -598,33 +617,26 @@ impl AuthorityRoot {
         volume: &crate::conversation::VolumeRef,
         prefix: &str,
     ) -> Result<Scope> {
-        self.require_private_owner_read(owner_scope, volume)?;
-        self.issue_derived(
+        self.delegate_read(
             owner_scope,
             &id.into(),
-            &Capabilities::new([volume.directory_read_capability(prefix, &mut None)?]),
-            Some(reader),
-            &mut None,
+            ScopeDerivation::PrivateDirectoryRead {
+                volume,
+                prefix,
+                reader,
+            },
         )
     }
 
-    pub(in crate::core) fn require_private_owner_read(
+    fn delegate_read(
         &self,
-        owner_scope: &Scope,
-        volume: &crate::conversation::VolumeRef,
-    ) -> Result<()> {
-        self.verifier(&mut None)?.verify(owner_scope, &mut None)?;
-        volume.validate(&mut None)?;
-        if !matches!(volume.owner(), VolumeOwner::Agent(owner) if Some(*owner) == owner_scope.agent)
-            || !owner_scope
-                .capabilities
-                .contains(&volume.capability(VolumeOperation::Read, &mut None)?)
-        {
-            return Err(Error::Unauthorized(
-                "private read delegation requires its original owner".into(),
-            ));
-        }
-        Ok(())
+        parent: &Scope,
+        id: &str,
+        request: ScopeDerivation<'_>,
+    ) -> Result<Scope> {
+        self.verifier(&mut None)?.verify(parent, &mut None)?;
+        let (capabilities, agent) = request.resolve(parent)?;
+        self.issue_derived(parent, id, capabilities.as_ref(), agent, &mut None)
     }
 }
 

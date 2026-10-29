@@ -372,8 +372,9 @@ impl<'a> StockExecution<'a> {
         if let Some(verifier) = journal.working_checkpoint_authority() {
             let digest = cut.payload_digest(self.io)?;
             let proof = with_history_io(self.io, |work| {
-                verifier.working_checkpoint_proof(digest, work)
-            })?;
+                Ok::<_, Error>(verifier.working_checkpoint_proof(digest, work))
+            })?
+            .await?;
             let mut first = [0; 32];
             let mut second = [0; 32];
             first.copy_from_slice(&proof[..32]);

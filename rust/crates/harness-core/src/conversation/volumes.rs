@@ -558,8 +558,41 @@ impl ContentGrant {
         Self::check_volume(scope, volume, operation, maximum_bytes, work)
     }
 
+    /// Validate a proposed acting agent against its committed volume owner,
+    /// before the custodian issues that agent's attestation. This creates no
+    /// grant and never substitutes for the later signed acting-agent scope.
+    #[cfg(feature = "filesystem")]
+    pub(crate) fn authorize_agent_volume(
+        verifier: &AuthorityVerifier,
+        scope: &Scope,
+        agent: AgentId,
+        volume: &VolumeRef,
+        operation: VolumeOperation,
+        maximum_bytes: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        verifier.verify(scope, work)?;
+        if scope.agent().is_some_and(|admitted| admitted != agent) {
+            return Err(Error::Unauthorized(
+                "admission belongs to another acting agent".into(),
+            ));
+        }
+        Self::check_agent_volume(scope, Some(agent), volume, operation, maximum_bytes, work)
+    }
+
     fn check_volume(
         scope: &Scope,
+        volume: &VolumeRef,
+        operation: VolumeOperation,
+        maximum_bytes: u64,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        Self::check_agent_volume(scope, scope.agent(), volume, operation, maximum_bytes, work)
+    }
+
+    fn check_agent_volume(
+        scope: &Scope,
+        agent: Option<AgentId>,
         volume: &VolumeRef,
         operation: VolumeOperation,
         maximum_bytes: u64,
@@ -572,7 +605,7 @@ impl ContentGrant {
             return Ok(());
         }
         if operation == VolumeOperation::Write {
-            volume.require_writer(scope.agent(), work)?;
+            volume.require_writer(agent, work)?;
         }
         volume.validate(work)?;
         let digest = volume.identity_digest(

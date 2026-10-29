@@ -156,7 +156,7 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
     };
     let root = AuthorityRoot::new("conformance", [7; 32], audience.clone());
     let admission = admission(&root, audience, &fixture.binding, case).await?;
-    check_scope(&root, &admission, &fixture.path, &fixture.binding, case)?;
+    check_scope(&root, &admission, &fixture.path, &fixture.binding, case).await?;
     fixture
         .check(
             backend,
@@ -167,14 +167,21 @@ async fn run(backend: &dyn Backend, case: Case) -> Result {
         )
         .await
 }
-fn check_scope(
+async fn check_scope(
     root: &AuthorityRoot,
     admission: &TurnAdmission,
     path: &AgentPath,
     binding: &VolumeBinding,
     case: Case,
 ) -> Result {
-    let authority = agent_authority(root, admission, path, std::slice::from_ref(binding), &[]);
+    let authority = agent_authority(
+        &root.clone().into(),
+        admission,
+        path,
+        std::slice::from_ref(binding),
+        &[],
+    )
+    .await;
     match (case, authority) {
         (Case::LocalRoot, Ok(authority))
             if authority

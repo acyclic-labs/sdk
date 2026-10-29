@@ -109,9 +109,3 @@ pub fn validate_component_label(
         .map(|_| value)
         .map_err(js_error)
 }
-
-pub(super) fn key_bytes(value: Vec<u8>) -> Result<[u8; 32], JsValue> {
-    value
-        .try_into()
-        .map_err(|_| JsValue::from_str("authority key must contain exactly 32 bytes"))
-}

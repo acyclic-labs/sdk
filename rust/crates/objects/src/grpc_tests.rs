@@ -8,6 +8,9 @@ use std::time::Duration;
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
+#[path = "grpc_context_tests.rs"]
+mod context;
+
 /// Writes commit on the primary; reads are served from a view that holds only
 /// what `catch_up` applied, at the replica's own applied revision.
 struct Replica {

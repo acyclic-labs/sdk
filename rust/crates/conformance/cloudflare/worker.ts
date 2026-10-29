@@ -6,6 +6,7 @@ import { SqliteJournal, type StreamChange } from "../../../../typescript/package
 import { openCloudflareAgent, openCloudflareLedger } from "../../../../typescript/packages/harness/src/cloudflare.js";
 import { streamLedgerPort } from "../../../../typescript/packages/harness/src/event-ledger.js";
 import { initSync as initGuest, WasmAgentAuthority, WasmAgentRegistry, WasmSessionAuthority, type WasmFileRefWire, type Preset } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
+import { fixtureAuthority } from "./fixture-authority.mjs";
 import guestWasm from "./generated/agent_guest_bg.wasm";
 
 initSync({ module: wasm });
@@ -53,8 +54,8 @@ export class Ledger extends DurableObject {
 }
 
 export class Agent extends DurableObject {
-  private readonly owner = new WasmAgentAuthority({ kind: "task", id: "00112233-4455-6677-8899-aabbccddeeff" },
-    "do-conformance", new Uint8Array(32).fill(23));
+  private owner?: WasmAgentAuthority;
+  private custody?: ReturnType<typeof fixtureAuthority>;
   private readonly registry = new WasmAgentRegistry();
   private agent?: ReturnType<typeof openCloudflareAgent>;
   private executions = 0;
@@ -96,7 +97,8 @@ export class Agent extends DurableObject {
       { kind: "disabled" });
   }
   private host(preset: Preset = options.preset): ReturnType<typeof openCloudflareAgent> {
-    const audience = { kind: "task" as const, id: "00112233-4455-6677-8899-aabbccddeeff" };
+    const custody = this.custody ??= fixtureAuthority("00112233-4455-6677-8899-aabbccddeeff", this.grants);
+    const owner = this.owner ??= new WasmAgentAuthority(custody.capability);
     const name = this.ctx.id.name!;
     const context = { storage: {
       sql: this.ctx.storage.sql,
@@ -113,10 +115,8 @@ export class Agent extends DurableObject {
       },
     } };
     return this.agent ??= openCloudflareAgent(context, this.env.LEDGER.getByName(name.startsWith("protocol-") ? name : "suite"), name,
-      { ...options, preset, handler_timeout_ms: name === "timeout" ? 1000n : options.handler_timeout_ms }, this.owner, this.registry,
-      { admission: { audience, scope: this.owner.issueScope("host", this.grants, undefined),
-        account: [...new TextEncoder().encode("browser")], namespace: "agents" },
-      authority: new WasmSessionAuthority(hostFixtureTrust(), "workers:/test", "account"),
+      { ...options, preset, handler_timeout_ms: name === "timeout" ? 1000n : options.handler_timeout_ms }, owner, this.registry,
+      { authority: new WasmSessionAuthority(hostFixtureTrust(), "workers:/test", "account"),
       credential: hostFixtureCredential(), policy: () => true });
   }
   async configureAdmission(grants: string[]) {

@@ -3,7 +3,7 @@ use crate::{crypto::BlockId, verify::*};
 use std::collections::HashSet;
 
 /// An authenticated owner-supplied trust snapshot, never derived from a token.
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Snapshot {
     /// Environment whose public issuer keys were authenticated by the owner.
     pub environment: String,
@@ -57,4 +57,35 @@ impl Trust for Snapshot {
             RevocationCheck::Block(id) => self.revoked_block_ids.contains(id),
         })
     }
+}
+
+/// Loss of the authenticated trust publication owner. Consumers must fence
+/// active authority; source loss never means unchanged trust.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("authenticated trust change source closed")]
+pub struct SourceClosed;
+
+/// One registered publication event, with the same executor ownership as Auth.
+#[cfg(not(target_arch = "wasm32"))]
+pub type Changed = futures::future::BoxFuture<'static, Result<(), SourceClosed>>;
+/// A browser publication event stays on its original event loop.
+#[cfg(target_arch = "wasm32")]
+pub type Changed = futures::future::LocalBoxFuture<'static, Result<(), SourceClosed>>;
+
+/// Authenticated owner's trust publications, shared by native and hosted Auth.
+/// Register synchronously when `changed` is called, before checking current
+/// authority. Resolve after a publication is visible to the owner's validity
+/// guard. Coalescing is allowed: consumers recheck exact authority after a wake.
+/// Losing the producer must resolve `SourceClosed`, including while idle.
+/// Never supply a detached local notifier or periodically probe current trust.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait ChangeSource: Send + Sync {
+    /// Register the next real owner publication or producer loss.
+    fn changed(&self) -> Changed;
+}
+/// Same trust publication contract for a browser owner.
+#[cfg(target_arch = "wasm32")]
+pub trait ChangeSource {
+    /// Register the next real owner publication or producer loss.
+    fn changed(&self) -> Changed;
 }

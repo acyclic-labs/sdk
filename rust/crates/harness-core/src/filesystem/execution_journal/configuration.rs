@@ -181,9 +181,10 @@ where
         self
     }
 
-    /// Cancels the turn's model calls and tools once `stop` fires.
+    /// Cancels model calls, tools and pending platform checkpoints when `stop` fires.
     #[must_use]
     pub fn with_stop(mut self, stop: acyclic_actors::guest::CancellationToken) -> Self {
+        self.verifier.bind_checkpoint_stop(&stop);
         self.stop = Some(stop);
         self
     }

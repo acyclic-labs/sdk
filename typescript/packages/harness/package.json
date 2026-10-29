@@ -55,7 +55,7 @@
     "build": "bun run generate && bun run build:wasm && bun x tsc -b tsconfig.json",
     "check": "bun run generate && bun run build:wasm && bun x tsc -b tsconfig.json --pretty false",
     "check:types": "bun x tsc -p tsconfig.type-tests.json",
-    "test": "bun run generate && bun run build && bun test test",
+    "test": "bun run generate && bun run build && node ../../../scripts/generate-proto.mjs && bash ../../../scripts/build-host-fixture.sh && bun test test",
     "test:browser:mcp": "node test/mcp-http-fixture.mjs",
     "test:client:browser": "bun test/client-framework-browser.mjs",
     "generate": "bun ../../../scripts/generate.mjs harness",

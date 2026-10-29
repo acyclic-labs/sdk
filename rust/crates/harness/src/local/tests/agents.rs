@@ -366,9 +366,10 @@ async fn follow_tool_output(
         .as_ref()
         .ok_or_else(|| Error::NotFound("issuer".into()))?;
     let (path, volumes) = (&state.path, &state.volumes);
+    let runtime = &(*issuer).clone().into();
     let authority = move || {
         crate::filesystem::agent_authority(
-            issuer,
+            runtime,
             &crate::filesystem::TurnAdmission::LocalRoot,
             path,
             volumes,
@@ -376,8 +377,8 @@ async fn follow_tool_output(
         )
     };
     // A structured scope of `actions` on `paths`, for the same agent.
-    let structured = |actions: &[Action], paths: &[&str]| -> Result<_> {
-        let mut scoped = authority()?;
+    let structured = async |actions: &[Action], paths: &[&str]| -> Result<_> {
+        let mut scoped = authority().await?;
         let capability = Capability {
             layers: vec![
                 paths
@@ -395,16 +396,20 @@ async fn follow_tool_output(
             ],
             expires_at: None,
         };
-        scoped.scope = scoped.issuer.bootstrap_scope(
-            "observer",
-            &crate::Capabilities::new([capability.to_scope_label().map_err(agent)?]),
-            scoped.scope.agent(),
-            &mut None,
-        )?;
+        scoped.scope = scoped
+            .issuer
+            .native()
+            .ok_or_else(|| Error::Invalid("native fixture custody required".into()))?
+            .bootstrap_scope(
+                "observer",
+                &crate::Capabilities::new([capability.to_scope_label().map_err(agent)?]),
+                scoped.scope.agent(),
+                &mut None,
+            )?;
         Ok(scoped)
     };
     // Negative control: the same agent, attenuated to no grants, gets none.
-    let mut denied = authority()?;
+    let mut denied = authority().await?;
     denied.scope = denied.scope.attenuate_workload(
         "denied",
         &crate::Capabilities::new(Vec::<String>::new()),
@@ -422,12 +427,12 @@ async fn follow_tool_output(
     );
     // A structured scope is held to its compiled view: writing everywhere
     // reads nothing, and reading only `tools/` is enough.
-    let writer = structured(&[Action::Create, Action::Write], &["**"])?;
+    let writer = structured(&[Action::Create, Action::Write], &["**"]).await?;
     assert!(
         observation(harness, &writer, path).await.is_err(),
         "a write-only structured scope yields no credential"
     );
-    let reader = structured(&[Action::List, Action::Read], &["tools", "tools/**"])?;
+    let reader = structured(&[Action::List, Action::Read], &["tools", "tools/**"]).await?;
     observation(harness, &reader, path).await?;
     // From after the settled turn: its output stays the newest call's.
     let mut observer = conversation(harness).await?.observe(1).await?;
@@ -447,8 +452,12 @@ async fn follow_tool_output(
     // Revoking the agent scope the connection's credential derives from
     // ends its observation.
     // Negative control: an unrelated root with identical grants cannot close it.
-    let unrelated = authority()?;
-    unrelated.issuer.revoke_workload(&unrelated.scope)?;
+    let unrelated = authority().await?;
+    unrelated
+        .issuer
+        .native()
+        .ok_or_else(|| Error::Invalid("native fixture custody required".into()))?
+        .revoke_workload(&unrelated.scope)?;
     issuer.verifier(&mut None)?.verify(admitted, &mut None)?;
     issuer.revoke_workload(admitted)?;
     tokio::time::timeout(wait, async {

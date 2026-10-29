@@ -233,20 +233,23 @@ async fn later_compaction_replaces_pre_stage_history_and_survives_reopen() -> Re
     Ok(())
 }
 
-#[test]
-fn working_checkpoint_reads_require_only_the_public_key() -> Result<()> {
+#[tokio::test]
+async fn working_checkpoint_reads_require_only_the_public_key() -> Result<()> {
     let authority = crate::core::Authority {
         kind: crate::core::AggregateKind::Conversation,
         id: crate::ConversationId::new().to_string(),
     };
     let issuer = crate::core::AuthorityRoot::new("working-cut", [19; 32], authority);
     let verifier = issuer.verifier(&mut None)?;
-    let proof = verifier.working_checkpoint_proof([31; 32], &mut None)?;
+    let proof = verifier
+        .working_checkpoint_proof([31; 32], &mut None)
+        .await?;
     let public = crate::core::AuthorityVerifier::from_public(
         "working-cut".into(),
         verifier.audience().clone(),
         issuer.public_workload_trust()?,
         verifier.public_checkpoint_key(),
+        issuer.trust_changes(),
     )?;
     drop(issuer);
     drop(verifier);
@@ -259,6 +262,7 @@ fn working_checkpoint_reads_require_only_the_public_key() -> Result<()> {
     assert!(
         public
             .working_checkpoint_proof([31; 32], &mut None)
+            .await
             .is_err()
     );
     Ok(())
