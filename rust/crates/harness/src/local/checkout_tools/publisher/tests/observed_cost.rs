@@ -40,7 +40,7 @@ pub(super) async fn cost_fixture() -> Result<(
         harness.files.clone(),
         &harness.project,
         &harness.verifier,
-        harness.limits.file_bytes,
+        Some(harness.limits.file_bytes),
     );
     Ok((directory, state, harness, publisher))
 }
