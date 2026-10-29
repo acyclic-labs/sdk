@@ -19,27 +19,13 @@ impl StockExecution<'_> {
         let (context_input, base, working) = self
             .response_base(journal, input, step, prior_messages)
             .await?;
-        let canonical = if step == 0 && input.selected_context.is_some() {
-            Some(
-                stage_json(
-                    journal,
-                    input.operation_id,
-                    "context:0:canonical",
-                    &base,
-                    self.io,
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
         let (context, prepared) = self
             .prepare_transformed_request(&context_input, base)
             .await?;
         Ok((
             ResponseProjection {
                 context,
-                canonical,
+                canonical: None,
                 checkpoint: None,
                 working,
             },
@@ -325,7 +311,8 @@ impl StockExecution<'_> {
                     return Ok(retained);
                 }
                 let token_pressure = policy.needs_compaction(accounting.capacity, input_tokens)?;
-                let possible_message_pressure = projection.canonical.is_some()
+                let selected_base = step == 0 && input.selected_context.is_some();
+                let possible_message_pressure = selected_base
                     && prepared.request().messages.len() > self.compaction_message_limit(true, 0);
                 if !possible_message_pressure && !token_pressure {
                     return Ok(prepared);
@@ -342,7 +329,7 @@ impl StockExecution<'_> {
                     .messages
                     .len()
                     .saturating_sub(source.messages.len());
-                let message_pressure = projection.canonical.is_some()
+                let message_pressure = selected_base
                     && source.messages.len() > 1
                     && source.messages.len() > self.compaction_message_limit(true, stage_messages);
                 if !message_pressure && !token_pressure {

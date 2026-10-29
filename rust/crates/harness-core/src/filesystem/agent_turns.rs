@@ -53,6 +53,8 @@ pub struct TurnAuthority {
     pub approval: Arc<dyn crate::runtime::ToolPolicy>,
     /// Where the turn's agent tools record their effects.
     pub effects: Option<Arc<dyn crate::agent::TurnEffects>>,
+    /// The same finalized journal returned in `OpenTurn`, retained by tools.
+    pub journal: Arc<dyn crate::executor::ExecutionJournal>,
 }
 
 /// The conversation authority of one agent over its bound volumes.
@@ -873,6 +875,19 @@ where
                 None => None,
             };
             let (policy, resolved) = self.approvals(agent, &bindings.content).await?;
+            let outputs = Arc::clone(&files);
+            let approvals = Arc::new(AgentApprovals::new(files, Arc::new(policy)));
+            let journal = journal
+                .with_stop(stop)
+                .with_agent_approvals(Arc::clone(&approvals));
+            let selected = context
+                .select(agent, &*bindings.content.reader, input)
+                .await?;
+            let journal = match &selected {
+                Some(selected) => journal.with_bound_selection(selected.clone()),
+                None => journal,
+            };
+            let journal: Arc<dyn crate::executor::ExecutionJournal> = Arc::new(journal);
             let authority = TurnAuthority {
                 issuer: bindings.issuer,
                 scope: bindings.scope,
@@ -880,25 +895,14 @@ where
                 content: bindings.content,
                 approval: Arc::new(resolved.bind()?),
                 effects: effects.clone(),
-            };
-            let outputs = Arc::clone(&files);
-            let approvals = Arc::new(AgentApprovals::new(files, Arc::new(policy)));
-            let journal = journal
-                .with_stop(stop)
-                .with_agent_approvals(Arc::clone(&approvals));
-            let selected = context
-                .select(agent, &*authority.content.reader, input)
-                .await?;
-            let journal = match &selected {
-                Some(selected) => journal.with_bound_selection(selected.clone()),
-                None => journal,
+                journal: Arc::clone(&journal),
             };
             Ok(OpenTurn {
                 executor: self
                     .executors
                     .executor(agent, turn, input, &authority)
                     .await?,
-                journal: Arc::new(journal),
+                journal,
                 max_steps: self.limits.max_steps,
                 custody: Some(authority.issuer),
                 selected,

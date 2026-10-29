@@ -27,26 +27,6 @@ pub(crate) fn stock_string_copy(value: &str, io: Option<&PreparationIo>) -> Resu
     Ok(copied)
 }
 
-pub(in crate::executor) fn stock_selection_copy(
-    value: &ModelContextSelection,
-    io: Option<&PreparationIo>,
-) -> Result<ModelContextSelection> {
-    let mut ids = Vec::new();
-    for id in &value.message_ids {
-        stock_vec_push(&mut ids, *id, io)?;
-    }
-    let checkpoint = value
-        .checkpoint
-        .as_ref()
-        .map(|reference| crate::model::clone_file(reference, io))
-        .transpose()?;
-    Ok(ModelContextSelection {
-        conversation_revision: value.conversation_revision,
-        message_ids: ids,
-        checkpoint,
-    })
-}
-
 pub(crate) fn stock_vec_push<T>(
     values: &mut Vec<T>,
     value: T,

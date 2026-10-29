@@ -9,8 +9,6 @@ pub(in crate::executor) struct StockExecution<'a> {
     pub(in crate::executor) compaction: once_cell::sync::OnceCell<ResolvedCompaction<'a>>,
     pub(in crate::executor) records:
         tokio::sync::Mutex<crate::executor::record_index::RecordIndex<'a>>,
-    pub(in crate::executor) working_context:
-        tokio::sync::OnceCell<Option<crate::executor::working_context::WorkingContext<'a>>>,
     pub(in crate::executor) working_tail:
         tokio::sync::Mutex<crate::executor::working_tail::TailCache<'a>>,
     pub(in crate::executor) request_cache:
@@ -37,7 +35,6 @@ impl<'a> StockExecution<'a> {
             summary: None,
             compaction: once_cell::sync::OnceCell::new(),
             records: tokio::sync::Mutex::new(Default::default()),
-            working_context: tokio::sync::OnceCell::new(),
             working_tail: tokio::sync::Mutex::new(Default::default()),
             request_cache: tokio::sync::Mutex::new(Default::default()),
             content_admission: Default::default(),

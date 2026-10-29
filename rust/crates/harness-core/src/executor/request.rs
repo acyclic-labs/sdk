@@ -113,7 +113,7 @@ impl StockExecution<'_> {
         prior_messages: &[ModelMessage],
     ) -> Result<crate::context::Context> {
         let mut context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io)?;
-        self.canonical_base_for_turn(journal, input.operation_id, &mut context_input)
+        self.canonical_base_for_input(journal, &mut context_input)
             .await
     }
 

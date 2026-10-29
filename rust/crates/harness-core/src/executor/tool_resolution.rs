@@ -127,9 +127,7 @@ impl StockExecution<'_> {
         }) {
             return Err(Error::Indeterminate(operation_id));
         }
-        let key = with_history_io(self.io, |work| {
-            crate::executor::preparation_format(format_args!("tool:{step}:{call_id}:failed"), work)
-        })?;
+        let key = tool_settlement_key(step, call_id, ToolTerminalOutcome::Failed, self.io)?;
         let content = tool_failure_content(reason, &cause, self.io)?;
         let event = ExecutionEvent::ToolFailed {
             step,

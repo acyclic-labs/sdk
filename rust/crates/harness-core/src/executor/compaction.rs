@@ -1,11 +1,15 @@
 use super::*;
 
 impl StockExecution<'_> {
-    pub(super) fn compaction_message_limit(&self, canonical: bool, stage_messages: usize) -> usize {
+    pub(super) fn compaction_message_limit(
+        &self,
+        selected_base: bool,
+        stage_messages: usize,
+    ) -> usize {
         self.stock
             .limits
             .context_messages
-            .saturating_sub(if canonical { 2 } else { 0 })
+            .saturating_sub(if selected_base { 2 } else { 0 })
             .saturating_sub(stage_messages)
     }
 
@@ -21,14 +25,22 @@ impl StockExecution<'_> {
         let (input, step, prior) = turn;
         let (context, pre_stage) = source;
         let (projection, accounting) = captured;
+        let message_limit = self.compaction_message_limit(
+            step == 0 && input.selected_context.is_some(),
+            projection
+                .context
+                .messages
+                .len()
+                .saturating_sub(context.messages.len()),
+        );
         let (through, maximum) = self
             .summary_budget(
-                &projection,
                 accounting.count,
                 accounting.capacity,
                 &context,
                 pre_stage,
                 policy,
+                message_limit,
             )
             .await?;
         let summary = self
@@ -55,17 +67,7 @@ impl StockExecution<'_> {
             self.io,
         )
         .await?;
-        let checkpoint = self
-            .stage_canonical_checkpoint(
-                journal,
-                input,
-                projection.canonical.as_ref(),
-                &context,
-                &compacted,
-                (&compaction, &reference),
-            )
-            .await?;
-        let working = if pre_stage && journal.working_checkpoint_authority().is_some() {
+        let working = if pre_stage {
             Some(
                 self.stage_working_cut(
                     journal,
@@ -88,8 +90,8 @@ impl StockExecution<'_> {
             .await?;
         let compacted = ResponseProjection {
             context: compacted,
-            canonical: projection.canonical,
-            checkpoint,
+            canonical: None,
+            checkpoint: None,
             working,
         };
         self.finish_compaction(
@@ -157,12 +159,12 @@ impl StockExecution<'_> {
 
     async fn summary_budget(
         &self,
-        projection: &ResponseProjection,
         count: crate::context::ModelTokenCount,
         capacity: crate::context::ModelContextCapacity,
         context: &crate::context::Context,
         pre_stage: bool,
         policy: &crate::context::ThresholdCompaction,
+        message_limit: usize,
     ) -> Result<(usize, usize)> {
         let canonical_request = crate::model::PreparedModelRequest::prepare(
             self.request_from_context(context)?,
@@ -179,14 +181,7 @@ impl StockExecution<'_> {
             policy,
             context,
             &count,
-            self.compaction_message_limit(
-                projection.canonical.is_some(),
-                projection
-                    .context
-                    .messages
-                    .len()
-                    .saturating_sub(context.messages.len()),
-            ),
+            message_limit,
             self.io,
         )?;
         let mandatory = with_history_io(self.io, |work| {
@@ -209,63 +204,6 @@ impl StockExecution<'_> {
             ));
         }
         Ok((through, maximum))
-    }
-
-    pub(super) async fn stage_canonical_checkpoint(
-        &self,
-        journal: &dyn ExecutionJournal,
-        input: &TurnInput,
-        source: Option<&FileRef>,
-        context: &crate::context::Context,
-        compacted: &crate::context::Context,
-        compaction: (&FileRef, &crate::context::CompactionReference),
-    ) -> Result<Option<FileRef>> {
-        let Some(source) = source else {
-            return Ok(None);
-        };
-        let (compaction, proof) = compaction;
-        let selection = stock_selection_copy(
-            &input
-                .selected_context
-                .as_ref()
-                .ok_or_else(|| {
-                    stock_boundary(
-                        self.io,
-                        crate::wire::ErrorCode::Invalid,
-                        "canonical compaction has no selected history",
-                    )
-                })?
-                .selection,
-            self.io,
-        )?;
-        let retained = stage_json(
-            journal,
-            input.operation_id,
-            "context:0:canonical-retained",
-            compacted,
-            self.io,
-        )
-        .await?;
-        let envelope = crate::context::CanonicalContextCheckpoint {
-            operation_id: input.operation_id,
-            selection,
-            source: crate::model::clone_file(source, self.io)?,
-            retained,
-            compaction: crate::model::clone_file(compaction, self.io)?,
-        };
-        // stage_json authenticated these exact proof bytes before returning its
-        // reference; validate the held value without loading a second copy.
-        envelope.validate_projection(context, compacted, proof, self.stock.limits, self.io)?;
-        Ok(Some(
-            stage_json(
-                journal,
-                input.operation_id,
-                "context:0:checkpoint",
-                &envelope,
-                self.io,
-            )
-            .await?,
-        ))
     }
 
     pub(super) async fn publish_compacted_context(

@@ -59,7 +59,8 @@ pub struct ExecutionJournalCacheId(OperationId);
 /// Durable host services available to an executor; policy remains executor-owned.
 pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Authenticates private working cuts issued by this journal binding.
-    /// Without this capability the executor retains the ordinary replay path.
+    /// Without this capability the original journal's content and compaction
+    /// proof validation still bind its working cut; no signature is claimed.
     fn working_checkpoint_authority(&self) -> Option<&crate::core::AuthorityVerifier> {
         None
     }
@@ -127,6 +128,21 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         _io: Option<&'a PreparationIo>,
     ) -> Result<Option<IndexedExecutionFuture<'a>>> {
         Ok(None)
+    }
+
+    /// Observes one original tool's terminal record without replaying history.
+    /// `None` leaves the request unresolved; it never authorizes retirement.
+    fn tool_settlement<'a>(
+        &'a self,
+        query: ToolSettlementQuery<'a>,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<ToolSettlement>>> {
+        query.validate(io)?;
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "execution journal has no authenticated tool settlement lookup",
+        ))
     }
 
     /// Appends one reconstructable observation on the original optional ledger.

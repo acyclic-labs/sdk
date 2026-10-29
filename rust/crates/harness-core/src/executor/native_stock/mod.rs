@@ -1,6 +1,5 @@
 //! Original-work admission for the shared stock engine.
 use super::*;
-use crate::projection::ModelContextSelection;
 
 mod allocation;
 pub(crate) use allocation::*;

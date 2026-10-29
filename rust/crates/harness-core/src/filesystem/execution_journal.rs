@@ -61,6 +61,7 @@ mod summary_map;
 mod test_support;
 #[cfg(test)]
 mod tests;
+mod tool_settlement;
 mod traits;
 use summary::*;
 use summary_cache::SummaryCache;

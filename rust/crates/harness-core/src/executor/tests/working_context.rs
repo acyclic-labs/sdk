@@ -1,8 +1,28 @@
 use super::*;
 
 #[tokio::test]
-async fn canonical_cut_survives_followup_steps_and_reopen_before_stages() -> Result<()> {
+async fn selected_working_cut_survives_followup_steps_and_reopen_before_stages() -> Result<()> {
+    for signed in [false, true] {
+        selected_working_cut_case(signed).await?;
+    }
+    Ok(())
+}
+
+async fn selected_working_cut_case(signed: bool) -> Result<()> {
     let mut journal = Journal::default();
+    let issuer = crate::core::AuthorityRoot::new(
+        "selected-working-cut",
+        [21; 32],
+        crate::core::Authority {
+            kind: crate::core::AggregateKind::Conversation,
+            id: crate::ConversationId::new().to_string(),
+        },
+    );
+    journal.8 = if signed {
+        Some(issuer.verifier(&mut None)?)
+    } else {
+        None
+    };
     let (provider, _) = counted_model(
         65_536,
         None,
@@ -71,6 +91,16 @@ async fn canonical_cut_survives_followup_steps_and_reopen_before_stages() -> Res
         .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
         .await?;
     assert!(first.bytes().len() < 2_000);
+    let restarted = StockExecution::ordinary(&executor);
+    let replayed = restarted
+        .prepared_response(&journal, &input, 0, &[], &mut DispatchPhase::new())
+        .await?;
+    assert_eq!(replayed.bytes(), first.bytes());
+    assert_eq!(
+        provider.request_count(),
+        1,
+        "restart repeated paid compaction"
+    );
     let tail = vec![ModelMessage {
         role: ModelRole::Assistant,
         content: ModelContent::Text("tool result after the cut".into()),
@@ -78,11 +108,10 @@ async fn canonical_cut_survives_followup_steps_and_reopen_before_stages() -> Res
     // A fresh stock session must discover the same authenticated cut without
     // redispatching its summary. The original selected input remains unchanged.
     for session in [&execution, &StockExecution::ordinary(&executor)] {
-        let mut context_input = ContextInput::copy_for_turn(&input, 1, &tail, None)?;
-        let original_input = context_input.clone();
-        let base = session
-            .canonical_base_for_turn(&journal, input.operation_id, &mut context_input)
-            .await?;
+        let original_input = ContextInput::copy_for_turn(&input, 1, &tail, None)?;
+        let (mut context_input, base, working) =
+            session.response_base(&journal, &input, 1, &tail).await?;
+        let reference = working.as_ref().expect("selected base has a working cut");
         assert_eq!(context_input, original_input);
         assert_eq!(base.messages.last(), tail.last());
         let current = base.current_input_index.unwrap() as usize;
@@ -120,15 +149,22 @@ async fn canonical_cut_survives_followup_steps_and_reopen_before_stages() -> Res
         );
         assert!(crate::contract::canonical_json_bytes(&projected)?.len() < 2_000);
         let reads = journal.4.load(Ordering::SeqCst);
-        let _ = session
-            .canonical_base_for_turn(&journal, input.operation_id, &mut context_input)
-            .await?;
+        let (_, repeated, repeated_working) =
+            session.response_base(&journal, &input, 1, &tail).await?;
+        assert_eq!(repeated_working.as_ref(), Some(reference));
+        assert_eq!(repeated.messages.last(), tail.last());
         assert_eq!(
             journal.4.load(Ordering::SeqCst),
-            reads,
-            "warm continuation reloaded old checkpoint payloads"
+            reads + 1,
+            "warm continuation read more than its current projection"
         );
-        let mut wrong = context_input.clone();
+        session.load_working_cut(&journal, reference).await?;
+        assert_ne!(
+            journal.4.load(Ordering::SeqCst),
+            reads + 1,
+            "forced working-payload reload did not break the read bound"
+        );
+        let mut wrong = input.clone();
         wrong
             .selected_context
             .as_mut()
@@ -137,31 +173,29 @@ async fn canonical_cut_survives_followup_steps_and_reopen_before_stages() -> Res
             .conversation_revision += 1;
         assert!(
             session
-                .canonical_base_for_turn(&journal, input.operation_id, &mut wrong)
+                .response_base(&journal, &wrong, 1, &tail)
                 .await
                 .is_err()
         );
-        let mut wrong_input = context_input.clone();
+        let mut wrong_input = input.clone();
         wrong_input.input = ModelContent::Text("a different admitted input".into());
         assert!(
             session
-                .canonical_base_for_turn(&journal, input.operation_id, &mut wrong_input)
+                .response_base(&journal, &wrong_input, 1, &tail)
+                .await
+                .is_err()
+        );
+        let mut foreign = input.clone();
+        foreign.operation_id = OperationId::new();
+        assert!(
+            session
+                .synchronize_working_cut(&journal, &foreign, 1, tail.len(), Some(reference))
                 .await
                 .is_err()
         );
         assert!(
             session
-                .canonical_base_for_turn(&journal, OperationId::new(), &mut context_input)
-                .await
-                .is_err()
-        );
-        assert!(
-            session
-                .canonical_base_for_turn(
-                    &Journal::default(),
-                    input.operation_id,
-                    &mut context_input
-                )
+                .load_working_cut(&Journal::default(), reference)
                 .await
                 .is_err()
         );
@@ -170,13 +204,11 @@ async fn canonical_cut_survives_followup_steps_and_reopen_before_stages() -> Res
     let address = std::ptr::from_ref(&journal) as usize;
     journal = Journal::default();
     assert_eq!(std::ptr::from_ref(&journal) as usize, address);
-    let mut context_input = ContextInput::copy_for_turn(&input, 1, &tail, None)?;
+    let (_, original, working) = execution.response_base(&journal, &input, 1, &tail).await?;
     assert!(
-        execution
-            .canonical_base_for_turn(&journal, input.operation_id, &mut context_input)
-            .await
-            .is_err(),
-        "negative control reused a canonical cut after replacing its journal"
+        working.is_none(),
+        "replacing the journal retained an authenticated working cut"
     );
+    assert!(crate::contract::canonical_json_bytes(&original)?.len() > 50_000);
     Ok(())
 }
