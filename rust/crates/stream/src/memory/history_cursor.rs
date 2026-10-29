@@ -180,7 +180,7 @@ impl futures::Stream for FiniteRead {
     ) -> std::task::Poll<Option<Self::Item>> {
         let cursor = self.get_mut();
         let result = match cursor.peek(|| Ok::<_, StreamError>(()), || StreamError::Unavailable) {
-            Ok(Some(_)) => cursor.take().map(Ok),
+            Ok(Some(_)) => cursor.take_record().map(Ok),
             Ok(None) => None,
             Err(error) => Some(Err(error)),
         };
@@ -280,7 +280,7 @@ impl FiniteRead {
         Ok(Some(record))
     }
 
-    fn take(&mut self) -> Option<Record> {
+    fn take_record(&mut self) -> Option<Record> {
         let record = self.window.as_mut()?.next()?;
         self.next = record.sequence.checked_add(1)?;
         self.remaining -= 1;
