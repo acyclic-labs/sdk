@@ -119,3 +119,38 @@ test("event owner loss releases metadata, placement and queued waits", async () 
     }
   } finally { authority.free(); fixture.free(); }
 }, 10_000);
+
+test("failed delivery ends current waiters and preserves recovery without reviving disposal", async () => {
+  const { agent, fixture, authority, admission } = await setup();
+  let entered = Promise.withResolvers<void>();
+  let calls = 0;
+  const wait = () => { ++calls; entered.resolve(); return new Promise<never>(() => {}); };
+  const stream = WasmStream.connectProvider({ dispatch: wait, open: wait });
+  const providers = WasmAgentProviders.injected(stream, { length: wait, read: wait, put: wait }, false, fixture.options);
+  const guest = AgentGuest.open(providers, fixture.options, fixture.owner, fixture.registry,
+    { kind: "admitted", audience: admission.audience, scope: admission.scope });
+  const host = WasmAgentServer.open(providers, fixture.options, fixture.owner, fixture.registry,
+    admission, authority, { manifest: guest.manifest(), onRecord: () => { throw new Error("unexpected guest delivery"); },
+      policy: () => true, admitted: async () => {} });
+  const outcome = (pending: Promise<unknown>) => pending.then(
+    () => new Error("pending storage unexpectedly completed"), error => error);
+  try {
+    await host.adopt(agent);
+    const first = outcome(host.read(agent, "status", 0n, 1));
+    await Promise.race([entered.promise, first.then(error => { throw error; })]);
+    host.deliveryFailed();
+    expect((await first).code).toBe("unavailable");
+    entered = Promise.withResolvers<void>();
+    const second = outcome(host.read(agent, "status", 0n, 1));
+    await Promise.race([entered.promise, second.then(error => { throw error; })]);
+    expect(calls).toBe(2);
+    host.close();
+    expect((await second).code).toBe("unavailable");
+    host.deliveryFailed();
+    await expect(host.read(agent, "status", 0n, 1)).rejects.toThrow("unavailable");
+    expect(calls).toBe(2);
+  } finally {
+    host.close(); host.free(); guest.free(); providers.free(); stream.free();
+    authority.free(); fixture.free();
+  }
+}, 10_000);

@@ -353,10 +353,23 @@ impl WasmAgentServer {
         )
     }
 
-    /// Stops the host's sessions and pending commands with typed Unavailable.
-    /// A failed delivery or platform disposal must close its producer lifetime.
+    /// Stops this platform owner's sessions and commands permanently.
     pub fn close(&self) {
-        drop(self.lifetime.borrow_mut().take());
+        let lifetime = self.lifetime.borrow_mut().take();
+        drop(lifetime);
+    }
+
+    /// Fail the current delivery's waiters without disabling durable recovery.
+    /// Subsequent events subscribe to a fresh generation; disposal stays final.
+    #[wasm_bindgen(js_name = deliveryFailed)]
+    pub fn delivery_failed(&self) {
+        let previous = {
+            let mut lifetime = self.lifetime.borrow_mut();
+            lifetime
+                .as_mut()
+                .map(|current| std::mem::replace(current, tokio::sync::watch::channel(()).0))
+        };
+        drop(previous);
     }
 
     /// Bind platform metadata and queue waits to this same host owner. Dropping

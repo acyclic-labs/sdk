@@ -62,12 +62,14 @@ export class Agent extends DurableObject {
   private retainedRecoveryAlarm = false;
   private grants = hostFixtureGrants();
   private readonly timeout = { started: false, aborted: false };
+  private readonly started = Promise.withResolvers<void>();
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.ctx.blockConcurrencyWhile(async () => {
       this.grants = await this.ctx.storage.get("fixture-grants") ?? this.grants;
     });
     const timeout = this.timeout;
+    const started = this.started;
     const hangs = ctx.id.name === "timeout" || ctx.id.name === "cancel";
     const protocol = ctx.id.name?.startsWith("protocol-");
     if (protocol) this.registry.registerTool(hostFixtureTool(),
@@ -77,6 +79,7 @@ export class Agent extends DurableObject {
       async function* (_bytes: Uint8Array, dispatch: { step: number }, signal: AbortSignal) {
         if (hangs) {
           timeout.started = true;
+          started.resolve();
           await new Promise<void>(resolve => {
             const aborted = () => { timeout.aborted = true; resolve(); };
             if (signal.aborted) aborted();
@@ -138,6 +141,7 @@ export class Agent extends DurableObject {
   pause(paused: boolean) { return this.host().pause(paused); }
   cancel(intent: string) { return this.host().cancel(intent); }
   timeoutState() { return this.timeout; }
+  waitStarted() { return this.started.promise; }
   readFile(file: WasmFileRefWire) { return this.host().readFile(file); }
   wake() { return this.host().wake(); }
   alarm() { return this.host().wake(); }
@@ -166,7 +170,7 @@ export class Suite extends DurableObject {
   async deadline(retry: boolean): Promise<void> {
     const journal = new SqliteJournal(this.ctx.storage, "deadline-admission");
     await qualifyJournalDeadline({
-      configure: (configuration: Uint8Array, maximum: number) => journal.configure(configuration, maximum),
+      configure: (configuration: Uint8Array, maximum: number, authority: Uint8Array) => journal.configure(configuration, maximum, authority),
       flush: () => journal.flush(),
       read: (index: number) => journal.read(index),
       async append(index: number, admit: () => Uint8Array, changes: readonly StreamChange[]) {
@@ -355,12 +359,9 @@ export default {
       const agent = env.AGENT.getByName("cancel");
       const creation = agent.create("cancel-root", "Wait for an inbox cancellation").then(
         value => ({ value }), error => ({ error: String(error) }));
-      for (let attempt = 0; attempt < 100 && !(await agent.timeoutState()).started; attempt += 1) {
-        await new Promise(resolve => setTimeout(resolve, 20));
-      }
-      if (!(await agent.timeoutState()).started) {
-        throw new Error("STEP guest-cancel start failed; recovery: bash scripts/qualify-cloudflare.sh");
-      }
+      await Promise.race([agent.waitStarted(), creation.then(outcome => {
+        throw new Error(`STEP guest-cancel start failed: ${JSON.stringify(outcome)}; recovery: bash scripts/qualify-cloudflare.sh`);
+      })]);
       await agent.cancel("cancel-running-guest");
       const outcome = await creation;
       if ("error" in outcome || !(await agent.timeoutState()).aborted) {

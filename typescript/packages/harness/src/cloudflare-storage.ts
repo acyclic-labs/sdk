@@ -81,10 +81,11 @@ export class SqliteJournal {
     }
   }
 
-  async configure(configuration: Uint8Array, maximumFrameBytes: number): Promise<void> {
+  async configure(configuration: Uint8Array, maximumFrameBytes: number, authority: Uint8Array): Promise<Uint8Array> {
     this.maximumFrameBytes = maximumFrameBytes;
-    this.storage.transactionSync(() => {
+    const retained = this.storage.transactionSync(() => {
       this.storage.sql.exec("CREATE TABLE IF NOT EXISTS acyclic_stream_domains (domain TEXT PRIMARY KEY, configuration BLOB NOT NULL, count INTEGER NOT NULL, bytes INTEGER NOT NULL)");
+      this.storage.sql.exec("CREATE TABLE IF NOT EXISTS acyclic_stream_authorities (domain TEXT PRIMARY KEY, authority BLOB NOT NULL)");
       this.storage.sql.exec("CREATE TABLE IF NOT EXISTS acyclic_stream_commands (domain TEXT NOT NULL, ordinal INTEGER NOT NULL, length INTEGER NOT NULL, PRIMARY KEY(domain, ordinal))");
       this.storage.sql.exec("CREATE TABLE IF NOT EXISTS acyclic_stream_chunks (domain TEXT NOT NULL, ordinal INTEGER NOT NULL, chunk INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(domain, ordinal, chunk))");
       this.storage.sql.exec("INSERT INTO acyclic_stream_domains (domain, configuration, count, bytes) VALUES (?, ?, 0, 0) ON CONFLICT(domain) DO NOTHING", this.domain, Uint8Array.from(configuration).buffer);
@@ -92,8 +93,12 @@ export class SqliteJournal {
       if (!row || !equal(bytes(row.configuration), configuration)) {
         throw new Error("STEP sqlite-open failed: journal configuration differs; recovery: reopen with the original stream limits or choose a new domain");
       }
+      this.storage.sql.exec("INSERT INTO acyclic_stream_authorities (domain, authority) VALUES (?, ?) ON CONFLICT(domain) DO NOTHING", this.domain, Uint8Array.from(authority).buffer);
+      const [owner] = this.storage.sql.exec("SELECT authority FROM acyclic_stream_authorities WHERE domain = ?", this.domain);
+      return bytes(owner?.authority);
     });
     await this.storage.sync();
+    return retained;
   }
 
   flush(): Promise<void> {

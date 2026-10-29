@@ -25,7 +25,8 @@ struct WasmJournalStreamLimits {
 #[wasm_bindgen]
 impl WasmStream {
     /// Pull-based finite read or atomic checked follow for an injected host
-    /// port. Returns canonical SessionFrame record/progress bytes.
+    /// port. Returns length-delimited canonical SessionFrame record/progress bytes,
+    /// so a byte transport may split or coalesce chunks without changing records.
     #[wasm_bindgen(js_name = openProviderCursor)]
     pub async fn open_provider_cursor(
         &self,

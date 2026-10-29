@@ -61,8 +61,26 @@ pub async fn qualify_journal_deadline(
             if !matches!(outcome, CommitOutcome::Committed(_)) {
                 return Err(StreamError::InvalidResponse);
             }
+            let CommitOutcome::Committed(receipt) = &outcome else {
+                return Err(StreamError::InvalidResponse);
+            };
+            let issued = receipt.revision.clone();
             drop(provider);
             let reopened = JournalStream::open(journal, JournalStreamLimits::default()).await?;
+            let applied = reopened
+                .wait_applied(&acyclic_stream::RevisionCut::of(issued.clone()))
+                .await?;
+            if !applied.same_authority(&issued) || applied.index < issued.index {
+                return Err(StreamError::InvalidResponse);
+            }
+            let foreign = acyclic_stream::AppliedRevisions::in_process().at(0);
+            if reopened
+                .wait_applied(&acyclic_stream::RevisionCut::of(foreign))
+                .await
+                != Err(StreamError::RevisionForeign)
+            {
+                return Err(StreamError::InvalidResponse);
+            }
             if reopened
                 .commit(CommitRequest {
                     deadline_unix_millis: Some(0),

@@ -86,8 +86,9 @@ An event host exposes the same canonical protobuf session with
 incoming frames through `next(signal)` and pulls outgoing frames from the returned
 cursor. Return `null` on input EOF, cancel the pending platform read when `signal`
 aborts, and call `cursor.close()` on disconnect. Call `EventAgentHost.close()`
-when its platform owner is disposed. Failed delivery closes the same owner
-lifetime, terminating active sessions and commands with typed `Unavailable`.
+when its platform owner is disposed. Failed delivery ends the current generation
+of sessions and commands with typed `Unavailable`; subsequent events can recover
+from committed state and the retained alarm. Platform disposal is permanent.
 Direct storage controls share that lifetime: closing the owner cancels their
 pending reads and refuses subsequent work before storage is accessed. Platform
 policy and admission callbacks receive the original operation's `AbortSignal`.
@@ -102,6 +103,18 @@ The shared Rust session engine
 owns credentials, admission, flow control, calls and follows. There is no second
 agent protocol or background writer. Stream follows are available; filesystem
 resource follows require a platform resource provider.
+
+Provider RPC cursors carry length-delimited protobuf session frames. The shared
+Rust decoder preserves messages when a byte transport splits or coalesces chunks;
+a partial frame at EOF is `InvalidResponse`, and an ended live follow is
+`Unavailable`. Finite reads end normally between complete frames. This adds only
+the protobuf length prefix and retains at most one incomplete frame, without an
+additional RPC, storage operation or background task.
+
+Journal configuration retains the core's opaque revision authority in the same
+durable store. Reopening replays under that authority, preserving exact commit
+receipts and minimum revision cuts. The storage adapter only saves and returns
+the admitted bytes; the shared Rust revision engine owns their interpretation.
 
 The public binding announces the same admitted private-volume resource on
 native and portable hosts. Constructing its resource name does not require a

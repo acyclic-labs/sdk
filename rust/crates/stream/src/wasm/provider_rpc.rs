@@ -59,6 +59,35 @@ impl Drop for OwnedCursor {
     }
 }
 
+struct CursorFrames {
+    cursor: OwnedCursor,
+    decoder: wire_codec::session::FrameDecoder,
+    chunk: Vec<u8>,
+    offset: usize,
+}
+impl CursorFrames {
+    async fn next(&mut self) -> Result<Option<wire::SessionFrame>, StreamError> {
+        loop {
+            let mut remaining = &self.chunk[self.offset..];
+            let frame = self.decoder.read(&mut remaining)?;
+            self.offset = self.chunk.len() - remaining.len();
+            if frame.is_some() {
+                return Ok(frame);
+            }
+            let value = reply(self.cursor.0.next()).await?;
+            if value.is_null() {
+                self.decoder.finish()?;
+                return Ok(None);
+            }
+            let bytes: Uint8Array = value.dyn_into().map_err(|_| StreamError::InvalidResponse)?;
+            // Chunk boundaries and sizes belong to the transport. The shared
+            // decoder admits each logical frame, even when a chunk has several.
+            self.chunk = bytes.to_vec();
+            self.offset = 0;
+        }
+    }
+}
+
 /// A trusted host port over the public canonical provider protobufs.
 pub(crate) struct InjectedStream {
     port: Port,
@@ -114,7 +143,12 @@ impl InjectedStream {
         if !cursor.is_object() {
             return Err(StreamError::InvalidResponse);
         }
-        let cursor = OwnedCursor(cursor.unchecked_into());
+        let cursor = CursorFrames {
+            cursor: OwnedCursor(cursor.unchecked_into()),
+            decoder: wire_codec::session::FrameDecoder::default(),
+            chunk: Vec::new(),
+            offset: 0,
+        };
         let read = operation == "read";
         let seek = if read {
             wire_codec::read_from_wire(
@@ -126,16 +160,16 @@ impl InjectedStream {
             None
         };
         Ok(
-            futures::stream::try_unfold((cursor, from), move |(cursor, next)| {
+            futures::stream::try_unfold((cursor, from), move |(mut cursor, next)| {
                 let seek = seek.clone();
                 async move {
-                    let value = reply(cursor.0.next()).await?;
-                    if value.is_null() {
-                        return Ok(None);
-                    }
-                    let bytes = snapshot(value)?;
-                    let frame = wire::SessionFrame::decode(bytes.as_slice())
-                        .map_err(|_| StreamError::InvalidResponse)?;
+                    let Some(frame) = cursor.next().await? else {
+                        return if read {
+                            Ok(None)
+                        } else {
+                            Err(StreamError::Unavailable)
+                        };
+                    };
                     if frame.channel_id != 1 || frame.generation != 1 {
                         return Err(StreamError::InvalidResponse);
                     }
@@ -407,7 +441,7 @@ impl super::WasmStream {
                         generation: 1,
                         body: Some(body),
                     }
-                    .encode_to_vec()
+                    .encode_length_delimited_to_vec()
                 })
             })
             .boxed_local();

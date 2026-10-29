@@ -160,7 +160,7 @@ export class EventAgentHost {
         alarm = await this.host.drain(identity.path);
       }
     } catch (error) {
-      this.host.close();
+      this.host.deliveryFailed();
       throw error;
     }
     await this.command(async () => {

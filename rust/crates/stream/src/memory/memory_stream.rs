@@ -69,6 +69,7 @@ impl MemoryStream {
     #[cfg(any(
         test,
         feature = "local",
+        all(feature = "wasm-journal", target_arch = "wasm32"),
         all(feature = "postgres", not(target_arch = "wasm32"))
     ))]
     #[must_use]

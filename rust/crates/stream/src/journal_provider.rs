@@ -28,6 +28,7 @@ extern "C" {
         this: &HostJournal,
         configuration: &[u8],
         maximum_frame_bytes: u32,
+        authority: &[u8],
     ) -> Result<js_sys::Promise, JsValue>;
     #[wasm_bindgen(method, catch)]
     fn flush(this: &HostJournal) -> Result<js_sys::Promise, JsValue>;
@@ -94,7 +95,7 @@ const PAGE: usize = 64;
 struct Inner {
     journal: HostJournal,
     limits: JournalStreamLimits,
-    cache: crate::query_sync::Mutex<Replicated<HostPort>>,
+    cache: tokio::sync::OnceCell<crate::query_sync::Mutex<Replicated<HostPort>>>,
     claims: OperationClaims,
 }
 
@@ -136,21 +137,8 @@ impl JournalStream {
             return Ok(stream);
         }
         let journal: HostJournal = journal.unchecked_into();
-        let clock = Arc::new(ReplicaClock::default());
-        let provider =
-            MemoryStream::new_with_commit_clock(limits.memory, clock.clone(), clock.clone());
         let inner = Rc::new(Inner {
-            cache: crate::query_sync::Mutex::new(Replicated::new(
-                HostPort {
-                    journal: journal.clone(),
-                    limits,
-                    configured: false,
-                    bytes: 0,
-                },
-                provider,
-                clock,
-                0,
-            )),
+            cache: tokio::sync::OnceCell::new(),
             journal,
             limits,
             claims: OperationClaims::default(),
@@ -161,11 +149,60 @@ impl JournalStream {
         Ok(stream)
     }
 
+    async fn replica(
+        &self,
+    ) -> Result<&crate::query_sync::Mutex<Replicated<HostPort>>, StreamError> {
+        self.0
+            .cache
+            .get_or_try_init(|| async {
+                let clock = Arc::new(ReplicaClock::default());
+                let provider = MemoryStream::new_with_commit_clock(
+                    self.0.limits.memory,
+                    clock.clone(),
+                    clock.clone(),
+                );
+                let maximum = u32::try_from(MAX_COMMAND_BYTES + 17).map_err(unavailable)?;
+                let proposed =
+                    crate::wire_codec::revision_to_wire(&provider.revisions.at(0)).encode_to_vec();
+                let retained = JsFuture::from(
+                    self.0
+                        .journal
+                        .configure(&self.0.limits.configuration(), maximum, &proposed)
+                        .map_err(unavailable)?,
+                )
+                .await
+                .map_err(unavailable)?;
+                let retained = retained.dyn_into::<Uint8Array>().map_err(unavailable)?;
+                if retained.length() as usize > MAX_COMMAND_BYTES {
+                    return Err(StreamError::LimitExceeded);
+                }
+                let authority = crate::wire::Revision::decode(retained.to_vec().as_slice())
+                    .map_err(unavailable)?;
+                let authority = crate::wire_codec::revision_from_wire(authority)?;
+                if authority.scope.as_bytes().is_empty() || authority.index != 0 {
+                    return Err(StreamError::InvalidResponse);
+                }
+                // All concurrent openers share this initialization. No replay,
+                // provider or revision token is exposed before durable authority.
+                let provider = provider.with_authority(authority.scope, authority.incarnation);
+                Ok(crate::query_sync::Mutex::new(Replicated::new(
+                    HostPort {
+                        journal: self.0.journal.clone(),
+                        limits: self.0.limits,
+                        bytes: 0,
+                    },
+                    provider,
+                    clock,
+                    0,
+                )))
+            })
+            .await
+    }
     async fn query<T>(
         &self,
         operation: impl AsyncFnOnce(&MemoryStream) -> Result<T, StreamError>,
     ) -> Result<T, StreamError> {
-        let mut cache = self.0.cache.lock().await;
+        let mut cache = self.replica().await?.lock().await;
         cache.refresh(PAGE).await?;
         operation(&cache.provider).await
     }
@@ -175,8 +212,8 @@ impl JournalStream {
         command: WriteRequest,
         deadline: Option<u64>,
     ) -> Result<WriteOutcome, StreamError> {
-        self.0
-            .cache
+        self.replica()
+            .await?
             .lock()
             .await
             .execute(command, deadline, PAGE)
