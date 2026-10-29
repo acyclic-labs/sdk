@@ -449,9 +449,6 @@ async fn seal_members(group: &Group) -> Result<(), crate::FsError> {
         .members
         .len();
     for index in 0..count {
-        let notified = group.signal.notified();
-        tokio::pin!(notified);
-        notified.as_mut().enable();
         let proposal = {
             let state = group
                 .state
@@ -461,8 +458,7 @@ async fn seal_members(group: &Group) -> Result<(), crate::FsError> {
                 return Err(PublicationError::GroupAborted(GroupAbort::PhaseEnded).into());
             }
             match state.selected_at(index) {
-                Some((_, true)) => continue,
-                Some((proposal, false)) => Arc::clone(proposal),
+                Some((proposal, _)) => Arc::clone(proposal),
                 None => continue,
             }
         };
@@ -473,32 +469,8 @@ async fn seal_members(group: &Group) -> Result<(), crate::FsError> {
             .seal
             .take()
             .ok_or(crate::FsError::InvalidDiff)?;
-        let result = {
-            let future = (seal.callback)();
-            tokio::pin!(future);
-            loop {
-                tokio::select! {
-                    biased;
-                    () = notified.as_mut() => {
-                        notified.set(group.signal.notified());
-                        notified.as_mut().enable();
-                        let state = group
-                            .state
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        if state.phase != Phase::Appending {
-                            break Err(PublicationError::GroupAborted(GroupAbort::PhaseEnded).into());
-                        }
-                        // The authority task already owns the immutable append.
-                        // Caller loss ends only this caller's pending seal.
-                        if state.selected_at(index).is_some_and(|(_, withdrawn)| withdrawn) {
-                            break Ok(());
-                        }
-                    }
-                    result = future.as_mut() => break result,
-                }
-            }
-        };
+        // Reply withdrawal never bypasses an admitted operation's final guard.
+        let result = (seal.callback)().await;
         proposal
             .prepared
             .lock()

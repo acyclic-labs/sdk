@@ -121,6 +121,17 @@ fn ownership_release_barrier_waits_for_the_final_clone() {
     barrier.wait();
 }
 
+#[test]
+fn ownership_release_deadline_refuses_a_retained_owner() -> io::Result<()> {
+    let anchor = OwnershipAnchor::new(());
+    let barrier = anchor.release_barrier();
+    let error = barrier.wait_until(std::time::Instant::now()).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    let barrier = anchor.release_barrier();
+    drop(anchor);
+    barrier.wait_until(std::time::Instant::now())
+}
+
 #[cfg(unix)]
 #[test]
 fn callback_cancellation_retains_captured_prefix_and_original_owner() -> io::Result<()> {

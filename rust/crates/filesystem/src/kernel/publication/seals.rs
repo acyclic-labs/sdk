@@ -33,7 +33,6 @@ where
         &mut KernelAccounting::native(original, original.cancellation()),
     )
     .map_err(E::from)?;
-    let invocation = original.clone();
     let original = original
         .authority_publication_view(&lifetime)
         .map_err(crate::FsError::from)
@@ -50,17 +49,14 @@ where
     });
     let slot = Arc::clone(&error);
     let funding = original.clone();
-    let owner = api::native_publication_owner(invocation.clone(), factory);
+    let owner = api::native_publication_owner(original.clone(), factory);
     let callback = move || {
         let mut owner = owner.clone();
         let slot = Arc::clone(&slot);
-        let owner_work = invocation.clone();
+        let owner_work = original.clone();
         let boxed = crate::heap_future::native_future(&original, || async move {
             match owner(&owner_work).await {
                 Ok(()) => Ok(()),
-                // Original admission already checks cancellation. Caller loss
-                // withdraws only this seal, independently of reply polling.
-                Err(_) if owner_work.cancellation().is_cancelled() => Ok(()),
                 Err(error) => {
                     *slot
                         .error
