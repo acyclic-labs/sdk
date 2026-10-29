@@ -14,8 +14,8 @@ use crate::{
 use wire::ErrorCode::{Invalid, Storage};
 const EVENT_WIRE_VERSION: &str = "2";
 const PAYLOAD_BOUNDS: crate::executor::json::JsonBounds = crate::executor::json::JsonBounds {
-    maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
-    maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64 + 1,
+    maximum_bytes: Some(acyclic_stream::MAX_RECORD_BYTES as u64),
+    maximum_items: Some(acyclic_stream::MAX_RECORD_BYTES as u64 + 1),
     maximum_depth: 256,
 };
 mod admission;

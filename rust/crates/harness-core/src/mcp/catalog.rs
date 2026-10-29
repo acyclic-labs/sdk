@@ -72,14 +72,12 @@ impl McpCatalog {
                 "harness/mcp-catalog-install/v1",
                 self,
                 previous
-                    .map(|old| {
-                        crate::executor::json::canonical_json_digest(old, u64::MAX, &mut None)
-                    })
+                    .map(|old| crate::executor::json::canonical_json_digest(old, None, &mut None))
                     .transpose()?,
                 maximum_tools,
                 maximum_bytes,
             ),
-            u64::MAX,
+            None,
             &mut None,
         )
     }
@@ -315,9 +313,9 @@ impl McpCatalog {
         next.pin_catalog_revision(
             &prefix,
             previous
-                .map(|old| crate::executor::json::canonical_json_digest(old, u64::MAX, &mut None))
+                .map(|old| crate::executor::json::canonical_json_digest(old, None, &mut None))
                 .transpose()?,
-            crate::executor::json::canonical_json_digest(self, u64::MAX, &mut None)?,
+            crate::executor::json::canonical_json_digest(self, None, &mut None)?,
         )?;
         if let Some(old) = previous {
             for remote in &old.tools {
