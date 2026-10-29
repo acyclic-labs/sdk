@@ -442,6 +442,8 @@ pub async fn run(
     let mut input = PromptInput::default();
     // The open panel's title and rows; Esc closes it.
     let mut overlay: Option<(&'static str, Vec<Line<'static>>)> = None;
+    // The message id and text of the prompt the host last refused.
+    let mut unsent: Option<(String, String)> = None;
     input
         .completion
         .set_file("commands/commands.json", Some(DEFAULT_COMMANDS_JSON))?;
@@ -599,8 +601,23 @@ pub async fn run(
                                     input.editor = Editor::new(&text);
                                     continue;
                                 }
-                                let id = acyclic_harness::OperationId::new().to_string();
-                                let inbox = conversation.send(&id, &text).await?;
+                                // A refused prompt, such as an unknown `/name`, stays
+                                // in the editor with its reason. Sending the same text
+                                // again reuses its message id, so a send whose commit
+                                // was uncertain replays exactly and never commits twice.
+                                let id = match unsent.take() {
+                                    Some((id, sent)) if sent == text => id,
+                                    _ => acyclic_harness::OperationId::new().to_string(),
+                                };
+                                let inbox = match conversation.send(&id, &text).await {
+                                    Ok(inbox) => inbox,
+                                    Err(error) => {
+                                        view.notice = Some(error.to_string());
+                                        input.editor = Editor::new(&text);
+                                        unsent = Some((id, text));
+                                        continue;
+                                    }
+                                };
                                 view.pending.push((inbox, text));
                                 view.back = 0;
                                 view.pending_dirty = true;

@@ -27,7 +27,16 @@
             ],
             "cursor": true
           },
-          "prompt": "/marker extra"
+          "prompt": "/marke"
+        },
+        {
+          "when": {
+            "contains": [
+              "/marke",
+              "agent control refused"
+            ]
+          },
+          "prompt": "r extra"
         },
         {
           "when": {
