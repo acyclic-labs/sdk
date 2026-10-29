@@ -721,7 +721,7 @@ pub async fn run(
                             InputEffect::Quit => return Ok(view.outcome.code()),
                             InputEffect::Scroll(rows) if diff_open && diff_query.is_none() => {
                                 let cursor = if rows < 0 {
-                                    diff_panel.as_ref().and_then(|panel| panel.next.clone())
+                                    diff_panel.as_mut().and_then(|panel| panel.next.take())
                                 } else {
                                     None
                                 };
