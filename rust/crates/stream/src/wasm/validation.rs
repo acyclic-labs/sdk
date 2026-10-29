@@ -671,6 +671,17 @@ mod http {
                 let result = Object::new();
                 set(
                     &result,
+                    "retained",
+                    &array_js(field(item, "retained")?, |record| {
+                        if record.is_null() {
+                            Ok(JsValue::UNDEFINED)
+                        } else {
+                            record_js(record)
+                        }
+                    })?,
+                )?;
+                set(
+                    &result,
                     "projection",
                     &JsValue::from_str(string(field(item, "projection")?)?),
                 )?;

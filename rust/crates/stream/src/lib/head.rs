@@ -30,9 +30,26 @@ pub enum HeadProjection {
     Tail,
 }
 
+/// One original record appended by a retained publication, independently of
+/// the path's current head or ancestry. Inherited fork records belong to their
+/// original publication and destination, not to the inheriting path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetainedRecord {
+    /// Original publication identity.
+    pub commit_id: CommitId,
+    /// Original append destination.
+    pub path: StreamPath,
+    /// Original sequence assigned at that destination.
+    pub sequence: u64,
+}
+
 /// Named observations and an optional hierarchy page at one authority cut.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeadsRequest {
+    /// Original retained records, in response order. A missing publication or
+    /// position yields `None`, never proof that a command did not execute.
+    /// Every selected path requires read authorization for the whole view.
+    pub retained: HeadSet<RetainedRecord>,
     /// Requests an irreversible-prefix proof through this sequence for each
     /// named path. A deferred backend seals the captured prefix only when the
     /// requested sequence is accepted and not already confirmed.
@@ -43,8 +60,8 @@ pub struct HeadsRequest {
     pub paths: HeadSet<StreamPath>,
     /// Optional direct-child page, including its existing continuation fence.
     pub children: Option<ChildrenPageRequest>,
-    /// Nonzero total result budget: named paths plus returned children.
-    /// Named paths must fit; the remaining budget bounds the child page.
+    /// Nonzero total result budget: named paths, retained selections and children.
+    /// Explicit selections must fit; the remainder bounds the child page.
     pub limit: u32,
     /// Minimum applied authority cut, checked before the snapshot is captured.
     pub at_least: RevisionCut,
@@ -52,7 +69,7 @@ pub struct HeadsRequest {
 
 impl HeadsRequest {
     pub(crate) fn validate(&self) -> Result<(), StreamError> {
-        let named = u32::try_from(self.paths.len()).map_err(|_| StreamError::InvalidArgument)?;
+        let named = self.selection_count()?;
         if self.limit == 0
             || named > self.limit
             || (self.children.is_some() && named == self.limit)
@@ -62,11 +79,23 @@ impl HeadsRequest {
         }
         Ok(())
     }
+
+    pub(crate) fn selection_count(&self) -> Result<u32, StreamError> {
+        self.paths
+            .len()
+            .checked_add(self.retained.len())
+            .and_then(|count| u32::try_from(count).ok())
+            .ok_or(StreamError::InvalidArgument)
+    }
 }
 
 /// A coherent view. No component was observed before or after `snapshot`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Heads {
+    /// Original retained records in selection order at this snapshot. Returned
+    /// bytes, sequence, publication identity and time are the original facts;
+    /// they do not certify that the current path still contains that prefix.
+    pub retained: HeadSet<Option<Record>>,
     /// Exact projection used for every named path.
     pub projection: HeadProjection,
     /// Exact authority revision shared by heads, absence and the hierarchy page.
@@ -89,16 +118,29 @@ impl Heads {
         let child_count = self.children.as_ref().map_or(0, |page| page.children.len());
         if self.projection != request.projection
             || self.heads.len() != request.paths.len()
+            || self.retained.len() != request.retained.len()
             || self.children.is_some() != request.children.is_some()
             || child_count
                 > request
                     .children
                     .as_ref()
                     .map_or(0, |page| page.limit as usize)
-            || self.heads.len().saturating_add(child_count) > request.limit as usize
+            || self
+                .heads
+                .len()
+                .saturating_add(self.retained.len())
+                .saturating_add(child_count)
+                > request.limit as usize
             || !request.at_least.proven_by(Some(&self.snapshot))
         {
             return Err(StreamError::InvalidResponse);
+        }
+        for (record, selected) in self.retained.iter().zip(&request.retained) {
+            if record.as_ref().is_some_and(|record| {
+                record.commit_id != selected.commit_id || record.sequence != selected.sequence
+            }) {
+                return Err(StreamError::InvalidResponse);
+            }
         }
         for head in self.heads.iter().flatten() {
             head.validate_projection(self.projection)?;

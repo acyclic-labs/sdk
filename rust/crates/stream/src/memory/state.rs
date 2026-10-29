@@ -40,7 +40,6 @@ impl State {
     fn replay_count(&self) -> usize {
         self.replay_count
     }
-    #[cfg(any(test, feature = "local"))]
     fn commit(&self, id: &CommitId) -> Option<&CommittedEnvelope> {
         match self.find_commit(id, || Ok::<_, std::convert::Infallible>(())) {
             Ok(value) => value,

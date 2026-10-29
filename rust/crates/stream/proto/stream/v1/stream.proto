@@ -117,6 +117,20 @@ message HeadsRequest {
   HeadProjection projection = 5;
   // Confirm this irreversible prefix at the captured view; distinct from crash durability.
   optional uint64 durable_through = 6;
+  // Original retained publications, independently of current heads or ancestry.
+  // Counts against limit. Every selected destination requires read authorization.
+  repeated RetainedRecord retained = 7;
+}
+
+message RetainedRecord {
+  bytes commit_id = 1;
+  string path = 2;
+  uint64 sequence = 3;
+}
+
+message RetainedRecordObservation {
+  // Missing is not proof that a command never executed. Denial refuses the view.
+  Record record = 1;
 }
 
 message HeadObservation {
@@ -130,6 +144,7 @@ message HeadsResponse {
   repeated HeadObservation heads = 2;
   ChildrenPageResponse children = 3;
   HeadProjection projection = 4;
+  repeated RetainedRecordObservation retained = 5;
 }
 
 message ForkOrigin {

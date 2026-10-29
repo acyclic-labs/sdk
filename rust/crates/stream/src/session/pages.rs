@@ -101,6 +101,11 @@ pub(super) fn heads<P: StreamProvider + ?Sized>(
                     }
                 }
             }
+            for record in view.retained.iter().flatten() {
+                if filter.project(record.clone())? != Some(record.clone()) {
+                    return Err(StreamError::AccessDenied);
+                }
+            }
             if let (Some(page), Some(visibility)) = (view.children.take(), visibility) {
                 view.children = Some(
                     visibility.page(

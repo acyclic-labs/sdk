@@ -4,15 +4,17 @@ use crate::StreamProviderExt as _;
 pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(), StreamError> {
     let paths = [path("coherent/a/state")?, path("coherent/b/state")?];
     let mut previous = None;
+    let mut retained_previous = None;
     for generation in 0..2 {
         let outcome = provider
             .commit(CommitRequest {
                 conditions: Vec::new(),
                 mutations: paths
                     .iter()
-                    .map(|path| CommitMutation::Append {
+                    .enumerate()
+                    .map(|(index, path)| CommitMutation::Append {
                         path: path.clone(),
-                        records: vec![vec![generation].into()],
+                        records: vec![vec![generation, index as u8].into()],
                     })
                     .collect(),
                 idempotency_key: IdempotencyKey::new(Bytes::from(vec![b'v', generation]))?,
@@ -23,6 +25,30 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
             return Err(StreamError::Unavailable);
         };
         let request = crate::HeadsRequest {
+            retained: [
+                crate::RetainedRecord {
+                    commit_id: receipt.commit_id,
+                    path: paths[0].clone(),
+                    sequence: generation as u64,
+                },
+                crate::RetainedRecord {
+                    commit_id: receipt.commit_id,
+                    path: paths[1].clone(),
+                    sequence: generation as u64,
+                },
+                crate::RetainedRecord {
+                    commit_id: receipt.commit_id,
+                    path: paths[0].clone(),
+                    sequence: u64::MAX,
+                },
+                crate::RetainedRecord {
+                    commit_id: receipt.commit_id,
+                    path: path("coherent/absent")?,
+                    sequence: 0,
+                },
+            ]
+            .into_iter()
+            .collect(),
             durable_through: None,
             projection: Default::default(),
             paths: [paths[0].clone(), paths[1].clone(), path("coherent/absent")?]
@@ -35,7 +61,7 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
                 hierarchy_version: None,
                 limit: 8,
             }),
-            limit: 5,
+            limit: 9,
             at_least: crate::RevisionCut::of(receipt.revision.clone()),
         };
         let view = provider.heads(request.clone()).await?;
@@ -43,12 +69,44 @@ pub(super) async fn verify<P: StreamProvider + ?Sized>(provider: &P) -> Result<(
         if view.snapshot != receipt.revision || view.heads[2].is_some() {
             return Err(StreamError::Unavailable);
         }
-        for head in &view.heads[..2] {
+        if view.retained[0] != view.heads[0].as_ref().and_then(|head| head.last.clone())
+            || view.retained[1] != view.heads[1].as_ref().and_then(|head| head.last.clone())
+            || view.retained[2].is_some()
+            || view.retained[3].is_some()
+        {
+            return Err(StreamError::Unavailable);
+        }
+        // Original co-commit bytes and time remain exact after both roots advance.
+        if let Some((old_request, old_records)) = retained_previous.take() {
+            let original = provider.heads(old_request).await?;
+            if original.snapshot != view.snapshot || original.retained != old_records {
+                return Err(StreamError::Unavailable);
+            }
+        } else {
+            retained_previous = Some((request.clone(), view.retained.clone()));
+        }
+        let mut too_small = request.clone();
+        too_small.limit = 6;
+        if provider.heads(too_small).await != Err(StreamError::InvalidArgument) {
+            return Err(StreamError::Unavailable);
+        }
+        let mut wrong_position = view.clone();
+        wrong_position.retained[0] = view.retained[1].clone();
+        if let Some(record) = &mut wrong_position.retained[0] {
+            record.sequence += 1;
+        }
+        if wrong_position.validate_for(&request) != Err(StreamError::InvalidResponse) {
+            return Err(StreamError::Unavailable);
+        }
+        for (index, head) in view.heads[..2].iter().enumerate() {
             let record = head
                 .as_ref()
                 .and_then(|head| head.last.as_ref())
                 .ok_or(StreamError::Unavailable)?;
-            if record.value.as_ref() != [generation] || record.commit_id != receipt.commit_id {
+            if record.value.as_ref() != [generation, index as u8]
+                || record.commit_id != receipt.commit_id
+                || record.committed_at_micros != receipt.committed_at_micros
+            {
                 return Err(StreamError::Unavailable);
             }
         }

@@ -335,6 +335,7 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
     tree(&provider).await?;
     let client = local(&provider)?;
     let request = crate::HeadsRequest {
+        retained: Default::default(),
         durable_through: None,
         projection: Default::default(),
         paths: [
@@ -389,7 +390,37 @@ async fn session_heads_keeps_named_absence_and_children_on_the_same_cut() -> Tes
     )?;
     let mut allowed = request.clone();
     allowed.paths.pop();
-    assert!(client.heads(allowed, 1).await?.heads[0].is_some());
+    let original = client.heads(allowed.clone(), 1).await?.heads[0]
+        .as_ref()
+        .and_then(|head| head.last.clone())
+        .ok_or("missing original")?;
+    allowed.retained.push(crate::RetainedRecord {
+        commit_id: original.commit_id,
+        path: allowed.paths[0].clone(),
+        sequence: original.sequence,
+    });
+    assert_eq!(
+        client.heads(allowed.clone(), 1).await?.retained[0],
+        Some(original.clone())
+    );
+    // A retained-only selection still binds its actual destination, never context.
+    let mut selected_only = allowed.clone();
+    selected_only.paths.clear();
+    selected_only.children = None;
+    assert_eq!(
+        client.heads(selected_only.clone(), 1).await?.retained[0],
+        Some(original)
+    );
+    selected_only.retained[0].path = StreamPath::new("tree/absent")?;
+    assert_eq!(
+        client.heads(selected_only, 1).await,
+        Err(StreamError::AccessDenied)
+    );
+    allowed.retained[0].path = StreamPath::new("tree/absent")?;
+    assert_eq!(
+        client.heads(allowed, 1).await,
+        Err(StreamError::AccessDenied)
+    );
     assert_eq!(
         client.heads(request, 1).await,
         Err(StreamError::AccessDenied)
@@ -413,6 +444,7 @@ async fn remote_provider_reads_and_pages_never_use_unary_rpcs() -> TestResult {
         provider.children_page(page("tree", 10)?).await?
     );
     let view = crate::HeadsRequest {
+        retained: Default::default(),
         durable_through: None,
         projection: Default::default(),
         paths: [StreamPath::new("tree/a/status")?].into(),

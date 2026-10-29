@@ -33,6 +33,41 @@ async fn historical_commit_lookup_and_snapshot_rebuild_do_not_scan_retained_hist
             let examined = COMMIT_VISITS.with(std::cell::Cell::get) / 100;
             maximum = maximum.max(examined);
             eprintln!("historical commit step={step} examined={examined} elapsed_ns={elapsed}");
+            for count in [1, 8, 64] {
+                let selected = crate::RetainedRecord {
+                    commit_id: oldest,
+                    path: path.clone(),
+                    sequence: 0,
+                };
+                let request = crate::HeadsRequest {
+                    retained: std::iter::repeat_n(selected, count).collect(),
+                    durable_through: None,
+                    projection: crate::HeadProjection::Tail,
+                    paths: Default::default(),
+                    children: None,
+                    limit: count as u32,
+                    at_least: Default::default(),
+                };
+                COMMIT_VISITS.with(|count| count.set(0));
+                let started = std::time::Instant::now();
+                let view = provider.heads(request).await?;
+                let examined = COMMIT_VISITS.with(std::cell::Cell::get);
+                assert_eq!(view.retained.len(), count);
+                assert!(
+                    view.retained
+                        .iter()
+                        .all(|record| record.as_ref().is_some_and(|record| {
+                            record.commit_id == oldest
+                                && record.sequence == 0
+                                && record.value.as_ref() == b"value"
+                        }))
+                );
+                assert!(examined <= 257 * count);
+                eprintln!(
+                    "retained selection history={step} count={count} examined={examined} elapsed_ns={}",
+                    started.elapsed().as_nanos()
+                );
+            }
         }
     }
     // Original reverse scan, independent of the indexed lookup.
