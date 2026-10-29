@@ -758,7 +758,7 @@ async fn an_unlimited_goal_keeps_its_loop_identity_across_counter_boundaries() -
         ),
     ] {
         let path = AgentPath::root(&id(1));
-        let mut state = AgentState::adopted(path.clone(), &adopted(id(1)));
+        let mut state = AgentState::adopted(path.clone(), &adopted(id(1)))?;
         let goal = Arc::new(Goal {
             policy: GoalContinuationPolicy::default(),
             status: Mutex::new(GoalStatus::Active),
