@@ -412,7 +412,7 @@ fn advance_history_digest(
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
     let digest =
-        crate::executor::json::canonical_json_digest(message, maximum_encoded_bytes, work)?;
+        crate::executor::json::canonical_json_digest(message, Some(maximum_encoded_bytes), work)?;
     if let Some(work) = work.as_deref_mut() {
         work.hashed_bytes(b"harness:conversation-prefix:v3\0".len() as u64 + 64)?;
     }
