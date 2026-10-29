@@ -165,7 +165,10 @@ impl ModelContent {
         history_step(work, 1)?;
         limits.validate(work)?;
         if let Self::Text(text) = self {
-            return if text.len() as u64 <= limits.render_bytes {
+            return if limits
+                .render_bytes
+                .is_none_or(|maximum| text.len() as u64 <= maximum)
+            {
                 Ok(())
             } else {
                 Err(invalid(work, "model text exceeds render limit"))
@@ -188,7 +191,11 @@ impl ModelContent {
                 }
             }
             match part {
-                ModelContentPart::Text { text } if text.len() as u64 > limits.render_bytes => {
+                ModelContentPart::Text { text }
+                    if limits
+                        .render_bytes
+                        .is_some_and(|maximum| text.len() as u64 > maximum) =>
+                {
                     return Err(invalid(work, "model text exceeds render limit"));
                 }
                 ModelContentPart::File { file, policy } => {
@@ -199,9 +206,9 @@ impl ModelContent {
                     metadata,
                     ..
                 }) => {
-                    value_bound(arguments, Some(limits.render_bytes), work)?;
+                    value_bound(arguments, limits.render_bytes, work)?;
                     if !metadata.is_null() {
-                        value_bound(metadata, Some(limits.render_bytes), work)?;
+                        value_bound(metadata, limits.render_bytes, work)?;
                     }
                 }
                 ModelContentPart::Reasoning { block } => {
@@ -327,7 +334,11 @@ impl ToolResultContent {
             for part in parts {
                 history_step(work, 1)?;
                 match part {
-                    ModelDataPart::Text { text } if text.len() as u64 > limits.render_bytes => {
+                    ModelDataPart::Text { text }
+                        if limits
+                            .render_bytes
+                            .is_some_and(|maximum| text.len() as u64 > maximum) =>
+                    {
                         return Err(invalid(work, "tool result text exceeds render limit"));
                     }
                     ModelDataPart::File { file, policy } => {
@@ -352,7 +363,10 @@ impl ToolResultContent {
         }
         // `result_bound` charges the message scan.
         if let Self::Error { message } = self {
-            if message.len() as u64 > limits.render_bytes {
+            if limits
+                .render_bytes
+                .is_some_and(|maximum| message.len() as u64 > maximum)
+            {
                 return Err(invalid(work, "tool error exceeds render limit"));
             }
             if message.is_empty() || message.chars().any(char::is_control) {
@@ -362,6 +376,6 @@ impl ToolResultContent {
                 ));
             }
         }
-        preparation::result_bound(self, Some(limits.render_bytes), work)
+        preparation::result_bound(self, limits.render_bytes, work)
     }
 }

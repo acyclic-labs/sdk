@@ -215,7 +215,7 @@ async fn prepared_accounting_recovers_with_its_projection_before_model_dispatch(
 async fn continued_tool_results_stop_before_aggregate_render_overflow_is_published_or_dispatched()
 -> Result<()> {
     let limits = Limits {
-        render_bytes: 512,
+        render_bytes: Some(512),
         ..Limits::default()
     };
     let provider = Arc::new(ContinuingModel {

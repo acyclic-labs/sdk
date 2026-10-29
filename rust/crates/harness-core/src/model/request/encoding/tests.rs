@@ -138,7 +138,7 @@ fn continuation_finish_keeps_the_hash_cut_bound_to_its_canonical_bytes() -> Resu
         let mut continued = prepared.into_continuation();
         continued.messages().push(message(8));
         let changed = Limits {
-            render_bytes: Limits::default().render_bytes - 1,
+            render_bytes: Some(1_048_576),
             ..Limits::default()
         };
         let prepared = continued.finish(changed, None)?;

@@ -96,11 +96,12 @@ impl EnvironmentFacts {
         })?;
         // Empty string quotes are already in wrapper. One separator and at
         // most one extra input-index digit accompany the inserted message.
-        let available = limits
-            .render_bytes
-            .saturating_sub(used)
-            .saturating_sub(bodies)
-            .saturating_sub(wrapper + 2);
+        let available = limits.render_bytes.map(|maximum| {
+            maximum
+                .saturating_sub(used)
+                .saturating_sub(bodies)
+                .saturating_sub(wrapper + 2)
+        });
         let mut encoded = 0_u64;
         let mut raw = 0_u64;
         self.parts(|part| {
@@ -109,7 +110,7 @@ impl EnvironmentFacts {
             encoded = encoded.saturating_add(json_string_bytes(part));
             Ok(())
         })?;
-        if encoded > available {
+        if available.is_some_and(|available| encoded > available) {
             return Ok(None);
         }
         let mut text = String::new();
@@ -239,7 +240,7 @@ mod tests {
                 messages: vec![ModelMessage { role: ModelRole::User, content: ModelContent::Text("current".into()) }],
                 current_input_index: Some(0), ..Default::default()
             };
-            let limits = Limits { render_bytes: budget, context_messages: std::num::NonZeroUsize::new(messages), ..Limits::default() };
+            let limits = Limits { render_bytes: Some(budget), context_messages: std::num::NonZeroUsize::new(messages), ..Limits::default() };
             if let Some(insertion) = facts(cwd).project(&context, limits, None)? {
                 insertion.insert(&mut context, 0, None)?;
                 prop_assert_eq!(context.current_input_index, Some(1));

@@ -101,10 +101,10 @@ pub(crate) fn validate_projected_messages(
             metadata: &context.metadata,
             current_input_index: context.current_input_index,
         };
-        crate::executor::json::json_byte_length(&borrowed, Some(limits.render_bytes), work)
+        crate::executor::json::json_byte_length(&borrowed, limits.render_bytes, work)
     })
     .and_then(|bytes| {
-        let mut remaining = Some(limits.render_bytes - bytes);
+        let mut remaining = limits.render_bytes.map(|maximum| maximum - bytes);
         crate::model::reserve_instruction_bodies(messages, &mut remaining, io).map(|_| ())
     })
 }
@@ -192,7 +192,11 @@ pub(crate) fn restrict_context_limits(
             .into_iter()
             .chain(admitted.attachments)
             .min(),
-        render_bytes: pinned.render_bytes.min(admitted.render_bytes),
+        render_bytes: pinned
+            .render_bytes
+            .into_iter()
+            .chain(admitted.render_bytes)
+            .min(),
         model_steps: pinned
             .model_steps
             .into_iter()
