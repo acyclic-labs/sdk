@@ -98,8 +98,6 @@ struct Shared {
     stopping: AtomicBool,
     completed: AtomicBool,
     controller_alive: AtomicBool,
-    #[cfg(test)]
-    polling: AtomicBool,
     cleanup: Mutex<StartupCleanup>,
     ownership: SourcePayloadOwnership,
     delivery: Arc<Delivery>,
