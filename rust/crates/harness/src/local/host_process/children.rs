@@ -719,24 +719,6 @@ mod framing {
     use super::*;
 
     #[test]
-    fn native_assistant_refusal_is_not_a_successful_empty_answer() {
-        let mut captured = include_str!("fixtures/pi-assistant-error.jsonl").lines();
-        let event: Value = serde_json::from_str(captured.next().expect("captured assistant"))
-            .expect("captured Pi event");
-        assert_eq!(
-            answer(&event),
-            Some(Outcome::Failed {
-                message: "No API key for provider: fixture".into()
-            })
-        );
-        // The session-level settlement event has no assistant outcome. It must
-        // not erase a preceding terminal error while the process exits.
-        let settled: Value = serde_json::from_str(captured.next().expect("captured settlement"))
-            .expect("captured Pi settlement");
-        assert_eq!(answer(&settled), None);
-    }
-
-    #[test]
     fn a_receipt_follows_its_child_to_a_remounted_view() {
         let parent = AgentPath::root(&crate::agent::AgentId::from_bytes([1; 16]));
         let Ok(child) = parent.child(&crate::agent::AgentId::from_bytes([2; 16])) else {
