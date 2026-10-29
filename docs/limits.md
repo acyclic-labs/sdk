@@ -8,7 +8,7 @@ Pending entries remain unfinished. A retained page must make all remaining data 
 
 ## Logical total and completion owners
 
-Source inventory composed through main `aefd8df65b`, 2026-10-29. Each row is an owner checklist entry, not a claim that the whole mechanism is complete. The constant table below retains historical file/line locations; current source and exact-source receipts govern qualification. A deleted consumer check does not close a lower-layer whole-value refusal.
+Source inventory composed through main `235fc8a59d`, 2026-10-29. Each row is an owner checklist entry, not a claim that the whole mechanism is complete. The constant table below retains historical file/line locations; current source and exact-source receipts govern qualification. A deleted consumer check does not close a lower-layer whole-value refusal.
 
 For every category 1 total: default `None`, complete continuation, bounded credited residency, original authority/work/cancellation, and one final atomic publication are required. Category 2 pages/frames split work; category 3 credits delay it. Explicit finite caller capacities remain opt-in. Category 4 corruption, bomb, integer and actual OS capability checks remain; an ordinary logical value is not a frame.
 
@@ -1004,7 +1004,7 @@ Qualification uses the same accepted-byte/count/digest oracle for candidate and 
 
 | Constant / limit | File:line | Category | Action |
 |---|---|---|---|
-| Machines CONNECT_TIMEOUT10s / RPC_TIMEOUT30s | `rust/crates/machines/src/grpc/mod.rs:12` (removed) | 1 | Delete implicit channel cutoffs on remote mTLS and owner-confined local sockets. Caller-selected command deadlines and original operation observation/reconciliation, socket identity and bearer validation remain. |
+| Machines CONNECT_TIMEOUT10s / RPC_TIMEOUT30s | `rust/crates/machines/src/grpc/mod.rs:12` (historical); current `grpc/native.rs:11` | 1 | Deleted current native connector constants and both remote/local builder projections; compilation pending. Delete implicit channel cutoffs on remote mTLS and owner-confined local sockets. Caller-selected command deadlines and original operation observation/reconciliation, socket identity and bearer validation remain. |
 | Inference connect10s / channel/request60s | `rust/crates/inference/src/host/mod.rs:128,707` (removed) | 1 | Delete implicit connection and operation deadlines. Caller cancellation remains owned by the actual future; physical HTTP2 keepalive health detection remains. No evaluation/model/budget semantics changed. |
 | Inference API key8192 bytes | `rust/crates/inference/src/host/values.rs:2` (removed) | 1 | Delete the count refusal and cap-only property. Retain nonempty/HTTP metadata validation and sensitive credentials. New16385-byte exact-identity control includes newline/empty rejection and absence of hidden gRPC deadline. |
 
@@ -2025,3 +2025,14 @@ The remaining local journal append-counter poll now waits on the existing public
 | Node synchronous pipe maxBuffer on complete diff, git/status/apply, CLI and probe output | `arena/packages/arena/src/{arena,forks,acyclic,opencode}.ts` | 1 arbitrary aggregate output refusal | DELETE the pipe-buffer admission by using the existing shared file-backed capture primitive. The canonical module is projected at build time and ships inside the standalone package, including generated declarations; there is one implementation. |
 
 Arena build and test generation now project the canonical `scripts/process-capture.mjs` into their normal TypeScript outputs. All synchronous output carriers use that same primitive; explicit caller deadlines, failure status and diagnostics remain. Existing real diff and dirty-worktree fork/promotion controls cross the former default buffer with complete2MiB payloads. Full output still becomes the caller-requested string after process exit; this is no streaming-result or bounded-RSS claim. Current-source compilation, full Arena controls, published-package isolation and the former-buffer negative control remain pending.
+
+
+## Current native transport deadline composition
+
+| Limit | File:line | Category | Action |
+| --- | --- | --- | --- |
+| Machines CONNECT_TIMEOUT10s / RPC_TIMEOUT30s | `rust/crates/machines/src/grpc/native.rs:11` (historical symbols) | 1 implicit connection/RPC refusal | DELETE both constants and both TLS/local-socket builder projections. Explicit optional command and file deadlines, credential expiry, original operation outcomes and local socket identity stay. |
+| Objects HTTP request30s when context is None | `rust/crates/objects/src/http.rs:177` | 1 None fallback | DELETE the absent-context timeout; the original optional Auth Context alone bounds the request. The event-held real HTTP body control now crosses31s with both absent and explicit original contexts and retains deadline/cancellation/producer-loss negatives. |
+| Objects gRPC connection10s | `rust/crates/objects/src/grpc.rs:160` | 1 implicit connection refusal | DELETE the channel's default connection timeout. Original authenticated endpoint/credential construction and explicit per-operation Context/transfer deadline remain. |
+
+A fresh current-source search found these defaults in native projections after owner composition; the historical removed-path inventory was insufficient. No selected finite budget is widened, no transport recovery policy changes, and no framing/availability/event producer is added. Formatting and whitespace checks pass. Current-source compilation and the existing real transport controls remain pending; the HTTP absence case must fail under restoration of the former30s fallback. No speedup or latency claim is made.
