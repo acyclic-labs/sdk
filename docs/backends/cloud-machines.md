@@ -33,7 +33,7 @@ existing Machine through one keyed mutation and its original operation watch.
 The simulator refuses both forms before mutation because it has no guest filesystem.
 
 The successful original operation event carries `OperationState.outcome` with
-its retained `MutationOutcome`. Create and AttachVolume consume that result
+its retained `MutationOutcome`. Create, AttachVolume, checkpoint and fork consume that result
 without inspecting mutable current state. Recovery returns the same original
 observation even after later attachments or policy changes. A missing or
 substituted settled result retains the original key as indeterminate.

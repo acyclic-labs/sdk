@@ -53,10 +53,10 @@ Once a gRPC mutation is admitted, its completion wait consumes the original
 operation watch. Its producer publishes terminal success, failure or cancellation;
 silence causes no inspection or subscription restart. An interrupted watch returns
 the original idempotency key for explicit recovery and never resubmits the mutation.
-Create and AttachVolume take their settled MachineState from the successful
-operation event's retained outcome. Recovery uses that original result, so later
-attachments or suspension policies cannot replace it. No current-state read is
-needed for their settlement; a missing original result remains indeterminate.
+Create, AttachVolume, checkpoint and fork take their settled observations from
+the successful operation event's retained outcome. Recovery uses that original
+result, so later resource changes or deletion cannot replace it. No current-state
+read is needed for settlement; a missing original result remains indeterminate.
 Dropping the waiting future stops local observation without cancelling the native
 operation. Persist the original key for recovery after process restart; the SDK
 uses the service's durable operation journal.
