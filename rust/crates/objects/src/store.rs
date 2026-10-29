@@ -991,26 +991,27 @@ impl<M: Medium> Account<M> {
             self.track(&digest, &existing);
             break (existing, false);
         };
+        let verified = Verified {
+            digest,
+            length: envelope.length,
+            revision: None,
+        };
+        // A complete version was indexed before its payload was written, so
+        // a put adopting one writes nothing.
+        if !created && self.complete(&digest, &envelope).await? {
+            self.completed(&digest, &envelope.version, false);
+            return Ok(Put::AlreadyExists { verified });
+        }
         // Any writer of the payload first holds every child; an index key
         // outlives a refusal, pinning its child until this version's removal.
         let tag = Self::envelope_tag(&digest, &envelope.version);
         let Some(indexed) = self.reference(&envelope.references, &tag).await? else {
             return Ok(Put::Unknown);
         };
-        let wrote = if !created && self.complete(&digest, &envelope).await? {
-            false
-        } else {
-            match self.write_payload(&digest, &envelope, payload).await? {
-                Some(wrote) => wrote,
-                None => return Ok(Put::Unknown),
-            }
+        let Some(wrote) = self.write_payload(&digest, &envelope, payload).await? else {
+            return Ok(Put::Unknown);
         };
         self.completed(&digest, &envelope.version, created || indexed || wrote);
-        let verified = Verified {
-            digest,
-            length: envelope.length,
-            revision: None,
-        };
         Ok(if created {
             Put::Created { verified }
         } else {
