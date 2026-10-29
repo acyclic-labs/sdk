@@ -1605,25 +1605,15 @@ pub struct SelectedWorkloadCase {
     pub case: WorkloadCase,
 }
 
-/// Explicit bounds for corpus generation, filtering, and serialization.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Optional caller policies for corpus generation, filtering, and serialization.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct SelectionLimits {
     /// Maximum raw pairwise cases admitted before generation.
-    pub maximum_generated_cases: usize,
+    pub maximum_generated_cases: Option<usize>,
     /// Maximum matching cases retained in one result.
-    pub maximum_selected_cases: usize,
+    pub maximum_selected_cases: Option<usize>,
     /// Maximum encoded selected-corpus JSON bytes.
-    pub maximum_json_bytes: usize,
-}
-
-impl Default for SelectionLimits {
-    fn default() -> Self {
-        Self {
-            maximum_generated_cases: 1_000_000,
-            maximum_selected_cases: 1_000_000,
-            maximum_json_bytes: 16 * 1024 * 1024,
-        }
-    }
+    pub maximum_json_bytes: Option<usize>,
 }
 
 /// Selects deterministic corpus cases using a canonical conjunctive filter.
@@ -1687,13 +1677,15 @@ pub fn select_workload_cases(
         }
     }
 
-    let generated_upper_bound = pairwise_case_upper_bound()?;
-    if generated_upper_bound > limits.maximum_generated_cases {
-        return Err(SelectorError::LimitExceeded {
-            what: "generated case count",
-            limit: limits.maximum_generated_cases,
-            actual: generated_upper_bound,
-        });
+    if let Some(limit) = limits.maximum_generated_cases {
+        let generated_upper_bound = pairwise_case_upper_bound()?;
+        if generated_upper_bound > limit {
+            return Err(SelectorError::LimitExceeded {
+                what: "generated case count",
+                limit,
+                actual: generated_upper_bound,
+            });
+        }
     }
     let cases = pairwise_cases();
     if let Some(index) = selected_case
@@ -1721,10 +1713,12 @@ pub fn select_workload_cases(
             });
         if matches {
             let actual = selected.len().saturating_add(1);
-            if actual > limits.maximum_selected_cases {
+            if let Some(limit) = limits.maximum_selected_cases
+                && actual > limit
+            {
                 return Err(SelectorError::LimitExceeded {
                     what: "selected case count",
-                    limit: limits.maximum_selected_cases,
+                    limit,
                     actual,
                 });
             }
@@ -1829,27 +1823,29 @@ impl From<SelectorError> for SelectedCorpusError {
     }
 }
 
-struct BoundedJsonWriter {
-    bytes: Box<[u8]>,
-    written: usize,
+struct JsonWriter {
+    bytes: Vec<u8>,
+    maximum_bytes: Option<usize>,
     exceeded: bool,
 }
 
-impl std::io::Write for BoundedJsonWriter {
+impl std::io::Write for JsonWriter {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let required = self.written.checked_add(bytes.len());
-        if required.is_none_or(|required| required > self.bytes.len()) {
+        let required = self
+            .bytes
+            .len()
+            .checked_add(bytes.len())
+            .ok_or_else(|| std::io::Error::other("selected workload JSON size overflow"))?;
+        if self.maximum_bytes.is_some_and(|maximum| required > maximum) {
             self.exceeded = true;
             return Err(std::io::Error::other(
                 "selected workload JSON limit exceeded",
             ));
         }
-        let required = required.unwrap_or(self.bytes.len());
         self.bytes
-            .get_mut(self.written..required)
-            .ok_or_else(|| std::io::Error::other("selected workload JSON limit exceeded"))?
-            .copy_from_slice(bytes);
-        self.written = required;
+            .try_reserve(bytes.len())
+            .map_err(std::io::Error::other)?;
+        self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
     }
 
@@ -1907,9 +1903,9 @@ pub fn selected_workload_corpus_json(
     let cases = select_workload_cases(selectors, limits)?;
     let mut canonical: Vec<_> = selectors.iter().map(ToString::to_string).collect();
     canonical.sort_unstable();
-    let mut writer = BoundedJsonWriter {
-        bytes: vec![0; limits.maximum_json_bytes].into_boxed_slice(),
-        written: 0,
+    let mut writer = JsonWriter {
+        bytes: Vec::new(),
+        maximum_bytes: limits.maximum_json_bytes,
         exceeded: false,
     };
     let encoded = serde_json::to_writer_pretty(
@@ -1924,14 +1920,13 @@ pub fn selected_workload_corpus_json(
     );
     if writer.exceeded {
         return Err(SelectedCorpusError::OutputLimit {
-            limit: limits.maximum_json_bytes,
+            limit: limits
+                .maximum_json_bytes
+                .expect("writer exceeded a selected policy"),
         });
     }
     encoded.map_err(SelectedCorpusError::Serialization)?;
-    let written = writer.written;
-    let mut bytes = writer.bytes.into_vec();
-    bytes.truncate(written);
-    String::from_utf8(bytes).map_err(|error| {
+    String::from_utf8(writer.bytes).map_err(|error| {
         SelectedCorpusError::Serialization(serde_json::Error::io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             error,
@@ -2136,7 +2131,7 @@ mod tests {
             selected_workload_corpus_json(
                 &["backend=memory".parse()?],
                 SelectionLimits {
-                    maximum_json_bytes: 1,
+                    maximum_json_bytes: Some(1),
                     ..SelectionLimits::default()
                 },
             ),
@@ -2198,7 +2193,7 @@ mod tests {
             select_workload_cases(
                 &[],
                 SelectionLimits {
-                    maximum_generated_cases: 0,
+                    maximum_generated_cases: Some(0),
                     ..SelectionLimits::default()
                 },
             ),
@@ -2209,7 +2204,7 @@ mod tests {
             select_workload_cases(
                 &[exact],
                 SelectionLimits {
-                    maximum_generated_cases: 0,
+                    maximum_generated_cases: Some(0),
                     ..SelectionLimits::default()
                 },
             ),
@@ -2257,21 +2252,28 @@ mod tests {
     }
 
     #[test]
-    fn bounded_json_writer_never_exceeds_its_fixed_allocation() -> std::io::Result<()> {
-        let limit = 80 * 1024;
-        let mut writer = BoundedJsonWriter {
-            bytes: vec![0; limit].into_boxed_slice(),
-            written: 0,
-            exceeded: false,
-        };
-        std::io::Write::write_all(&mut writer, &vec![7; 70 * 1024])?;
-        assert_eq!(writer.bytes.len(), limit);
-        assert_eq!(writer.written, 70 * 1024);
-        assert!(!writer.exceeded);
-        assert!(std::io::Write::write_all(&mut writer, &vec![8; 11 * 1024]).is_err());
-        assert_eq!(writer.bytes.len(), limit);
-        assert_eq!(writer.written, 70 * 1024);
-        assert!(writer.exceeded);
+    fn selected_json_policy_rejects_only_the_unaccepted_write() -> std::io::Result<()> {
+        for maximum in [None, Some(80 * 1024)] {
+            let mut writer = JsonWriter {
+                bytes: Vec::new(),
+                maximum_bytes: maximum,
+                exceeded: false,
+            };
+            let first = vec![7; 70 * 1024];
+            std::io::Write::write_all(&mut writer, &first)?;
+            let second = vec![8; 11 * 1024];
+            let accepted = std::io::Write::write_all(&mut writer, &second);
+            if maximum.is_some() {
+                assert!(accepted.is_err());
+                assert_eq!(writer.bytes, first);
+                assert!(writer.exceeded);
+            } else {
+                accepted?;
+                assert_eq!(writer.bytes[..first.len()], first);
+                assert_eq!(writer.bytes[first.len()..], second);
+                assert!(!writer.exceeded);
+            }
+        }
         Ok(())
     }
 
