@@ -41,7 +41,7 @@ fn recursive_refusal_drops_inputs_without_a_runtime_or_job_allocation() {
     ));
     // Bypassing the guard allocates a real job and owned task, violating the
     // same zero-allocation admission oracle even while this scope is active.
-    let runtime = coordination_runtime().unwrap();
+    let runtime = crate::coordination().unwrap();
     runtime.block_on(async {
         let mut accepted = None;
         let allocation = acyclic_test_support::measure(|| {
@@ -66,7 +66,7 @@ fn persistence_scope_restores_thread_state_after_unwinding() {
 
 #[test]
 fn moving_an_accepted_wait_into_persistence_refuses_without_releasing_commit_custody() {
-    coordination_runtime().unwrap().block_on(async {
+    crate::coordination().unwrap().block_on(async {
         let key = Arc::new(std::sync::Mutex::new(()));
         let owned_key = Arc::clone(&key);
         let (started, starting) = tokio::sync::oneshot::channel();
@@ -186,7 +186,7 @@ fn recursive_saturated_persistence_has_a_finite_progress_oracle() -> io::Result<
         .as_ref()
         .map_err(|error| io::Error::other(error.to_string()))?
         .exclusive_threads();
-    coordination_runtime()?.block_on(async {
+    crate::coordination()?.block_on(async {
         assert_eq!(saturated_recursion(true, threads).await?, threads);
         // Negative control: the exact same saturated service with the guard
         // bypassed yields Pending in every worker. Waiting synchronously here
@@ -200,7 +200,7 @@ fn recursive_saturated_persistence_has_a_finite_progress_oracle() -> io::Result<
 #[test]
 fn seeded_persistence_keeps_physical_custody_while_coordination_cancels() -> io::Result<()> {
     let (schedule, mut boundaries) = crate::testing::Schedule::seeded(71);
-    coordination_runtime()?.block_on(async {
+    crate::coordination()?.block_on(async {
         let mut operation = Box::pin(schedule.scope(async {
             let key = Arc::new(std::sync::Mutex::new(()));
             let owned_key = Arc::clone(&key);

@@ -48,20 +48,18 @@ pub fn main_with(seams: impl FnOnce(ServerConfig) -> ServerConfig) -> ExitCode {
     // never replace the execution result or prevent owner cleanup.
     let _ = acyclic_native_runtime::obs::initialize_diagnostic_service();
     let graceful = args.host_workspace || matches!(args.command, Some(Command::Serve(_)));
-    let result = acyclic_native_runtime::coordination_runtime()
+    let result = acyclic_native_runtime::coordination()
         .map_err(|error| Box::new(error) as Box<dyn std::error::Error>)
         .and_then(|runtime| {
             // Keep Tokio's entry frame independent of the size of the CLI future.
-            let result = runtime.block_on(phase(|| async {
+            runtime.block_on(phase(|| async {
                 let shutdown = lifecycle::shutdown();
                 let operation = phase(|| run(args, seams, shutdown.clone()));
                 let (result, _) =
                     lifecycle::observe(&report, std::io::stderr(), shutdown, graceful, operation)
                         .await;
                 result
-            }));
-            runtime.shutdown_background();
-            result
+            }))
         });
     match result {
         Ok(code) => ExitCode::from(code),

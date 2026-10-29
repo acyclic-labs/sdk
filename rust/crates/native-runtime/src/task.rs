@@ -73,16 +73,6 @@ impl<T> std::future::Future for PersistenceTask<T> {
     }
 }
 
-/// Runtime for a single coordination owner. Durable storage uses its own shared,
-/// fixed service through [`spawn_persistence`]. Interactive blocking reads may
-/// occupy the incidental Tokio worker without starving storage producers.
-pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
-    tokio::runtime::Builder::new_current_thread()
-        .max_blocking_threads(1)
-        .enable_all()
-        .build()
-}
-
 /// Submits durable storage work to the shared, bounded persistence service.
 ///
 /// Submission is eager: a replay reader may await records produced by the
@@ -259,57 +249,6 @@ mod tests {
     #[cfg(feature = "test-support")]
     use std::time::Duration;
 
-    #[test]
-    fn coordination_blocking_pool_stays_flat_with_more_tasks() {
-        fn identities(runtime: &tokio::runtime::Runtime, tasks: usize, starters: usize) -> usize {
-            let (send, receive) = std::sync::mpsc::channel();
-            let (release, wait) = std::sync::mpsc::channel();
-            let wait = std::sync::Arc::new(std::sync::Mutex::new(wait));
-            let mut jobs = Vec::new();
-            // The first worker is physically occupied before further jobs are
-            // submitted. An expanding pool has to start another worker; a
-            // fixed owner queues them without allocating another thread.
-            for index in 0..tasks {
-                let send = send.clone();
-                let wait = std::sync::Arc::clone(&wait);
-                jobs.push(runtime.spawn_blocking(move || {
-                    let identity = std::thread::current().id();
-                    send.send(identity).unwrap();
-                    wait.lock().unwrap().recv().unwrap();
-                    identity
-                }));
-                if index == 0 {
-                    receive.recv().unwrap();
-                }
-            }
-            // The expanding-pool control must physically start a second
-            // worker before the first is released, rather than depending on
-            // which worker wins the runnable queue after release.
-            for _ in 1..starters {
-                receive.recv().unwrap();
-            }
-            for _ in 0..tasks {
-                release.send(()).unwrap();
-            }
-            runtime.block_on(async {
-                let mut identities = std::collections::HashSet::new();
-                for job in jobs {
-                    identities.insert(job.await.unwrap());
-                }
-                identities.len()
-            })
-        }
-        let runtime = super::coordination_runtime().unwrap();
-        assert_eq!(identities(&runtime, 4, 1), 1);
-        assert_eq!(identities(&runtime, 8, 1), 1);
-        // Actual previous owner construction: Tokio's default blocking pool.
-        let expanding = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        assert!(identities(&expanding, 8, 2) > 1);
-    }
-
     // Outside a simulation, blocking work must stay visible to a paused Tokio
     // clock: virtual time may not auto-advance past an unfinished closure.
     // Negative control: routing this path through the native worker service
@@ -340,7 +279,7 @@ mod tests {
 
     #[test]
     fn persistence_retains_accepted_work_after_caller_drop() {
-        let runtime = super::coordination_runtime().unwrap();
+        let runtime = crate::coordination().unwrap();
         runtime.block_on(async {
             let (started, starting) = tokio::sync::oneshot::channel();
             let (release, held) = std::sync::mpsc::channel::<()>();

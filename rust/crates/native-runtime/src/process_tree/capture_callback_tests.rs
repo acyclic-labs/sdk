@@ -81,13 +81,14 @@ fn transferring_signal_ownership_has_constant_cost_without_cloning() -> io::Resu
 
 #[test]
 fn callback_signals_have_a_sibling_producer_and_cleanup_on_producer_loss() -> io::Result<()> {
-    crate::coordination_runtime()?.block_on(async {
+    crate::coordination()?.block_on(async {
         for release_event in [true, false] {
             let tree = super::capture_events_tests::child("callback")?;
             let (starting, started) = tokio::sync::oneshot::channel();
             let (release, held) = std::sync::mpsc::channel();
+            let coordination = crate::spawn(async { std::thread::current().id() }).await?;
             let mut handler = Handler {
-                coordination: std::thread::current().id(),
+                coordination,
                 starting: Some(starting),
                 release: held,
                 wakes: vec![ProcessWake::new()?],
@@ -96,10 +97,14 @@ fn callback_signals_have_a_sibling_producer_and_cleanup_on_producer_loss() -> io
             };
             // Calling on the previous coordination path fails the exact same
             // boundary oracle, before its sibling could be blocked forever.
-            assert_eq!(
-                handler.take_wakes().err().unwrap().kind(),
-                io::ErrorKind::WouldBlock
-            );
+            let handler = crate::spawn(async move {
+                assert_eq!(
+                    handler.take_wakes().err().unwrap().kind(),
+                    io::ErrorKind::WouldBlock
+                );
+                handler
+            })
+            .await?;
             let outcome = crate::spawn(tree.capture(
                 CaptureSchedule::new(Duration::from_secs(2)),
                 4096,
@@ -107,10 +112,14 @@ fn callback_signals_have_a_sibling_producer_and_cleanup_on_producer_loss() -> io
                 handler,
             ));
             started.await.map_err(io::Error::other)?;
-            if release_event {
-                release.send(()).map_err(io::Error::other)?;
-            }
-            drop(release);
+            crate::spawn(async move {
+                if release_event {
+                    release.send(()).map_err(io::Error::other)?;
+                }
+                drop(release);
+                Ok::<_, io::Error>(())
+            })
+            .await??;
             let outcome = outcome.await??;
             assert_eq!(outcome.handler.extracted, 1);
             if release_event {

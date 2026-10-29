@@ -77,7 +77,7 @@ fn full_output_does_not_block_cancellation_or_other_producers() -> io::Result<()
     }
 
     initialize_diagnostic_service()?;
-    crate::coordination_runtime()?.block_on(async {
+    crate::coordination()?.block_on(async {
         let report = super::super::WaitReport::default();
         let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
         let (producer, receiver) = tokio::sync::oneshot::channel::<()>();

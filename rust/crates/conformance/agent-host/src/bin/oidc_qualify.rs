@@ -96,7 +96,7 @@ async fn run(directory: PathBuf) -> Result {
 
 fn main() -> std::process::ExitCode {
     let directory = std::env::args_os().nth(1).map(PathBuf::from);
-    let result = acyclic_native_runtime::coordination_runtime()
+    let result = acyclic_native_runtime::coordination()
         .map_err(|error| error.to_string())
         .and_then(|runtime| {
             runtime
@@ -109,7 +109,7 @@ fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!(
-                "STEP_FAILED oidc-qualification: {error}; recovery: pwsh -NoProfile -File Q:/lanes/bs.ps1 bash scripts/be-edge-oidc.sh"
+                "STEP_FAILED oidc-qualification: {error}; recovery: cargo run --locked -p acyclic-agent-host-conformance --features local --bin oidc-qualify -- CAPTURE_DIRECTORY"
             );
             std::process::ExitCode::FAILURE
         }

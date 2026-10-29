@@ -50,7 +50,7 @@ fn blocked_diagnostic_output_does_not_delay_graceful_owner_cleanup() {
             Ok(())
         }
     }
-    let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
+    let runtime = acyclic_native_runtime::coordination().unwrap();
     let report = WaitReport::default();
     let dispatch = tracing::Dispatch::new(subscriber(&report, Some("off".into())));
     let _subscriber = tracing::dispatcher::set_default(&dispatch);
@@ -138,7 +138,7 @@ fn termination_reports_the_live_wait_before_cancellation_with_logging_disabled()
                 panic!("termination did not wake the process boundary")
             };
             assert_eq!(result.unwrap(), 143);
-            acyclic_native_runtime::coordination_runtime()
+            acyclic_native_runtime::coordination()
                 .unwrap()
                 .block_on(diagnostic.unwrap())
                 .unwrap();
@@ -175,7 +175,7 @@ fn dropped_producer_exits_with_its_typed_error_and_no_live_wait() {
                     .unwrap_err()
                     .is::<tokio::sync::oneshot::error::RecvError>()
             );
-            acyclic_native_runtime::coordination_runtime()
+            acyclic_native_runtime::coordination()
                 .unwrap()
                 .block_on(diagnostic.unwrap())
                 .unwrap();
@@ -223,7 +223,7 @@ fn broken_diagnostic_output_does_not_skip_graceful_owner_cleanup() {
     assert_eq!(result.unwrap(), 0);
     assert!(cleaned.get());
     assert_eq!(
-        acyclic_native_runtime::coordination_runtime()
+        acyclic_native_runtime::coordination()
             .unwrap()
             .block_on(diagnostic.unwrap())
             .unwrap_err()
@@ -241,7 +241,7 @@ fn sigterm_reports_from_the_process_boundary() {
         let report = WaitReport::default();
         let dispatch = tracing::Dispatch::new(subscriber(&report, Some("off".into())));
         let _subscriber = tracing::dispatcher::set_default(&dispatch);
-        let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
+        let runtime = acyclic_native_runtime::coordination().unwrap();
         runtime.block_on(async {
             let mut shutdown = shutdown();
             // Arm the actual signal receiver before publishing readiness.

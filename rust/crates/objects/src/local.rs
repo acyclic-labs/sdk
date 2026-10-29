@@ -682,17 +682,24 @@ mod isolation_tests {
 
     #[test]
     fn local_storage_progresses_with_an_occupied_input_worker() {
-        let runtime = acyclic_native_runtime::coordination_runtime().unwrap();
+        let runtime = acyclic_native_runtime::coordination().unwrap();
+        // Preserve the actual previous single-slot boundary as the negative
+        // control; production coordination never constructs this runtime.
+        let previous = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
         let (started, starting) = std::sync::mpsc::channel();
         let (release, held) = std::sync::mpsc::channel::<()>();
-        let input = runtime.spawn_blocking(move || {
+        let input = previous.spawn_blocking(move || {
             started.send(()).unwrap();
             held.recv()
         });
         starting.recv().unwrap();
         runtime.block_on(async {
             // The old route cannot start until the input producer closes.
-            let mut old_route = Box::pin(tokio::task::spawn_blocking(|| ()));
+            let mut old_route = Box::pin(previous.spawn_blocking(|| ()));
             assert!(old_route.as_mut().now_or_never().is_none());
             let root = tempfile::tempdir().unwrap();
             let store = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
