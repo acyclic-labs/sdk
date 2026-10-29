@@ -76,3 +76,53 @@ It excludes setup and warmup, verifies all 256 deliveries, and returns elapsed
 time plus data/control request counts. A downstream service can instrument
 physical dispatch with the same ledger; counts at an API wrapper boundary alone
 do not establish physical network traffic. No benchmark is scheduled by CI.
+
+### Guest durable state binding
+
+`domain::Binding::actor_state(name)` selects the executing actor's own state.
+Its public declaration is `stateTransaction: true`, with no capability,
+resource, target account, namespace or Worker target. Workers cannot select
+this kind. Every selected name for this kind must share one admitted owner,
+epoch, state cut and pending transaction group.
+
+JavaScript hosts use `materializeActorState` with the public `ActorStateHost`.
+The host loads `seed` from `local::ActorStateBinding::seed`, applies each
+`ActorStateCommit` through that same native binding's `apply`, and resolves
+`commit` only after its original `flush` confirms durability. The host supplies
+and retains the original invocation/flush identity; guest packets carry no
+provider, actor, placement epoch or publication key. A hosted runtime must use
+this same materializer and native producer, not a private guest storage API.
+
+`transaction` runs synchronously. Its borrowed `get`, `put`, `entries`, journal
+append and alarm operations expire at callback return. Failure rolls back the
+callback, preserving any earlier pending transaction group. Values are copied
+at the JavaScript boundary so later caller mutation cannot alter admitted work.
+`flush` publishes all pending metadata, journal frames and alarm in **one**
+conditional Stream commit against the original actor head and journal tail.
+Only its confirmed result acknowledges durability. Failed/unknown publication
+fences the binding; an unknown result retains its original PreparedPublish and
+never dispatches the guest callback again. The delivery/checkpoint owner takes
+the updated Snapshot through `finish` before its next normal publication.
+
+Metadata is retained with the actor checkpoint/epoch/alarm state. Journal frames
+stay in the canonical `<state-path>/journal` stream and are read in requested
+pages bounded by the journal tail in that same committed state cut. Later owner
+epochs cannot extend an older cut's replay. Missing frames are errors, not EOF.
+The journal is opaque persistence: the existing Stream journal engine retains
+all command interpretation. Actor alarms use the existing generation fence and
+are delivered as `GuestEvent.alarm`, without a guest timer.
+
+The local state record is explicitly `AST` version 1, with an invalid-protobuf
+prefix that makes older unversioned decoders refuse it. Its reader rejects
+unversioned records; there is no migration or old-writer fallback. Adoption
+requires a fresh state root/data generation. Metadata and the journal cut cannot
+be silently discarded by an older decoder. Older deployment validators also
+reject the new binding kind because its external capability/resource are empty.
+Hosted adoption must deploy the new reader/materializer and make its explicit
+preproduction generation reset before admitting the new kind or promotion.
+
+Harness EventStorage/streamJournal adapters compose this primitive; no harness
+logic, signing key or second StreamLedger belongs in Actors. Objects grants keep
+their original immutable Objects authority. Platform authority admission and
+trailer-preserving fetch are separate public contracts, not implicit effects of
+this state binding.

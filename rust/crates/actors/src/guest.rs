@@ -20,6 +20,10 @@ mod body;
 pub use body::*;
 mod state;
 pub use state::GuestState;
+mod state_transaction;
+pub use state_transaction::{
+    ActorMetadataWrite, ActorStateAlarm, ActorStateCommit, ActorStateSeed,
+};
 mod handler;
 pub use handler::{
     AlarmChange, Composer, Composition, Delivery, Effect, Handler, Interrupt, Manifest,
@@ -179,6 +183,7 @@ pub fn typescript() -> String {
         SocketTransport, GuestSocketEvent, GuestEvent, GuestEventResult,
         CodecIdentity, Checkpoint, GuestError, CheckpointCodec<()>,
         CallerCapability, AdmittedCaller, RuntimeHandle, ActorRuntime,
+        ActorMetadataWrite, ActorStateAlarm, ActorStateSeed, ActorStateCommit,
         GuestState<()>, GuestContext<()>, ActorDefinition<(), ()>);
     output
         .lines()

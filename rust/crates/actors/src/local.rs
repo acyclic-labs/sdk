@@ -1,12 +1,14 @@
 //! Single-node Actors runtime primitives over the canonical Stream transaction.
 mod applied;
+mod state_binding;
+pub use state_binding::{ActorStateBinding, ActorStateTransaction};
 mod invoke;
 pub use invoke::{CommittedInvocation, InvocationReceipt, InvocationTicket};
 /// Shared readiness registration and hibernation handoff.
 pub mod ready;
 mod record;
 pub use applied::{Applied, AppliedCut};
-pub use record::{STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD};
+pub use record::{METADATA_OVERHEAD, STATE_RECORD_OVERHEAD, SUBSCRIPTION_OVERHEAD};
 mod runtime;
 pub use crate::guest::Subscription;
 pub use runtime::{Clock, Runtime, RuntimeLimits, SystemClock};
@@ -92,8 +94,20 @@ pub struct State {
     subscriptions: BTreeMap<String, Subscription>,
     alarm: Alarm,
     paused: bool,
+    metadata: BTreeMap<String, bytes::Bytes>,
+    journal_tail: u64,
 }
 impl State {
+    /// Durable guest metadata, from this same checkpoint/epoch/commit cut.
+    pub fn metadata(&self) -> impl ExactSizeIterator<Item = (&str, &bytes::Bytes)> {
+        self.metadata
+            .iter()
+            .map(|(key, value)| (key.as_str(), value))
+    }
+    /// Number of journal frames retained at this same committed state cut.
+    pub const fn journal_tail(&self) -> u64 {
+        self.journal_tail
+    }
     /// Current placement fence; zero means created but never placed.
     pub const fn epoch(&self) -> u64 {
         self.epoch
@@ -406,6 +420,8 @@ impl<P: StreamProvider + ?Sized> Store<P> {
             subscriptions,
             alarm: Alarm::default(),
             paused: false,
+            metadata: BTreeMap::new(),
+            journal_tail: 0,
         };
         Ok([
             Effect {
@@ -767,7 +783,13 @@ fn next(state: &State, trigger: &Trigger, transition: &Transition) -> Result<Sta
             state.alarm.delivered_generation = Some(*generation);
         }
     }
-    let deadline = match transition.alarm {
+    change_alarm(&mut state.alarm, transition.alarm)?;
+    state.checkpoint = Some(transition.checkpoint.clone());
+    Ok(state)
+}
+
+fn change_alarm(alarm: &mut Alarm, change: AlarmChange) -> Result<(), Error> {
+    let deadline = match change {
         AlarmChange::Keep => None,
         AlarmChange::Clear => Some(None),
         AlarmChange::Set {
@@ -776,16 +798,14 @@ fn next(state: &State, trigger: &Trigger, transition: &Transition) -> Result<Sta
         AlarmChange::Set { deadline_unix_ms } => Some(Some(deadline_unix_ms)),
     };
     if let Some(deadline) = deadline {
-        state.alarm.generation = state
-            .alarm
+        alarm.generation = alarm
             .generation
             .checked_add(1)
             .ok_or(Error::Invalid("alarm generation overflow"))?;
-        state.alarm.deadline_unix_ms = deadline;
-        state.alarm.delivered_generation = None;
+        alarm.deadline_unix_ms = deadline;
+        alarm.delivered_generation = None;
     }
-    state.checkpoint = Some(transition.checkpoint.clone());
-    Ok(state)
+    Ok(())
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

@@ -43,6 +43,7 @@ pub fn validate_deployment_binding(
     worker: Option<String>,
 ) -> Result<(), JsValue> {
     domain::Binding::try_from(acyclic_actors::wire::Binding {
+        state_transaction: false,
         name,
         capability,
         resource,

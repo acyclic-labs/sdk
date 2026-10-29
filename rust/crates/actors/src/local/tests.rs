@@ -769,3 +769,134 @@ proptest! {
         }).map_err(|error| TestCaseError::fail(error.to_string()))?;
     }
 }
+
+/// Real durable provider: metadata, journal and alarm share one commit, survive
+/// reopen, and cannot be rewritten by an old epoch or a failed transaction.
+#[tokio::test]
+async fn state_transaction_flush_is_one_durable_fenced_journal_commit() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let address = actor("state-transaction")?;
+    {
+        let provider = Arc::new(LocalStream::open(directory.path(), Default::default()).await?);
+        let store = Store::new(Arc::clone(&provider), state_root()?);
+        place(&store, &address).await?;
+        let initial = store.load(&address).await?;
+        let journal = StreamPath::new(format!("{}/journal", initial.path()))?;
+        let initial_tail = initial.tail;
+        let mut binding = store.bind_state(initial, 1)?;
+        assert_eq!(binding.seed()?.journal_tail, "0");
+        binding.apply(crate::guest::ActorStateCommit {
+            writes: vec![crate::guest::ActorMetadataWrite {
+                key: "metadata".into(),
+                value: Bytes::from_static(b"accepted"),
+            }],
+            journal_from: "0".into(),
+            journal: vec![Bytes::from_static(b"first"), Bytes::from_static(b"second")],
+            alarm: crate::guest::ActorStateAlarm::Set {
+                deadline: "42".into(),
+            },
+        })?;
+        binding.transaction(|state| {
+            assert_eq!(
+                state.get("metadata").map(Bytes::as_ref),
+                Some(b"accepted".as_slice())
+            );
+            assert_eq!(state.entries().count(), 1);
+            Ok(())
+        })?;
+        let refused: Result<(), Error> = binding.transaction(|state| {
+            state.put("metadata".into(), Bytes::from_static(b"rolled-back"));
+            state.append_journal(2, vec![Bytes::from_static(b"rolled-back")])?;
+            state.alarm(None)?;
+            Err(Error::Invalid("transaction refused"))
+        });
+        assert!(refused.is_err());
+        assert_eq!(store.load(&address).await?.tail, initial_tail);
+        assert!(matches!(
+            provider.tail(journal.clone()).await,
+            Err(StreamError::NotFound)
+        ));
+        binding.flush(key("state-transaction/first")?).await?;
+        let confirmed = binding.finish()?;
+        assert_eq!(confirmed.tail, initial_tail + 1);
+        assert_eq!(confirmed.state().ok_or("missing state")?.journal_tail(), 2);
+        let mut frames = provider
+            .read(ReadRequest {
+                path: journal,
+                from: 0,
+                limit: 2,
+                key: None,
+                at_least: Default::default(),
+            })
+            .await?;
+        for expected in [b"first".as_slice(), b"second".as_slice()] {
+            let frame = frames.try_next().await?.ok_or("missing durable frame")?;
+            assert_eq!(frame.value.as_ref(), expected);
+            assert_eq!(Some(frame.commit_id), confirmed.anchor);
+        }
+        assert!(frames.try_next().await?.is_none());
+        // The original delivery owner uses this updated cut, rather than an
+        // obsolete pre-flush state, for its normal cursor/checkpoint commit.
+        store
+            .publish(
+                &confirmed,
+                1,
+                &record(0),
+                None,
+                transition(7, AlarmChange::Keep),
+                key("state-transaction/checkpoint")?,
+            )
+            .await?;
+        // A changed native journal tail must refuse metadata and alarm too.
+        let mut stale = store.bind_state(store.load(&address).await?, 1)?;
+        let current = store.load(&address).await?;
+        store
+            .claim(&current, 2, key("state-transaction/takeover")?)
+            .await?;
+        stale.transaction(|state| {
+            state.put("metadata".into(), Bytes::from_static(b"stale"));
+            state.append_journal(2, vec![Bytes::from_static(b"stale")])?;
+            state.alarm(None)
+        })?;
+        assert!(matches!(
+            stale.flush(key("state-transaction/stale")?).await,
+            Err(Error::Conflict)
+        ));
+        assert!(stale.transaction(|_| Ok(())).is_err());
+        assert!(stale.finish().is_err());
+    }
+    let store = Store::new(
+        Arc::new(LocalStream::open(directory.path(), Default::default()).await?),
+        state_root()?,
+    );
+    let restored = store.load(&address).await?;
+    let state = restored.state().ok_or("missing restored state")?;
+    assert_eq!(state.epoch(), 2);
+    assert_eq!(state.alarm().deadline_unix_ms(), Some(42));
+    assert_eq!(
+        state.metadata().collect::<Vec<_>>(),
+        vec![("metadata", &Bytes::from_static(b"accepted"))]
+    );
+    let binding = store.bind_state(restored, 2)?;
+    assert_eq!(
+        binding
+            .read_journal(0, 1)
+            .await?
+            .iter()
+            .map(AsRef::as_ref)
+            .collect::<Vec<&[u8]>>(),
+        vec![b"first".as_slice()]
+    );
+    assert_eq!(
+        binding
+            .read_journal(1, 4)
+            .await?
+            .iter()
+            .map(AsRef::as_ref)
+            .collect::<Vec<&[u8]>>(),
+        vec![b"second".as_slice()]
+    );
+    assert!(binding.read_journal(2, 1).await?.is_empty());
+    assert!(binding.read_journal(3, 1).await.is_err());
+    Ok(())
+}

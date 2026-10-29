@@ -91,6 +91,12 @@ pub fn environment_typescript(
         let binding = bindings
             .get(name.as_str())
             .ok_or_else(|| ManifestError::invalid("bindings", "unknown-binding"))?;
+        if binding.is_actor_state() {
+            output.push_str(&format!(
+                "  readonly {name}: import(\"@acyclic-labs/actors\").ActorStateBinding;\n"
+            ));
+            continue;
+        }
         let grant = grants
             .get(binding.capability())
             .ok_or_else(|| ManifestError::invalid("grants", "unknown-grant"))?;

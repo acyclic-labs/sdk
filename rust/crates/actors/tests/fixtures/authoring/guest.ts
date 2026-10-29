@@ -339,6 +339,46 @@ sql?: RuntimeHandle,
  * Optional host-managed lifetime extension authority.
  */
 waitUntil?: RuntimeHandle, };
+export type ActorMetadataWrite = {
+/**
+ * Actor-local metadata key.
+ */
+key: string,
+/**
+ * Opaque value; copied at the guest boundary.
+ */
+value: Uint8Array, };
+export type ActorStateAlarm = { "type": "keep" } | { "type": "set",
+/**
+ * Exact u64 decimal, never a floating-point timestamp.
+ */
+deadline: string, } | { "type": "clear" };
+export type ActorStateSeed = {
+/**
+ * Metadata from that same cut, without a second remote read.
+ */
+metadata: Array<ActorMetadataWrite>,
+/**
+ * Exact u64 decimal committed frame count.
+ */
+journalTail: string, };
+export type ActorStateCommit = {
+/**
+ * Last assignment for each changed metadata key.
+ */
+writes: Array<ActorMetadataWrite>,
+/**
+ * Original committed journal tail, as exact u64 decimal.
+ */
+journalFrom: string,
+/**
+ * Opaque canonical journal frames, appended in order.
+ */
+journal: Array<Uint8Array>,
+/**
+ * Alarm mutation in this same conditional commit.
+ */
+alarm: ActorStateAlarm, };
 export type GuestState<State> = { with: (mutate: (state: State) => undefined) => void };
 export type GuestContext<Bindings> = {
 /**

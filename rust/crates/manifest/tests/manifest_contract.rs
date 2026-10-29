@@ -967,3 +967,30 @@ fn actor_and_worker_lowering_preserve_and_remove_selected_fetch_authority()
     }
     Ok(())
 }
+
+#[test]
+fn actor_state_binding_is_own_actor_only_and_cannot_be_selected_by_a_worker()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut manifest = fixture()?;
+    let environment = manifest.environments.first_mut().ok_or_else(missing)?;
+    environment
+        .bindings
+        .push(acyclic_actors::domain::Binding::actor_state("eventStorage".into())?.into());
+    environment
+        .entries
+        .first_mut()
+        .ok_or_else(missing)?
+        .bindings
+        .push("eventStorage".into());
+    validate(&manifest)?;
+    let environment = manifest.environments.first_mut().ok_or_else(missing)?;
+    add_worker(environment)?;
+    environment
+        .entries
+        .last_mut()
+        .ok_or_else(missing)?
+        .bindings
+        .push("eventStorage".into());
+    assert!(validate(&manifest).is_err());
+    Ok(())
+}

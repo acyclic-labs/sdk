@@ -72,6 +72,7 @@ message Binding {
   bytes target_account = 4;
   optional string actor_namespace = 5;
   optional string worker_service = 6;
+  bool state_transaction = 7;
 }
 
 message CheckpointActorRequest {

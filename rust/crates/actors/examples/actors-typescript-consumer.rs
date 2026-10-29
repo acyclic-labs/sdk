@@ -14,6 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         code_sha256: vec![0x11; 32],
 
         bindings: vec![wire::Binding {
+            state_transaction: false,
             target_account: Vec::new(),
             actor_namespace: None,
             worker_service: None,

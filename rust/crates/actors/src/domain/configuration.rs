@@ -50,6 +50,10 @@ pub struct Binding {
     #[wire(tag = 6)]
     #[ts(optional)]
     worker_service: Option<String>,
+    /// Bind the executing actor's own durable state transaction; never a
+    /// caller-selected account, state stream or external resource grant.
+    #[wire(tag = 7)]
+    state_transaction: bool,
 }
 
 impl Binding {
@@ -62,12 +66,26 @@ impl Binding {
             target_account: Vec::new(),
             actor_namespace: None,
             worker_service: None,
+            state_transaction: false,
         };
         binding.validate_admission()?;
         Ok(binding)
     }
 
     fn validate_admission(&self) -> Result<(), DomainError> {
+        if self.state_transaction {
+            return if !self.name.is_empty()
+                && self.capability.is_empty()
+                && self.resource.is_empty()
+                && self.target_account.is_empty()
+                && self.actor_namespace.is_none()
+                && self.worker_service.is_none()
+            {
+                Ok(())
+            } else {
+                Err(DomainError::InvalidBinding)
+            };
+        }
         if self.name.is_empty() || self.capability.is_empty() || self.resource.is_empty() {
             return Err(DomainError::InvalidBinding);
         }
@@ -132,6 +150,27 @@ impl Binding {
 }
 
 impl Binding {
+    /// Select the executing actor's original state publication owner. The host
+    /// admits its actor/epoch before materializing this binding. No cross-actor
+    /// resource, caller authority or credential can be supplied by the guest.
+    pub fn actor_state(name: String) -> Result<Self, DomainError> {
+        let value = Self {
+            name,
+            capability: String::new(),
+            resource: String::new(),
+            target_account: Vec::new(),
+            actor_namespace: None,
+            worker_service: None,
+            state_transaction: true,
+        };
+        value.validate_admission()?;
+        Ok(value)
+    }
+    /// Whether this binding selects the executing actor's own state owner.
+    pub const fn is_actor_state(&self) -> bool {
+        self.state_transaction
+    }
+
     /// Declare a namespace binding with explicit target account and named grant.
     pub fn actor_namespace(
         name: String,
@@ -149,6 +188,7 @@ impl Binding {
             target_account: account.to_vec(),
             actor_namespace: Some(namespace.to_owned()),
             worker_service: None,
+            state_transaction: false,
         };
         value.validate_admission()?;
         Ok(value)
@@ -170,6 +210,7 @@ impl Binding {
             target_account: account.to_vec(),
             actor_namespace: None,
             worker_service: Some(worker.to_owned()),
+            state_transaction: false,
         };
         value.validate_admission()?;
         Ok(value)

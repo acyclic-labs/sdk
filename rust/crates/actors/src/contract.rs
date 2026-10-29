@@ -110,7 +110,9 @@ pub fn validate_deployment(request: &wire::DeploymentRequest) -> Result<(), Cont
     }
     names.clear();
     for item in &request.bindings {
-        if domain::Binding::try_from(item.clone()).is_err() {
+        if domain::Binding::try_from(item.clone()).is_err()
+            || (item.state_transaction && request.worker_limits.is_some())
+        {
             return Err(ContractError::InvalidArgument);
         }
         if !names.insert(&item.name) {
