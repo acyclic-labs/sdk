@@ -27,6 +27,14 @@
 // rates/concurrency at admission, cumulative lifetime totals globally at the
 // metering owner/billing ledger. Delegation and renewal never reset counters.
 // Label is advisory, scoped to its block revocation id, and grants no authority.
+// CallerContext is host-admitted invocation metadata, never a bearer or proof.
+// Its caller remains the original customer across accounts; audience is the exact
+// recipient account/ns/id. Delegation is ordered first delegate to presenter.
+// Hosts authenticate dispatch binding and every authority independently, then
+// recheck current trust/revocation, minimum expiry, target and owner policy on
+// scoped handle use. Decoding this shape does not authenticate its claims.
+// Guest memory receives only the invocation-scoped opaque capability handle,
+// never an account credential, refresh secret, signing key or append authority.
 // Product resource encodings/actions and static/dynamic extractor vocabularies
 // live in validation/v1/options.proto FileOptions. Owners encode substitutions
 // BEFORE expansion: Objects bucket / entire opaque key as separate components;

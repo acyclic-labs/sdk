@@ -5,6 +5,8 @@ mod identity;
 pub use identity::*;
 mod revocation;
 pub use revocation::*;
+mod caller;
+pub use caller::*;
 
 /// Attested principal category.
 #[acyclic_contract_derive::enumeration(error = Error, unknown = Error::UnknownEnum)]
@@ -449,7 +451,12 @@ pub enum TipProof {
         BlockProto,
         SignedBlockProto,
         CapabilityProto,
-        AdmittedCapabilityProto
+        AdmittedCapabilityProto,
+        CallerIdentityProto,
+        CallerKeyRevocationProto,
+        CallerRevocationProto,
+        CallerAuthorityProto,
+        CallerContextProto
     ),
     enums(PrincipalKind, AuditDecision)
 )]
