@@ -21,7 +21,7 @@ fn owned_read_input<'a>(
 )> {
     let before = io.owned_bytes()?;
     let input = {
-        let bytes = io.encode(arguments, io.remaining()?.bytes_encoded, false)?;
+        let bytes = io.encode(arguments, Some(io.remaining()?.bytes_encoded), false)?;
         let _hold = io.guard_bytes(&bytes)?;
         crate::filesystem::retain_decoded(io.decode(
             std::marker::PhantomData,
