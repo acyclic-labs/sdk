@@ -46,8 +46,7 @@ mod queue;
 mod runtime;
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 mod service;
-mod signal;
-mod sync;
+use crate::runtime::{signal, sync};
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub(crate) use client::Cache;
 pub use client::transport;

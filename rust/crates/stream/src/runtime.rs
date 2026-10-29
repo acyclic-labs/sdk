@@ -1,6 +1,11 @@
 //! Scheduling for owned provider and actor work, independent of transports.
 use crate::{BoxProviderFuture, ProviderPlatform};
 
+pub(crate) mod signal;
+pub(crate) mod sources;
+pub(crate) mod sync;
+pub use sources::ReadySources;
+
 /// Gives other host tasks one turn without spawning detached work.
 ///
 /// A browser self-wake schedules a microtask, which cannot make `IndexedDB`

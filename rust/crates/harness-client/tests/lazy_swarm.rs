@@ -417,7 +417,6 @@ impl Peak {
 fn bounded(peak: &Peak, policy: &ReaderPolicy) -> bool {
     peak.cache_bytes <= policy.cache_bytes
         && peak.follows <= 2 * HEIGHT + 1
-        && peak.follows <= policy.follows
         && peak.requests <= policy.requests
         && peak.timers <= 1
 }
@@ -831,13 +830,12 @@ fn swarm_scroll_and_history_stay_bounded() {
     );
 }
 
-/// The open history is followed before tree rows spend the follow budget,
-/// so its new records stay live. Control: following it after every visible
-/// status left it outside a full budget.
+/// Opening credit delays subscriptions rather than removing either visible
+/// statuses or open history from the reader's logical interests.
 #[test]
-fn the_open_history_keeps_its_follow_under_a_full_follow_budget() {
+fn opening_credit_does_not_drop_visible_tails_or_open_history() {
     let policy = ReaderPolicy {
-        follows: 2,
+        follow_requests: 2,
         ..policy()
     };
     let mut client = Client::new(policy, RTT);
@@ -852,8 +850,21 @@ fn the_open_history_keeps_its_follow_under_a_full_follow_budget() {
         .follows()
         .map(|(path, _)| path.clone())
         .collect();
-    assert_eq!(follows.len(), 2, "{follows:?}");
+    let statuses: Vec<_> = client
+        .rows()
+        .iter()
+        .filter_map(|(_, row)| match row {
+            Row::Agent { path, .. } => Some(path.status().unwrap()),
+            _ => None,
+        })
+        .collect();
+    assert!(statuses.len() > policy.follow_requests);
+    assert!(
+        statuses.iter().all(|status| follows.contains(status)),
+        "{follows:?}"
+    );
     assert!(follows.contains(&history), "{follows:?}");
+    assert!(follows.len() <= 2 * HEIGHT + 1);
 }
 
 /// The eager variant — every listing page read, every status followed and

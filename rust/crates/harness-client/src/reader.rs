@@ -44,8 +44,9 @@ pub struct ReaderPolicy {
     /// Of those, prefetch reads; visible reads always keep a slot. New
     /// visible work gets at most one request window's ordering advantage.
     pub prefetch_requests: usize,
-    /// Live follows on the one multiplexed session.
-    pub follows: usize,
+    /// Concurrent follow openings on the one multiplexed session. All wanted
+    /// tails are retained; completed opens release credit for the next batch.
+    pub follow_requests: usize,
     /// Records per read.
     pub read_limit: u32,
     /// Children per listing page.
@@ -73,7 +74,7 @@ impl Default for ReaderPolicy {
             streams: 4096,
             requests: 48,
             prefetch_requests: 32,
-            follows: 64,
+            follow_requests: 64,
             read_limit: 64,
             listing_limit: 64,
             lag: 16,
@@ -108,7 +109,7 @@ impl ReaderPolicy {
             && (16..=65_536).contains(&self.streams)
             && (2..=64).contains(&self.requests)
             && self.prefetch_requests < self.requests
-            && (1..=254).contains(&self.follows)
+            && self.follow_requests > 0
             && (1..=acyclic_stream::MAX_ITEMS as u32).contains(&self.read_limit)
             && (1..=acyclic_stream::MAX_ITEMS as u32).contains(&self.listing_limit)
             && self.lag >= 1
@@ -1242,7 +1243,7 @@ impl Reader {
             self.cache.before_head(stream, head.tail);
             self.cache.observe_tail(stream, head.tail);
             if let Some(last) = head.last {
-                self.keep(stream, driver::fetched(&last), Some(self.frame_mark));
+                self.keep(stream, driver::fetched(last), Some(self.frame_mark));
             }
             self.generation += 1;
             HeadObservation::Applied
@@ -1325,9 +1326,6 @@ impl Reader {
         for stream in streams {
             if self.issues.get(&stream) == Some(&ReadIssue::AccessDenied) {
                 continue;
-            }
-            if next.len() >= self.policy.follows {
-                break;
             }
             let Some(tail) = self.cache.tail(&stream) else {
                 continue;
