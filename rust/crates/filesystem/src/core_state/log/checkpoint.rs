@@ -183,7 +183,7 @@ impl CoreLog {
             self.adopt_native(work)?;
         }
         self.flush_physical(root)?;
-        let lease = self.lease(work)?;
+        let mut lease = self.lease(work)?;
         let durability = CheckpointDurability::new(lease.file(), work)?;
         // The durable WAL owns recovery until every record file and every
         // changed family directory has crossed its barrier. A directory flush
@@ -247,7 +247,7 @@ impl CoreLog {
             }
             durability.directory(&first.parent.directory, work)?;
         }
-        self.reset_checkpoint_wal(durability.finish(work)?, work)
+        self.reset_checkpoint_wal(durability.finish(work)?, work, &mut lease)
     }
 
     // A successful device drain is the only constructor of this permission.
@@ -256,6 +256,7 @@ impl CoreLog {
         &mut self,
         _durable: CheckpointDurable,
         work: Option<&crate::NativeMaterializationWork>,
+        lease: &mut acyclic_native_runtime::FileLease,
     ) -> Result<(), LocalCoreStateStoreError> {
         let mut reset = work
             .map(|work| {
@@ -269,9 +270,7 @@ impl CoreLog {
         self.broken = true;
         // Appends name their offsets, so emptying the log leaves no cursor
         // to rewind.
-        let truncated = self
-            .lease(work)
-            .and_then(|mut lease| lease.discard_contents());
+        let truncated = lease.discard_contents();
         let truncate_recorded = reset
             .as_mut()
             .map(|reset| {

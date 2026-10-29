@@ -16,7 +16,7 @@ impl Clone for OwnershipAnchor {
 }
 
 struct ReleaseSignal {
-    released: Arc<(Mutex<bool>, Condvar)>,
+    released: Arc<(crate::sync::Mutex<bool>, crate::sync::Condvar)>,
 }
 
 impl Drop for ReleaseSignal {
@@ -46,7 +46,10 @@ impl<Owner, Fence> SharedOwner<Owner, Fence> {
             _owner: owner,
             fences: crate::sync::Mutex::new(Vec::new()),
             release: ReleaseSignal {
-                released: Arc::new((Mutex::new(false), Condvar::new())),
+                released: Arc::new((
+                    crate::sync::Mutex::new(false),
+                    crate::sync::Condvar::new(),
+                )),
             },
         }
     }
@@ -115,7 +118,7 @@ impl OwnershipAnchor {
 
 /// A non-owning release condition for an [`OwnershipAnchor`] clone family.
 pub struct OwnershipReleaseBarrier {
-    released: Arc<(Mutex<bool>, Condvar)>,
+    released: Arc<(crate::sync::Mutex<bool>, crate::sync::Condvar)>,
 }
 
 impl OwnershipReleaseBarrier {
