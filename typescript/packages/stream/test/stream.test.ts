@@ -640,7 +640,7 @@ describe("website Stream contract", () => {
       release();
       await expect(next).resolves.toEqual({ done: true, value: undefined });
     });
-    expect(requests).toEqual([{ path: "events", from: "0", limit: 1 }]);
+    expect(requests).toEqual([{ path: "events", from: "0", limit: 1, key: null }]);
   });
 
   test("Rust encodes every protobuf-backed hosted request shape", async () => {
@@ -652,7 +652,7 @@ describe("website Stream contract", () => {
     expect(encoded("tail", toBinary(TailRequestSchema, create(TailRequestSchema, { path: "events" })))).toEqual({ path: "events" });
     expect(encoded("append", toBinary(AppendRequestSchema, create(AppendRequestSchema, { path: "events", records: [create(AppendRecordSchema, { value: new Uint8Array([1, 2]) })], ifTail: 0xffff_ffff_ffff_ffffn, idempotencyKey: retry })))).toEqual({ path: "events", records: [{ value: "AQI=", keys: [], attributes: [] }], options: { ifTail: "18446744073709551615", idempotencyKey: retryWire } });
     expect(encoded("fork", toBinary(ForkRequestSchema, create(ForkRequestSchema, { source: "events", destination: "copy", atTail: 3n, idempotencyKey: retry })))).toEqual({ source: "events", destination: "copy", exclude: [], options: { atTail: "3", idempotencyKey: retryWire } });
-    expect(encoded("read", toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "events", from: 5n, limit: 6 })))).toEqual({ path: "events", from: "5", limit: 6 });
+    expect(encoded("read", toBinary(ReadRequestSchema, create(ReadRequestSchema, { path: "events", from: 5n, limit: 6 })))).toEqual({ path: "events", from: "5", limit: 6, key: null });
     expect(encoded("children/page", toBinary(ChildrenPageRequestSchema, create(ChildrenPageRequestSchema, { parent: "runs", after: "runs/a", hierarchyVersion: new Uint8Array(32).fill(7), limit: 7 })))).toEqual({ parent: "runs", after: "runs/a", hierarchyVersion: encodedCommitId, limit: 7 });
     const commit = create(CommitRequestSchema, {
       conditions: [create(CommitConditionSchema, { condition: { case: "tail", value: create(TailConditionSchema, { path: "events", expected: 8n }) } })],
