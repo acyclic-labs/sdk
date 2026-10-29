@@ -56,6 +56,12 @@ pub(super) struct PublicAuthority {
 
 struct NativeTrustChanges(tokio::sync::watch::Receiver<u64>);
 impl acyclic_auth::trust::ChangeSource for NativeTrustChanges {
+    fn check_open(&self) -> std::result::Result<(), acyclic_auth::trust::SourceClosed> {
+        self.0
+            .has_changed()
+            .map(|_| ())
+            .map_err(|_| acyclic_auth::trust::SourceClosed)
+    }
     fn changed(&self) -> acyclic_auth::trust::Changed {
         let mut receiver = self.0.clone();
         receiver.borrow_and_update();

@@ -1,4 +1,6 @@
 export type * from "./contract.js";
+export { materializeGuestAdmission } from "./guest-admission.js";
+export type { GuestAdmissionHost } from "./guest-admission.js";
 export { CredentialCache, CredentialSnapshot, credentialProvider, credentialStream, resolveCredential, validateCredential } from "./credential.js";
 export type { CredentialBinding, CredentialWatch, CredentialValidity, CredentialProvider, CredentialOptions, CredentialRequest } from "./credential.js";
 export { ActorReference, ResourceIdentity, canonicalResourceHost } from "./addressing.js";

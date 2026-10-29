@@ -1,11 +1,50 @@
 import { beforeAll, expect, test } from "bun:test";
-import { WasmAgentAuthority } from "../generated/wasm/acyclic_harness_wasm.js";
+import { WasmAgentAuthority, type WasmAuthorityCapability } from "../generated/wasm/acyclic_harness_wasm.js";
 import { ensureBrowserWasm } from "../src/wasm-runtime.js";
 import { fixtureAuthority, initializeFixtureAuthority } from "../../../../rust/crates/conformance/cloudflare/fixture-authority.mjs";
+import { materializeGuestAdmission, type GuestAdmissionHost } from "../../auth/src/guest-admission.js";
+import type { EventHostAccess } from "../src/event-host.js";
 
 beforeAll(async () => {
   await ensureBrowserWasm();
   await initializeFixtureAuthority();
+});
+
+test("hosted admission bindings retain original revocation and refuse missing admission", async () => {
+  const host = fixtureAuthority("bound-guest");
+  const bindings: GuestAdmissionHost<WasmAuthorityCapability, EventHostAccess> = host.bindings;
+  expect(() => materializeGuestAdmission("platformAuthority", undefined)).toThrow("guest admission missing");
+  expect(() => materializeGuestAdmission("hostAccess", undefined)).toThrow("guest admission missing");
+  // Request/config objects cannot stand in for the host's original admission port.
+  expect(() => materializeGuestAdmission("platformAuthority", { admission: host.capability.admission } as never)).toThrow();
+  const capability = materializeGuestAdmission("platformAuthority", bindings);
+  const access = materializeGuestAdmission("hostAccess", bindings);
+  expect(capability).toBe(host.capability);
+  expect(materializeGuestAdmission("hostAccess", bindings)).toBe(access);
+  const derive = capability.derive.bind(capability);
+  let mints = 0;
+  capability.derive = (request, signal) => { ++mints; return derive(request, signal); };
+  for (const count of [1, 100, 1000]) {
+    for (let index = 0; index < count; ++index) {
+      expect(materializeGuestAdmission("platformAuthority", bindings)).toBe(capability);
+      expect(materializeGuestAdmission("hostAccess", bindings)).toBe(access);
+    }
+    expect(mints).toBe(0);
+  }
+  const owner = new WasmAgentAuthority(capability);
+  const observer = new AbortController();
+  try {
+    await expect(owner.issueScope("before-revoke", ["interaction:route"])).resolves.toBeDefined();
+    // Register on the original owner, not a local notification channel.
+    const changed = capability.trustChanged(observer.signal);
+    host.revoke(capability.admission.scope);
+    await changed;
+    expect(capability.check(capability.admission.scope)).not.toBe("current");
+    expect(access.policy(new Uint8Array(), {} as never, observer.signal)).toBe(false);
+    expect(() => materializeGuestAdmission("platformAuthority", bindings)).toThrow();
+    expect(() => materializeGuestAdmission("hostAccess", bindings)).toThrow();
+    await expect(owner.issueScope("after-revoke", ["interaction:route"])).rejects.toBeDefined();
+  } finally { observer.abort(); owner.free(); host.free(); }
 });
 
 test("a separate host issues exact sealed descendants and keeps current ownership", async () => {
@@ -36,6 +75,8 @@ test("a separate host issues exact sealed descendants and keeps current ownershi
     await expect(owner.issueScope("unrelated-child", ["interaction:route"])).resolves.toBeDefined();
     expect(calls).toBe(2);
     host.close();
+    expect(() => materializeGuestAdmission("platformAuthority", host.bindings)).toThrow("guest admission stopped");
+    expect(() => materializeGuestAdmission("hostAccess", host.bindings)).toThrow("guest admission stopped");
     await expect(owner.issueScope("after-close", ["interaction:route"])).rejects.toBeDefined();
     expect(calls).toBe(2);
   } finally {
@@ -48,6 +89,7 @@ test("async-only validity and a changed audience fail before operation dispatch"
   const host = fixtureAuthority("admission-refusals");
   try {
     expect(() => new WasmAgentAuthority({ ...host.capability, check: async () => "current" })).toThrow();
+    expect(() => new WasmAgentAuthority({ ...host.capability, trustClosed: () => true })).toThrow();
     const admission = { ...host.capability.admission,
       audience: { ...host.capability.admission.audience, id: "another-task" } };
     expect(() => new WasmAgentAuthority({ ...host.capability, admission })).toThrow();

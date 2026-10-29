@@ -97,6 +97,18 @@ pub fn environment_typescript(
             ));
             continue;
         }
+        if let Some(kind) = binding.guest_admission_kind() {
+            let projection = match kind {
+                acyclic_auth::guest::GuestAdmissionKind::PlatformAuthority => {
+                    "import(\"@acyclic-labs/harness/browser\").WasmAuthorityCapability"
+                }
+                acyclic_auth::guest::GuestAdmissionKind::HostAccess => {
+                    "import(\"@acyclic-labs/harness/hosting\").EventHostAccess"
+                }
+            };
+            output.push_str(&format!("  readonly {name}: {projection};\n"));
+            continue;
+        }
         let grant = grants
             .get(binding.capability())
             .ok_or_else(|| ManifestError::invalid("grants", "unknown-grant"))?;

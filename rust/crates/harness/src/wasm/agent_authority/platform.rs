@@ -36,6 +36,7 @@ struct Platform {
     owner: JsValue,
     check: Function,
     trust_changed: Function,
+    trust_closed: Function,
     derive: Function,
     checkpoint: Function,
 }
@@ -67,6 +68,17 @@ impl Platform {
 }
 
 impl acyclic_auth::trust::ChangeSource for Platform {
+    fn check_open(&self) -> std::result::Result<(), acyclic_auth::trust::SourceClosed> {
+        match self
+            .trust_closed
+            .call0(&self.owner)
+            .ok()
+            .and_then(|value| value.as_bool())
+        {
+            Some(false) => Ok(()),
+            _ => Err(acyclic_auth::trust::SourceClosed),
+        }
+    }
     fn changed(&self) -> acyclic_auth::trust::Changed {
         // Register now, before the consumer's synchronous authority check.
         let registered = (|| {
@@ -209,6 +221,7 @@ pub(super) fn open(owner: JsValue) -> Result<WasmAgentAuthority, JsValue> {
     let platform = Arc::new(Platform {
         check: field("check")?.dyn_into()?,
         trust_changed: field("trustChanged")?.dyn_into()?,
+        trust_closed: field("trustClosed")?.dyn_into()?,
         derive: field("derive")?.dyn_into()?,
         checkpoint: field("checkpoint")?.dyn_into()?,
         owner,
@@ -291,6 +304,10 @@ export interface WasmAuthorityCapability {
      * that producer is lost. Abort releases only this registration. Registering
      * never probes, starts a timer or creates an independent trust channel. */
     trustChanged(signal: AbortSignal): Promise<void>;
+    /** Synchronous producer-loss observation from the SAME owner. This does not
+     * register work or consume the pending publication; async owners must retain
+     * a local guard. Throwing or a non-boolean result is closed. */
+    trustClosed(): boolean;
     /** Return only exact sealed descendants. Ordinary narrowing may change an
      * acting agent only when the actual resource producer independently admits
      * it. The full request identifies the operation; uncertainty is not replayed. */

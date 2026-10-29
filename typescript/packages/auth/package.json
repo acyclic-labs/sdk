@@ -22,6 +22,10 @@
     "./proto": {
       "types": "./generated/proto/auth/v1/auth_pb.d.ts",
       "default": "./generated/proto/auth/v1/auth_pb.js"
+    },
+    "./guest-admission": {
+      "types": "./dist/guest-admission.d.ts",
+      "default": "./dist/guest-admission.js"
     }
   },
   "files": [

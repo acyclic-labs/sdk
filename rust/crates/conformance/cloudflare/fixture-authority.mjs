@@ -1,4 +1,5 @@
-import init, { HostFixtureAuthority, hostFixtureGrants } from "./generated/acyclic_cloudflare_conformance.js";
+import init, { HostFixtureAuthority, hostFixtureGrants, hostFixtureTrust } from "./generated/acyclic_cloudflare_conformance.js";
+import { WasmSessionAuthority } from "../../../../typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js";
 
 /** Load the qualification host into memory separate from the harness guest. */
 export async function initializeFixtureAuthority() {
@@ -21,6 +22,7 @@ export function fixtureAuthority(task, grants = hostFixtureGrants(), account = "
   const capability = {
     admission, stopped,
     trustChanged: signal => host.trustChanged(signal),
+    trustClosed: () => host.trustClosed(),
     check: scope => lifetime.aborted || BigInt(Date.now()) >= deadline ? "closed" : host.check(scope),
     derive(request, signal) {
       signal.throwIfAborted();
@@ -33,5 +35,27 @@ export function fixtureAuthority(task, grants = hostFixtureGrants(), account = "
       return host.checkpoint(request);
     },
   };
-  return { capability, revoke: scope => host.revoke(scope), close: () => closed.abort(), free() { closed.abort(); host.free(); } };
+  let access;
+  const projections = Object.freeze({
+    platformAuthority: () => capability,
+    hostAccess: () => {
+      access ??= Object.freeze({
+        authority: new WasmSessionAuthority(hostFixtureTrust(), "workers:/test", "account"),
+        credential: host.bindingCredential(),
+        policy(_principal, _command, signal) {
+          signal.throwIfAborted();
+          return capability.check(admission.scope) === "current";
+        },
+      });
+      return access;
+    },
+  });
+  // The descriptor selects a port; only this original host can produce it.
+  const bindings = Object.freeze({ binding(kind) {
+    if (lifetime.aborted || BigInt(Date.now()) >= deadline)
+      throw new Error("guest admission stopped; recovery: obtain a fresh authenticated invocation before guest entry");
+    return host.binding(kind, projections[kind]);
+  } });
+  return { capability, bindings, revoke: scope => host.revoke(scope), close: () => closed.abort(),
+    free() { closed.abort(); access?.credential.fill(0); access?.authority.free(); host.free(); } };
 }

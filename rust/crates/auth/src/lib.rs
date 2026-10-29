@@ -9,6 +9,7 @@ pub mod channel;
 pub mod contract;
 pub mod credential;
 pub mod crypto;
+pub mod guest;
 pub mod operation;
 mod resource;
 pub mod revocation;

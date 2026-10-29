@@ -54,6 +54,10 @@ pub struct Binding {
     /// caller-selected account, state stream or external resource grant.
     #[wire(tag = 7)]
     state_transaction: bool,
+    /// Select a projection of the original authenticated invocation, never a grant.
+    #[wire(tag = 8)]
+    #[ts(optional)]
+    guest_admission: Option<String>,
 }
 
 impl Binding {
@@ -67,14 +71,19 @@ impl Binding {
             actor_namespace: None,
             worker_service: None,
             state_transaction: false,
+            guest_admission: None,
         };
         binding.validate_admission()?;
         Ok(binding)
     }
 
     fn validate_admission(&self) -> Result<(), DomainError> {
-        if self.state_transaction {
-            return if !self.name.is_empty()
+        if self.state_transaction || self.guest_admission.is_some() {
+            return if !(self.state_transaction && self.guest_admission.is_some())
+                && self.guest_admission.as_deref().is_none_or(|kind| {
+                    acyclic_auth::guest::GuestAdmissionKind::parse(kind).is_some()
+                })
+                && !self.name.is_empty()
                 && self.capability.is_empty()
                 && self.resource.is_empty()
                 && self.target_account.is_empty()
@@ -162,10 +171,38 @@ impl Binding {
             actor_namespace: None,
             worker_service: None,
             state_transaction: true,
+            guest_admission: None,
         };
         value.validate_admission()?;
         Ok(value)
     }
+    /// Select an authenticated platform projection. The descriptor carries no
+    /// caller, credential, signing material or user-selected trust configuration.
+    pub fn guest_admission(
+        name: String,
+        kind: acyclic_auth::guest::GuestAdmissionKind,
+    ) -> Result<Self, DomainError> {
+        let value = Self {
+            name,
+            capability: String::new(),
+            resource: String::new(),
+            target_account: Vec::new(),
+            actor_namespace: None,
+            worker_service: None,
+            state_transaction: false,
+            guest_admission: Some(kind.as_str().into()),
+        };
+        value.validate_admission()?;
+        Ok(value)
+    }
+
+    /// The selected projection, already checked at wire admission.
+    pub fn guest_admission_kind(&self) -> Option<acyclic_auth::guest::GuestAdmissionKind> {
+        self.guest_admission
+            .as_deref()
+            .and_then(acyclic_auth::guest::GuestAdmissionKind::parse)
+    }
+
     /// Whether this binding selects the executing actor's own state owner.
     pub const fn is_actor_state(&self) -> bool {
         self.state_transaction
@@ -189,6 +226,7 @@ impl Binding {
             actor_namespace: Some(namespace.to_owned()),
             worker_service: None,
             state_transaction: false,
+            guest_admission: None,
         };
         value.validate_admission()?;
         Ok(value)
@@ -211,6 +249,7 @@ impl Binding {
             actor_namespace: None,
             worker_service: Some(worker.to_owned()),
             state_transaction: false,
+            guest_admission: None,
         };
         value.validate_admission()?;
         Ok(value)

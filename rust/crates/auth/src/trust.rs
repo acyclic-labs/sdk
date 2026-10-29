@@ -80,12 +80,17 @@ pub type Changed = futures::future::LocalBoxFuture<'static, Result<(), SourceClo
 /// Never supply a detached local notifier or periodically probe current trust.
 #[cfg(not(target_arch = "wasm32"))]
 pub trait ChangeSource: Send + Sync {
+    /// Synchronously observe producer loss without registering or consuming an
+    /// event. Retaining historical public trust must not fabricate a live owner.
+    fn check_open(&self) -> Result<(), SourceClosed>;
     /// Register the next real owner publication or producer loss.
     fn changed(&self) -> Changed;
 }
 /// Same trust publication contract for a browser owner.
 #[cfg(target_arch = "wasm32")]
 pub trait ChangeSource {
+    /// Same non-dispatching producer observation as the native owner.
+    fn check_open(&self) -> Result<(), SourceClosed>;
     /// Register the next real owner publication or producer loss.
     fn changed(&self) -> Changed;
 }

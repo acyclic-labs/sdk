@@ -1,4 +1,5 @@
 /** Rust agent host backed by real browser providers. */
+export type { WasmAuthorityCapability } from "../generated/wasm/acyclic_harness_wasm.js";
 export {
   WasmAgentAuthority as BrowserAgentAuthority,
   WasmAgentRegistry as BrowserAgentRegistry,

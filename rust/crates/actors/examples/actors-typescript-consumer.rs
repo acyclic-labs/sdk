@@ -15,6 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         bindings: vec![wire::Binding {
             state_transaction: false,
+            guest_admission: None,
             target_account: Vec::new(),
             actor_namespace: None,
             worker_service: None,
