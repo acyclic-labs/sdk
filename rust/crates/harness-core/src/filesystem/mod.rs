@@ -233,6 +233,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         // Construction returns before polling this concrete publication graph.
         crate::conversation::BoundedContentFuture::new(io, || async move {
+            let unmeasured;
+            let active_io = if let Some(io) = io {
+                io
+            } else {
+                unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+                &unmeasured
+            };
+            let io = Some(active_io);
             let descriptor = crate::executor::with_history_io(io, |work| {
                 FileDescriptor::from_bytes(bytes, media_type, work)
             })?;
@@ -270,23 +278,40 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     &(&provisional, expected_generation),
                 )?),
             };
-            let (opened, prior) = crate::conversation::BoundedContentFuture::new(io, || async {
-                let owned;
-                let io = if let Some(io) = io {
-                    io
-                } else {
-                    owned = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
-                    &owned
-                };
-                let opened = self.open(&workspace, Some(io)).await?;
-                let prior = io.sdk(
-                    opened
-                        .operation_generation(operation, io, io.cancellation())
-                        .await,
-                )?;
-                Ok::<_, Error>((opened, prior))
-            })?
-            .await?;
+            let root = self.open(&workspace, io).await?;
+            let opened = self.select_current_workspace(&root, active_io).await?;
+            let prior = active_io.sdk(
+                opened
+                    .operation_generation(operation, active_io, active_io.cancellation())
+                    .await,
+            )?;
+            let root_cut = if opened.id() != root.id() && prior.is_none() {
+                Some(
+                    active_io.sdk(
+                        root.capture_policy_cut(active_io, active_io.cancellation())
+                            .await,
+                    )?,
+                )
+            } else {
+                None
+            };
+            let root_authorization = if opened.id() != root.id() {
+                let (generation, fence) = self
+                    .authorize_content_write(
+                        &root,
+                        grant,
+                        provisional.path(),
+                        prior.is_some(),
+                        ceiling,
+                        io,
+                    )?
+                    .await?;
+                let hold = active_io.guard_owned(generation.logical_owned_bytes()?)?;
+                Some((generation, hold, fence))
+            } else {
+                None
+            };
+            let root_fence = root_authorization.as_ref().map(|(_, _, fence)| *fence);
             let (authorized_generation, policy_fence) = self
                 .authorize_content_write(
                     &opened,
@@ -420,11 +445,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             });
             let generation = self
                 .apply_authorized_generation(
-                    &workspace,
-                    (policy_fence, grant),
+                    &opened,
+                    (policy_fence, grant, root_fence),
+                    root_cut,
                     &mutations,
                     IdempotencyKey(stock_string_copy(idempotency_key.as_str(), io)?),
-                    io,
+                    active_io,
                 )?
                 .await?;
             let generation_reference = (self).generation_ref_id(generation.id(), io)?;

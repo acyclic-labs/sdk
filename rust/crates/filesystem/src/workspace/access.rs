@@ -2,6 +2,54 @@ use super::*;
 use crate::access::{Action, Capability, Context, PathTrie, Principal};
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<A, O> {
+    /// Capture the backend's authenticated atomic policy cut before authorizing
+    /// a publication in another workspace. Accounting completes before the
+    /// caller enters the cut; use `PolicyCut::scope` for that publication only.
+    /// A backend without atomic cut support refuses before publication.
+    pub async fn capture_policy_cut<W: crate::facade::FsWork>(
+        &self,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<crate::PolicyCut, WorkspaceError> {
+        let mut accounting = work.accounting(cancellation);
+        let result = async {
+            accounting.check()?;
+            if crate::PolicyCut::current().is_some()
+                || self.volume.fs.authority().policy_owner() == crate::PolicyOwner::Unsupported
+            {
+                return Err(WorkspaceError::AccessDenied);
+            }
+            self.atomic_policy_cut(&mut accounting, cancellation).await
+        }
+        .await;
+        work.finish(result, &accounting)
+    }
+
+    async fn atomic_policy_cut(
+        &self,
+        accounting: &mut KernelAccounting<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<crate::PolicyCut, WorkspaceError> {
+        let mut authority_work = crate::AuthorityWork::new(accounting.remaining()?, cancellation);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            authority_work.original = accounting.native_work();
+        }
+        let captured = self
+            .volume
+            .fs
+            .authority()
+            .policy_cut(self.authority_id(), &mut authority_work)
+            .await
+            .map_err(|error| WorkspaceError::from(FsError::Authority(error)));
+        match accounting.standalone_parts() {
+            Some((_, spent, _, _)) => {
+                Ok(merge_workspace_backend(authority_work.receipt(captured), spent, 0)?.value)
+            }
+            None => captured,
+        }
+    }
+
     /// Authorize and publish under one backend-owned policy cut. The operation
     /// must reject clock-expiring authority. Atomic backends reject publication
     /// if the source changes; process owners exclude policy edits while it runs.
@@ -25,26 +73,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Workspace<
             match self.volume.fs.authority().policy_owner() {
                 crate::PolicyOwner::Unsupported => return Err(WorkspaceError::AccessDenied),
                 crate::PolicyOwner::AtomicPublication => {
-                    let mut authority_work =
-                        crate::AuthorityWork::new(accounting.remaining()?, cancellation);
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        authority_work.original = accounting.native_work();
-                    }
-                    let captured = self
-                        .volume
-                        .fs
-                        .authority()
-                        .policy_cut(self.authority_id(), &mut authority_work)
-                        .await
-                        .map_err(|error| WorkspaceError::from(FsError::Authority(error)));
-                    let cut = match accounting.standalone_parts() {
-                        Some((_, spent, _, _)) => {
-                            merge_workspace_backend(authority_work.receipt(captured), spent, 0)?
-                                .value
-                        }
-                        None => captured?,
-                    };
+                    let cut = self
+                        .atomic_policy_cut(&mut accounting, cancellation)
+                        .await?;
                     return Ok(cut.scope(operation()).await);
                 }
                 crate::PolicyOwner::ExclusiveProcess => {}
