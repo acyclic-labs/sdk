@@ -239,7 +239,6 @@ struct Pool {
     removed: Arc<signal::Signal<u64>>,
     released: ReleaseSender,
     release_sender: ReleaseSender,
-    revisions: Arc<crate::RevisionTracker>,
 }
 impl Route {
     fn live(&self) -> bool {
@@ -273,7 +272,14 @@ impl Client {
             .with_revisions(crate::RevisionTracker::scoped(&self.revisions, scope))
     }
 
-    pub(crate) fn with_revisions(mut self, revisions: Arc<crate::RevisionTracker>) -> Self {
+    /// Uses an explicitly owned causal context on this existing Session pool.
+    /// Clones sharing `revisions` share read-your-writes requirements; unrelated
+    /// operations may supply distinct contexts without opening new connections.
+    /// Keep the context through every dependent operation and reconnect. Ending
+    /// its lifetime does not prove coverage or authorize discarding a minimum
+    /// still needed elsewhere. Explicit request minima are never filtered.
+    #[must_use]
+    pub fn with_revisions(mut self, revisions: Arc<crate::RevisionTracker>) -> Self {
         self.revisions = revisions;
         self
     }
@@ -327,7 +333,6 @@ impl Client {
             removed: Arc::clone(&removed),
             released: Arc::clone(&release_sender),
             release_sender,
-            revisions: Arc::clone(&revisions),
         };
         executor.spawn(Box::pin(async move {
             if let Err(error) = pool.run().await {

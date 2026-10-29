@@ -31,7 +31,7 @@ pub fn verify_abandoned_reconnect(broken: bool) {
                 admissions: Arc::clone(&pool.admissions),
                 attempt_epoch: Arc::clone(&pool.attempt_epoch),
                 abandoned: Arc::clone(&pool.abandoned),
-                revisions: Arc::clone(&pool.revisions),
+                revisions: Arc::default(),
             };
             let prepare = |client: &Client, id| {
                 let progress = Arc::new(Progress::new(0));
@@ -143,7 +143,7 @@ pub fn verify_pool_lifetime(fault: u8) {
             admissions: Arc::clone(&pool.admissions),
             attempt_epoch: Arc::clone(&pool.attempt_epoch),
             abandoned: Arc::clone(&pool.abandoned),
-            revisions: Arc::clone(&pool.revisions),
+            revisions: Arc::default(),
         };
         let prepare = |id| {
             let progress = Arc::new(Progress::new(0));
@@ -389,7 +389,7 @@ pub fn verify_link_isolation(broken: bool) {
         let (records, _receiver) = mpsc::channel(2);
         let (ready, mut opened) = oneshot::channel();
         pool.command(Command::Open(Box::new(OpenCommand {
-            revisions: Arc::clone(&pool.revisions),
+            revisions: Arc::default(),
             filter: None,
             credential: 0,
             raw: false,
@@ -540,7 +540,7 @@ pub fn verify_node_dials(fault: u8) {
                 admissions: Arc::clone(&pool.admissions),
                 attempt_epoch: Arc::clone(&pool.attempt_epoch),
                 abandoned: Arc::clone(&pool.abandoned),
-                revisions: Arc::clone(&pool.revisions),
+                revisions: Arc::default(),
             };
             let a = client
                 .cursor(1, Arc::clone(&pool.routes[&1].progress), receiver)
@@ -654,7 +654,7 @@ pub fn verify_terminal_cursor_dial(broken: bool) {
             admissions: Arc::clone(&pool.admissions),
             attempt_epoch: Arc::clone(&pool.attempt_epoch),
             abandoned: Arc::clone(&pool.abandoned),
-            revisions: Arc::clone(&pool.revisions),
+            revisions: Arc::default(),
         };
         let a = client
             .cursor(1, Arc::clone(&pool.routes[&1].progress), receiver_a)

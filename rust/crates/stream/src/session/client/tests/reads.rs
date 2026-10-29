@@ -21,6 +21,71 @@ fn read(path: &str, from: u64, limit: u32) -> Result<crate::ReadRequest, StreamE
 }
 
 #[tokio::test]
+async fn operation_frontiers_retire_while_the_shared_session_keeps_progressing() -> TestResult {
+    let provider = Arc::new(MemoryStream::default());
+    append(&provider, "events", 1).await?;
+    let first = provider.wait_applied(&Default::default()).await?;
+    let original = local(&provider)?;
+    let retired = Arc::downgrade(original.revisions());
+    let sibling = original.clone().with_revisions(Arc::default());
+    let mut live = crate::records_only(
+        sibling
+            .follow(crate::FollowRequest::new(StreamPath::new("events")?, 1))
+            .await?,
+    );
+    append(&provider, "events", 1).await?;
+    let latest = provider.wait_applied(&Default::default()).await?;
+    assert_eq!(
+        sequences(original.read(read("events", 0, 2)?).await?).await?,
+        vec![0, 1]
+    );
+    assert_eq!(
+        original.revisions().floor(&Default::default())?,
+        crate::RevisionCut::of(latest.clone()),
+        "an open raises its originating operation's floor"
+    );
+    assert_eq!(
+        sibling.revisions().floor(&Default::default())?,
+        crate::RevisionCut::of(first),
+        "sharing a physical session does not join independent operation contexts"
+    );
+    // Negative control: a pool-lifetime owner keeps the retired context alive.
+    let retained = Arc::clone(original.revisions());
+    drop(original);
+    // Open dispatch drains prior cursor removals, so this also establishes
+    // retirement of the original read without a timer or a separate probe.
+    assert_eq!(
+        sequences(sibling.read(read("events", 0, 2)?).await?).await?,
+        vec![0, 1]
+    );
+    assert!(retired.upgrade().is_some());
+    drop(retained);
+    assert!(retired.upgrade().is_none());
+    assert_eq!(
+        sibling.revisions().floor(&Default::default())?,
+        crate::RevisionCut::of(latest)
+    );
+    assert_eq!(
+        live.next()
+            .await
+            .transpose()?
+            .ok_or("follow ended")?
+            .sequence,
+        1
+    );
+    append(&provider, "events", 1).await?;
+    assert_eq!(
+        live.next()
+            .await
+            .transpose()?
+            .ok_or("follow ended")?
+            .sequence,
+        2
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn revision_scope_selection_preserves_other_views_and_explicit_minima() -> TestResult {
     let provider = Arc::new(MemoryStream::default());
     append(&provider, "events", 1).await?;

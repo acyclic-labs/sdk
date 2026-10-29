@@ -323,7 +323,7 @@ fn reconnect_before_removal(broken: bool) -> TestResult {
             admissions: Arc::clone(&pool.admissions),
             attempt_epoch: Arc::clone(&pool.attempt_epoch),
             abandoned: Arc::clone(&pool.abandoned),
-            revisions: Arc::clone(&pool.revisions),
+            revisions: Arc::default(),
         };
         let a = client.cursor(1, a_progress, receiver)?;
         let b_progress = Arc::clone(&pool.routes.get(&3).unwrap().progress);

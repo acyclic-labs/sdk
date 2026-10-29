@@ -40,10 +40,11 @@ async fn unproven_session_opens_settle_the_opener_and_preserve_its_sibling()
         ),
     ] {
         let (mut pool, mut records) = fixture::fixture(&channel);
+        let revisions = Arc::default();
         pool.routes
             .get_mut(&3)
             .ok_or("missing original route")?
-            .revisions = Arc::clone(&pool.revisions);
+            .revisions = Arc::clone(&revisions);
         let opened = |id, generation, revision: Option<&crate::Revision>| {
             frame(
                 id,
@@ -65,7 +66,7 @@ async fn unproven_session_opens_settle_the_opener_and_preserve_its_sibling()
             }),
             sender,
         );
-        sibling.revisions = Arc::clone(&pool.revisions);
+        sibling.revisions = Arc::clone(&revisions);
         let (ready, sibling_opened) = oneshot::channel();
         sibling.ready = Some(ready);
         sibling.opened = false;
@@ -232,7 +233,7 @@ fn open(
     boundary(pool, model, wakes & 2 != 0)?;
     let (ready, _opened) = oneshot::channel();
     let command = Command::Open(Box::new(OpenCommand {
-        revisions: Arc::clone(&pool.revisions),
+        revisions: Arc::clone(&client.revisions),
         filter: None,
         credential: 0,
         id,
