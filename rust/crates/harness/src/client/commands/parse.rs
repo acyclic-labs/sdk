@@ -7,7 +7,12 @@ pub fn has_frontmatter(bytes: &[u8]) -> bool {
     bytes.starts_with(b"---\n") || bytes.starts_with(b"---\r\n")
 }
 
-pub(super) fn expand(body: &str, arguments: &str, maximum_bytes: u64) -> Result<String> {
+pub(super) fn expand(
+    body: &str,
+    arguments: &str,
+    maximum_bytes: impl Into<Option<u64>>,
+) -> Result<String> {
+    let maximum_bytes = maximum_bytes.into();
     if body.contains('\0') {
         return Err(Error::Invalid("command body contains NUL".into()));
     }
@@ -19,14 +24,19 @@ pub(super) fn expand(body: &str, arguments: &str, maximum_bytes: u64) -> Result<
             .checked_add(argument.len())
             .and_then(|n| n.checked_add(part.len()))
             .ok_or_else(|| Error::Invalid("expanded command size overflow".into()))?;
-        if length as u64 > maximum_bytes {
+        if maximum_bytes.is_some_and(|maximum| length as u64 > maximum) {
             return Err(Error::Invalid("expanded command exceeds byte bound".into()));
         }
         text.push_str(argument);
         text.push_str(part);
     }
     if !body.contains("$ARGUMENTS") && !arguments.is_empty() {
-        if text.len() as u64 + 1 + arguments.len() as u64 > maximum_bytes {
+        let length = text
+            .len()
+            .checked_add(1)
+            .and_then(|length| length.checked_add(arguments.len()))
+            .ok_or_else(|| Error::Invalid("expanded command size overflow".into()))?;
+        if maximum_bytes.is_some_and(|maximum| length as u64 > maximum) {
             return Err(Error::Invalid("expanded command exceeds byte bound".into()));
         }
         text.push('\n');
