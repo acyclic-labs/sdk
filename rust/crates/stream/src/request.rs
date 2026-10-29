@@ -423,12 +423,23 @@ pub(crate) fn validate_commit_shape(request: &CommitRequest) -> Result<(), Strea
             destination,
             ..
         } = mutation
-            && (source == destination
-                || request.mutations.iter().any(|other| {
-                    let path = mutation_path(other).as_str();
-                    path.strip_prefix(destination.as_str())
+            && (source == destination || {
+                // Canonical mutations are sorted. Search for the slash
+                // boundary: punctuation siblings may precede descendants.
+                let index = request.mutations.partition_point(|other| {
+                    mutation_path(other)
+                        .as_str()
+                        .bytes()
+                        .cmp(destination.as_str().bytes().chain(std::iter::once(b'/')))
+                        .is_lt()
+                });
+                request.mutations.get(index).is_some_and(|other| {
+                    mutation_path(other)
+                        .as_str()
+                        .strip_prefix(destination.as_str())
                         .is_some_and(|suffix| suffix.starts_with('/'))
-                }))
+                })
+            })
         {
             return Err(StreamError::InvalidArgument);
         }
