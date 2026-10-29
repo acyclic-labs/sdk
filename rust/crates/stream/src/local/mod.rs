@@ -90,6 +90,38 @@ type JournalPersistBlocker = (
 static JOURNAL_PERSIST_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
 #[cfg(test)]
 static JOURNAL_FLUSHED_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);
+#[cfg(all(test, not(loom)))]
+static JOURNAL_WRITE_BLOCKER: Mutex<
+    Option<(
+        usize,
+        tokio::sync::oneshot::Sender<()>,
+        std::sync::mpsc::Receiver<()>,
+    )>,
+> = Mutex::new(None);
+#[cfg(all(test, not(loom)))]
+fn pause_journal_write(journal: &Arc<Mutex<Journal>>) -> std::io::Result<()> {
+    let identity = Arc::as_ptr(journal) as usize;
+    let blocker = {
+        let mut hook = JOURNAL_WRITE_BLOCKER
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if hook
+            .as_ref()
+            .is_some_and(|(expected, _, _)| *expected == identity)
+        {
+            hook.take()
+        } else {
+            None
+        }
+    };
+    if let Some((_, started, release)) = blocker {
+        started
+            .send(())
+            .map_err(|_| std::io::ErrorKind::BrokenPipe)?;
+        release.recv().map_err(std::io::Error::other)?;
+    }
+    Ok(())
+}
 // Lock order: journal -> test hook; release the hook before a device-gate wait.
 #[cfg(test)]
 static JOURNAL_COMPACT_BLOCKER: Mutex<Option<JournalPersistBlocker>> = Mutex::new(None);

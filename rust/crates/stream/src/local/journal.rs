@@ -308,32 +308,27 @@ impl Journal {
         Ok(())
     }
 
-    /// Writes `frame` after every earlier one, without waiting for the
-    fn append(
+    /// Pins the next offset and descriptor under the caller's publication fence.
+    fn begin_append(
         &mut self,
-        frame: &mut PreparedFrame,
         required: bool,
-    ) -> Result<(), LocalStreamError> {
+    ) -> Result<(acyclic_native_runtime::FileLease, u64), LocalStreamError> {
         if !self.volatile && (!required || self.limits.durability == LocalDurability::Barrier) {
             forget_incarnation(&self.root)?;
             self.volatile = true;
         }
-        let offset = self.bytes;
-        self.file.lease()?.write(|file| {
-            Ok(frame.write(&mut acyclic_native_runtime::WriteAt::new(file, offset)))
-        })??;
-        tracing::trace!(
-            bytes = frame.encoded.len() as u64,
-            required,
-            "acyclic.stream.journal_append"
-        );
+        Ok((self.file.lease()?, self.bytes))
+    }
+
+    /// Only completed physical writes advance the observable journal cut.
+    fn complete_append(&mut self, bytes: u64, required: bool) {
+        tracing::trace!(bytes, required, "acyclic.stream.journal_append");
         self.appended += 1;
         if required {
             self.required = self.appended;
         }
         self.operations += 1;
-        self.bytes += frame.encoded.len() as u64;
-        Ok(())
+        self.bytes += bytes;
     }
 
     /// Whether frames were written since the journal last flushed.
