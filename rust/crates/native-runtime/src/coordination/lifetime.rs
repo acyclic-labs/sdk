@@ -1,9 +1,4 @@
-use std::{
-    future::Future,
-    pin::Pin,
-    sync::Arc,
-    task::{Context, Poll},
-};
+use std::{future::Future, sync::Arc};
 
 type Owner = Arc<dyn Send + Sync>;
 
@@ -28,30 +23,22 @@ pub fn with_actor_lifetime<F: Future>(
     OWNER.scope(Arc::new(owner), future)
 }
 
-pin_project_lite::pin_project! {
-    #[project = InheritedProjection]
-    enum Inherited<F> {
-        Scoped { #[pin] future: tokio::task::futures::TaskLocalFuture<Owner, F> },
-        Plain { #[pin] future: F },
-    }
+pub(super) fn owner() -> Option<Owner> {
+    OWNER.try_with(Arc::clone).ok()
 }
 
-impl<F: Future> Future for Inherited<F> {
-    type Output = F::Output;
-
-    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.project() {
-            InheritedProjection::Scoped { future } => future.poll(context),
-            InheritedProjection::Plain { future } => future.poll(context),
-        }
-    }
-}
-
-pub(super) fn inherit<F: Future>(future: F) -> impl Future<Output = F::Output> {
-    match OWNER.try_with(Arc::clone) {
-        Ok(owner) => Inherited::Scoped {
-            future: OWNER.scope(owner, future),
-        },
-        Err(_) => Inherited::Plain { future },
+pub(super) fn spawn_on<F>(
+    runtime: &tokio::runtime::Handle,
+    future: F,
+) -> crate::TaskHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    // Choose before task storage is allocated. A delivery with no scoped owner
+    // needs only its original future, without space for task-local bookkeeping.
+    match owner() {
+        Some(owner) => crate::task::spawn_on(runtime, OWNER.scope(owner, future)),
+        None => crate::task::spawn_on(runtime, future),
     }
 }

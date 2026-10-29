@@ -270,17 +270,13 @@ fn actor_lifetime_inheritance_is_constant_and_excludes_background_tasks() -> io:
             for count in [1, 100_000] {
                 let inherited = acyclic_test_support::measure(|| {
                     for _ in 0..count {
-                        drop(std::hint::black_box(lifetime::inherit(
-                            std::future::pending::<()>(),
-                        )));
+                        drop(std::hint::black_box(lifetime::owner()));
                     }
                 });
                 assert_eq!(inherited.count_total, 0);
                 let copied = acyclic_test_support::measure(|| {
                     for _ in 0..count {
-                        drop(std::hint::black_box(Box::new(lifetime::inherit(
-                            std::future::pending::<()>(),
-                        ))));
+                        drop(std::hint::black_box(Box::new(lifetime::owner())));
                     }
                 });
                 assert_eq!(copied.count_total, count);
@@ -296,6 +292,68 @@ fn actor_lifetime_inheritance_is_constant_and_excludes_background_tasks() -> io:
     );
     drop(release);
     assert!(pool.block_on(background)?.is_err());
+    Ok(())
+}
+
+#[test]
+fn unscoped_submission_retains_only_the_original_task_storage() -> io::Result<()> {
+    async fn submissions<T: Future<Output = io::Result<()>>>(
+        count: usize,
+        mut submit: impl FnMut() -> T,
+        abort: impl Fn(&T),
+    ) -> acyclic_test_support::AllocationInfo {
+        let mut tasks = Vec::with_capacity(count);
+        let work = acyclic_test_support::measure(|| {
+            for _ in 0..count {
+                tasks.push(submit());
+            }
+        });
+        for task in &tasks {
+            abort(task);
+        }
+        for task in tasks {
+            assert!(task.await.is_err());
+        }
+        work
+    }
+    fn payload() -> impl Future<Output = ()> + Send {
+        let bytes = [7_u8; 16];
+        async move {
+            std::future::pending::<()>().await;
+            std::hint::black_box(bytes);
+        }
+    }
+    let pool = Coordination::start(NonZeroUsize::new(1).unwrap())?;
+    let owner = executor(&pool.first);
+    pool.block_on(async {
+        for count in [1, 100_000] {
+            let original = submissions(
+                count,
+                || crate::task::spawn_on(&owner.handle, std::future::pending::<()>()),
+                crate::TaskHandle::abort,
+            )
+            .await;
+            let owned = submissions(
+                count,
+                || owner.spawn(std::future::pending::<()>()),
+                ActorTask::abort,
+            )
+            .await;
+            assert_eq!(original.count_total, count as u64);
+            assert_eq!(owned.count_total, original.count_total);
+            assert_eq!(owned.bytes_total, original.bytes_total);
+            // A separately allocated polling frame violates that same storage
+            // bound at either population size, using the actual enqueue path.
+            let boxed = submissions(
+                count,
+                || crate::task::spawn_on(&owner.handle, Box::pin(payload())),
+                crate::TaskHandle::abort,
+            )
+            .await;
+            assert_eq!(boxed.count_total, original.count_total + count as u64);
+            assert!(boxed.bytes_total > original.bytes_total);
+        }
+    });
     Ok(())
 }
 

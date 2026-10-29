@@ -184,10 +184,7 @@ impl ActorExecutor {
         F::Output: Send + 'static,
     {
         let task = if self.alive.is_available() {
-            Some(crate::task::spawn_on(
-                &self.handle,
-                lifetime::inherit(future),
-            ))
+            Some(lifetime::spawn_on(&self.handle, future))
         } else {
             drop(future);
             None
