@@ -108,8 +108,9 @@ fn emit(output: &mut impl Write, line: &Value) -> std::io::Result<()> {
 /// message `operation:id`, so rerunning the operation replays it. Each settled
 /// prompt prints `{"id", "inbox", "text"}` (or `"error"`), each approval
 /// request `{"approval": request}`. An ended agent is terminal: it admits
-/// no further input, so every prompt outstanding when it ends, and every
-/// later one, is answered with its reason and never sent. Exits,
+/// no further input, so every prompt it leaves unanswered, outstanding when
+/// it ends or sent later, is answered with its reason; an exact replay of a
+/// prompt it answered still prints its saved answer. Exits,
 /// successfully, once stdin closes and every prompt settled, whether
 /// answered or failed.
 pub async fn jsonl(
@@ -147,10 +148,6 @@ pub async fn jsonl(
                         .get("id")
                         .and_then(Value::as_str)
                         .map_or_else(|| format!("jsonl-{sent}"), str::to_owned);
-                    if let Some(reason) = &finished {
-                        emit(output, &json!({"id": id, "error": reason}))?;
-                        continue;
-                    }
                     let message = format!("{operation}:{id}");
                     // A refused prompt, such as an unknown `/name`, is its own
                     // record; the stream goes on.
@@ -161,11 +158,15 @@ pub async fn jsonl(
                             continue;
                         }
                     };
-                    // An exact replay of a settled prompt is answered at once.
+                    // An exact replay of a settled prompt is answered at once,
+                    // whether or not the agent has since ended.
                     let reply = conversation.reply(&message, inbox).await?;
-                    match settled(conversation, &id, inbox, reply).await? {
-                        Some(line) => emit(output, &line)?,
-                        None => {
+                    match (settled(conversation, &id, inbox, reply).await?, &finished) {
+                        (Some(line), _) => emit(output, &line)?,
+                        (None, Some(reason)) => {
+                            emit(output, &json!({"id": id, "inbox": inbox, "error": reason}))?;
+                        }
+                        (None, None) => {
                             pending.insert(inbox, (message, id));
                         }
                     }

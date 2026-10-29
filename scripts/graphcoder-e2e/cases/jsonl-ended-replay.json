@@ -1,0 +1,67 @@
+{
+  "id": "jsonl-ended-replay",
+  "workspace": {
+    "kind": "plain",
+    "files": {}
+  },
+  "model": {
+    "steps": [
+      {
+        "when": {
+          "user": "first"
+        },
+        "text": [
+          "FIRST_ANSWER"
+        ]
+      },
+      {
+        "when": {
+          "user": "second"
+        },
+        "status": 400,
+        "json": {
+          "error": {
+            "message": "scripted refusal",
+            "type": "invalid_request_error"
+          }
+        }
+      }
+    ]
+  },
+  "inputs": [
+    {
+      "mode": "jsonl",
+      "args": [
+        "--operation",
+        "00000000-0000-0000-0000-000000000004",
+        "--input-format",
+        "jsonl"
+      ],
+      "stdin": "{\"prompt\":\"first\",\"id\":\"a\"}\n{\"prompt\":\"second\",\"id\":\"b\"}\n",
+      "exit": 0,
+      "stdout_contains": [
+        "FIRST_ANSWER",
+        "\"id\":\"b\""
+      ]
+    },
+    {
+      "mode": "jsonl",
+      "args": [
+        "--operation",
+        "00000000-0000-0000-0000-000000000004",
+        "--input-format",
+        "jsonl"
+      ],
+      "stdin": "\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n{\"prompt\":\"first\",\"id\":\"a\"}\n{\"prompt\":\"third\",\"id\":\"c\"}\n",
+      "exit": 0,
+      "stdout_contains": [
+        "FIRST_ANSWER",
+        "\"id\":\"c\"",
+        "conversation ended"
+      ]
+    }
+  ],
+  "assert": {
+    "requests": 2
+  }
+}

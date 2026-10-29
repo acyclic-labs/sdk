@@ -171,6 +171,7 @@
       "owner": "sessions (#1452)",
       "cases": [
         "jsonl-input",
+        "jsonl-ended-replay",
         "jsonl-malformed",
         "text-responses",
         "provider-error"
