@@ -350,6 +350,6 @@ async fn close_local(
         .local_root_release_barrier()
         .ok_or("local root has no release barrier")?;
     drop(fs);
-    tokio::time::timeout(std::time::Duration::from_secs(10), released.wait_async()).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(10), released.released()).await?;
     Ok(())
 }
