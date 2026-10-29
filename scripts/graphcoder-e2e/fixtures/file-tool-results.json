@@ -1,0 +1,290 @@
+{
+  "anthropic": {
+    "source_main": "2119af7341ec4fe957438dfdbe43cb1b7b8eb41d",
+    "platform": "linux",
+    "case": "file-tools-anthropic",
+    "original_capture_sha256": "b1d61b1c01cd1f84960902d792e00f2eb826b937f6c566da6eaf89e5b703debc",
+    "projection": "Original request metadata and tool result messages; unrelated model input and tool schemas omitted.",
+    "records": [
+      {
+        "case": "file-tools-anthropic",
+        "method": "POST",
+        "path": "messages",
+        "sequence": 3,
+        "status": 200,
+        "step": 0,
+        "body": {
+          "messages": []
+        }
+      },
+      {
+        "case": "file-tools-anthropic",
+        "method": "POST",
+        "path": "messages",
+        "sequence": 5,
+        "status": 200,
+        "step": 1,
+        "body": {
+          "messages": [
+            {
+              "content": [
+                {
+                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"a812f7c101be20dde29562df3acbff98889c8dd1bdd8b3d4ddffd7bc51aedcb5\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"owner\":{\"id\":\"2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+                  "tool_use_id": "write",
+                  "type": "tool_result"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        }
+      },
+      {
+        "case": "file-tools-anthropic",
+        "method": "POST",
+        "path": "messages",
+        "sequence": 7,
+        "status": 200,
+        "step": 2,
+        "body": {
+          "messages": [
+            {
+              "content": [
+                {
+                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"a812f7c101be20dde29562df3acbff98889c8dd1bdd8b3d4ddffd7bc51aedcb5\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"owner\":{\"id\":\"2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+                  "tool_use_id": "write",
+                  "type": "tool_result"
+                }
+              ],
+              "role": "user"
+            },
+            {
+              "content": [
+                {
+                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"32369d4f2903c7de54547d0f9850bbd5f5e1271a0c36e5d01c6f5e4f92a5e8e4\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"owner\":{\"id\":\"2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+                  "tool_use_id": "edit",
+                  "type": "tool_result"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        }
+      },
+      {
+        "case": "file-tools-anthropic",
+        "method": "POST",
+        "path": "messages",
+        "sequence": 9,
+        "status": 200,
+        "step": 3,
+        "body": {
+          "messages": [
+            {
+              "content": [
+                {
+                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"a812f7c101be20dde29562df3acbff98889c8dd1bdd8b3d4ddffd7bc51aedcb5\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"owner\":{\"id\":\"2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+                  "tool_use_id": "write",
+                  "type": "tool_result"
+                }
+              ],
+              "role": "user"
+            },
+            {
+              "content": [
+                {
+                  "content": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"32369d4f2903c7de54547d0f9850bbd5f5e1271a0c36e5d01c6f5e4f92a5e8e4\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"owner\":{\"id\":\"2e17889e-9e9e-421b-9ad8-23cce40f6888\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+                  "tool_use_id": "edit",
+                  "type": "tool_result"
+                }
+              ],
+              "role": "user"
+            },
+            {
+              "content": [
+                {
+                  "content": "\"after edit\\n\"",
+                  "tool_use_id": "read",
+                  "type": "tool_result"
+                }
+              ],
+              "role": "user"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "chat": {
+    "source_main": "2119af7341ec4fe957438dfdbe43cb1b7b8eb41d",
+    "platform": "linux",
+    "case": "file-tools-chat",
+    "original_capture_sha256": "87928c2181dd4cb9512d06c8e044041708a36117e9f2071af7616ff1406856bc",
+    "projection": "Original request metadata and tool result messages; unrelated model input and tool schemas omitted.",
+    "records": [
+      {
+        "case": "file-tools-chat",
+        "method": "POST",
+        "path": "chat/completions",
+        "sequence": 3,
+        "status": 200,
+        "step": 0,
+        "body": {
+          "messages": []
+        }
+      },
+      {
+        "case": "file-tools-chat",
+        "method": "POST",
+        "path": "chat/completions",
+        "sequence": 5,
+        "status": 200,
+        "step": 1,
+        "body": {
+          "messages": [
+            {
+              "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"567c5861b077ad88cdebca24b248c7eb55904385fdc2908f0b9bb40a7804ff9b\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"owner\":{\"id\":\"3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "role": "tool",
+              "tool_call_id": "write"
+            }
+          ]
+        }
+      },
+      {
+        "case": "file-tools-chat",
+        "method": "POST",
+        "path": "chat/completions",
+        "sequence": 7,
+        "status": 200,
+        "step": 2,
+        "body": {
+          "messages": [
+            {
+              "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"567c5861b077ad88cdebca24b248c7eb55904385fdc2908f0b9bb40a7804ff9b\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"owner\":{\"id\":\"3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "role": "tool",
+              "tool_call_id": "write"
+            },
+            {
+              "content": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"2fc00f64a990e43e6b7c33c6cc92391a0aee5f908080310728327e608ff02142\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"owner\":{\"id\":\"3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "role": "tool",
+              "tool_call_id": "edit"
+            }
+          ]
+        }
+      },
+      {
+        "case": "file-tools-chat",
+        "method": "POST",
+        "path": "chat/completions",
+        "sequence": 9,
+        "status": 200,
+        "step": 3,
+        "body": {
+          "messages": [
+            {
+              "content": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"567c5861b077ad88cdebca24b248c7eb55904385fdc2908f0b9bb40a7804ff9b\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"owner\":{\"id\":\"3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "role": "tool",
+              "tool_call_id": "write"
+            },
+            {
+              "content": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"2fc00f64a990e43e6b7c33c6cc92391a0aee5f908080310728327e608ff02142\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"owner\":{\"id\":\"3444d7fa-a33a-472e-bd14-0fc0f3eb690d\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "role": "tool",
+              "tool_call_id": "edit"
+            },
+            {
+              "content": "\"after edit\\n\"",
+              "role": "tool",
+              "tool_call_id": "read"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "responses": {
+    "source_main": "2119af7341ec4fe957438dfdbe43cb1b7b8eb41d",
+    "platform": "linux",
+    "case": "file-tools-responses",
+    "original_capture_sha256": "bd01b2d493e8cd28d19940b437ff813236bad050396293978e195978fc8f8688",
+    "projection": "Original request metadata and tool result messages; unrelated model input and tool schemas omitted.",
+    "records": [
+      {
+        "case": "file-tools-responses",
+        "method": "POST",
+        "path": "responses",
+        "sequence": 3,
+        "status": 200,
+        "step": 0,
+        "body": {
+          "input": []
+        }
+      },
+      {
+        "case": "file-tools-responses",
+        "method": "POST",
+        "path": "responses",
+        "sequence": 5,
+        "status": 200,
+        "step": 1,
+        "body": {
+          "input": [
+            {
+              "call_id": "write",
+              "output": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"88312b6637ff9f34d01e048e1ef9214bb8cdaad205e59385e5db6fffddd96816\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"owner\":{\"id\":\"bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "type": "function_call_output"
+            }
+          ]
+        }
+      },
+      {
+        "case": "file-tools-responses",
+        "method": "POST",
+        "path": "responses",
+        "sequence": 7,
+        "status": 200,
+        "step": 2,
+        "body": {
+          "input": [
+            {
+              "call_id": "write",
+              "output": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"88312b6637ff9f34d01e048e1ef9214bb8cdaad205e59385e5db6fffddd96816\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"owner\":{\"id\":\"bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "type": "function_call_output"
+            },
+            {
+              "call_id": "edit",
+              "output": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"c4e1fa102c9fba6e2f14fda7e469818aa4556a1d39691b8fdadddbcfd7ad2f59\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"owner\":{\"id\":\"bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "type": "function_call_output"
+            }
+          ]
+        }
+      },
+      {
+        "case": "file-tools-responses",
+        "method": "POST",
+        "path": "responses",
+        "sequence": 9,
+        "status": 200,
+        "step": 3,
+        "body": {
+          "input": [
+            {
+              "call_id": "write",
+              "output": "{\"file\":{\"descriptor\":{\"byte_length\":12,\"media_type\":\"text/plain\",\"sha256\":[90,253,125,131,132,140,135,78,105,81,98,195,228,26,130,140,7,37,21,154,150,211,110,0,150,123,90,93,181,40,109,103]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"88312b6637ff9f34d01e048e1ef9214bb8cdaad205e59385e5db6fffddd96816\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"owner\":{\"id\":\"bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "type": "function_call_output"
+            },
+            {
+              "call_id": "edit",
+              "output": "{\"file\":{\"descriptor\":{\"byte_length\":11,\"media_type\":\"text/plain\",\"sha256\":[173,216,24,10,242,6,53,108,70,29,188,165,176,18,206,222,232,138,90,143,99,53,188,177,117,227,195,65,209,134,179,70]},\"display_name\":\"result.txt\",\"path\":\"result.txt\",\"version\":\"c4e1fa102c9fba6e2f14fda7e469818aa4556a1d39691b8fdadddbcfd7ad2f59\",\"volume\":{\"class\":\"agent_private\",\"id\":\"journal-bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"owner\":{\"id\":\"bf15ff2d-112a-4dee-b9a3-0ebec2af0363\",\"kind\":\"agent\"},\"provider\":{\"family\":\"filesystem\",\"namespace\":\"local\",\"version\":\"2\"}}}}",
+              "type": "function_call_output"
+            },
+            {
+              "call_id": "read",
+              "output": "\"after edit\\n\"",
+              "type": "function_call_output"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
