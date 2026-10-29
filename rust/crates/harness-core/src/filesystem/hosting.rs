@@ -538,8 +538,8 @@ where
     }
 
     /// Reads at most `maximum` bytes from `offset` of `path` below `agent`'s
-    /// tool output, through `agent`'s own authorized reader. Returns the
-    /// bytes and the chunk's length.
+    /// tool output, under `agent`'s own grant, loading only those bytes.
+    /// Returns the bytes and the file's length.
     ///
     /// # Errors
     /// As [`Self::read_file`].
@@ -561,33 +561,27 @@ where
             &[],
         )
         .map_err(turn)?;
-        let reader = super::FilesystemContentVerifier::new(
-            Arc::clone(&self.volumes),
+        let grant = super::ContentGrant::verify_directory_read(
             &authority.verifier,
             &authority.scope,
-            self.maximum_bytes,
-            None,
-        )
-        .map_err(turn)?;
-        let (_, bytes, _) = crate::conversation::ContentResidencyVerifier::read_private_path(
-            &*reader,
             &authority.private.volume,
             super::TOOL_OUTPUT,
-            path,
-            None,
-            self.maximum_bytes,
-            ContentAccess::default(),
+            &mut None,
         )
-        .map_err(turn)?
-        .await
         .map_err(turn)?;
-        let length = bytes.len() as u64;
-        let start = usize::try_from(offset)
-            .ok()
-            .filter(|start| *start <= bytes.len())
-            .ok_or(Error::Record("read offset is past the file's end"))?;
-        let end = start.saturating_add(usize::try_from(maximum).unwrap_or(usize::MAX));
-        Ok((bytes[start..end.min(bytes.len())].to_vec(), length))
+        let (bytes, length) = self
+            .volumes
+            .read_private_range(
+                &authority.private.volume,
+                &grant,
+                path,
+                offset,
+                maximum,
+                None,
+            )
+            .await
+            .map_err(turn)?;
+        Ok((bytes.to_vec(), length))
     }
 
     /// The approval `agent` waits on, with the exact action it shows. An
