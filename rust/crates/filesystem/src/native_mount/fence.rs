@@ -890,6 +890,8 @@ mod cleanup_credit_tests {
         std::fs::create_dir_all(replacement.join("parent/mount"))?;
         directory_alias(&alias, &original)?;
         let destination = alias.join("parent/mount");
+        let (expected_fence, _) =
+            MountDestinationGuard::paths_for_canonical(&std::fs::canonicalize(&destination)?)?;
         let work = NativeMaterializationWork::new(
             crate::WorkBudget::UNBOUNDED,
             &crate::CancellationToken::new(),
@@ -906,6 +908,8 @@ mod cleanup_credit_tests {
         // alias race on both hosts without renaming the held directory.
         remove_directory_alias(&alias)?;
         directory_alias(&alias, &replacement)?;
+        let (replacement_fence, _) =
+            MountDestinationGuard::paths_for_canonical(&std::fs::canonicalize(&destination)?)?;
         let mut guard = None;
         MountDestinationGuard::acquire_held(
             &destination,
@@ -924,8 +928,9 @@ mod cleanup_credit_tests {
             &mut &work,
         )?;
         let name = std::str::from_utf8(guard.fence_name.as_ref().ok_or("missing fence name")?)?;
-        let stays_with_root = original.join("parent").join(name).is_file()
-            && !replacement.join("parent").join(name).exists();
+        let stays_with_root = expected_fence.file_name() == Some(std::ffi::OsStr::new(name))
+            && expected_fence.is_file()
+            && !replacement_fence.exists();
         // Drain the owned fence before any control assertion, including the
         // old lexical-reopen negative, so a failed proof leaves no live lock.
         guard.release_cleanup(Some(&crate::CancellationToken::new()))?;

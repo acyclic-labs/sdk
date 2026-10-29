@@ -356,7 +356,6 @@ fn compile_cached_policy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     let compiled = (|| {
         accounting.charge(WorkCounters {
             items_examined: bytes.len() as u64,
-            source_bytes_read: bytes.len() as u64,
             ..WorkCounters::UNCHARGED
         })?;
         let policy = serde_json::from_slice(bytes).map_err(|_| FsError::InvalidAccessPolicy)?;
