@@ -265,11 +265,6 @@ proptest! {
     #[test]
     fn canonical_checkpoint_does_not_reload_its_held_proof(text in "[a-z]{1,24}") {
         futures::executor::block_on(async {
-            let executor = uncompacted_executor(
-                Model::new("test".into(), "reads".into(), "1".into(), Value::Null)?,
-                Arc::new(ScriptedModelProvider::new([])),
-                ContextPipeline::default(), ToolRegistry::default(),
-            );
             let journal = Journal::default();
             let input = input(3, &text);
             let source = crate::context::Context {
@@ -291,9 +286,15 @@ proptest! {
             let source_file = stage_json(&journal, input.operation_id, "source", &source, None).await?;
             let proof_file = stage_json(&journal, input.operation_id, "proof", &proof, None).await?;
             let before = journal.4.load(Ordering::SeqCst);
-            assert!(StockExecution::ordinary(&executor).stage_canonical_checkpoint(
-                &journal, &input, Some(&source_file), &source, &retained,
-                (&proof_file, &proof)).await?.is_some());
+            let retained_file = stage_json(&journal, input.operation_id, "retained", &retained, None).await?;
+            let envelope = crate::context::CanonicalContextCheckpoint {
+                operation_id: input.operation_id,
+                selection: input.selected_context.as_ref().unwrap().selection.clone(),
+                source: source_file,
+                retained: retained_file,
+                compaction: proof_file.clone(),
+            };
+            envelope.validate_projection(&source, &retained, &proof, Limits::default(), None)?;
             assert_eq!(journal.4.load(Ordering::SeqCst), before);
             // Real former read: the same no-reload check rejects this variant.
             load_json::<crate::context::CompactionReference>(&journal, &proof_file, None).await?;

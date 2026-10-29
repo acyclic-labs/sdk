@@ -114,7 +114,7 @@ impl<'a> StockExecution<'a> {
             }
             let mut context_input = ContextInput::copy_for_turn(input, step, prior, self.io)?;
             let base = self
-                .canonical_base_for_turn(journal, input.operation_id, &mut context_input)
+                .canonical_base_for_input(journal, &mut context_input)
                 .await?;
             return Ok((context_input, base, None));
         };

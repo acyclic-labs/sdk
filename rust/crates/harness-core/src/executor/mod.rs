@@ -60,7 +60,6 @@ mod request;
 mod response;
 mod retained_request;
 pub(crate) mod transcript;
-mod working_context;
 mod working_tail;
 pub(crate) use transcript::load_projection as load_response_projection;
 mod summary;

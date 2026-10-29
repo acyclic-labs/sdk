@@ -12,15 +12,13 @@ impl StockExecution<'_> {
         accounting: &ContextAccounting,
         policy: &crate::context::ThresholdCompaction,
     ) -> Result<(crate::context::Context, bool)> {
-        if let Some(reference) = &projection.canonical {
-            let source = retain_preparation(
-                load_json::<crate::context::Context>(journal, reference, self.io).await?,
-            )?;
-            return Ok((source, true));
-        }
-        if journal.working_checkpoint_authority().is_some() {
+        let selected_base = turn.1 == 0 && turn.0.selected_context.is_some();
+        if selected_base || journal.working_checkpoint_authority().is_some() {
             let (input, step, prior) = turn;
             let (_, base, _) = self.response_base(journal, input, step, prior).await?;
+            if selected_base {
+                return Ok((base, true));
+            }
             let request = crate::model::PreparedModelRequest::prepare(
                 self.request_from_context(&base)?,
                 self.stock.limits,
