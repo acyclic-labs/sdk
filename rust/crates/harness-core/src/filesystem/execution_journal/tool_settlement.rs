@@ -29,7 +29,6 @@ where
             io,
             cache: None,
         };
-        let mut terminal = None;
         for outcome in [ToolTerminalOutcome::Completed, ToolTerminalOutcome::Failed] {
             let key_hold;
             let key = tool_settlement_key(query.step, query.call_id, outcome, io)?;
@@ -47,21 +46,20 @@ where
             let retry_key = crate::model::hash_bytes(retry.as_bytes(), io)?;
             let entry = checkpoint_maps::retry_entry(&reader, state, retry_key).await?;
             if let Some((sequence, digest)) = entry {
-                if terminal.is_some() {
-                    return Err(invalid(io));
-                }
                 self.verify_terminal_record(query, outcome, sequence, digest, retry.as_str(), io)
                     .await?;
-                terminal = Some(ToolSettlement {
+                // The signed checkpoint's admission already excludes a second
+                // settlement; no other retry path can change this decision.
+                return Ok(Some(ToolSettlement {
                     cut: state.tail,
                     sequence,
                     outcome,
-                });
+                }));
             }
             drop(key);
             drop(key_hold);
         }
-        Ok(terminal)
+        Ok(None)
     }
 
     async fn verify_terminal_record(

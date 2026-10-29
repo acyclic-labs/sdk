@@ -145,6 +145,14 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
             effect: crate::tool::ToolInvocation::model_call_operation(turn, 64, "call", None)?,
             ..query
         };
+        let failed_key = tool_settlement_key(64, "call", ToolTerminalOutcome::Failed, None)?;
+        assert!(
+            journal
+                .append(turn, &failed_key, &refusal(64), None)?
+                .await
+                .is_err(),
+            "a second settlement entered the authenticated prefix"
+        );
         assert_eq!(
             journal.tool_settlement(completed, Some(&io))?.await?,
             Some(ToolSettlement {
@@ -157,7 +165,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
             assert_eq!(work.live_allocation_bytes(), baseline);
         }
         let mut finite = budget;
-        finite.authority_records_read = 0;
+        finite.backend_read_operations = 0;
         let finite_io = PreparationIo::from_budget(finite, &cancellation)?;
         let denied = match journal.tool_settlement(completed, Some(&finite_io)) {
             Ok(future) => future.await,
@@ -167,6 +175,7 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
             denied.is_err(),
             "finite read refusal became an absent result"
         );
+        assert_eq!(finite_io.receipt().backend_read_operations, 0);
         assert_eq!(finite_io.receipt().authority_records_read, 0);
         assert_eq!(finite_io.owned_bytes()?, 0);
         let cancelled = acyclic_fs::CancellationToken::new();
