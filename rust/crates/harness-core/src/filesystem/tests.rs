@@ -310,7 +310,7 @@ async fn check_staged_content<O: AsyncObjectStore + 'static>(
     let snapshot = acyclic_fs::LazySnapshotRef::new(
         acyclic_fs::WorkspaceId::from_bytes([19; 16]),
         decoded,
-        acyclic_fs::SourceReference {
+        acyclic_fs::demand::SourceReference {
             identity: [20; 16],
             epoch: 0,
         },
