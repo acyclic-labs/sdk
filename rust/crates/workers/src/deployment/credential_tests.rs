@@ -59,7 +59,7 @@ async fn published_code_survives_collection_until_unpublished() {
     }
     assert_eq!(client.objects.head(blob).await.unwrap().length, 6);
     assert!(client.unpublish(&digest).await.unwrap());
-    for _ in 0..2 {
+    for _ in 0..3 {
         client.objects.collect().await.unwrap();
     }
     assert!(client.objects.head(blob).await.is_err());

@@ -1,17 +1,26 @@
 //! Durable local-directory medium: one immutable file per key.
 //!
-//! A key becomes visible only by hard-linking a complete, synchronized
-//! temporary file into place, so create-if-absent is atomic on every
-//! supported filesystem and a crash never exposes partial bytes. One process
+//! A key becomes visible only by hard-linking a complete temporary file into
+//! place, so create-if-absent is atomic on every supported filesystem; until
+//! flushed, a crash can lose it or leave it short or damaged. One process
 //! owns the root, so one in-process lock makes compare-and-replace and
 //! compare-and-remove atomic; only create competes with them, and it never
 //! replaces an existing key.
+//!
+//! A write only publishes its name; [`Medium::flush`] makes named keys
+//! durable in one batch, where a commit needs them. One owning process makes
+//! the set of unflushed writes exact: it flushes them all on close, once its
+//! last accepted write is done, and a root opened after an unclean close is
+//! flushed whole before any write and reported [`Medium::recovered`] until
+//! settled: a close before then leaves the root marked unclean.
 use crate::{Medium, MediumError, Store};
 use acyclic_stream::OwnedBytes;
+use std::collections::{BTreeSet, HashMap};
 use std::io::{Read as _, Seek as _, Write as _};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::PoisonError;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// How file contents are made durable before they become observable.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -51,14 +60,15 @@ pub enum LocalOpenError {
 }
 
 const FORMAT: &[u8] = b"acyclic-objects-local-v1\n";
+/// Present while an owner may hold unflushed writes.
+const OPEN: &str = "OPEN";
 
 /// The durable local-directory medium.
 pub struct LocalMedium {
     root: PathBuf,
     durability: LocalDurability,
-    conditional: std::sync::Arc<std::sync::Mutex<()>>,
-    _lock: std::fs::File,
-    _anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
+    conditional: Arc<Mutex<()>>,
+    unflushed: Arc<Unflushed>,
 }
 
 /// One durable local account over a [`LocalMedium`].
@@ -78,10 +88,13 @@ impl crate::Account<LocalMedium> {
     }
 }
 
-async fn blocking<T: Send + 'static>(
+/// Submits `work` at once, so callers collecting several submit them
+/// together and await them after.
+fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> std::io::Result<T> + Send + 'static,
-) -> std::io::Result<T> {
-    acyclic_native_runtime::spawn_persistence(work).await?
+) -> impl Future<Output = std::io::Result<T>> {
+    let submitted = acyclic_native_runtime::spawn_persistence(work);
+    async move { submitted.await? }
 }
 
 fn native(durability: LocalDurability) -> acyclic_native_runtime::Durability {
@@ -96,6 +109,80 @@ fn sync(file: &std::fs::File, durability: LocalDurability) -> std::io::Result<()
     acyclic_native_runtime::sync_file(file, native(durability), None)
 }
 
+/// The flush of one member of a batch. Apple orders each member with a
+/// barrier and pays for one full flush per batch, in [`finish_batch`];
+/// elsewhere each member flushes its data.
+fn sync_member(path: &Path, durability: LocalDurability) -> std::io::Result<()> {
+    // Windows flushes a file only through a handle that may write it.
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .write(cfg!(windows))
+        .open(path)
+    {
+        Ok(file) => file,
+        // A removal is durable once its directory is.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    sync_contents(&file, durability)
+}
+
+/// Orders `file`'s bytes before any later metadata change of it.
+fn sync_contents(file: &std::fs::File, durability: LocalDurability) -> std::io::Result<()> {
+    if cfg!(target_vendor = "apple") {
+        acyclic_native_runtime::sync_file(file, acyclic_native_runtime::Durability::Barrier, None)
+    } else {
+        acyclic_native_runtime::sync_data(file, native(durability))
+    }
+}
+
+fn sync_member_directory(path: &Path, durability: LocalDurability) -> std::io::Result<()> {
+    if cfg!(target_vendor = "apple") {
+        acyclic_native_runtime::sync_parent(path, acyclic_native_runtime::Durability::Barrier)
+    } else {
+        sync_directory(path, durability)
+    }
+}
+
+/// Apple's one full flush, covering every barrier before it.
+fn finish_batch(root: &Path, durability: LocalDurability) -> std::io::Result<()> {
+    if cfg!(target_vendor = "apple") && durability == LocalDurability::FullFlush {
+        sync_directory(root, durability)?;
+    }
+    Ok(())
+}
+
+/// Flushes every file and directory below `directory`, for a root whose
+/// last owner may have closed without flushing.
+fn flush_tree(directory: &Path, durability: LocalDurability) -> std::io::Result<()> {
+    let entries = match std::fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            flush_tree(&entry.path(), durability)?;
+        } else {
+            sync_member(&entry.path(), durability)?;
+        }
+    }
+    sync_member_directory(directory, durability)
+}
+
+/// Makes everything below `root` durable: one filesystem flush where the
+/// platform has one, else each file and directory.
+fn recover(root: &Path, durability: LocalDurability) -> std::io::Result<()> {
+    match acyclic_native_runtime::sync_filesystem(root) {
+        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+            flush_tree(&root.join("keys"), durability)?;
+            finish_batch(root, durability)
+        }
+        synced => synced,
+    }
+}
+
 /// The shared native namespace flush. Every platform flushes the directory
 /// itself (Windows through a backup-semantics handle), so a successful
 /// FullFlush never rests on a skipped directory.
@@ -103,20 +190,114 @@ fn sync_directory(path: &Path, durability: LocalDurability) -> std::io::Result<(
     acyclic_native_runtime::sync_parent(path, native(durability))
 }
 
-/// Creates `directory` and its missing ancestors, syncing the parent of each
-/// directory this call created, or raced another creator to, so that no new
-/// name below survives a crash its directory entry does not.
-fn create_directories(directory: &Path, durability: LocalDurability) -> std::io::Result<()> {
+/// Paths written since they were last flushed: files, removals and created
+/// directories. Each is tracked before it becomes visible, so a flush of
+/// anything below it finds it, and again after, so a flush whose snapshot
+/// preceded the change forgets none of it; each tracking carries a fresh
+/// sequence, and a flush forgets only the sequences it snapshot.
+///
+/// It also holds the root's ownership. The medium and every accepted write
+/// hold it, so the root closes, everything flushed, the marker removed and
+/// the lock released, only once the last of them lets go.
+struct Unflushed {
+    paths: Mutex<(u64, HashMap<PathBuf, u64>)>,
+    root: PathBuf,
+    durability: LocalDurability,
+    /// Whether the root opened unclean and its repair has not settled.
+    recovered: AtomicBool,
+    _lock: std::fs::File,
+    _anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
+}
+
+impl Drop for Unflushed {
+    /// A clean close of a settled root leaves nothing unflushed, so the next
+    /// open trusts it; an unsettled one stays marked unclean.
+    fn drop(&mut self) {
+        let unflushed = self.drain();
+        let settled = !*self.recovered.get_mut();
+        let flushed = flush_batch(&self.root, &unflushed, self.durability).and_then(|()| {
+            if !settled {
+                return Ok(());
+            }
+            std::fs::remove_file(self.root.join(OPEN))?;
+            sync_directory(&self.root, self.durability)
+        });
+        // A failed close leaves the marker, and the next open recovers.
+        drop(flushed);
+    }
+}
+
+impl Unflushed {
+    /// Applies `change` to `path`, tracked on both sides of it.
+    fn changed<T>(
+        &self,
+        path: &Path,
+        change: impl FnOnce() -> std::io::Result<T>,
+    ) -> std::io::Result<T> {
+        self.track(path);
+        let changed = change();
+        self.track(path);
+        changed
+    }
+
+    fn track(&self, path: &Path) {
+        let mut paths = self.paths.lock().unwrap_or_else(PoisonError::into_inner);
+        paths.0 += 1;
+        let sequence = paths.0;
+        paths.1.insert(path.to_path_buf(), sequence);
+    }
+
+    /// The directories a flush of `paths` syncs: each path's own, and the
+    /// parent of each unflushed directory above it, with the writes covered.
+    fn plan(&self, keys: &Path, paths: &[PathBuf]) -> (BTreeSet<PathBuf>, Vec<(PathBuf, u64)>) {
+        let tracked = self.paths.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut directories = BTreeSet::new();
+        let mut covered = Vec::new();
+        for path in paths {
+            if let Some(&sequence) = tracked.1.get(path) {
+                covered.push((path.clone(), sequence));
+            }
+            let mut below = path.as_path();
+            while let Some(directory) = below.parent() {
+                if !directories.insert(directory.to_path_buf()) || directory == keys {
+                    break;
+                }
+                match tracked.1.get(directory) {
+                    Some(&sequence) => covered.push((directory.to_path_buf(), sequence)),
+                    None => break,
+                }
+                below = directory;
+            }
+        }
+        (directories, covered)
+    }
+
+    fn forget(&self, covered: Vec<(PathBuf, u64)>) {
+        let mut tracked = self.paths.lock().unwrap_or_else(PoisonError::into_inner);
+        for (path, sequence) in covered {
+            if tracked.1.get(&path) == Some(&sequence) {
+                tracked.1.remove(&path);
+            }
+        }
+    }
+
+    fn drain(&mut self) -> Vec<PathBuf> {
+        let tracked = self.paths.get_mut().unwrap_or_else(PoisonError::into_inner);
+        tracked.1.drain().map(|(path, _)| path).collect()
+    }
+}
+
+/// Creates `directory` and its missing ancestors, tracking each new one so
+/// the flush of a name below it also makes its entry durable.
+fn create_directories(directory: &Path, unflushed: &Unflushed) -> std::io::Result<()> {
     if directory.is_dir() {
         return Ok(());
     }
     let parent = directory.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
-    create_directories(parent, durability)?;
-    match std::fs::create_dir(directory) {
-        Ok(()) => sync_directory(parent, durability),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            sync_directory(parent, durability)
-        }
+    create_directories(parent, unflushed)?;
+    match unflushed.changed(directory, || std::fs::create_dir(directory)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(error) => Err(error),
     }
 }
@@ -133,8 +314,11 @@ impl LocalMedium {
         }
         let root = root.as_ref().to_path_buf();
         let durability = limits.durability;
-        let (root, lock) = acyclic_native_runtime::spawn_persistence(move || {
+        let (root, lock, recovered) = acyclic_native_runtime::spawn_persistence(move || {
+            // Every key lives below `keys`, created here and made durable
+            // with the root below, so no flush need reach above it.
             std::fs::create_dir_all(root.join("tmp"))?;
+            std::fs::create_dir_all(root.join("keys"))?;
             let format = root.join("FORMAT");
             match std::fs::read(&format) {
                 Ok(bytes) if bytes == FORMAT => {}
@@ -161,16 +345,31 @@ impl LocalMedium {
             for entry in std::fs::read_dir(root.join("tmp"))? {
                 std::fs::remove_file(entry?.path())?;
             }
-            Ok((root, lock))
+            let marker = root.join(OPEN);
+            let recovered = marker.exists();
+            if recovered {
+                // The last owner may have left writes unflushed.
+                recover(&root, durability)?;
+            } else {
+                sync(&std::fs::File::create(&marker)?, durability)?;
+            }
+            sync_directory(&root, durability)?;
+            Ok((root, lock, recovered))
         })
         .await
         .map_err(|_| LocalOpenError::Unavailable)??;
         Ok(Self {
-            root,
             durability,
             conditional: Default::default(),
-            _lock: lock,
-            _anchor: anchor,
+            unflushed: Arc::new(Unflushed {
+                paths: Mutex::default(),
+                root: root.clone(),
+                durability,
+                recovered: AtomicBool::new(recovered),
+                _lock: lock,
+                _anchor: anchor,
+            }),
+            root,
         })
     }
 
@@ -181,9 +380,16 @@ impl LocalMedium {
     }
 }
 
-enum Created {
-    Exists,
-    Linked(std::io::Result<()>),
+/// Flushes every unflushed path and its directory as one batch.
+fn flush_batch(root: &Path, paths: &[PathBuf], durability: LocalDurability) -> std::io::Result<()> {
+    let directories: BTreeSet<&Path> = paths.iter().filter_map(|path| path.parent()).collect();
+    for path in paths.iter().filter(|path| !path.is_dir()) {
+        sync_member(path, durability)?;
+    }
+    for directory in directories {
+        sync_member_directory(directory, durability)?;
+    }
+    finish_batch(root, durability)
 }
 
 fn failed(error: std::io::Error) -> MediumError {
@@ -245,35 +451,28 @@ impl Medium for LocalMedium {
         let mut name = [0u8; 16];
         getrandom::fill(&mut name).map_err(|error| failed(std::io::Error::other(error)))?;
         let temporary = self.root.join("tmp").join(hex::encode(name));
-        let durability = self.durability;
-        let created = blocking(move || {
+        let unflushed = self.unflushed.clone();
+        blocking(move || {
             if target.exists() {
-                return Ok(Created::Exists);
+                return Ok(false);
             }
             let parent = target.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
-            create_directories(parent, durability)?;
+            create_directories(parent, &unflushed)?;
             let mut file = std::fs::File::create_new(&temporary)?;
             file.write_all(&bytes)?;
-            sync(&file, durability)?;
             drop(file);
-            let linked = acyclic_native_runtime::publish_new(&temporary, &target, None);
+            let published = unflushed.changed(&target, || {
+                acyclic_native_runtime::publish_new(&temporary, &target, None)
+            });
             let _ = std::fs::remove_file(&temporary);
-            match linked {
-                Ok(()) => Ok(Created::Linked(sync_directory(parent, durability))),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    Ok(Created::Exists)
-                }
+            match published {
+                Ok(()) => Ok(true),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
                 Err(error) => Err(error),
             }
         })
         .await
-        .map_err(failed)?;
-        match created {
-            Created::Exists => Ok(false),
-            Created::Linked(Ok(())) => Ok(true),
-            // Visible, but the name may not survive a crash.
-            Created::Linked(Err(error)) => Err(MediumError::Ambiguous(error)),
-        }
+        .map_err(failed)
     }
 
     async fn read(
@@ -306,17 +505,14 @@ impl Medium for LocalMedium {
 
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
         let path = self.path(key);
-        let durability = self.durability;
-        blocking(move || match std::fs::remove_file(&path) {
-            Ok(()) => {
-                if let Some(parent) = path.parent() {
-                    sync_directory(parent, durability)?;
-                }
-                Ok(true)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error),
-        })
+        let unflushed = self.unflushed.clone();
+        blocking(
+            move || match unflushed.changed(&path, || std::fs::remove_file(&path)) {
+                Ok(()) => Ok(true),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(error),
+            },
+        )
         .await
         .map_err(failed)
     }
@@ -331,48 +527,87 @@ impl Medium for LocalMedium {
         let mut name = [0u8; 16];
         getrandom::fill(&mut name).map_err(|error| failed(std::io::Error::other(error)))?;
         let temporary = self.root.join("tmp").join(hex::encode(name));
-        let (durability, conditional) = (self.durability, self.conditional.clone());
-        let replaced = blocking(move || {
+        let (conditional, unflushed) = (self.conditional.clone(), self.unflushed.clone());
+        let durability = self.durability;
+        blocking(move || {
             let _held = conditional.lock().unwrap_or_else(PoisonError::into_inner);
             if !holds(&target, &expected)? {
-                return Ok(None);
+                return Ok(false);
             }
             let mut file = std::fs::File::create_new(&temporary)?;
             file.write_all(&bytes)?;
-            sync(&file, durability)?;
+            // The bytes land before the rename can: a crash keeps the old
+            // value or the new one, never a torn rewrite of a committed key.
+            sync_contents(&file, durability)?;
             drop(file);
-            if let Err(error) = std::fs::rename(&temporary, &target) {
+            if let Err(error) = unflushed.changed(&target, || std::fs::rename(&temporary, &target))
+            {
                 let _ = std::fs::remove_file(&temporary);
                 return Err(error);
-            }
-            let parent = target.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
-            Ok(Some(sync_directory(parent, durability)))
-        })
-        .await
-        .map_err(failed)?;
-        match replaced {
-            None => Ok(false),
-            Some(Ok(())) => Ok(true),
-            Some(Err(error)) => Err(MediumError::Ambiguous(error)),
-        }
-    }
-
-    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
-        let (path, expected) = (self.path(key), expected.to_vec());
-        let (durability, conditional) = (self.durability, self.conditional.clone());
-        blocking(move || {
-            let _held = conditional.lock().unwrap_or_else(PoisonError::into_inner);
-            if !holds(&path, &expected)? {
-                return Ok(false);
-            }
-            std::fs::remove_file(&path)?;
-            if let Some(parent) = path.parent() {
-                sync_directory(parent, durability)?;
             }
             Ok(true)
         })
         .await
         .map_err(failed)
+    }
+
+    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+        let (path, expected) = (self.path(key), expected.to_vec());
+        let (conditional, unflushed) = (self.conditional.clone(), self.unflushed.clone());
+        blocking(move || {
+            let _held = conditional.lock().unwrap_or_else(PoisonError::into_inner);
+            if !holds(&path, &expected)? {
+                return Ok(false);
+            }
+            unflushed.changed(&path, || std::fs::remove_file(&path))?;
+            Ok(true)
+        })
+        .await
+        .map_err(failed)
+    }
+
+    async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
+        let paths: Vec<PathBuf> = keys.iter().map(|key| self.path(key)).collect();
+        let durability = self.durability;
+        // What this flush covers is snapshot first: a change finishing during
+        // it is tracked again, and stays unflushed. Members are submitted
+        // together, so the device can retire them as one batch; directories
+        // follow their entries, and Apple's one full flush follows every
+        // barrier.
+        let (directories, covered) = self.unflushed.plan(&self.root.join("keys"), &paths);
+        let files: Vec<_> = paths
+            .iter()
+            .cloned()
+            .map(|path| blocking(move || sync_member(&path, durability)))
+            .collect();
+        for file in files {
+            file.await.map_err(failed)?;
+        }
+        let directories: Vec<_> = directories
+            .into_iter()
+            .map(|directory| blocking(move || sync_member_directory(&directory, durability)))
+            .collect();
+        for directory in directories {
+            directory.await.map_err(failed)?;
+        }
+        let root = self.root.clone();
+        blocking(move || finish_batch(&root, durability))
+            .await
+            .map_err(failed)?;
+        self.unflushed.forget(covered);
+        Ok(())
+    }
+
+    fn volatile(&self) -> bool {
+        true
+    }
+
+    fn recovered(&self) -> bool {
+        self.unflushed.recovered.load(Ordering::Acquire)
+    }
+
+    fn settle(&self) {
+        self.unflushed.recovered.store(false, Ordering::Release);
     }
 
     async fn list(
@@ -381,7 +616,7 @@ impl Medium for LocalMedium {
         after: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(String, u64)>, MediumError> {
-        if !prefix.ends_with('/') {
+        if !prefix.is_empty() && !prefix.ends_with('/') {
             return Err(failed(std::io::ErrorKind::InvalidInput.into()));
         }
         let directory = self.path(prefix.trim_end_matches('/'));
@@ -410,6 +645,38 @@ impl std::fmt::Debug for LocalMedium {
 mod isolation_tests {
     use super::*;
     use futures::FutureExt as _;
+
+    #[tokio::test]
+    async fn a_change_finishing_during_a_flush_stays_unflushed() {
+        let root = tempfile::tempdir().unwrap();
+        let medium = LocalMedium::open(root.path(), LocalObjectsLimits::default(), None)
+            .await
+            .unwrap();
+        let (keys, path) = (medium.root.join("keys"), medium.path("k/key"));
+        let tracked = |unflushed: &Unflushed| {
+            let paths = unflushed.paths.lock().unwrap();
+            paths.1.contains_key(&path)
+        };
+        // A flush snapshots while the change is in flight.
+        let mut covered = None;
+        medium
+            .unflushed
+            .changed(&path, || {
+                covered = Some(medium.unflushed.plan(&keys, std::slice::from_ref(&path)).1);
+                Ok(())
+            })
+            .unwrap();
+        medium.unflushed.forget(covered.unwrap());
+        assert!(tracked(&medium.unflushed));
+        // Control: a change tracked only before it lands is forgotten.
+        medium
+            .unflushed
+            .forget(medium.unflushed.plan(&keys, std::slice::from_ref(&path)).1);
+        medium.unflushed.track(&path);
+        let (_, covered) = medium.unflushed.plan(&keys, std::slice::from_ref(&path));
+        medium.unflushed.forget(covered);
+        assert!(!tracked(&medium.unflushed));
+    }
 
     #[test]
     fn local_storage_progresses_with_an_occupied_input_worker() {

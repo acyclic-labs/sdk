@@ -453,6 +453,11 @@ impl Blobs for GrpcObjects {
         Ok(page)
     }
 
+    /// The server acknowledges a put only once it is durable.
+    async fn flush(&self, _only: Option<&[Digest]>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
         let reply = call!(
             self,

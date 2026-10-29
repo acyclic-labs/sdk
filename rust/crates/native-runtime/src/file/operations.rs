@@ -147,6 +147,36 @@ fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {
     })
 }
 
+/// Flushes every dirty file and directory of the filesystem holding `path`
+/// in one call where the platform has one, Linux `syncfs`; `Unsupported`
+/// elsewhere, where a caller flushes each file instead.
+pub fn sync_filesystem(path: &Path) -> io::Result<()> {
+    #[cfg(feature = "test-support")]
+    return testing::durable_operation("file:sync_filesystem", || sync_filesystem_impl(path));
+    #[cfg(not(feature = "test-support"))]
+    sync_filesystem_impl(path)
+}
+
+fn sync_filesystem_impl(path: &Path) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd as _;
+        let file = File::open(path)?;
+        // SAFETY: syncfs acts only on this live descriptor.
+        #[allow(unsafe_code, reason = "syncfs acts only on the held descriptor")]
+        if unsafe { libc::syncfs(file.as_raw_fd()) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = path;
+        Err(io::ErrorKind::Unsupported.into())
+    }
+}
+
 /// Flushes the directory entry namespace on platforms exposing directory flushes.
 pub fn sync_parent(path: &Path, durability: Durability) -> io::Result<()> {
     #[cfg(feature = "test-support")]

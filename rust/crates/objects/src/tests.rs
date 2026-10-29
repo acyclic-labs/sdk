@@ -96,19 +96,19 @@ async fn releases_and_sweeps_commit_revisions() -> Result<(), Box<dyn std::error
     assert_eq!(again.revision.as_ref(), Some(&released));
 
     let mut passes = Vec::new();
-    for _ in 0..3 {
+    for _ in 0..4 {
         passes.push(blobs.collect().await?);
     }
     let sweep = passes
         .iter()
         .position(|pass| pass.swept > 0)
-        .filter(|sweep| *sweep < 2)
+        .filter(|sweep| *sweep < 3)
         .ok_or("an unretained blob is swept")?;
     let swept = passes[sweep].revision.clone().ok_or("a sweep commits")?;
     assert!(swept.index > released.index);
     // Negative control: a pass that sweeps nothing commits nothing.
-    assert_eq!(passes[2].swept, 0);
-    assert_eq!(passes[2].revision.as_ref(), Some(&swept));
+    assert_eq!(passes[3].swept, 0);
+    assert_eq!(passes[3].revision.as_ref(), Some(&swept));
     Ok(())
 }
 
@@ -288,6 +288,18 @@ impl Medium for Faulty {
     ) -> Result<Vec<(String, u64)>, MediumError> {
         self.inner.list(prefix, after, limit).await
     }
+    async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
+        self.inner.flush(keys).await
+    }
+    fn volatile(&self) -> bool {
+        self.inner.volatile()
+    }
+    fn recovered(&self) -> bool {
+        self.inner.recovered()
+    }
+    fn settle(&self) {
+        self.inner.settle();
+    }
 }
 
 #[tokio::test]
@@ -336,13 +348,16 @@ async fn incomplete_root_scan_suspends_collection() -> Result<(), Box<dyn std::e
 }
 
 #[tokio::test]
-async fn unrooted_blobs_survive_exactly_one_collection() -> Result<(), Box<dyn std::error::Error>> {
+async fn an_unrooted_blob_survives_the_pass_after_the_one_finding_it()
+-> Result<(), Box<dyn std::error::Error>> {
     let blobs = crate::MemoryObjects::memory();
     let Put::Created { verified } = blobs.put(vec![3; 8].into(), Vec::new()).await? else {
         return Err("not created".into());
     };
-    assert_eq!(blobs.collect().await?.swept, 0);
-    assert_eq!(blobs.head(verified.digest).await?.length, 8);
+    for _ in 0..2 {
+        assert_eq!(blobs.collect().await?.swept, 0);
+        assert_eq!(blobs.head(verified.digest).await?.length, 8);
+    }
     assert_eq!(blobs.collect().await?.swept, 1);
     assert_eq!(
         blobs
@@ -374,15 +389,17 @@ fn manifest_and_envelope_encodings_round_trip() -> Result<(), crate::Error> {
 
 /// One shared medium that several [`Store`]s, standing for processes, open.
 /// It parks one operation matching `pause` until released, to force one
-/// interleaving. With `forgetful` the delete protocol's conditional writes,
-/// on published envelopes, ignore the bytes they were given: a deleter's mark
-/// is never stored and its removal matches whatever is there, the negative
-/// control for the delete protocol.
+/// interleaving. With `forgetful` the delete protocol's conditional writes
+/// ignore the bytes they were given: a deleter's mark is never stored and its
+/// envelope removal matches whatever is there, the negative control for the
+/// delete protocol. Creates of keys containing `ambiguous` are lost with an
+/// unknown outcome.
 #[derive(Clone)]
 struct Shared {
     inner: std::sync::Arc<dyn Medium>,
     pause: std::sync::Arc<std::sync::Mutex<Option<Pause>>>,
     forgetful: bool,
+    ambiguous: std::sync::Arc<std::sync::Mutex<Option<&'static str>>>,
 }
 
 impl Default for Shared {
@@ -405,6 +422,7 @@ impl Shared {
             inner: std::sync::Arc::new(inner),
             pause: Default::default(),
             forgetful,
+            ambiguous: Default::default(),
         }
     }
 
@@ -442,8 +460,10 @@ impl Shared {
         (reached, release)
     }
 
-    fn forgets(&self, expected: &[u8]) -> bool {
-        self.forgetful && crate::blob::Envelope::published_size(expected.len() as u64)
+    /// Whether `forgetful` drops this replace: a deleter's mark.
+    fn forgets_mark(&self, bytes: &[u8]) -> bool {
+        self.forgetful
+            && crate::blob::Envelope::decode(bytes).is_ok_and(|envelope| envelope.dying.is_some())
     }
 
     async fn after(&self, operation: &'static str, key: &str) {
@@ -471,7 +491,16 @@ impl Shared {
 #[async_trait::async_trait]
 impl Medium for Shared {
     async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
-        let created = self.inner.create(key, bytes).await;
+        let lost = self
+            .ambiguous
+            .lock()
+            .unwrap()
+            .is_some_and(|fragment| key.contains(fragment));
+        let created = if lost {
+            Err(MediumError::Ambiguous(std::io::ErrorKind::TimedOut.into()))
+        } else {
+            self.inner.create(key, bytes).await
+        };
         self.after("create", key).await;
         created
     }
@@ -480,7 +509,9 @@ impl Medium for Shared {
         key: &str,
         range: Option<Range<u64>>,
     ) -> Result<Option<OwnedBytes>, MediumError> {
-        self.inner.read(key, range).await
+        let read = self.inner.read(key, range).await;
+        self.after("read", key).await;
+        read
     }
     async fn remove(&self, key: &str) -> Result<bool, MediumError> {
         let removed = self.inner.remove(key).await;
@@ -493,7 +524,7 @@ impl Medium for Shared {
         expected: &[u8],
         bytes: OwnedBytes,
     ) -> Result<bool, MediumError> {
-        let replaced = if self.forgets(expected) {
+        let replaced = if self.forgets_mark(&bytes) {
             Ok(self.inner.read(key, Some(0..0)).await?.is_some())
         } else {
             self.inner.replace(key, expected, bytes).await
@@ -502,7 +533,7 @@ impl Medium for Shared {
         replaced
     }
     async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
-        let removed = if self.forgets(expected) {
+        let removed = if self.forgetful && key.contains("/e/") {
             self.inner.remove(key).await
         } else {
             self.inner.remove_if(key, expected).await
@@ -519,6 +550,18 @@ impl Medium for Shared {
         let listed = self.inner.list(prefix, after, limit).await;
         self.after("list", prefix).await;
         listed
+    }
+    async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
+        self.inner.flush(keys).await
+    }
+    fn volatile(&self) -> bool {
+        self.inner.volatile()
+    }
+    fn recovered(&self) -> bool {
+        self.inner.recovered()
+    }
+    fn settle(&self) {
+        self.inner.settle();
     }
 }
 
@@ -575,8 +618,9 @@ async fn delete_then_reference(
 #[tokio::test]
 async fn delete_never_breaks_a_reference_written_by_another_process()
 -> Result<(), Box<dyn std::error::Error>> {
+    // The writer sees the deleter's mark and refuses, and the delete
+    // completes: its last check precedes the writer's index key.
     for writer in [Writer::Put, Writer::Retain] {
-        // The writer sees the deleter's mark and refuses; the delete completes.
         assert_eq!(delete_then_reference(writer, false).await?, (false, false));
         // Negative control: without a stored mark the same schedule commits a
         // reference to a deleted blob.
@@ -717,11 +761,13 @@ async fn another_processs_collection_keeps_a_fresh_blob_for_one_full_pass()
         .verified()
         .ok_or("unknown")?
         .digest;
-    // The writer's admission is durable: the other process's first pass keeps both.
+    // The other process's first pass finds both unreferenced and its next
+    // keeps them, so the writer has one whole pass to commit.
     assert_eq!(collecting.collect().await?.swept, 0);
     writing
         .retain(&RootId::new(*b"root")?, vec![pinned])
         .await?;
+    assert_eq!(collecting.collect().await?.swept, 0);
     assert_eq!(collecting.collect().await?.swept, 1);
     assert_eq!(collecting.head(pinned).await?.length, 8);
     assert_eq!(
@@ -844,8 +890,9 @@ async fn stalled_delete_then_reput(
         async move { deleting.delete(digest).await }
     });
     reached.notified().await;
-    others.collect().await?;
-    others.collect().await?;
+    for _ in 0..3 {
+        others.collect().await?;
+    }
     assert_eq!(
         others.head(digest).await.map_err(|error| error.code).err(),
         Some(ErrorCode::NotFound)
@@ -911,7 +958,8 @@ async fn collection_revives_a_kept_blob_whose_deleter_crashed()
             .replace(&key, &live, marked.encode().into())
             .await?
     );
-    // Marked, it refuses new holders, as a live deleter needs.
+    // Marked, it refuses new holders, as a live deleter needs; the refused
+    // parent's index key still holds it.
     let parent = blobs.put(vec![12; 32].into(), vec![child]).await;
     assert_eq!(
         parent.map_err(|error| error.code).err(),
@@ -928,8 +976,12 @@ async fn collection_revives_a_kept_blob_whose_deleter_crashed()
     Ok(())
 }
 
-/// Whether any payload of `digest` is stored.
-async fn payload_stored(medium: &Shared, digest: Digest) -> Result<bool, MediumError> {
+/// Whether any key of `digest` under `fragment` is stored.
+async fn stored_under(
+    medium: &Shared,
+    digest: Digest,
+    fragment: &str,
+) -> Result<bool, MediumError> {
     let hex = digest.to_hex();
     Ok(Medium::list(
         medium,
@@ -939,22 +991,28 @@ async fn payload_stored(medium: &Shared, digest: Digest) -> Result<bool, MediumE
     )
     .await?
     .iter()
-    .any(|(key, _)| key.contains("/p/") && key.contains(&hex)))
+    .any(|(key, _)| key.contains(fragment) && key.contains(&hex)))
 }
 
-/// A put paused between its payload and its publication while an independent
-/// store collects: the put either publishes a payload GET verifies, or
-/// reports its outcome unknown; never a lost payload created.
+/// Where a put stalls: after creating its envelope, and after writing its
+/// payload.
+const PUT_STALLS: [(&str, &str, usize); 2] = [("create", "/e/", 0), ("create", "/p/", 0)];
+
+/// A put paused at `stall` while an independent store collects `passes`
+/// times, then committed by a retain. The commit either references a blob
+/// GET verifies or fails; it never commits a lost blob. Whether it succeeded.
 async fn stalled_put(
     medium: Shared,
+    stall: (&'static str, &'static str, usize),
     passes: usize,
     fill: u8,
-) -> Result<Put, Box<dyn std::error::Error>> {
+) -> Result<bool, Box<dyn std::error::Error>> {
     let writer = Store::new(medium.clone()).account(b"account")?;
     let collector = Store::new(medium.clone()).account(b"account")?;
     let body = OwnedBytes::from(vec![fill; 64]);
     let digest = Digest::of(&body);
-    let (reached, release) = medium.park("create", "/p/");
+    let (operation, fragment, skip) = stall;
+    let (reached, release) = medium.park_after(operation, fragment, skip);
     let put = tokio::spawn({
         let writer = writer.clone();
         let body = body.clone();
@@ -964,68 +1022,80 @@ async fn stalled_put(
     for _ in 0..passes {
         collector.collect().await?;
     }
-    let fenced = !payload_stored(&medium, digest).await?;
+    let fenced = !stored_under(&medium, digest, "/e/").await?;
     release.notify_one();
+    // A put reads nothing back, so it reports what it wrote.
     let outcome = put.await??;
-    match &outcome {
-        Put::Created { .. } => {
-            assert!(!fenced, "a removed payload is never reported created");
+    assert!(
+        matches!(outcome, Put::Created { .. }),
+        "{stall:?}: {outcome:?}"
+    );
+    // A stream entry's flush refuses a removed blob as a retain does.
+    let flushed = writer.flush(Some(&[digest])).await;
+    assert_eq!(
+        flushed.map_err(|error| error.code),
+        if fenced {
+            Err(ErrorCode::MissingReference)
+        } else {
+            Ok(())
+        },
+        "{stall:?}"
+    );
+    let root = RootId::new(*b"root")?;
+    match writer.retain(&root, vec![digest]).await {
+        Ok(_) => {
+            assert!(
+                !fenced,
+                "{stall:?}: a commit never references a removed blob"
+            );
             let read = writer.get(digest, ByteRange::FULL, 64).await?;
             assert_eq!(read.body().as_ref(), body.as_ref());
+            Ok(true)
         }
-        Put::Unknown => {
-            assert_eq!(
-                writer.head(digest).await.map_err(|error| error.code),
-                Err(ErrorCode::NotFound)
-            );
-            // Negative control: the collector really removed the payload,
-            // and nothing fences an unconditional envelope create, so the
-            // unfenced publish would have acknowledged a lost payload.
-            assert!(fenced);
-            let hex = digest.to_hex();
-            assert!(
-                !Medium::list(
-                    &medium,
-                    &format!("{}/", Digest::of(b"account").to_hex()),
-                    None,
-                    100_000
-                )
-                .await?
-                .iter()
-                .any(|(key, _)| key.contains("/e/") && key.contains(&hex))
-            );
+        Err(error) => {
+            assert_eq!(error.code, ErrorCode::MissingReference, "{stall:?}");
+            // Negative control: the collector really removed the envelope,
+            // so a commit that skipped its check would reference a lost blob.
+            assert!(fenced, "{stall:?}");
             let retried = writer.put(body.clone(), Vec::new()).await?;
             assert!(matches!(retried, Put::Created { .. }));
+            writer.retain(&root, vec![digest]).await?;
             let read = writer.get(digest, ByteRange::FULL, 64).await?;
             assert_eq!(read.body().as_ref(), body.as_ref());
+            Ok(false)
         }
-        Put::AlreadyExists { .. } => return Err("nothing else published this digest".into()),
     }
-    Ok(outcome)
 }
 
 #[tokio::test]
-async fn a_put_stalled_across_collections_never_publishes_a_lost_payload()
+async fn a_put_stalled_past_its_grace_never_commits_a_lost_blob()
 -> Result<(), Box<dyn std::error::Error>> {
-    // Two passes fence the put's admission and revoke it.
-    assert_eq!(stalled_put(Shared::default(), 2, 5).await?, Put::Unknown);
-    // Control: one pass keeps the admission, and the put publishes.
-    assert!(matches!(
-        stalled_put(Shared::default(), 1, 6).await?,
-        Put::Created { .. }
-    ));
+    for stall in PUT_STALLS {
+        // The third pass removes what the first found.
+        assert!(
+            !stalled_put(Shared::default(), stall, 3, 5).await?,
+            "{stall:?}"
+        );
+        // Control: two passes keep the blob, and the commit holds it.
+        assert!(
+            stalled_put(Shared::default(), stall, 2, 6).await?,
+            "{stall:?}"
+        );
+    }
     Ok(())
 }
 
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test]
-async fn a_local_put_stalled_across_collections_never_publishes_a_lost_payload()
+async fn a_local_put_stalled_past_its_grace_never_commits_a_lost_blob()
 -> Result<(), Box<dyn std::error::Error>> {
-    for (passes, created) in [(2, false), (1, true)] {
-        let root = tempfile::tempdir()?;
-        let local = crate::LocalMedium::open(root.path(), Default::default(), None).await?;
-        let outcome = stalled_put(Shared::over(local, false), passes, 7).await?;
-        assert_eq!(matches!(outcome, Put::Created { .. }), created);
+    for stall in PUT_STALLS {
+        for (passes, committed) in [(3, false), (2, true)] {
+            let root = tempfile::tempdir()?;
+            let local = crate::LocalMedium::open(root.path(), Default::default(), None).await?;
+            let outcome = stalled_put(Shared::over(local, false), stall, passes, 7).await?;
+            assert_eq!(outcome, committed, "{stall:?}");
+        }
     }
     Ok(())
 }
@@ -1046,15 +1116,17 @@ async fn a_delayed_collector_never_removes_a_later_version()
     });
     reached.notified().await;
     collector.collect().await?;
-    // The second pass parks right after revoking, before removing anything.
-    let (revoked, resume) = medium.park("remove", "/e/");
+    collector.collect().await?;
+    // The third pass parks right after removing the envelope, before its payload.
+    let (removed, resume) = medium.park("remove", "/e/");
     let collecting = tokio::spawn({
         let collector = collector.clone();
         async move { collector.collect().await }
     });
-    revoked.notified().await;
+    removed.notified().await;
     release.notify_one();
-    assert_eq!(put.await??, Put::Unknown);
+    // Its version is gone; a commit of it fails its check.
+    assert!(matches!(put.await??, Put::Created { .. }));
     // A later put of the same digest publishes a fresh version meanwhile.
     assert!(matches!(
         writer.put(body.clone(), Vec::new()).await?,
@@ -1064,7 +1136,7 @@ async fn a_delayed_collector_never_removes_a_later_version()
     collecting.await??;
     let read = writer.get(digest, ByteRange::FULL, 64).await?;
     assert_eq!(read.body().as_ref(), body.as_ref());
-    // Negative control: the revoked version's payload really was removed.
+    // Negative control: the removed version's payload really is gone.
     let hex = digest.to_hex();
     let payloads = Medium::list(
         &medium,
@@ -1081,65 +1153,104 @@ async fn a_delayed_collector_never_removes_a_later_version()
 }
 
 #[test]
-fn pending_envelopes_round_trip_and_list_by_size() -> Result<(), Box<dyn std::error::Error>> {
+fn envelopes_round_trip_and_decode_earlier_encodings() -> Result<(), Box<dyn std::error::Error>> {
     let envelope = crate::blob::Envelope {
         kind: crate::Kind::Blob,
         length: 3,
         stored: 3,
         references: vec![Digest::of(b"child")],
         version: [4; 16],
-        dying: None,
-        pending: true,
+        dying: Some([5; 16]),
+        condemned: 9,
     };
-    let pending = envelope.encode();
-    assert_eq!(crate::blob::Envelope::decode(&pending)?, envelope);
-    assert!(!crate::blob::Envelope::published_size(pending.len() as u64));
-    let published = crate::blob::Envelope {
-        pending: false,
-        ..envelope
-    }
-    .encode();
-    assert!(crate::blob::Envelope::published_size(published.len() as u64));
-    assert_eq!(published.len(), pending.len() + 16);
+    let encoded = envelope.encode();
+    assert_eq!(crate::blob::Envelope::decode(&encoded)?, envelope);
+    // Stamping and marking never change the size.
+    let restamped = crate::blob::Envelope {
+        dying: None,
+        condemned: u64::MAX,
+        ..envelope.clone()
+    };
+    assert_eq!(restamped.encode().len(), encoded.len());
+    // An envelope from before stamps is unstamped.
+    let earlier = crate::blob::Envelope::decode(&encoded[..encoded.len() - 8])?;
+    assert_eq!((earlier.dying, earlier.condemned), (Some([5; 16]), 0));
+    // A pending one, which this protocol no longer writes, marks no deleter.
+    let mut pending = encoded[..encoded.len() - 24].to_vec();
+    *pending.last_mut().ok_or("empty")? = 2;
+    let decoded = crate::blob::Envelope::decode(&pending)?;
+    assert_eq!((decoded.dying, decoded.condemned), (None, 0));
     Ok(())
 }
 
-#[tokio::test]
-async fn a_retry_takes_over_an_abandoned_pending_put() -> Result<(), Box<dyn std::error::Error>> {
+/// Where the first of two equal puts parks while the second runs to
+/// completion: after each of its writes; it reads nothing.
+const EQUAL_PUT_STALLS: [(&str, &str, usize); 2] = [("create", "/e/", 0), ("create", "/p/", 0)];
+
+/// Two processes put the same bytes, the first parked at `stall`. With
+/// `lossy`, the second's payload write is lost with an unknown outcome.
+async fn equal_puts(
+    stall: (&'static str, &'static str, usize),
+    lossy: bool,
+) -> Result<[Put; 2], Box<dyn std::error::Error>> {
     let medium = Shared::default();
     let first = Store::new(medium.clone()).account(b"account")?;
-    let retry = Store::new(medium.clone()).account(b"account")?;
+    let second = Store::new(medium.clone()).account(b"account")?;
+    first.revisions().await?;
+    second.revisions().await?;
     let body = OwnedBytes::from(vec![9; 64]);
     let digest = Digest::of(&body);
-    let (reached, release) = medium.park("create", "/p/");
+    let (operation, fragment, skip) = stall;
+    let (reached, release) = medium.park_after(operation, fragment, skip);
     let stalled = tokio::spawn({
         let first = first.clone();
         let body = body.clone();
         async move { first.put(body, Vec::new()).await }
     });
     reached.notified().await;
-    // The stalled put's pending envelope never blocks a retry of its digest.
-    assert!(matches!(
-        retry.put(body.clone(), Vec::new()).await?,
-        Put::Created { .. }
-    ));
+    *medium.ambiguous.lock().unwrap() = lossy.then_some("/p/");
+    let other = second.put(body.clone(), Vec::new()).await?;
+    *medium.ambiguous.lock().unwrap() = None;
     release.notify_one();
-    // Negative control: the overtaken put can no longer publish.
-    assert_eq!(stalled.await??, Put::Unknown);
-    let read = retry.get(digest, ByteRange::FULL, 64).await?;
-    assert_eq!(read.body().as_ref(), body.as_ref());
-    let hex = digest.to_hex();
-    let payloads = Medium::list(
-        &medium,
-        &format!("{}/", Digest::of(b"account").to_hex()),
-        None,
-        100_000,
-    )
-    .await?
-    .into_iter()
-    .filter(|(key, _)| key.contains("/p/") && key.contains(&hex))
-    .count();
-    assert_eq!(payloads, 1);
+    let outcomes = [stalled.await??, other];
+    if !lossy {
+        let read = second.get(digest, ByteRange::FULL, 64).await?;
+        assert_eq!(read.body().as_ref(), body.as_ref());
+        let hex = digest.to_hex();
+        let payloads = Medium::list(
+            &medium,
+            &format!("{}/", Digest::of(b"account").to_hex()),
+            None,
+            100_000,
+        )
+        .await?
+        .into_iter()
+        .filter(|(key, _)| key.contains("/p/") && key.contains(&hex))
+        .count();
+        assert_eq!(payloads, 1, "{stall:?}: equal puts share one version");
+    }
+    Ok(outcomes)
+}
+
+#[tokio::test]
+async fn equal_puts_resolve_to_one_created_at_every_interleaving()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut detected = false;
+    for stall in EQUAL_PUT_STALLS {
+        let outcomes = equal_puts(stall, false).await?;
+        assert!(
+            matches!(
+                outcomes,
+                [Put::Created { .. }, Put::AlreadyExists { .. }]
+                    | [Put::AlreadyExists { .. }, Put::Created { .. }]
+            ),
+            "{stall:?}: {outcomes:?}"
+        );
+        // Negative control: a helper whose write is lost reports unknown, so
+        // the check above would catch a put that failed to complete its peer.
+        detected |= equal_puts(stall, true).await?.contains(&Put::Unknown);
+    }
+    assert!(detected);
     Ok(())
 }
 
@@ -1152,7 +1263,8 @@ async fn lists_page_past_pending_puts() -> Result<(), Box<dyn std::error::Error>
         let put = blobs.put(vec![fill; 16].into(), Vec::new()).await?;
         published.push(put.verified().ok_or("a put verifies")?.digest);
     }
-    let (reached, release) = medium.park("create", "/p/");
+    // Its envelope is created; its payload is still to come.
+    let (reached, release) = medium.park("create", "/e/");
     let stalled = tokio::spawn({
         let blobs = blobs.clone();
         async move { blobs.put(vec![99; 16].into(), Vec::new()).await }
@@ -1179,98 +1291,898 @@ async fn lists_page_past_pending_puts() -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-/// A put paused right after publishing while an independent store collects.
-async fn stalled_after_publish(passes: usize) -> Result<Put, Box<dyn std::error::Error>> {
-    let medium = Shared::default();
-    let writer = Store::new(medium.clone()).account(b"account")?;
-    let collector = Store::new(medium.clone()).account(b"account")?;
-    let body = OwnedBytes::from(vec![10; 64]);
-    let digest = Digest::of(&body);
-    let (reached, release) = medium.park("replace", "/e/");
-    let put = tokio::spawn({
-        let writer = writer.clone();
-        let body = body.clone();
-        async move { writer.put(body, Vec::new()).await }
-    });
-    reached.notified().await;
-    for _ in 0..passes {
-        collector.collect().await?;
+/// Counts each operation of a volatile medium, with the keys of each flush.
+#[derive(Default)]
+pub(crate) struct Counting {
+    inner: MemoryMedium,
+    counts: std::sync::Mutex<std::collections::BTreeMap<&'static str, usize>>,
+    flushes: std::sync::Mutex<Vec<usize>>,
+}
+
+impl Counting {
+    fn count(&self, operation: &'static str) {
+        *self.counts.lock().unwrap().entry(operation).or_default() += 1;
     }
-    release.notify_one();
-    let outcome = put.await??;
-    if matches!(outcome, Put::Created { .. }) {
-        let read = writer.get(digest, ByteRange::FULL, 64).await?;
-        assert_eq!(read.body().as_ref(), body.as_ref());
+
+    fn take(&self) -> std::collections::BTreeMap<&'static str, usize> {
+        std::mem::take(&mut *self.counts.lock().unwrap())
     }
-    Ok(outcome)
+
+    fn flushed(&self) -> Vec<usize> {
+        std::mem::take(&mut *self.flushes.lock().unwrap())
+    }
+}
+
+#[async_trait::async_trait]
+impl Medium for Counting {
+    async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
+        self.count("create");
+        self.inner.create(key, bytes).await
+    }
+    async fn read(
+        &self,
+        key: &str,
+        range: Option<Range<u64>>,
+    ) -> Result<Option<OwnedBytes>, MediumError> {
+        self.count("read");
+        self.inner.read(key, range).await
+    }
+    async fn remove(&self, key: &str) -> Result<bool, MediumError> {
+        self.count("remove");
+        self.inner.remove(key).await
+    }
+    async fn replace(
+        &self,
+        key: &str,
+        expected: &[u8],
+        bytes: OwnedBytes,
+    ) -> Result<bool, MediumError> {
+        self.count("replace");
+        self.inner.replace(key, expected, bytes).await
+    }
+    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+        self.count("remove_if");
+        self.inner.remove_if(key, expected).await
+    }
+    async fn list(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>, MediumError> {
+        self.count("list");
+        self.inner.list(prefix, after, limit).await
+    }
+    async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
+        self.count("flush");
+        self.flushes.lock().unwrap().push(keys.len());
+        Ok(())
+    }
+    fn volatile(&self) -> bool {
+        true
+    }
+    fn recovered(&self) -> bool {
+        false
+    }
+    fn settle(&self) {}
+}
+
+/// The operations of one fresh put, and of one usage scan, in an account
+/// already holding `existing` blobs.
+async fn operations(
+    existing: u32,
+) -> Result<[std::collections::BTreeMap<&'static str, usize>; 2], Box<dyn std::error::Error>> {
+    let store = Store::new(Counting::default());
+    let blobs = store.account(b"account")?;
+    for blob in 0..existing {
+        blobs
+            .put(blob.to_le_bytes().to_vec().into(), Vec::new())
+            .await?;
+    }
+    store.medium().take();
+    assert!(matches!(
+        blobs.put(vec![0xff; 64].into(), Vec::new()).await?,
+        Put::Created { .. }
+    ));
+    let put = store.medium().take();
+    blobs.usage().await?;
+    Ok([put, store.medium().take()])
 }
 
 #[tokio::test]
-async fn a_put_swept_before_it_returns_is_never_created() -> Result<(), Box<dyn std::error::Error>>
-{
-    // Two passes fence the admission and sweep the unrooted blob.
-    assert_eq!(stalled_after_publish(2).await?, Put::Unknown);
-    // Control: one pass keeps it, and the re-admitted put returns created.
-    assert!(matches!(
-        stalled_after_publish(1).await?,
-        Put::Created { .. }
-    ));
+async fn a_fresh_put_writes_twice_reads_nothing_and_flushes_nothing_at_any_size()
+-> Result<(), Box<dyn std::error::Error>> {
+    let [small, small_scan] = operations(1).await?;
+    let [large, large_scan] = operations(2_000).await?;
+    assert_eq!(small.get("create"), Some(&2), "{small:?}");
+    for operation in ["read", "list", "replace", "remove", "remove_if", "flush"] {
+        assert_eq!(small.get(operation), None, "{small:?}");
+    }
+    assert_eq!(small, large);
+    // Negative control: the same count sees a scan grow with the account.
+    assert_ne!(small_scan, large_scan);
     Ok(())
 }
 
-/// PLATFORM-26/32: a FullFlush create is acknowledged only after the shared
-/// native namespace flush of its directory succeeds, on every platform.
+#[tokio::test]
+async fn a_commit_flushes_only_its_unflushed_closure_in_one_batch()
+-> Result<(), Box<dyn std::error::Error>> {
+    let store = Store::new(Counting::default());
+    let blobs = store.account(b"account")?;
+    let digest = |put: Put| {
+        put.verified()
+            .map(|verified| verified.digest)
+            .ok_or("unknown")
+    };
+    let child = digest(blobs.put(vec![1; 8].into(), Vec::new()).await?)?;
+    let parent = digest(blobs.put(vec![2; 8].into(), vec![child]).await?)?;
+    let root = RootId::new(*b"root")?;
+    store.medium().flushed();
+    blobs.retain(&root, vec![parent]).await?;
+    // Two barriers: both envelopes and payloads, the parent's index key on
+    // the child and the batch's own; then the batch.
+    assert_eq!(store.medium().flushed(), [6, 1]);
+    // Durable now: the same closure costs only the new batch's keys.
+    blobs.retain(&root, vec![parent]).await?;
+    assert_eq!(store.medium().flushed(), [1, 1]);
+    // A caller's own commit of a durable closure flushes nothing.
+    blobs.flush(Some(&[parent])).await?;
+    assert_eq!(store.medium().flushed(), Vec::<usize>::new());
+    // Negative control: a new blob in the closure is flushed with it.
+    let fresh = digest(blobs.put(vec![3; 8].into(), vec![parent]).await?)?;
+    blobs.flush(Some(&[fresh])).await?;
+    assert_eq!(store.medium().flushed(), [3]);
+    Ok(())
+}
+
+/// A volatile medium standing for one process over a disk: a write is
+/// visible at once and survives a crash only once flushed. After `budget`
+/// mutating operations the process dies, failing every later one. Unless
+/// `flushes`, a flush makes nothing durable: the negative control for a
+/// commit without its barrier. Unless `swaps`, a crash tears an unflushed
+/// replace like any write: the control for a rewrite without its ordering.
+///
+/// With `short_reads`, a range past a key's end reads what there is instead
+/// of refusing: the control for a presence probe that trusts a torn key.
+/// `recovered` is what a restart after a crash reports until the store
+/// settles it; unset on one, it is the control for a store that never
+/// repairs what the crash left. A flush
+/// never makes the removal of a key matching `lost_removals` durable: the
+/// control for a removal reaching the disk after removals ordered behind it.
+#[derive(Clone)]
+struct Crashing {
+    disk: std::sync::Arc<std::sync::Mutex<Disk>>,
+    flushes: bool,
+    swaps: bool,
+    short_reads: bool,
+    recovered: bool,
+    lost_removals: Option<&'static str>,
+}
+
+#[derive(Default)]
+struct Disk {
+    visible: std::collections::BTreeMap<String, OwnedBytes>,
+    durable: std::collections::BTreeMap<String, OwnedBytes>,
+    /// Blobs committed by an appended stream entry, durable at once.
+    commits: Vec<Digest>,
+    /// Keys last written by a replace, which a crash never tears.
+    swapped: std::collections::BTreeSet<String>,
+    /// Whether the store settled the repair of a restart.
+    settled: bool,
+    budget: Option<usize>,
+    operations: usize,
+}
+
+/// Which unflushed writes a crash keeps: whole, or torn to half their bytes.
+#[derive(Clone, Copy, Debug)]
+enum Survivors {
+    None,
+    All,
+    Torn,
+    /// All, with those matching torn.
+    TornOnly(&'static str),
+    /// All, with those matching at full length but zeroed.
+    Damaged(&'static str),
+    Only(&'static str),
+    AllBut(&'static str),
+}
+
+impl Survivors {
+    fn tears(self, key: &str) -> bool {
+        match self {
+            Self::Torn => true,
+            Self::TornOnly(fragment) => key.contains(fragment),
+            _ => false,
+        }
+    }
+
+    fn keep(self, key: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::All | Self::Torn | Self::TornOnly(_) | Self::Damaged(_) => true,
+            Self::Only(fragment) => key.contains(fragment),
+            Self::AllBut(fragment) => !key.contains(fragment),
+        }
+    }
+}
+
+const SURVIVORS: [Survivors; 9] = [
+    Survivors::None,
+    Survivors::All,
+    Survivors::Torn,
+    Survivors::TornOnly("/p/"),
+    Survivors::Damaged("/p/"),
+    Survivors::Only("/e/"),
+    Survivors::Only("/p/"),
+    Survivors::Only("/i/"),
+    Survivors::AllBut("/i/"),
+];
+
+fn dead() -> MediumError {
+    MediumError::Failed(std::io::ErrorKind::BrokenPipe.into())
+}
+
+impl Crashing {
+    fn new(flushes: bool, swaps: bool, budget: Option<usize>) -> Self {
+        Self::over(
+            Disk {
+                budget,
+                ..Disk::default()
+            },
+            flushes,
+            swaps,
+        )
+    }
+
+    fn over(disk: Disk, flushes: bool, swaps: bool) -> Self {
+        Self {
+            disk: std::sync::Arc::new(std::sync::Mutex::new(disk)),
+            flushes,
+            swaps,
+            short_reads: false,
+            recovered: false,
+            lost_removals: None,
+        }
+    }
+
+    /// A restart over what a crash left.
+    fn restart(disk: Disk) -> Self {
+        Self {
+            recovered: true,
+            ..Self::over(disk, true, true)
+        }
+    }
+
+    fn alive(&self) -> Result<std::sync::MutexGuard<'_, Disk>, MediumError> {
+        let disk = self.disk.lock().unwrap();
+        if disk.budget == Some(0) {
+            return Err(dead());
+        }
+        Ok(disk)
+    }
+
+    /// One mutating operation, unless the process died.
+    fn step(&self) -> Result<std::sync::MutexGuard<'_, Disk>, MediumError> {
+        let mut disk = self.alive()?;
+        if let Some(budget) = &mut disk.budget {
+            *budget -= 1;
+        }
+        disk.operations += 1;
+        Ok(disk)
+    }
+
+    /// Appends a stream entry committing `digest`.
+    fn append(&self, digest: Digest) -> Result<(), MediumError> {
+        self.step()?.commits.push(digest);
+        Ok(())
+    }
+
+    /// What a restart finds: the durable state, with `survivors` of the
+    /// unflushed writes.
+    fn recover(&self, survivors: Survivors) -> Disk {
+        let disk = self.disk.lock().unwrap();
+        let mut found = disk.durable.clone();
+        let keys: std::collections::BTreeSet<_> =
+            disk.visible.keys().chain(disk.durable.keys()).collect();
+        for key in keys {
+            if disk.visible.get(key) == disk.durable.get(key) || !survivors.keep(key) {
+                continue;
+            }
+            match disk.visible.get(key) {
+                Some(bytes) if survivors.tears(key) && !disk.swapped.contains(key) => {
+                    found.insert(key.clone(), bytes.slice(..bytes.len() / 2))
+                }
+                Some(bytes)
+                    if matches!(survivors, Survivors::Damaged(fragment) if key.contains(fragment))
+                        && !disk.swapped.contains(key) =>
+                {
+                    found.insert(key.clone(), vec![0; bytes.len()].into())
+                }
+                Some(bytes) => found.insert(key.clone(), bytes.clone()),
+                None => found.remove(key),
+            };
+        }
+        Disk {
+            visible: found.clone(),
+            durable: found,
+            commits: disk.commits.clone(),
+            swapped: std::collections::BTreeSet::new(),
+            settled: false,
+            budget: None,
+            operations: 0,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Medium for Crashing {
+    async fn create(&self, key: &str, bytes: OwnedBytes) -> Result<bool, MediumError> {
+        let mut disk = self.step()?;
+        if disk.visible.contains_key(key) {
+            return Ok(false);
+        }
+        disk.swapped.remove(key);
+        disk.visible.insert(key.to_owned(), bytes);
+        Ok(true)
+    }
+    async fn read(
+        &self,
+        key: &str,
+        range: Option<Range<u64>>,
+    ) -> Result<Option<OwnedBytes>, MediumError> {
+        let disk = self.alive()?;
+        let Some(bytes) = disk.visible.get(key) else {
+            return Ok(None);
+        };
+        match range {
+            None => Ok(Some(bytes.clone())),
+            Some(range) if range.start <= range.end && range.end <= bytes.len() as u64 => {
+                Ok(Some(bytes.slice(range.start as usize..range.end as usize)))
+            }
+            Some(range) if self.short_reads => {
+                let end = bytes.len();
+                Ok(Some(bytes.slice(
+                    (range.start as usize).min(end)..(range.end as usize).min(end),
+                )))
+            }
+            Some(_) => Err(MediumError::Failed(std::io::ErrorKind::InvalidInput.into())),
+        }
+    }
+    async fn remove(&self, key: &str) -> Result<bool, MediumError> {
+        Ok(self.step()?.visible.remove(key).is_some())
+    }
+    async fn replace(
+        &self,
+        key: &str,
+        expected: &[u8],
+        bytes: OwnedBytes,
+    ) -> Result<bool, MediumError> {
+        let mut disk = self.step()?;
+        if disk
+            .visible
+            .get(key)
+            .is_none_or(|stored| stored.as_ref() != expected)
+        {
+            return Ok(false);
+        }
+        if self.swaps {
+            disk.swapped.insert(key.to_owned());
+        }
+        disk.visible.insert(key.to_owned(), bytes);
+        Ok(true)
+    }
+    async fn remove_if(&self, key: &str, expected: &[u8]) -> Result<bool, MediumError> {
+        let mut disk = self.step()?;
+        if disk
+            .visible
+            .get(key)
+            .is_none_or(|stored| stored.as_ref() != expected)
+        {
+            return Ok(false);
+        }
+        disk.visible.remove(key);
+        Ok(true)
+    }
+    async fn list(
+        &self,
+        prefix: &str,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(String, u64)>, MediumError> {
+        let disk = self.alive()?;
+        Ok(disk
+            .visible
+            .range(prefix.to_owned()..)
+            .take_while(|(key, _)| key.starts_with(prefix))
+            .filter(|(key, _)| after.is_none_or(|after| key.as_str() > after))
+            .take(limit)
+            .map(|(key, bytes)| (key.clone(), bytes.len() as u64))
+            .collect())
+    }
+    async fn flush(&self, keys: &[String]) -> Result<(), MediumError> {
+        let mut disk = self.step()?;
+        if self.flushes {
+            for key in keys {
+                match disk.visible.get(key).cloned() {
+                    Some(bytes) => disk.durable.insert(key.clone(), bytes),
+                    None if self.lost_removals.is_some_and(|lost| key.contains(lost)) => None,
+                    None => disk.durable.remove(key),
+                };
+            }
+        }
+        Ok(())
+    }
+    fn volatile(&self) -> bool {
+        true
+    }
+    fn recovered(&self) -> bool {
+        self.recovered && !self.disk.lock().unwrap().settled
+    }
+    fn settle(&self) {
+        self.disk.lock().unwrap().settled = true;
+    }
+}
+
+/// Puts a child and a parent referencing it and retains the parent; puts
+/// another blob over the child and commits it as a stream entry, flushing
+/// first unless `append_first`; then collects.
+async fn commit_scenario(
+    medium: &Crashing,
+    append_first: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let blobs = Store::new(medium.clone()).account(b"account")?;
+    let digest = |put: Put| {
+        put.verified()
+            .map(|verified| verified.digest)
+            .ok_or("unknown")
+    };
+    let child = digest(blobs.put(vec![1; 48].into(), Vec::new()).await?)?;
+    let parent = digest(blobs.put(vec![2; 48].into(), vec![child]).await?)?;
+    blobs.retain(&RootId::new(*b"root")?, vec![parent]).await?;
+    let gone = RootId::new(*b"gone")?;
+    blobs.retain(&gone, vec![child]).await?;
+    blobs.release(&gone).await?;
+    let entry = digest(blobs.put(vec![3; 48].into(), vec![child]).await?)?;
+    if append_first {
+        medium.append(entry)?;
+        blobs.flush(Some(&[entry])).await?;
+    } else {
+        blobs.flush(Some(&[entry])).await?;
+        medium.append(entry)?;
+    }
+    blobs.collect().await?;
+    Ok(())
+}
+
+/// Every committed blob on `disk`, and all it references, is whole: those
+/// of each root batch and of each appended stream entry.
+fn committed_blobs_are_whole(disk: &Disk) -> Result<(), String> {
+    let prefix = format!("{}/", Digest::of(b"account").to_hex());
+    let mut pending = disk.commits.clone();
+    for (key, batch) in &disk.durable {
+        // A torn batch was never acknowledged.
+        if let Some(name) = key.strip_prefix(&format!("{prefix}r/"))
+            && let Ok(batch) = crate::blob::decode_batch(batch)
+        {
+            // A batch a crash kept still pins its members against a delete.
+            let tag = format!("r{}", name.replacen('/', ".", 1));
+            for member in &batch {
+                if !disk
+                    .durable
+                    .contains_key(&format!("{prefix}i/{}/{tag}", member.to_hex()))
+                {
+                    return Err(format!("{key}: {} unindexed", member.to_hex()));
+                }
+            }
+            pending.extend(batch);
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    while let Some(digest) = pending.pop() {
+        if !seen.insert(digest) {
+            continue;
+        }
+        let hex = digest.to_hex();
+        let envelope = disk
+            .durable
+            .get(&format!("{prefix}e/{}/{hex}", &hex[..2]))
+            .ok_or(format!("{hex}: no envelope"))?;
+        let envelope =
+            crate::blob::Envelope::decode(envelope).map_err(|_| format!("{hex}: torn envelope"))?;
+        // Each child is pinned against a delete by this blob's index key.
+        let tag = format!("e{hex}.{}", hex::encode(envelope.version));
+        for child in &envelope.references {
+            if !disk
+                .durable
+                .contains_key(&format!("{prefix}i/{}/{tag}", child.to_hex()))
+            {
+                return Err(format!("{hex}: child {} unindexed", child.to_hex()));
+            }
+        }
+        let payload = disk
+            .durable
+            .get(&format!(
+                "{prefix}p/{}/{hex}.{}",
+                &hex[..2],
+                hex::encode(envelope.version)
+            ))
+            .ok_or(format!("{hex}: no payload"))?;
+        if Digest::of(payload) != digest {
+            return Err(format!("{hex}: torn payload"));
+        }
+        pending.extend(envelope.references);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_crash_at_any_step_never_leaves_a_commit_on_a_missing_or_torn_blob()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The protocol, then its negative controls: a barrier that makes
+    // nothing durable, a replace a crash can tear, a released root batch
+    // whose removal reaches the disk after its index keys', and a stream
+    // entry appended before its barrier.
+    for (flushes, swaps, lost_removals, append_first) in [
+        (true, true, None, false),
+        (false, true, None, false),
+        (true, false, None, false),
+        (true, true, Some("/r/"), false),
+        (true, true, None, true),
+    ] {
+        let correct = flushes && swaps && lost_removals.is_none() && !append_first;
+        let configured = |budget| Crashing {
+            lost_removals,
+            ..Crashing::new(flushes, swaps, budget)
+        };
+        let whole = configured(None);
+        commit_scenario(&whole, append_first).await?;
+        let steps = whole.disk.lock().unwrap().operations;
+        let mut violations = Vec::new();
+        for budget in 0..=steps {
+            for survivors in SURVIVORS {
+                let crashed = configured(Some(budget));
+                let _ = commit_scenario(&crashed, append_first).await;
+                let disk = crashed.recover(survivors);
+                if let Err(broken) = committed_blobs_are_whole(&disk) {
+                    violations.push(format!("crash at {budget}, {survivors:?}: {broken}"));
+                    continue;
+                }
+                if correct {
+                    // A restart repairs what the crash left and commits again.
+                    let restarted = Crashing::restart(disk);
+                    commit_scenario(&restarted, false)
+                        .await
+                        .map_err(|error| format!("crash at {budget}, {survivors:?}: {error}"))?;
+                    committed_blobs_are_whole(&restarted.recover(Survivors::None))?;
+                }
+            }
+        }
+        if correct {
+            assert!(violations.is_empty(), "{violations:#?}");
+        } else {
+            assert!(
+                !violations.is_empty(),
+                "control flushes={flushes} swaps={swaps} lost_removals={lost_removals:?}                  append_first={append_first} went undetected"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// What a restart after a crash inside a put of `body` observes, or how the
+/// store betrayed it: a blob that reads whole or not at all, a reput that
+/// completes it, and a collection that leaves none of its keys behind.
+async fn after_a_crashed_put(
+    medium: &Crashing,
+    body: &OwnedBytes,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let digest = Digest::of(body);
+    let blobs = Store::new(medium.clone()).account(b"account")?;
+    let whole = |object: Result<crate::Object, crate::Error>| {
+        object.is_ok_and(|object| object.body() == body)
+    };
+    let present = blobs.head(digest).await.is_ok();
+    let listed = blobs.list(None, 16).await?.digests.contains(&digest);
+    if present != listed || (present && !whole(blobs.get(digest, ByteRange::FULL, 64).await)) {
+        return Err(format!("present {present}, listed {listed}, but not whole").into());
+    }
+    let put = blobs.put(body.clone(), Vec::new()).await?;
+    if put.verified().is_none() || !whole(blobs.get(digest, ByteRange::FULL, 64).await) {
+        return Err(format!("reput {put:?} left it unreadable").into());
+    }
+    for _ in 0..3 {
+        blobs.collect().await?;
+    }
+    let left: Vec<_> = medium
+        .disk
+        .lock()
+        .unwrap()
+        .visible
+        .keys()
+        .filter(|key| key.contains(&digest.to_hex()))
+        .cloned()
+        .collect();
+    if !left.is_empty() {
+        return Err(format!("collection left {left:?}").into());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_crash_inside_a_put_leaves_no_blob_until_a_reput_completes_it()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The envelope precedes its payload: an envelope without a whole payload
+    // is no blob to any reader, a reput writes the payload and collection
+    // removes the orphan. Negative controls, one layer each: the length
+    // probe trusting a torn payload without the restart's repair, and a
+    // store that never repairs what the crash damaged.
+    let body = OwnedBytes::from(vec![4; 48]);
+    for (short_reads, recovered) in [(false, true), (true, false), (false, false)] {
+        let whole = Crashing::new(true, true, None);
+        Store::new(whole.clone())
+            .account(b"account")?
+            .put(body.clone(), Vec::new())
+            .await?;
+        let steps = whole.disk.lock().unwrap().operations;
+        let mut violations = Vec::new();
+        for budget in 0..=steps {
+            for survivors in SURVIVORS {
+                if short_reads && matches!(survivors, Survivors::Damaged(_)) {
+                    // That control injects a torn payload only.
+                    continue;
+                }
+                let crashed = Crashing::new(true, true, Some(budget));
+                let _ = Store::new(crashed.clone())
+                    .account(b"account")?
+                    .put(body.clone(), Vec::new())
+                    .await;
+                let restarted = Crashing {
+                    short_reads,
+                    recovered,
+                    ..Crashing::restart(crashed.recover(survivors))
+                };
+                if let Err(broken) = after_a_crashed_put(&restarted, &body).await {
+                    violations.push(format!("crash at {budget}, {survivors:?}: {broken}"));
+                }
+            }
+        }
+        if short_reads || !recovered {
+            assert!(
+                !violations.is_empty(),
+                "control short_reads={short_reads} recovered={recovered} went undetected"
+            );
+        } else {
+            assert!(violations.is_empty(), "{violations:#?}");
+        }
+    }
+    Ok(())
+}
+
+/// Puts a child and a parent referencing it, committing neither; the parent.
+async fn uncommitted_parent(medium: &Crashing) -> Result<Digest, Box<dyn std::error::Error>> {
+    let blobs = Store::new(medium.clone()).account(b"account")?;
+    let child = Digest::of(&[1; 48]);
+    blobs.put(vec![1; 48].into(), Vec::new()).await?;
+    blobs.put(vec![2; 48].into(), vec![child]).await?;
+    Ok(Digest::of(&[2; 48]))
+}
+
+#[tokio::test]
+async fn a_recovered_parent_commits_only_with_its_closure_whole_and_indexed()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A crash can keep a parent while losing its child or the index key
+    // pinning it; the restart's repair leaves it a blob only with its
+    // closure whole and indexed, before a retain or a flush of every blob
+    // commits it. Negative control: a store not told the medium recovered.
+    for (recovered, retain) in [(true, true), (true, false), (false, true), (false, false)] {
+        let whole = Crashing::new(true, true, None);
+        let parent = uncommitted_parent(&whole).await?;
+        let steps = whole.disk.lock().unwrap().operations;
+        let mut violations = Vec::new();
+        for budget in 0..=steps {
+            for survivors in SURVIVORS {
+                let crashed = Crashing::new(true, true, Some(budget));
+                let _ = uncommitted_parent(&crashed).await;
+                let restarted = Crashing {
+                    recovered,
+                    ..Crashing::restart(crashed.recover(survivors))
+                };
+                let blobs = Store::new(restarted.clone()).account(b"account")?;
+                if retain {
+                    match blobs.retain(&RootId::new(*b"root")?, vec![parent]).await {
+                        Ok(_) => {}
+                        Err(error) if error.code == ErrorCode::MissingReference => {}
+                        Err(error) => return Err(format!("crash at {budget}: {error}").into()),
+                    }
+                } else if blobs.head(parent).await.is_ok() {
+                    // A caller that finds the parent commits it in a stream
+                    // entry after a flush of every blob.
+                    blobs.flush(None).await?;
+                    restarted.append(parent)?;
+                }
+                assert!(!recovered || !restarted.recovered(), "repair never settled");
+                if let Err(broken) = committed_blobs_are_whole(&restarted.recover(Survivors::None))
+                {
+                    violations.push(format!("crash at {budget}, {survivors:?}: {broken}"));
+                }
+            }
+        }
+        if recovered {
+            assert!(violations.is_empty(), "{violations:#?}");
+        } else {
+            assert!(
+                !violations.is_empty(),
+                "an unchecked closure went undetected, retain={retain}"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The durable syncs `work` issues, by operation.
+#[cfg(all(
+    feature = "local",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+async fn syncs<T>(work: impl Future<Output = T>) -> (T, std::collections::BTreeMap<String, usize>) {
+    use acyclic_native_runtime::testing::Schedule;
+    let (schedule, mut events) = Schedule::new();
+    let driver = tokio::spawn(async move {
+        while let Some(boundary) = events.recv().await {
+            boundary.release();
+        }
+    });
+    let value = schedule.scope(work).await;
+    schedule.drained().await;
+    driver.abort();
+    let _ = driver.await;
+    let mut syncs = std::collections::BTreeMap::new();
+    for call in schedule.durable_writes() {
+        if call.operation.contains("sync") {
+            *syncs.entry(call.operation.to_string()).or_default() += 1;
+        }
+    }
+    (value, syncs)
+}
+
 #[cfg(all(
     feature = "local",
     feature = "test-support",
     not(target_arch = "wasm32")
 ))]
 #[tokio::test]
-async fn a_local_create_never_succeeds_past_a_failed_directory_flush()
+async fn a_local_put_syncs_nothing_and_its_commit_syncs_its_closure_once()
 -> Result<(), Box<dyn std::error::Error>> {
-    use acyclic_native_runtime::testing::{DurableFault, Schedule};
     acyclic_native_runtime::initialize_native_io_services()?;
-    let scheduled = async |fault: Option<(usize, DurableFault)>| {
-        let root = tempfile::tempdir().unwrap();
-        let medium = crate::LocalMedium::open(root.path(), Default::default(), None)
-            .await
-            .unwrap();
-        let (schedule, mut events) = Schedule::new();
-        if let Some((ordinal, fault)) = fault {
-            schedule.cut_at(ordinal, fault);
-        }
-        let driver = tokio::spawn(async move {
+    let root = tempfile::tempdir()?;
+    let store = Store::new(crate::LocalMedium::open(root.path(), Default::default(), None).await?);
+    let blobs = store.account(b"account")?;
+    blobs.revisions().await?;
+    let digest = |put: Put| {
+        put.verified()
+            .map(|verified| verified.digest)
+            .ok_or("unknown")
+    };
+    let (child, child_syncs) = syncs(blobs.put(vec![7; 64].into(), Vec::new())).await;
+    let child = digest(child?)?;
+    let (parent, parent_syncs) = syncs(blobs.put(vec![8; 64].into(), vec![child])).await;
+    let parent = digest(parent?)?;
+    assert!(child_syncs.is_empty(), "{child_syncs:?}");
+    assert!(parent_syncs.is_empty(), "{parent_syncs:?}");
+    let root_id = RootId::new(*b"root")?;
+    let (retained, commit) = syncs(blobs.retain(&root_id, vec![parent])).await;
+    retained?;
+    eprintln!("syncs of one put: {child_syncs:?}; of its commit: {commit:?}");
+    // Negative control: the same trace sees the commit's barrier.
+    assert!(!commit.is_empty());
+    // Durable now: a second commit of the closure syncs only its own batch.
+    let (retained, again) = syncs(blobs.retain(&root_id, vec![parent])).await;
+    retained?;
+    eprintln!("syncs of a commit of a durable closure: {again:?}");
+    assert!(again.values().sum::<usize>() < commit.values().sum::<usize>());
+    Ok(())
+}
+
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
+#[tokio::test]
+async fn a_local_root_left_open_is_flushed_whole_on_reopen()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let open = async || crate::LocalMedium::open(root.path(), Default::default(), None).await;
+    let body = OwnedBytes::from(vec![4; 32]);
+    let store = Store::new(open().await?);
+    store
+        .account(b"account")?
+        .put(body.clone(), Vec::new())
+        .await?;
+    drop(store);
+    // A clean close flushed everything and cleared the marker.
+    let marker = root.path().join("OPEN");
+    assert!(!marker.exists());
+    // As a close that never ran leaves it.
+    std::fs::write(&marker, b"")?;
+    // A clean close before the store repaired the root keeps it unclean.
+    let unrepaired = open().await?;
+    assert!(unrepaired.recovered());
+    drop(unrepaired);
+    assert!(marker.exists());
+    let reopened = Store::new(open().await?);
+    assert!(reopened.medium().recovered());
+    let object = reopened
+        .account(b"account")?
+        .get(Digest::of(&body), ByteRange::FULL, 32)
+        .await?;
+    assert_eq!(object.body(), &body);
+    // Its repair settled the root, so this close clears the marker.
+    assert!(!reopened.medium().recovered());
+    drop(reopened);
+    assert!(!marker.exists());
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "local",
+    feature = "test-support",
+    not(target_arch = "wasm32")
+))]
+#[tokio::test]
+async fn a_local_root_closes_only_after_its_last_accepted_write()
+-> Result<(), Box<dyn std::error::Error>> {
+    use acyclic_native_runtime::testing::Schedule;
+    use std::sync::atomic::AtomicBool;
+    let root = tempfile::tempdir()?;
+    let path = root.path().to_owned();
+    let open = || crate::LocalMedium::open(path.clone(), Default::default(), None);
+    let (schedule, mut events) = Schedule::new();
+    // Every boundary runs, except the first submission once `holding`.
+    let holding = std::sync::Arc::new(AtomicBool::new(false));
+    let (hold, held) = tokio::sync::oneshot::channel();
+    let driver = tokio::spawn({
+        let holding = holding.clone();
+        async move {
+            let mut hold = Some(hold);
             while let Some(boundary) = events.recv().await {
+                if boundary.name.ends_with(":submitted") && holding.load(Ordering::SeqCst) {
+                    if let Some(hold) = hold.take() {
+                        let _ = hold.send(boundary);
+                        continue;
+                    }
+                }
                 boundary.release();
             }
-        });
-        let created = schedule
-            .scope(medium.create("a/b/key", OwnedBytes::from(vec![7; 16])))
-            .await;
-        schedule.drained().await;
-        driver.abort();
-        let _ = driver.await;
-        (created, schedule.durable_writes())
-    };
-    let (created, trace) = scheduled(None).await;
-    assert!(created?);
-    let published = trace
-        .iter()
-        .position(|call| call.operation == "namespace:publish_new")
-        .ok_or("the create publishes through the shared native link")?;
-    // Negative control: a no-op directory adapter records no flush here.
-    let flush = trace[published..]
-        .iter()
-        .find(|call| call.operation == "file:sync_parent")
-        .ok_or("the published name's directory is flushed")?
-        .ordinal;
-    for fault in [DurableFault::Failed, DurableFault::After] {
-        let (created, _) = scheduled(Some((flush, fault))).await;
-        assert!(
-            matches!(created, Err(MediumError::Ambiguous(_))),
-            "{fault:?}: a visible name whose directory flush failed is ambiguous, never created"
-        );
-    }
+        }
+    });
+    let boundary = schedule
+        .scope(async {
+            // Control: a root with nothing in flight reopens at once.
+            drop(open().await?);
+            let medium = open().await?;
+            holding.store(true, Ordering::SeqCst);
+            let mut write = Box::pin(medium.create("k/key", OwnedBytes::from(vec![1; 8])));
+            let boundary = tokio::select! {
+                boundary = held => boundary?,
+                _ = &mut write => return Err::<_, Box<dyn std::error::Error>>("unheld".into()),
+            };
+            // The put is cancelled with its write accepted, and its owner closes.
+            drop(write);
+            drop(medium);
+            assert!(matches!(
+                open().await,
+                Err(crate::local::LocalOpenError::AlreadyOwned)
+            ));
+            Ok(boundary)
+        })
+        .await?;
+    boundary.release();
+    schedule.drained().await;
+    // The write done, the root closed clean, the write flushed with it.
+    let reopened = schedule.scope(open()).await?;
+    assert!(!reopened.recovered());
+    assert!(reopened.read("k/key", None).await?.is_some());
+    drop(reopened);
+    driver.abort();
+    let _ = driver.await;
     Ok(())
 }
 
@@ -1325,6 +2237,9 @@ impl Blobs for Overlap {
     }
     async fn list(&self, after: Option<Digest>, limit: u32) -> Result<crate::Page, crate::Error> {
         self.inner.list(after, limit).await
+    }
+    async fn flush(&self, only: Option<&[Digest]>) -> Result<(), crate::Error> {
+        self.inner.flush(only).await
     }
     async fn retain(
         &self,
@@ -1410,10 +2325,13 @@ async fn a_collection_pages_through_more_blobs_than_one_listing()
     blobs
         .retain(&RootId::new(b"kept".to_vec())?, vec![kept])
         .await?;
-    // Admission protects one cut; the next sweeps every unrooted page.
-    let first = blobs.collect().await?.swept;
-    let second = blobs.collect().await?.swept;
-    assert_eq!(first + second, count as u64 - 1);
+    // The first pass finds them, the second keeps them, the third sweeps
+    // every unrooted page.
+    let mut swept = 0;
+    for _ in 0..3 {
+        swept += blobs.collect().await?.swept;
+    }
+    assert_eq!(swept, count as u64 - 1);
     // Negative control: the rooted blob on the first page survives.
     assert_eq!(blobs.usage().await?.blobs, 1);
     assert_eq!(blobs.head(kept).await?.digest, kept);

@@ -23,7 +23,17 @@ pub async fn put_blob(
     }
     let references = convert::digests(&request.references)?;
     let put = blobs.put(request.body.into(), references).await?;
+    durable(blobs, &put).await?;
     Ok((convert::wire_put(&put), put_revision(&put)))
+}
+
+/// A remote put is acknowledged durable: its client has no commit to defer
+/// the flush to.
+async fn durable(blobs: &dyn Blobs, put: &crate::Put) -> Result<(), Error> {
+    match put.verified() {
+        Some(verified) => blobs.flush(Some(&[verified.digest])).await,
+        None => Ok(()),
+    }
 }
 
 fn put_revision(put: &crate::Put) -> Option<Revision> {
@@ -41,6 +51,7 @@ pub async fn put_manifest(
 ) -> Result<Served<wire::PutResponse>, Error> {
     let manifest = convert::from_manifest(request.manifest.as_ref())?;
     let put = blobs.put_manifest(manifest).await?;
+    durable(blobs, &put).await?;
     Ok((convert::wire_put(&put), put_revision(&put)))
 }
 

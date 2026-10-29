@@ -295,12 +295,11 @@ pub async fn verify(first: &dyn Blobs, second: &dyn Blobs, run: &str) -> Result<
     );
     let kept = first.retain(&root, vec![verified.digest]).await;
     expect!("collection-keeps-retained-closures", kept.is_ok(), kept);
-    let second_pass = first.collect().await;
-    expect!(
-        "collection-keeps-retained-closures",
-        second_pass.is_ok(),
-        second_pass
-    );
+    // The pass after the one that found the orphan unreferenced keeps it.
+    for _ in 0..2 {
+        let pass = first.collect().await;
+        expect!("collection-keeps-retained-closures", pass.is_ok(), pass);
+    }
     for live in [
         rooted,
         verified.digest,

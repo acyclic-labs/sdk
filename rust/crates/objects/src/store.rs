@@ -1,20 +1,20 @@
 //! The one blob engine, over any [`Medium`].
 //!
 //! Per account, under `blake3(account)`:
-//! - `p/<aa>/<digest>.<version>` holds one put's payload, written first;
-//! - `e/<aa>/<digest>` holds the envelope, whose creation publishes the blob;
+//! - `e/<aa>/<digest>` holds the envelope, which a put creates first;
+//! - `p/<aa>/<digest>.<version>` holds the payload of that envelope's
+//!   version, written next; the blob exists once both do;
 //! - `r/<blake3(root)>/<blake3(batch)>.<nonce>` holds one retain's batch;
 //! - `i/<child>/<holder>` marks one inbound reference: `e<parent>.<version>`
 //!   for an envelope, `r<blake3(root)>.<blake3(batch)>.<nonce>` for a root batch;
-//! - `g/<revision>` is a collection revision, created by its one collector;
-//! - `a/<revision>/<digest>` admits a put at that revision.
+//! - `epoch` holds the collection epoch, advanced by its one collector.
 //!
 //! Delete never breaks a live reference, across processes, by two flags
 //! over create-if-absent, conditional replace and listing. A holder creates
-//! its `i/` key on each child, then refuses a child whose envelope is absent
-//! or carries a deleter's mark; a deleter marks the envelope as its own with a
-//! conditional replace, then refuses when the blob has an `i/` key. One of the
-//! two always sees the other's flag.
+//! its `i/` key on each child, then refuses a child whose blob is absent or
+//! whose envelope carries a deleter's mark; a deleter marks the envelope as
+//! its own with a conditional replace, then refuses when the blob has an `i/`
+//! key. One of the two always sees the other's flag.
 //!
 //! Destructive work is fenced by the exact bytes it observed, never by a
 //! clock or by re-reading shared state. Each put writes a fresh version into
@@ -22,23 +22,35 @@
 //! and its outbound index keys `e<digest>.<v>`. A deleter removes only the
 //! envelope still holding its own mark, then that version's payload and keys,
 //! so a deleter delayed across any number of collections and re-puts matches
-//! nothing of a later blob. A kept blob whose mark outlived its deleter is
-//! revived by collection, which also takes over the removal of an unkept one.
+//! nothing of a later blob. A removed version never returns, so a payload
+//! whose envelope names another version, or none, is an orphan anyone may
+//! remove.
 //!
-//! Publish, then commit the reference. Collection is fenced by revision, never
-//! by wall clock: the collection that creates revision `n` keeps every blob
-//! admitted at `n - 1` or later, so a put protects its blob for one full
-//! collection after it returns, within which a retain or a referencing put
-//! must pin it. A put admits, creates its envelope pending, writes its
-//! payload, then publishes by conditionally replacing its exact pending
-//! bytes. Collection revokes a pending envelope only once its admission is
-//! fenced, by conditionally removing those same bytes, and only then removes
-//! the payload. One of the two conditional writes wins, so a put stalled
-//! across any number of collections either publishes a payload no collector
-//! removed or reports its outcome unknown; it never reports a lost payload
-//! created. A put re-admits when collection advanced while it ran. An index
-//! key of a holder that crashed before committing pins its child; it never
-//! refuses wrongly in the unsafe direction.
+//! A put makes nothing durable. Content addressing makes a blob no commit
+//! references free to lose, so durability is paid once, by the commit: a
+//! retain, a run claim, or a caller's own commit after [`crate::Blobs::flush`]
+//! first flushes, in one batch, the envelope, payload and outbound index keys
+//! of every blob in its closure that this process wrote and has not flushed.
+//! A blob outside that set is durable with everything it references. A put
+//! adds its blob to the set before any of its keys becomes visible, so an
+//! equal put adopting it, and that put's commit, flush it too. A crash may
+//! tear an unflushed key; no commit references it, so a put replaces it and
+//! a collection removes it.
+//!
+//! A put of a new digest creates its envelope under a fresh version, then
+//! the payload that version names, and reads nothing. A put finding an equal
+//! envelope adopts its version, clearing a deleter's mark or a collection's
+//! stamp. Either writes the payload only after indexing and admitting the
+//! blob's references, so a complete blob's children are held.
+//!
+//! Collection is fenced by epoch, never by wall clock or by a put's reads.
+//! It stamps each unreferenced envelope it finds unstamped with its epoch,
+//! and removes one stamped two epochs earlier: a blob survives the whole
+//! collection after the one that stamped it, within which a commit must
+//! reference it. A commit re-checks each blob as it references it, so a put
+//! stalled past that grace fails its commit; no commit references a lost
+//! blob. An index key of a holder that crashed before committing pins its
+//! child; it never refuses wrongly in the unsafe direction.
 use crate::blob::{Envelope, corrupt, decode_batch, encode_batch, invalid};
 use crate::{
     ByteRange, Collection, Delete, Deletion, Digest, Error, Head, Kind, Manifest, Medium,
@@ -57,13 +69,19 @@ const PAGE: usize = 1000;
 pub struct Store<M> {
     medium: Arc<M>,
     accounts: Arc<Mutex<HashMap<Digest, Arc<State>>>>,
+    scrub: Scrub,
 }
+
+/// The repair of a medium that recovered from a crash, done once before any
+/// account uses it.
+type Scrub = Arc<tokio::sync::OnceCell<()>>;
 
 impl<M> Clone for Store<M> {
     fn clone(&self) -> Self {
         Self {
             medium: Arc::clone(&self.medium),
             accounts: Arc::clone(&self.accounts),
+            scrub: Arc::clone(&self.scrub),
         }
     }
 }
@@ -73,6 +91,21 @@ struct State {
     gate: tokio::sync::RwLock<()>,
     /// This account's revisions, opened from the medium on first use.
     revisions: tokio::sync::OnceCell<Issued>,
+    /// Over a volatile medium, the blob versions this process wrote and has
+    /// not flushed.
+    written: Mutex<HashMap<Digest, Vec<Written>>>,
+}
+
+/// One unflushed blob version, with what a flush of it covers.
+struct Written {
+    version: [u8; 16],
+    references: Vec<Digest>,
+    /// Whether its payload was complete, so a flush leaves it durable.
+    complete: bool,
+    /// The puts through it still in flight.
+    puts: usize,
+    /// Whether any put wrote through it.
+    wrote: bool,
 }
 
 /// One run's revisions of an account: every mutation commits the next index
@@ -151,6 +184,7 @@ impl<M: Medium> Store<M> {
         Self {
             medium: Arc::new(medium),
             accounts: Arc::default(),
+            scrub: Arc::default(),
         }
     }
 
@@ -171,6 +205,7 @@ impl<M: Medium> Store<M> {
             medium: Arc::clone(&self.medium),
             prefix: format!("{}/", id.to_hex()),
             state,
+            scrub: Arc::clone(&self.scrub),
         })
     }
 
@@ -185,6 +220,7 @@ pub struct Account<M> {
     medium: Arc<M>,
     prefix: String,
     state: Arc<State>,
+    scrub: Scrub,
 }
 
 /// A prefix's listing, one page per call.
@@ -217,6 +253,7 @@ impl<M> Clone for Account<M> {
             medium: Arc::clone(&self.medium),
             prefix: self.prefix.clone(),
             state: Arc::clone(&self.state),
+            scrub: Arc::clone(&self.scrub),
         }
     }
 }
@@ -242,6 +279,7 @@ impl MemoryObjects {
             medium: Arc::new(medium),
             prefix: format!("{}/", Digest::of(b"memory").to_hex()),
             state: Arc::default(),
+            scrub: Arc::default(),
         }
     }
 }
@@ -297,6 +335,7 @@ impl<M> Account<M> {
             medium,
             prefix: self.prefix.clone(),
             state: Arc::clone(&self.state),
+            scrub: Arc::clone(&self.scrub),
         }
     }
 }
@@ -314,10 +353,121 @@ impl<M: Medium> Account<M> {
 
     /// This account's revisions, opening them on first use.
     async fn issued(&self) -> Result<&Issued, Error> {
+        self.scrubbed().await?;
         self.state
             .revisions
             .get_or_try_init(|| self.open_revisions())
             .await
+    }
+
+    /// Waits until the medium is as a clean close leaves it.
+    async fn scrubbed(&self) -> Result<(), Error> {
+        if self.medium.recovered() {
+            self.scrub.get_or_try_init(|| self.scrub_medium()).await?;
+        }
+        Ok(())
+    }
+
+    /// Repairs a medium that recovered from a crash, every account of it, as
+    /// a clean close leaves it. Every key that survived is durable, but an
+    /// unflushed one can be torn, damaged or alone: torn envelopes and every
+    /// payload not whole are removed, then, up the reference graph, the
+    /// payload of each parent of no blob, so an envelope is a blob only with
+    /// its whole closure; each blob's lost index keys are restored. The
+    /// medium settles once every repair is flushed; a crash before then
+    /// repairs again. A clean medium never pays this: it costs one read of
+    /// every key, once per crash.
+    async fn scrub_medium(&self) -> Result<(), Error> {
+        let mut after: Option<String> = None;
+        while let Some((key, _)) = self
+            .medium
+            .list("", after.as_deref(), 1)
+            .await
+            .map_err(medium)?
+            .pop()
+        {
+            let Some((account, _)) = key.split_once('/') else {
+                after = Some(key);
+                continue;
+            };
+            let account = Account {
+                medium: Arc::clone(&self.medium),
+                prefix: format!("{account}/"),
+                state: Arc::default(),
+                scrub: Arc::clone(&self.scrub),
+            };
+            let repaired = account.repair().await?;
+            self.medium.flush(&repaired).await.map_err(medium)?;
+            // Past every key of this account.
+            after = Some(format!("{}{}", account.prefix, char::MAX));
+        }
+        self.medium.settle();
+        Ok(())
+    }
+
+    /// Repairs this account after a crash; the keys it changed.
+    async fn repair(&self) -> Result<Vec<String>, Error> {
+        let mut repaired = Vec::new();
+        let mut blobs = HashMap::new();
+        let mut parents: HashMap<Digest, Vec<Digest>> = HashMap::new();
+        let mut pages = self.pages(format!("{}e/", self.prefix));
+        while let Some(page) = pages.next().await? {
+            for (key, _) in page {
+                let digest = self.digest_from_key(&key)?;
+                let Some((_, envelope)) = self.stored_envelope(&digest).await? else {
+                    self.clear_torn(&key).await?;
+                    repaired.push(key);
+                    continue;
+                };
+                let payload = self.payload_key(&digest, &envelope.version);
+                match self.medium.read(&payload, None).await.map_err(medium)? {
+                    Some(bytes)
+                        if bytes.len() as u64 == envelope.stored
+                            && Digest::of(&bytes) == digest =>
+                    {
+                        for child in &envelope.references {
+                            parents.entry(*child).or_default().push(digest);
+                        }
+                        blobs.insert(digest, envelope);
+                    }
+                    Some(_) => {
+                        self.medium.remove(&payload).await.map_err(medium)?;
+                        repaired.push(payload);
+                    }
+                    None => {}
+                }
+            }
+        }
+        let mut broken: Vec<Digest> = parents
+            .keys()
+            .filter(|child| !blobs.contains_key(child))
+            .copied()
+            .collect();
+        while let Some(child) = broken.pop() {
+            for parent in parents.remove(&child).into_iter().flatten() {
+                if let Some(envelope) = blobs.remove(&parent) {
+                    let payload = self.payload_key(&parent, &envelope.version);
+                    self.medium.remove(&payload).await.map_err(medium)?;
+                    repaired.push(payload);
+                    broken.push(parent);
+                }
+            }
+        }
+        for (digest, envelope) in &blobs {
+            let tag = Self::envelope_tag(digest, &envelope.version);
+            for child in &envelope.references {
+                let key = self.index_key(child, &tag);
+                if self
+                    .medium
+                    .create(&key, OwnedBytes::new())
+                    .await
+                    .map_err(medium)?
+                {
+                    repaired.push(key);
+                }
+            }
+        }
+        Ok(repaired)
     }
 
     fn incarnation_key(&self) -> String {
@@ -334,11 +484,21 @@ impl<M: Medium> Account<M> {
                 let incarnation = u128::from_be_bytes(version()?);
                 let record = incarnation_record(incarnation, 1);
                 if self.medium.create(&key, record).await.map_err(medium)? {
+                    self.medium.flush(&[key]).await.map_err(medium)?;
                     return Ok(Issued::new(account, incarnation, 1));
                 }
                 continue;
             };
-            let (incarnation, run) = decode_incarnation(&record)?;
+            let (incarnation, run) = match decode_incarnation(&record) {
+                Ok(claimed) => claimed,
+                // Torn before its flush: neither its run nor any earlier one
+                // can be told apart, so the account starts a new incarnation.
+                Err(_) if self.medium.volatile() => {
+                    self.medium.remove_if(&key, &record).await.map_err(medium)?;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             let run = run.checked_add(1).ok_or_else(corrupt)?;
             let claimed = incarnation_record(incarnation, run);
             if self
@@ -347,6 +507,8 @@ impl<M: Medium> Account<M> {
                 .await
                 .map_err(medium)?
             {
+                // A run claimed twice would reuse its revisions.
+                self.medium.flush(&[key]).await.map_err(medium)?;
                 return Ok(Issued::new(account, incarnation, run));
             }
         }
@@ -386,37 +548,40 @@ impl<M: Medium> Account<M> {
     }
 
     /// Marks `tag` as holding each of `children`, then admits them: refused
-    /// when one is absent or marked by a deleter. `None` means an index write's outcome
-    /// is unknown, so the holder must not commit.
-    async fn reference(&self, children: &[Digest], tag: &str) -> Result<Option<()>, Error> {
+    /// when one is absent or marked by a deleter. Whether it created any key;
+    /// `None` means an index write's outcome is unknown, so the holder must
+    /// not commit.
+    async fn reference(&self, children: &[Digest], tag: &str) -> Result<Option<bool>, Error> {
+        let mut created = false;
         for child in children {
             match self
                 .medium
-                .create(
-                    &format!("{}{tag}", self.index_prefix(child)),
-                    OwnedBytes::new(),
-                )
+                .create(&self.index_key(child, tag), OwnedBytes::new())
                 .await
             {
-                Ok(_) => {}
+                Ok(new) => created |= new,
                 Err(MediumError::Ambiguous(_)) => return Ok(None),
                 Err(error) => return Err(medium(error)),
             }
         }
         for child in children {
-            match self.envelope(child).await? {
+            match self.blob(child).await? {
                 Some(envelope) if envelope.dying.is_none() => {}
                 _ => return Err(ErrorCode::MissingReference.into()),
             }
         }
-        Ok(Some(()))
+        Ok(Some(created))
+    }
+
+    fn index_key(&self, child: &Digest, tag: &str) -> String {
+        format!("{}{tag}", self.index_prefix(child))
     }
 
     /// Removes `tag`'s index keys, once its holder is gone.
     async fn unreference(&self, children: &[Digest], tag: &str) -> Result<(), Error> {
         for child in children {
             self.medium
-                .remove(&format!("{}{tag}", self.index_prefix(child)))
+                .remove(&self.index_key(child, tag))
                 .await
                 .map_err(medium)?;
         }
@@ -441,77 +606,139 @@ impl<M: Medium> Account<M> {
         Ok((self.digest_from_key(key)?, version))
     }
 
-    fn revision_key(&self, revision: u64) -> String {
-        format!("{}g/{revision:020}", self.prefix)
+    fn epoch_key(&self) -> String {
+        format!("{}epoch", self.prefix)
     }
 
-    fn admission_prefix(&self, revision: u64) -> String {
-        format!("{}a/{revision:020}/", self.prefix)
-    }
-
-    /// The revision a `g/` or `a/` key names.
-    fn revision_of(key: &str, depth: usize) -> Result<u64, Error> {
-        key.rsplit('/')
-            .nth(depth)
-            .and_then(|revision| revision.parse().ok())
-            .ok_or_else(corrupt)
-    }
-
-    /// The current collection revision: the greatest `g/` key, zero before any.
-    async fn revision(&self) -> Result<u64, Error> {
-        let mut current = 0;
-        for (key, _) in self.list_all(&format!("{}g/", self.prefix)).await? {
-            current = current.max(Self::revision_of(&key, 0)?);
+    /// Holds `envelope`'s version of `digest` in the unflushed set for one
+    /// put, before any of its keys becomes visible.
+    fn track(&self, digest: &Digest, envelope: &Envelope) {
+        if !self.medium.volatile() {
+            return;
         }
-        Ok(current)
-    }
-
-    /// Admits `digest` at the current revision, confirmed by reading the
-    /// revision again after the write, and returns that revision. `None`
-    /// means a write's outcome is unknown.
-    async fn admit(&self, digest: &Digest) -> Result<Option<u64>, Error> {
-        let mut revision = self.revision().await?;
-        loop {
-            let key = format!("{}{}", self.admission_prefix(revision), digest.to_hex());
-            match self.medium.create(&key, OwnedBytes::new()).await {
-                Ok(_) => {}
-                Err(MediumError::Ambiguous(_)) => return Ok(None),
-                Err(error) => return Err(medium(error)),
-            }
-            let current = self.revision().await?;
-            if current == revision {
-                return Ok(Some(revision));
-            }
-            revision = current;
+        let mut written = self
+            .state
+            .written
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let versions = written.entry(*digest).or_default();
+        match versions
+            .iter_mut()
+            .find(|blob| blob.version == envelope.version)
+        {
+            Some(blob) => blob.puts += 1,
+            None => versions.push(Written {
+                version: envelope.version,
+                references: envelope.references.clone(),
+                complete: false,
+                puts: 1,
+                wrote: false,
+            }),
         }
     }
 
-    /// Whether `digest` was admitted at revision `from` or later.
-    async fn admitted(&self, digest: &Digest, from: u64) -> Result<bool, Error> {
-        for revision in from..=self.revision().await? {
-            let key = format!("{}{}", self.admission_prefix(revision), digest.to_hex());
-            if self
-                .medium
-                .read(&key, Some(0..0))
-                .await
-                .map_err(medium)?
-                .is_some()
-            {
-                return Ok(true);
+    /// Drops `version` of `digest` from the unflushed set: removed, or
+    /// flushed complete.
+    fn untrack(&self, digest: &Digest, version: &[u8; 16]) {
+        let mut written = self
+            .state
+            .written
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(versions) = written.get_mut(digest) {
+            versions.retain(|blob| blob.version != *version);
+            if versions.is_empty() {
+                written.remove(digest);
             }
         }
-        Ok(false)
     }
 
-    /// Whether `digest` is referenced or, for a collection fenced at `fence`,
-    /// admitted since.
-    async fn held(&self, digest: &Digest, fence: Option<u64>) -> Result<bool, Error> {
-        if let Some(from) = fence {
-            if self.admitted(digest, from).await? {
-                return Ok(true);
+    /// Ends one put's hold on `version` of `digest`, its payload complete.
+    /// A version no put wrote through is as durable as it was, and leaves
+    /// the set with its last hold; one any put wrote stays until flushed.
+    fn completed(&self, digest: &Digest, version: &[u8; 16], wrote: bool) {
+        let mut written = self
+            .state
+            .written
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(versions) = written.get_mut(digest) else {
+            return;
+        };
+        for blob in versions.iter_mut() {
+            if blob.version == *version {
+                blob.complete = true;
+                blob.wrote |= wrote;
+                blob.puts = blob.puts.saturating_sub(1);
             }
         }
-        self.any(&self.index_prefix(digest)).await
+        versions.retain(|blob| blob.puts > 0 || blob.wrote);
+        if versions.is_empty() {
+            written.remove(digest);
+        }
+    }
+
+    /// Makes durable, in one batch with `keys`, every unflushed blob version
+    /// in the closure of `only`, or every one. The walk stops at a blob
+    /// outside the set: it is durable with everything it references, since a
+    /// crash's damage is scrubbed before any account runs.
+    async fn flush_blobs(
+        &self,
+        only: Option<&[Digest]>,
+        mut keys: Vec<String>,
+    ) -> Result<(), Error> {
+        if !self.medium.volatile() {
+            return Ok(());
+        }
+        let mut covered = Vec::new();
+        let mut seen = HashSet::new();
+        let mut pending: Vec<Digest> = match only {
+            Some(only) => only.to_vec(),
+            None => {
+                let written = self
+                    .state
+                    .written
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                written.keys().copied().collect()
+            }
+        };
+        {
+            let written = self
+                .state
+                .written
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            while let Some(digest) = pending.pop() {
+                if !seen.insert(digest) {
+                    continue;
+                }
+                let Some(versions) = written.get(&digest) else {
+                    continue;
+                };
+                keys.push(self.envelope_key(&digest));
+                for blob in versions {
+                    keys.push(self.payload_key(&digest, &blob.version));
+                    let tag = Self::envelope_tag(&digest, &blob.version);
+                    keys.extend(
+                        blob.references
+                            .iter()
+                            .map(|child| self.index_key(child, &tag)),
+                    );
+                    pending.extend(blob.references.iter().copied());
+                    if blob.complete {
+                        covered.push((digest, blob.version));
+                    }
+                }
+            }
+        }
+        if !keys.is_empty() {
+            self.medium.flush(&keys).await.map_err(medium)?;
+        }
+        for (digest, version) in covered {
+            self.untrack(&digest, &version);
+        }
+        Ok(())
     }
 
     /// Removes `digest` unless it is held. The deleter marks the envelope as
@@ -522,16 +749,43 @@ impl<M: Medium> Account<M> {
     async fn remove_blob(&self, digest: Digest, fence: Option<u64>) -> Result<Delete, Error> {
         let key = self.envelope_key(&digest);
         let Some((observed, envelope)) = self.stored_envelope(&digest).await? else {
+            if fence.is_some() {
+                self.clear_torn(&key).await?;
+            }
             return Ok(Delete::Absent);
         };
-        if envelope.pending {
-            // Its put owns it until collection fences the put's admission.
-            return match fence {
-                Some(_) => self.revoke(digest, &key, &observed, &envelope, fence).await,
-                None => Ok(Delete::Absent),
-            };
+        match fence {
+            // An envelope whose payload is still to come belongs to its put;
+            // only collection, once its grace ends, removes it.
+            None if !self.complete(&digest, &envelope).await? => return Ok(Delete::Absent),
+            // A deleter's mark is taken over below, whatever the grace.
+            None => {}
+            Some(_) if envelope.dying.is_some() => {}
+            // This collection starts its grace.
+            Some(fence) if envelope.condemned == 0 => {
+                let stamped = Envelope {
+                    condemned: fence,
+                    ..envelope
+                };
+                return match self
+                    .medium
+                    .replace(&key, &observed, stamped.encode().into())
+                    .await
+                {
+                    Ok(_) | Err(MediumError::Ambiguous(_)) => Ok(Delete::Referenced),
+                    Err(error) => Err(medium(error)),
+                };
+            }
+            Some(fence) if envelope.condemned.saturating_add(1) >= fence => {
+                return Ok(Delete::Referenced);
+            }
+            Some(_) => {}
         }
-        if self.held(&digest, fence).await? {
+        if self.any(&self.index_prefix(&digest)).await? {
+            // A kept blob outlives a mark its deleter left behind.
+            if envelope.dying.is_some() && fence.is_some() {
+                self.revive(&key, &observed, envelope).await?;
+            }
             return Ok(Delete::Referenced);
         }
         let marked = Envelope {
@@ -547,13 +801,14 @@ impl<M: Medium> Account<M> {
         {
             return Err(ErrorCode::OutcomeUnknown.into());
         }
-        if self.held(&digest, fence).await? {
+        if self.any(&self.index_prefix(&digest)).await? {
             self.revive(&key, &marked, envelope).await?;
             return Ok(Delete::Referenced);
         }
         if !self.medium.remove_if(&key, &marked).await.map_err(moved)? {
             return Err(ErrorCode::OutcomeUnknown.into());
         }
+        self.untrack(&digest, &envelope.version);
         // This blob's own keys: no later blob of the digest shares them.
         self.medium
             .remove(&self.payload_key(&digest, &envelope.version))
@@ -572,6 +827,7 @@ impl<M: Medium> Account<M> {
     async fn revive(&self, key: &str, marked: &[u8], envelope: Envelope) -> Result<(), Error> {
         let live = Envelope {
             dying: None,
+            condemned: 0,
             ..envelope
         };
         match self.medium.replace(key, marked, live.encode().into()).await {
@@ -588,51 +844,39 @@ impl<M: Medium> Account<M> {
         }
     }
 
-    /// The published envelope of `digest`; a pending one is not yet a blob.
-    async fn envelope(&self, digest: &Digest) -> Result<Option<Envelope>, Error> {
-        Ok(self
-            .stored_envelope(digest)
-            .await?
-            .map(|(_, envelope)| envelope)
-            .filter(|envelope| !envelope.pending))
+    /// The envelope of `digest` once its payload is stored: a put creates
+    /// the envelope first, so until its payload follows it is not a blob.
+    async fn blob(&self, digest: &Digest) -> Result<Option<Envelope>, Error> {
+        let Some((_, envelope)) = self.stored_envelope(digest).await? else {
+            return Ok(None);
+        };
+        Ok(self.complete(digest, &envelope).await?.then_some(envelope))
     }
 
-    /// Revokes a pending envelope whose put's admission is fenced, then
-    /// removes that put's payload and keys. Its put's publication replaces
-    /// the same exact bytes, so exactly one of the two succeeds.
-    async fn revoke(
-        &self,
-        digest: Digest,
-        key: &str,
-        observed: &[u8],
-        envelope: &Envelope,
-        fence: Option<u64>,
-    ) -> Result<Delete, Error> {
-        if self.held(&digest, fence).await? {
-            return Ok(Delete::Referenced);
+    /// Whether a read failed on a key a crash tore: only an unflushed write,
+    /// which no commit references, can be, and it reads short.
+    fn torn(&self, error: &MediumError) -> bool {
+        matches!(error, MediumError::Failed(error) if error.kind() == std::io::ErrorKind::InvalidInput)
+            && self.medium.volatile()
+    }
+
+    /// Whether the payload of `envelope`'s version is complete. A medium
+    /// publishes a key only with all its bytes, and a crash's damage is
+    /// scrubbed before any account runs, so presence at full length is
+    /// completeness.
+    async fn complete(&self, digest: &Digest, envelope: &Envelope) -> Result<bool, Error> {
+        let key = self.payload_key(digest, &envelope.version);
+        let range = envelope.stored..envelope.stored;
+        match self.medium.read(&key, Some(range)).await {
+            Ok(Some(_)) => Ok(true),
+            Ok(None) => Ok(false),
+            Err(error) if self.torn(&error) => Ok(false),
+            Err(error) => Err(medium(error)),
         }
-        if !self.medium.remove_if(key, observed).await.map_err(moved)? {
-            return Err(ErrorCode::OutcomeUnknown.into());
-        }
-        self.clear(&digest, envelope).await?;
-        Ok(Delete::Absent)
     }
 
-    /// Removes the payload and index keys of a pending version no longer on
-    /// its envelope key; no publication of that version can follow.
-    async fn clear(&self, digest: &Digest, envelope: &Envelope) -> Result<(), Error> {
-        self.medium
-            .remove(&self.payload_key(digest, &envelope.version))
-            .await
-            .map_err(medium)?;
-        self.unreference(
-            &envelope.references,
-            &Self::envelope_tag(digest, &envelope.version),
-        )
-        .await
-    }
-
-    /// The envelope with the exact bytes a conditional write must match.
+    /// The envelope with the exact bytes a conditional write must match;
+    /// none for one a crash tore.
     async fn stored_envelope(
         &self,
         digest: &Digest,
@@ -645,8 +889,22 @@ impl<M: Medium> Account<M> {
         else {
             return Ok(None);
         };
-        let envelope = Envelope::decode(&bytes)?;
-        Ok(Some((bytes, envelope)))
+        match Envelope::decode(&bytes) {
+            Ok(envelope) => Ok(Some((bytes, envelope))),
+            Err(_) if self.medium.volatile() => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Removes the envelope at `key` if a crash tore it.
+    async fn clear_torn(&self, key: &str) -> Result<(), Error> {
+        let Some(bytes) = self.medium.read(key, None).await.map_err(medium)? else {
+            return Ok(());
+        };
+        if self.medium.volatile() && Envelope::decode(&bytes).is_err() {
+            self.medium.remove_if(key, &bytes).await.map_err(medium)?;
+        }
+        Ok(())
     }
 
     /// One listing page at a time, so a pass over a prefix holds one page.
@@ -679,123 +937,114 @@ impl<M: Medium> Account<M> {
         }
     }
 
-    /// Publishes payload then envelope under a fresh version; the envelope is
-    /// the commit point.
+    /// Publishes the blob `wanted` describes: creates its envelope under a
+    /// fresh version, or adopts an equal one, then indexes its references
+    /// and writes its payload unless complete. A new blob costs one envelope
+    /// and one payload write and no read; a stored one, two reads.
     async fn publish(
         &self,
         digest: Digest,
-        stored: OwnedBytes,
-        mut envelope: Envelope,
+        payload: OwnedBytes,
+        wanted: Envelope,
     ) -> Result<Put, Error> {
-        if let Some(existing) = self.envelope(&digest).await? {
-            return self.existing(digest, &existing, &envelope).await;
-        }
-        envelope.version = version()?;
-        let tag = Self::envelope_tag(&digest, &envelope.version);
-        match self.reference(&envelope.references, &tag).await {
-            Ok(Some(())) => {}
-            Ok(None) => return Ok(Put::Unknown),
-            Err(error) => {
-                self.unreference(&envelope.references, &tag).await?;
-                return Err(error);
+        let key = self.envelope_key(&digest);
+        let (envelope, created) = loop {
+            let fresh = Envelope {
+                version: version()?,
+                ..wanted.clone()
+            };
+            self.track(&digest, &fresh);
+            match self.medium.create(&key, fresh.encode().into()).await {
+                Ok(true) => break (fresh, true),
+                Ok(false) => self.untrack(&digest, &fresh.version),
+                Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
+                Err(error) => return Err(medium(error)),
             }
-        }
-        // Admit before anything exists: collection keeps what was admitted
-        // since its fence, and revokes only what it fenced.
-        let Some(admitted) = self.admit(&digest).await? else {
+            let Some((observed, existing)) = self.stored_envelope(&digest).await? else {
+                // Removed since, or torn by a crash.
+                self.clear_torn(&key).await?;
+                continue;
+            };
+            let existing = Self::equal(existing, &wanted)?;
+            if existing.dying.is_some() || existing.condemned != 0 {
+                let live = Envelope {
+                    dying: None,
+                    condemned: 0,
+                    ..existing
+                };
+                match self
+                    .medium
+                    .replace(&key, &observed, live.encode().into())
+                    .await
+                {
+                    Ok(true) => {}
+                    // Moved since: the next pass decides.
+                    Ok(false) | Err(MediumError::Ambiguous(_)) => continue,
+                    Err(error) => return Err(medium(error)),
+                }
+                self.track(&digest, &live);
+                break (live, false);
+            }
+            // A version outside the unflushed set is durable, unless this put
+            // writes to it; tracked first, so its writes are never invisible
+            // to a commit.
+            self.track(&digest, &existing);
+            break (existing, false);
+        };
+        // Any writer of the payload first holds every child; an index key
+        // outlives a refusal, pinning its child until this version's removal.
+        let tag = Self::envelope_tag(&digest, &envelope.version);
+        let Some(indexed) = self.reference(&envelope.references, &tag).await? else {
             return Ok(Put::Unknown);
         };
-        let key = self.envelope_key(&digest);
-        let pending = Envelope {
-            pending: true,
-            ..envelope.clone()
-        }
-        .encode();
-        match self.medium.create(&key, pending.clone().into()).await {
-            Ok(true) => {}
-            Ok(false) => match self.stored_envelope(&digest).await? {
-                // An abandoned or concurrent put's pending envelope: take it
-                // over by its exact bytes. That put's publication then never
-                // matches, so its payload and keys are cleared here.
-                Some((observed, abandoned)) if abandoned.pending => {
-                    match self
-                        .medium
-                        .replace(&key, &observed, pending.clone().into())
-                        .await
-                    {
-                        Ok(true) => {
-                            self.clear(&digest, &abandoned).await?;
-                        }
-                        Ok(false) | Err(MediumError::Ambiguous(_)) => {
-                            self.unreference(&envelope.references, &tag).await?;
-                            return Ok(Put::Unknown);
-                        }
-                        Err(error) => return Err(medium(error)),
-                    }
-                }
-                // An equal put won; these keys are this one's.
-                _ => {
-                    self.unreference(&envelope.references, &tag).await?;
-                    return match self.envelope(&digest).await? {
-                        Some(existing) => self.existing(digest, &existing, &envelope).await,
-                        None => Ok(Put::Unknown),
-                    };
-                }
-            },
-            Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
-            Err(error) => return Err(medium(error)),
-        }
-        let payload = self.payload_key(&digest, &envelope.version);
-        match self.medium.create(&payload, stored).await {
-            Ok(_) => {}
-            Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
-            Err(error) => return Err(medium(error)),
-        }
-        // Publishes only while no collector revoked the pending bytes.
-        match self
-            .medium
-            .replace(&key, &pending, envelope.encode().into())
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) => {
-                // Collection fenced this put and owns its removal.
-                self.medium.remove(&payload).await.map_err(medium)?;
-                self.unreference(&envelope.references, &tag).await?;
-                return Ok(Put::Unknown);
+        let wrote = if !created && self.complete(&digest, &envelope).await? {
+            false
+        } else {
+            match self.write_payload(&digest, &envelope, payload).await? {
+                Some(wrote) => wrote,
+                None => return Ok(Put::Unknown),
             }
-            Err(MediumError::Ambiguous(_)) => return Ok(Put::Unknown),
-            Err(error) => return Err(medium(error)),
-        }
-        // The blob stays protected for a full collection after this returns.
-        // Collection advanced while this put ran: re-admit, then confirm the
-        // published version survived, as an existing blob's put does.
-        if self.revision().await? != admitted {
-            if self.admit(&digest).await?.is_none() {
-                return Ok(Put::Unknown);
-            }
-            match self.envelope(&digest).await? {
-                Some(current) if current.version == envelope.version && current.dying.is_none() => {
-                }
-                _ => return Ok(Put::Unknown),
-            }
-        }
-        Ok(Put::Created {
-            verified: Verified {
-                digest,
-                length: envelope.length,
-                revision: None,
-            },
+        };
+        self.completed(&digest, &envelope.version, created || indexed || wrote);
+        let verified = Verified {
+            digest,
+            length: envelope.length,
+            revision: None,
+        };
+        Ok(if created {
+            Put::Created { verified }
+        } else {
+            Put::AlreadyExists { verified }
         })
     }
 
-    /// An envelope observed present is durable unless a deleter holds it.
-    async fn existing(
+    /// Writes `payload` as `envelope`'s version, replacing one a crash tore;
+    /// whether this call wrote it, or `None` when that is unknown.
+    async fn write_payload(
         &self,
-        digest: Digest,
-        existing: &Envelope,
-        wanted: &Envelope,
-    ) -> Result<Put, Error> {
+        digest: &Digest,
+        envelope: &Envelope,
+        payload: OwnedBytes,
+    ) -> Result<Option<bool>, Error> {
+        let key = self.payload_key(digest, &envelope.version);
+        loop {
+            match self.medium.create(&key, payload.clone()).await {
+                Ok(true) => return Ok(Some(true)),
+                Ok(false) => {}
+                Err(MediumError::Ambiguous(_)) => return Ok(None),
+                Err(error) => return Err(medium(error)),
+            }
+            if self.complete(digest, envelope).await? {
+                return Ok(Some(false));
+            }
+            if let Some(torn) = self.medium.read(&key, None).await.map_err(medium)? {
+                self.medium.remove_if(&key, &torn).await.map_err(medium)?;
+            }
+        }
+    }
+
+    /// An existing envelope a put adopts: the same bytes, the same references.
+    fn equal(existing: Envelope, wanted: &Envelope) -> Result<Envelope, Error> {
         if existing.kind != wanted.kind
             || existing.length != wanted.length
             || existing.stored != wanted.stored
@@ -805,22 +1054,7 @@ impl<M: Medium> Account<M> {
         if existing.references != wanted.references {
             return Err(ErrorCode::Conflict.into());
         }
-        if existing.dying.is_some() || self.admit(&digest).await?.is_none() {
-            return Ok(Put::Unknown);
-        }
-        // Admitted, then still unmarked: a deleter marking it later checks
-        // admissions after, and a mark already made is seen here.
-        match self.envelope(&digest).await? {
-            Some(current) if current.version == existing.version && current.dying.is_none() => {}
-            _ => return Ok(Put::Unknown),
-        }
-        Ok(Put::AlreadyExists {
-            verified: Verified {
-                digest,
-                length: existing.length,
-                revision: None,
-            },
-        })
+        Ok(existing)
     }
 
     async fn read_payload(
@@ -830,12 +1064,22 @@ impl<M: Medium> Account<M> {
         range: Option<std::ops::Range<u64>>,
     ) -> Result<OwnedBytes, Error> {
         let full = range.is_none();
-        let bytes = self
+        let bytes = match self
             .medium
             .read(&self.payload_key(digest, &envelope.version), range)
             .await
-            .map_err(medium)?
-            .ok_or_else(corrupt)?;
+        {
+            Ok(Some(bytes)) => bytes,
+            // Its put has not written it yet, a collector removed it, or a
+            // crash tore it before any commit.
+            Ok(None) => return Err(ErrorCode::NotFound.into()),
+            Err(error) if self.torn(&error) => return Err(ErrorCode::NotFound.into()),
+            Err(error) => return Err(medium(error)),
+        };
+        if full && (bytes.len() as u64) < envelope.stored && self.medium.volatile() {
+            // Torn by a crash before any commit: not yet written.
+            return Err(ErrorCode::NotFound.into());
+        }
         if full && (bytes.len() as u64 != envelope.stored || Digest::of(&bytes) != *digest) {
             return Err(corrupt());
         }
@@ -861,6 +1105,14 @@ impl<M: Medium> Account<M> {
             match envelope.kind {
                 Kind::Blob => {
                     let whole = range.start == 0 && range.end == envelope.length;
+                    // A whole read checks its bytes; a partial one first
+                    // proves a payload a crash could have torn complete.
+                    if !whole
+                        && self.medium.volatile()
+                        && !self.complete(&digest, &envelope).await?
+                    {
+                        return Err(ErrorCode::NotFound.into());
+                    }
                     out.push(
                         self.read_payload(&digest, &envelope, (!whole).then_some(range))
                             .await?,
@@ -874,7 +1126,10 @@ impl<M: Medium> Account<M> {
                         let start = range.start.max(offset);
                         let stop = range.end.min(end);
                         if start < stop {
-                            let child = self.envelope(&part.digest).await?.ok_or_else(corrupt)?;
+                            let (_, child) = self
+                                .stored_envelope(&part.digest)
+                                .await?
+                                .ok_or_else(corrupt)?;
                             if child.length != part.length {
                                 return Err(corrupt());
                             }
@@ -903,15 +1158,30 @@ impl<M: Medium> Account<M> {
             .map_err(suspended)?
         {
             let batch = self
-                .medium
-                .read(&key, None)
+                .batch(&key)
                 .await
-                .map_err(medium)
-                .and_then(|bytes| bytes.ok_or_else(corrupt))
+                .and_then(|batch| batch.ok_or_else(corrupt))
                 .map_err(suspended)?;
-            references.extend(decode_batch(&batch).map_err(suspended)?);
+            references.extend(batch);
         }
         Ok(references)
+    }
+
+    /// The root batch at `key`. A crash may tear one only before its retain
+    /// acknowledged it, so a torn batch is removed as never written; its
+    /// index keys only pin.
+    async fn batch(&self, key: &str) -> Result<Option<Vec<Digest>>, Error> {
+        let Some(bytes) = self.medium.read(key, None).await.map_err(medium)? else {
+            return Ok(None);
+        };
+        match decode_batch(&bytes) {
+            Ok(batch) => Ok(Some(batch)),
+            Err(_) if self.medium.volatile() => {
+                self.medium.remove_if(key, &bytes).await.map_err(medium)?;
+                Ok(Some(Vec::new()))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     fn head_of(digest: Digest, envelope: Envelope) -> Head {
@@ -932,11 +1202,16 @@ impl<M: Medium> Account<M> {
     ) -> Result<Object, Error> {
         // Everything committed by `served` is visible to the read after it.
         let served = self.issued().await?.applied.current();
-        let envelope = self
-            .envelope(&digest)
+        // Reading the payload proves the blob complete; an empty selection
+        // reads none, so it checks the payload instead.
+        let (_, envelope) = self
+            .stored_envelope(&digest)
             .await?
             .ok_or(Error::from(ErrorCode::NotFound))?;
         let selected = range.resolve(envelope.length)?;
+        if selected.is_empty() && !self.complete(&digest, &envelope).await? {
+            return Err(ErrorCode::NotFound.into());
+        }
         if selected.end - selected.start > maximum_bytes {
             return Err(ErrorCode::QuotaExceeded.into());
         }
@@ -993,7 +1268,7 @@ impl<M: Medium> Account<M> {
                 // Assigned by `publish`.
                 version: [0; 16],
                 dying: None,
-                pending: false,
+                condemned: 0,
             },
         )
         .await
@@ -1016,7 +1291,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
         let _gate = self.state.gate.read().await;
         for part in &manifest.parts {
             let envelope = self
-                .envelope(&part.digest)
+                .blob(&part.digest)
                 .await?
                 .ok_or(Error::from(ErrorCode::MissingReference))?;
             if envelope.length != part.length {
@@ -1037,11 +1312,24 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 // Assigned by `publish`.
                 version: [0; 16],
                 dying: None,
-                pending: false,
+                condemned: 0,
             },
         )
         .await
         .map(|put| issued.committed(put))
+    }
+
+    async fn flush(&self, only: Option<&[Digest]>) -> Result<(), Error> {
+        self.scrubbed().await?;
+        self.flush_blobs(only, Vec::new()).await?;
+        // A blob collected since its put is not durable however flushed.
+        for digest in only.into_iter().flatten() {
+            match self.blob(digest).await? {
+                Some(envelope) if envelope.dying.is_none() => {}
+                _ => return Err(ErrorCode::MissingReference.into()),
+            }
+        }
+        Ok(())
     }
 
     async fn get(
@@ -1056,7 +1344,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
     async fn head(&self, digest: Digest) -> Result<Head, Error> {
         let served = self.issued().await?.applied.current();
         let envelope = self
-            .envelope(&digest)
+            .blob(&digest)
             .await?
             .ok_or(Error::from(ErrorCode::NotFound))?;
         let mut head = Self::head_of(digest, envelope);
@@ -1086,7 +1374,8 @@ impl<M: Medium> crate::Blobs for Account<M> {
         let served = self.issued().await?.applied.current();
         let after = after.map(|digest| self.envelope_key(&digest));
         let limit = usize::try_from(limit).map_err(|_| invalid())?;
-        // Pending envelopes are not blobs: page past them to a full page.
+        // Envelopes still awaiting their payload are not blobs: page past
+        // them to a full page.
         let mut digests = Vec::new();
         let mut cursor = after;
         loop {
@@ -1096,9 +1385,10 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 .list(&format!("{}e/", self.prefix), cursor.as_deref(), wanted)
                 .await
                 .map_err(medium)?;
-            for (key, size) in &keys {
-                if Envelope::published_size(*size) {
-                    digests.push(self.digest_from_key(key)?);
+            for (key, _) in &keys {
+                let digest = self.digest_from_key(key)?;
+                if self.blob(&digest).await?.is_some() {
+                    digests.push(digest);
                 }
             }
             if keys.len() < wanted || digests.len() == limit {
@@ -1129,19 +1419,27 @@ impl<M: Medium> crate::Blobs for Account<M> {
         let name = format!("{}.{}", Digest::of(&batch).to_hex(), nonce()?);
         let tag = Self::batch_tag(root, &name);
         match self.reference(&references, &tag).await {
-            Ok(Some(())) => {}
+            Ok(Some(_)) => {}
             Ok(None) => return Err(ErrorCode::OutcomeUnknown.into()),
             Err(error) => {
                 self.unreference(&references, &tag).await?;
                 return Err(error);
             }
         }
+        // Delete consults only the index, so the closure and this batch's
+        // index keys are durable before the batch that commits them.
+        let index = references
+            .iter()
+            .map(|child| self.index_key(child, &tag))
+            .collect();
+        self.flush_blobs(Some(&references), index).await?;
         let key = format!("{}{name}", self.root_prefix(root));
         match self.medium.create(&key, batch.into()).await {
             Ok(_) => {}
             Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
             Err(error) => return Err(medium(error)),
         }
+        self.medium.flush(&[key]).await.map_err(moved)?;
         Ok(Retained {
             references: references.len() as u64,
             revision: Some(issued.commit()),
@@ -1152,19 +1450,30 @@ impl<M: Medium> crate::Blobs for Account<M> {
         let issued = self.issued().await?;
         let _gate = self.state.gate.read().await;
         let batches = self.list_all(&self.root_prefix(root)).await?;
+        let mut removed = Vec::new();
         for (key, _) in &batches {
-            let Some(batch) = self.medium.read(key, None).await.map_err(medium)? else {
+            let Some(references) = self.batch(key).await? else {
                 continue;
             };
-            let references = decode_batch(&batch)?;
             match self.medium.remove(key).await {
                 Ok(_) => {}
                 Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
                 Err(error) => return Err(medium(error)),
             }
-            let tag = Self::batch_tag(root, key.rsplit('/').next().ok_or_else(corrupt)?);
-            self.unreference(&references, &tag).await?;
+            removed.push((key, references));
         }
+        // A batch back from a crash must find its index keys: its removal is
+        // durable before theirs.
+        let batch_keys: Vec<_> = removed.iter().map(|(key, _)| (*key).clone()).collect();
+        self.medium.flush(&batch_keys).await.map_err(medium)?;
+        let mut index_keys = Vec::new();
+        for (key, references) in &removed {
+            let tag = Self::batch_tag(root, key.rsplit('/').next().ok_or_else(corrupt)?);
+            self.unreference(references, &tag).await?;
+            index_keys.extend(references.iter().map(|child| self.index_key(child, &tag)));
+        }
+        // An index key back from a crash would pin its child forever.
+        self.medium.flush(&index_keys).await.map_err(medium)?;
         let revision = if batches.is_empty() {
             issued.applied.current()
         } else {
@@ -1179,35 +1488,9 @@ impl<M: Medium> crate::Blobs for Account<M> {
     async fn collect(&self) -> Result<Collection, Error> {
         let issued = self.issued().await?;
         let _gate = self.state.gate.write().await;
-        let fence = self.revision().await?;
-        let epoch = fence + 1;
-        // One collector wins each revision, across processes.
-        match self
-            .medium
-            .create(&self.revision_key(epoch), OwnedBytes::new())
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) => return Err(ErrorCode::Conflict.into()),
-            Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
-            Err(error) => return Err(medium(error)),
-        }
-        let mut pages = self.pages(format!("{}g/", self.prefix));
-        while let Some(page) = pages.next().await? {
-            for (key, _) in page {
-                if Self::revision_of(&key, 0)? < fence {
-                    self.medium.remove(&key).await.map_err(medium)?;
-                }
-            }
-        }
         let mut marked = HashSet::new();
         let mut marks = Vec::new();
         let mut pending = self.rooted().await?;
-        for revision in [fence, epoch] {
-            for (key, _) in self.list_all(&self.admission_prefix(revision)).await? {
-                pending.push(self.digest_from_key(&key)?);
-            }
-        }
         while let Some(digest) = pending.pop() {
             if !marked.insert(digest) {
                 continue;
@@ -1229,6 +1512,46 @@ impl<M: Medium> crate::Blobs for Account<M> {
             self.revive(&self.envelope_key(&digest), &observed, envelope)
                 .await?;
         }
+        // Only a pass that can sweep advances the epoch: marking first never
+        // keeps less, since every sweep still consults the inbound index.
+        // Losing the claim to a crash only repeats the epoch, which keeps more.
+        let observed = self
+            .medium
+            .read(&self.epoch_key(), None)
+            .await
+            .map_err(medium)?;
+        let fence = match observed.as_deref().map(<[u8; 8]>::try_from) {
+            Some(Ok(bytes)) => u64::from_be_bytes(bytes),
+            Some(Err(_)) if !self.medium.volatile() => return Err(corrupt()),
+            // Torn by a crash, or never claimed.
+            Some(Err(_)) | None => 0,
+        };
+        let epoch = fence.checked_add(1).ok_or_else(corrupt)?;
+        let advanced = OwnedBytes::from(epoch.to_be_bytes().to_vec());
+        // One collector wins each epoch, across processes.
+        let claimed = match &observed {
+            Some(observed) => {
+                self.medium
+                    .replace(&self.epoch_key(), observed, advanced)
+                    .await
+            }
+            None => self.medium.create(&self.epoch_key(), advanced).await,
+        };
+        match claimed {
+            Ok(true) => {}
+            Ok(false) => return Err(ErrorCode::Conflict.into()),
+            Err(MediumError::Ambiguous(_)) => return Err(ErrorCode::OutcomeUnknown.into()),
+            Err(error) => return Err(medium(error)),
+        }
+        // Revisions and admissions of the earlier put protocol fence nothing.
+        for prefix in ["g/", "a/"] {
+            let mut pages = self.pages(format!("{}{prefix}", self.prefix));
+            while let Some(page) = pages.next().await? {
+                for (key, _) in page {
+                    self.medium.remove(&key).await.map_err(medium)?;
+                }
+            }
+        }
         let mut collection = Collection {
             epoch,
             ..Collection::default()
@@ -1242,46 +1565,27 @@ impl<M: Medium> crate::Blobs for Account<M> {
                     continue;
                 }
                 let stored = self
-                    .envelope(&digest)
+                    .blob(&digest)
                     .await?
                     .map_or(0, |envelope| envelope.stored);
-                if self.sweep(digest, fence).await? == Delete::Deleted {
+                if self.sweep(digest, epoch).await? == Delete::Deleted {
                     collection.swept += 1;
                     collection.swept_bytes += stored;
                 }
             }
         }
-        // Payloads of no envelope, or of one a parent's sweep above unpinned.
+        // Payloads of no envelope or of a removed version: none can return.
         let mut pages = self.pages(format!("{}p/", self.prefix));
         while let Some(page) = pages.next().await? {
             for (key, size) in page {
                 let (digest, version) = self.payload_of(&key)?;
-                if marked.contains(&digest) || self.admitted(&digest, fence).await? {
-                    continue;
-                }
                 match self.stored_envelope(&digest).await? {
-                    // A pending one is revoked before its payload goes.
-                    Some((_, envelope)) if envelope.version == version => {
-                        if self.sweep(digest, fence).await? == Delete::Deleted {
-                            collection.swept += 1;
-                            collection.swept_bytes += size;
-                        }
-                    }
-                    // Its put was revoked, lost to an equal put, or its deleter
-                    // stopped: no publication of this version can follow.
+                    // Its envelope's pass above decided, or a put just wrote it.
+                    Some((_, envelope)) if envelope.version == version => {}
                     _ => {
                         self.medium.remove(&key).await.map_err(medium)?;
                         collection.swept_bytes += size;
                     }
-                }
-            }
-        }
-        // Admissions before the fence no longer protect anything.
-        let mut pages = self.pages(format!("{}a/", self.prefix));
-        while let Some(page) = pages.next().await? {
-            for (key, _) in page {
-                if Self::revision_of(&key, 1)? < fence {
-                    self.medium.remove(&key).await.map_err(medium)?;
                 }
             }
         }
@@ -1349,6 +1653,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
     }
 
     async fn usage(&self) -> Result<Usage, Error> {
+        self.scrubbed().await?;
         let mut usage = Usage::default();
         let mut after: Option<String> = None;
         loop {
@@ -1359,7 +1664,7 @@ impl<M: Medium> crate::Blobs for Account<M> {
                 .map_err(medium)?;
             for (key, _) in &page {
                 let digest = self.digest_from_key(key)?;
-                if let Some(envelope) = self.envelope(&digest).await? {
+                if let Some(envelope) = self.blob(&digest).await? {
                     usage.blobs += 1;
                     usage.unique_bytes += envelope.stored;
                 }
@@ -1412,5 +1717,49 @@ impl<M: Medium> crate::Blobs for Account<M> {
         crate::NativeObjectsError,
     > {
         crate::native::put_batch(self, requests, meter)
+    }
+}
+
+#[cfg(test)]
+mod written_tests {
+    use super::*;
+
+    #[test]
+    fn a_version_another_put_wrote_through_stays_unflushed() {
+        let store = Store::new(crate::tests::Counting::default());
+        let account = store.account(b"account").unwrap();
+        let digest = Digest::of(b"blob");
+        let envelope = Envelope {
+            kind: Kind::Blob,
+            length: 4,
+            stored: 4,
+            references: Vec::new(),
+            version: [1; 16],
+            dying: None,
+            condemned: 0,
+        };
+        let tracked = || {
+            account
+                .state
+                .written
+                .lock()
+                .unwrap()
+                .get(&digest)
+                .is_some_and(|versions| versions.iter().any(|blob| blob.complete))
+        };
+        // Two equal puts hold the version; the one that finishes last wrote
+        // nothing, but the other wrote its payload.
+        account.track(&digest, &envelope);
+        account.track(&digest, &envelope);
+        account.completed(&digest, &envelope.version, true);
+        account.completed(&digest, &envelope.version, false);
+        assert!(tracked());
+        account.untrack(&digest, &envelope.version);
+        // Control: a version no put wrote through leaves with its last hold.
+        account.track(&digest, &envelope);
+        account.track(&digest, &envelope);
+        account.completed(&digest, &envelope.version, false);
+        account.completed(&digest, &envelope.version, false);
+        assert!(!tracked());
     }
 }

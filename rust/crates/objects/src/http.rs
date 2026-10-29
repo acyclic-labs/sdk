@@ -282,6 +282,11 @@ impl Blobs for HttpObjects {
         convert::listed(&reply, after, limit)
     }
 
+    /// The server acknowledges a put only once it is durable.
+    async fn flush(&self, _only: Option<&[Digest]>) -> Result<(), Error> {
+        Ok(())
+    }
+
     async fn retain(&self, root: &RootId, references: Vec<Digest>) -> Result<Retained, Error> {
         let reply: wire::RetainResponse = self
             .call(
