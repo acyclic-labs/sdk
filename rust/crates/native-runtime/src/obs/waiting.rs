@@ -24,6 +24,12 @@ pin_project_lite::pin_project! {
     }
 }
 
+impl<F> Waiting<F> {
+    pub(crate) fn context(&self) -> &OperationSpan {
+        &self.context
+    }
+}
+
 impl<F: Future> Future for Waiting<F> {
     type Output = F::Output;
 
@@ -55,6 +61,7 @@ pub fn waiting<F: Future>(primitive: &'static str, key: impl Display, future: F)
             "waiting",
             primitive,
             key = %key,
+            stage = 0_u64,
             finished = tracing::field::Empty,
         )),
     }

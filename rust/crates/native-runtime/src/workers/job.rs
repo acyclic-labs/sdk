@@ -22,6 +22,7 @@ pub(crate) enum NativeJob {
         health: Option<HealthOwner>,
     },
     Task {
+        progress: Option<obs::OperationSpan>,
         #[cfg(feature = "test-support")]
         scope: Option<testing::host::Work>,
         operation: Box<dyn FnOnce() + Send>,
@@ -38,6 +39,15 @@ pub(crate) enum NativeJob {
 }
 
 impl NativeJob {
+    pub(crate) fn stage(&self, stage: u64) {
+        if let Self::Task {
+            progress: Some(progress),
+            ..
+        } = self
+        {
+            progress.record("stage", stage);
+        }
+    }
     #[cfg(feature = "test-support")]
     pub(crate) fn may_wait_for_driver(&self) -> bool {
         match self {
@@ -170,6 +180,7 @@ impl NativeJob {
                 })
             }),
             Self::Task {
+                progress,
                 #[cfg(feature = "test-support")]
                 scope,
                 operation,
@@ -181,11 +192,16 @@ impl NativeJob {
                 completion,
             } => {
                 let charges = (_allocation, admission, meter, health);
+                let _turn = crate::task::PersistenceTurn::enter(progress.clone());
+                if let Some(progress) = &progress {
+                    progress.record("stage", 2_u64);
+                }
                 #[cfg(feature = "test-support")]
                 if let Some(scope) = scope {
-                    return scope.run(|| run_task(operation, terminal, completion, charges));
+                    return scope
+                        .run(|| run_task(operation, terminal, completion, charges, progress));
                 }
-                run_task(operation, terminal, completion, charges)
+                run_task(operation, terminal, completion, charges, progress)
             }
         }
     }
@@ -197,6 +213,7 @@ fn run_task(
     terminal: Arc<dyn TaskTerminal>,
     completion: Option<Arc<OperationFence>>,
     charges: impl Sized,
+    progress: Option<obs::OperationSpan>,
 ) -> Option<Waker> {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(operation));
     drop(charges);
@@ -207,6 +224,9 @@ fn run_task(
         completion.complete();
     }
     let waker = terminal.publish();
+    if let Some(progress) = &progress {
+        progress.record("stage", 4_u64);
+    }
     // This shared owner retains the state's charge until it is released,
     // including when the observer has already taken the result.
     crate::sync::release(terminal);

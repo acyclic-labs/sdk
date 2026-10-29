@@ -62,7 +62,7 @@ impl CommandJournal for LocalPort {
         let entries = if from == head {
             Vec::new()
         } else {
-            spawn_blocking(move || {
+            spawn_blocking("streams", "read-page", &format_args!("{:p}/{from}", Arc::as_ptr(&journal)), move || {
                 let journal = journal.lock().map_err(|_| StreamError::Unavailable)?;
                 if journal.bytes != head {
                     return Err(StreamError::InvalidResponse);

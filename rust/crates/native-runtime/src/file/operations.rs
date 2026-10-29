@@ -22,9 +22,11 @@ pub fn sync_file(
     meter: Option<&dyn NativeReadMeter>,
 ) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:sync", || sync_file_impl(file, durability, meter));
+    return crate::persistence_syscall(|| {
+        testing::durable_operation("file:sync", || sync_file_impl(file, durability, meter))
+    });
     #[cfg(not(feature = "test-support"))]
-    sync_file_impl(file, durability, meter)
+    crate::persistence_syscall(|| sync_file_impl(file, durability, meter))
 }
 
 fn sync_file_impl(
@@ -117,9 +119,11 @@ pub(crate) fn sync_file_unsequenced(file: &File, durability: Durability) -> io::
 /// Flushes file data according to `durability`.
 pub fn sync_data(file: &File, durability: Durability) -> io::Result<()> {
     #[cfg(feature = "test-support")]
-    return testing::durable_operation("file:sync_data", || sync_data_impl(file, durability));
+    return crate::persistence_syscall(|| {
+        testing::durable_operation("file:sync_data", || sync_data_impl(file, durability))
+    });
     #[cfg(not(feature = "test-support"))]
-    sync_data_impl(file, durability)
+    crate::persistence_syscall(|| sync_data_impl(file, durability))
 }
 
 fn sync_data_impl(file: &File, durability: Durability) -> io::Result<()> {

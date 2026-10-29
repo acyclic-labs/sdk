@@ -73,9 +73,12 @@ impl LocalStream {
             frames = Empty,
             bytes = Empty
         ));
-        let open = spawn_blocking(move || {
-            span.in_scope(|| Journal::open(&root, limits, &recovered, &span))
-        });
+        let open = spawn_blocking(
+            "streams",
+            "recover",
+            &format_args!("{:p}", root.as_os_str().as_encoded_bytes().as_ptr()),
+            move || span.in_scope(|| Journal::open(&root, limits, &recovered, &span)),
+        );
         #[cfg(test)]
         {
             if let Ok(mut hook) = JOURNAL_OPEN_SUBMITTED.lock()
@@ -357,6 +360,7 @@ impl LocalStream {
         let fail_cut_truncation = FAIL_CUT_TRUNCATION.with(std::cell::Cell::get);
         let required = !deferred(self);
         let stream = self.worker();
+        let key = Arc::as_ptr(&stream.inner.journal) as usize;
         let acquire = move || {
             let file = stream
                 .inner
@@ -415,7 +419,9 @@ impl LocalStream {
                 file.write(|file| {
                     #[cfg(all(test, not(loom)))]
                     pause_journal_write(&stream.inner.journal)?;
-                    Ok(frame.write(&mut acyclic_native_runtime::WriteAt::new(file, offset)))
+                    acyclic_native_runtime::persistence_syscall(|| {
+                        Ok(frame.write(&mut acyclic_native_runtime::WriteAt::new(file, offset)))
+                    })
                 })
                 .map_err(|error| stream.inner.fail(LocalStreamFailure::io("write", &error)))?
                 .map_err(|error| {
@@ -441,9 +447,9 @@ impl LocalStream {
             Ok(())
         };
         #[cfg(not(loom))]
-        let submitted = acyclic_native_runtime::FileLease::submit(acquire, write);
+        let submitted = acyclic_native_runtime::FileLease::submit("streams", "append", &key, acquire, write);
         #[cfg(loom)]
-        let submitted = query_model::submit_file(acquire, write);
+        let submitted = query_model::submit_file("streams", "append", &key, acquire, write);
         submitted.await.map_err(|_| {
             self.inner
                 .fail(LocalStreamFailure::new("write", "executor"))
@@ -478,7 +484,8 @@ impl LocalStream {
         let inner = Arc::clone(&self.inner);
         let work = self.work.clone();
         let span = obs::OperationSpan::new(tracing::debug_span!("acyclic.stream.compact"));
-        spawn_blocking(move || {
+        let key = Arc::as_ptr(&inner.journal) as usize;
+        spawn_blocking("streams", "compact", &key, move || {
             span.in_scope(|| {
                 let state = state.encode();
                 let mut journal = inner
@@ -629,6 +636,7 @@ impl LocalStream {
                 Some((file, durability)) => {
                     let inner = Arc::clone(&self.inner);
                     let work = self.work.clone();
+                    let key = Arc::as_ptr(&inner.journal) as usize;
                     let acquire = move || Ok::<_, StreamError>((file, (inner, work)));
                     let flush = move |file: &acyclic_native_runtime::FileLease,
                                       (inner, work): &mut (
@@ -638,9 +646,9 @@ impl LocalStream {
                         Ok(inner.flush_through(file, durability, work.as_deref()))
                     };
                     #[cfg(not(loom))]
-                    let submitted = acyclic_native_runtime::FileLease::submit(acquire, flush);
+                    let submitted = acyclic_native_runtime::FileLease::submit("streams", "flush", &key, acquire, flush);
                     #[cfg(loom)]
-                    let submitted = query_model::submit_file(acquire, flush);
+                    let submitted = query_model::submit_file("streams", "flush", &key, acquire, flush);
                     let flushed = submitted.await.map_err(|_| {
                         self.inner
                             .fail(LocalStreamFailure::new("flush", "executor"))

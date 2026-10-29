@@ -26,27 +26,88 @@ pub fn coordination_runtime() -> std::io::Result<tokio::runtime::Runtime> {
 /// Submission is eager: a replay reader may await records produced by the
 /// closure before it awaits this result. Once admitted, the service retains
 /// the closure through physical completion if the caller disappears. Closures
-/// must not wait for work submitted to this same service.
+/// must not wait for work submitted to this same service: reentrant submission
+/// returns [`std::io::ErrorKind::WouldBlock`] before entering its queue.
+/// `medium`, `operation` and the opaque `key` identify the original producer in
+/// wait reports. Never include credentials, user content or paths in the key.
 pub fn spawn_persistence<F, T>(
+    medium: &'static str,
+    operation: &'static str,
+    key: &dyn std::fmt::Display,
     work: F,
-) -> impl std::future::Future<Output = std::io::Result<T>> + Send
+) -> impl std::future::Future<Output = std::io::Result<T>> + Send + use<F, T>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    let completion = crate::task_completion(
-        move || Ok(work()),
-        None,
-        None,
-        None,
-        &crate::workers::PERSISTENCE_WORKERS,
-    );
-    let task = spawn(crate::obs::waiting(
+    let waiting = crate::obs::waiting(
         "persistence-completion",
-        "durable-storage",
-        async move { completion?.await },
-    ));
-    async move { task.await? }
+        format_args!("{medium}/{operation}/{key}"),
+        std::future::pending::<()>(),
+    );
+    let progress = waiting.context().clone();
+    let completion = if PERSISTENCE_JOB.with(|job| job.borrow().is_some()) {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "persistence worker cannot submit to its own service",
+        ))
+    } else {
+        progress.in_scope(|| {
+            crate::task_completion(
+                move || Ok(work()),
+                None,
+                None,
+                None,
+                &crate::workers::PERSISTENCE_WORKERS,
+            )
+        })
+    };
+    let task = completion.map(|completion| {
+        spawn(async move {
+            let _waiting = waiting;
+            completion.await
+        })
+    });
+    async move { task?.await? }
+}
+
+thread_local! {
+    static PERSISTENCE_JOB: std::cell::RefCell<Option<crate::obs::OperationSpan>> = const { std::cell::RefCell::new(None) };
+}
+
+pub(crate) struct PersistenceTurn(Option<crate::obs::OperationSpan>);
+
+impl PersistenceTurn {
+    pub(crate) fn enter(progress: Option<crate::obs::OperationSpan>) -> Self {
+        Self(PERSISTENCE_JOB.with(|job| job.replace(progress)))
+    }
+}
+
+impl Drop for PersistenceTurn {
+    fn drop(&mut self) {
+        PERSISTENCE_JOB.with(|job| job.replace(self.0.take()));
+    }
+}
+
+/// Marks a physical call in the original persistence job, without submitting work.
+pub fn persistence_syscall<T>(call: impl FnOnce() -> T) -> T {
+    struct Running;
+    impl Drop for Running {
+        fn drop(&mut self) {
+            PERSISTENCE_JOB.with(|job| {
+                if let Some(job) = job.borrow().as_ref() {
+                    job.record("stage", 2_u64);
+                }
+            });
+        }
+    }
+    PERSISTENCE_JOB.with(|job| {
+        if let Some(job) = job.borrow().as_ref() {
+            job.record("stage", 3_u64);
+        }
+    });
+    let _running = Running;
+    call()
 }
 
 /// The caller's task submission context, retained across a native worker turn.
@@ -247,13 +308,70 @@ mod tests {
     }
 
     #[test]
+    fn persistence_reports_the_original_job_and_refuses_same_service_dependencies() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let report = crate::obs::WaitReport::default();
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
+        let _dispatch = tracing::dispatcher::set_default(&dispatch);
+        let runtime = super::coordination_runtime().unwrap();
+        runtime.block_on(async {
+            let (started, starting) = tokio::sync::oneshot::channel();
+            let (release, held) = std::sync::mpsc::channel();
+            let job = super::spawn_persistence("local", "write", &17, move || {
+                super::persistence_syscall(|| {
+                    started.send(()).unwrap();
+                    held.recv().unwrap();
+                });
+                // The negative control attempts to wait on its own service.
+                // Its body must never enter that service, even with free workers.
+                let nested = super::spawn_persistence("local", "nested", &18, || {
+                    panic!("reentrant persistence body ran")
+                });
+                let mut nested = std::pin::pin!(nested);
+                let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+                assert!(matches!(std::future::Future::poll(nested.as_mut(), &mut context),
+                    std::task::Poll::Ready(Err(error)) if error.kind() == std::io::ErrorKind::WouldBlock));
+            });
+            starting.await.unwrap();
+            let mut bytes = Vec::new();
+            report.report(&mut bytes).unwrap();
+            let observed = String::from_utf8(bytes).unwrap();
+            assert!(observed.contains("local/write/17"), "{observed}");
+            assert!(observed.contains("stage=syscall"), "{observed}");
+            release.send(()).unwrap();
+            job.await.unwrap();
+            let mut bytes = Vec::new();
+            report.report(&mut bytes).unwrap();
+            assert!(bytes.is_empty(), "a terminal job remained live");
+        });
+    }
+
+    #[test]
+    fn persistence_worker_panic_terminates_its_original_wait() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let report = crate::obs::WaitReport::default();
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(report.clone()));
+        let _dispatch = tracing::dispatcher::set_default(&dispatch);
+        let runtime = super::coordination_runtime().unwrap();
+        let error = runtime
+            .block_on(super::spawn_persistence("local", "panic", &19, || {
+                panic!("original persistence failure")
+            }))
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        let mut bytes = Vec::new();
+        report.report(&mut bytes).unwrap();
+        assert!(bytes.is_empty(), "a failed producer retained its wait");
+    }
+
+    #[test]
     fn persistence_retains_accepted_work_after_caller_drop() {
         let runtime = super::coordination_runtime().unwrap();
         runtime.block_on(async {
             let (started, starting) = tokio::sync::oneshot::channel();
             let (release, held) = std::sync::mpsc::channel::<()>();
             let (finished, mut finishing) = tokio::sync::oneshot::channel();
-            let submitted = super::spawn_persistence(move || {
+            let submitted = super::spawn_persistence("test", "retained", &"held", move || {
                 let _ = started.send(());
                 let error = held.recv().unwrap_err();
                 let result = std::io::Error::new(std::io::ErrorKind::Interrupted, error);

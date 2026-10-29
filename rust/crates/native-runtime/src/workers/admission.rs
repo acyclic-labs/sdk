@@ -230,6 +230,7 @@ pub(crate) fn poll_submission_with(
     }
     // A job that never waits retires its prepaid waiter charge on admission.
     let prepaid = job.take_admission();
+    job.stage(1);
     match workers.sender.try_send(job) {
         Ok(()) => {
             admission.queued_jobs += 1;
@@ -240,6 +241,7 @@ pub(crate) fn poll_submission_with(
             Poll::Ready(Ok(()))
         }
         Err(mpsc::TrySendError::Full(job)) => {
+            job.stage(0);
             if let Some(node) = waiter.as_ref() {
                 // The existing node already carries the job's charge.
                 debug_assert!(prepaid.is_none(), "admission waiter paid twice");
