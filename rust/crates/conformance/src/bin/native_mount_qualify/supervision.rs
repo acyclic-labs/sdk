@@ -92,8 +92,8 @@ pub(super) async fn captured_child_ready(
             acyclic_fs::model::FilesystemProfile::Posix
         },
         NativeWatchOptions {
+            limits: acyclic_fs::model::VolumeLimits::default(),
             recursive: false,
-            ..Default::default()
         },
         &original,
     )?;
