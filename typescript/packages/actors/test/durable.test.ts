@@ -146,6 +146,86 @@ test("initialization and exclusive sections gate every handler; failed or fenced
   expect(deliveries).toBe(2);
 });
 
+test("capture closes admission, drains reentrant handlers, then acquires exclusive state", async () => {
+  let sections = 0, successorCalls = 0;
+  class Measured extends ActorActivation<{ value: number }> {
+    override blockConcurrencyWhile<Result>(callback: (state: { value: number }) => Result | Promise<Result>): Promise<Result> {
+      sections++;
+      return super.blockConcurrencyWhile(callback);
+    }
+  }
+  const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>();
+  const capturing = Promise.withResolvers<void>(), publish = Promise.withResolvers<void>();
+  const activation = new Measured(() => ({ value: 0 }));
+  const delivery = activation.deliver(async () => {
+    entered.resolve();
+    await resume.promise;
+    await activation.blockConcurrencyWhile(state => { state.value++; });
+  });
+  await entered.promise;
+  const capture = activation.quiesce(async state => {
+    capturing.resolve();
+    await publish.promise;
+    return state.value;
+  });
+  const successor = activation.deliver(state => { successorCalls++; return ++state.value; });
+  try {
+    // Former ordering requests exclusivity here, ahead of the admitted handler.
+    expect(sections).toBe(1);
+    resume.resolve();
+    await delivery;
+    await capturing.promise;
+    expect(sections).toBe(3);
+    expect(successorCalls).toBe(0);
+    publish.resolve();
+    expect(await capture).toBe(1);
+    expect(await successor).toBe(2);
+    expect(sections).toBe(4);
+  } finally {
+    activation.fence(); resume.resolve(); publish.resolve();
+    await Promise.allSettled([delivery, capture, successor]);
+  }
+});
+
+test("queued admission belongs to its capture cut; host loss settles every current and late observer", async () => {
+  const initialize = Promise.withResolvers<number>();
+  const activation = new ActorActivation(() => initialize.promise);
+  const order: string[] = [];
+  const a = activation.deliver(() => { order.push("first"); });
+  const b = activation.quiesce(() => { order.push("capture"); });
+  const c = activation.deliver(() => { order.push("second"); });
+  const d = activation.quiesce(() => { order.push("capture-second"); });
+  initialize.resolve(1);
+  await Promise.all([a, b, c, d]);
+  expect(order).toEqual(["first", "capture", "second", "capture-second"]);
+
+  const held = Promise.withResolvers<number>(), entered = Promise.withResolvers<void>();
+  const lost = new ActorActivation(() => { entered.resolve(); return held.promise; });
+  let effects = 0;
+  const pending = [lost.deliver(() => { effects++; }), lost.quiesce(() => { effects++; }), lost.deliver(() => { effects++; })];
+  const settled = Promise.allSettled(pending);
+  const failures: unknown[] = [];
+  for (const operation of pending) void operation.catch(error => { failures.push(error); });
+  await entered.promise;
+  try {
+    lost.fence();
+    // Ownership loss synchronously rejects observers; observe that notification
+    // on the next microtask, before releasing the original blocked producer.
+    await Promise.resolve();
+    expect(failures).toHaveLength(3);
+    for (const result of await settled) {
+      expect(result.status).toBe("rejected");
+      if (result.status === "rejected") expect(result.reason.code).toBe("unavailable");
+    }
+    await expect(lost.deliver(() => { effects++; })).rejects.toMatchObject({ code: "unavailable" });
+    await expect(lost.quiesce(() => { effects++; })).rejects.toMatchObject({ code: "unavailable" });
+    expect(effects).toBe(0);
+  } finally {
+    held.resolve(1);
+    await settled;
+  }
+});
+
 test("durable host receives the exact triple; validation rejects bounds before any host effect", async () => {
   const seen: string[] = [];
   const host = new Proxy({}, {get(_target, property) { return (address: Uint8Array) => {

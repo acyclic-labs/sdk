@@ -66,62 +66,115 @@ export function alarmInfo(retryCount: number, isRetry = retryCount !== 0): Reado
   return Object.freeze({ retryCount, isRetry });
 }
 
+interface ActivationObserver {
+  previous: ActivationObserver | undefined;
+  next: ActivationObserver | undefined;
+  reject(reason: unknown): void;
+}
+
 /** Constructor and exclusive sections gate every new delivery. Failed heaps stay fenced. */
 export class ActorActivation<State> {
   #initialize: (() => State | Promise<State>) | undefined;
   #value: State | undefined;
   #initialized = false;
-  #failed = false;
-  #fenced = false;
+  #failure: (Error & { code: "unavailable" }) | undefined;
+  #observers: ActivationObserver | undefined;
   #gate: Promise<void> = Promise.resolve();
-  readonly #deliveries = new Set<Promise<unknown>>();
+  #admission: Promise<void> | undefined;
+  #batch: { active: number; drained?: () => void } = { active: 0 };
   constructor(initialize: () => State | Promise<State>) { this.#initialize = initialize; }
+  // Remove settled observers: a terminal promise's reactions would retain history
+  // for the entire activation. Only currently pending operations observe stop.
+  #observe<Result>(operation: Promise<Result>): Promise<Result> {
+    return new Promise<Result>((resolve, reject) => {
+      const observer: ActivationObserver = { previous: undefined, next: undefined, reject };
+      if (this.#failure) reject(this.#failure);
+      else {
+        observer.next = this.#observers;
+        if (observer.next) observer.next.previous = observer;
+        this.#observers = observer;
+      }
+      operation.then(value => {
+        this.#unlink(observer);
+        if (this.#failure) reject(this.#failure); else resolve(value);
+      }, error => {
+        this.#unlink(observer);
+        reject(error);
+        this.fence(error);
+      });
+    });
+  }
+  #unlink(observer: ActivationObserver): void {
+    if (observer.previous) observer.previous.next = observer.next;
+    else if (this.#observers === observer) this.#observers = observer.next;
+    else return;
+    if (observer.next) observer.next.previous = observer.previous;
+    observer.previous = observer.next = undefined;
+  }
+  #available(): void { if (this.#failure) throw this.#failure; }
   blockConcurrencyWhile<Result>(callback: (state: State) => Result | Promise<Result>): Promise<Result> {
     const operation = this.#gate.then(async () => {
-      if (this.#failed || this.#fenced) throw new Error("activation failed; host must discard heap");
-      // Failure remains terminal even when the host cancels or fences this activation.
-      this.#failed = true;
+      this.#available();
       if (!this.#initialized) {
         const initialize = this.#initialize!;
         this.#initialize = undefined;
         this.#value = await initialize();
         this.#initialized = true;
       }
+      this.#available();
       const result = await callback(this.#value as State);
-      if (this.#fenced) throw new Error("activation fenced; host must discard heap");
-      this.#failed = false;
+      this.#available();
       return result;
     });
     this.#gate = operation.then(() => undefined, () => undefined);
-    return operation;
+    return this.#observe(operation);
   }
-  async deliver<Result>(handler: (state: State) => Result | Promise<Result>): Promise<Result> {
-    const state = await this.blockConcurrencyWhile(state => state);
-    // Ownership may be revoked after admission resolves but before this continuation.
-    if (this.#fenced) throw new Error("activation fenced; host must discard heap");
+  deliver<Result>(handler: (state: State) => Result | Promise<Result>): Promise<Result> {
+    const batch = this.#batch, admission = this.#admission;
+    // Registration precedes every await, including initialization and admission.
+    batch.active++;
     const delivery = (async () => {
       try {
+        if (admission) await admission;
+        const state = await this.blockConcurrencyWhile(state => state);
+        // Ownership may be revoked after admission resolves but before this continuation.
+        this.#available();
         const result = await handler(state);
-        if (this.#fenced) throw new Error("activation fenced; host must discard heap");
+        this.#available();
         return result;
-      } catch (error) { this.fence(); throw error; }
+      } finally { if (--batch.active === 0) batch.drained?.(); }
     })();
-    this.#deliveries.add(delivery);
-    try { return await delivery; }
-    finally { this.#deliveries.delete(delivery); }
+    return this.#observe(delivery);
   }
   /** Host capture waits for admitted handlers and gates new deliveries until complete.
    * Call outside a handler: a handler cannot wait for its own completion.
    */
   quiesce<Result>(capture: (state: State) => Result | Promise<Result>): Promise<Result> {
-    return this.blockConcurrencyWhile(async state => {
-      await Promise.all(this.#deliveries);
-      if (this.#fenced) throw new Error("activation fenced; host must discard heap");
-      return capture(state);
-    });
+    const batch = this.#batch;
+    const drained = batch.active === 0 ? Promise.resolve() : new Promise<void>(resolve => { batch.drained = resolve; });
+    // Close admission first. Already admitted handlers retain exclusive access
+    // while draining; capture acquires it only after their completion event.
+    const operation = (this.#admission?.then(() => drained) ?? drained).then(() => this.blockConcurrencyWhile(capture));
+    const released = () => { if (this.#admission === admission) this.#admission = undefined; };
+    const admission = operation.then(released, released);
+    this.#admission = admission;
+    this.#batch = { active: 0 };
+    return this.#observe(operation);
   }
   /** Host cancellation/ownership loss permanently invalidates this heap. */
-  fence(): void { this.#fenced = true; }
+  fence(cause?: unknown): void {
+    if (this.#failure) return;
+    this.#failure = Object.assign(
+      new Error("activation fenced; host must discard heap", { cause }),
+      { code: "unavailable" as const },
+    );
+    // Only terminal notification visits all currently armed observers.
+    while (this.#observers) {
+      const observer = this.#observers;
+      this.#unlink(observer);
+      observer.reject(this.#failure);
+    }
+  }
 }
 
 /** Namespace class handlers. The constructor runs before any delivered call. */
