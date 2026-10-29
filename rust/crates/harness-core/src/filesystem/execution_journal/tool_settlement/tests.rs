@@ -111,17 +111,76 @@ async fn terminal_lookup_survives_reconstruction_without_replaying_history() -> 
                 crate::wire::ErrorCode::Unauthorized
             );
         }
+        let payload = journal
+            .stage_with_io(turn, "payload", b"{}", "application/json", None)
+            .await?;
+        journal
+            .append(
+                turn,
+                "dispatch",
+                &ExecutionEvent::ToolStarted {
+                    step: 64,
+                    call_id: "call".into(),
+                    invocation: payload.clone(),
+                },
+                None,
+            )?
+            .await?;
+        let key = tool_settlement_key(64, "call", ToolTerminalOutcome::Completed, None)?;
+        journal
+            .append(
+                turn,
+                &key,
+                &ExecutionEvent::ToolCompleted {
+                    step: 64,
+                    call_id: "call".into(),
+                    result: payload.clone(),
+                    projection: payload,
+                },
+                None,
+            )?
+            .await?;
+        let completed = ToolSettlementQuery {
+            step: 64,
+            effect: crate::tool::ToolInvocation::model_call_operation(turn, 64, "call", None)?,
+            ..query
+        };
+        assert_eq!(
+            journal.tool_settlement(completed, Some(&io))?.await?,
+            Some(ToolSettlement {
+                cut: 67,
+                sequence: 67,
+                outcome: ToolTerminalOutcome::Completed,
+            })
+        );
         if native {
             assert_eq!(work.live_allocation_bytes(), baseline);
         }
+        let mut finite = budget;
+        finite.authority_records_read = 0;
+        let finite_io = PreparationIo::from_budget(finite, &cancellation)?;
+        let denied = match journal.tool_settlement(completed, Some(&finite_io)) {
+            Ok(future) => future.await,
+            Err(error) => Err(error),
+        };
+        assert!(
+            denied.is_err(),
+            "finite read refusal became an absent result"
+        );
+        assert_eq!(finite_io.receipt().authority_records_read, 0);
+        assert_eq!(finite_io.owned_bytes()?, 0);
         let cancelled = acyclic_fs::CancellationToken::new();
         let cancelled_io = PreparationIo::from_budget(budget, &cancelled)?;
         cancelled.cancel();
-        assert!(
-            journal
-                .tool_settlement(query, Some(&cancelled_io))?
-                .await
-                .is_err()
+        let cancelled_result = match journal.tool_settlement(query, Some(&cancelled_io)) {
+            Ok(future) => future.await,
+            Err(error) => Err(error),
+        };
+        assert_eq!(
+            cancelled_result
+                .expect_err("cancelled read accepted")
+                .code(),
+            crate::wire::ErrorCode::Cancelled
         );
         assert_eq!(cancelled_io.receipt().authority_records_read, 0);
     }
@@ -170,5 +229,25 @@ async fn raw_terminal_observation_cannot_authorize_request_retirement() -> Resul
         effect: crate::tool::ToolInvocation::model_call_operation(turn, 0, "call", None)?,
     };
     assert_eq!(journal.tool_settlement(query, None)?.await?, None);
+    let state = journal
+        .load_index_checkpoint(turn, None)
+        .await?
+        .expect("original checkpoint")
+        .0;
+    let head = journal.index_path(turn, "head", None)?;
+    // A genuine signed root copied into a different commit loses its anchor.
+    journal
+        .stream
+        .append(acyclic_stream::AppendRequest {
+            path: (*head).clone(),
+            records: vec![journal.encode_index_checkpoint(state, None)?.into()],
+            if_tail: Some(1),
+            idempotency_key: StreamKey::unique(),
+        })
+        .await?;
+    assert!(
+        journal.tool_settlement(query, None)?.await.is_err(),
+        "detached checkpoint became an absent or terminal result"
+    );
     Ok(())
 }
