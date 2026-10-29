@@ -186,6 +186,11 @@ impl<J: CommandJournal> Replicated<J> {
         self.failed
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_proposal_clock(&self, millis: u64) {
+        self.clock.set(millis);
+    }
+
     fn check(&self) -> Result<(), StreamError> {
         if self.failed {
             Err(StreamError::Unavailable)
@@ -420,10 +425,9 @@ impl<J: CommandJournal> Replicated<J> {
                     self.refresh_with(page, &mut observe).await?;
                     fresh = true;
                     // An unchanged monotonic cut confirms the original refusal;
-                    // only a changed state or clock-dependent refusal replans.
-                    if self.cursor != expected
-                        || matches!(&result, Err(StreamError::DeadlineElapsed))
-                    {
+                    // Deadline-bearing refusals must also use the observed
+                    // clock, even when the original refusal was a conflict.
+                    if self.cursor != expected || deadline.is_some() {
                         continue;
                     }
                 }

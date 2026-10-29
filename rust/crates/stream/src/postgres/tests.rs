@@ -137,6 +137,56 @@ async fn publication_uses_only_required_sql_observations()
             ..
         }))
     ));
+    // The retained cursor is current, but its proposal clock predates this
+    // already elapsed deadline. A condition conflict must not mask expiry.
+    let expired_conflict = CommitRequest {
+        deadline_unix_millis: Some(1),
+        conditions: vec![CommitCondition::Tail {
+            path: original.path.clone(),
+            expected: 0,
+        }],
+        mutations: vec![CommitMutation::Append {
+            path: StreamPath::new("deadline/control")?,
+            records: vec!["deadline".into()],
+        }],
+        idempotency_key: IdempotencyKey::unique(),
+    };
+    replica.set_proposal_clock(0);
+    let before = replica.cursor;
+    sql_case(&replica, "expired-conflict").await?;
+    assert!(matches!(
+        replica
+            .execute(WriteRequest::Commit(expired_conflict.clone()), None, PAGE)
+            .await,
+        Err(StreamError::DeadlineElapsed)
+    ));
+    assert_eq!(replica.cursor, before);
+    assert!(
+        replica
+            .provider
+            .inspect_idempotency(expired_conflict.idempotency_key.clone())
+            .await?
+            .is_none()
+    );
+    sql_case(&replica, "retry-expired-conflict").await?;
+    assert!(matches!(
+        replica
+            .execute(
+                WriteRequest::Commit(CommitRequest {
+                    deadline_unix_millis: None,
+                    conditions: vec![CommitCondition::Tail {
+                        path: original.path.clone(),
+                        expected: 2,
+                    }],
+                    ..expired_conflict
+                }),
+                None,
+                PAGE,
+            )
+            .await?
+            .outcome,
+        WriteOutcome::Commit(CommitOutcome::Committed(_))
+    ));
     sql_case(&replica, "late-deadline").await?;
     let expired = AppendRequest {
         if_tail: None,
@@ -177,7 +227,7 @@ async fn publication_uses_only_required_sql_observations()
             &[&namespace],
         )
         .await?;
-    assert_eq!(rows.get::<_, i64>(0), 6);
+    assert_eq!(rows.get::<_, i64>(0), 7);
     drop(replica);
     drop(provider);
     drop(writer);
